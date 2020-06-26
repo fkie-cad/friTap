@@ -11,8 +11,9 @@ In order to realize this project we fulfill the following steps:
 - Identify the "hooking points" of each SSL/TLS-implementation with the following goals:
     - 1. we want to extract at least the used symmetric key 
     - 2. we want to dump the network communication which is encapsulated inside the SSL/TLS-Socket as PCAP
+    - it shouldn't matter if cert pinning is in use or not.
 - Enumerate a pool of apps in the "wild" which used SSL/TLS where we evaluate our framework
-
+- Bonus: only deactivating cert pinning for the SSL/TLS-libaries
 
 
 [1] https://github.com/google/ssl_logger 
