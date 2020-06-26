@@ -6,7 +6,12 @@ This frida framework - by now called SSL-Interceptor (a better name has to be fi
 - extracting the encryption keys from the used SSL-Implementation
 - dunmp a PCAP wiht the decrypted content
 
-
+In order to realize this project we fulfill the following steps:
+- Enumerate the most common SSL/TLS-implementations used on Android. It is recommend to develop a test app which can use all the diffrent libraries so that we can later test our framework.
+- Identify the "hooking points" of each SSL/TLS-implementation with the following goals:
+    - 1. we want to extract at least the used symmetric key 
+    - 2. we want to dump the network communication which is encapsulated inside the SSL/TLS-Socket as PCAP
+- Enumerate a pool of apps in the "wild" which used SSL/TLS where we evaluate our framework
 
 
 
