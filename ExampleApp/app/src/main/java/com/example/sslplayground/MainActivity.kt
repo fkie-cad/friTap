@@ -33,7 +33,7 @@ class MainActivity : AppCompatActivity() {
     }
 
 
-    fun onTestButtonClick(view: View) {
+    fun onHTTPGetClick(view: View) {
         SSLConnecter(this).connect("https://wikipedia.org")
     }
 
