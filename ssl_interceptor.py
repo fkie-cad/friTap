@@ -22,7 +22,7 @@ __version__ = "0.01"
 ssl_sessions = {}
 
 
-def ssl_log(app, pcap=None, verbose=False):
+def ssl_log(app, pcap=None, verbose=False, spawn=False):
 
     def log_pcap(pcap_file, ss_family, ssl_session_id, function, src_addr, src_port,
                  dst_addr, dst_port, data):
@@ -180,7 +180,11 @@ def ssl_log(app, pcap=None, verbose=False):
                      p["src_port"], p["dst_addr"], p["dst_port"], data)
 
     device = frida.get_usb_device()
-    process = device.attach(app)
+    if spawn:
+        pid = device.spawn(app)
+        process = device.attach(pid)
+    else:
+        process = device.attach(app)
     if pcap:
         pcap_file = open(pcap, "wb", 0)
         for writes in (
@@ -198,6 +202,7 @@ def ssl_log(app, pcap=None, verbose=False):
     print("Press Ctrl+C to stop logging.")
     print('[*] Running Script')
     script.load()
+    device.resume(pid)
     try:
         signal.pause()
     except KeyboardInterrupt:
@@ -235,8 +240,10 @@ Examples:
                       help="Name of PCAP file to write")
     args.add_argument("-verbose", required=False, action="store_const",
                       const=True, help="Show verbose output")
+    args.add_argument("-spawn", required=False, action="store_const", const=True,
+                      help="Spawn the app instead of attaching to a running process")
     args.add_argument("app", metavar="<app name>",
                       help="APP whose SSL calls to log")
     parsed = parser.parse_args()
 
-    ssl_log(parsed.app, parsed.pcap, parsed.verbose)
+    ssl_log(parsed.app, parsed.pcap, parsed.verbose, parsed.spawn)
