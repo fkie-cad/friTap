@@ -33,7 +33,7 @@ class MainActivity : AppCompatActivity() {
     }
 
 
-    fun onHTTPGetClick(view: View) {
+    fun onHTTPGetWikipediaClick(view: View) {
         SSLConnecter(this).connect("https://wikipedia.org")
     }
 
@@ -61,4 +61,8 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+
+    fun onHTTPGetGoogleClick(view: View) {
+        SSLConnecter(this).connect("https://www.google.com/")
     }
+}

@@ -24,15 +24,28 @@
         app:layout_constraintTop_toTopOf="parent"/>
 
     <Button
-        android:id="@+id/TestButton"
+        android:id="@+id/WikipediaButton"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="HTTP Get"
+        android:text="HTTPS Get Wikipedia"
         android:layout_marginStart="16dp"
         android:layout_marginTop="16dp"
-        android:onClick="onHTTPGetClick"
+        android:onClick="onHTTPGetWikipediaClick"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent"
-        android:layout_marginLeft="16dp" /> />
+        android:layout_marginLeft="16dp" />
+
+    <Button
+        android:id="@+id/GoogleButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="HTTPS Get Google"
+        android:layout_marginStart="16dp"
+        android:layout_marginTop="16dp"
+        android:onClick="onHTTPGetGoogleClick"
+        app:layout_constraintStart_toEndOf="@id/WikipediaButton"
+        app:layout_constraintTop_toTopOf="parent"
+        android:layout_marginLeft="16dp" />
+    />
 
 </androidx.constraintlayout.widget.ConstraintLayout>
