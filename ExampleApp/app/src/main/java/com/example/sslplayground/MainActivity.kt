@@ -1,35 +1,36 @@
 package com.example.sslplayground
 
-import android.os.AsyncTask
 import android.os.Bundle
-import android.os.Parcel
-import android.os.Parcelable
 import android.text.method.ScrollingMovementMethod
 import android.view.View
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.android.synthetic.main.activity_main.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import java.io.InputStream
 import java.lang.ref.WeakReference
 import java.net.URL
-import java.net.URLConnection
 import javax.net.ssl.HttpsURLConnection
 
 
 class MainActivity : AppCompatActivity() {
 
-    private val textView: TextView by lazy { findViewById<TextView>(R.id.textView) }
+    private val textViewOutput: TextView by lazy { findViewById<TextView>(R.id.Output) }
+
+    private val textViewConnectionInformation: TextView by lazy { findViewById<TextView>(R.id.connectionInformation) }
 
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-        textView.setHorizontallyScrolling(true)
-        textView.movementMethod = ScrollingMovementMethod()
-        textView.text = "Welcome!\n"
+        textViewConnectionInformation.setHorizontallyScrolling(true)
+        textViewConnectionInformation.movementMethod = ScrollingMovementMethod()
+        textViewConnectionInformation.text = "Welcome!\n"
+
+        textViewOutput.setHorizontallyScrolling(true)
+        textViewOutput.movementMethod = ScrollingMovementMethod()
     }
 
 
@@ -49,15 +50,18 @@ class MainActivity : AppCompatActivity() {
                 if (act != null) {
                     val url = URL(url)
                     val httpsUrlConnection: HttpsURLConnection = url.openConnection() as HttpsURLConnection
+
                     if(httpsUrlConnection.responseCode == HttpsURLConnection.HTTP_OK){
                         httpsUrlConnection.inputStream.bufferedReader().use {
-                        act.textView.append(it.readText())
-
+                        act.textViewOutput.append(it.readText())
+                        act.textViewConnectionInformation.append("HTTP " + httpsUrlConnection.responseCode.toString() + "\n")
+                        act.textViewConnectionInformation.append("Cipher suite: " + httpsUrlConnection.cipherSuite + "\n")
                         }
                     } else {
-                           act.textView.append("HTTP " + httpsUrlConnection.responseCode.toString())
+                           act.textViewConnectionInformation.append("HTTP " + httpsUrlConnection.responseCode.toString())
                         }
                     }
+
                 }
             }
         }

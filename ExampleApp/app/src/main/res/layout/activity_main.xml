@@ -7,21 +7,21 @@
     tools:context=".MainActivity">
 
     <TextView
-        android:id="@+id/textView"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
+        android:id="@+id/connectionInformation"
+        android:layout_width="348dp"
+        android:layout_height="150dp"
         android:layout_marginStart="16dp"
-        android:layout_marginTop="84dp"
+        android:layout_marginTop="16dp"
         android:layout_marginEnd="16dp"
         android:layout_marginBottom="16dp"
-        android:gravity="bottom"
+        android:gravity="top"
+        android:scrollbars="vertical"
         android:scrollHorizontally="true"
         android:text=""
-        android:scrollbars="vertical"
-        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintBottom_toTopOf="@+id/HeadingOutput"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent"/>
+        app:layout_constraintTop_toBottomOf="@+id/HeadingConnectionInformation" />
 
     <Button
         android:id="@+id/WikipediaButton"
@@ -46,6 +46,51 @@
         app:layout_constraintStart_toEndOf="@id/WikipediaButton"
         app:layout_constraintTop_toTopOf="parent"
         android:layout_marginLeft="16dp" />
+
+    <TextView
+        android:id="@+id/Output"
+        android:layout_width="348dp"
+        android:layout_height="300dp"
+        android:layout_marginStart="16dp"
+        android:layout_marginLeft="16dp"
+        android:layout_marginEnd="16dp"
+        android:layout_marginRight="16dp"
+        android:layout_marginBottom="24dp"
+        android:layout_marginTop="16dp"
+        android:gravity="bottom"
+        android:scrollbars="vertical"
+        android:scrollHorizontally="true"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@+id/HeadingOutput" />
+
+    <TextView
+        android:id="@+id/HeadingConnectionInformation"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="90dp"
+        android:layout_marginBottom="16dp"
+        android:text="Connection Information"
+        android:textSize="16sp"
+        android:textStyle="bold"
+        android:typeface="normal"
+        app:layout_constraintBottom_toTopOf="@+id/connectionInformation"
+        app:layout_constraintStart_toStartOf="@+id/connectionInformation"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <TextView
+        android:id="@+id/HeadingOutput"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:layout_marginBottom="16dp"
+        android:text="Output"
+        android:textSize="16sp"
+        android:textStyle="bold"
+        app:layout_constraintBottom_toTopOf="@+id/Output"
+        app:layout_constraintStart_toStartOf="@+id/Output"
+        app:layout_constraintTop_toBottomOf="@+id/connectionInformation" />
     />
 
 </androidx.constraintlayout.widget.ConstraintLayout>
