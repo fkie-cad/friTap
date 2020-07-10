@@ -15,8 +15,7 @@ handle IPv4 and automatically treated it as `sockaddr_in`. So, to fix the
 problem, we check `address.ss_family` and allocate memory according to the 
 result.
 
-## Analysing this bug with Dwarf
-TODO
+
 
 [1] https://github.com/google/ssl_logger 
 
