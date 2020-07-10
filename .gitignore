@@ -156,3 +156,6 @@ dist
 
 #vscode folder
 .vscode/
+
+#pcap files
+*.pcap
