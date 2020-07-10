@@ -12,7 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.lang.ref.WeakReference
 import java.net.URL
-import javax.net.ssl.HttpsURLConnection
+import javax.net.ssl.*
 
 
 class MainActivity : AppCompatActivity() {
@@ -31,6 +31,9 @@ class MainActivity : AppCompatActivity() {
 
         textViewOutput.setHorizontallyScrolling(true)
         textViewOutput.movementMethod = ScrollingMovementMethod()
+
+        var defaultSocketFactory = HttpsURLConnection.getDefaultSSLSocketFactory()
+        val context : SSLContext = SSLContext.getInstance("TLS")
     }
 
 
@@ -45,11 +48,11 @@ class MainActivity : AppCompatActivity() {
 
         fun connect(url: String) {
             viewModelScope.launch(Dispatchers.IO) {
-
                 val act: MainActivity? = activity.get()
                 if (act != null) {
+
                     val url = URL(url)
-                    val httpsUrlConnection: HttpsURLConnection = url.openConnection() as HttpsURLConnection
+                    val httpsUrlConnection = url.openConnection() as HttpsURLConnection
 
                     if(httpsUrlConnection.responseCode == HttpsURLConnection.HTTP_OK){
                         httpsUrlConnection.inputStream.bufferedReader().use {
