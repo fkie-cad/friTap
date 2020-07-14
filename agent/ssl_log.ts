@@ -7,7 +7,7 @@ const AF_INET6 = 10
 var modules = Process.enumerateModules()
 
 var library_method_mapping: { [key: string]: Array<String> } = {}
-library_method_mapping["*libssl*"] = ["SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session", "SSL_SESSION_get_id"]
+library_method_mapping["*libssl*"] = ["SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_connect", "SSL_CTX_set_keylog_callback"]
 library_method_mapping["*libc*"] = ["getpeername", "getsockname", "ntohs", "ntohl"]
 var resolver = new ApiResolver("module")
 var addresses: { [key: string]: NativePointer } = {}
@@ -151,5 +151,11 @@ Interceptor.attach(addresses["SSL_write"],
             send(message, args[1].readByteArray(parseInt(args[2])))
         },
         onLeave: function (retval: any) {
+        }
+    })
+Interceptor.attach(addresses["SSL_connect"],
+    {
+        onEnter: function (args: any) {
+            //HIER GEHTS WEITER
         }
     })
