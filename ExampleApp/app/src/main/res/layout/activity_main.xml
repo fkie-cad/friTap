@@ -27,7 +27,7 @@
         android:id="@+id/WikipediaButton"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="HTTPS Get Wikipedia"
+        android:text="Wikipedia"
         android:layout_marginStart="16dp"
         android:layout_marginTop="16dp"
         android:onClick="onHTTPGetWikipediaClick"
@@ -39,11 +39,12 @@
         android:id="@+id/GoogleButton"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="HTTPS Get Google"
+        android:text="Google"
         android:layout_marginStart="16dp"
         android:layout_marginTop="16dp"
         android:onClick="onHTTPGetGoogleClick"
         app:layout_constraintStart_toEndOf="@id/WikipediaButton"
+        app:layout_constraintEnd_toStartOf="@id/keyExchangeSwitch"
         app:layout_constraintTop_toTopOf="parent"
         android:layout_marginLeft="16dp" />
 
@@ -91,6 +92,17 @@
         app:layout_constraintBottom_toTopOf="@+id/Output"
         app:layout_constraintStart_toStartOf="@+id/Output"
         app:layout_constraintTop_toBottomOf="@+id/connectionInformation" />
-    />
 
+    <ToggleButton
+        android:id="@+id/keyExchangeSwitch"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="ToggleButton"
+        android:textOn="RSA"
+        android:textOff="(EC)DHE"
+        android:layout_marginStart="16dp"
+        android:layout_marginTop="16dp"
+        app:layout_constraintStart_toEndOf="@id/GoogleButton"
+        app:layout_constraintTop_toTopOf="parent"
+        android:layout_marginLeft="16dp" />
 </androidx.constraintlayout.widget.ConstraintLayout>

@@ -4,6 +4,7 @@ import android.os.Bundle
 import android.text.method.ScrollingMovementMethod
 import android.view.View
 import android.widget.TextView
+import android.widget.ToggleButton
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -32,8 +33,7 @@ class MainActivity : AppCompatActivity() {
         textViewOutput.setHorizontallyScrolling(true)
         textViewOutput.movementMethod = ScrollingMovementMethod()
 
-        var defaultSocketFactory = HttpsURLConnection.getDefaultSSLSocketFactory()
-        val context : SSLContext = SSLContext.getInstance("TLS")
+        HttpsURLConnection.setDefaultSSLSocketFactory(CustomSSLSocketFactory(findViewById(R.id.keyExchangeSwitch)))
     }
 
 
@@ -54,20 +54,21 @@ class MainActivity : AppCompatActivity() {
                     val url = URL(url)
                     val httpsUrlConnection = url.openConnection() as HttpsURLConnection
 
-                    if(httpsUrlConnection.responseCode == HttpsURLConnection.HTTP_OK){
+                    if (httpsUrlConnection.responseCode == HttpsURLConnection.HTTP_OK) {
                         httpsUrlConnection.inputStream.bufferedReader().use {
-                        act.textViewOutput.append(it.readText())
-                        act.textViewConnectionInformation.append("HTTP " + httpsUrlConnection.responseCode.toString() + "\n")
-                        act.textViewConnectionInformation.append("Cipher suite: " + httpsUrlConnection.cipherSuite + "\n")
+                            act.textViewOutput.append(it.readText())
+                            act.textViewConnectionInformation.append("HTTP " + httpsUrlConnection.responseCode.toString() + "\n")
+                            act.textViewConnectionInformation.append("Cipher suite: " + httpsUrlConnection.cipherSuite + "\n")
                         }
                     } else {
-                           act.textViewConnectionInformation.append("HTTP " + httpsUrlConnection.responseCode.toString())
-                        }
+                        act.textViewConnectionInformation.append("HTTP " + httpsUrlConnection.responseCode.toString())
                     }
-
+                    httpsUrlConnection.disconnect()
                 }
+
             }
         }
+    }
 
     fun onHTTPGetGoogleClick(view: View) {
         SSLConnecter(this).connect("https://www.google.com/")
