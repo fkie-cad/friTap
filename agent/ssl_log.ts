@@ -7,7 +7,7 @@ const AF_INET6 = 10
 var modules = Process.enumerateModules()
 
 var library_method_mapping: { [key: string]: Array<String> } = {}
-library_method_mapping["*libssl*"] = ["SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_connect", "SSL_CTX_set_keylog_callback"]
+library_method_mapping["*libssl*"] = ["SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_keylog_callback", "SSL_get_SSL_CTX"]
 library_method_mapping["*libc*"] = ["getpeername", "getsockname", "ntohs", "ntohl"]
 var resolver = new ApiResolver("module")
 var addresses: { [key: string]: NativePointer } = {}
@@ -56,6 +56,8 @@ var getpeername = new NativeFunction(addresses["getpeername"], "int", ["int", "p
 var getsockname = new NativeFunction(addresses["getsockname"], "int", ["int", "pointer", "pointer"])
 var ntohs = new NativeFunction(addresses["ntohs"], "uint16", ["uint16"])
 var ntohl = new NativeFunction(addresses["ntohl"], "uint32", ["uint32"])
+var SSL_CTX_set_keylog_callback = new NativeFunction(addresses["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"])
+var SSL_get_SSL_CTX = new NativeFunction(addresses["SSL_get_SSL_CTX"], "pointer", ["pointer"])
 
 /**
    * Returns a dictionary of a sockfd's "src_addr", "src_port", "dst_addr", and
@@ -139,6 +141,7 @@ Interceptor.attach(addresses["SSL_read"],
             if (retval <= 0) {
                 return
             }
+            this.message["contentType"] = "datalog"
             send(this.message, this.buf.readByteArray(retval))
         }
     })
@@ -148,14 +151,22 @@ Interceptor.attach(addresses["SSL_write"],
             var message = getPortsAndAddresses(SSL_get_fd(args[0]) as number, false)
             message["ssl_session_id"] = getSslSessionId(args[0])
             message["function"] = "SSL_write"
+            message["contentType"] = "datalog"
             send(message, args[1].readByteArray(parseInt(args[2])))
         },
         onLeave: function (retval: any) {
         }
     })
-Interceptor.attach(addresses["SSL_connect"],
+Interceptor.attach(addresses["SSL_new"],
     {
         onEnter: function (args: any) {
-            //HIER GEHTS WEITER
+            var keylog_callback = new NativeCallback(function (ctxPtr, linePtr: NativePointer) {
+                var message: { [key: string]: string | number | null } = {}
+                message["contentType"] = "keylog"
+                message["keylog"] = linePtr.readCString()
+                send(message)
+            }, "void", ["pointer", "pointer"])
+            SSL_CTX_set_keylog_callback(args[0], keylog_callback)
         }
+
     })

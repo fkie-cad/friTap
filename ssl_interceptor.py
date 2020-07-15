@@ -22,7 +22,7 @@ __version__ = "0.01"
 ssl_sessions = {}
 
 
-def ssl_log(app, pcap=None, verbose=False, spawn=False):
+def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False):
 
     def log_pcap(pcap_file, ss_family, ssl_session_id, function, src_addr, src_port,
                  dst_addr, dst_port, data):
@@ -149,35 +149,43 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False):
             pprint.pprint(message)
             os.kill(os.getpid(), signal.SIGTERM)
             return
-        if not data or len(data) == 0:
-            return
         p = message["payload"]
+        if not "contentType" in p:
+            return
         if verbose:
-            if(p["ss_family"] == "AF_INET"):
-                src_addr = socket.inet_ntop(socket.AF_INET,
-                                            struct.pack(">I", p["src_addr"]))
-                dst_addr = socket.inet_ntop(socket.AF_INET,
-                                            struct.pack(">I", p["dst_addr"]))
-            elif(p["ss_family"] == "AF_INET6"):
+            if(p["contentType"] == "keylog"):
+                print(p["keylog"])
+            elif not data or len(data) == 0:
+                return
+            else:
+                if(p["ss_family"] == "AF_INET"):
+                    src_addr = socket.inet_ntop(socket.AF_INET,
+                                                struct.pack(">I", p["src_addr"]))
+                    dst_addr = socket.inet_ntop(socket.AF_INET,
+                                                struct.pack(">I", p["dst_addr"]))
+                elif(p["ss_family"] == "AF_INET6"):
 
-                raw_src_addr = bytes.fromhex(p["src_addr"])
-                src_addr = socket.inet_ntop(socket.AF_INET6,
-                                            struct.pack(">16s", raw_src_addr))
-                raw_dst_addr = bytes.fromhex(p["dst_addr"])
-                dst_addr = socket.inet_ntop(socket.AF_INET6,
-                                            struct.pack(">16s", raw_dst_addr))
-            print("SSL Session: " + p["ssl_session_id"])
-            print("[%s] %s:%d --> %s:%d" % (
-                p["function"],
-                src_addr,
-                p["src_port"],
-                dst_addr,
-                p["dst_port"]))
-            hexdump.hexdump(data)
-            print()
-        if pcap:
+                    raw_src_addr = bytes.fromhex(p["src_addr"])
+                    src_addr = socket.inet_ntop(socket.AF_INET6,
+                                                struct.pack(">16s", raw_src_addr))
+                    raw_dst_addr = bytes.fromhex(p["dst_addr"])
+                    dst_addr = socket.inet_ntop(socket.AF_INET6,
+                                                struct.pack(">16s", raw_dst_addr))
+                print("SSL Session: " + p["ssl_session_id"])
+                print("[%s] %s:%d --> %s:%d" % (
+                    p["function"],
+                    src_addr,
+                    p["src_port"],
+                    dst_addr,
+                    p["dst_port"]))
+                hexdump.hexdump(data)
+                print()
+        if pcap and p["contentType"] == "datalog":
             log_pcap(pcap_file, p["ss_family"], p["ssl_session_id"], p["function"], p["src_addr"],
                      p["src_port"], p["dst_addr"], p["dst_port"], data)
+        if keylog and p["contentType"] == "keylog":
+            keylog_file.write(p["keylog"] + "\n")
+            keylog_file.flush()
 
     device = frida.get_usb_device()
     if spawn:
@@ -196,11 +204,17 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False):
             ("=I", 65535),          # Max length of captured packets
                 ("=I", 101)):           # Data link type (LINKTYPE_IPV4 = 228) CHANGED TO RAW
             pcap_file.write(struct.pack(writes[0], writes[1]))
+    if keylog:
+        keylog_file = open(keylog, "w")
     with open("_ssl_log.js") as f:
         script = process.create_script(f.read())
     script.on("message", on_message)
     print("Press Ctrl+C to stop logging.")
     print('[*] Running Script')
+    if pcap:
+        print(f'[*] Logging pcap to {pcap}')
+    if keylog:
+        print(f'[*] Logging keylog file to {keylog}')
     script.load()
     device.resume(pid)
     try:
@@ -233,6 +247,7 @@ Examples:
   %(prog)s -pcap ssl.pcap com.example.app
   %(prog)s -verbose com.example.app
   %(prog)s -pcap log.pcap -verbose com.example.app
+  %(prog)s -keylog keys.log -verbose -spawn com.example.app
 """)
 
     args = parser.add_argument_group("Arguments")
@@ -242,8 +257,11 @@ Examples:
                       const=True, help="Show verbose output")
     args.add_argument("-spawn", required=False, action="store_const", const=True,
                       help="Spawn the app instead of attaching to a running process")
+    args.add_argument("-keylog", metavar="<path>", required=False,
+                      help="Log the keys used for tls traffic")
     args.add_argument("app", metavar="<app name>",
                       help="APP whose SSL calls to log")
     parsed = parser.parse_args()
 
-    ssl_log(parsed.app, parsed.pcap, parsed.verbose, parsed.spawn)
+    ssl_log(parsed.app, parsed.pcap, parsed.verbose,
+            parsed.spawn, parsed.keylog)
