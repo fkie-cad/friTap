@@ -216,7 +216,8 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False):
     if keylog:
         print(f'[*] Logging keylog file to {keylog}')
     script.load()
-    device.resume(pid)
+    if spawn:
+        device.resume(pid)
     try:
         signal.pause()
     except KeyboardInterrupt:
