@@ -15,7 +15,6 @@ import java.lang.ref.WeakReference
 import java.net.URL
 import javax.net.ssl.*
 
-
 class MainActivity : AppCompatActivity() {
 
     private val textViewOutput: TextView by lazy { findViewById<TextView>(R.id.Output) }
@@ -33,7 +32,6 @@ class MainActivity : AppCompatActivity() {
         textViewOutput.setHorizontallyScrolling(true)
         textViewOutput.movementMethod = ScrollingMovementMethod()
 
-        HttpsURLConnection.setDefaultSSLSocketFactory(CustomSSLSocketFactory(findViewById(R.id.keyExchangeSwitch)))
     }
 
 
@@ -47,10 +45,11 @@ class MainActivity : AppCompatActivity() {
 
 
         fun connect(url: String) {
+
             viewModelScope.launch(Dispatchers.IO) {
                 val act: MainActivity? = activity.get()
                 if (act != null) {
-
+                    HttpsURLConnection.setDefaultSSLSocketFactory(CustomSSLSocketFactory(act.findViewById(R.id.keyExchangeSwitch)))
                     val url = URL(url)
                     val httpsUrlConnection = url.openConnection() as HttpsURLConnection
 
