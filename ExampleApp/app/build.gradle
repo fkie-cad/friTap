@@ -27,6 +27,10 @@ android {
             path file('CMakeLists.txt')
         }
     }
+    sourceSets {
+        // wolfSSL JNI Java source files are added here
+        main.java.srcDirs += '../wolfssljni/src/java'
+    }
     ndkVersion '21.3.6528147'
 }
 
