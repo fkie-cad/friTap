@@ -32,7 +32,10 @@ android {
         main.java.srcDirs += '../wolfssljni/src/java'
     }
     ndkVersion '21.3.6528147'
+
 }
+
+
 
 dependencies {
     implementation fileTree(dir: "libs", include: ["*.jar"])
@@ -44,6 +47,7 @@ dependencies {
     androidTestImplementation 'androidx.test.ext:junit:1.1.1'
     androidTestImplementation 'androidx.test.espresso:espresso-core:3.2.0'
     implementation "androidx.lifecycle:lifecycle-viewmodel-ktx:2.2.0"
-
+    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.3.1'
+    testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.3.1'
 
 }

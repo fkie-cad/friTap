@@ -2,6 +2,9 @@ package com.example.sslplayground
 
 import android.util.Log
 import android.widget.ToggleButton
+import com.wolfssl.WolfSSL
+import com.wolfssl.provider.jsse.WolfSSLSocket
+import com.wolfssl.provider.jsse.WolfSSLSocketFactory
 import java.lang.Exception
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -22,6 +25,7 @@ class CustomSSLSocketFactory(val rsaSwitch : ToggleButton) : SSLSocketFactory() 
 
     override fun createSocket(s: Socket?, host: String?, port: Int, autoClose: Boolean): Socket {
         s?.run { close() }
+        Log.i(this.javaClass.name, "Default factory: " + this.defaultFactory.javaClass.name)
         val socket = defaultFactory.createSocket() as SSLSocket
         if(rsaSwitch.isChecked){
             //Have to downgrade TLS to 1.2, as 1.3 disallows RSA

@@ -2,18 +2,20 @@ package com.example.sslplayground
 
 import android.os.Bundle
 import android.text.method.ScrollingMovementMethod
+import android.util.Log
 import android.view.View
 import android.widget.TextView
-import android.widget.ToggleButton
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import kotlinx.android.synthetic.main.activity_main.*
+import com.wolfssl.WolfSSL
+import com.wolfssl.provider.jsse.WolfSSLProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.lang.ref.WeakReference
 import java.net.URL
-import javax.net.ssl.*
+import java.security.Security
+import javax.net.ssl.HttpsURLConnection
 
 class MainActivity : AppCompatActivity() {
 
@@ -39,13 +41,24 @@ class MainActivity : AppCompatActivity() {
         SSLConnecter(this).connect("https://wikipedia.org")
     }
 
+
+
     class SSLConnecter(val context : MainActivity) : ViewModel(){
 
         private val activity : WeakReference<MainActivity> = WeakReference(this.context)
 
+        companion object {
+            init {
+                System.loadLibrary("wolfssl")
+                System.loadLibrary("wolfssljni")
+            }
+        }
 
         fun connect(url: String) {
+            val ssl = WolfSSL()
 
+            Security.insertProviderAt(WolfSSLProvider(), 1)
+            Log.i(this.javaClass.name, Security.getProviders().joinToString())
             viewModelScope.launch(Dispatchers.IO) {
                 val act: MainActivity? = activity.get()
                 if (act != null) {
