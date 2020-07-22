@@ -1,4 +1,5 @@
 import { off } from "process"
+import { readAddresses } from "./shared"
 
 const AF_INET = 2
 const AF_INET6 = 10
@@ -9,46 +10,9 @@ var modules = Process.enumerateModules()
 var library_method_mapping: { [key: string]: Array<String> } = {}
 library_method_mapping["*libssl*"] = ["SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_keylog_callback", "SSL_get_SSL_CTX"]
 library_method_mapping["*libc*"] = ["getpeername", "getsockname", "ntohs", "ntohl"]
-var resolver = new ApiResolver("module")
-var addresses: { [key: string]: NativePointer } = {}
 
-for (let library_name in library_method_mapping) {
-    library_method_mapping[library_name].forEach(function (method) {
-        var matches = resolver.enumerateMatches("exports:" + library_name + "!" + method)
-        if (matches.length == 0) {
-            throw "Could not find " + library_name + "!" + method
-        }
-        else {
-            send("Found " + library_name + "!" + method)
-        }
-        if (matches.length == 0) {
-            throw "Could not find " + library_name + "!" + method
-        }
-        else if (matches.length != 1) {
-            // Sometimes Frida returns duplicates.
-            var address = null
-            var s = ""
-            var duplicates_only = true
-            for (var k = 0; k < matches.length; k++) {
-                if (s.length != 0) {
-                    s += ", "
-                }
-                s += matches[k].name + "@" + matches[k].address
-                if (address == null) {
-                    address = matches[k].address
-                }
-                else if (!address.equals(matches[k].address)) {
-                    duplicates_only = false
-                }
-            }
-            if (!duplicates_only) {
-                throw "More than one match found for " + library_name + "!" + method + ": " +
-                s
-            }
-        }
-        addresses[method.toString()] = matches[0].address
-    })
-}
+var addresses: { [key: string]: NativePointer } = readAddresses(library_method_mapping)
+
 var SSL_get_fd = new NativeFunction(addresses["SSL_get_fd"], "int", ["pointer"])
 var SSL_get_session = new NativeFunction(addresses["SSL_get_session"], "pointer", ["pointer"])
 var SSL_SESSION_get_id = new NativeFunction(addresses["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"])
