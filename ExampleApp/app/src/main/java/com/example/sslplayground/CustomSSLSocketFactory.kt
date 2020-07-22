@@ -1,6 +1,7 @@
 package com.example.sslplayground
 
 import android.util.Log
+import android.widget.Spinner
 import android.widget.ToggleButton
 import com.wolfssl.WolfSSL
 import com.wolfssl.provider.jsse.WolfSSLSocket
@@ -15,8 +16,8 @@ import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
 
 
-class CustomSSLSocketFactory(val rsaSwitch : ToggleButton) : SSLSocketFactory() {
-    private val defaultFactory = SSLSocketFactory.getDefault() as SSLSocketFactory
+class CustomSSLSocketFactory(private val rsaSwitch : ToggleButton) : SSLSocketFactory() {
+    private val defaultFactory = getDefault() as SSLSocketFactory
 
 
     override fun getDefaultCipherSuites(): Array<String> {
@@ -27,17 +28,17 @@ class CustomSSLSocketFactory(val rsaSwitch : ToggleButton) : SSLSocketFactory() 
         s?.run { close() }
         Log.i(this.javaClass.name, "Default factory: " + this.defaultFactory.javaClass.name)
         val socket = defaultFactory.createSocket() as SSLSocket
+
         if(rsaSwitch.isChecked){
             //Have to downgrade TLS to 1.2, as 1.3 disallows RSA
             socket.enabledProtocols = socket.enabledProtocols.filterNot { it.contains("1.3") }.toTypedArray()
             socket.enabledCipherSuites = socket.supportedCipherSuites.filter { it.startsWith("TLS_RSA") }.toTypedArray()
-            Log.i(this.javaClass.name, "Protocols: " + socket.enabledProtocols.joinToString())
-            Log.i(this.javaClass.name, "Cipher Suites: " + socket.enabledCipherSuites.joinToString())
         }else{
             socket.enabledCipherSuites = socket.supportedCipherSuites.filterNot { it.startsWith("TLS_RSA") }.toTypedArray()
-            Log.i(this.javaClass.name, "Protocols: " + socket.enabledProtocols.joinToString())
-            Log.i(this.javaClass.name, "Cipher Suites: " + socket.enabledCipherSuites.joinToString())
         }
+        Log.i(this.javaClass.name, "Protocols: " + socket.enabledProtocols.joinToString())
+        Log.i(this.javaClass.name, "Cipher Suites: " + socket.enabledCipherSuites.joinToString())
+
         socket.keepAlive = false
         socket.connect(InetSocketAddress(host, port))
         return socket
