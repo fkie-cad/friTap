@@ -159,3 +159,6 @@ dist
 
 #pcap files
 *.pcap
+
+#git cache
+.git_cache

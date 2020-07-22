@@ -1,5 +1,5 @@
 import { off } from "process"
-import { readAddresses } from "./shared"
+import { readAddresses, getPortsAndAddresses } from "./shared"
 
 const AF_INET = 2
 const AF_INET6 = 10
@@ -16,53 +16,9 @@ var addresses: { [key: string]: NativePointer } = readAddresses(library_method_m
 var SSL_get_fd = new NativeFunction(addresses["SSL_get_fd"], "int", ["pointer"])
 var SSL_get_session = new NativeFunction(addresses["SSL_get_session"], "pointer", ["pointer"])
 var SSL_SESSION_get_id = new NativeFunction(addresses["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"])
-var getpeername = new NativeFunction(addresses["getpeername"], "int", ["int", "pointer", "pointer"])
-var getsockname = new NativeFunction(addresses["getsockname"], "int", ["int", "pointer", "pointer"])
-var ntohs = new NativeFunction(addresses["ntohs"], "uint16", ["uint16"])
-var ntohl = new NativeFunction(addresses["ntohl"], "uint32", ["uint32"])
 var SSL_CTX_set_keylog_callback = new NativeFunction(addresses["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"])
 var SSL_get_SSL_CTX = new NativeFunction(addresses["SSL_get_SSL_CTX"], "pointer", ["pointer"])
 
-/**
-   * Returns a dictionary of a sockfd's "src_addr", "src_port", "dst_addr", and
-   * "dst_port".
-   * @param {int} sockfd The file descriptor of the socket to inspect.
-   * @param {boolean} isRead If true, the context is an SSL_read call. If
-   *     false, the context is an SSL_write call.
-   * @return {dict} Dictionary of sockfd's "src_addr", "src_port", "dst_addr",
-   *     and "dst_port".
-   */
-function getPortsAndAddresses(sockfd: number, isRead: boolean) {
-    var message: { [key: string]: string | number } = {}
-    var addrlen = Memory.alloc(4)
-    var addr = Memory.alloc(128)
-    var src_dst = ["src", "dst"]
-    for (var i = 0; i < src_dst.length; i++) {
-        addrlen.writeU32(128)
-        if ((src_dst[i] == "src") !== isRead) {
-            getsockname(sockfd, addr, addrlen)
-        }
-        else {
-            getpeername(sockfd, addr, addrlen)
-        }
-        if (addr.readU16() == AF_INET) {
-            message[src_dst[i] + "_port"] = ntohs(addr.add(2).readU16()) as number
-            message[src_dst[i] + "_addr"] = ntohl(addr.add(4).readU32()) as number
-            message["ss_family"] = "AF_INET"
-        } else if (addr.readU16() == AF_INET6) {
-            message[src_dst[i] + "_port"] = ntohs(addr.add(2).readU16()) as number
-            message[src_dst[i] + "_addr"] = ""
-            var ipv6_addr = addr.add(8)
-            for (var offset = 0; offset < 16; offset += 1) {
-                message[src_dst[i] + "_addr"] += ("0" + ipv6_addr.add(offset).readU8().toString(16).toUpperCase()).substr(-2)
-            }
-            message["ss_family"] = "AF_INET6"
-        } else {
-            throw "Only supporting IPv4/6"
-        }
-    }
-    return message
-}
 
 /**
    * Get the session_id of SSL object and return it as a hex string.
@@ -94,7 +50,7 @@ function getSslSessionId(ssl: NativePointer) {
 Interceptor.attach(addresses["SSL_read"],
     {
         onEnter: function (args: any) {
-            var message = getPortsAndAddresses(SSL_get_fd(args[0]) as number, true)
+            var message = getPortsAndAddresses(SSL_get_fd(args[0]) as number, true, addresses)
             message["ssl_session_id"] = getSslSessionId(args[0])
             message["function"] = "SSL_read"
             this.message = message
@@ -112,7 +68,7 @@ Interceptor.attach(addresses["SSL_read"],
 Interceptor.attach(addresses["SSL_write"],
     {
         onEnter: function (args: any) {
-            var message = getPortsAndAddresses(SSL_get_fd(args[0]) as number, false)
+            var message = getPortsAndAddresses(SSL_get_fd(args[0]) as number, false, addresses)
             message["ssl_session_id"] = getSslSessionId(args[0])
             message["function"] = "SSL_write"
             message["contentType"] = "datalog"
