@@ -18,7 +18,6 @@ export function readAddresses(library_method_mapping: { [key: string]: Array<Str
 
     var resolver = new ApiResolver("module")
     var addresses: { [key: string]: NativePointer } = {}
-
     for (let library_name in library_method_mapping) {
         library_method_mapping[library_name].forEach(function (method) {
             var matches = resolver.enumerateMatches("exports:" + library_name + "!" + method)
