@@ -1,9 +1,6 @@
 import { off } from "process"
 import { readAddresses, getPortsAndAddresses } from "./shared"
 
-const AF_INET = 2
-const AF_INET6 = 10
-
 
 var modules = Process.enumerateModules()
 
