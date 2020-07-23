@@ -28,6 +28,13 @@ class MainActivity : AppCompatActivity() {
 
     private val spinnerSSLLibrary: Spinner by lazy {findViewById<Spinner>(R.id.sslLibrarySpinner)}
 
+    companion object {
+        init {
+            System.loadLibrary("wolfssl")
+            System.loadLibrary("wolfssljni")
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -49,7 +56,7 @@ class MainActivity : AppCompatActivity() {
             // Apply the adapter to the spinner
             spinnerSSLLibrary.adapter = adapter
         }
-
+        Security.addProvider(WolfSSLProvider())
     }
 
 
@@ -63,12 +70,6 @@ class MainActivity : AppCompatActivity() {
 
         private val activity : WeakReference<MainActivity> = WeakReference(this.context)
 
-        companion object {
-            init {
-                System.loadLibrary("wolfssl")
-                System.loadLibrary("wolfssljni")
-            }
-        }
 
         fun connect(url: String) {
             val ssl = WolfSSL()
@@ -76,17 +77,10 @@ class MainActivity : AppCompatActivity() {
             viewModelScope.launch(Dispatchers.IO) {
                 val act: MainActivity? = activity.get()
                 if (act != null) {
-                    val selectedLibrary = act.findViewById<Spinner>(R.id.sslLibrarySpinner).selectedItem.toString()
-                    if (selectedLibrary == "BoringSSL"){
-                        Security.removeProvider("wolfJSSE version 1.0")
-                    }else if(selectedLibrary == "WolfSSL"){
-                        Security.insertProviderAt(WolfSSLProvider(), 1)
-                    }else{
-                        throw RuntimeException("Unknown Error while selecting library for SSL!")
-                    }
+
                     Log.i(this.javaClass.name, Security.getProviders().joinToString())
 
-                    HttpsURLConnection.setDefaultSSLSocketFactory(CustomSSLSocketFactory(act.findViewById(R.id.keyExchangeSwitch)))
+                    HttpsURLConnection.setDefaultSSLSocketFactory(CustomSSLSocketFactory(act.findViewById(R.id.keyExchangeSwitch), act.findViewById(R.id.sslLibrarySpinner)))
                     val url = URL(url)
                     val httpsUrlConnection = url.openConnection() as HttpsURLConnection
 

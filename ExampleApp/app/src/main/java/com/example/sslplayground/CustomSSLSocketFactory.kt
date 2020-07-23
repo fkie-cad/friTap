@@ -11,14 +11,22 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketAddress
+import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLParameters
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
 
 
-class CustomSSLSocketFactory(private val rsaSwitch : ToggleButton) : SSLSocketFactory() {
-    private val defaultFactory = getDefault() as SSLSocketFactory
+class CustomSSLSocketFactory(private val rsaSwitch : ToggleButton, private val sslLibrarySpinner: Spinner) : SSLSocketFactory() {
+    private lateinit var defaultFactory : SSLSocketFactory
 
+    init {
+        if(sslLibrarySpinner.selectedItem == "BoringSSL"){
+            defaultFactory = getDefault() as SSLSocketFactory
+        }else if(sslLibrarySpinner.selectedItem == "WolfSSL"){
+            defaultFactory = SSLContext.getInstance("TLS", "wolfJSSE").apply { init(null, null, null) }.socketFactory
+        }
+    }
 
     override fun getDefaultCipherSuites(): Array<String> {
         throw RuntimeException("Not Implemented!")
@@ -26,7 +34,7 @@ class CustomSSLSocketFactory(private val rsaSwitch : ToggleButton) : SSLSocketFa
 
     override fun createSocket(s: Socket?, host: String?, port: Int, autoClose: Boolean): Socket {
         s?.run { close() }
-        Log.i(this.javaClass.name, "Default factory: " + this.defaultFactory.javaClass.name)
+        Log.i(this.javaClass.name, "Factory: " + this.defaultFactory.javaClass.name)
         val socket = defaultFactory.createSocket() as SSLSocket
 
         if(rsaSwitch.isChecked){
