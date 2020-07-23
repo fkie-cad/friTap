@@ -14,6 +14,8 @@ import com.wolfssl.WolfSSL
 import com.wolfssl.provider.jsse.WolfSSLProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import org.spongycastle.jce.provider.BouncyCastleProvider
+import org.spongycastle.jsse.provider.BouncyCastleJsseProvider
 import java.lang.RuntimeException
 import java.lang.ref.WeakReference
 import java.net.URL
@@ -57,6 +59,8 @@ class MainActivity : AppCompatActivity() {
             spinnerSSLLibrary.adapter = adapter
         }
         Security.addProvider(WolfSSLProvider())
+        Security.addProvider(BouncyCastleProvider())
+        Security.addProvider(BouncyCastleJsseProvider())
     }
 
 

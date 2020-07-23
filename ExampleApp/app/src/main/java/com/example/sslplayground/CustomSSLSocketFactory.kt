@@ -11,10 +11,7 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketAddress
-import javax.net.ssl.SSLContext
-import javax.net.ssl.SSLParameters
-import javax.net.ssl.SSLSocket
-import javax.net.ssl.SSLSocketFactory
+import javax.net.ssl.*
 
 
 class CustomSSLSocketFactory(private val rsaSwitch : ToggleButton, private val sslLibrarySpinner: Spinner) : SSLSocketFactory() {
@@ -25,6 +22,8 @@ class CustomSSLSocketFactory(private val rsaSwitch : ToggleButton, private val s
             defaultFactory = getDefault() as SSLSocketFactory
         }else if(sslLibrarySpinner.selectedItem == "WolfSSL"){
             defaultFactory = SSLContext.getInstance("TLS", "wolfJSSE").apply { init(null, null, null) }.socketFactory
+        }else if(sslLibrarySpinner.selectedItem == "BouncyCastle"){
+            defaultFactory = SSLContext.getInstance("TLS", "SCJSSE").apply { init(null, null, null) }.socketFactory
         }
     }
 

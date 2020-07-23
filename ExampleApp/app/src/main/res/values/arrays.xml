@@ -3,5 +3,6 @@
     <string-array name="ssl_library_array">
         <item>BoringSSL</item>
         <item>WolfSSL</item>
+        <item>BouncyCastle</item>
     </string-array>
 </resources>
