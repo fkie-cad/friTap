@@ -23,7 +23,7 @@ Interceptor.attach(Module.getExportByName("libdl.so", "android_dlopen_ext"), {
                 console.log("OpenSSL/BoringSSL detected.")
                 boring_execute()
             } else if (this.moduleName.endsWith("libwolfssl.so")) {
-                console.log("WolfSSL detected.")
+                console.log("WolfSSL detected. Warning: Key logging is currently not yet supported for WolfSSL. Master Keys will be printed.")
                 wolf_execute()
             }
         }
