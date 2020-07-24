@@ -1,4 +1,5 @@
 import { readAddresses, getPortsAndAddresses } from "./shared"
+import { log } from "./log"
 
 export function execute() {
     var library_method_mapping: { [key: string]: Array<String> } = {}
@@ -22,7 +23,7 @@ export function execute() {
     function getSslSessionId(ssl: NativePointer) {
         var session = wolfSSL_get_session(ssl) as NativePointer
         if (session.isNull()) {
-            console.log("Session is null")
+            log("Session is null")
             return 0
         }
         var p = session.add(8)
@@ -49,7 +50,7 @@ export function execute() {
         var session = wolfSSL_get_session(wolfSslPtr)
         var nullPtr = ptr(0)
         var masterKeySize = wolfSSL_SESSION_get_master_key(session, nullPtr, 0) as number
-        console.log("Size of master key: " + masterKeySize)
+        log("Size of master key: " + masterKeySize)
         var buffer = Memory.alloc(masterKeySize)
         wolfSSL_SESSION_get_master_key(session, buffer, masterKeySize)
 
@@ -80,12 +81,12 @@ export function execute() {
         //Check if wolfSSL_connect_TLSv13 or wolfSSL_accept_TLSv13 are defined. By this, we can see if TLS_13 has been defined.
         //The structure of the Arrays struct depends on this
         var tls13Enbaled = (null != Module.findExportByName("libwolfssl.so", "wolfSSL_connect_TLSv13 ")) || (null != Module.findExportByName("libwolfssl.so", "wolfSSL_accept_TLSv13 "))
-        console.log("Psk: " + pskEnabled + " TLS13: " + tls13Enbaled)
+        log("Psk: " + pskEnabled + " TLS13: " + tls13Enbaled)
         var clientRandomPtr: NativePointer
         if (!pskEnabled) {
             clientRandomPtr = Arrays.add(5)
         } else {
-            console.log(Arrays.add(2).readU32())
+            log(String(Arrays.add(2).readU32()))
             if (tls13Enbaled) {
                 clientRandomPtr = Arrays.add(5).add(1).add(257).add(257).add(64)
             }
@@ -145,8 +146,8 @@ export function execute() {
             onLeave: function (retval: any) {
                 //var clientRandom = getClientRandom(this.wolfSslPtr)
                 var masterKey = getMasterKey(this.wolfSslPtr)
-                //console.log("Client Random: " + clientRandom)
-                console.log("master key: " + masterKey)
+                //log("Client Random: " + clientRandom)
+                log("master key: " + masterKey)
             }
         })
 

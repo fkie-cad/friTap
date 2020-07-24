@@ -1,4 +1,5 @@
 import { readAddresses, getPortsAndAddresses } from "./shared"
+import { log } from "./log"
 
 export function execute() {
     var library_method_mapping: { [key: string]: Array<String> } = {}
@@ -23,7 +24,7 @@ export function execute() {
     function getSslSessionId(ssl: NativePointer) {
         var session = SSL_get_session(ssl) as NativePointer
         if (session.isNull()) {
-            console.log("Session is null")
+            log("Session is null")
             return 0
         }
         var len_pointer = Memory.alloc(4)

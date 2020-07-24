@@ -152,6 +152,8 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False):
         p = message["payload"]
         if not "contentType" in p:
             return
+        if p["contentType"] == "console":
+            print("[*] " + p["console"])
         if verbose:
             if(p["contentType"] == "keylog"):
                 print(p["keylog"])
