@@ -21,6 +21,11 @@ __version__ = "0.01"
 #                                  <bytes sent by server>)
 ssl_sessions = {}
 
+# Names of all supported read functions:
+SSL_READ = ["SSL_read", "wolfSSL_read", "readApplicationData"]
+# Names of all supported write functions:
+SSL_WRITE = ["SSL_write", "wolfSSL_write", "writeApplicationData"]
+
 
 def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False):
 
@@ -45,7 +50,7 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False):
                                             random.randint(0, 0xFFFFFFFF))
         client_sent, server_sent = ssl_sessions[ssl_session_id]
 
-        if function == "SSL_read":
+        if function in SSL_READ:
             seq, ack = (server_sent, client_sent)
         else:
             seq, ack = (client_sent, server_sent)
@@ -129,7 +134,7 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False):
         else:
             print("Packet has unknown/unsupported family!")
 
-        if function == "SSL_read":
+        if function in SSL_READ:
             server_sent += len(data)
         else:
             client_sent += len(data)
