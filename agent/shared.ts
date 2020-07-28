@@ -104,3 +104,26 @@ export function getPortsAndAddresses(sockfd: number, isRead: boolean, methodAddr
     }
     return message
 }
+/**
+ * Convert a Java byte array to string
+ * @param byteArray The array to convert
+ * @returns {string} The resulting string
+ */
+export function byteArrayToString(byteArray: any) {
+    console.log(byteArray.length)
+    return Array.from(byteArray, function (byte: number) {
+        return ('0' + (byte & 0xFF).toString(16)).slice(-2);
+    }).join('')
+}
+/**
+ * Convert a Java byte arry to number (Big Endian)
+ * @param byteArray The array to convert
+ * @returns {number} The resulting number
+ */
+export function byteArrayToNumber(byteArray: any) {
+    var value = 0;
+    for (var i = 0; i < byteArray.length; i++) {
+        value = (value * 256) + (byteArray[i] & 0xFF);
+    }
+    return value;
+}

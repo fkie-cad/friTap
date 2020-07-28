@@ -11,7 +11,7 @@ if (moduleNames.indexOf("libssl.so") > -1) {
     boring_execute()
 }
 if (moduleNames.indexOf("libwolfssl.so") > -1) {
-    log("WolfSSL detected.")
+    log("WolfSSL detected. Warning: Key logging is currently not yet supported for WolfSSL. Master Keys will be printed.")
     wolf_execute()
 }
 java_execute()
