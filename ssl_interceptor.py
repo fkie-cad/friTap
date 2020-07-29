@@ -165,7 +165,6 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False):
                 return
             else:
                 if(p["ss_family"] == "AF_INET"):
-                    print(p)
                     src_addr = socket.inet_ntop(socket.AF_INET,
                                                 struct.pack(">I", p["src_addr"]))
                     dst_addr = socket.inet_ntop(socket.AF_INET,

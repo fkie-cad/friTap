@@ -110,11 +110,25 @@ export function getPortsAndAddresses(sockfd: number, isRead: boolean, methodAddr
  * @returns {string} The resulting string
  */
 export function byteArrayToString(byteArray: any) {
-    console.log(byteArray.length)
     return Array.from(byteArray, function (byte: number) {
         return ('0' + (byte & 0xFF).toString(16)).slice(-2);
     }).join('')
 }
+
+/**
+ * Convert a Java Reflection array to string
+ * @param byteArray The array to convert
+ * @returns {string} The resulting string
+ */
+export function reflectionByteArrayToString(byteArray: any) {
+    var result = ""
+    var arrayReflect = Java.use("java.lang.reflect.Array")
+    for (var i = 0; i < arrayReflect.getLength(byteArray); i++) {
+        result += ('0' + (arrayReflect.get(byteArray, i) & 0xFF).toString(16)).slice(-2);
+    }
+    return result
+}
+
 /**
  * Convert a Java byte arry to number (Big Endian)
  * @param byteArray The array to convert
@@ -126,4 +140,16 @@ export function byteArrayToNumber(byteArray: any) {
         value = (value * 256) + (byteArray[i] & 0xFF);
     }
     return value;
+}
+/**
+ * Access an attribute of a Java Class
+ * @param Instance The instace you want to access
+ * @param fieldName The name of the attribute
+ * @returns The value of the attribute of the requested field
+ */
+export function getAttribute(Instance: Java.Wrapper, fieldName: string) {
+    var clazz = Java.use("java.lang.Class")
+    var field = Java.cast(Instance.getClass(), clazz).getDeclaredField(fieldName)
+    field.setAccessible(true)
+    return field.get(Instance)
 }

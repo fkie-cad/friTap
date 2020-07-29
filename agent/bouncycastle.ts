@@ -1,10 +1,12 @@
 import { log } from "./log"
-import { byteArrayToString, byteArrayToNumber } from "./shared"
+import { byteArrayToString, byteArrayToNumber, getAttribute, reflectionByteArrayToString } from "./shared"
 import { inspect } from "util";
 
 export function execute() {
     Java.perform(function () {
 
+        //Hook the inner class "AppDataOutput/input" of ProvSSLSocketDirect, so we can access the 
+        //socket information in its outer class by accessing this.this$0
         var appDataOutput = Java.use("org.spongycastle.jsse.provider.ProvSSLSocketDirect$AppDataOutput")
         appDataOutput.write.overload('[B', 'int', 'int').implementation = function (buf: any, offset: any, len: any) {
             var result: Array<number> = [];
@@ -60,7 +62,28 @@ export function execute() {
             send(message, result)
             return bytesRead
         }
+        //Hook the handshake to read the client random and the master key
+        var ProvSSLSocketDirect = Java.use("org.spongycastle.jsse.provider.ProvSSLSocketDirect")
+        ProvSSLSocketDirect.notifyHandshakeComplete.implementation = function (x: any) {
 
+            log("Post handshake")
+            console.log(getAttribute(this, "handshakeSession"))
+            //var protocol = getAttribute(this, "protocol")
+            var protocol = this.protocol.value
+            var securityParameters = protocol.securityParameters.value
+            var clientRandom = securityParameters.clientRandom.value
+            var masterSecretObj = getAttribute(securityParameters, "masterSecret")
+
+            var clazz = Java.use("java.lang.Class")
+            var masterSecretRawField = Java.cast(masterSecretObj.getClass(), clazz).getSuperclass().getDeclaredField("data")
+            masterSecretRawField.setAccessible(true)
+            var masterSecretReflectArray = masterSecretRawField.get(masterSecretObj)
+            var message: { [key: string]: any } = {}
+            message["contentType"] = "keylog"
+            message["keylog"] = "CLIENT RANDOM " + byteArrayToString(clientRandom) + " " + reflectionByteArrayToString(masterSecretReflectArray)
+            send(message)
+            return this.notifyHandshakeComplete(x)
+        }
 
     })
 
