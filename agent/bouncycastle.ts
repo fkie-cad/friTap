@@ -18,12 +18,12 @@ export function execute() {
             var localAddress = this.this$0.value.getLocalAddress().getAddress()
             var inetAddress = this.this$0.value.getInetAddress().getAddress()
             if (localAddress.length == 4) {
-                message["src_addr"] = byteArrayToNumber(localAddress)
-                message["dst_addr"] = byteArrayToNumber(inetAddress)
+                message["src_addr"] = byteArrayToNumber(inetAddress)
+                message["dst_addr"] = byteArrayToNumber(localAddress)
                 message["ss_family"] = "AF_INET"
             } else {
-                message["src_addr"] = byteArrayToString(localAddress)
-                message["dst_addr"] = byteArrayToString(inetAddress)
+                message["src_addr"] = byteArrayToString(inetAddress)
+                message["dst_addr"] = byteArrayToString(localAddress)
                 message["ss_family"] = "AF_INET6"
             }
             message["ssl_session_id"] = ""
