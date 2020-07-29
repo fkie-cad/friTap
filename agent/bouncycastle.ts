@@ -9,7 +9,7 @@ export function execute() {
         appDataOutput.write.overload('[B', 'int', 'int').implementation = function (buf: any, offset: any, len: any) {
             var result: Array<number> = [];
             for (var i = 0; i < len; ++i) {
-                result.push(buf[i]);
+                result.push(buf[i] & 0xff);
             }
             var message: { [key: string]: any } = {}
             message["contentType"] = "datalog"
@@ -37,7 +37,7 @@ export function execute() {
             var bytesRead = this.read(buf, offset, len)
             var result: Array<number> = [];
             for (var i = 0; i < bytesRead; ++i) {
-                result.push(buf[i]);
+                result.push(buf[i] & 0xff);
             }
             var message: { [key: string]: any } = {}
             message["contentType"] = "datalog"
