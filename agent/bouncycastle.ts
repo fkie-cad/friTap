@@ -31,6 +31,7 @@ export function execute() {
             message["ssl_session_id"] = ""
             message["function"] = "writeApplicationData"
             send(message, result)
+
             return this.write(buf, offset, len)
         }
 
@@ -60,27 +61,26 @@ export function execute() {
             message["ssl_session_id"] = ""
             message["function"] = "readApplicationData"
             send(message, result)
+
             return bytesRead
         }
         //Hook the handshake to read the client random and the master key
         var ProvSSLSocketDirect = Java.use("org.spongycastle.jsse.provider.ProvSSLSocketDirect")
         ProvSSLSocketDirect.notifyHandshakeComplete.implementation = function (x: any) {
 
-            log("Post handshake")
-            console.log(getAttribute(this, "handshakeSession"))
-            //var protocol = getAttribute(this, "protocol")
             var protocol = this.protocol.value
             var securityParameters = protocol.securityParameters.value
             var clientRandom = securityParameters.clientRandom.value
             var masterSecretObj = getAttribute(securityParameters, "masterSecret")
 
+            //The key is in the AbstractTlsSecret, so we need to access the superclass to get the field
             var clazz = Java.use("java.lang.Class")
             var masterSecretRawField = Java.cast(masterSecretObj.getClass(), clazz).getSuperclass().getDeclaredField("data")
             masterSecretRawField.setAccessible(true)
             var masterSecretReflectArray = masterSecretRawField.get(masterSecretObj)
             var message: { [key: string]: any } = {}
             message["contentType"] = "keylog"
-            message["keylog"] = "CLIENT RANDOM " + byteArrayToString(clientRandom) + " " + reflectionByteArrayToString(masterSecretReflectArray)
+            message["keylog"] = "CLIENT_RANDOM " + byteArrayToString(clientRandom) + " " + reflectionByteArrayToString(masterSecretReflectArray)
             send(message)
             return this.notifyHandshakeComplete(x)
         }
