@@ -193,12 +193,27 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False):
             keylog_file.write(p["keylog"] + "\n")
             keylog_file.flush()
 
+    def on_delivered(child):
+        print(f"[*] Attached to child process with pid {child.pid}")
+        instrument(device.attach(child.pid))
+        device.resume(child.pid)
+
+    def instrument(process):
+        process.enable_child_gating()
+        with open("_ssl_log.js") as f:
+            script = process.create_script(f.read())
+        script.on("message", on_message)
+        script.load()
+
+    # Main code
     device = frida.get_usb_device()
+    device.on("child_added", on_delivered)
     if spawn:
         pid = device.spawn(app)
         process = device.attach(pid)
     else:
         process = device.attach(app)
+
     if pcap:
         pcap_file = open(pcap, "wb", 0)
         for writes in (
@@ -212,16 +227,15 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False):
             pcap_file.write(struct.pack(writes[0], writes[1]))
     if keylog:
         keylog_file = open(keylog, "w")
-    with open("_ssl_log.js") as f:
-        script = process.create_script(f.read())
-    script.on("message", on_message)
+
     print("Press Ctrl+C to stop logging.")
     print('[*] Running Script')
+    instrument(process)
     if pcap:
         print(f'[*] Logging pcap to {pcap}')
     if keylog:
         print(f'[*] Logging keylog file to {keylog}')
-    script.load()
+
     if spawn:
         device.resume(pid)
     try:

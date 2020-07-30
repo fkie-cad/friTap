@@ -15,17 +15,18 @@ if (moduleNames.indexOf("libwolfssl.so") > -1) {
     wolf_execute()
 }
 
-
-Java.perform(function () {
-    try {
-        //If we can load a class of spongycastle, we know its present and we have to hook it
-        var testLoad = Java.use("org.spongycastle.jsse.provider.ProvSSLSocketDirect")
-        log("Bouncycastle/Spongycastle detected.")
-        bouncy_execute()
-    } catch (error) {
-        //On error, just do nothing
-    }
-})
+if (Java.available) {
+    Java.perform(function () {
+        try {
+            //If we can load a class of spongycastle, we know its present and we have to hook it
+            var testLoad = Java.use("org.spongycastle.jsse.provider.ProvSSLSocketDirect")
+            log("Bouncycastle/Spongycastle detected.")
+            bouncy_execute()
+        } catch (error) {
+            //On error, just do nothing
+        }
+    })
+}
 
 
 //Hook the dynamic loader, in case library gets loaded at a later point in time
@@ -46,4 +47,3 @@ Interceptor.attach(Module.getExportByName("libdl.so", "android_dlopen_ext"), {
 
     }
 })
-// Idee: Irgendwie die dexfiles scannen und gucken ob spongy dabei ist. Alternativ: Versuche java.use, und guck obs klappt?
