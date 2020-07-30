@@ -14,6 +14,9 @@ android {
         versionName "1.0"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        ndk {
+            abiFilters "armeabi-v7a", "arm64-v8a", "x86", "x86_64"
+        }
     }
 
     buildTypes {
@@ -27,6 +30,7 @@ android {
             path file('CMakeLists.txt')
         }
     }
+
     sourceSets {
         // wolfSSL JNI Java source files are added here
         main.java.srcDirs += '../wolfssljni/src/java'
