@@ -11,7 +11,7 @@ if (moduleNames.indexOf("libssl.so") > -1) {
     boring_execute()
 }
 if (moduleNames.indexOf("libwolfssl.so") > -1) {
-    log("WolfSSL detected. Warning: Key logging is currently not yet supported for WolfSSL. Master Keys will be printed.")
+    log("WolfSSL detected.")
     wolf_execute()
 }
 
@@ -40,7 +40,7 @@ Interceptor.attach(Module.getExportByName("libdl.so", "android_dlopen_ext"), {
                 log("OpenSSL/BoringSSL detected.")
                 boring_execute()
             } else if (this.moduleName.endsWith("libwolfssl.so")) {
-                log("WolfSSL detected. Warning: Key logging is currently not yet supported for WolfSSL. Master Keys will be printed.")
+                log("WolfSSL detected.")
                 wolf_execute()
             }
         }
