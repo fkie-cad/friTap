@@ -19,7 +19,7 @@ adb shell "/data/local/tmp/frida-server &"
 ```
 
 ## Extracting a pcap with sllinterceptor
-The first way is to directly tell sslinterceptor write all traffic to a pcap file. To do this with flipboard, use the following command:
+The first way is to directly tell sslinterceptor to write all traffic to a pcap file. To do this with flipboard, use the following command:
 
 `python sslinterceptor.py flipboard.app -spawn -pcap flipboard.pcap`
 
