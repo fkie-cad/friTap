@@ -21,7 +21,7 @@ adb shell "/data/local/tmp/frida-server &"
 ## Extracting a pcap with sllinterceptor
 The first way is to directly tell sslinterceptor to write all traffic to a pcap file. To do this with flipboard, use the following command:
 
-`python sslinterceptor.py flipboard.app -spawn -pcap flipboard.pcap`
+`python3 sslinterceptor.py flipboard.app -spawn -pcap flipboard.pcap`
 
 In this example, we had Flipboard running on a Genymotion instance:
 
@@ -34,7 +34,7 @@ When finished, you can open the resulting `flipboard.pcap` with wireshark and lo
 ## Extracting keys and decrypting with wireshark
 Wireshark offers a way to automatically decrypt TLS traffic when provided a file containing the neccessary keys [2]. Such a file can be created using the `-keylog` option on sslinterceptor:
 
-`python sslinterceptor.py flipboard.app -spawn -keylog flipboard.keylog`
+`python3 sslinterceptor.py flipboard.app -spawn -keylog flipboard.keylog`
 
 To make use of this, we can simultaniously use sslinterceptor to log the keys and tcpdump (via adb) to record the pcap:
 
