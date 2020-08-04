@@ -26,6 +26,7 @@ Output:
 ![Log pcap output](/images/pcap_output.png)
 
 Note that the packets in this pcap currently only reflect the content, source and destination of packets. Certain IP/TCP header information may be omitted or set to default values. For a more precise output, log the traffic seperately and decrypt it using the keys logged by the `-keylog` option (see example below). 
+Also, when you try to analyse the resulting pcap, it might happen that wireshark mistakes the decrypted traffic for still being encoded because it still runs on port 443 (happens e.g. for HTTP2 traffic, Http1.1 seems to work fine). To circumvent this, just tell wireshark to decode traffic on port 443 as HTTP2 traffic (or  any other).
 
 ## Log keys of TLS traffic
 `python3 ./sslinterceptor.py com.example.app -spawn -keylog myKeyLogFile.log`
