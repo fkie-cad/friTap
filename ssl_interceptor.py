@@ -45,10 +45,18 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False):
         """
         t = time.time()
 
-        if ssl_session_id not in ssl_sessions:
-            ssl_sessions[ssl_session_id] = (random.randint(0, 0xFFFFFFFF),
-                                            random.randint(0, 0xFFFFFFFF))
-        client_sent, server_sent = ssl_sessions[ssl_session_id]
+        if function in SSL_READ:
+            session_unique_key = str(src_addr) + str(src_port) + \
+                str(dst_addr) + str(dst_port)
+        else:
+            session_unique_key = str(dst_addr) + str(dst_port) + \
+                str(src_addr) + str(src_port)
+        if session_unique_key not in ssl_sessions:
+
+            ssl_sessions[session_unique_key] = (random.randint(0, 0xFFFFFFFF),
+                                                random.randint(0, 0xFFFFFFFF))
+
+        client_sent, server_sent = ssl_sessions[session_unique_key]
 
         if function in SSL_READ:
             seq, ack = (server_sent, client_sent)
@@ -137,7 +145,7 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False):
             server_sent += len(data)
         else:
             client_sent += len(data)
-        ssl_sessions[ssl_session_id] = (client_sent, server_sent)
+        ssl_sessions[session_unique_key] = (client_sent, server_sent)
 
     def on_message(message, data):
         """Callback for errors and messages sent from Frida-injected JavaScript.
