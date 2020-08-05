@@ -7,6 +7,7 @@ import random
 import pprint
 import os
 import socket
+import sys
 
 
 try:
@@ -201,10 +202,15 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False):
             keylog_file.write(p["keylog"] + "\n")
             keylog_file.flush()
 
-    def on_delivered(child):
+    def on_child_added(child):
         print(f"[*] Attached to child process with pid {child.pid}")
         instrument(device.attach(child.pid))
         device.resume(child.pid)
+
+    def on_spawn_added(spawn):
+        print(f"[*] Process spawned with pid {spawn.pid}")
+        instrument(device.attach(spawn.pid))
+        device.resume(spawn.pid)
 
     def instrument(process):
         process.enable_child_gating()
@@ -215,7 +221,9 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False):
 
     # Main code
     device = frida.get_usb_device()
-    device.on("child_added", on_delivered)
+    device.enable_spawn_gating()
+    device.on("child_added", on_child_added)
+    device.on("spawn_added", on_spawn_added)
     if spawn:
         pid = device.spawn(app)
         process = device.attach(pid)
