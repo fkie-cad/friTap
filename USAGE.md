@@ -3,11 +3,12 @@ General Usage: `ssl_interceptor.py [-pcap <path>] [-verbose] [-spawn] [-keylog <
                           <app name>`
                           
 Arguments:
-  - `pcap <path>`    Name of PCAP file to write
-  - `verbose`        Show verbose output
-  - `spawn`          Spawn the app instead of attaching to a running process
-  - `keylog <path>`  Log the keys used for tls traffic
-  - `<app name>`     APP whose SSL calls to log
+  - `pcap <path>`         Name of PCAP file to write
+  - `verbose`             Show verbose output
+  - `spawn`               Spawn the app instead of attaching to a running process
+  - `keylog <path>`       Log the keys used for tls traffic
+  - `enable_spawn_gating` Catch newly spawned processes. ATTENTION: These could be unrelated to the current process!
+  - `<app name>`          APP whose SSL calls to log
 
 The target device needs to have frida-server running. Further information about setting up the device can be found [here](https://frida.re/docs/android/).
 # Examples
