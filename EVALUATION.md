@@ -6,6 +6,7 @@
 | Paypal | Boringssl/Openssl | Yes | Works fine. For HTTP2 traffic you have to tell wireshark explicitly what it is. |
 | Spotify | Boringssl/Openssl | Yes | Is unity based, which leads to the assumption that unity apps in general should work. |
 | Raid Shadow Legends | Boringssl/Openssl | Yes | |
+| FreeNow | Boringssl/Openssl | Yes | |
 | Lierando | Boringssl/Openssl | Partly | Can read initial traffic, but requests to individual restaurants. Lots of forking going on, also spawns a service. |
 | Facebook | Boringssl/Openssl | Partly | Can read SSL traffic, but there is mainly QUIC |
 | Whatsapp | Boringssl/Openssl | Partly | Some SSL traffic can be read, but most is happening via NoisePipes on port 5222 |
