@@ -298,10 +298,10 @@ Examples:
                       help="Spawn the app instead of attaching to a running process")
     args.add_argument("-keylog", metavar="<path>", required=False,
                       help="Log the keys used for tls traffic")
-    args.add_argument("app", metavar="<app name>",
-                      help="APP whose SSL calls to log")
     args.add_argument("-enable_spawn_gating", required=False, action="store_const", const=True,
                       help="Catch newly spawned processes. ATTENTION: These could be unrelated to the current process!")
+    args.add_argument("app", metavar="<app name>",
+                      help="APP whose SSL calls to log")
     parsed = parser.parse_args()
 
     ssl_log(parsed.app, parsed.pcap, parsed.verbose,
