@@ -28,7 +28,7 @@ SSL_READ = ["SSL_read", "wolfSSL_read", "readApplicationData"]
 SSL_WRITE = ["SSL_write", "wolfSSL_write", "writeApplicationData"]
 
 
-def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False):
+def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False):
 
     def log_pcap(pcap_file, ss_family, ssl_session_id, function, src_addr, src_port,
                  dst_addr, dst_port, data):
@@ -208,7 +208,8 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False):
         device.resume(child.pid)
 
     def on_spawn_added(spawn):
-        print(f"[*] Process spawned with pid {spawn.pid}")
+        print(
+            f"[*] Process spawned with pid {spawn.pid}. Name: {spawn.identifier}")
         instrument(device.attach(spawn.pid))
         device.resume(spawn.pid)
 
@@ -221,9 +222,10 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False):
 
     # Main code
     device = frida.get_usb_device()
-    device.enable_spawn_gating()
     device.on("child_added", on_child_added)
-    device.on("spawn_added", on_spawn_added)
+    if enable_spawn_gating:
+        device.enable_spawn_gating()
+        device.on("spawn_added", on_spawn_added)
     if spawn:
         pid = device.spawn(app)
         process = device.attach(pid)
@@ -298,7 +300,9 @@ Examples:
                       help="Log the keys used for tls traffic")
     args.add_argument("app", metavar="<app name>",
                       help="APP whose SSL calls to log")
+    args.add_argument("-enable_spawn_gating", required=False, action="store_const", const=True,
+                      help="Catch newly spawned processes. ATTENTION: These could be unrelated to the current process!")
     parsed = parser.parse_args()
 
     ssl_log(parsed.app, parsed.pcap, parsed.verbose,
-            parsed.spawn, parsed.keylog)
+            parsed.spawn, parsed.keylog, parsed.enable_spawn_gating)
