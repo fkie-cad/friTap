@@ -11,5 +11,5 @@
 | Facebook | Boringssl/Openssl | Partly | Can read SSL traffic, but there is mainly QUIC |
 | Whatsapp | Boringssl/Openssl | Partly | Some SSL traffic can be read, but most is happening via NoisePipes on port 5222 |
 | Firefox | Boringssl/Openssl | Partly? | Some parts are there but there is definitly something missing. |  
-| Chrome | Boringsssl/Openssl | Partly? | Some parts are there but there is definitly something missing. |
+| Chrome | Boringsssl/Openssl | Partly? | Some parts are there but there is definitly something missing. Chrome runs multiple processes that cannot even be catched via spawn-gating. When trying to attach to "com.android.chrome:sandboxed_process0:org.chromium.content.app.SandboxedPro" the process crashes, maybe some kind of anti-debug.|
 | Twitter | Openssl ??? | No | No calls to SSL_read/write, but to many methods from libcrypto. Maybe own implementation?|
