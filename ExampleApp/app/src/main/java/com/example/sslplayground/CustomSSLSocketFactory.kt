@@ -19,11 +19,13 @@ class CustomSSLSocketFactory(private val rsaSwitch : ToggleButton, private val s
 
     init {
         if(sslLibrarySpinner.selectedItem == "BoringSSL"){
-            defaultFactory = getDefault() as SSLSocketFactory
+            defaultFactory = SSLContext.getInstance("TLS", "AndroidOpenSSL").apply { init(null, null, null) }.socketFactory
         }else if(sslLibrarySpinner.selectedItem == "WolfSSL"){
             defaultFactory = SSLContext.getInstance("TLS", "wolfJSSE").apply { init(null, null, null) }.socketFactory
         }else if(sslLibrarySpinner.selectedItem == "BouncyCastle"){
             defaultFactory = SSLContext.getInstance("TLS", "SCJSSE").apply { init(null, null, null) }.socketFactory
+        }else if(sslLibrarySpinner.selectedItem == "GmsCore_OpenSSL"){
+            defaultFactory = getDefault() as SSLSocketFactory
         }
     }
 

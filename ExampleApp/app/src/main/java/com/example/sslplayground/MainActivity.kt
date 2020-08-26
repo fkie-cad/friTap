@@ -10,6 +10,7 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.google.android.gms.security.ProviderInstaller
 import com.wolfssl.WolfSSL
 import com.wolfssl.provider.jsse.WolfSSLProvider
 import kotlinx.coroutines.Dispatchers
@@ -61,6 +62,7 @@ class MainActivity : AppCompatActivity() {
         Security.addProvider(WolfSSLProvider())
         Security.addProvider(BouncyCastleProvider())
         Security.addProvider(BouncyCastleJsseProvider())
+        ProviderInstaller.installIfNeeded(this)
     }
 
 

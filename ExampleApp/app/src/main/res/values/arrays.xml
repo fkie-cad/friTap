@@ -4,5 +4,6 @@
         <item>BoringSSL</item>
         <item>WolfSSL</item>
         <item>BouncyCastle</item>
+        <item>GmsCore_OpenSSL</item>
     </string-array>
 </resources>
