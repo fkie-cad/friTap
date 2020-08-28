@@ -29,7 +29,7 @@ export function execute() {
                 message["ss_family"] = "AF_INET6"
             }
             message["ssl_session_id"] = byteArrayToString(this.this$0.value.getConnection().getSession().getId())
-            log(message["ssl_session_id"])
+            //log(message["ssl_session_id"])
             message["function"] = "writeApplicationData"
             send(message, result)
 
