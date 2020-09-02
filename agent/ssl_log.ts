@@ -49,5 +49,16 @@ Interceptor.attach(Module.getExportByName("libdl.so", "android_dlopen_ext"), {
     }
 })
 
-//log("DEBUG trying conscrypt")
-conscrypt_execute()
+if (Java.available) {
+    Java.perform(function () {
+        //Conscrypt needs early instrumentation as we block the provider installation
+        var provider = Java.use("java.security.Security");
+        if (provider.getProviders().toString().includes("GmsCore_OpenSSL")) {
+            log("WARNING: Detected GmsCore_OpenSSL Provider. This requires early instrumentation. Consider rerunning with the -spawn flag")
+        }
+
+        //As the classloader responsible for loading ProviderInstaller sometimes is not present from the beginning on,
+        //we always have to watch the classloader activity
+        conscrypt_execute()
+    })
+}
