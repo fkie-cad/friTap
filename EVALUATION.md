@@ -8,9 +8,9 @@
 | Raid Shadow Legends | Boringssl/Openssl | Yes | |
 | FreeNow | Boringssl/Openssl | Yes | |
 | Google Play Store | Boringssl/Openssl | Yes ||
-| Lierando | Boringssl/Openssl | Yes | Provider Catching/blocking did not work, but we can simply remove it right after the start. |
+| Lierando | Boringssl/Openssl | Yes | Provider Catching/blocking did not work, but we can simply remove the GmsCore Provider right after the start. |
 | Facebook | Boringssl/Openssl | Partly | Can read SSL traffic, but there is mainly QUIC |
 | Whatsapp | Boringssl/Openssl | Partly | Some SSL traffic can be read, but most is happening via NoisePipes on port 5222 |
 | Firefox | Boringssl/Openssl | Partly? | Some parts are there but there is definitly something missing. |  
 | Chrome | Boringsssl/Openssl | Partly? | Some parts are there but there is definitly something missing. Chrome runs multiple processes that cannot even be catched via spawn-gating. When trying to attach to "com.android.chrome:sandboxed_process0:org.chromium.content.app.SandboxedPro" the process crashes, maybe some kind of anti-debug. Some information here: https://www.zdnet.com/article/google-strengthens-chrome-for-android-with-sandbox/|
-| Twitter | Conscrypt/GmsCore| Yes | Twitter uses the GmsCore_Openssl provider which is installed via providerinstaller. Is based on Boringssl, but doesn't export any symbols, so implemented a custom solution |
+| Twitter | Conscrypt/GmsCore| Yes | Twitter uses the GmsCore_Openssl provider which is installed via providerinstaller. Is based on Boringssl, but doesn't export any symbols, so implemented a custom solution, which blocks the installation of the GmsCore Provider. |
