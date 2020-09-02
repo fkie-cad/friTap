@@ -2,6 +2,7 @@ import { off } from "process"
 import { execute as boring_execute } from "./openssl_boringssl"
 import { execute as wolf_execute } from "./wolfssl"
 import { execute as bouncy_execute } from "./bouncycastle"
+import { execute as conscrypt_execute } from "./conscrypt"
 import { log } from "./log"
 
 var moduleNames: Array<string> = []
@@ -47,3 +48,6 @@ Interceptor.attach(Module.getExportByName("libdl.so", "android_dlopen_ext"), {
 
     }
 })
+
+//log("DEBUG trying conscrypt")
+conscrypt_execute()
