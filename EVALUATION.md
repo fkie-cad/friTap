@@ -8,7 +8,7 @@
 | Raid Shadow Legends | Boringssl/Openssl | Yes | |
 | FreeNow | Boringssl/Openssl | Yes | |
 | Google Play Store | Boringssl/Openssl | Yes ||
-| Lierando | Boringssl/Openssl | Partly | Can read initial traffic, but not requests to individual restaurants. Lots of forking going on, also spawns a service. |
+| Lierando | Boringssl/Openssl | Yes | Provider Catching/blocking did not work, but we can simply remove it right after the start. |
 | Facebook | Boringssl/Openssl | Partly | Can read SSL traffic, but there is mainly QUIC |
 | Whatsapp | Boringssl/Openssl | Partly | Some SSL traffic can be read, but most is happening via NoisePipes on port 5222 |
 | Firefox | Boringssl/Openssl | Partly? | Some parts are there but there is definitly something missing. |  

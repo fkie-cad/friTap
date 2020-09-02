@@ -54,7 +54,10 @@ if (Java.available) {
         //Conscrypt needs early instrumentation as we block the provider installation
         var provider = Java.use("java.security.Security");
         if (provider.getProviders().toString().includes("GmsCore_OpenSSL")) {
-            log("WARNING: Detected GmsCore_OpenSSL Provider. This requires early instrumentation. Consider rerunning with the -spawn flag")
+            log("WARNING: PID " + Process.id + " Detected GmsCore_OpenSSL Provider. This can be a bit unstable. If you having issues, rerun with -spawn for early instrumentation. Consider rerunning with the -spawn flag")
+            provider.removeProvider("GmsCore_OpenSSL")
+            console.log("removed it")
+            console.log(provider.getProviders().toString())
         }
 
         //As the classloader responsible for loading ProviderInstaller sometimes is not present from the beginning on,
