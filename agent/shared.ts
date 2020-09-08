@@ -97,7 +97,13 @@ export function getPortsAndAddresses(sockfd: number, isRead: boolean, methodAddr
             for (var offset = 0; offset < 16; offset += 1) {
                 message[src_dst[i] + "_addr"] += ("0" + ipv6_addr.add(offset).readU8().toString(16).toUpperCase()).substr(-2)
             }
-            message["ss_family"] = "AF_INET6"
+            if (message[src_dst[i] + "_addr"].toString().indexOf("00000000000000000000FFFF") === 0) {
+                message[src_dst[i] + "_addr"] = ntohl(ipv6_addr.add(12).readU32()) as number
+                message["ss_family"] = "AF_INET"
+            }
+            else {
+                message["ss_family"] = "AF_INET6"
+            }
         } else {
             throw "Only supporting IPv4/6"
         }
