@@ -5,25 +5,7 @@ import pprint
 import sys
 
 
-def compare(enc_pcap, dec_pcap):
-    """
-    compare a encrypted and a decrypted pcap and return number of connections, and number of connections of 
-    theese which have been found decrypted 
-    """
-
-    # Read sessions in the encrypted pcap
-    with pyshark.FileCapture(enc_pcap, display_filter="tls") as enc:
-        sessions_enc = list()
-        for pkt in enc:
-            if "handshake_type" in pkt.tls.field_names and pkt.tls.handshake_type == "1":
-                sessions_enc.append({
-                    "src_addr": pkt.ip.src,
-                    "dst_addr": pkt.ip.dst,
-                    "src_port": pkt.tcp.srcport,
-                    "dst_port": pkt.tcp.dstport
-                })
-
-    # Read sessions in the decrypted pcap
+def _get_sessions_dec(dec_pcap):
     sessions_dec = list()
     try:
         i = 0
@@ -39,7 +21,35 @@ def compare(enc_pcap, dec_pcap):
                 })
                 i += 1
     except Exception as e:
-        pass
+        return sessions_dec
+
+
+def _get_sessions_enc(enc_pcap):
+    # Read sessions in the encrypted pcap
+    sessions_enc = list()
+
+    with pyshark.FileCapture(enc_pcap, display_filter="tls") as enc:
+        for pkt in enc:
+            if "handshake_type" in pkt.tls.field_names and pkt.tls.handshake_type == "1":
+                sessions_enc.append({
+                    "src_addr": pkt.ip.src,
+                    "dst_addr": pkt.ip.dst,
+                    "src_port": pkt.tcp.srcport,
+                    "dst_port": pkt.tcp.dstport
+                })
+    return sessions_enc
+
+
+def compare(enc_pcap, dec_pcap):
+    """
+    compare a encrypted and a decrypted pcap and return number of connections, and number of connections of 
+    theese which have been found decrypted 
+    """
+
+    # Read sessions in the decrypted pcap
+    sessions_dec = _get_sessions_dec(dec_pcap)
+    # Read sessions in the encrypted pcap
+    sessions_enc = _get_sessions_enc(enc_pcap)
 
     total_sessions = len(sessions_enc)
     decrypted_sessions = 0
