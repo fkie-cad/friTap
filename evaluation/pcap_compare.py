@@ -27,7 +27,7 @@ def compare(enc_pcap, dec_pcap):
     sessions_dec = list()
     try:
         i = 0
-        while i < 3:
+        while True:
             with pyshark.FileCapture(
                     dec_pcap, display_filter=f"tcp.stream eq {i}") as dec:
                 pkt = dec[0]
