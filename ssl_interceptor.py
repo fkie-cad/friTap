@@ -279,26 +279,26 @@ if __name__ == "__main__":
 
     parser = ArgParser(
         add_help=False,
-        description="Decrypts and logs a process's SSL traffic.",
+        description="Decrypts and logs an android applications SSL traffic.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=r"""
 Examples:
-  %(prog)s -pcap ssl.pcap com.example.app
-  %(prog)s -verbose com.example.app
-  %(prog)s -pcap log.pcap -verbose com.example.app
-  %(prog)s -keylog keys.log -verbose -spawn com.example.app
+  %(prog)s -p ssl.pcap com.example.app
+  %(prog)s --verbose com.example.app
+  %(prog)s --pcap log.pcap --verbose com.example.app
+  %(prog)s -k keys.log -v -s com.example.app
 """)
 
     args = parser.add_argument_group("Arguments")
-    args.add_argument("-pcap", metavar="<path>", required=False,
+    args.add_argument("-p ", "--pcap", metavar="<path>", required=False,
                       help="Name of PCAP file to write")
-    args.add_argument("-verbose", required=False, action="store_const",
+    args.add_argument("-v", "--verbose", required=False, action="store_const",
                       const=True, help="Show verbose output")
-    args.add_argument("-spawn", required=False, action="store_const", const=True,
+    args.add_argument("-s", "--spawn", required=False, action="store_const", const=True,
                       help="Spawn the app instead of attaching to a running process")
-    args.add_argument("-keylog", metavar="<path>", required=False,
+    args.add_argument("-k", "--keylog", metavar="<path>", required=False,
                       help="Log the keys used for tls traffic")
-    args.add_argument("-enable_spawn_gating", required=False, action="store_const", const=True,
+    args.add_argument("--enable_spawn_gating", required=False, action="store_const", const=True,
                       help="Catch newly spawned processes. ATTENTION: These could be unrelated to the current process!")
     args.add_argument("app", metavar="<app name>",
                       help="APP whose SSL calls to log")
