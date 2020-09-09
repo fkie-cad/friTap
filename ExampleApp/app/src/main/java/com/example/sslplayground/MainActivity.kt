@@ -22,6 +22,7 @@ import java.lang.ref.WeakReference
 import java.net.URL
 import java.security.Security
 import javax.net.ssl.HttpsURLConnection
+import javax.net.ssl.SSLHandshakeException
 
 class MainActivity : AppCompatActivity() {
 
@@ -89,16 +90,20 @@ class MainActivity : AppCompatActivity() {
                     HttpsURLConnection.setDefaultSSLSocketFactory(CustomSSLSocketFactory(act.findViewById(R.id.keyExchangeSwitch), act.findViewById(R.id.sslLibrarySpinner)))
                     val url = URL(url)
                     val httpsUrlConnection = url.openConnection() as HttpsURLConnection
-
-                    if (httpsUrlConnection.responseCode == HttpsURLConnection.HTTP_OK) {
-                        httpsUrlConnection.inputStream.bufferedReader().use {
-                            act.textViewOutput.append(it.readText())
-                            act.textViewConnectionInformation.append("HTTP " + httpsUrlConnection.responseCode.toString() + "\n")
-                            act.textViewConnectionInformation.append("Cipher suite: " + httpsUrlConnection.cipherSuite + "\n")
+                    try {
+                        if (httpsUrlConnection.responseCode == HttpsURLConnection.HTTP_OK) {
+                            httpsUrlConnection.inputStream.bufferedReader().use {
+                                act.textViewOutput.append(it.readText())
+                                act.textViewConnectionInformation.append("HTTP " + httpsUrlConnection.responseCode.toString() + "\n")
+                                act.textViewConnectionInformation.append("Cipher suite: " + httpsUrlConnection.cipherSuite + "\n")
+                            }
+                        } else {
+                            act.textViewConnectionInformation.append("HTTP " + httpsUrlConnection.responseCode.toString())
                         }
-                    } else {
-                        act.textViewConnectionInformation.append("HTTP " + httpsUrlConnection.responseCode.toString())
+                    }catch(e : SSLHandshakeException){
+                        act.textViewConnectionInformation.append("Handshake error!\n")
                     }
+
                     httpsUrlConnection.disconnect()
                 }
 
