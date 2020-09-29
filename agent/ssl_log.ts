@@ -7,14 +7,23 @@ import { log } from "./log"
 
 var moduleNames: Array<string> = []
 Process.enumerateModules().forEach(item => moduleNames.push(item.name))
-if (moduleNames.indexOf("libssl.so") > -1) {
-    log("OpenSSL/BoringSSL detected.")
-    boring_execute()
+
+for(var mod of moduleNames){
+    if(mod.indexOf("libssl.so") >= 0){
+        log("OpenSSL/BoringSSL detected.")
+        boring_execute()
+        break
+    }
 }
-if (moduleNames.indexOf("libwolfssl.so") > -1) {
-    log("WolfSSL detected.")
-    wolf_execute()
+
+for(var mod of moduleNames){
+    if(mod.indexOf("libwolfssl.so") >= 0){
+        log("WolfSSL detected.")
+        wolf_execute()
+        break
+    }
 }
+
 
 if (Java.available) {
     Java.perform(function () {
@@ -30,24 +39,40 @@ if (Java.available) {
 }
 
 
-//Hook the dynamic loader, in case library gets loaded at a later point in time
-Interceptor.attach(Module.getExportByName("libdl.so", "android_dlopen_ext"), {
-    onEnter: function (args) {
-        this.moduleName = args[0].readCString()
-    },
-    onLeave: function (retval: any) {
-        if (this.moduleName != undefined) {
-            if (this.moduleName.endsWith("libssl.so")) {
-                log("OpenSSL/BoringSSL detected.")
-                boring_execute()
-            } else if (this.moduleName.endsWith("libwolfssl.so")) {
-                log("WolfSSL detected.")
-                wolf_execute()
-            }
-        }
 
+//Hook the dynamic loader, in case library gets loaded at a later point in time
+//check wether we are on android or linux
+try {
+    let dl_exports = Process.getModuleByName("libdl.so").enumerateExports()
+    var dlopen = "dlopen"
+    for (var ex of dl_exports){
+        if (ex.name === "android_dlopen_ext"){
+            dlopen = "android_dlopen_ext"
+            break
+        }
     }
-})
+
+
+    Interceptor.attach(Module.getExportByName("libdl.so", dlopen), {
+        onEnter: function (args) {
+            this.moduleName = args[0].readCString()
+        },
+        onLeave: function (retval: any) {
+            if (this.moduleName != undefined) {
+                if (this.moduleName.endsWith("libssl.so")) {
+                    log("OpenSSL/BoringSSL detected.")
+                    boring_execute()
+                } else if (this.moduleName.endsWith("libwolfssl.so")) {
+                    log("WolfSSL detected.")
+                    wolf_execute()
+                }
+            }
+
+        }
+    })
+} catch (error) {
+    log("No dynamic loader present for hooking.")
+}
 
 if (Java.available) {
     Java.perform(function () {

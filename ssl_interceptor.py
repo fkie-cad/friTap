@@ -28,7 +28,7 @@ SSL_READ = ["SSL_read", "wolfSSL_read", "readApplicationData"]
 SSL_WRITE = ["SSL_write", "wolfSSL_write", "writeApplicationData"]
 
 
-def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False):
+def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, android=False):
 
     def log_pcap(pcap_file, ss_family, ssl_session_id, function, src_addr, src_port,
                  dst_addr, dst_port, data):
@@ -221,13 +221,19 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
         script.load()
 
     # Main code
-    device = frida.get_usb_device()
+    if android:
+        device = frida.get_usb_device()
+    else:
+        device = frida.get_local_device()
     device.on("child_added", on_child_added)
     if enable_spawn_gating:
         device.enable_spawn_gating()
         device.on("spawn_added", on_spawn_added)
     if spawn:
-        pid = device.spawn(app)
+        if android:
+            pid = device.spawn(app)
+        else:
+            pid = device.spawn(app.split(" "))
         process = device.attach(pid)
     else:
         process = device.attach(app)
@@ -302,7 +308,8 @@ Examples:
                       help="Catch newly spawned processes. ATTENTION: These could be unrelated to the current process!")
     args.add_argument("app", metavar="<app name>",
                       help="APP whose SSL calls to log")
+    args.add_argument("-a", "--android", required=False, action="store_const", const=True, help="Attach to a process on android")
     parsed = parser.parse_args()
 
     ssl_log(parsed.app, parsed.pcap, parsed.verbose,
-            parsed.spawn, parsed.keylog, parsed.enable_spawn_gating)
+            parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.android)

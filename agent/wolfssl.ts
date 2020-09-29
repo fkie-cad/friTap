@@ -1,6 +1,5 @@
 import { readAddresses, getPortsAndAddresses } from "./shared"
 import { log } from "./log"
-import { delay } from "../ExampleApp/wolfssljni/docs/script-dir/jszip/dist/jszip"
 
 export function execute() {
     var library_method_mapping: { [key: string]: Array<String> } = {}
