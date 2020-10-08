@@ -8,16 +8,16 @@ import { log } from "./log"
 var moduleNames: Array<string> = []
 Process.enumerateModules().forEach(item => moduleNames.push(item.name))
 
-for(var mod of moduleNames){
-    if(mod.indexOf("libssl.so") >= 0){
+for (var mod of moduleNames) {
+    if (mod.indexOf("libssl.so") >= 0) {
         log("OpenSSL/BoringSSL detected.")
         boring_execute()
         break
     }
 }
 
-for(var mod of moduleNames){
-    if(mod.indexOf("libwolfssl.so") >= 0){
+for (var mod of moduleNames) {
+    if (mod.indexOf("libwolfssl.so") >= 0) {
         log("WolfSSL detected.")
         wolf_execute()
         break
@@ -45,8 +45,8 @@ if (Java.available) {
 try {
     let dl_exports = Process.getModuleByName("libdl.so").enumerateExports()
     var dlopen = "dlopen"
-    for (var ex of dl_exports){
-        if (ex.name === "android_dlopen_ext"){
+    for (var ex of dl_exports) {
+        if (ex.name === "android_dlopen_ext") {
             dlopen = "android_dlopen_ext"
             break
         }
@@ -79,14 +79,22 @@ if (Java.available) {
         //Conscrypt needs early instrumentation as we block the provider installation
         var provider = Java.use("java.security.Security");
         if (provider.getProviders().toString().includes("GmsCore_OpenSSL")) {
-            log("WARNING: PID " + Process.id + " Detected GmsCore_OpenSSL Provider. This can be a bit unstable. If you having issues, rerun with -spawn for early instrumentation. Consider rerunning with the -spawn flag")
+            log("WARNING: PID " + Process.id + " Detected GmsCore_OpenSSL Provider. This can be a bit unstable. If you having issues, rerun with -spawn for early instrumentation. Trying to remove it to fall back on default Provider")
             provider.removeProvider("GmsCore_OpenSSL")
-            console.log("removed it")
+            log("Removed GmsCore_OpenSSL")
             console.log(provider.getProviders().toString())
         }
 
         //As the classloader responsible for loading ProviderInstaller sometimes is not present from the beginning on,
         //we always have to watch the classloader activity
         conscrypt_execute()
+
+        //Now do the same for Ssl_guard
+        if (provider.getProviders().toString().includes("Ssl_Guard")) {
+            log("Ssl_Guard deteced, removing it to fall back on default Provider")
+            provider.removeProvider("Ssl_Guard")
+            log("Removed Ssl_Guard")
+            console.log(provider.getProviders().toString())
+        }
     })
 }
