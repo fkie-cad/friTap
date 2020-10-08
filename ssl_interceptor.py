@@ -297,7 +297,8 @@ Examples:
 """)
 
     args = parser.add_argument_group("Arguments")
-    args.add_argument("-a", "--android", required=False, action="store_const", const=True, help="Attach to a process on android")
+    args.add_argument("-a", "--android", required=False, action="store_const",
+                      const=True, help="Attach to a process on android")
     args.add_argument("-k", "--keylog", metavar="<path>", required=False,
                       help="Log the keys used for tls traffic")
     args.add_argument("-p ", "--pcap", metavar="<path>", required=False,
@@ -312,5 +313,5 @@ Examples:
                       help="executable/app whose SSL calls to log")
     parsed = parser.parse_args()
 
-    ssl_log(parsed.app, parsed.pcap, parsed.verbose,
+    ssl_log(parsed.exec, parsed.pcap, parsed.verbose,
             parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.android)
