@@ -13,12 +13,20 @@ def _get_sessions_dec(dec_pcap):
             with pyshark.FileCapture(
                     dec_pcap, display_filter=f"tcp.stream eq {i}") as dec:
                 pkt = dec[0]
-                sessions_dec.append({
-                    "src_addr": pkt.ip.src,
-                    "dst_addr": pkt.ip.dst,
-                    "src_port": pkt.tcp.srcport,
-                    "dst_port": pkt.tcp.dstport
-                })
+                if hasattr(pkt, "ip"):
+                    sessions_dec.append({
+                        "src_addr": pkt.ip.src,
+                        "dst_addr": pkt.ip.dst,
+                        "src_port": pkt.tcp.srcport,
+                        "dst_port": pkt.tcp.dstport
+                    })
+                else:
+                    sessions_dec.append({
+                        "src_addr": pkt.ipv6.src,
+                        "dst_addr": pkt.ipv6.dst,
+                        "src_port": pkt.tcp.srcport,
+                        "dst_port": pkt.tcp.dstport
+                    })
                 i += 1
     except Exception as e:
         return sessions_dec
@@ -31,12 +39,20 @@ def _get_sessions_enc(enc_pcap):
     with pyshark.FileCapture(enc_pcap, display_filter="tls") as enc:
         for pkt in enc:
             if "handshake_type" in pkt.tls.field_names and pkt.tls.handshake_type == "1":
-                sessions_enc.append({
-                    "src_addr": pkt.ip.src,
-                    "dst_addr": pkt.ip.dst,
-                    "src_port": pkt.tcp.srcport,
-                    "dst_port": pkt.tcp.dstport
-                })
+                if hasattr(pkt, "ip"):
+                    sessions_enc.append({
+                        "src_addr": pkt.ip.src,
+                        "dst_addr": pkt.ip.dst,
+                        "src_port": pkt.tcp.srcport,
+                        "dst_port": pkt.tcp.dstport
+                    })
+                else:
+                    sessions_enc.append({
+                        "src_addr": pkt.ipv6.src,
+                        "dst_addr": pkt.ipv6.dst,
+                        "src_port": pkt.tcp.srcport,
+                        "dst_port": pkt.tcp.dstport
+                    })
     return sessions_enc
 
 
