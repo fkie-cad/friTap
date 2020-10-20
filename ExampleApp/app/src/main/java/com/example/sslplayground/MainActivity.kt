@@ -102,6 +102,8 @@ class MainActivity : AppCompatActivity() {
                         }
                     }catch(e : SSLHandshakeException){
                         act.textViewConnectionInformation.append("Handshake error!\n")
+                        Log.e(this.javaClass.name, e.toString())
+                        e.printStackTrace()
                     }
 
                     httpsUrlConnection.disconnect()
