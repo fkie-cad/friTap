@@ -24,12 +24,12 @@ export function execute() {
 
     //We have to hook multiple entrypoints: ProviderInstallerImpl and ProviderInstaller
     Java.perform(function () {
-
         //Part one: Hook ProviderInstallerImpl
         var javaClassLoader = Java.use("java.lang.ClassLoader")
         var backupImplementation = javaClassLoader.loadClass.overload("java.lang.String").implementation
         //The classloader for ProviderInstallerImpl might not be present on startup, so we hook the loadClass method.  
         javaClassLoader.loadClass.overload("java.lang.String").implementation = function (className: string) {
+            let retval = this.loadClass(className)
             if (className.endsWith("ProviderInstallerImpl")) {
                 log("Process is loading ProviderInstallerImpl")
                 var providerInstallerImpl = findProviderInstallerFromClassloaders(javaClassLoader, backupImplementation)
@@ -43,7 +43,7 @@ export function execute() {
 
                 }
             }
-            return this.loadClass(className)
+            return retval
         }
         /*
         //Do the same for second overload of javaClassLoader
