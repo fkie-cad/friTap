@@ -43,7 +43,10 @@ def install_xapk(apk_path):
             apk_path, "Android", "obb")) if f.endswith(".obb")]
     for obb in obbs:
         subprocess.run(
-            ["adb", "push", obb, "/data/media/0/Android/obb"], stdout=subprocess.DEVNULL)
+            ["adb", "push", obb, "/data/local/tmp"], stdout=subprocess.DEVNULL)
+        obb_without_path = obb.split("/")[-1]
+        subprocess.run(
+            ["adb", "shell", "su", "-c", "mv", f"/data/local/tmp/{obb_without_path}", "/data/media/0/Android/obb"], stdout=subprocess.DEVNULL)
     result = subprocess.run(
         [r"adb", "install-multiple", "-g", *apks], stdout=subprocess.DEVNULL)
     if result.returncode == 0:
@@ -59,7 +62,7 @@ def install(apk_path):
         return install_xapk(apk_path)
 
 
-def evaluate(apk_path, verbose, keep_files):
+def evaluate(apk_path, verbose, keep_files, monkey_delay):
     def log(message):
         if verbose:
             print(message)
@@ -81,8 +84,9 @@ def evaluate(apk_path, verbose, keep_files):
     log("[~] Attaching interceptor")
     p_interceptor = subprocess.Popen(["python3", "ssl_interceptor.py", package_name,
                                       "-a", "-p", DEC_PATH, "--enable_spawn_gating"], cwd="/Users/maxufer/Arbeit/sslinterceptor", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    log(f"[~] Resuming app and waiting {monkey_delay} seconds")
     device.resume(pid)
-    time.sleep(5)
+    time.sleep(monkey_delay)
     log("[~] Starting monkey")
     result = subprocess.run(
         ["adb", "shell", "monkey", "-p", package_name, "500"],
@@ -122,5 +126,8 @@ if __name__ == "__main__":
                         action="store_const", const=True)
     parser.add_argument("-k", "--keep_files", required=False,
                         action="store_const", const=True, help="Keep the pcaps")
+    parser.add_argument("-m", "--monkey_delay",
+                        metavar="<delay>", type=int, default=5, required=False)
     parsed = parser.parse_args()
-    evaluate(parsed.app, parsed.verbose, parsed.keep_files)
+    evaluate(parsed.app, parsed.verbose,
+             parsed.keep_files, parsed.monkey_delay)
