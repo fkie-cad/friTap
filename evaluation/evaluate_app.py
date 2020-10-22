@@ -4,6 +4,10 @@ import frida
 import subprocess
 import sys
 import time
+from pcap_compare import compare
+
+ENC_PATH = "/Users/maxufer/Arbeit/sslinterceptor/evaluation/.evaluate_enc.pcap"
+DEC_PATH = "/Users/maxufer/Arbeit/sslinterceptor/evaluation/.evaluate_dec.pcap"
 
 
 def get_files_recursive(path):
@@ -55,7 +59,7 @@ def install(apk_path):
         return install_xapk(apk_path)
 
 
-def evaluate(apk_path, verbose):
+def evaluate(apk_path, verbose, keep_files):
     def log(message):
         if verbose:
             print(message)
@@ -72,11 +76,11 @@ def evaluate(apk_path, verbose):
     time.sleep(2)
     log("[~] Attaching speartrace")
     p_spear = subprocess.Popen(["python3", "speartrace.py",
-                                f"-p", package_name, "-o", "/Users/maxufer/Arbeit/sslinterceptor/evaluation/.evaluate_enc.pcap"], cwd="/Users/maxufer/Arbeit/utilities/speartrace", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                f"-p", package_name, "-o", ENC_PATH], cwd="/Users/maxufer/Arbeit/utilities/speartrace", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(2)
     log("[~] Attaching interceptor")
     p_interceptor = subprocess.Popen(["python3", "ssl_interceptor.py", package_name,
-                                      "-a", "-p", "/Users/maxufer/Arbeit/sslinterceptor/evaluation/.evaluate_dec.pcap", "--enable_spawn_gating"], cwd="/Users/maxufer/Arbeit/sslinterceptor", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                      "-a", "-p", DEC_PATH, "--enable_spawn_gating"], cwd="/Users/maxufer/Arbeit/sslinterceptor", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     device.resume(pid)
     time.sleep(5)
     log("[~] Starting monkey")
@@ -96,6 +100,18 @@ def evaluate(apk_path, verbose):
                    stdout=subprocess.DEVNULL)
     subprocess.run(
         ["adb", "shell", 'su -c "rm /data/media/0/Android/obb/*.obb"'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    log("[~] Analysing pcaps")
+    total, total_dec = compare(ENC_PATH, DEC_PATH)
+    if total != 0:
+        quota = float(total_dec)/float(total)
+        print(f"{apk_path}: Total: {total}, decrypted: {total_dec}, Quota: {quota:.0%}")
+    else:
+        print("No streams found")
+
+    if not keep_files:
+        log("[~] Removing pcaps")
+        os.remove(ENC_PATH)
+        os.remove(DEC_PATH)
 
 
 if __name__ == "__main__":
@@ -104,5 +120,7 @@ if __name__ == "__main__":
     parser.add_argument("app", metavar="<path to apk>")
     parser.add_argument("-v", "--verbose", required=False,
                         action="store_const", const=True)
+    parser.add_argument("-k", "--keep_files", required=False,
+                        action="store_const", const=True, help="Keep the pcaps")
     parsed = parser.parse_args()
-    evaluate(parsed.app, parsed.verbose)
+    evaluate(parsed.app, parsed.verbose, parsed.keep_files)
