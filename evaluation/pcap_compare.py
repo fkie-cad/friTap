@@ -3,6 +3,7 @@ import pyshark
 import argparse
 import pprint
 import sys
+import time
 
 
 def _get_sessions_dec(dec_pcap):
@@ -81,11 +82,17 @@ def compare(enc_pcap, dec_pcap):
 
 
 if __name__ == "__main__":
+    start = time.time()
     parser = argparse.ArgumentParser(
         description="Compare encrypted and decrypted pcaps for completeness")
     parser.add_argument("-e", metavar="<encrypted pcap>")
     parser.add_argument("-d", metavar="<decrypted pcap>")
     args = parser.parse_args()
     total, total_dec = compare(args.e, args.d)
-    quota = float(total_dec)/float(total)
-    print(f"Total: {total}, decrypted: {total_dec}, Quota: {quota:.0%}")
+    if total != 0:
+        quota = float(total_dec)/float(total)
+        print(f"Total: {total}, decrypted: {total_dec}, Quota: {quota:.0%}")
+        end = time.time()
+        print(f"Total time: {end-start}")
+    else:
+        print("No streams found!")
