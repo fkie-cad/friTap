@@ -109,7 +109,7 @@ def evaluate(app, verbose, keep_files, monkey_delay, install, manual, enable_spa
     else:
         log(f"[~] waiting {monkey_delay} seconds")
         time.sleep(monkey_delay)
-        if custom_input:
+        if not custom_input:
             log("[~] Starting monkey")
             result = subprocess.run(
                 ["adb", "shell", "monkey", "-p", package_name, "500"],
