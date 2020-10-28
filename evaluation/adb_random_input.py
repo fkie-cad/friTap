@@ -12,11 +12,11 @@ def run(seconds):
     while True:
         state = rnd.randint(0, 2)
         if state == 0:
-            subprocess.run(["adb", "shell", "input", "tap", rnd.randint(
-                X_MIN, X_MAX), rnd.randint(Y_MIN, Y_MAX)])
+            subprocess.run(["adb", "shell", "input", "tap", str(
+                rnd.randint(X_MIN, X_MAX)), str(rnd.randint(Y_MIN, Y_MAX))])
         elif state == 1:
-            subprocess.run(["adb", "shell", "input", "swipe", rnd.randint(X_MIN, X_MAX), rnd.randint(
-                Y_MIN, Y_MAX), rnd.randint(X_MIN, X_MAX), rnd.randint(Y_MIN, Y_MAX)])
+            subprocess.run(["adb", "shell", "input", "swipe", str(rnd.randint(X_MIN, X_MAX)), str(
+                rnd.randint(Y_MIN, Y_MAX)), str(rnd.randint(X_MIN, X_MAX)), str(rnd.randint(Y_MIN, Y_MAX))])
         if time.time() - start_time >= seconds:
             break
 
