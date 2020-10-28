@@ -34,7 +34,7 @@ def __install_xapk(apk_path):
         "config.") or f.startswith("bloops_dynamic") or f.startswith("rate.")) and f.endswith(".apk")]
     if len(main_apk) != 1:
         raise RuntimeError(
-            f"Unusual number of main apks in {apk_path}: {','.join(main_apk)}")
+            f"{apk_path}: Unusual number of main apks: {','.join(main_apk)}")
     package_name = main_apk[0].split(os.path.sep)[-1][:-4]
     apks = [os.path.join(apk_path, f) for f in files if f.endswith(".apk")]
     obbs = list()
@@ -68,9 +68,13 @@ def evaluate(app, verbose, keep_files, monkey_delay, install, manual):
             print(message)
     if install:
         log(f"[~] Installing {app}...")
-        package_name = install_apk(app)
+        try:
+            package_name = install_apk(app)
+        except Exception as e:
+            sys.stderr.write(f"{app}: Install failed")
+            sys.exit()
         if not package_name:
-            log("[~] Install failed!")
+            sys.stderr.write(f"{app}: Install failed")
             sys.exit(1)
     else:
         package_name = app
@@ -114,7 +118,10 @@ def evaluate(app, verbose, keep_files, monkey_delay, install, manual):
         subprocess.run(
             ["adb", "shell", 'su -c "rm /data/media/0/Android/obb/*.obb"'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     log("[~] Analysing pcaps")
-    total, total_dec = compare(ENC_PATH, DEC_PATH)
+    try:
+        total, total_dec = compare(ENC_PATH, DEC_PATH)
+    except ValueError as e:
+        print(f"{app}: Found decrypted stream that was not encrypted!")
     if total != 0:
         quota = float(total_dec)/float(total)
         print(f"{app}: Total: {total}, decrypted: {total_dec}, Quota: {quota:.0%}")

@@ -71,12 +71,8 @@ def compare(enc_pcap, dec_pcap):
     total_sessions = len(sessions_enc)
     decrypted_sessions = 0
     for sess in sessions_dec:
-        try:
-            sessions_enc.remove(sess)
-            decrypted_sessions += 1
-        except ValueError as e:
-            print("Found session in decrypted pcap which is not present in encrypted pcap - aborting...", file=sys.stderr)
-            sys.exit(1)
+        sessions_enc.remove(sess)
+        decrypted_sessions += 1
 
     return total_sessions, decrypted_sessions
 
@@ -88,7 +84,11 @@ if __name__ == "__main__":
     parser.add_argument("-e", metavar="<encrypted pcap>")
     parser.add_argument("-d", metavar="<decrypted pcap>")
     args = parser.parse_args()
-    total, total_dec = compare(args.e, args.d)
+    try:
+        total, total_dec = compare(args.e, args.d)
+    except ValueError as e:
+        print("Found decrypted session which is not present in encypted file")
+        sys.exit()
     if total != 0:
         quota = float(total_dec)/float(total)
         print(f"Total: {total}, decrypted: {total_dec}, Quota: {quota:.0%}")
