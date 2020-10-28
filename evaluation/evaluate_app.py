@@ -22,7 +22,7 @@ def get_files_recursive(path):
 def __install_apk(apk_path):
     package_name = apk_path.split(os.path.sep)[-1][:-4]
     result = subprocess.run(
-        [r"adb", "install", "-g", apk_path], stdout=subprocess.DEVNULL)
+        [r"adb", "install", "-g", apk_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if result.returncode == 0:
         return package_name
     else:
@@ -44,12 +44,12 @@ def __install_xapk(apk_path):
             apk_path, "Android", "obb")) if f.endswith(".obb")]
     for obb in obbs:
         subprocess.run(
-            ["adb", "push", obb, "/data/local/tmp"], stdout=subprocess.DEVNULL)
+            ["adb", "push", obb, "/data/local/tmp"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         obb_without_path = obb.split("/")[-1]
         subprocess.run(
-            ["adb", "shell", "su", "-c", "mv", f"/data/local/tmp/{obb_without_path}", "/data/media/0/Android/obb"], stdout=subprocess.DEVNULL)
+            ["adb", "shell", "su", "-c", "mv", f"/data/local/tmp/{obb_without_path}", "/data/media/0/Android/obb"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     result = subprocess.run(
-        [r"adb", "install-multiple", "-g", *apks], stdout=subprocess.DEVNULL)
+        [r"adb", "install-multiple", "-g", *apks], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if result.returncode == 0:
         return package_name
     else:
@@ -72,10 +72,10 @@ def evaluate(app, verbose, keep_files, monkey_delay, install, manual, enable_spa
         try:
             package_name = install_apk(app)
         except Exception as e:
-            sys.stderr.write(f"{app}: Install failed")
+            sys.stderr.write(f"{app}: Install failed\n")
             sys.exit()
         if not package_name:
-            sys.stderr.write(f"{app}: Install failed")
+            sys.stderr.write(f"{app}: Install failed\n")
             sys.exit(1)
     else:
         package_name = app
