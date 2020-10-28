@@ -77,12 +77,11 @@ try {
 if (Java.available) {
     Java.perform(function () {
         //Conscrypt needs early instrumentation as we block the provider installation
-        var provider = Java.use("java.security.Security");
-        if (provider.getProviders().toString().includes("GmsCore_OpenSSL")) {
+        var Security = Java.use("java.security.Security");
+        if (Security.getProviders().toString().includes("GmsCore_OpenSSL")) {
             log("WARNING: PID " + Process.id + " Detected GmsCore_OpenSSL Provider. This can be a bit unstable. If you having issues, rerun with -spawn for early instrumentation. Trying to remove it to fall back on default Provider")
-            provider.removeProvider("GmsCore_OpenSSL")
+            Security.removeProvider("GmsCore_OpenSSL")
             log("Removed GmsCore_OpenSSL")
-            console.log(provider.getProviders().toString())
         }
 
         //As the classloader responsible for loading ProviderInstaller sometimes is not present from the beginning on,
@@ -90,11 +89,38 @@ if (Java.available) {
         conscrypt_execute()
 
         //Now do the same for Ssl_guard
-        if (provider.getProviders().toString().includes("Ssl_Guard")) {
+        if (Security.getProviders().toString().includes("Ssl_Guard")) {
             log("Ssl_Guard deteced, removing it to fall back on default Provider")
-            provider.removeProvider("Ssl_Guard")
+            Security.removeProvider("Ssl_Guard")
             log("Removed Ssl_Guard")
-            console.log(provider.getProviders().toString())
+        }
+
+        //Same thing for Conscrypt provider which has been manually inserted (not by providerinstaller)
+        if (Security.getProviders().toString().includes("Conscrypt version")) {
+            log("Conscrypt detected")
+            Security.removeProvider("Conscrypt")
+            log("Removed Conscrypt")
+        }
+        log("Remaining: " + Security.getProviders().toString())
+
+
+        //Hook insertProviderAt/addprovider for dynamic provider blocking
+        Security.insertProviderAt.implementation = function (provider: any, position: number) {
+            if (provider.getName().includes("Conscrypt") || provider.getName().includes("Ssl_Guard") || provider.getName().includes("GmsCore_OpenSSL")) {
+                log("Blocking provider registration of " + provider.getName())
+                return position
+            } else {
+                return this.insertProviderAt(provider, position)
+            }
+        }
+        //Same for addProvider
+        Security.insertProviderAt.implementation = function (provider: any) {
+            if (provider.getName().includes("Conscrypt") || provider.getName().includes("Ssl_Guard") || provider.getName().includes("GmsCore_OpenSSL")) {
+                log("Blocking provider registration of " + provider.getName())
+                return 1
+            } else {
+                return this.addProvider(provider)
+            }
         }
     })
 }
