@@ -62,16 +62,18 @@ def install(apk_path):
         return install_xapk(apk_path)
 
 
-def evaluate(apk_path, verbose, keep_files, monkey_delay):
+def evaluate(app, verbose, keep_files, monkey_delay, install):
     def log(message):
         if verbose:
             print(message)
-
-    log(f"[~] Installing {apk_path}...")
-    package_name = install(apk_path)
-    if not package_name:
-        log("[~] Install failed!")
-        sys.exit(1)
+    if install:
+        log(f"[~] Installing {app}...")
+        package_name = install(app)
+        if not package_name:
+            log("[~] Install failed!")
+            sys.exit(1)
+    else:
+        package_name = app
 
     log("[~] Spawning app with frida")
     device = frida.get_usb_device()
@@ -99,18 +101,19 @@ def evaluate(apk_path, verbose, keep_files, monkey_delay):
     log("[~] Terminating processes")
     p_interceptor.terminate()
     p_spear.terminate()
-    log("[~] Uninstalling app")
-    subprocess.run(["adb", "uninstall", package_name],
-                   stdout=subprocess.DEVNULL)
-    subprocess.run(
-        ["adb", "shell", 'su -c "rm /data/media/0/Android/obb/*.obb"'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if install:
+        log("[~] Uninstalling app")
+        subprocess.run(["adb", "uninstall", package_name],
+                       stdout=subprocess.DEVNULL)
+        subprocess.run(
+            ["adb", "shell", 'su -c "rm /data/media/0/Android/obb/*.obb"'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     log("[~] Analysing pcaps")
     total, total_dec = compare(ENC_PATH, DEC_PATH)
     if total != 0:
         quota = float(total_dec)/float(total)
-        print(f"{apk_path}: Total: {total}, decrypted: {total_dec}, Quota: {quota:.0%}")
+        print(f"{app}: Total: {total}, decrypted: {total_dec}, Quota: {quota:.0%}")
     else:
-        print(f"{apk_path}: No streams found")
+        print(f"{app}: No streams found")
 
     if not keep_files:
         log("[~] Removing pcaps")
@@ -121,13 +124,16 @@ def evaluate(apk_path, verbose, keep_files, monkey_delay):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Try ssl_interceptor on app")
-    parser.add_argument("app", metavar="<path to apk>")
+    parser.add_argument("app", metavar="<path to apk/app name>")
     parser.add_argument("-v", "--verbose", required=False,
                         action="store_const", const=True)
     parser.add_argument("-k", "--keep_files", required=False,
                         action="store_const", const=True, help="Keep the pcaps")
     parser.add_argument("-m", "--monkey_delay",
                         metavar="<delay>", type=int, default=5, required=False)
+    parser.add_argument("-i", "--install",
+                        action="store_const", const=True, required=False)
+
     parsed = parser.parse_args()
     evaluate(parsed.app, parsed.verbose,
-             parsed.keep_files, parsed.monkey_delay)
+             parsed.keep_files, parsed.monkey_delay, parsed.install)
