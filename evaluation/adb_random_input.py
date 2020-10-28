@@ -9,6 +9,7 @@ Y_MAX = 2660
 
 def run(seconds):
     start_time = time.time()
+    actions = 0
     while True:
         state = rnd.randint(0, 2)
         if state == 0:
@@ -17,11 +18,12 @@ def run(seconds):
         elif state == 1:
             subprocess.run(["adb", "shell", "input", "swipe", str(rnd.randint(X_MIN, X_MAX)), str(
                 rnd.randint(Y_MIN, Y_MAX)), str(rnd.randint(X_MIN, X_MAX)), str(rnd.randint(Y_MIN, Y_MAX))])
+        actions += 1
         if time.time() - start_time >= seconds:
             break
 
-    print(time.time()-start_time)
+    return actions
 
 
 if __name__ == "__main__":
-    run(5)
+    print(f"{run(5)} actions")
