@@ -91,6 +91,7 @@ def evaluate(app, verbose, keep_files, monkey_delay, install, manual):
     if manual:
         print("[~] Collecting data, give user input now...")
         print("[~] Press Enter to continue")
+        input()
     else:
         log(f"[~] waiting {monkey_delay} seconds")
         time.sleep(monkey_delay)
