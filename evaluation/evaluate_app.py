@@ -6,8 +6,8 @@ import sys
 import time
 from pcap_compare import compare
 
-ENC_PATH = "/Users/maxufer/Arbeit/sslinterceptor/evaluation/.evaluate_enc.pcap"
-DEC_PATH = "/Users/maxufer/Arbeit/sslinterceptor/evaluation/.evaluate_dec.pcap"
+ENC_PATH = "/home/he1n/sslinterceptor/evaluation/.evaluate_enc.pcap"
+DEC_PATH = "/home/he1n/sslinterceptor/evaluation/.evaluate_dec.pcap"
 
 
 def get_files_recursive(path):
@@ -79,11 +79,11 @@ def evaluate(apk_path, verbose, keep_files, monkey_delay):
     time.sleep(2)
     log("[~] Attaching speartrace")
     p_spear = subprocess.Popen(["python3", "speartrace.py",
-                                f"-p", package_name, "-o", ENC_PATH], cwd="/Users/maxufer/Arbeit/utilities/speartrace", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                f"-p", package_name, "-o", ENC_PATH], cwd="/home/he1n/sslinterceptor/evaluation/speartrace", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(2)
     log("[~] Attaching interceptor")
     p_interceptor = subprocess.Popen(["python3", "ssl_interceptor.py", package_name,
-                                      "-a", "-p", DEC_PATH, "--enable_spawn_gating"], cwd="/Users/maxufer/Arbeit/sslinterceptor", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                      "-a", "-p", DEC_PATH, "--enable_spawn_gating"], cwd="/home/he1n/sslinterceptor", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     log(f"[~] Resuming app and waiting {monkey_delay} seconds")
     device.resume(pid)
     time.sleep(monkey_delay)
@@ -110,7 +110,7 @@ def evaluate(apk_path, verbose, keep_files, monkey_delay):
         quota = float(total_dec)/float(total)
         print(f"{apk_path}: Total: {total}, decrypted: {total_dec}, Quota: {quota:.0%}")
     else:
-        print("No streams found")
+        print(f"{apk_path}: No streams found")
 
     if not keep_files:
         log("[~] Removing pcaps")
