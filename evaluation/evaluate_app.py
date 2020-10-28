@@ -18,7 +18,7 @@ def get_files_recursive(path):
     return obbs
 
 
-def install_apk(apk_path):
+def __install_apk(apk_path):
     package_name = apk_path.split(os.path.sep)[-1][:-4]
     result = subprocess.run(
         [r"adb", "install", "-g", apk_path], stdout=subprocess.DEVNULL)
@@ -28,7 +28,7 @@ def install_apk(apk_path):
         return None
 
 
-def install_xapk(apk_path):
+def __install_xapk(apk_path):
     files = os.listdir(apk_path)
     main_apk = [f for f in files if not (f.startswith(
         "config.") or f.startswith("bloops_dynamic") or f.startswith("rate.")) and f.endswith(".apk")]
@@ -55,11 +55,11 @@ def install_xapk(apk_path):
         return None
 
 
-def install(apk_path):
+def install_apk(apk_path):
     if os.path.isfile(apk_path):
-        return install_apk(apk_path)
+        return __install_apk(apk_path)
     else:
-        return install_xapk(apk_path)
+        return __install_xapk(apk_path)
 
 
 def evaluate(app, verbose, keep_files, monkey_delay, install, manual):
@@ -68,7 +68,7 @@ def evaluate(app, verbose, keep_files, monkey_delay, install, manual):
             print(message)
     if install:
         log(f"[~] Installing {app}...")
-        package_name = install(app)
+        package_name = install_apk(app)
         if not package_name:
             log("[~] Install failed!")
             sys.exit(1)
