@@ -91,7 +91,7 @@ def evaluate(app, verbose, keep_files, monkey_delay, install, manual, enable_spa
     else:
         p_spear = subprocess.Popen(["python3", "speartrace.py",
                                     f"-p", package_name, "-o", ENC_PATH], cwd="/home/he1n/sslinterceptor/evaluation/speartrace", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(2)
+    time.sleep(4)
     log("[~] Attaching interceptor")
     if enable_spawn_gating:
         p_interceptor = subprocess.Popen(["python3", "ssl_interceptor.py", package_name,
