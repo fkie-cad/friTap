@@ -8,6 +8,11 @@ Y_MAX = 2660
 
 
 def run(seconds):
+    """
+    Will send random actions via adb and returns number of actions 
+    Args:
+    seconds: how long should the program run
+    """
     start_time = time.time()
     actions = 0
     while True:

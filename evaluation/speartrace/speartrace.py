@@ -13,7 +13,7 @@ __location__ = os.path.realpath(
     os.path.join(os.getcwd(), os.path.dirname(__file__)))
 
 
-def speartrace(output, verbose, app_name=None, pid=None):
+def speartrace(output, verbose, app_name=None, pid=None, enable_spawn_gating=False):
 
     # session[<SESSION id>] = (<bytes sent by client>,
     #                                  <bytes sent by server>)
@@ -170,8 +170,9 @@ def speartrace(output, verbose, app_name=None, pid=None):
 
     device = frida.get_usb_device()
     device.on("child_added", on_child_added)
-    device.enable_spawn_gating()
-    device.on("spawn_added", on_spawn_added)
+    if enable_spawn_gating:
+        device.enable_spawn_gating()
+        device.on("spawn_added", on_spawn_added)
     if app_name:
         pid = device.spawn(app_name)
     process = device.attach(pid)
@@ -212,11 +213,15 @@ if __name__ == "__main__":
                     required=False, help="Path to pcap to write to")
     ap.add_argument("-v", "--verbose", required=False,
                     help="Print verbose output", action="store_true")
+    ap.add_argument("-e", "--enable_spawn_gating", required=False,
+                    action="store_true", help="Enable spawn gating")
     parsed = ap.parse_args()
     if not ((parsed.pid is None) ^ (parsed.f is None)):
         print("Exactly one of -p/-f has to specified!")
         sys.exit(1)
     if parsed.pid:
-        speartrace(parsed.output, parsed.verbose, pid=parsed.pid)
+        speartrace(parsed.output, parsed.verbose, pid=parsed.pid,
+                   enable_spawn_gating=parsed.enable_spawn_gating)
     else:
-        speartrace(parsed.output, parsed.verbose, app_name=parsed.f)
+        speartrace(parsed.output, parsed.verbose, app_name=parsed.f,
+                   enable_spawn_gating=parsed.enable_spawn_gating)

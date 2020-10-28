@@ -62,7 +62,7 @@ def install_apk(apk_path):
         return __install_xapk(apk_path)
 
 
-def evaluate(app, verbose, keep_files, monkey_delay, install, manual):
+def evaluate(app, verbose, keep_files, monkey_delay, install, manual, enable_spawn_gating):
     def log(message):
         if verbose:
             print(message)
@@ -84,12 +84,21 @@ def evaluate(app, verbose, keep_files, monkey_delay, install, manual):
     pid = device.spawn(package_name)
     time.sleep(2)
     log("[~] Attaching speartrace")
-    p_spear = subprocess.Popen(["python3", "speartrace.py",
-                                f"-p", package_name, "-o", ENC_PATH], cwd="/home/he1n/sslinterceptor/evaluation/speartrace", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if enable_spawn_gating:
+        p_spear = subprocess.Popen(["python3", "speartrace.py",
+                                    f"-p", package_name, "-o", ENC_PATH, "--enable_spawn_gating"], cwd="/home/he1n/sslinterceptor/evaluation/speartrace", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        p_spear = subprocess.Popen(["python3", "speartrace.py",
+                                    f"-p", package_name, "-o", ENC_PATH], cwd="/home/he1n/sslinterceptor/evaluation/speartrace", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(2)
     log("[~] Attaching interceptor")
-    p_interceptor = subprocess.Popen(["python3", "ssl_interceptor.py", package_name,
-                                      "-a", "-p", DEC_PATH, "--enable_spawn_gating"], cwd="/home/he1n/sslinterceptor", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if enable_spawn_gating:
+        p_interceptor = subprocess.Popen(["python3", "ssl_interceptor.py", package_name,
+                                          "-a", "-p", DEC_PATH, "--enable_spawn_gating"], cwd="/home/he1n/sslinterceptor", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        p_interceptor = subprocess.Popen(["python3", "ssl_interceptor.py", package_name,
+                                          "-a", "-p", DEC_PATH], cwd="/home/he1n/sslinterceptor", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
     log(f"[~] Resuming app")
     device.resume(pid)
     if manual:
@@ -148,7 +157,9 @@ if __name__ == "__main__":
                         const=True, help="Don't use monkey, but manual user input")
     parser.add_argument("-i", "--install",
                         action="store_const", const=True, required=False, help="Install the apk from the given path and remove it afterwards")
+    parser.add_argument("-e", "--enable_spawn_gating", action="store_const", const=True, required=False,
+                        help="Enable spawn gating. Can catch spawned services, but can also lead to false negatives/positives because of unrelated processes")
 
     parsed = parser.parse_args()
     evaluate(parsed.app, parsed.verbose,
-             parsed.keep_files, parsed.monkey_delay, parsed.install, parsed.manual)
+             parsed.keep_files, parsed.monkey_delay, parsed.install, parsed.manual, parsed.enable_spawn_gating)
