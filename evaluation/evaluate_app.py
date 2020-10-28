@@ -114,14 +114,15 @@ def evaluate(app, verbose, keep_files, monkey_delay, install, manual, enable_spa
             result = subprocess.run(
                 ["adb", "shell", "monkey", "-p", package_name, "500"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if result.returncode != 0:
+                log("[~] Monkey returned with status 1 (Error)")
+            else:
+                log("[~] Finished")
         else:
             log("[~] Sending custom random input")
             adb_random_input.run(5)
         time.sleep(5)
-        if result.returncode != 0:
-            log("[~] Monkey returned with status 1 (Error)")
-        else:
-            log("[~] Finished")
+
     log("[~] Terminating processes")
     p_interceptor.terminate()
     p_spear.terminate()
