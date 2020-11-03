@@ -76,7 +76,7 @@ def evaluate(app, verbose, keep_files, monkey_delay, install, manual, enable_spa
             sys.exit()
         if not package_name:
             sys.stderr.write(f"{app}: Install failed\n")
-            sys.exit(1)
+            sys.exit()
     else:
         package_name = app
 
