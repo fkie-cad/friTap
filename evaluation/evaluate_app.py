@@ -135,13 +135,13 @@ def evaluate(app, verbose, keep_files, monkey_delay, install, manual, enable_spa
     log("[~] Analysing pcaps")
     try:
         total, total_dec = compare(ENC_PATH, DEC_PATH)
+        if total != 0:
+            quota = float(total_dec)/float(total)
+            print(f"{app}: Total: {total}, decrypted: {total_dec}, Quota: {quota:.0%}")
+        else:
+            print(f"{app}: No streams found")
     except ValueError as e:
         print(f"{app}: Found decrypted stream that was not encrypted!")
-    if total != 0:
-        quota = float(total_dec)/float(total)
-        print(f"{app}: Total: {total}, decrypted: {total_dec}, Quota: {quota:.0%}")
-    else:
-        print(f"{app}: No streams found")
 
     if not keep_files:
         log("[~] Removing pcaps")
