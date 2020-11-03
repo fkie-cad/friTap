@@ -7,8 +7,11 @@ import time
 import adb_random_input
 from pcap_compare import compare
 
-ENC_PATH = "/home/he1n/sslinterceptor/evaluation/.evaluate_enc.pcap"
-DEC_PATH = "/home/he1n/sslinterceptor/evaluation/.evaluate_dec.pcap"
+ENC_PATH = "/Users/maxufer/Arbeit/sslinterceptor/evaluation/.evaluate_enc.pcap"
+DEC_PATH = "/Users/maxufer/Arbeit/sslinterceptor/evaluation/.evaluate_dec.pcap"
+
+INTERCEPTOR_PATH = "/Users/maxufer/Arbeit/sslinterceptor/"
+SPEARTRACE_PATH = "/Users/maxufer/Arbeit/sslinterceptor/evaluation/speartrace"
 
 
 def get_files_recursive(path):
@@ -87,18 +90,18 @@ def evaluate(app, verbose, keep_files, monkey_delay, install, manual, enable_spa
     log("[~] Attaching speartrace")
     if enable_spawn_gating:
         p_spear = subprocess.Popen(["python3", "speartrace.py",
-                                    f"-p", package_name, "-o", ENC_PATH, "--enable_spawn_gating"], cwd="/home/he1n/sslinterceptor/evaluation/speartrace", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                    f"-p", package_name, "-o", ENC_PATH, "--enable_spawn_gating"], cwd=SPEARTRACE_PATH, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     else:
         p_spear = subprocess.Popen(["python3", "speartrace.py",
-                                    f"-p", package_name, "-o", ENC_PATH], cwd="/home/he1n/sslinterceptor/evaluation/speartrace", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                    f"-p", package_name, "-o", ENC_PATH], cwd=SPEARTRACE_PATH, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(4)
     log("[~] Attaching interceptor")
     if enable_spawn_gating:
         p_interceptor = subprocess.Popen(["python3", "ssl_interceptor.py", package_name,
-                                          "-a", "-p", DEC_PATH, "--enable_spawn_gating"], cwd="/home/he1n/sslinterceptor", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                          "-a", "-p", DEC_PATH, "--enable_spawn_gating"], cwd=INTERCPTOR_PATH, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     else:
         p_interceptor = subprocess.Popen(["python3", "ssl_interceptor.py", package_name,
-                                          "-a", "-p", DEC_PATH], cwd="/home/he1n/sslinterceptor", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                          "-a", "-p", DEC_PATH], cwd=INTERCEPTOR_PATH, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     log(f"[~] Resuming app")
     device.resume(pid)
