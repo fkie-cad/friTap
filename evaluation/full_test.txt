@@ -1234,3 +1234,4 @@
 /home/he1n/apk_collection/successful/com.turner.tnt.android.networkapp.apk: Total: 17, decrypted: 15, Quota: 88%
 /home/he1n/apk_collection/successful/com.tuya.smartlife: Total: 5, decrypted: 5, Quota: 100%
 /home/he1n/apk_collection/successful/com.twcable.twcnews.apk: Total: 16, decrypted: 16, Quota: 100%
+/home/he1n/apk_collection/successful/com.twc.radar.apk: Total: 35, decrypted: 35, Quota: 100%
