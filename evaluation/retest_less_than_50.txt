@@ -1,0 +1,37 @@
+/home/he1n/apk_collection/successful/cn.danatech.xingseus.apk: Total: 22, decrypted: 22, Quota: 100%
+/home/he1n/apk_collection/successful/com.blondeagames.art.coloring.book.apk: Total: 22, decrypted: 21, Quota: 95%
+/home/he1n/apk_collection/successful/com.calendar.wom.apk: Total: 3, decrypted: 3, Quota: 100%
+/home/he1n/apk_collection/successful/com.coinbase.android: Total: 45, decrypted: 1, Quota: 2%
+/home/he1n/apk_collection/successful/com.darden.mobile.longhornsteakhouse.apk: Total: 10, decrypted: 2, Quota: 20%
+/home/he1n/apk_collection/successful/com.devsense.symbolab.apk: Total: 7, decrypted: 3, Quota: 43%
+/home/he1n/apk_collection/successful/com.gps.maps.me.city.navigation.metro.transit.navigation.live.traffic.weather: Total: 23, decrypted: 2, Quota: 9%
+/home/he1n/apk_collection/successful/com.grubhub.android.apk: Total: 21, decrypted: 20, Quota: 95%
+/home/he1n/apk_collection/successful/com.jimmyjohns.apk: Total: 8, decrypted: 2, Quota: 25%
+/home/he1n/apk_collection/successful/com.jpgroup.pocketsniper.apk: Total: 29, decrypted: 29, Quota: 100%
+/home/he1n/apk_collection/successful/com.kocogames.wartroops1917: Total: 8, decrypted: 8, Quota: 100%
+/home/he1n/apk_collection/successful/com.koushikdutta.cast.apk: Total: 5, decrypted: 2, Quota: 40%
+/home/he1n/apk_collection/successful/com.krispykreme.HotLights.apk: Total: 6, decrypted: 3, Quota: 50%
+/home/he1n/apk_collection/successful/com.launcher.smart.android.apk: No streams found
+/home/he1n/apk_collection/successful/com.ninjakiwi.bloonstdbattles.apk: No streams found
+/home/he1n/apk_collection/successful/com.nomonkeys.ballblast: Total: 22, decrypted: 13, Quota: 59%
+/home/he1n/apk_collection/successful/com.os.falcon.bob2.adventure.world.apk: Total: 9, decrypted: 8, Quota: 89%
+/home/he1n/apk_collection/successful/com.playcus.findthedifferences2.apk: Total: 54, decrypted: 54, Quota: 100%
+/home/he1n/apk_collection/successful/com.riotgames.legendsofruneterra: Total: 14, decrypted: 2, Quota: 14%
+/home/he1n/apk_collection/successful/com.rmg.hotelteam: Total: 7, decrypted: 7, Quota: 100%
+/home/he1n/apk_collection/successful/com.sgiggle.production.apk: Total: 26, decrypted: 13, Quota: 50%
+/home/he1n/apk_collection/successful/com.stubhub: Total: 2, decrypted: 1, Quota: 50%
+/home/he1n/apk_collection/successful/com.textmeinc.textme: Total: 21, decrypted: 21, Quota: 100%
+/home/he1n/apk_collection/successful/com.topultragame.slotlasvega: Total: 17, decrypted: 12, Quota: 71%
+/home/he1n/apk_collection/successful/com.tripledot.blackjack: Total: 3, decrypted: 3, Quota: 100%
+/home/he1n/apk_collection/successful/com.tripledot.woodoku: Total: 4, decrypted: 4, Quota: 100%
+/home/he1n/apk_collection/successful/com.variable.sw.apk: Total: 4, decrypted: 3, Quota: 75%
+/home/he1n/apk_collection/successful/com.YoStarEN.Arknights: Total: 12, decrypted: 2, Quota: 17%
+/home/he1n/apk_collection/successful/com.zynga.wizardofoz.apk: Total: 32, decrypted: 16, Quota: 50%
+/home/he1n/apk_collection/successful/cz.ackee.ventusky.apk: Total: 6, decrypted: 1, Quota: 17%
+/home/he1n/apk_collection/successful/dating.app.chat.flirt.wgbcv.apk: Total: 40, decrypted: 40, Quota: 100%
+/home/he1n/apk_collection/successful/org.pbskids.gamesapp.apk: Total: 27, decrypted: 25, Quota: 93%
+/home/he1n/apk_collection/successful/org.talkingpoints.parents.apk: Total: 7, decrypted: 3, Quota: 43%
+/home/he1n/apk_collection/successful/pixelart.unicorn.colorbynumber.paintbynumber.apk: Total: 5, decrypted: 5, Quota: 100%
+/home/he1n/apk_collection/successful/pl.lukok.draughts.apk: Total: 10, decrypted: 10, Quota: 100%
+/home/he1n/apk_collection/successful/spapps.com.earthquake.apk: Total: 15, decrypted: 15, Quota: 100%
+
