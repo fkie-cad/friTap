@@ -1,9 +1,12 @@
+import { log } from "./log"
+
 /**
  * This file contains methods which are shared for reading
  * secrets/data from different libraries. These methods are
  * indipendent from the implementation of ssl/tls, but they depend
  * on libc.
  */
+
 
 //GLOBALS
 const AF_INET = 2
@@ -69,6 +72,7 @@ export function readAddresses(library_method_mapping: { [key: string]: Array<Str
 *     and "dst_port".
 */
 export function getPortsAndAddresses(sockfd: number, isRead: boolean, methodAddresses: { [key: string]: NativePointer }): { [key: string]: string | number } {
+log("using strange")
     var getpeername = new NativeFunction(methodAddresses["getpeername"], "int", ["int", "pointer", "pointer"])
     var getsockname = new NativeFunction(methodAddresses["getsockname"], "int", ["int", "pointer", "pointer"])
     var ntohs = new NativeFunction(methodAddresses["ntohs"], "uint16", ["uint16"])
@@ -81,9 +85,13 @@ export function getPortsAndAddresses(sockfd: number, isRead: boolean, methodAddr
     for (var i = 0; i < src_dst.length; i++) {
         addrlen.writeU32(128)
         if ((src_dst[i] == "src") !== isRead) {
+          log("writing socket")
+            log(sockfd.toString())
             getsockname(sockfd, addr, addrlen)
         }
         else {
+            log("reading socket")
+            log(sockfd.toString())
             getpeername(sockfd, addr, addrlen)
         }
         if (addr.readU16() == AF_INET) {
@@ -105,11 +113,16 @@ export function getPortsAndAddresses(sockfd: number, isRead: boolean, methodAddr
                 message["ss_family"] = "AF_INET6"
             }
         } else {
+            log("addr.readU16() ==")
+            log(addr.readU16().toString())
             throw "Only supporting IPv4/6"
         }
     }
     return message
 }
+
+
+
 /**
  * Convert a Java byte array to string
  * @param byteArray The array to convert
