@@ -101,7 +101,8 @@ if (Java.available) {
             Security.removeProvider("Conscrypt")
             log("Removed Conscrypt")
         }
-        log("Remaining: " + Security.getProviders().toString())
+        //Uncomment this line to show all remaining providers
+        //log("Remaining: " + Security.getProviders().toString())
 
 
         //Hook insertProviderAt/addprovider for dynamic provider blocking
