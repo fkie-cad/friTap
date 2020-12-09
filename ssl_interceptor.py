@@ -16,7 +16,7 @@ except ImportError:
     pass
 
 __author__ = "Max Ufer"
-__version__ = "0.01"
+__version__ = "1.0"
 
 # ssl_session[<SSL_SESSION id>] = (<bytes sent by client>,
 #                                  <bytes sent by server>)
@@ -272,7 +272,7 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
 
 class ArgParser(argparse.ArgumentParser):
     def error(self, message):
-        print("ssl_logger v" + __version__)
+        print("friTap v" + __version__)
         print("by " + __author__)
         print()
         print("Error: " + message)
