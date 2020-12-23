@@ -23,9 +23,9 @@ __version__ = "1.0"
 ssl_sessions = {}
 
 # Names of all supported read functions:
-SSL_READ = ["SSL_read", "wolfSSL_read", "readApplicationData"]
+SSL_READ = ["SSL_read", "wolfSSL_read", "readApplicationData","NSS_read"]
 # Names of all supported write functions:
-SSL_WRITE = ["SSL_write", "wolfSSL_write", "writeApplicationData"]
+SSL_WRITE = ["SSL_write", "wolfSSL_write", "writeApplicationData","NSS_write"]
 
 
 def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, android=False):

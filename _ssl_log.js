@@ -1,441 +1,565 @@
 (function(){function r(e,n,t){function o(i,f){if(!n[i]){if(!e[i]){var c="function"==typeof require&&require;if(!f&&c)return c(i,!0);if(u)return u(i,!0);var a=new Error("Cannot find module '"+i+"'");throw a.code="MODULE_NOT_FOUND",a}var p=n[i]={exports:{}};e[i][0].call(p.exports,function(r){var n=e[i][1][r];return o(n||r)},p,p.exports,r,e,n,t)}return n[i].exports}for(var u="function"==typeof require&&require,i=0;i<t.length;i++)o(t[i]);return o}return r})()({1:[function(require,module,exports){
 "use strict";
-
-var _interopRequireDefault = require("@babel/runtime-corejs2/helpers/interopRequireDefault");
-
-var _defineProperty = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/object/define-property"));
-
-(0, _defineProperty["default"])(exports, "__esModule", {
-  value: true
-});
+Object.defineProperty(exports, "__esModule", { value: true });
 exports.execute = void 0;
-
-var log_1 = require("./log");
-
-var shared_1 = require("./shared");
-
+const log_1 = require("./log");
+const shared_1 = require("./shared");
 function execute() {
-  Java.perform(function () {
-    //Hook the inner class "AppDataOutput/input" of ProvSSLSocketDirect, so we can access the 
-    //socket information in its outer class by accessing this.this$0
-    var appDataOutput = Java.use("org.spongycastle.jsse.provider.ProvSSLSocketDirect$AppDataOutput");
-
-    appDataOutput.write.overload('[B', 'int', 'int').implementation = function (buf, offset, len) {
-      var result = [];
-
-      for (var i = 0; i < len; ++i) {
-        result.push(buf[i] & 0xff);
-      }
-
-      var message = {};
-      message["contentType"] = "datalog";
-      message["src_port"] = this.this$0.value.getLocalPort();
-      message["dst_port"] = this.this$0.value.getPort();
-      var localAddress = this.this$0.value.getLocalAddress().getAddress();
-      var inetAddress = this.this$0.value.getInetAddress().getAddress();
-
-      if (localAddress.length == 4) {
-        message["src_addr"] = shared_1.byteArrayToNumber(localAddress);
-        message["dst_addr"] = shared_1.byteArrayToNumber(inetAddress);
-        message["ss_family"] = "AF_INET";
-      } else {
-        message["src_addr"] = shared_1.byteArrayToString(localAddress);
-        message["dst_addr"] = shared_1.byteArrayToString(inetAddress);
-        message["ss_family"] = "AF_INET6";
-      }
-
-      message["ssl_session_id"] = shared_1.byteArrayToString(this.this$0.value.getConnection().getSession().getId()); //log(message["ssl_session_id"])
-
-      message["function"] = "writeApplicationData";
-      send(message, result);
-      return this.write(buf, offset, len);
-    };
-
-    var appDataInput = Java.use("org.spongycastle.jsse.provider.ProvSSLSocketDirect$AppDataInput");
-
-    appDataInput.read.overload('[B', 'int', 'int').implementation = function (buf, offset, len) {
-      var bytesRead = this.read(buf, offset, len);
-      var result = [];
-
-      for (var i = 0; i < bytesRead; ++i) {
-        result.push(buf[i] & 0xff);
-      }
-
-      var message = {};
-      message["contentType"] = "datalog";
-      message["ss_family"] = "AF_INET";
-      message["src_port"] = this.this$0.value.getPort();
-      message["dst_port"] = this.this$0.value.getLocalPort();
-      var localAddress = this.this$0.value.getLocalAddress().getAddress();
-      var inetAddress = this.this$0.value.getInetAddress().getAddress();
-
-      if (localAddress.length == 4) {
-        message["src_addr"] = shared_1.byteArrayToNumber(inetAddress);
-        message["dst_addr"] = shared_1.byteArrayToNumber(localAddress);
-        message["ss_family"] = "AF_INET";
-      } else {
-        message["src_addr"] = shared_1.byteArrayToString(inetAddress);
-        message["dst_addr"] = shared_1.byteArrayToString(localAddress);
-        message["ss_family"] = "AF_INET6";
-      }
-
-      message["ssl_session_id"] = shared_1.byteArrayToString(this.this$0.value.getConnection().getSession().getId());
-      log_1.log(message["ssl_session_id"]);
-      message["function"] = "readApplicationData";
-      send(message, result);
-      return bytesRead;
-    }; //Hook the handshake to read the client random and the master key
-
-
-    var ProvSSLSocketDirect = Java.use("org.spongycastle.jsse.provider.ProvSSLSocketDirect");
-
-    ProvSSLSocketDirect.notifyHandshakeComplete.implementation = function (x) {
-      var protocol = this.protocol.value;
-      var securityParameters = protocol.securityParameters.value;
-      var clientRandom = securityParameters.clientRandom.value;
-      var masterSecretObj = shared_1.getAttribute(securityParameters, "masterSecret"); //The key is in the AbstractTlsSecret, so we need to access the superclass to get the field
-
-      var clazz = Java.use("java.lang.Class");
-      var masterSecretRawField = Java.cast(masterSecretObj.getClass(), clazz).getSuperclass().getDeclaredField("data");
-      masterSecretRawField.setAccessible(true);
-      var masterSecretReflectArray = masterSecretRawField.get(masterSecretObj);
-      var message = {};
-      message["contentType"] = "keylog";
-      message["keylog"] = "CLIENT_RANDOM " + shared_1.byteArrayToString(clientRandom) + " " + shared_1.reflectionByteArrayToString(masterSecretReflectArray);
-      send(message);
-      return this.notifyHandshakeComplete(x);
-    };
-  });
+    Java.perform(function () {
+        //Hook the inner class "AppDataOutput/input" of ProvSSLSocketDirect, so we can access the 
+        //socket information in its outer class by accessing this.this$0
+        var appDataOutput = Java.use("org.spongycastle.jsse.provider.ProvSSLSocketDirect$AppDataOutput");
+        appDataOutput.write.overload('[B', 'int', 'int').implementation = function (buf, offset, len) {
+            var result = [];
+            for (var i = 0; i < len; ++i) {
+                result.push(buf[i] & 0xff);
+            }
+            var message = {};
+            message["contentType"] = "datalog";
+            message["src_port"] = this.this$0.value.getLocalPort();
+            message["dst_port"] = this.this$0.value.getPort();
+            var localAddress = this.this$0.value.getLocalAddress().getAddress();
+            var inetAddress = this.this$0.value.getInetAddress().getAddress();
+            if (localAddress.length == 4) {
+                message["src_addr"] = shared_1.byteArrayToNumber(localAddress);
+                message["dst_addr"] = shared_1.byteArrayToNumber(inetAddress);
+                message["ss_family"] = "AF_INET";
+            }
+            else {
+                message["src_addr"] = shared_1.byteArrayToString(localAddress);
+                message["dst_addr"] = shared_1.byteArrayToString(inetAddress);
+                message["ss_family"] = "AF_INET6";
+            }
+            message["ssl_session_id"] = shared_1.byteArrayToString(this.this$0.value.getConnection().getSession().getId());
+            //log(message["ssl_session_id"])
+            message["function"] = "writeApplicationData";
+            send(message, result);
+            return this.write(buf, offset, len);
+        };
+        var appDataInput = Java.use("org.spongycastle.jsse.provider.ProvSSLSocketDirect$AppDataInput");
+        appDataInput.read.overload('[B', 'int', 'int').implementation = function (buf, offset, len) {
+            var bytesRead = this.read(buf, offset, len);
+            var result = [];
+            for (var i = 0; i < bytesRead; ++i) {
+                result.push(buf[i] & 0xff);
+            }
+            var message = {};
+            message["contentType"] = "datalog";
+            message["ss_family"] = "AF_INET";
+            message["src_port"] = this.this$0.value.getPort();
+            message["dst_port"] = this.this$0.value.getLocalPort();
+            var localAddress = this.this$0.value.getLocalAddress().getAddress();
+            var inetAddress = this.this$0.value.getInetAddress().getAddress();
+            if (localAddress.length == 4) {
+                message["src_addr"] = shared_1.byteArrayToNumber(inetAddress);
+                message["dst_addr"] = shared_1.byteArrayToNumber(localAddress);
+                message["ss_family"] = "AF_INET";
+            }
+            else {
+                message["src_addr"] = shared_1.byteArrayToString(inetAddress);
+                message["dst_addr"] = shared_1.byteArrayToString(localAddress);
+                message["ss_family"] = "AF_INET6";
+            }
+            message["ssl_session_id"] = shared_1.byteArrayToString(this.this$0.value.getConnection().getSession().getId());
+            log_1.log(message["ssl_session_id"]);
+            message["function"] = "readApplicationData";
+            send(message, result);
+            return bytesRead;
+        };
+        //Hook the handshake to read the client random and the master key
+        var ProvSSLSocketDirect = Java.use("org.spongycastle.jsse.provider.ProvSSLSocketDirect");
+        ProvSSLSocketDirect.notifyHandshakeComplete.implementation = function (x) {
+            var protocol = this.protocol.value;
+            var securityParameters = protocol.securityParameters.value;
+            var clientRandom = securityParameters.clientRandom.value;
+            var masterSecretObj = shared_1.getAttribute(securityParameters, "masterSecret");
+            //The key is in the AbstractTlsSecret, so we need to access the superclass to get the field
+            var clazz = Java.use("java.lang.Class");
+            var masterSecretRawField = Java.cast(masterSecretObj.getClass(), clazz).getSuperclass().getDeclaredField("data");
+            masterSecretRawField.setAccessible(true);
+            var masterSecretReflectArray = masterSecretRawField.get(masterSecretObj);
+            var message = {};
+            message["contentType"] = "keylog";
+            message["keylog"] = "CLIENT_RANDOM " + shared_1.byteArrayToString(clientRandom) + " " + shared_1.reflectionByteArrayToString(masterSecretReflectArray);
+            send(message);
+            return this.notifyHandshakeComplete(x);
+        };
+    });
 }
-
 exports.execute = execute;
 
-},{"./log":3,"./shared":5,"@babel/runtime-corejs2/core-js/object/define-property":11,"@babel/runtime-corejs2/helpers/interopRequireDefault":15}],2:[function(require,module,exports){
+},{"./log":3,"./shared":6}],2:[function(require,module,exports){
 "use strict";
-
-var _interopRequireDefault = require("@babel/runtime-corejs2/helpers/interopRequireDefault");
-
-var _getIterator2 = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/get-iterator"));
-
-var _isArray = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/array/is-array"));
-
-var _iterator2 = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/symbol/iterator"));
-
-var _symbol = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/symbol"));
-
-var _from = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/array/from"));
-
-var _defineProperty = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/object/define-property"));
-
-function _createForOfIteratorHelper(o, allowArrayLike) { var it; if (typeof _symbol["default"] === "undefined" || o[_iterator2["default"]] == null) { if ((0, _isArray["default"])(o) || (it = _unsupportedIterableToArray(o)) || allowArrayLike && o && typeof o.length === "number") { if (it) o = it; var i = 0; var F = function F() {}; return { s: F, n: function n() { if (i >= o.length) return { done: true }; return { done: false, value: o[i++] }; }, e: function e(_e) { throw _e; }, f: F }; } throw new TypeError("Invalid attempt to iterate non-iterable instance.\nIn order to be iterable, non-array objects must have a [Symbol.iterator]() method."); } var normalCompletion = true, didErr = false, err; return { s: function s() { it = (0, _getIterator2["default"])(o); }, n: function n() { var step = it.next(); normalCompletion = step.done; return step; }, e: function e(_e2) { didErr = true; err = _e2; }, f: function f() { try { if (!normalCompletion && it["return"] != null) it["return"](); } finally { if (didErr) throw err; } } }; }
-
-function _unsupportedIterableToArray(o, minLen) { if (!o) return; if (typeof o === "string") return _arrayLikeToArray(o, minLen); var n = Object.prototype.toString.call(o).slice(8, -1); if (n === "Object" && o.constructor) n = o.constructor.name; if (n === "Map" || n === "Set") return (0, _from["default"])(o); if (n === "Arguments" || /^(?:Ui|I)nt(?:8|16|32)(?:Clamped)?Array$/.test(n)) return _arrayLikeToArray(o, minLen); }
-
-function _arrayLikeToArray(arr, len) { if (len == null || len > arr.length) len = arr.length; for (var i = 0, arr2 = new Array(len); i < len; i++) { arr2[i] = arr[i]; } return arr2; }
-
-(0, _defineProperty["default"])(exports, "__esModule", {
-  value: true
-});
+Object.defineProperty(exports, "__esModule", { value: true });
 exports.execute = void 0;
-
-var log_1 = require("./log");
-
+const log_1 = require("./log");
 function findProviderInstallerFromClassloaders(currentClassLoader, backupImplementation) {
-  var providerInstallerImpl = null;
-  var classLoaders = Java.enumerateClassLoadersSync();
-
-  var _iterator = _createForOfIteratorHelper(classLoaders),
-      _step;
-
-  try {
-    for (_iterator.s(); !(_step = _iterator.n()).done;) {
-      var cl = _step.value;
-
-      try {
-        var classFactory = Java.ClassFactory.get(cl);
-        providerInstallerImpl = classFactory.use("com.google.android.gms.common.security.ProviderInstallerImpl");
-        break;
-      } catch (error) {// On error we return null
-      }
-    } //Revert the implementation to avoid an infinitloop of "Loadclass"
-
-  } catch (err) {
-    _iterator.e(err);
-  } finally {
-    _iterator.f();
-  }
-
-  currentClassLoader.loadClass.overload("java.lang.String").implementation = backupImplementation;
-  return providerInstallerImpl;
+    var providerInstallerImpl = null;
+    var classLoaders = Java.enumerateClassLoadersSync();
+    for (var cl of classLoaders) {
+        try {
+            var classFactory = Java.ClassFactory.get(cl);
+            providerInstallerImpl = classFactory.use("com.google.android.gms.common.security.ProviderInstallerImpl");
+            break;
+        }
+        catch (error) {
+            // On error we return null
+        }
+    }
+    //Revert the implementation to avoid an infinitloop of "Loadclass"
+    currentClassLoader.loadClass.overload("java.lang.String").implementation = backupImplementation;
+    return providerInstallerImpl;
 }
-
 function execute() {
-  //We have to hook multiple entrypoints: ProviderInstallerImpl and ProviderInstaller
-  Java.perform(function () {
-    //Part one: Hook ProviderInstallerImpl
-    var javaClassLoader = Java.use("java.lang.ClassLoader");
-    var backupImplementation = javaClassLoader.loadClass.overload("java.lang.String").implementation; //The classloader for ProviderInstallerImpl might not be present on startup, so we hook the loadClass method.  
+    //We have to hook multiple entrypoints: ProviderInstallerImpl and ProviderInstaller
+    Java.perform(function () {
+        //Part one: Hook ProviderInstallerImpl
+        var javaClassLoader = Java.use("java.lang.ClassLoader");
+        var backupImplementation = javaClassLoader.loadClass.overload("java.lang.String").implementation;
+        //The classloader for ProviderInstallerImpl might not be present on startup, so we hook the loadClass method.  
+        javaClassLoader.loadClass.overload("java.lang.String").implementation = function (className) {
+            let retval = this.loadClass(className);
+            if (className.endsWith("ProviderInstallerImpl")) {
+                log_1.log("Process is loading ProviderInstallerImpl");
+                var providerInstallerImpl = findProviderInstallerFromClassloaders(javaClassLoader, backupImplementation);
+                if (providerInstallerImpl === null) {
+                    log_1.log("ProviderInstallerImpl could not be found, although it has been loaded");
+                }
+                else {
+                    providerInstallerImpl.insertProvider.implementation = function () {
+                        log_1.log("ProviderinstallerImpl redirection/blocking");
+                    };
+                }
+            }
+            return retval;
+        };
+        /*
+        //Do the same for second overload of javaClassLoader
+        var backupImplementation = javaClassLoader.loadClass.overload("java.lang.String", "boolean").implementation
+        //The classloader for ProviderInstallerImpl might not be present on startup, so we hook the loadClass method.
+        javaClassLoader.loadClass.overload("java.lang.String", "boolean").implementation = function (className: string, resolve: boolean) {
+            if (className.endsWith("ProviderInstallerImpl")) {
+                log("Process is loading ProviderInstallerImpl (Method 2)")
+                var providerInstallerImpl = findProviderInstallerFromClassloaders(javaClassLoader, backupImplementation)
+                if (providerInstallerImpl === null) {
+                    log("ProviderInstallerImpl could not be found, although it has been loaded")
+                } else {
+                    providerInstallerImpl.insertProvider.implementation = function () {
+                        log("ProviderinstallerImpl redirection/blocking")
 
-    javaClassLoader.loadClass.overload("java.lang.String").implementation = function (className) {
-      var retval = this.loadClass(className);
+                    }
 
-      if (className.endsWith("ProviderInstallerImpl")) {
-        log_1.log("Process is loading ProviderInstallerImpl");
-        var providerInstallerImpl = findProviderInstallerFromClassloaders(javaClassLoader, backupImplementation);
-
-        if (providerInstallerImpl === null) {
-          log_1.log("ProviderInstallerImpl could not be found, although it has been loaded");
-        } else {
-          providerInstallerImpl.insertProvider.implementation = function () {
-            log_1.log("ProviderinstallerImpl redirection/blocking");
-          };
+                }
+            }
+            return this.loadClass(className, resolve)
         }
-      }
-
-      return retval;
-    };
-    /*
-    //Do the same for second overload of javaClassLoader
-    var backupImplementation = javaClassLoader.loadClass.overload("java.lang.String", "boolean").implementation
-    //The classloader for ProviderInstallerImpl might not be present on startup, so we hook the loadClass method.
-    javaClassLoader.loadClass.overload("java.lang.String", "boolean").implementation = function (className: string, resolve: boolean) {
-        if (className.endsWith("ProviderInstallerImpl")) {
-            log("Process is loading ProviderInstallerImpl (Method 2)")
-            var providerInstallerImpl = findProviderInstallerFromClassloaders(javaClassLoader, backupImplementation)
-            if (providerInstallerImpl === null) {
-                log("ProviderInstallerImpl could not be found, although it has been loaded")
-            } else {
-                providerInstallerImpl.insertProvider.implementation = function () {
-                    log("ProviderinstallerImpl redirection/blocking")
-                 }
-             }
+        */
+        //Part two: Hook Providerinstaller
+        try {
+            var providerInstaller = Java.use("com.google.android.gms.security.ProviderInstaller");
+            providerInstaller.installIfNeeded.implementation = function (context) {
+                log_1.log("Providerinstaller redirection/blocking");
+            };
+            providerInstaller.installIfNeededAsync.implementation = function (context, callback) {
+                log_1.log("Providerinstaller redirection/blocking");
+                callback.onProviderInstalled();
+            };
         }
-        return this.loadClass(className, resolve)
-    }
-    */
-    //Part two: Hook Providerinstaller
-
-
-    try {
-      var providerInstaller = Java.use("com.google.android.gms.security.ProviderInstaller");
-
-      providerInstaller.installIfNeeded.implementation = function (context) {
-        log_1.log("Providerinstaller redirection/blocking");
-      };
-
-      providerInstaller.installIfNeededAsync.implementation = function (context, callback) {
-        log_1.log("Providerinstaller redirection/blocking");
-        callback.onProviderInstalled();
-      };
-    } catch (error) {// As it is not available, do nothing
-    }
-  });
+        catch (error) {
+            // As it is not available, do nothing
+        }
+    });
 }
-
 exports.execute = execute;
 
-},{"./log":3,"@babel/runtime-corejs2/core-js/array/from":8,"@babel/runtime-corejs2/core-js/array/is-array":9,"@babel/runtime-corejs2/core-js/get-iterator":10,"@babel/runtime-corejs2/core-js/object/define-property":11,"@babel/runtime-corejs2/core-js/symbol":13,"@babel/runtime-corejs2/core-js/symbol/iterator":14,"@babel/runtime-corejs2/helpers/interopRequireDefault":15}],3:[function(require,module,exports){
+},{"./log":3}],3:[function(require,module,exports){
 "use strict";
-
-var _interopRequireDefault = require("@babel/runtime-corejs2/helpers/interopRequireDefault");
-
-var _defineProperty = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/object/define-property"));
-
-(0, _defineProperty["default"])(exports, "__esModule", {
-  value: true
-});
+Object.defineProperty(exports, "__esModule", { value: true });
 exports.log = void 0;
-
 function log(str) {
-  var message = {};
-  message["contentType"] = "console";
-  message["console"] = str;
-  send(message);
+    var message = {};
+    message["contentType"] = "console";
+    message["console"] = str;
+    send(message);
 }
-
 exports.log = log;
 
-},{"@babel/runtime-corejs2/core-js/object/define-property":11,"@babel/runtime-corejs2/helpers/interopRequireDefault":15}],4:[function(require,module,exports){
+},{}],4:[function(require,module,exports){
 "use strict";
-
-var _interopRequireDefault = require("@babel/runtime-corejs2/helpers/interopRequireDefault");
-
-var _parseInt2 = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/parse-int"));
-
-var _defineProperty = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/object/define-property"));
-
-(0, _defineProperty["default"])(exports, "__esModule", {
-  value: true
-});
+Object.defineProperty(exports, "__esModule", { value: true });
 exports.execute = void 0;
+const shared_1 = require("./shared");
+const log_1 = require("./log");
+/*
+SSL_ImportFD === SSL_NEW
 
-var shared_1 = require("./shared");
 
-var log_1 = require("./log");
-
+*/
+//GLOBALS
+const AF_INET = 2;
+const AF_INET6 = 100;
 function execute() {
-  var library_method_mapping = {};
-  library_method_mapping["*libssl*"] = ["SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_keylog_callback", "SSL_get_SSL_CTX"];
-  library_method_mapping["*libc*"] = ["getpeername", "getsockname", "ntohs", "ntohl"];
-  var addresses = shared_1.readAddresses(library_method_mapping);
-  var SSL_get_fd = new NativeFunction(addresses["SSL_get_fd"], "int", ["pointer"]);
-  var SSL_get_session = new NativeFunction(addresses["SSL_get_session"], "pointer", ["pointer"]);
-  var SSL_SESSION_get_id = new NativeFunction(addresses["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
-  var SSL_CTX_set_keylog_callback = new NativeFunction(addresses["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"]);
-  /**
-     * Get the session_id of SSL object and return it as a hex string.
-     * @param {!NativePointer} ssl A pointer to an SSL object.
-     * @return {dict} A string representing the session_id of the SSL object's
-     *     SSL_SESSION. For example,
-     *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
-     */
+    var library_method_mapping = {};
+    library_method_mapping["*libssl*"] = ["SSL_ImportFD", "SSL_GetSessionID"];
+    library_method_mapping["*libnspr*"] = ["PR_Write", "PR_Read", "PR_SetEnv", "PR_FileDesc2NativeHandle", "PR_GetPeerName", "PR_GetSockName"];
+    library_method_mapping["*libc*"] = ["getpeername", "getsockname", "ntohs", "ntohl"];
+    var addresses = shared_1.readAddresses(library_method_mapping);
+    var SSL_get_fd = new NativeFunction(addresses["PR_FileDesc2NativeHandle"], "int", ["pointer"]);
+    var SET_NSS_ENV = new NativeFunction(addresses["PR_SetEnv"], "pointer", ["pointer"]);
+    var SSL_SESSION_get_id = new NativeFunction(addresses["SSL_GetSessionID"], "pointer", ["pointer"]);
+    //var SSL_CTX_set_keylog_callback = new NativeFunction(addresses["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"])
+    var getsockname = new NativeFunction(Module.getExportByName('libnspr4.so', 'PR_GetSockName'), "int", ["pointer", "pointer"]);
+    var getpeername = new NativeFunction(Module.getExportByName('libnspr4.so', 'PR_GetPeerName'), "int", ["pointer", "pointer"]);
+    /**
+* Returns a dictionary of a sockfd's "src_addr", "src_port", "dst_addr", and
+* "dst_port".
+* @param {pointer} sockfd The file descriptor of the socket to inspect as PRFileDesc.
+* @param {boolean} isRead If true, the context is an SSL_read call. If
+*     false, the context is an SSL_write call.
+* @param {{ [key: string]: NativePointer}} methodAddresses Dictionary containing (at least) addresses for getpeername, getsockname, ntohs and ntohl
+* @return {{ [key: string]: string | number }} Dictionary of sockfd's "src_addr", "src_port", "dst_addr",
+*     and "dst_port".
 
-  function getSslSessionId(ssl) {
-    var session = SSL_get_session(ssl);
+  PRStatus PR_GetPeerName(
+PRFileDesc *fd,
+PRNetAddr *addr);
 
-    if (session.isNull()) {
-      log_1.log("Session is null");
-      return 0;
-    }
+PRStatus PR_GetSockName(
+PRFileDesc *fd,
+PRNetAddr *addr);
 
-    var len_pointer = Memory.alloc(4);
-    var p = SSL_SESSION_get_id(session, len_pointer);
-    var len = len_pointer.readU32();
-    var session_id = "";
+PRStatus PR_NetAddrToString(
+const PRNetAddr *addr,
+char *string,
+PRUint32 size);
 
-    for (var i = 0; i < len; i++) {
-      // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
-      // it to session_id.
-      session_id += ("0" + p.add(i).readU8().toString(16).toUpperCase()).substr(-2);
-    }
 
-    return session_id;
-  }
+union PRNetAddr {
+struct {
+   PRUint16 family;
+   char data[14];
+} raw;
+struct {
+   PRUint16 family;
+   PRUint16 port;
+   PRUint32 ip;
+   char pad[8];
+} inet;
+#if defined(_PR_INET6)
+struct {
+   PRUint16 family;
+   PRUint16 port;
+   PRUint32 flowinfo;
+   PRIPv6Addr ip;
+} ipv6;
+#endif // defined(_PR_INET6)
+};
 
-  Interceptor.attach(addresses["SSL_read"], {
-    onEnter: function onEnter(args) {
-      var message = shared_1.getPortsAndAddresses(SSL_get_fd(args[0]), true, addresses);
-      message["ssl_session_id"] = getSslSessionId(args[0]);
-      message["function"] = "SSL_read";
-      this.message = message;
-      this.buf = args[1];
-    },
-    onLeave: function onLeave(retval) {
-      retval |= 0; // Cast retval to 32-bit integer.
+typedef union PRNetAddr PRNetAddr;
 
-      if (retval <= 0) {
-        return;
-      }
-
-      this.message["contentType"] = "datalog";
-      send(this.message, this.buf.readByteArray(retval));
-    }
-  });
-  Interceptor.attach(addresses["SSL_write"], {
-    onEnter: function onEnter(args) {
-      var message = shared_1.getPortsAndAddresses(SSL_get_fd(args[0]), false, addresses);
-      message["ssl_session_id"] = getSslSessionId(args[0]);
-      message["function"] = "SSL_write";
-      message["contentType"] = "datalog";
-      send(message, args[1].readByteArray((0, _parseInt2["default"])(args[2])));
-    },
-    onLeave: function onLeave(retval) {}
-  });
-  Interceptor.attach(addresses["SSL_new"], {
-    onEnter: function onEnter(args) {
-      var keylog_callback = new NativeCallback(function (ctxPtr, linePtr) {
+*/
+    function getPortsAndAddressesFromNSS(sockfd, isRead, methodAddresses) {
+        //var getpeername = new NativeFunction(methodAddresses["PR_GetPeerName"], "int", ["pointer", "pointer"])
+        //var getsockname = new NativeFunction(methodAddresses["PR_GetSockName"], "int", ["pointer", "pointer"])
+        var ntohs = new NativeFunction(methodAddresses["ntohs"], "uint16", ["uint16"]);
+        var ntohl = new NativeFunction(methodAddresses["ntohl"], "uint32", ["uint32"]);
         var message = {};
-        message["contentType"] = "keylog";
-        message["keylog"] = linePtr.readCString();
-        send(message);
-      }, "void", ["pointer", "pointer"]);
-      SSL_CTX_set_keylog_callback(args[0], keylog_callback);
+        var addrType = Memory.alloc(2); // PRUint16 is a 2 byte (16 bit) value on all plattforms
+        //var prNetAddr = Memory.alloc(Process.pointerSize)
+        var addrlen = Memory.alloc(4);
+        var addr = Memory.alloc(128);
+        var src_dst = ["src", "dst"];
+        log_1.log("reached1");
+        for (var i = 0; i < src_dst.length; i++) {
+            addrlen.writeU32(128);
+            if ((src_dst[i] == "src") !== isRead) {
+                log_1.log("reached2");
+                getsockname(sockfd, addr);
+            }
+            else {
+                log_1.log("reached3");
+                getpeername(sockfd, addr);
+            }
+            if (addr.readU16() == AF_INET) {
+                message[src_dst[i] + "_port"] = ntohs(addr.add(2).readU16());
+                message[src_dst[i] + "_addr"] = ntohl(addr.add(4).readU32());
+                message["ss_family"] = "AF_INET";
+            }
+            else if (addr.readU16() == AF_INET6) {
+                message[src_dst[i] + "_port"] = ntohs(addr.add(2).readU16());
+                message[src_dst[i] + "_addr"] = "";
+                var ipv6_addr = addr.add(8);
+                for (var offset = 0; offset < 16; offset += 1) {
+                    message[src_dst[i] + "_addr"] += ("0" + ipv6_addr.add(offset).readU8().toString(16).toUpperCase()).substr(-2);
+                }
+                if (message[src_dst[i] + "_addr"].toString().indexOf("00000000000000000000FFFF") === 0) {
+                    message[src_dst[i] + "_addr"] = ntohl(ipv6_addr.add(12).readU32());
+                    message["ss_family"] = "AF_INET";
+                }
+                else {
+                    message["ss_family"] = "AF_INET6";
+                }
+            }
+            else {
+                throw "Only supporting IPv4/6";
+            }
+        }
+        return message;
     }
-  });
+    /**
+       * Get the session_id of SSL object and return it as a hex string.
+       * @param {!NativePointer} ssl A pointer to an SSL object.
+       * @return {dict} A string representing the session_id of the SSL object's
+       *     SSL_SESSION. For example,
+       *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
+       *
+       * On NSS the return type of SSL_GetSessionID is a SECItem:
+            typedef enum {
+       * siBuffer = 0,
+       * siClearDataBuffer = 1,
+       * siCipherDataBuffer = 2,
+       * siDERCertBuffer = 3,
+       * siEncodedCertBuffer = 4,
+       * siDERNameBuffer = 5,
+       * siEncodedNameBuffer = 6,
+       * siAsciiNameString = 7,
+       * siAsciiString = 8,
+       * siDEROID = 9,
+       * siUnsignedInteger = 10,
+       * siUTCTime = 11,
+       * siGeneralizedTime = 12,
+       * siVisibleString = 13,
+       * siUTF8String = 14,
+       * siBMPString = 15
+       * } SECItemType;
+       *
+       * typedef struct SECItemStr SECItem;
+       *
+       * struct SECItemStr {
+       * SECItemType type;
+       * unsigned char *data;
+       * unsigned int len;
+       * };
+       *
+       *
+       */
+    function getSslSessionId(sslSessionIdSECItem) {
+        if (sslSessionIdSECItem == null) {
+            log_1.log("Session is null");
+            return 0;
+        }
+        var session_id = "";
+        /*var a = Memory.dup(sslSessionIdSECItem, 32)
+        log(hexdump(a))*/
+        //var type_field = sslSessionIdSECItem.readByteArray(1) // enum should be the same size as char => 1 byte
+        //session_id = sslSessionIdSECItem.add(1+Process.pointerSize).readPointer().readUtf8String() || "";
+        var session_id_ptr = sslSessionIdSECItem.add(8).readPointer();
+        var len_tmp = sslSessionIdSECItem.add(16).readU32();
+        var len = (len_tmp > 32) ? 32 : len_tmp;
+        var session_id = "";
+        var b = Memory.dup(sslSessionIdSECItem, 32);
+        /*log(hexdump(b))
+        log("lenght value")
+        log(len.toString());*/
+        for (var i = 8; i < len; i++) {
+            // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
+            // it to session_id.
+            session_id +=
+                ("0" + session_id_ptr.add(i).readU8().toString(16).toUpperCase()).substr(-2);
+        }
+        return session_id;
+    }
+    Interceptor.attach(addresses["PR_Read"], {
+        onEnter: function (args) {
+            this.fd = args[0];
+            this.buf = args[1];
+        },
+        onLeave: function (retval) {
+            //log("write")
+            retval |= 0; // Cast retval to 32-bit integer.
+            if (retval <= 0) {
+                return;
+            }
+            var addr = Memory.alloc(8);
+            getpeername(this.fd, addr);
+            if (addr.readU16() == 2 || addr.readU16() == 10 || addr.readU16() == 100) {
+                var message = getPortsAndAddressesFromNSS(this.fd, true, addresses);
+                message["ssl_session_id"] = getSslSessionId(this.fd);
+                message["function"] = "NSS_read";
+                this.message = message;
+                this.message["contentType"] = "datalog";
+                send(this.message, this.buf.readByteArray(retval));
+            }
+        }
+    });
+    Interceptor.attach(addresses["PR_Write"], {
+        onEnter: function (args) {
+            //log("write")
+            var addr = Memory.alloc(8);
+            getsockname(args[0], addr);
+            if (addr.readU16() == 2 || addr.readU16() == 10 || addr.readU16() == 100) {
+                var message = getPortsAndAddressesFromNSS(args[0], false, addresses);
+                message["ssl_session_id"] = getSslSessionId(args[0]);
+                message["function"] = "NSS_write";
+                message["contentType"] = "datalog";
+                send(message, args[1].readByteArray(parseInt(args[2])));
+            }
+        },
+        onLeave: function (retval) {
+        }
+    });
+    Interceptor.attach(addresses["SSL_ImportFD"], {
+        onEnter: function (args) {
+            var keylog = Memory.allocUtf8String("SSLKEYLOGFILE=keylogfile");
+            SET_NSS_ENV(keylog);
+        }
+    });
 }
-
 exports.execute = execute;
 
-},{"./log":3,"./shared":5,"@babel/runtime-corejs2/core-js/object/define-property":11,"@babel/runtime-corejs2/core-js/parse-int":12,"@babel/runtime-corejs2/helpers/interopRequireDefault":15}],5:[function(require,module,exports){
+},{"./log":3,"./shared":6}],5:[function(require,module,exports){
 "use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.execute = void 0;
+const shared_1 = require("./shared");
+const log_1 = require("./log");
+function execute() {
+    var library_method_mapping = {};
+    library_method_mapping["*libssl*"] = ["SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_keylog_callback", "SSL_get_SSL_CTX"];
+    library_method_mapping["*libc*"] = ["getpeername", "getsockname", "ntohs", "ntohl"];
+    var addresses = shared_1.readAddresses(library_method_mapping);
+    var SSL_get_fd = new NativeFunction(addresses["SSL_get_fd"], "int", ["pointer"]);
+    var SSL_get_session = new NativeFunction(addresses["SSL_get_session"], "pointer", ["pointer"]);
+    var SSL_SESSION_get_id = new NativeFunction(addresses["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
+    var SSL_CTX_set_keylog_callback = new NativeFunction(addresses["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"]);
+    /**
+       * Get the session_id of SSL object and return it as a hex string.
+       * @param {!NativePointer} ssl A pointer to an SSL object.
+       * @return {dict} A string representing the session_id of the SSL object's
+       *     SSL_SESSION. For example,
+       *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
+       */
+    function getSslSessionId(ssl) {
+        var session = SSL_get_session(ssl);
+        if (session.isNull()) {
+            log_1.log("Session is null");
+            return 0;
+        }
+        var len_pointer = Memory.alloc(4);
+        var p = SSL_SESSION_get_id(session, len_pointer);
+        var len = len_pointer.readU32();
+        var session_id = "";
+        for (var i = 0; i < len; i++) {
+            // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
+            // it to session_id.
+            session_id +=
+                ("0" + p.add(i).readU8().toString(16).toUpperCase()).substr(-2);
+        }
+        return session_id;
+    }
+    Interceptor.attach(addresses["SSL_read"], {
+        onEnter: function (args) {
+            var message = shared_1.getPortsAndAddresses(SSL_get_fd(args[0]), true, addresses);
+            message["ssl_session_id"] = getSslSessionId(args[0]);
+            message["function"] = "SSL_read";
+            this.message = message;
+            this.buf = args[1];
+        },
+        onLeave: function (retval) {
+            retval |= 0; // Cast retval to 32-bit integer.
+            if (retval <= 0) {
+                return;
+            }
+            this.message["contentType"] = "datalog";
+            send(this.message, this.buf.readByteArray(retval));
+        }
+    });
+    Interceptor.attach(addresses["SSL_write"], {
+        onEnter: function (args) {
+            var message = shared_1.getPortsAndAddresses(SSL_get_fd(args[0]), false, addresses);
+            message["ssl_session_id"] = getSslSessionId(args[0]);
+            message["function"] = "SSL_write";
+            message["contentType"] = "datalog";
+            send(message, args[1].readByteArray(parseInt(args[2])));
+        },
+        onLeave: function (retval) {
+        }
+    });
+    Interceptor.attach(addresses["SSL_new"], {
+        onEnter: function (args) {
+            var keylog_callback = new NativeCallback(function (ctxPtr, linePtr) {
+                var message = {};
+                message["contentType"] = "keylog";
+                message["keylog"] = linePtr.readCString();
+                send(message);
+            }, "void", ["pointer", "pointer"]);
+            SSL_CTX_set_keylog_callback(args[0], keylog_callback);
+        }
+    });
+}
+exports.execute = execute;
+
+},{"./log":3,"./shared":6}],6:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.getAttribute = exports.byteArrayToNumber = exports.reflectionByteArrayToString = exports.byteArrayToString = exports.getPortsAndAddresses = exports.readAddresses = void 0;
+const log_1 = require("./log");
 /**
  * This file contains methods which are shared for reading
  * secrets/data from different libraries. These methods are
  * indipendent from the implementation of ssl/tls, but they depend
  * on libc.
  */
-
-var _interopRequireDefault = require("@babel/runtime-corejs2/helpers/interopRequireDefault");
-
-var _from = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/array/from"));
-
-var _defineProperty = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/object/define-property"));
-
-(0, _defineProperty["default"])(exports, "__esModule", {
-  value: true
-});
-exports.getAttribute = exports.byteArrayToNumber = exports.reflectionByteArrayToString = exports.byteArrayToString = exports.getPortsAndAddresses = exports.readAddresses = void 0; //GLOBALS
-
-var AF_INET = 2;
-var AF_INET6 = 10;
+//GLOBALS
+const AF_INET = 2;
+const AF_INET6 = 10;
 /**
  * Read the addresses for the given methods from the given modules
  * @param {{[key: string]: Array<String> }} library_method_mapping A string indexed list of arrays, mapping modules to methods
  * @return {{[key: string]: NativePointer }} A string indexed list of NativePointers, which point to the respective methods
  */
-
 function readAddresses(library_method_mapping) {
-  var resolver = new ApiResolver("module");
-  var addresses = {};
-
-  var _loop = function _loop(library_name) {
-    library_method_mapping[library_name].forEach(function (method) {
-      var matches = resolver.enumerateMatches("exports:" + library_name + "!" + method);
-
-      if (matches.length == 0) {
-        throw "Could not find " + library_name + "!" + method;
-      } else {
-        send("Found " + library_name + "!" + method);
-      }
-
-      if (matches.length == 0) {
-        throw "Could not find " + library_name + "!" + method;
-      } else if (matches.length != 1) {
-        // Sometimes Frida returns duplicates.
-        var address = null;
-        var s = "";
-        var duplicates_only = true;
-
-        for (var k = 0; k < matches.length; k++) {
-          if (s.length != 0) {
-            s += ", ";
-          }
-
-          s += matches[k].name + "@" + matches[k].address;
-
-          if (address == null) {
-            address = matches[k].address;
-          } else if (!address.equals(matches[k].address)) {
-            duplicates_only = false;
-          }
-        }
-
-        if (!duplicates_only) {
-          throw "More than one match found for " + library_name + "!" + method + ": " + s;
-        }
-      }
-
-      addresses[method.toString()] = matches[0].address;
-    });
-  };
-
-  for (var library_name in library_method_mapping) {
-    _loop(library_name);
-  }
-
-  return addresses;
+    var resolver = new ApiResolver("module");
+    var addresses = {};
+    for (let library_name in library_method_mapping) {
+        library_method_mapping[library_name].forEach(function (method) {
+            var matches = resolver.enumerateMatches("exports:" + library_name + "!" + method);
+            if (matches.length == 0) {
+                throw "Could not find " + library_name + "!" + method;
+            }
+            else {
+                send("Found " + library_name + "!" + method);
+            }
+            if (matches.length == 0) {
+                throw "Could not find " + library_name + "!" + method;
+            }
+            else if (matches.length != 1) {
+                // Sometimes Frida returns duplicates.
+                var address = null;
+                var s = "";
+                var duplicates_only = true;
+                for (var k = 0; k < matches.length; k++) {
+                    if (s.length != 0) {
+                        s += ", ";
+                    }
+                    s += matches[k].name + "@" + matches[k].address;
+                    if (address == null) {
+                        address = matches[k].address;
+                    }
+                    else if (!address.equals(matches[k].address)) {
+                        duplicates_only = false;
+                    }
+                }
+                if (!duplicates_only) {
+                    throw "More than one match found for " + library_name + "!" + method + ": " +
+                        s;
+                }
+            }
+            addresses[method.toString()] = matches[0].address;
+        });
+    }
+    return addresses;
 }
-
 exports.readAddresses = readAddresses;
 /**
 * Returns a dictionary of a sockfd's "src_addr", "src_port", "dst_addr", and
@@ -447,101 +571,94 @@ exports.readAddresses = readAddresses;
 * @return {{ [key: string]: string | number }} Dictionary of sockfd's "src_addr", "src_port", "dst_addr",
 *     and "dst_port".
 */
-
 function getPortsAndAddresses(sockfd, isRead, methodAddresses) {
-  var getpeername = new NativeFunction(methodAddresses["getpeername"], "int", ["int", "pointer", "pointer"]);
-  var getsockname = new NativeFunction(methodAddresses["getsockname"], "int", ["int", "pointer", "pointer"]);
-  var ntohs = new NativeFunction(methodAddresses["ntohs"], "uint16", ["uint16"]);
-  var ntohl = new NativeFunction(methodAddresses["ntohl"], "uint32", ["uint32"]);
-  var message = {};
-  var addrlen = Memory.alloc(4);
-  var addr = Memory.alloc(128);
-  var src_dst = ["src", "dst"];
-
-  for (var i = 0; i < src_dst.length; i++) {
-    addrlen.writeU32(128);
-
-    if (src_dst[i] == "src" !== isRead) {
-      getsockname(sockfd, addr, addrlen);
-    } else {
-      getpeername(sockfd, addr, addrlen);
+    log_1.log("using strange");
+    var getpeername = new NativeFunction(methodAddresses["getpeername"], "int", ["int", "pointer", "pointer"]);
+    var getsockname = new NativeFunction(methodAddresses["getsockname"], "int", ["int", "pointer", "pointer"]);
+    var ntohs = new NativeFunction(methodAddresses["ntohs"], "uint16", ["uint16"]);
+    var ntohl = new NativeFunction(methodAddresses["ntohl"], "uint32", ["uint32"]);
+    var message = {};
+    var addrlen = Memory.alloc(4);
+    var addr = Memory.alloc(128);
+    var src_dst = ["src", "dst"];
+    for (var i = 0; i < src_dst.length; i++) {
+        addrlen.writeU32(128);
+        if ((src_dst[i] == "src") !== isRead) {
+            log_1.log("writing socket");
+            log_1.log(sockfd.toString());
+            getsockname(sockfd, addr, addrlen);
+        }
+        else {
+            log_1.log("reading socket");
+            log_1.log(sockfd.toString());
+            getpeername(sockfd, addr, addrlen);
+        }
+        if (addr.readU16() == AF_INET) {
+            message[src_dst[i] + "_port"] = ntohs(addr.add(2).readU16());
+            message[src_dst[i] + "_addr"] = ntohl(addr.add(4).readU32());
+            message["ss_family"] = "AF_INET";
+        }
+        else if (addr.readU16() == AF_INET6) {
+            message[src_dst[i] + "_port"] = ntohs(addr.add(2).readU16());
+            message[src_dst[i] + "_addr"] = "";
+            var ipv6_addr = addr.add(8);
+            for (var offset = 0; offset < 16; offset += 1) {
+                message[src_dst[i] + "_addr"] += ("0" + ipv6_addr.add(offset).readU8().toString(16).toUpperCase()).substr(-2);
+            }
+            if (message[src_dst[i] + "_addr"].toString().indexOf("00000000000000000000FFFF") === 0) {
+                message[src_dst[i] + "_addr"] = ntohl(ipv6_addr.add(12).readU32());
+                message["ss_family"] = "AF_INET";
+            }
+            else {
+                message["ss_family"] = "AF_INET6";
+            }
+        }
+        else {
+            log_1.log("addr.readU16() ==");
+            log_1.log(addr.readU16().toString());
+            throw "Only supporting IPv4/6";
+        }
     }
-
-    if (addr.readU16() == AF_INET) {
-      message[src_dst[i] + "_port"] = ntohs(addr.add(2).readU16());
-      message[src_dst[i] + "_addr"] = ntohl(addr.add(4).readU32());
-      message["ss_family"] = "AF_INET";
-    } else if (addr.readU16() == AF_INET6) {
-      message[src_dst[i] + "_port"] = ntohs(addr.add(2).readU16());
-      message[src_dst[i] + "_addr"] = "";
-      var ipv6_addr = addr.add(8);
-
-      for (var offset = 0; offset < 16; offset += 1) {
-        message[src_dst[i] + "_addr"] += ("0" + ipv6_addr.add(offset).readU8().toString(16).toUpperCase()).substr(-2);
-      }
-
-      if (message[src_dst[i] + "_addr"].toString().indexOf("00000000000000000000FFFF") === 0) {
-        message[src_dst[i] + "_addr"] = ntohl(ipv6_addr.add(12).readU32());
-        message["ss_family"] = "AF_INET";
-      } else {
-        message["ss_family"] = "AF_INET6";
-      }
-    } else {
-      throw "Only supporting IPv4/6";
-    }
-  }
-
-  return message;
+    return message;
 }
-
 exports.getPortsAndAddresses = getPortsAndAddresses;
 /**
  * Convert a Java byte array to string
  * @param byteArray The array to convert
  * @returns {string} The resulting string
  */
-
 function byteArrayToString(byteArray) {
-  return (0, _from["default"])(byteArray, function (_byte) {
-    return ('0' + (_byte & 0xFF).toString(16)).slice(-2);
-  }).join('');
+    return Array.from(byteArray, function (byte) {
+        return ('0' + (byte & 0xFF).toString(16)).slice(-2);
+    }).join('');
 }
-
 exports.byteArrayToString = byteArrayToString;
 /**
  * Convert a Java Reflection array to string
  * @param byteArray The array to convert
  * @returns {string} The resulting string
  */
-
 function reflectionByteArrayToString(byteArray) {
-  var result = "";
-  var arrayReflect = Java.use("java.lang.reflect.Array");
-
-  for (var i = 0; i < arrayReflect.getLength(byteArray); i++) {
-    result += ('0' + (arrayReflect.get(byteArray, i) & 0xFF).toString(16)).slice(-2);
-  }
-
-  return result;
+    var result = "";
+    var arrayReflect = Java.use("java.lang.reflect.Array");
+    for (var i = 0; i < arrayReflect.getLength(byteArray); i++) {
+        result += ('0' + (arrayReflect.get(byteArray, i) & 0xFF).toString(16)).slice(-2);
+    }
+    return result;
 }
-
 exports.reflectionByteArrayToString = reflectionByteArrayToString;
 /**
  * Convert a Java byte arry to number (Big Endian)
  * @param byteArray The array to convert
  * @returns {number} The resulting number
  */
-
 function byteArrayToNumber(byteArray) {
-  var value = 0;
-
-  for (var i = 0; i < byteArray.length; i++) {
-    value = value * 256 + (byteArray[i] & 0xFF);
-  }
-
-  return value;
+    var value = 0;
+    for (var i = 0; i < byteArray.length; i++) {
+        value = (value * 256) + (byteArray[i] & 0xFF);
+    }
+    return value;
 }
-
 exports.byteArrayToNumber = byteArrayToNumber;
 /**
  * Access an attribute of a Java Class
@@ -549,134 +666,91 @@ exports.byteArrayToNumber = byteArrayToNumber;
  * @param fieldName The name of the attribute
  * @returns The value of the attribute of the requested field
  */
-
 function getAttribute(Instance, fieldName) {
-  var clazz = Java.use("java.lang.Class");
-  var field = Java.cast(Instance.getClass(), clazz).getDeclaredField(fieldName);
-  field.setAccessible(true);
-  return field.get(Instance);
+    var clazz = Java.use("java.lang.Class");
+    var field = Java.cast(Instance.getClass(), clazz).getDeclaredField(fieldName);
+    field.setAccessible(true);
+    return field.get(Instance);
 }
-
 exports.getAttribute = getAttribute;
 
-},{"@babel/runtime-corejs2/core-js/array/from":8,"@babel/runtime-corejs2/core-js/object/define-property":11,"@babel/runtime-corejs2/helpers/interopRequireDefault":15}],6:[function(require,module,exports){
+},{"./log":3}],7:[function(require,module,exports){
 "use strict";
-
-var _interopRequireDefault = require("@babel/runtime-corejs2/helpers/interopRequireDefault");
-
-var _getIterator2 = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/get-iterator"));
-
-var _isArray = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/array/is-array"));
-
-var _iterator2 = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/symbol/iterator"));
-
-var _symbol = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/symbol"));
-
-var _from = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/array/from"));
-
-var _defineProperty = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/object/define-property"));
-
-function _createForOfIteratorHelper(o, allowArrayLike) { var it; if (typeof _symbol["default"] === "undefined" || o[_iterator2["default"]] == null) { if ((0, _isArray["default"])(o) || (it = _unsupportedIterableToArray(o)) || allowArrayLike && o && typeof o.length === "number") { if (it) o = it; var i = 0; var F = function F() {}; return { s: F, n: function n() { if (i >= o.length) return { done: true }; return { done: false, value: o[i++] }; }, e: function e(_e) { throw _e; }, f: F }; } throw new TypeError("Invalid attempt to iterate non-iterable instance.\nIn order to be iterable, non-array objects must have a [Symbol.iterator]() method."); } var normalCompletion = true, didErr = false, err; return { s: function s() { it = (0, _getIterator2["default"])(o); }, n: function n() { var step = it.next(); normalCompletion = step.done; return step; }, e: function e(_e2) { didErr = true; err = _e2; }, f: function f() { try { if (!normalCompletion && it["return"] != null) it["return"](); } finally { if (didErr) throw err; } } }; }
-
-function _unsupportedIterableToArray(o, minLen) { if (!o) return; if (typeof o === "string") return _arrayLikeToArray(o, minLen); var n = Object.prototype.toString.call(o).slice(8, -1); if (n === "Object" && o.constructor) n = o.constructor.name; if (n === "Map" || n === "Set") return (0, _from["default"])(o); if (n === "Arguments" || /^(?:Ui|I)nt(?:8|16|32)(?:Clamped)?Array$/.test(n)) return _arrayLikeToArray(o, minLen); }
-
-function _arrayLikeToArray(arr, len) { if (len == null || len > arr.length) len = arr.length; for (var i = 0, arr2 = new Array(len); i < len; i++) { arr2[i] = arr[i]; } return arr2; }
-
-(0, _defineProperty["default"])(exports, "__esModule", {
-  value: true
-});
-
-var openssl_boringssl_1 = require("./openssl_boringssl");
-
-var wolfssl_1 = require("./wolfssl");
-
-var bouncycastle_1 = require("./bouncycastle");
-
-var conscrypt_1 = require("./conscrypt");
-
-var log_1 = require("./log");
-
+Object.defineProperty(exports, "__esModule", { value: true });
+const openssl_boringssl_1 = require("./openssl_boringssl");
+const wolfssl_1 = require("./wolfssl");
+const bouncycastle_1 = require("./bouncycastle");
+const conscrypt_1 = require("./conscrypt");
+const nss_1 = require("./nss");
+const log_1 = require("./log");
 var moduleNames = [];
-Process.enumerateModules().forEach(function (item) {
-  return moduleNames.push(item.name);
-});
-
-for (var _i = 0, _moduleNames = moduleNames; _i < _moduleNames.length; _i++) {
-  var mod = _moduleNames[_i];
-
-  if (mod.indexOf("libssl.so") >= 0) {
-    log_1.log("OpenSSL/BoringSSL detected.");
-    openssl_boringssl_1.execute();
-    break;
-  }
-}
-
-for (var _i2 = 0, _moduleNames2 = moduleNames; _i2 < _moduleNames2.length; _i2++) {
-  var mod = _moduleNames2[_i2];
-
-  if (mod.indexOf("libwolfssl.so") >= 0) {
-    log_1.log("WolfSSL detected.");
-    wolfssl_1.execute();
-    break;
-  }
-}
-
-if (Java.available) {
-  Java.perform(function () {
-    try {
-      //If we can load a class of spongycastle, we know its present and we have to hook it
-      var testLoad = Java.use("org.spongycastle.jsse.provider.ProvSSLSocketDirect");
-      log_1.log("Bouncycastle/Spongycastle detected.");
-      bouncycastle_1.execute();
-    } catch (error) {//On error, just do nothing
-    }
-  });
-} //Hook the dynamic loader, in case library gets loaded at a later point in time
-//check wether we are on android or linux
-
-
-try {
-  var dl_exports = Process.getModuleByName("libdl.so").enumerateExports();
-  var dlopen = "dlopen";
-
-  var _iterator = _createForOfIteratorHelper(dl_exports),
-      _step;
-
-  try {
-    for (_iterator.s(); !(_step = _iterator.n()).done;) {
-      var ex = _step.value;
-
-      if (ex.name === "android_dlopen_ext") {
-        dlopen = "android_dlopen_ext";
+Process.enumerateModules().forEach(item => moduleNames.push(item.name));
+for (var mod of moduleNames) {
+    if (mod.indexOf("libssl.so") >= 0) {
+        log_1.log("OpenSSL/BoringSSL detected.");
+        openssl_boringssl_1.execute();
         break;
-      }
     }
-  } catch (err) {
-    _iterator.e(err);
-  } finally {
-    _iterator.f();
-  }
-
-  Interceptor.attach(Module.getExportByName("libdl.so", dlopen), {
-    onEnter: function onEnter(args) {
-      this.moduleName = args[0].readCString();
-    },
-    onLeave: function onLeave(retval) {
-      if (this.moduleName != undefined) {
-        if (this.moduleName.endsWith("libssl.so")) {
-          log_1.log("OpenSSL/BoringSSL detected.");
-          openssl_boringssl_1.execute();
-        } else if (this.moduleName.endsWith("libwolfssl.so")) {
-          log_1.log("WolfSSL detected.");
-          wolfssl_1.execute();
-        }
-      }
-    }
-  });
-} catch (error) {
-  log_1.log("No dynamic loader present for hooking.");
 }
-
+for (var mod of moduleNames) {
+    if (mod.indexOf("libwolfssl.so") >= 0) {
+        log_1.log("WolfSSL detected.");
+        wolfssl_1.execute();
+        break;
+    }
+}
+for (var mod of moduleNames) {
+    if (mod.indexOf("libnspr") >= 0) {
+        log_1.log("NSS SSL detected.");
+        nss_1.execute();
+        break;
+    }
+}
+if (Java.available) {
+    Java.perform(function () {
+        try {
+            //If we can load a class of spongycastle, we know its present and we have to hook it
+            var testLoad = Java.use("org.spongycastle.jsse.provider.ProvSSLSocketDirect");
+            log_1.log("Bouncycastle/Spongycastle detected.");
+            bouncycastle_1.execute();
+        }
+        catch (error) {
+            //On error, just do nothing
+        }
+    });
+}
+//Hook the dynamic loader, in case library gets loaded at a later point in time
+//check wether we are on android or linux
+try {
+    let dl_exports = Process.getModuleByName("libdl.so").enumerateExports();
+    var dlopen = "dlopen";
+    for (var ex of dl_exports) {
+        if (ex.name === "android_dlopen_ext") {
+            dlopen = "android_dlopen_ext";
+            break;
+        }
+    }
+    Interceptor.attach(Module.getExportByName("libdl.so", dlopen), {
+        onEnter: function (args) {
+            this.moduleName = args[0].readCString();
+        },
+        onLeave: function (retval) {
+            if (this.moduleName != undefined) {
+                if (this.moduleName.endsWith("libssl.so")) {
+                    log_1.log("OpenSSL/BoringSSL detected.");
+                    openssl_boringssl_1.execute();
+                }
+                else if (this.moduleName.endsWith("libwolfssl.so")) {
+                    log_1.log("WolfSSL detected.");
+                    wolfssl_1.execute();
+                }
+            }
+        }
+    });
+}
+catch (error) {
+    log_1.log("No dynamic loader present for hooking.");
+}
 if (Java.available) {
   Java.perform(function () {
     //Conscrypt needs early instrumentation as we block the provider installation
@@ -727,160 +801,180 @@ if (Java.available) {
       }
     };
   });
+
+    Java.perform(function () {
+        //Conscrypt needs early instrumentation as we block the provider installation
+        var Security = Java.use("java.security.Security");
+        if (Security.getProviders().toString().includes("GmsCore_OpenSSL")) {
+            log_1.log("WARNING: PID " + Process.id + " Detected GmsCore_OpenSSL Provider. This can be a bit unstable. If you having issues, rerun with -spawn for early instrumentation. Trying to remove it to fall back on default Provider");
+            Security.removeProvider("GmsCore_OpenSSL");
+            log_1.log("Removed GmsCore_OpenSSL");
+        }
+        //As the classloader responsible for loading ProviderInstaller sometimes is not present from the beginning on,
+        //we always have to watch the classloader activity
+        conscrypt_1.execute();
+        //Now do the same for Ssl_guard
+        if (Security.getProviders().toString().includes("Ssl_Guard")) {
+            log_1.log("Ssl_Guard deteced, removing it to fall back on default Provider");
+            Security.removeProvider("Ssl_Guard");
+            log_1.log("Removed Ssl_Guard");
+        }
+        //Same thing for Conscrypt provider which has been manually inserted (not by providerinstaller)
+        if (Security.getProviders().toString().includes("Conscrypt version")) {
+            log_1.log("Conscrypt detected");
+            Security.removeProvider("Conscrypt");
+            log_1.log("Removed Conscrypt");
+        }
+        log_1.log("Remaining: " + Security.getProviders().toString());
+        //Hook insertProviderAt/addprovider for dynamic provider blocking
+        Security.insertProviderAt.implementation = function (provider, position) {
+            if (provider.getName().includes("Conscrypt") || provider.getName().includes("Ssl_Guard") || provider.getName().includes("GmsCore_OpenSSL")) {
+                log_1.log("Blocking provider registration of " + provider.getName());
+                return position;
+            }
+            else {
+                return this.insertProviderAt(provider, position);
+            }
+        };
+        //Same for addProvider
+        Security.insertProviderAt.implementation = function (provider) {
+            if (provider.getName().includes("Conscrypt") || provider.getName().includes("Ssl_Guard") || provider.getName().includes("GmsCore_OpenSSL")) {
+                log_1.log("Blocking provider registration of " + provider.getName());
+                return 1;
+            }
+            else {
+                return this.addProvider(provider);
+            }
+        };
+    });
 }
 
-},{"./bouncycastle":1,"./conscrypt":2,"./log":3,"./openssl_boringssl":4,"./wolfssl":7,"@babel/runtime-corejs2/core-js/array/from":8,"@babel/runtime-corejs2/core-js/array/is-array":9,"@babel/runtime-corejs2/core-js/get-iterator":10,"@babel/runtime-corejs2/core-js/object/define-property":11,"@babel/runtime-corejs2/core-js/symbol":13,"@babel/runtime-corejs2/core-js/symbol/iterator":14,"@babel/runtime-corejs2/helpers/interopRequireDefault":15}],7:[function(require,module,exports){
+},{"./bouncycastle":1,"./conscrypt":2,"./log":3,"./nss":4,"./openssl_boringssl":5,"./wolfssl":8}],8:[function(require,module,exports){
 "use strict";
-
-var _interopRequireDefault = require("@babel/runtime-corejs2/helpers/interopRequireDefault");
-
-var _parseInt2 = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/parse-int"));
-
-var _defineProperty = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/object/define-property"));
-
-(0, _defineProperty["default"])(exports, "__esModule", {
-  value: true
-});
+Object.defineProperty(exports, "__esModule", { value: true });
 exports.execute = void 0;
-
-var shared_1 = require("./shared");
-
-var log_1 = require("./log");
-
+const shared_1 = require("./shared");
+const log_1 = require("./log");
 function execute() {
-  var library_method_mapping = {};
-  library_method_mapping["*libwolfssl*"] = ["wolfSSL_read", "wolfSSL_write", "wolfSSL_get_fd", "wolfSSL_get_session", "wolfSSL_connect", "wolfSSL_SESSION_get_master_key", "wolfSSL_get_client_random", "wolfSSL_KeepArrays"];
-  library_method_mapping["*libc*"] = ["getpeername", "getsockname", "ntohs", "ntohl"];
-  var addresses = shared_1.readAddresses(library_method_mapping);
-  var wolfSSL_get_fd = new NativeFunction(addresses["wolfSSL_get_fd"], "int", ["pointer"]);
-  var wolfSSL_get_session = new NativeFunction(addresses["wolfSSL_get_session"], "pointer", ["pointer"]);
-  var wolfSSL_SESSION_get_master_key = new NativeFunction(addresses["wolfSSL_SESSION_get_master_key"], "int", ["pointer", "pointer", "int"]);
-  var wolfSSL_get_client_random = new NativeFunction(addresses["wolfSSL_get_client_random"], "int", ["pointer", "pointer", "uint"]);
-  var wolfSSL_KeepArrays = new NativeFunction(addresses["wolfSSL_KeepArrays"], "void", ["pointer"]);
-  /**
-     * Get the session_id of SSL object and return it as a hex string.
-     * @param {!NativePointer} ssl A pointer to an SSL object.
-     * @return {dict} A string representing the session_id of the SSL object's
-     *     SSL_SESSION. For example,
-     *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
-     */
-
-  function getSslSessionId(ssl) {
-    var session = wolfSSL_get_session(ssl);
-
-    if (session.isNull()) {
-      log_1.log("Session is null");
-      return 0;
+    var library_method_mapping = {};
+    library_method_mapping["*libwolfssl*"] = ["wolfSSL_read", "wolfSSL_write", "wolfSSL_get_fd", "wolfSSL_get_session", "wolfSSL_connect", "wolfSSL_SESSION_get_master_key", "wolfSSL_get_client_random", "wolfSSL_KeepArrays"];
+    library_method_mapping["*libc*"] = ["getpeername", "getsockname", "ntohs", "ntohl"];
+    var addresses = shared_1.readAddresses(library_method_mapping);
+    var wolfSSL_get_fd = new NativeFunction(addresses["wolfSSL_get_fd"], "int", ["pointer"]);
+    var wolfSSL_get_session = new NativeFunction(addresses["wolfSSL_get_session"], "pointer", ["pointer"]);
+    var wolfSSL_SESSION_get_master_key = new NativeFunction(addresses["wolfSSL_SESSION_get_master_key"], "int", ["pointer", "pointer", "int"]);
+    var wolfSSL_get_client_random = new NativeFunction(addresses["wolfSSL_get_client_random"], "int", ["pointer", "pointer", "uint"]);
+    var wolfSSL_KeepArrays = new NativeFunction(addresses["wolfSSL_KeepArrays"], "void", ["pointer"]);
+    /**
+       * Get the session_id of SSL object and return it as a hex string.
+       * @param {!NativePointer} ssl A pointer to an SSL object.
+       * @return {dict} A string representing the session_id of the SSL object's
+       *     SSL_SESSION. For example,
+       *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
+       */
+    function getSslSessionId(ssl) {
+        var session = wolfSSL_get_session(ssl);
+        if (session.isNull()) {
+            log_1.log("Session is null");
+            return 0;
+        }
+        var p = session.add(8);
+        var len = 32; // This comes from internals.h. It is untested!
+        var session_id = "";
+        for (var i = 0; i < len; i++) {
+            // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
+            // it to session_id.
+            session_id +=
+                ("0" + p.add(i).readU8().toString(16).toUpperCase()).substr(-2);
+        }
+        return session_id;
     }
-
-    var p = session.add(8);
-    var len = 32; // This comes from internals.h. It is untested!
-
-    var session_id = "";
-
-    for (var i = 0; i < len; i++) {
-      // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
-      // it to session_id.
-      session_id += ("0" + p.add(i).readU8().toString(16).toUpperCase()).substr(-2);
+    /**
+       * Get the masterKey of the current session and return it as a hex string.
+       * @param {!NativePointer} wolfSslPtr A pointer to an SSL object.
+       * @return {string} A string representing the masterKey of the SSL object's
+       *     current session. For example,
+       *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
+       */
+    function getMasterKey(wolfSslPtr) {
+        var session = wolfSSL_get_session(wolfSslPtr);
+        var nullPtr = ptr(0);
+        var masterKeySize = wolfSSL_SESSION_get_master_key(session, nullPtr, 0);
+        var buffer = Memory.alloc(masterKeySize);
+        wolfSSL_SESSION_get_master_key(session, buffer, masterKeySize);
+        var masterKey = "";
+        for (var i = 0; i < masterKeySize; i++) {
+            // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
+            // it to message.
+            masterKey +=
+                ("0" + buffer.add(i).readU8().toString(16).toUpperCase()).substr(-2);
+        }
+        return masterKey;
     }
-
-    return session_id;
-  }
-  /**
-     * Get the masterKey of the current session and return it as a hex string.
-     * @param {!NativePointer} wolfSslPtr A pointer to an SSL object.
-     * @return {string} A string representing the masterKey of the SSL object's
-     *     current session. For example,
-     *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
-     */
-
-
-  function getMasterKey(wolfSslPtr) {
-    var session = wolfSSL_get_session(wolfSslPtr);
-    var nullPtr = ptr(0);
-    var masterKeySize = wolfSSL_SESSION_get_master_key(session, nullPtr, 0);
-    var buffer = Memory.alloc(masterKeySize);
-    wolfSSL_SESSION_get_master_key(session, buffer, masterKeySize);
-    var masterKey = "";
-
-    for (var i = 0; i < masterKeySize; i++) {
-      // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
-      // it to message.
-      masterKey += ("0" + buffer.add(i).readU8().toString(16).toUpperCase()).substr(-2);
+    /**
+       * Get the clientRandom of the current session and return it as a hex string.
+       * @param {!NativePointer} wolfSslPtr A pointer to an SSL object.
+       * @return {string} A string representing the clientRandom of the SSL object's
+       *     current session. For example,
+       *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
+       */
+    function getClientRandom(wolfSslPtr) {
+        var nullPtr = ptr(0);
+        var clientRandomSize = wolfSSL_get_client_random(wolfSslPtr, nullPtr, 0);
+        var buffer = Memory.alloc(clientRandomSize);
+        console.log(wolfSSL_get_client_random(wolfSslPtr, buffer, clientRandomSize));
+        var clientRandom = "";
+        for (var i = 0; i < clientRandomSize; i++) {
+            // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
+            // it to message.
+            clientRandom +=
+                ("0" + buffer.add(i).readU8().toString(16).toUpperCase()).substr(-2);
+        }
+        return clientRandom;
     }
-
-    return masterKey;
-  }
-  /**
-     * Get the clientRandom of the current session and return it as a hex string.
-     * @param {!NativePointer} wolfSslPtr A pointer to an SSL object.
-     * @return {string} A string representing the clientRandom of the SSL object's
-     *     current session. For example,
-     *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
-     */
-
-
-  function getClientRandom(wolfSslPtr) {
-    var nullPtr = ptr(0);
-    var clientRandomSize = wolfSSL_get_client_random(wolfSslPtr, nullPtr, 0);
-    var buffer = Memory.alloc(clientRandomSize);
-    console.log(wolfSSL_get_client_random(wolfSslPtr, buffer, clientRandomSize));
-    var clientRandom = "";
-
-    for (var i = 0; i < clientRandomSize; i++) {
-      // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
-      // it to message.
-      clientRandom += ("0" + buffer.add(i).readU8().toString(16).toUpperCase()).substr(-2);
-    }
-
-    return clientRandom;
-  }
-
-  Interceptor.attach(addresses["wolfSSL_read"], {
-    onEnter: function onEnter(args) {
-      var message = shared_1.getPortsAndAddresses(wolfSSL_get_fd(args[0]), true, addresses);
-      message["ssl_session_id"] = getSslSessionId(args[0]);
-      message["function"] = "wolfSSL_read";
-      this.message = message;
-      this.buf = args[1];
-    },
-    onLeave: function onLeave(retval) {
-      retval |= 0; // Cast retval to 32-bit integer.
-
-      if (retval <= 0) {
-        return;
-      }
-
-      this.message["contentType"] = "datalog";
-      send(this.message, this.buf.readByteArray(retval));
-    }
-  });
-  Interceptor.attach(addresses["wolfSSL_write"], {
-    onEnter: function onEnter(args) {
-      var message = shared_1.getPortsAndAddresses(wolfSSL_get_fd(args[0]), false, addresses);
-      message["ssl_session_id"] = getSslSessionId(args[0]);
-      message["function"] = "wolfSSL_write";
-      message["contentType"] = "datalog";
-      send(message, args[1].readByteArray((0, _parseInt2["default"])(args[2])));
-    },
-    onLeave: function onLeave(retval) {}
-  });
-  Interceptor.attach(addresses["wolfSSL_connect"], {
-    onEnter: function onEnter(args) {
-      this.wolfSslPtr = args[0];
-      wolfSSL_KeepArrays(this.wolfSslPtr);
-    },
-    onLeave: function onLeave(retval) {
-      var clientRandom = getClientRandom(this.wolfSslPtr);
-      var masterKey = getMasterKey(this.wolfSslPtr);
-      var message = {};
-      message["contentType"] = "keylog";
-      message["keylog"] = "CLIENT_RANDOM " + clientRandom + " " + masterKey;
-      send(message);
-    }
-  });
+    Interceptor.attach(addresses["wolfSSL_read"], {
+        onEnter: function (args) {
+            var message = shared_1.getPortsAndAddresses(wolfSSL_get_fd(args[0]), true, addresses);
+            message["ssl_session_id"] = getSslSessionId(args[0]);
+            message["function"] = "wolfSSL_read";
+            this.message = message;
+            this.buf = args[1];
+        },
+        onLeave: function (retval) {
+            retval |= 0; // Cast retval to 32-bit integer.
+            if (retval <= 0) {
+                return;
+            }
+            this.message["contentType"] = "datalog";
+            send(this.message, this.buf.readByteArray(retval));
+        }
+    });
+    Interceptor.attach(addresses["wolfSSL_write"], {
+        onEnter: function (args) {
+            var message = shared_1.getPortsAndAddresses(wolfSSL_get_fd(args[0]), false, addresses);
+            message["ssl_session_id"] = getSslSessionId(args[0]);
+            message["function"] = "wolfSSL_write";
+            message["contentType"] = "datalog";
+            send(message, args[1].readByteArray(parseInt(args[2])));
+        },
+        onLeave: function (retval) {
+        }
+    });
+    Interceptor.attach(addresses["wolfSSL_connect"], {
+        onEnter: function (args) {
+            this.wolfSslPtr = args[0];
+            wolfSSL_KeepArrays(this.wolfSslPtr);
+        },
+        onLeave: function (retval) {
+            var clientRandom = getClientRandom(this.wolfSslPtr);
+            var masterKey = getMasterKey(this.wolfSslPtr);
+            var message = {};
+            message["contentType"] = "keylog";
+            message["keylog"] = "CLIENT_RANDOM " + clientRandom + " " + masterKey;
+            send(message);
+        }
+    });
 }
-
 exports.execute = execute;
 
 },{"./log":3,"./shared":5,"@babel/runtime-corejs2/core-js/object/define-property":11,"@babel/runtime-corejs2/core-js/parse-int":12,"@babel/runtime-corejs2/helpers/interopRequireDefault":15}],8:[function(require,module,exports){
@@ -2200,4 +2294,3 @@ for (var i = 0; i < DOMIterables.length; i++) {
 }
 
 },{"./_global":39,"./_hide":41,"./_iterators":53,"./_wks":85,"./es6.array.iterator":90}]},{},[6])
-//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbIm5vZGVfbW9kdWxlcy9icm93c2VyLXBhY2svX3ByZWx1ZGUuanMiLCJhZ2VudC9ib3VuY3ljYXN0bGUudHMiLCJhZ2VudC9jb25zY3J5cHQudHMiLCJhZ2VudC9sb2cudHMiLCJhZ2VudC9vcGVuc3NsX2JvcmluZ3NzbC50cyIsImFnZW50L3NoYXJlZC50cyIsImFnZW50L3NzbF9sb2cudHMiLCJhZ2VudC93b2xmc3NsLnRzIiwibm9kZV9tb2R1bGVzL0BiYWJlbC9ydW50aW1lLWNvcmVqczIvY29yZS1qcy9hcnJheS9mcm9tLmpzIiwibm9kZV9tb2R1bGVzL0BiYWJlbC9ydW50aW1lLWNvcmVqczIvY29yZS1qcy9hcnJheS9pcy1hcnJheS5qcyIsIm5vZGVfbW9kdWxlcy9AYmFiZWwvcnVudGltZS1jb3JlanMyL2NvcmUtanMvZ2V0LWl0ZXJhdG9yLmpzIiwibm9kZV9tb2R1bGVzL0BiYWJlbC9ydW50aW1lLWNvcmVqczIvY29yZS1qcy9vYmplY3QvZGVmaW5lLXByb3BlcnR5LmpzIiwibm9kZV9tb2R1bGVzL0BiYWJlbC9ydW50aW1lLWNvcmVqczIvY29yZS1qcy9wYXJzZS1pbnQuanMiLCJub2RlX21vZHVsZXMvQGJhYmVsL3J1bnRpbWUtY29yZWpzMi9jb3JlLWpzL3N5bWJvbC5qcyIsIm5vZGVfbW9kdWxlcy9AYmFiZWwvcnVudGltZS1jb3JlanMyL2NvcmUtanMvc3ltYm9sL2l0ZXJhdG9yLmpzIiwibm9kZV9tb2R1bGVzL0BiYWJlbC9ydW50aW1lLWNvcmVqczIvaGVscGVycy9pbnRlcm9wUmVxdWlyZURlZmF1bHQuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L2ZuL2FycmF5L2Zyb20uanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L2ZuL2FycmF5L2lzLWFycmF5LmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9mbi9nZXQtaXRlcmF0b3IuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L2ZuL29iamVjdC9kZWZpbmUtcHJvcGVydHkuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L2ZuL3BhcnNlLWludC5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvZm4vc3ltYm9sL2luZGV4LmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9mbi9zeW1ib2wvaXRlcmF0b3IuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX2EtZnVuY3Rpb24uanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX2FkZC10by11bnNjb3BhYmxlcy5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9fYW4tb2JqZWN0LmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19hcnJheS1pbmNsdWRlcy5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9fY2xhc3NvZi5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9fY29mLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19jb3JlLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19jcmVhdGUtcHJvcGVydHkuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX2N0eC5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9fZGVmaW5lZC5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9fZGVzY3JpcHRvcnMuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX2RvbS1jcmVhdGUuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX2VudW0tYnVnLWtleXMuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX2VudW0ta2V5cy5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9fZXhwb3J0LmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19mYWlscy5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9fZ2xvYmFsLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19oYXMuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX2hpZGUuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX2h0bWwuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX2llOC1kb20tZGVmaW5lLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19pb2JqZWN0LmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19pcy1hcnJheS1pdGVyLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19pcy1hcnJheS5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9faXMtb2JqZWN0LmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19pdGVyLWNhbGwuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX2l0ZXItY3JlYXRlLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19pdGVyLWRlZmluZS5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9faXRlci1kZXRlY3QuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX2l0ZXItc3RlcC5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9faXRlcmF0b3JzLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19saWJyYXJ5LmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19tZXRhLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19vYmplY3QtY3JlYXRlLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19vYmplY3QtZHAuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX29iamVjdC1kcHMuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX29iamVjdC1nb3BkLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19vYmplY3QtZ29wbi1leHQuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX29iamVjdC1nb3BuLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19vYmplY3QtZ29wcy5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9fb2JqZWN0LWdwby5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9fb2JqZWN0LWtleXMtaW50ZXJuYWwuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX29iamVjdC1rZXlzLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19vYmplY3QtcGllLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19wYXJzZS1pbnQuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX3Byb3BlcnR5LWRlc2MuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX3JlZGVmaW5lLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19zZXQtdG8tc3RyaW5nLXRhZy5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9fc2hhcmVkLWtleS5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9fc2hhcmVkLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19zdHJpbmctYXQuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX3N0cmluZy10cmltLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19zdHJpbmctd3MuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX3RvLWFic29sdXRlLWluZGV4LmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL190by1pbnRlZ2VyLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL190by1pb2JqZWN0LmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL190by1sZW5ndGguanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX3RvLW9iamVjdC5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9fdG8tcHJpbWl0aXZlLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL191aWQuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX3drcy1kZWZpbmUuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX3drcy1leHQuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX3drcy5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9jb3JlLmdldC1pdGVyYXRvci1tZXRob2QuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvY29yZS5nZXQtaXRlcmF0b3IuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvZXM2LmFycmF5LmZyb20uanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvZXM2LmFycmF5LmlzLWFycmF5LmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL2VzNi5hcnJheS5pdGVyYXRvci5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9lczYub2JqZWN0LmRlZmluZS1wcm9wZXJ0eS5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9lczYub2JqZWN0LnRvLXN0cmluZy5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9lczYucGFyc2UtaW50LmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL2VzNi5zdHJpbmcuaXRlcmF0b3IuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvZXM2LnN5bWJvbC5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9lczcuc3ltYm9sLmFzeW5jLWl0ZXJhdG9yLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL2VzNy5zeW1ib2wub2JzZXJ2YWJsZS5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy93ZWIuZG9tLml0ZXJhYmxlLmpzIl0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiJBQUFBOzs7Ozs7Ozs7Ozs7QUNBQSxJQUFBLEtBQUEsR0FBQSxPQUFBLENBQUEsT0FBQSxDQUFBOztBQUNBLElBQUEsUUFBQSxHQUFBLE9BQUEsQ0FBQSxVQUFBLENBQUE7O0FBR0EsU0FBZ0IsT0FBaEIsR0FBdUI7QUFDbkIsRUFB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QTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUN2QkE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ0xBO0FBQ0E7QUFDQTs7QUNGQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDUkE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ3BCQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDTEE7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNKQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ1BBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDSkE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDZkE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQzlEQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ1BBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ05BO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDSkE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ1JBO0FBQ0E7QUFDQTs7QUNGQTtBQUNBO0FBQ0E7QUFDQTs7QUNIQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNOQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDUkE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ0xBO0FBQ0E7QUFDQTtBQUNBOztBQ0hBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ1pBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDYkE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDckVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDdEJBO0FBQ0E7QUFDQTtBQUNBOztBQ0hBO0FBQ0E7O0FDREE7QUFDQTs7QUNEQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDckRBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUN6Q0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNoQkE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNiQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ2hCQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ25CQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ1BBO0FBQ0E7O0FDREE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNiQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDakJBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDUEE7QUFDQTs7QUNEQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNUQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDUkE7QUFDQTs7QUNEQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ1BBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNMQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNaQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDakJBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQzlCQTtBQUNBO0FBQ0E7O0FDRkE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNQQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNOQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNOQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNOQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDTEE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDWkE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ0xBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ1RBO0FBQ0E7O0FDREE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ1hBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNSQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ1BBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDckNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDSkE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNsQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDSEE7O0FDQUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNKQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDakJBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ3RQQTtBQUNBOztBQ0RBO0FBQ0E7O0FDREE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSIsImZpbGUiOiJnZW5lcmF0ZWQuanMiLCJzb3VyY2VSb290IjoiIn0=

@@ -3,6 +3,7 @@ import { execute as boring_execute } from "./openssl_boringssl"
 import { execute as wolf_execute } from "./wolfssl"
 import { execute as bouncy_execute } from "./bouncycastle"
 import { execute as conscrypt_execute } from "./conscrypt"
+import { execute as nss_execute } from "./nss"
 import { log } from "./log"
 
 var moduleNames: Array<string> = []
@@ -20,6 +21,15 @@ for (var mod of moduleNames) {
     if (mod.indexOf("libwolfssl.so") >= 0) {
         log("WolfSSL detected.")
         wolf_execute()
+        break
+    }
+}
+
+
+for (var mod of moduleNames) {
+    if (mod.indexOf("libnspr") >= 0) {
+        log("NSS SSL detected.")
+        nss_execute()
         break
     }
 }
