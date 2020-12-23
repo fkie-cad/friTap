@@ -20,7 +20,7 @@ This project was inspired by [SSL_Logger](https://github.com/google/ssl_logger )
 - MatrixSSL
 - ...
 
-- [ ] Analysing the decrypted traffci/PCAP on the fly with Wireshark (create a FD which can observed)
+- [ ] Analysing the decrypted traffci/PCAP on the fly with Wireshark (create a FD which can be observed)
 - [ ] add iOS support
 - [ ] add Windows support 
 - [ ] Google traffic analysis
