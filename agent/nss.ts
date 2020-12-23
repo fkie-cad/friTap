@@ -93,15 +93,12 @@ function getPortsAndAddressesFromNSS(sockfd: NativePointer, isRead: boolean, met
     var addrlen = Memory.alloc(4)
     var addr = Memory.alloc(128)
     var src_dst = ["src", "dst"]
-    log("reached1")
     for (var i = 0; i < src_dst.length; i++) {
         addrlen.writeU32(128)
         if ((src_dst[i] == "src") !== isRead) {
-            log("reached2")
             getsockname(sockfd, addr)
         }
         else {
-            log("reached3")
             getpeername(sockfd, addr)
         }
         if (addr.readU16() == AF_INET) {

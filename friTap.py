@@ -15,7 +15,7 @@ try:
 except ImportError:
     pass
 
-__author__ = "Max Ufer"
+__author__ = "Max Ufer, Daniel Baier"
 __version__ = "1.0"
 
 # ssl_session[<SSL_SESSION id>] = (<bytes sent by client>,
@@ -285,7 +285,7 @@ if __name__ == "__main__":
 
     parser = ArgParser(
         add_help=False,
-        description="Decrypts and logs an executables or android applications SSL traffic.",
+        description="Decrypts and logs an executables or android applications SSL/TLS traffic.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=r"""
 Examples:
