@@ -159,7 +159,11 @@ dist
 
 #pcap files
 *.pcap
+*.pcapng
 
 #git cache
 .git_cache
 __handlers__
+
+#misc
+fritap_analysis.txt
