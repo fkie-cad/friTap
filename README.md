@@ -8,7 +8,25 @@ The goal of this project is to help researchers to analyze traffic encapsulated 
 
 This project was inspired by [SSL_Logger](https://github.com/google/ssl_logger ) and currently supports Android and Linux as well. More platforms will be added in future releases.
 
-## Features planend for future releases
+## Usage
+
+On Linux we can easily attach to a process by entering its name or its PID:
+
+```bash
+$ sudo python3 ./friTap.py --pcap mycapture.pcap thunderbird
+```
+
+
+
+For Android we just have to add the -a parameter to indicate that we are now attaching (or spawning) an Android app:
+
+```bash
+$ sudo python3 ./friTap.py -a com.example.app -pcap mycapture.pcap
+```
+
+Further ensure that the frida-server is running on the Android device. More examples on using fritap can be found in the [USAGE.md](./USAGE.md).
+
+## Planned features
 
 - [ ] fix spawning issue on Linux e.g. with Firefox
 
@@ -24,3 +42,4 @@ This project was inspired by [SSL_Logger](https://github.com/google/ssl_logger )
 - [ ] add iOS support
 - [ ] add Windows support 
 - [ ] Google traffic analysis
+
