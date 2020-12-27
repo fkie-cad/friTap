@@ -8,7 +8,7 @@ import pprint
 import os
 import socket
 import sys
-
+import tempfile
 
 try:
     import hexdump  # pylint: disable=g-import-not-at-top
@@ -22,13 +22,50 @@ __version__ = "1.0"
 #                                  <bytes sent by server>)
 ssl_sessions = {}
 
+
+filename = ""
+tmpdir=""
+
 # Names of all supported read functions:
 SSL_READ = ["SSL_read", "wolfSSL_read", "readApplicationData","NSS_read"]
 # Names of all supported write functions:
 SSL_WRITE = ["SSL_write", "wolfSSL_write", "writeApplicationData","NSS_write"]
 
+def write_pcap_header(pcap_file):
+    for writes in (
+            ("=I", 0xa1b2c3d4),     # Magic number
+            ("=H", 2),              # Major version number
+            ("=H", 4),              # Minor version number
+            ("=i", time.timezone),  # GMT to local correction
+            ("=I", 0),              # Accuracy of timestamps
+            ("=I", 65535),          # Max length of captured packets
+                ("=I", 101)):           # Data link type (LINKTYPE_IPV4 = 228) CHANGED TO RAW
+            pcap_file.write(struct.pack(writes[0], writes[1]))
+    return pcap_file
 
-def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, android=False):
+def cleanup(live=False):
+    if live:
+        os.unlink(filename)  # Remove file
+        os.rmdir(tmpdir)  # Remove directory
+    print("\nThx for using friTap\nHave a nice day\n")
+    os._exit(0)
+    
+
+
+def temp_fifo():
+    global tmpdir
+    global filename
+    tmpdir = tempfile.mkdtemp()
+    filename = os.path.join(tmpdir, 'fritap_sharkfin')  # Temporary filename
+    os.mkfifo(filename)  # Create FIFO
+    try:
+        return filename
+    except OSError as e:
+        print(f'Failed to create FIFO: {e}') 
+
+
+
+def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, android=False, live=False):
 
     def log_pcap(pcap_file, ss_family, ssl_session_id, function, src_addr, src_port,
                  dst_addr, dst_port, data):
@@ -101,9 +138,11 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
                 (">H", 0x5018),                   # Header Length and Flags
                 (">H", 0xFFFF),                   # Window Size
                 (">H", 0),                        # Checksum
-                    (">H", 0)):                       # Urgent Pointer
+                (">H", 0)):                       # Urgent Pointer
                 pcap_file.write(struct.pack(writes[0], writes[1]))
+
             pcap_file.write(data)
+
         elif ss_family == "AF_INET6":
             for writes in (
                 # PCAP record (packet) header
@@ -138,7 +177,10 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
                 (">H", 0),                        # Checksum
                     (">H", 0)):                       # Urgent Pointer
                 pcap_file.write(struct.pack(writes[0], writes[1]))
+
             pcap_file.write(data)
+      
+
         else:
             print("Packet has unknown/unsupported family!")
 
@@ -198,6 +240,16 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
         if pcap and p["contentType"] == "datalog":
             log_pcap(pcap_file, p["ss_family"], p["ssl_session_id"], p["function"], p["src_addr"],
                      p["src_port"], p["dst_addr"], p["dst_port"], data)
+        if live and p["contentType"] == "datalog":
+            try:
+                log_pcap(named_pipe, p["ss_family"], p["ssl_session_id"], p["function"], p["src_addr"],
+                     p["src_port"], p["dst_addr"], p["dst_port"], data)
+            except (BrokenPipeError, IOError):
+                process.detach()
+                cleanup(live)
+                
+
+
         if keylog and p["contentType"] == "keylog":
             keylog_file.write(p["keylog"] + "\n")
             keylog_file.flush()
@@ -238,17 +290,28 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
     else:
         process = device.attach(app)
 
-    if pcap:
+
+
+        
+
+    if live:
+        if pcap:
+            print("[*] YOU ARE TRYING TO WRITE A PCAP AND HAVING A LIVE VIEW\nTHIS IS NOT SUPPORTED!\nWHEN YOU DO A LIVE VIEW YOU CAN SAFE YOUR CAPUTRE WIHT WIRESHARK.")
+        fifo_file = temp_fifo()
+        print(f'[*] friTap live view on Wireshark')
+        print(f'[*] Created named pipe for Wireshark live view to {fifo_file}')
+        print(f'[*] Now open this named pipe with Wireshark in another terminal: sudo wireshark -k -i {fifo_file}')
+        print(f'[*] friTap will continue after the named pipe is ready....\n')
+        #input()
+        #named_pipe = os.open(fifo_file, os.O_WRONLY | os.O_CREAT | os.O_NONBLOCK)
+        named_pipe = open(fifo_file, "wb", 0)
+        named_pipe = write_pcap_header(named_pipe)
+    elif pcap:
         pcap_file = open(pcap, "wb", 0)
-        for writes in (
-            ("=I", 0xa1b2c3d4),     # Magic number
-            ("=H", 2),              # Major version number
-            ("=H", 4),              # Minor version number
-            ("=i", time.timezone),  # GMT to local correction
-            ("=I", 0),              # Accuracy of timestamps
-            ("=I", 65535),          # Max length of captured packets
-                ("=I", 101)):           # Data link type (LINKTYPE_IPV4 = 228) CHANGED TO RAW
-            pcap_file.write(struct.pack(writes[0], writes[1]))
+        pcap_file = write_pcap_header(pcap_file)
+
+
+
     if keylog:
         keylog_file = open(keylog, "w")
 
@@ -259,6 +322,7 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
         print(f'[*] Logging pcap to {pcap}')
     if keylog:
         print(f'[*] Logging keylog file to {keylog}')
+
 
     if spawn:
         device.resume(pid)
@@ -301,6 +365,8 @@ Examples:
                       const=True, help="Attach to a process on android")
     args.add_argument("-k", "--keylog", metavar="<path>", required=False,
                       help="Log the keys used for tls traffic")
+    args.add_argument("-l", "--live",required=False,action="store_const",const=True,
+                      help="Creates a named pipe /tmp/sharkfin which can be read by Wireshark during the capturing process")
     args.add_argument("-p ", "--pcap", metavar="<path>", required=False,
                       help="Name of PCAP file to write")
     args.add_argument("-s", "--spawn", required=False, action="store_const", const=True,
@@ -313,5 +379,8 @@ Examples:
                       help="executable/app whose SSL calls to log")
     parsed = parser.parse_args()
 
-    ssl_log(parsed.exec, parsed.pcap, parsed.verbose,
-            parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.android)
+    try:
+        ssl_log(parsed.exec, parsed.pcap, parsed.verbose,
+            parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.android, parsed.live)
+    finally:
+        cleanup(parsed.live)

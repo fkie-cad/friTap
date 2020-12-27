@@ -21,7 +21,7 @@ $ sudo python3 ./friTap.py --pcap mycapture.pcap thunderbird
 For Android we just have to add the -a parameter to indicate that we are now attaching (or spawning) an Android app:
 
 ```bash
-$ sudo python3 ./friTap.py -a com.example.app -pcap mycapture.pcap
+$ sudo python3 ./friTap.py -a -pcap mycapture.pcap com.example.app
 ```
 
 Further ensure that the frida-server is running on the Android device. More examples on using fritap can be found in the [USAGE.md](./USAGE.md).
@@ -38,7 +38,6 @@ Further ensure that the frida-server is running on the Android device. More exam
 - MatrixSSL
 - ...
 
-- [ ] Analysing the decrypted traffci/PCAP on the fly with Wireshark (create a FD which can be observed)
 - [ ] add iOS support
 - [ ] add Windows support 
 - [ ] Google traffic analysis
