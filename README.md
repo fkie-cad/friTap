@@ -26,6 +26,11 @@ $ sudo python3 ./friTap.py -a -pcap mycapture.pcap com.example.app
 
 Further ensure that the frida-server is running on the Android device. More examples on using fritap can be found in the [USAGE.md](./USAGE.md).
 
+## Dependencies
+
+- [frida](https://frida.re)
+- >= python3.6
+
 ## Planned features
 
 - [ ] fix spawning issue on Linux e.g. with Firefox
@@ -37,6 +42,9 @@ Further ensure that the frida-server is running on the Android device. More exam
 - Mbed TLS 
 - MatrixSSL
 - ...
+
+- Working with static linked libraries
+- Add feature to prototype TLS-Read/Write/SSLKEY functions
 
 - [ ] add iOS support
 - [ ] add Windows support 
