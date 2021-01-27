@@ -14,6 +14,16 @@ After setting up your environment to work with frida-compile just invoke the fol
 $ frida-compile agent/ssl_log.ts -o _ssl_log.js
 ```
 
+Alternatively, you can use npm scripts
+```bash
+$ npm run build
+```
+for building or
+```bash
+$ npm run watch
+```
+for continuous building on each save.
+
 
 ## Verifying a socket read or write function
 
