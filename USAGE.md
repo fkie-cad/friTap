@@ -1,29 +1,29 @@
 # Usage
-General Usage: `fritap.py [-a] [-l] [-pcap <path>] [-verbose] [-spawn] [-keylog <path>]
-                          <app name>`
-                          
-Arguments:
+Usage: friTap.py [-a] [-k <path>] [-l] [-p  <path>] [-s] [-v] [--enable_spawn_gating] <executable/app name/pid>
 
-  - `a`                   Indicates that we are investigating an Android app.
-  - `pcap <path>`         Name of PCAP file to write
-  - `verbose`             Show verbose output
-  - `spawn`               Spawn the app instead of attaching to a running process
-  - `keylog <path>`       Log the keys used for tls traffic
-  - `enable_spawn_gating` Catch newly spawned processes. ATTENTION: These could be unrelated to the current process!
-  - `l`                   Indicates that we want to do a live capture with named pipes.
-  - `<app name>`          APP whose SSL calls to log
+Decrypts and logs an executables or android applications SSL/TLS traffic.
+
+Arguments:
+  - `-a`, `--android` Attach to a process on android
+  - `-k <path>`, `--keylog <path>` Log the keys used for tls traffic
+  - `-l`, `--live` Creates a named pipe /tmp/sharkfin which can be read by Wireshark during the capturing process
+  - `-p  <path>`, `--pcap <path>` Name of PCAP file to write
+  - `-s`, `--spawn` Spawn the executable/app instead of attaching to a running process
+  - `-v`, `--verbose` Show verbose output
+  - `--enable_spawn_gating` Catch newly spawned processes. ATTENTION: These could be unrelated to the current process!
+  - `<executable/app name/pid>` executable/app whose SSL calls to log
 
 The target device needs to have frida-server running when Android or iOS apps are analyzed. Further information about setting up the device can be found [here](https://frida.re/docs/android/).
 # Examples
 ## Spawn an app and show output on screen
-`python3 ./fritap.py -a com.example.app -spawn -verbose`
+`python3 ./fritap.py -a com.example.app --spawn --verbose`
 
 The output could look like this:
 
 ![Example output](/images/verbose_output.png)
 
 ## Attach to a running app and write traffic to pcap
-`python3 ./fritap.py -a com.example.app -pcap myLogFile.pcap`
+`python3 ./fritap.py -a com.example.app -p myLogFile.pcap`
 
 Output:
 
@@ -33,7 +33,7 @@ Note that the packets in this pcap currently only reflect the content, source an
 Also, when you try to analyse the resulting pcap, it might happen that wireshark mistakes the decrypted traffic for still being encoded because it still runs on port 443 (happens e.g. for HTTP2 traffic, Http1.1 seems to work fine). To circumvent this, just tell wireshark to decode traffic on port 443 as HTTP2 traffic (or  any other).
 
 ## Log keys of TLS traffic
-`python3 ./fritap.py -a -spawn -keylog myKeyLogFile.log com.example.app`
+`python3 ./fritap.py -a -spawn --keylog myKeyLogFile.log com.example.app`
 
 Output:
 
