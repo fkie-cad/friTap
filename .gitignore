@@ -1,3 +1,9 @@
+#keys and certs for testing
+*.pem
+
+ExampleLinux/.devcontainer/*
+*.o
+
 #built application files
 *.apk
 *.ap_
