@@ -2,6 +2,7 @@
 *.pem
 
 ExampleLinux/.devcontainer/*
+ExampleLinux/sslserver
 *.o
 
 #built application files
