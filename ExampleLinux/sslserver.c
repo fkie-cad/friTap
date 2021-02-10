@@ -33,6 +33,12 @@ int create_socket(int port) {
     return s;
 }
 
+static void short_to_path(char *full_path) {
+    char *exec_name = strstr(full_path, "/sslserver");
+    *exec_name = 0x0;
+    return;
+}
+
 int main(int argc, char **argv) {
     int port, sock;
     if (argc != 2) {
@@ -40,7 +46,8 @@ int main(int argc, char **argv) {
         exit(EXIT_FAILURE);
     }
     port = atoi(argv[1]);
-    ssl_init();
+    short_to_path(argv[0]);
+    ssl_init(argv[0]);
     sock = create_socket(port);
     while (1) {
         struct sockaddr_in addr;

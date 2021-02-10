@@ -24,27 +24,32 @@ static SSL_CTX *create_context() {
     return ctx;
 }
 
-void configure_context(SSL_CTX *ctx) {
+void configure_context(SSL_CTX *ctx, char *current_path) {
     SSL_CTX_set_ecdh_auto(ctx, 1);
 
+    char cert_path[BUF_SIZE];
+    snprintf(cert_path, BUF_SIZE, "%s/%s", current_path, "cert.pem");
+    printf("DEBUG: cert_path %s\n", cert_path);
     /* Set the key and cert */
-    if (SSL_CTX_use_certificate_file(ctx, "cert.pem", SSL_FILETYPE_PEM) <= 0) {
+    if (SSL_CTX_use_certificate_file(ctx, cert_path, SSL_FILETYPE_PEM) <= 0) {
         ERR_print_errors_fp(stderr);
         exit(EXIT_FAILURE);
     }
-
-    if (SSL_CTX_use_PrivateKey_file(ctx, "key.pem", SSL_FILETYPE_PEM) <= 0) {
+    char key_path[BUF_SIZE];
+    snprintf(key_path, BUF_SIZE, "%s/%s", current_path, "key.pem");
+    printf("DEBUG: key_path %s\n", key_path);
+    if (SSL_CTX_use_PrivateKey_file(ctx, key_path, SSL_FILETYPE_PEM) <= 0) {
         ERR_print_errors_fp(stderr);
         exit(EXIT_FAILURE);
     }
 }
 
-void ssl_init(void) {
+void ssl_init(char *current_path) {
     SSL_load_error_strings();
     OpenSSL_add_ssl_algorithms();
 
     ctx = create_context();
-    configure_context(ctx);
+    configure_context(ctx, current_path);
 }
 void ssl_cleanup(void) {
     EVP_cleanup();
