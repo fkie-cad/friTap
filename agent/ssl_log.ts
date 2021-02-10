@@ -7,11 +7,11 @@ import { execute as nss_execute } from "./nss"
 import { log } from "./log"
 
 // sometimes libraries loaded but don't have function implemented we need to hook
-function hasRequiredFunctions(libName : string,expectedFuncName : string) : boolean {
+function hasRequiredFunctions(libName: string, expectedFuncName: string): boolean {
     var functionList = Process.getModuleByName(libName).enumerateExports().filter(exports => exports.name.toLowerCase().includes(expectedFuncName));
-    if (functionList.length == 0){
+    if (functionList.length == 0) {
         return false;
-    }else{
+    } else {
         return true;
     }
 }
@@ -21,11 +21,10 @@ Process.enumerateModules().forEach(item => moduleNames.push(item.name))
 
 for (var mod of moduleNames) {
     if (mod.indexOf("libssl.so") >= 0) {
-        if(hasRequiredFunctions(mod,"SSL_read")){
-            log("OpenSSL/BoringSSL detected.")
-            boring_execute()
-        }
-        
+        //if (hasRequiredFunctions(mod, "SSL_read")) {
+        log("OpenSSL/BoringSSL detected.")
+        boring_execute()
+        //}
         break
     }
 }
