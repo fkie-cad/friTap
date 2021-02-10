@@ -29,7 +29,6 @@ void configure_context(SSL_CTX *ctx, char *current_path) {
 
     char cert_path[BUF_SIZE];
     snprintf(cert_path, BUF_SIZE, "%s/%s", current_path, "cert.pem");
-    printf("DEBUG: cert_path %s\n", cert_path);
     /* Set the key and cert */
     if (SSL_CTX_use_certificate_file(ctx, cert_path, SSL_FILETYPE_PEM) <= 0) {
         ERR_print_errors_fp(stderr);
@@ -37,7 +36,6 @@ void configure_context(SSL_CTX *ctx, char *current_path) {
     }
     char key_path[BUF_SIZE];
     snprintf(key_path, BUF_SIZE, "%s/%s", current_path, "key.pem");
-    printf("DEBUG: key_path %s\n", key_path);
     if (SSL_CTX_use_PrivateKey_file(ctx, key_path, SSL_FILETYPE_PEM) <= 0) {
         ERR_print_errors_fp(stderr);
         exit(EXIT_FAILURE);
