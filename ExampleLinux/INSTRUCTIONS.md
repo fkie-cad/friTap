@@ -3,7 +3,7 @@
 2. `sudo docker build -t fritap:linux .`
 
 # Generate Key and certificate for testing
-openssl req -x509 -sha256 -nodes -days 365 -newkey rsa:4096 -keyout key.pem -out cert.pem
+`openssl req -x509 -sha256 -nodes -days 365 -newkey rsa:4096 -keyout key.pem -out cert.pem`
 
 # Using the container for testing
 1. To start the container, run `docker run --rm -it -p 8080:8080 -v $PWD:/mnt fritap:linux /bin/bash` **To use friTap in the container, you have to execute this from the top level directory, not from ExampleLinux**
