@@ -3,6 +3,8 @@
 
 ExampleLinux/.devcontainer/*
 ExampleLinux/sslserver
+ExampleLinux/wolfssl/*
+!ExampleLinux/wolfssl/.gitkeep
 *.o
 
 #built application files
