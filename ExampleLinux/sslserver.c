@@ -57,7 +57,9 @@ int main(int argc, char **argv) {
             perror("Unable to accept");
             exit(EXIT_FAILURE);
         }
+        printf("[*] Incoming connection from %s:%d\n", inet_ntoa(addr.sin_addr), addr.sin_port);
         echo_connection(client_fd);
+        printf("[*] Connection closed\n");
         close(client_fd);
     }
     //This actually can never happen because of endless loop, but who knows
