@@ -22,7 +22,7 @@ static SSL_CTX *create_context() {
     return ctx;
 }
 
-void configure_context(SSL_CTX *ctx, char *current_path) {
+static void configure_context(SSL_CTX *ctx, char *current_path) {
     SSL_CTX_set_ecdh_auto(ctx, 1);
 
     char cert_path[BUF_SIZE];
