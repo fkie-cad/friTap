@@ -4,8 +4,6 @@
 #include "common.h"
 #include "sslinterface.h"
 
-#define BUF_SIZE 512
-
 SSL_CTX *ctx;
 
 static SSL_CTX *create_context() {
