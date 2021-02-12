@@ -4,7 +4,7 @@ RUN apt-get update -y && apt-get upgrade -y && apt-get install -y build-essentia
 RUN pip3 install frida frida-tools hexdump
 
 COPY ./wolfssl /wolfssl 
-RUN cd /wolfssl && ./configure --enable-harden && make && make install && cd .. && rm -rf wolfssl
+RUN cd /wolfssl && ./configure  --enable-opensslall --enable-harden && make && make install && cd .. && rm -rf wolfssl
 
 ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib
 WORKDIR /mnt

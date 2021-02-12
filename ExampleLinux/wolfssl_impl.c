@@ -38,7 +38,6 @@ static void configure_context(WOLFSSL_CTX* ctx, char* current_path) {
 }
 void ssl_init(char* current_path) {
     wolfSSL_Init(); /* Initialize wolfSSL */
-    wolfSSL_Debugging_ON();
     ctx = create_context();
     configure_context(ctx, current_path);
 }
