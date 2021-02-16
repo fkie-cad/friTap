@@ -4,6 +4,7 @@ import { execute as wolf_execute } from "./wolfssl"
 import { execute as bouncy_execute } from "./bouncycastle"
 import { execute as conscrypt_execute } from "./conscrypt"
 import { execute as nss_execute } from "./nss"
+import { execute as gnutls_execute } from "./gnutls"
 import { log } from "./log"
 
 // sometimes libraries loaded but don't have function implemented we need to hook
@@ -25,6 +26,14 @@ for (var mod of moduleNames) {
         log("OpenSSL/BoringSSL detected.")
         boring_execute()
         //}
+        break
+    }
+}
+
+for (var mod of moduleNames) {
+    if (mod.indexOf("libgnutls.so") >= 0) {
+        log("GnuTls detected.")
+        gnutls_execute()
         break
     }
 }
