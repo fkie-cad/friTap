@@ -1,6 +1,5 @@
 # Setting up the Docker Container
-1. Download [wolfssl sources](https://www.wolfssl.com/download/) and place them in `./wolfssl`
-2. `sudo docker build -t fritap:linux .`
+`sudo docker build -t fritap:linux .`
 
 # Generate Key and certificate for testing
 `openssl req -x509 -sha256 -nodes -days 365 -newkey rsa:4096 -keyout key.pem -out cert.pem`
