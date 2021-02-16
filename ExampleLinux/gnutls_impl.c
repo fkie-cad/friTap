@@ -21,16 +21,6 @@ void ssl_init(char *current_path) {
 
     CHECK(gnutls_certificate_allocate_credentials(&x509_cred));
 
-    //CHECK(gnutls_certificate_set_x509_trust_file(x509_cred, CAFILE, GNUTLS_X509_FMT_PEM));
-
-    //CHECK(gnutls_certificate_set_x509_crl_file(x509_cred, CRLFILE, GNUTLS_X509_FMT_PEM));
-
-    /* The following code sets the certificate key pair as well as, 
-         * an OCSP response which corresponds to it. It is possible
-         * to set multiple key-pairs and multiple OCSP status responses
-         * (the latter since 3.5.6). See the manual pages of the individual
-         * functions for more information.
-         */
     char cert_path[BUF_SIZE];
     snprintf(cert_path, BUF_SIZE, "%s/%s", current_path, "cert.pem");
     char key_path[BUF_SIZE];
@@ -38,10 +28,6 @@ void ssl_init(char *current_path) {
     CHECK(gnutls_certificate_set_x509_key_file(x509_cred, cert_path,
                                                key_path,
                                                GNUTLS_X509_FMT_PEM));
-
-    //CHECK(gnutls_certificate_set_ocsp_status_request_file(x509_cred,
-    //                                                      OCSP_STATUS_FILE,
-    //                                                      0));
 
     CHECK(gnutls_priority_init(&priority_cache, NULL, NULL));
 }
