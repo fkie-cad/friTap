@@ -21,14 +21,14 @@ $ sudo python3 ./friTap.py --pcap mycapture.pcap thunderbird
 For Android we just have to add the -a parameter to indicate that we are now attaching (or spawning) an Android app:
 
 ```bash
-$ sudo python3 ./friTap.py -a -pcap mycapture.pcap com.example.app
+$ sudo python3 ./friTap.py -a --pcap mycapture.pcap com.example.app
 ```
 
 Further ensure that the frida-server is running on the Android device. More examples on using fritap can be found in the [USAGE.md](./USAGE.md).
 
 ## Dependencies
 
-- [frida](https://frida.re)
+- [frida](https://frida.re) Version 12.11.18 is the most stable, so if you have issues install this via `pip install frida==12.11.18`
 - >= python3.6
 
 ## Planned features
