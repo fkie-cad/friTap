@@ -3,7 +3,7 @@ import { log } from "./log"
 
 export function execute() {
     var library_method_mapping: { [key: string]: Array<String> } = {}
-    library_method_mapping["*libgnutls*"] = ["gnutls_record_recv", "gnutls_record_send", "gnutls_session_set_keylog_function", "gnutls_transport_get_int", "gnutls_session_get_id", "gnutls_init", "gnutls_handshake", "gnutls_session_get_keylog_function"]
+    library_method_mapping["*libgnutls*"] = ["gnutls_record_recv", "gnutls_record_send", "gnutls_session_set_keylog_function", "gnutls_transport_get_int", "gnutls_session_get_id", "gnutls_init", "gnutls_handshake", "gnutls_session_get_keylog_function", "gnutls_session_get_client_random"]
     library_method_mapping["*libc*"] = ["getpeername", "getsockname", "ntohs", "ntohl"]
 
     var addresses: { [key: string]: NativePointer } = readAddresses(library_method_mapping)
@@ -12,6 +12,7 @@ export function execute() {
     var gnutls_session_get_id = new NativeFunction(addresses["gnutls_session_get_id"], "int", ["pointer", "pointer", "pointer"])
     var gnutls_session_set_keylog_function = new NativeFunction(addresses["gnutls_session_set_keylog_function"], "void", ["pointer", "pointer"])
     var gnutls_session_get_keylog_function = new NativeFunction(addresses["gnutls_session_get_keylog_function"], "pointer", ["pointer"])
+    var gnutls_session_get_client_random = new NativeFunction(addresses["gnutls_session_get_client_random"], "pointer", ["pointer"])
 
 
     /**
@@ -90,12 +91,22 @@ export function execute() {
                     var p = secret.readPointer()
                     for (var i = 0; i < secret_len; i++) {
                         // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
-                        // it to session_id.
+                        // it to secret_str.
 
                         secret_str +=
                             ("0" + p.add(i).readU8().toString(16).toUpperCase()).substr(-2)
                     }
-                    message["keylog"] = label.readCString() + " " + secret_str
+                    var client_random_ptr = gnutls_session_get_client_random(session)
+                    var client_random_str = ""
+                    var client_random_len = 32
+                    for (var i = 0; i < client_random_len; i++) {
+                        // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
+                        // it to client_random_str.
+
+                        client_random_str +=
+                            ("0" + p.add(i).readU8().toString(16).toUpperCase()).substr(-2)
+                    }
+                    message["keylog"] = label.readCString() + " " + client_random_str + " " + secret_str
                     send(message)
                 }, "int", ["pointer", "pointer", "pointer"])
 
