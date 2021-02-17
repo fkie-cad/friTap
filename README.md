@@ -26,6 +26,17 @@ $ sudo python3 ./friTap.py -a --pcap mycapture.pcap com.example.app
 
 Further ensure that the frida-server is running on the Android device. More examples on using fritap can be found in the [USAGE.md](./USAGE.md).
 
+## Supported SSL/TLS implementations
+
+The following implementations of SSL/TLS are currently supported as targets:
+- openssl
+- boringssl
+- nss
+- gnutls
+- wolfssl
+- Bouncycastle/Spongycastle
+- Android: Conscrypt installed via [ProviderInstaller](https://developer.android.com/training/articles/security-gms-provider#patching)
+
 ## Dependencies
 
 - [frida](https://frida.re) Version 12.11.18 is the most stable, so if you have issues install this via `pip install frida==12.11.18`
