@@ -1,4 +1,4 @@
-CC = gcc
+CC = gcc -g
 TARGET = sslserver
 
 %.o: %.c

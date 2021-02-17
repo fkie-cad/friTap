@@ -3,7 +3,7 @@ import { log } from "./log"
 
 export function execute() {
     var library_method_mapping: { [key: string]: Array<String> } = {}
-    library_method_mapping["*libgnutls*"] = ["gnutls_record_recv", "gnutls_record_send", "gnutls_session_set_keylog_function", "gnutls_transport_get_int", "gnutls_session_get_id"]
+    library_method_mapping["*libgnutls*"] = ["gnutls_record_recv", "gnutls_record_send", "gnutls_session_set_keylog_function", "gnutls_transport_get_int", "gnutls_session_get_id", "gnutls_init", "gnutls_handshake", "gnutls_session_get_keylog_function"]
     library_method_mapping["*libc*"] = ["getpeername", "getsockname", "ntohs", "ntohl"]
 
     var addresses: { [key: string]: NativePointer } = readAddresses(library_method_mapping)
@@ -11,6 +11,7 @@ export function execute() {
     var gnutls_transport_get_int = new NativeFunction(addresses["gnutls_transport_get_int"], "int", ["pointer"])
     var gnutls_session_get_id = new NativeFunction(addresses["gnutls_session_get_id"], "int", ["pointer", "pointer", "pointer"])
     var gnutls_session_set_keylog_function = new NativeFunction(addresses["gnutls_session_set_keylog_function"], "void", ["pointer", "pointer"])
+    var gnutls_session_get_keylog_function = new NativeFunction(addresses["gnutls_session_get_keylog_function"], "pointer", ["pointer"])
 
 
     /**
@@ -47,6 +48,7 @@ export function execute() {
     Interceptor.attach(addresses["gnutls_record_recv"],
         {
             onEnter: function (args: any) {
+                console.log(gnutls_session_get_keylog_function(args[0]));
                 var message = getPortsAndAddresses(gnutls_transport_get_int(args[0]) as number, true, addresses)
                 message["ssl_session_id"] = getSslSessionId(args[0])
                 message["function"] = "SSL_read"
@@ -72,6 +74,35 @@ export function execute() {
                 send(message, args[1].readByteArray(parseInt(args[2])))
             },
             onLeave: function (retval: any) {
+            }
+        })
+    Interceptor.attach(addresses["gnutls_init"],
+        {
+            onEnter: function (args: any) {
+                this.session = args[0]
+            },
+            onLeave: function (retval: any) {
+                var keylog_callback = new NativeCallback(function (session: NativePointer, label: NativePointer, secret: NativePointer) {
+                    var message: { [key: string]: string | number | null } = {}
+                    message["contentType"] = "keylog"
+                    var secret_len = secret.add(Process.pointerSize).readUInt()
+                    var secret_str = ""
+                    var p = secret.readPointer()
+                    for (var i = 0; i < secret_len; i++) {
+                        // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
+                        // it to session_id.
+
+                        secret_str +=
+                            ("0" + p.add(i).readU8().toString(16).toUpperCase()).substr(-2)
+                    }
+                    message["keylog"] = label.readCString() + " " + secret_str
+                    send(message)
+                }, "int", ["pointer", "pointer", "pointer"])
+
+                gnutls_session_set_keylog_function(this.session.readPointer(), keylog_callback)
+
+
+
             }
         })
 

@@ -16,9 +16,12 @@
 static gnutls_certificate_credentials_t x509_cred;
 static gnutls_priority_t priority_cache;
 
-void ssl_init(char *current_path) {
-    CHECK(gnutls_global_init());
+static void logfunc(int loglevel, const char* msg) {
+    printf("%s", msg);
+}
 
+void ssl_init(char* current_path) {
+    CHECK(gnutls_global_init());
     CHECK(gnutls_certificate_allocate_credentials(&x509_cred));
 
     char cert_path[BUF_SIZE];
@@ -37,12 +40,14 @@ void ssl_cleanup(void) {
 
     gnutls_global_deinit();
 }
+
 //Read for incoming messages and echo them back
 void echo_connection(int client_fd) {
     gnutls_session_t session;
     int ret;
     char buffer[BUF_SIZE + 1];
     CHECK(gnutls_init(&session, GNUTLS_SERVER));
+    fflush(stdout);
     CHECK(gnutls_priority_set(session, priority_cache));
     CHECK(gnutls_credentials_set(session, GNUTLS_CRD_CERTIFICATE, x509_cred));
     gnutls_certificate_server_set_request(session, GNUTLS_CERT_IGNORE);
