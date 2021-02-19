@@ -8,11 +8,17 @@ export function execute() {
 
     var addresses: { [key: string]: NativePointer } = readAddresses(library_method_mapping)
 
-    var SSL_get_fd = new NativeFunction(addresses["SSL_get_fd"], "int", ["pointer"])
-    var SSL_get_session = new NativeFunction(addresses["SSL_get_session"], "pointer", ["pointer"])
-    var SSL_SESSION_get_id = new NativeFunction(addresses["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"])
-    var SSL_CTX_set_keylog_callback = new NativeFunction(addresses["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"])
+    const SSL_get_fd = new NativeFunction(addresses["SSL_get_fd"], "int", ["pointer"])
+    const SSL_get_session = new NativeFunction(addresses["SSL_get_session"], "pointer", ["pointer"])
+    const SSL_SESSION_get_id = new NativeFunction(addresses["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"])
+    const SSL_CTX_set_keylog_callback = new NativeFunction(addresses["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"])
 
+    const keylog_callback = new NativeCallback(function (ctxPtr, linePtr: NativePointer) {
+        var message: { [key: string]: string | number | null } = {}
+        message["contentType"] = "keylog"
+        message["keylog"] = linePtr.readCString()
+        send(message)
+    }, "void", ["pointer", "pointer"])
 
     /**
        * Get the session_id of SSL object and return it as a hex string.
@@ -71,15 +77,11 @@ export function execute() {
             onLeave: function (retval: any) {
             }
         })
+
     Interceptor.attach(addresses["SSL_new"],
         {
             onEnter: function (args: any) {
-                var keylog_callback = new NativeCallback(function (ctxPtr, linePtr: NativePointer) {
-                    var message: { [key: string]: string | number | null } = {}
-                    message["contentType"] = "keylog"
-                    message["keylog"] = linePtr.readCString()
-                    send(message)
-                }, "void", ["pointer", "pointer"])
+
                 SSL_CTX_set_keylog_callback(args[0], keylog_callback)
             }
 
