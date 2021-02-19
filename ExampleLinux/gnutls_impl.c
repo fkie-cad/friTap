@@ -47,7 +47,6 @@ void echo_connection(int client_fd) {
     int ret;
     char buffer[BUF_SIZE + 1];
     CHECK(gnutls_init(&session, GNUTLS_SERVER));
-    fflush(stdout);
     CHECK(gnutls_priority_set(session, priority_cache));
     CHECK(gnutls_credentials_set(session, GNUTLS_CRD_CERTIFICATE, x509_cred));
     gnutls_certificate_server_set_request(session, GNUTLS_CERT_IGNORE);

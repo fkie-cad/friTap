@@ -13,24 +13,24 @@ const AF_INET6 = 100
 
 export function execute() {
     var library_method_mapping: { [key: string]: Array<String> } = {}
-    library_method_mapping["*libssl*"] = ["SSL_ImportFD","SSL_GetSessionID"]
-    library_method_mapping["*libnspr*"] = ["PR_Write", "PR_Read","PR_SetEnv","PR_FileDesc2NativeHandle","PR_GetPeerName","PR_GetSockName"]
+    library_method_mapping["*libssl*"] = ["SSL_ImportFD", "SSL_GetSessionID"]
+    library_method_mapping["*libnspr*"] = ["PR_Write", "PR_Read", "PR_SetEnv", "PR_FileDesc2NativeHandle", "PR_GetPeerName", "PR_GetSockName"]
     library_method_mapping["*libc*"] = ["getpeername", "getsockname", "ntohs", "ntohl"]
 
     var addresses: { [key: string]: NativePointer } = readAddresses(library_method_mapping)
 
-    var SSL_get_fd = new NativeFunction(addresses["PR_FileDesc2NativeHandle"], "int", ["pointer"])
-    var SET_NSS_ENV = new NativeFunction(addresses["PR_SetEnv"], "pointer", ["pointer"])
-    var SSL_SESSION_get_id = new NativeFunction(addresses["SSL_GetSessionID"], "pointer", ["pointer"])
+    const SSL_get_fd = new NativeFunction(addresses["PR_FileDesc2NativeHandle"], "int", ["pointer"])
+    const SET_NSS_ENV = new NativeFunction(addresses["PR_SetEnv"], "pointer", ["pointer"])
+    const SSL_SESSION_get_id = new NativeFunction(addresses["SSL_GetSessionID"], "pointer", ["pointer"])
     //var SSL_CTX_set_keylog_callback = new NativeFunction(addresses["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"])
-    var getsockname = new NativeFunction(Module.getExportByName('libnspr4.so', 'PR_GetSockName'), "int", ["pointer", "pointer"]);
-    var getpeername = new NativeFunction(Module.getExportByName('libnspr4.so', 'PR_GetPeerName'), "int", ["pointer", "pointer"]);
+    const getsockname = new NativeFunction(Module.getExportByName('libnspr4.so', 'PR_GetSockName'), "int", ["pointer", "pointer"]);
+    const getpeername = new NativeFunction(Module.getExportByName('libnspr4.so', 'PR_GetPeerName'), "int", ["pointer", "pointer"]);
 
 
 
-  
 
-      /**
+
+    /**
 * Returns a dictionary of a sockfd's "src_addr", "src_port", "dst_addr", and
 * "dst_port".
 * @param {pointer} sockfd The file descriptor of the socket to inspect as PRFileDesc.
@@ -40,92 +40,92 @@ export function execute() {
 * @return {{ [key: string]: string | number }} Dictionary of sockfd's "src_addr", "src_port", "dst_addr",
 *     and "dst_port".
 
-    PRStatus PR_GetPeerName(
-  PRFileDesc *fd, 
-  PRNetAddr *addr);
+  PRStatus PR_GetPeerName(
+PRFileDesc *fd, 
+PRNetAddr *addr);
 
-  PRStatus PR_GetSockName(
-  PRFileDesc *fd, 
-  PRNetAddr *addr);
+PRStatus PR_GetSockName(
+PRFileDesc *fd, 
+PRNetAddr *addr);
 
-  PRStatus PR_NetAddrToString(
-  const PRNetAddr *addr, 
-  char *string, 
-  PRUint32 size);
+PRStatus PR_NetAddrToString(
+const PRNetAddr *addr, 
+char *string, 
+PRUint32 size);
 
 
-  union PRNetAddr {
-  struct {
-     PRUint16 family;
-     char data[14];
-  } raw;
-  struct {
-     PRUint16 family;
-     PRUint16 port;
-     PRUint32 ip;
-     char pad[8];
-  } inet;
+union PRNetAddr {
+struct {
+   PRUint16 family;
+   char data[14];
+} raw;
+struct {
+   PRUint16 family;
+   PRUint16 port;
+   PRUint32 ip;
+   char pad[8];
+} inet;
 #if defined(_PR_INET6)
-  struct {
-     PRUint16 family;
-     PRUint16 port;
-     PRUint32 flowinfo;
-     PRIPv6Addr ip;
-  } ipv6;
+struct {
+   PRUint16 family;
+   PRUint16 port;
+   PRUint32 flowinfo;
+   PRIPv6Addr ip;
+} ipv6;
 #endif // defined(_PR_INET6) 
 };
 
 typedef union PRNetAddr PRNetAddr;
 
 */
-function getPortsAndAddressesFromNSS(sockfd: NativePointer, isRead: boolean, methodAddresses: { [key: string]: NativePointer }): { [key: string]: string | number } {
-    //var getpeername = new NativeFunction(methodAddresses["PR_GetPeerName"], "int", ["pointer", "pointer"])
+    function getPortsAndAddressesFromNSS(sockfd: NativePointer, isRead: boolean, methodAddresses: { [key: string]: NativePointer }): { [key: string]: string | number } {
+        //var getpeername = new NativeFunction(methodAddresses["PR_GetPeerName"], "int", ["pointer", "pointer"])
 
-    //var getsockname = new NativeFunction(methodAddresses["PR_GetSockName"], "int", ["pointer", "pointer"])
-    var ntohs = new NativeFunction(methodAddresses["ntohs"], "uint16", ["uint16"])
-    var ntohl = new NativeFunction(methodAddresses["ntohl"], "uint32", ["uint32"])
+        //var getsockname = new NativeFunction(methodAddresses["PR_GetSockName"], "int", ["pointer", "pointer"])
+        var ntohs = new NativeFunction(methodAddresses["ntohs"], "uint16", ["uint16"])
+        var ntohl = new NativeFunction(methodAddresses["ntohl"], "uint32", ["uint32"])
 
-    var message: { [key: string]: string | number } = {}
-    var addrType = Memory.alloc(2) // PRUint16 is a 2 byte (16 bit) value on all plattforms
+        var message: { [key: string]: string | number } = {}
+        var addrType = Memory.alloc(2) // PRUint16 is a 2 byte (16 bit) value on all plattforms
 
-    
-    //var prNetAddr = Memory.alloc(Process.pointerSize)
-    var addrlen = Memory.alloc(4)
-    var addr = Memory.alloc(128)
-    var src_dst = ["src", "dst"]
-    for (var i = 0; i < src_dst.length; i++) {
-        addrlen.writeU32(128)
-        if ((src_dst[i] == "src") !== isRead) {
-            getsockname(sockfd, addr)
-        }
-        else {
-            getpeername(sockfd, addr)
-        }
-        if (addr.readU16() == AF_INET) {
-            message[src_dst[i] + "_port"] = ntohs(addr.add(2).readU16()) as number
-            message[src_dst[i] + "_addr"] = ntohl(addr.add(4).readU32()) as number
-            message["ss_family"] = "AF_INET"
-        } else if (addr.readU16() == AF_INET6) {
-            message[src_dst[i] + "_port"] = ntohs(addr.add(2).readU16()) as number
-            message[src_dst[i] + "_addr"] = ""
-            var ipv6_addr = addr.add(8)
-            for (var offset = 0; offset < 16; offset += 1) {
-                message[src_dst[i] + "_addr"] += ("0" + ipv6_addr.add(offset).readU8().toString(16).toUpperCase()).substr(-2)
-            }
-            if (message[src_dst[i] + "_addr"].toString().indexOf("00000000000000000000FFFF") === 0) {
-                message[src_dst[i] + "_addr"] = ntohl(ipv6_addr.add(12).readU32()) as number
-                message["ss_family"] = "AF_INET"
+
+        //var prNetAddr = Memory.alloc(Process.pointerSize)
+        var addrlen = Memory.alloc(4)
+        var addr = Memory.alloc(128)
+        var src_dst = ["src", "dst"]
+        for (var i = 0; i < src_dst.length; i++) {
+            addrlen.writeU32(128)
+            if ((src_dst[i] == "src") !== isRead) {
+                getsockname(sockfd, addr)
             }
             else {
-                message["ss_family"] = "AF_INET6"
+                getpeername(sockfd, addr)
             }
-        } else {
-            throw "Only supporting IPv4/6"
+            if (addr.readU16() == AF_INET) {
+                message[src_dst[i] + "_port"] = ntohs(addr.add(2).readU16()) as number
+                message[src_dst[i] + "_addr"] = ntohl(addr.add(4).readU32()) as number
+                message["ss_family"] = "AF_INET"
+            } else if (addr.readU16() == AF_INET6) {
+                message[src_dst[i] + "_port"] = ntohs(addr.add(2).readU16()) as number
+                message[src_dst[i] + "_addr"] = ""
+                var ipv6_addr = addr.add(8)
+                for (var offset = 0; offset < 16; offset += 1) {
+                    message[src_dst[i] + "_addr"] += ("0" + ipv6_addr.add(offset).readU8().toString(16).toUpperCase()).substr(-2)
+                }
+                if (message[src_dst[i] + "_addr"].toString().indexOf("00000000000000000000FFFF") === 0) {
+                    message[src_dst[i] + "_addr"] = ntohl(ipv6_addr.add(12).readU32()) as number
+                    message["ss_family"] = "AF_INET"
+                }
+                else {
+                    message["ss_family"] = "AF_INET6"
+                }
+            } else {
+                throw "Only supporting IPv4/6"
+            }
+
         }
-        
+        return message
     }
-    return message
-}
 
 
     /**
@@ -166,7 +166,7 @@ function getPortsAndAddressesFromNSS(sockfd: NativePointer, isRead: boolean, met
        *
        */
     function getSslSessionId(sslSessionIdSECItem: NativePointer) {
-        if(sslSessionIdSECItem == null){
+        if (sslSessionIdSECItem == null) {
             log("Session is null")
             return 0
         }
@@ -199,7 +199,7 @@ function getPortsAndAddressesFromNSS(sockfd: NativePointer, isRead: boolean, met
     Interceptor.attach(addresses["PR_Read"],
         {
             onEnter: function (args: any) {
-                this.fd =  args[0]
+                this.fd = args[0]
                 this.buf = args[1]
             },
             onLeave: function (retval: any) {
@@ -209,16 +209,16 @@ function getPortsAndAddressesFromNSS(sockfd: NativePointer, isRead: boolean, met
                     return
                 }
                 var addr = Memory.alloc(8);
-                
-                getpeername(this.fd,addr); 
-                if(addr.readU16() == 2 || addr.readU16() == 10 || addr.readU16() == 100){
-                var message = getPortsAndAddressesFromNSS(this.fd as NativePointer, true, addresses)
-                message["ssl_session_id"] = getSslSessionId(this.fd)
-                message["function"] = "NSS_read"
-                this.message = message
-               
-                this.message["contentType"] = "datalog"
-                send(this.message, this.buf.readByteArray(retval))
+
+                getpeername(this.fd, addr);
+                if (addr.readU16() == 2 || addr.readU16() == 10 || addr.readU16() == 100) {
+                    var message = getPortsAndAddressesFromNSS(this.fd as NativePointer, true, addresses)
+                    message["ssl_session_id"] = getSslSessionId(this.fd)
+                    message["function"] = "NSS_read"
+                    this.message = message
+
+                    this.message["contentType"] = "datalog"
+                    send(this.message, this.buf.readByteArray(retval))
                 }
             }
         })
@@ -227,14 +227,14 @@ function getPortsAndAddressesFromNSS(sockfd: NativePointer, isRead: boolean, met
             onEnter: function (args: any) {
                 //log("write")
                 var addr = Memory.alloc(8);
-                
-                getsockname(args[0],addr);
-                if(addr.readU16() == 2 || addr.readU16() == 10 || addr.readU16() == 100){
-                var message = getPortsAndAddressesFromNSS(args[0] as NativePointer, false, addresses)
-                message["ssl_session_id"] = getSslSessionId(args[0])
-                message["function"] = "NSS_write"
-                message["contentType"] = "datalog"
-                send(message, args[1].readByteArray(parseInt(args[2])))
+
+                getsockname(args[0], addr);
+                if (addr.readU16() == 2 || addr.readU16() == 10 || addr.readU16() == 100) {
+                    var message = getPortsAndAddressesFromNSS(args[0] as NativePointer, false, addresses)
+                    message["ssl_session_id"] = getSslSessionId(args[0])
+                    message["function"] = "NSS_write"
+                    message["contentType"] = "datalog"
+                    send(message, args[1].readByteArray(parseInt(args[2])))
                 }
 
             },
@@ -244,7 +244,7 @@ function getPortsAndAddressesFromNSS(sockfd: NativePointer, isRead: boolean, met
     Interceptor.attach(addresses["SSL_ImportFD"],
         {
             onEnter: function (args: any) {
-            var keylog = Memory.allocUtf8String("SSLKEYLOGFILE=keylogfile")
+                var keylog = Memory.allocUtf8String("SSLKEYLOGFILE=keylogfile")
                 SET_NSS_ENV(keylog)
             }
 
