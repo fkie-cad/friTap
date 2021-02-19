@@ -39,7 +39,7 @@ The following implementations of SSL/TLS are currently supported as targets:
 
 ## Dependencies
 
-- [frida](https://frida.re) Version 12.11.18 is the most stable, so if you have issues install this via `pip install frida==12.11.18`
+- [frida](https://frida.re)
 - >= python3.6
 
 ## Planned features
