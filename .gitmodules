@@ -1,6 +1,6 @@
-[submodule "ExampleApp/wolfssl"]
-	path = ExampleApp/wolfssl
+[submodule "ground_truth/example_app_android/wolfssl"]
+	path = ground_truth/example_app_android/wolfssl
 	url = git@github.com:wolfSSL/wolfssl.git
-[submodule "ExampleApp/wolfssljni"]
-	path = ExampleApp/wolfssljni
+[submodule "ground_truth/example_app_android/wolfssljni"]
+	path = ground_truth/example_app_android/wolfssljni
 	url = git@github.com:wolfSSL/wolfssljni.git

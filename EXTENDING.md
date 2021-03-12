@@ -2,7 +2,7 @@
 
 
 
-This project is based on [frida](https://frida.re/) and utlize [frida-compile](https://github.com/frida/frida-compile) in order to generate the frida javascript payload.
+This project is based on [frida](https://frida.re/) and utilize [frida-compile](https://github.com/frida/frida-compile) in order to generate the frida javascript payload.
 
 
 
@@ -14,21 +14,43 @@ After setting up your environment to work with frida-compile just invoke the fol
 $ frida-compile agent/ssl_log.ts -o _ssl_log.js
 ```
 
-Alternatively, you can use npm scripts
-```bash
-$ npm run build
-```
-for building or
-```bash
-$ npm run watch
-```
-for continuous building on each save.
-
 
 ## Verifying a socket read or write function
 
-TBD
+In order to identify shared libaries which could use functions for reading or writing we have serveral possibilites when we attach to the process of interest with frida:
+```bash
+sudo frida --no-pause thunderbird
+```
 
+At first we can look for modules (shared libries) with functions that looks intereseting for our purpose:
+
+```javascript
+Process.getModuleByName("libnspr4.so").enumerateExports().filter(exports => exports.name.toLowerCase().includes("read"))
+```
+
+Then we can create a simple hook which print us a hexdump of the traffic which  comes through this function
+```javascript
+
+Interceptor.attach(Module.getExportByName('libnspr4.so', 'PR_Read'), { 
+  onEnter(args) { 
+    console.log("hooking read func"); 
+    var addr = Memory.alloc(128); 
+    var getpeername = new NativeFunction(Module.getExportByName('libnspr4.so', 'PR_GetPeerName'), "int", ["pointer", "pointer"]) 
+    getpeername(args[0],addr); 
+     
+    if(addr === null){ 
+        return; 
+    } 
+    console.log("ip: "+addr.ip); 
+  }, 
+  onLeave(retval) { 
+ 
+  } 
+}); 
+```
+
+
+Another possiblites is to use frida-trace or a debugger of our choice.
 
 
 ## Common errors when compiling changes
