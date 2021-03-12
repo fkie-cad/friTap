@@ -1,29 +1,4 @@
-//-------OPENSSL-------
-#include <openssl/bio.h>
-#include <openssl/err.h>
-#include <openssl/ssl.h>
-#include <openssl/applink.c>
-
-//-------WINDOWS-------
-#include <stdio.h>
-#include <stdlib.h>
-#include <memory.h> 
-#include <string.h>
-#include <windows.h>
-
-
-#define HOSTNAME "localhost"
-#define TMP_BUFFER_SIZE 1024
-
-typedef struct SSL_Connection {
-    const SSL_METHOD* method;
-    SSL_CTX* context;
-    BIO* bio;
-    SSL* ssl = NULL;
-    char* host;
-}SSL_Connection;
-
-
+#include "OpenSSL.h"
 
 void report_and_exit(const char* msg) {
     perror(msg);
@@ -41,7 +16,7 @@ void OPENSSL_cleanup(SSL_CTX* ctx, BIO* bio) {
     BIO_free_all(bio);
 }
 
-void OPENSSL_setup_and_connect(SSL_Connection * connection, const char* hostname, int port) {
+void OPENSSL_setup_and_connect(OPENSSL_Connection* connection, const char* hostname, int port) {
     connection->method = TLSv1_2_client_method();                                       // Methoden der TLS 1.2 Suite
     if (connection->method == NULL) report_and_exit("Couldnt load TLS 1.2 suite...");
 
@@ -83,7 +58,7 @@ void OPENSSL_setup_and_connect(SSL_Connection * connection, const char* hostname
             "##### Certificate verification error (%i) but continuing...\n",
             (int)verify_flag);
 */
-char* OPENSSL_get_response(SSL_Connection* connection) {
+char* OPENSSL_get_response(OPENSSL_Connection* connection) {
     
     unsigned long responseBufferSize = 0;
     char* responseBuffer = (char*) malloc(1);
@@ -126,8 +101,8 @@ void OPENSSL_run() {
     OPENSSL_init();
     printf("Trying an HTTPS connection to %s...\n", HOSTNAME);
     
-    SSL_Connection* con = (SSL_Connection*)malloc(sizeof(SSL_Connection));
-    if (con == NULL) report_and_exit("Couldnt allocate memory for new SSL_Connection");
+    OPENSSL_Connection* con = (OPENSSL_Connection*)malloc(sizeof(OPENSSL_Connection));
+    if (con == NULL) report_and_exit("Couldnt allocate memory for new OPENSSL_Connection");
 
     sprintf(request,"Ya yeet!");
 
@@ -143,18 +118,6 @@ void OPENSSL_run() {
 
 
 int main(int argc, char* argv[]) {
-    //if (argc <= 1) report_and_exit("Invalid amount of given arguments!");
-    int option = 1;
-
-    switch (option) {
-        case 1:
-            OPENSSL_run();
-            break;
-        case 2:
-            printf("Option 2 ausgwählt!");
-            break;
-    }
-
-
+    OPENSSL_run();
     return 0;
 }
