@@ -89,7 +89,7 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>C:\Users\Crypt0n\Downloads\wolfssl-master\;C:\Program Files (x86)\OpenSSL-Win32\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Program Files (x86)\OpenSSL-Win32\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -118,12 +118,15 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
+      <AdditionalIncludeDirectories>C:\Program Files (x86)\OpenSSL-Win32\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>C:\Program Files (x86)\OpenSSL-Win32\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>C:\Program Files (x86)\OpenSSL-Win32\lib\capi.lib;C:\Program Files (x86)\OpenSSL-Win32\lib\dasync.lib;C:\Program Files (x86)\OpenSSL-Win32\lib\libapps.lib;C:\Program Files (x86)\OpenSSL-Win32\lib\libcrypto.lib;C:\Program Files (x86)\OpenSSL-Win32\lib\libcrypto_static.lib;C:\Program Files (x86)\OpenSSL-Win32\lib\libssl.lib;C:\Program Files (x86)\OpenSSL-Win32\lib\libssl_static.lib;C:\Program Files (x86)\OpenSSL-Win32\lib\libtestutil.lib;C:\Program Files (x86)\OpenSSL-Win32\lib\openssl.lib;C:\Program Files (x86)\OpenSSL-Win32\lib\ossltest.lib;C:\Program Files (x86)\OpenSSL-Win32\lib\padlock.lib;C:\Program Files (x86)\OpenSSL-Win32\lib\uitest.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">

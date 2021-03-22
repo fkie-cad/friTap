@@ -94,7 +94,8 @@ void WOLFSSL_cleanup(WOLFSSL_Connection* connection) {
 
 void WOLFSSL_run() {
     const char* message = "Ya yeet!";
-    printf("WolfSSL 4.7 Feb 2021");
+    printf("WolfSSL 4.7 Feb 2021\n");
+    printf("%p\n", wolfSSL_CTX_free);
     WOLFSSL_init();
     WOLFSSL_Connection* con;
     while (1) {
@@ -110,6 +111,7 @@ void WOLFSSL_run() {
         printf("Response: %s\n", response);
         
         WOLFSSL_cleanup(con);
+        Sleep(3000);
     }
     
 

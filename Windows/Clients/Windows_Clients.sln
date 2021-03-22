@@ -3,9 +3,9 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 16
 VisualStudioVersion = 16.0.31025.194
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "OpenSSL", ".\OpenSSL\OpenSSL.vcxproj", "{27249CFC-C379-4211-B4BA-71419F800F54}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "OpenSSL", "OpenSSL\OpenSSL.vcxproj", "{27249CFC-C379-4211-B4BA-71419F800F54}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "WolfSSL", ".\WolfSSL\WolfSSL.vcxproj", "{A90660DE-0093-491D-8352-31CC2D09E580}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "WolfSSL", "WolfSSL\WolfSSL.vcxproj", "{A90660DE-0093-491D-8352-31CC2D09E580}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -15,16 +15,16 @@ Global
 		Release|x86 = Release|x86
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
-		{27249CFC-C379-4211-B4BA-71419F800F54}.Debug|x64.ActiveCfg = Debug|x64
-		{27249CFC-C379-4211-B4BA-71419F800F54}.Debug|x64.Build.0 = Debug|x64
+		{27249CFC-C379-4211-B4BA-71419F800F54}.Debug|x64.ActiveCfg = Debug|Win32
+		{27249CFC-C379-4211-B4BA-71419F800F54}.Debug|x64.Build.0 = Debug|Win32
 		{27249CFC-C379-4211-B4BA-71419F800F54}.Debug|x86.ActiveCfg = Debug|Win32
 		{27249CFC-C379-4211-B4BA-71419F800F54}.Debug|x86.Build.0 = Debug|Win32
 		{27249CFC-C379-4211-B4BA-71419F800F54}.Release|x64.ActiveCfg = Release|x64
 		{27249CFC-C379-4211-B4BA-71419F800F54}.Release|x64.Build.0 = Release|x64
 		{27249CFC-C379-4211-B4BA-71419F800F54}.Release|x86.ActiveCfg = Release|Win32
 		{27249CFC-C379-4211-B4BA-71419F800F54}.Release|x86.Build.0 = Release|Win32
-		{A90660DE-0093-491D-8352-31CC2D09E580}.Debug|x64.ActiveCfg = Debug|x64
-		{A90660DE-0093-491D-8352-31CC2D09E580}.Debug|x64.Build.0 = Debug|x64
+		{A90660DE-0093-491D-8352-31CC2D09E580}.Debug|x64.ActiveCfg = Debug|Win32
+		{A90660DE-0093-491D-8352-31CC2D09E580}.Debug|x64.Build.0 = Debug|Win32
 		{A90660DE-0093-491D-8352-31CC2D09E580}.Debug|x86.ActiveCfg = Debug|Win32
 		{A90660DE-0093-491D-8352-31CC2D09E580}.Debug|x86.Build.0 = Debug|Win32
 		{A90660DE-0093-491D-8352-31CC2D09E580}.Release|x64.ActiveCfg = Release|x64

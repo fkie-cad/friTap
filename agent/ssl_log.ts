@@ -1,4 +1,3 @@
-import { off } from "process"
 import { execute as boring_execute } from "./openssl_boringssl"
 import { execute as wolf_execute } from "./wolfssl"
 import { execute as bouncy_execute } from "./bouncycastle"
@@ -6,6 +5,8 @@ import { execute as conscrypt_execute } from "./conscrypt"
 import { execute as nss_execute } from "./nss"
 import { execute as gnutls_execute } from "./gnutls"
 import { log } from "./log"
+
+
 
 // sometimes libraries loaded but don't have function implemented we need to hook
 function hasRequiredFunctions(libName: string, expectedFuncName: string): boolean {
@@ -17,14 +18,17 @@ function hasRequiredFunctions(libName: string, expectedFuncName: string): boolea
     }
 }
 
+
 var moduleNames: Array<string> = []
 Process.enumerateModules().forEach(item => moduleNames.push(item.name))
+
+
 
 for (var mod of moduleNames) {
     if (mod.indexOf("libssl.so") >= 0) {
         //if (hasRequiredFunctions(mod, "SSL_read")) {
         log("OpenSSL/BoringSSL detected.")
-        boring_execute()
+        boring_execute("libssl")
         //}
         break
     }
@@ -73,7 +77,27 @@ if (Java.available) {
 
 //Hook the dynamic loader, in case library gets loaded at a later point in time
 //check wether we are on android or linux
+
+//! Repeated module loading results in multiple intereceptions. This will cause multiple log entries if module is loaded into the same address space 
 try {
+
+    switch(Process.platform){
+        case "windows":
+            hookWindowsDynamicLoader()
+            break;
+        case "linux":
+            hookLinuxDynamicLoader()
+            break;
+        default:
+            console.log("Missing dynamic loader hook implementation!");
+    }
+
+    
+} catch (error) {
+    log("No dynamic loader present for hooking.")
+}
+
+function hookLinuxDynamicLoader():void{
     let dl_exports = Process.getModuleByName("libdl.so").enumerateExports()
     var dlopen = "dlopen"
     for (var ex of dl_exports) {
@@ -92,7 +116,7 @@ try {
             if (this.moduleName != undefined) {
                 if (this.moduleName.endsWith("libssl.so")) {
                     log("OpenSSL/BoringSSL detected.")
-                    boring_execute()
+                    boring_execute("libssl")
                 } else if (this.moduleName.endsWith("libwolfssl.so")) {
                     log("WolfSSL detected.")
                     wolf_execute()
@@ -101,9 +125,36 @@ try {
 
         }
     })
-} catch (error) {
-    log("No dynamic loader present for hooking.")
+
+    console.log(`[*] ${dlopen.indexOf("android") == -1 ? "Linux" : "Android"} dynamic loader hooked.`)
 }
+
+function hookWindowsDynamicLoader():void{
+    const resolver:ApiResolver = new ApiResolver('module')
+    var loadLibraryExW = resolver.enumerateMatches("exports:KERNELBASE.dll!*LoadLibraryExW")
+    
+    if(loadLibraryExW.length == 0) return console.log("[!] Missing windows dynamic loader!")
+
+   
+    Interceptor.attach(loadLibraryExW[0].address, {
+        onLeave(retval: NativePointer){
+                        
+            let map = new ModuleMap();
+            let moduleName = map.findName(retval)
+                        
+            if(moduleName === null) return
+
+            if(moduleName.indexOf("libssl-1_1.dll") != -1){
+                log("OpenSSL/BoringSSL detected.")
+                boring_execute("libssl-1_1.dll");
+            }
+                       
+            //More module comparisons
+        }
+    })
+    console.log("[*] Windows dynamic loader hooked.")
+}
+
 
 if (Java.available) {
     Java.perform(function () {

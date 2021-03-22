@@ -1,10 +1,15 @@
 import { readAddresses, getPortsAndAddresses } from "./shared"
 import { log } from "./log"
 
-export function execute() {
+export function execute(moduleName:string) {
+    
+    console.log("Execute")
+
     var library_method_mapping: { [key: string]: Array<String> } = {}
-    library_method_mapping["*libssl*"] = ["SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_keylog_callback", "SSL_get_SSL_CTX"]
+    library_method_mapping[`*${moduleName}*`] = ["SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_keylog_callback", "SSL_get_SSL_CTX"]
     library_method_mapping["*libc*"] = ["getpeername", "getsockname", "ntohs", "ntohl"]
+
+
 
     var addresses: { [key: string]: NativePointer } = readAddresses(library_method_mapping)
 
@@ -47,6 +52,7 @@ export function execute() {
         return session_id
     }
 
+    
     Interceptor.attach(addresses["SSL_read"],
         {
             onEnter: function (args: any) {
