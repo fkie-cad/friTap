@@ -65,7 +65,7 @@ def temp_fifo():
         print(f'Failed to create FIFO: {e}')
 
 
-def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, android=False, live=False):
+def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, android=False, live=False, isPID = False):
 
     def log_pcap(pcap_file, ss_family, ssl_session_id, function, src_addr, src_port,
                  dst_addr, dst_port, data):
@@ -199,6 +199,7 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
             dependent on message type.
         data: The string of captured decrypted data.
         """
+        print("OnMessage")
         if message["type"] == "error":
             pprint.pprint(message)
             os.kill(os.getpid(), signal.SIGTERM)
@@ -274,6 +275,7 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
         device = frida.get_usb_device()
     else:
         device = frida.get_local_device()
+
     device.on("child_added", on_child_added)
     if enable_spawn_gating:
         device.enable_spawn_gating()
@@ -285,7 +287,10 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
             pid = device.spawn(app.split(" "))
         process = device.attach(pid)
     else:
-        process = device.attach(app)
+        if isPID:
+            process = device.attach(int(app))
+        else:
+            process = device.attach(app)
 
     if live:
         if pcap:
@@ -318,7 +323,7 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
     if spawn:
         device.resume(pid)
     try:
-        signal.pause()
+        sys.stdin.read()
     except KeyboardInterrupt:
         pass
 
@@ -362,6 +367,8 @@ Examples:
                       help="Name of PCAP file to write")
     args.add_argument("-s", "--spawn", required=False, action="store_const", const=True,
                       help="Spawn the executable/app instead of attaching to a running process")
+    args.add_argument("--isPID", required=False, action="store_const", const=True,
+                      help="Spawn the executable/app instead of attaching to a running process")
     args.add_argument("-v", "--verbose", required=False, action="store_const",
                       const=True, help="Show verbose output")
     args.add_argument("--enable_spawn_gating", required=False, action="store_const", const=True,
@@ -371,7 +378,11 @@ Examples:
     parsed = parser.parse_args()
 
     try:
+        print("Start logging")
         ssl_log(parsed.exec, parsed.pcap, parsed.verbose,
-                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.android, parsed.live)
+                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.android, parsed.live, parsed.isPID)
+    except Exception as ar:
+        print(ar)
+
     finally:
         cleanup(parsed.live)

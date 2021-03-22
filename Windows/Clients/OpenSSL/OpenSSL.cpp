@@ -8,15 +8,21 @@ void report_and_exit(const char* msg) {
 
 void OPENSSL_init() {
     SSL_load_error_strings();
+    OpenSSL_add_all_algorithms();
     SSL_library_init();
 }
 
-void OPENSSL_cleanup(SSL_CTX* ctx, BIO* bio) {
+void OPENSSL_BIO_cleanup(SSL_CTX* ctx, BIO* bio) {
     SSL_CTX_free(ctx);
-    BIO_free_all(bio);
+    BIO_free(bio);
 }
 
-void OPENSSL_setup_and_connect(OPENSSL_Connection* connection, const char* hostname, int port) {
+void OPENSSL_cleanup(OPENSSL_Connection* connection) {
+    SSL_CTX_free(connection->context);
+    SSL_free(connection->ssl);
+}
+
+void OPENSSL_BIO_setup_and_connect(OPENSSL_Connection* connection, const char* hostname, int port) {
     connection->method = TLSv1_2_client_method();                                       // Methoden der TLS 1.2 Suite
     if (connection->method == NULL) report_and_exit("Couldnt load TLS 1.2 suite...");
 
@@ -37,14 +43,53 @@ void OPENSSL_setup_and_connect(OPENSSL_Connection* connection, const char* hostn
    
     //Versuche zu verbinden, wenn nicht dann räume auf
     if (BIO_do_connect(connection->bio) <= 0) {
-        OPENSSL_cleanup(connection->context, connection->bio);
+        OPENSSL_BIO_cleanup(connection->context, connection->bio);
         report_and_exit("Unable to connect to host...");
     }
 
 
 }
 
+void OPENSSL_setup_and_connect(OPENSSL_Connection* connection, const char* hostname, int port) {
+    WSADATA wsa;
 
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+        printf("Failed to initialize WSA. Error: %d\n", WSAGetLastError());
+    }
+    
+    struct sockaddr_in addr;
+    //struct hostent* host = gethostbyname(hostname);
+    connection->socket = socket(AF_INET, SOCK_STREAM, 6);
+    printf("Socket: %d", connection->socket);
+    printf("Sock error: %d ---", WSAGetLastError());
+    memset(&addr, 0, sizeof(addr));
+
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = inet_addr(hostname);
+
+    connection->method = TLSv1_2_client_method();
+    connection->context = SSL_CTX_new(connection->method);
+    if (connection->context == NULL) {
+        ERR_print_errors_fp(stderr);
+        abort();
+    }
+    
+    connect(connection->socket, (struct sockaddr*)&addr, sizeof(addr));
+    printf("%d",WSAGetLastError());
+        //close(connection->socket);
+        //report_and_exit("Connection...");
+
+   
+
+
+    connection->ssl = SSL_new(connection->context);
+    SSL_set_fd(connection->ssl, connection->socket);
+    if (SSL_connect(connection->ssl) != 1) {
+        ERR_print_errors_fp(stderr);
+    }
+
+}
 
 //Verifizierung des Zertifikats erstmal rausgenommen
 /*if (!SSL_CTX_load_verify_locations(ctx,
@@ -58,7 +103,7 @@ void OPENSSL_setup_and_connect(OPENSSL_Connection* connection, const char* hostn
             "##### Certificate verification error (%i) but continuing...\n",
             (int)verify_flag);
 */
-char* OPENSSL_get_response(OPENSSL_Connection* connection) {
+char* OPENSSL_BIO_get_response(OPENSSL_Connection* connection) {
     
     unsigned long responseBufferSize = 0;
     char* responseBuffer = (char*) malloc(1);
@@ -92,6 +137,40 @@ char* OPENSSL_get_response(OPENSSL_Connection* connection) {
     }
 }
 
+char* OPENSSL_get_response(OPENSSL_Connection* connection) {
+
+    unsigned long responseBufferSize = 0;
+    char* responseBuffer = (char*)malloc(1);
+    if (responseBuffer == NULL) report_and_exit("GetResponse...");
+    responseBuffer[0] = '\0';
+
+    while (1) {
+        //Neuen temporären Buffer erstellen
+        char* tempBuffer = (char*)malloc(TMP_BUFFER_SIZE);
+        if (tempBuffer == NULL) report_and_exit("Couldnt allocate memory for tempBuffer...");
+
+        int readBytesCount = SSL_read(connection->ssl, tempBuffer, TMP_BUFFER_SIZE);
+
+
+        if (readBytesCount <= 0) {
+            //Wenn keine Daten gelesen wurden, dann hänge hinten ein nullterm-Char dran und gebe reponseBuffer-Pointer zurück
+            char* returnBuffer = (char*)realloc(responseBuffer, responseBufferSize + 1);
+            if (returnBuffer == NULL) report_and_exit("Couldnt realloc memory for returnBuffer...");
+            returnBuffer[responseBufferSize] = '\0';
+            return returnBuffer;
+        }
+
+        //Wenn neue Daten gelesen wurden, dann erweitere ResponseBuffer und schreibe neue Daten hinein
+        char* tempResponseBuffer = (char*)realloc(responseBuffer, responseBufferSize + readBytesCount);
+        if (tempResponseBuffer == NULL) report_and_exit("Couldnt realloc memory for tempResponseBuffer...");
+        responseBuffer = tempResponseBuffer;
+        memcpy(responseBuffer + responseBufferSize, tempBuffer, readBytesCount);
+        responseBufferSize += readBytesCount;
+        free(tempBuffer);
+
+    }
+}
+
 void OPENSSL_run() {
 
     char request[1024];
@@ -103,15 +182,14 @@ void OPENSSL_run() {
     
     OPENSSL_Connection* con = (OPENSSL_Connection*)malloc(sizeof(OPENSSL_Connection));
     if (con == NULL) report_and_exit("Couldnt allocate memory for new OPENSSL_Connection");
-
     sprintf(request,"Ya yeet!");
 
     while (1) {
-        OPENSSL_setup_and_connect(con, HOSTNAME, 3000);
-        BIO_puts(con->bio, request);
+        OPENSSL_setup_and_connect(con, HOSTNAME, 443);
+        SSL_write(con->ssl, request, strlen(request));
         char* response = OPENSSL_get_response(con);
         printf("%s\n", response);
-        OPENSSL_cleanup(con->context, con->bio);
+        OPENSSL_cleanup(con);
         Sleep(3000);
     }
 }

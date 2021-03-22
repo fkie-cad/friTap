@@ -3,11 +3,31 @@ import { log } from "./log"
 
 export function execute(moduleName:string) {
     
-    console.log("Execute")
-
+    var socket_library:string =""
+    switch(Process.platform){
+        case "linux":
+            socket_library = "libc"
+            break
+        case "windows":
+            socket_library = "WS2_32.dll"
+            break
+        case "darwin":
+            //TODO:Darwin implementation pending...
+            break;
+        default:
+            log(`Platform "${Process.platform} currently not supported!`)
+    }
+    
     var library_method_mapping: { [key: string]: Array<String> } = {}
     library_method_mapping[`*${moduleName}*`] = ["SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_keylog_callback", "SSL_get_SSL_CTX"]
-    library_method_mapping["*libc*"] = ["getpeername", "getsockname", "ntohs", "ntohl"]
+    
+    //? Just in case darwin methods are different to linux and windows ones
+    if(socket_library === "libc" || socket_library === "WS2_32.dll"){
+        library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
+    }else{
+        //TODO: Darwin implementation pending
+    }
+    
 
 
 
@@ -52,10 +72,13 @@ export function execute(moduleName:string) {
         return session_id
     }
 
-    
+
+
+    console.log("Before read attach")
     Interceptor.attach(addresses["SSL_read"],
         {
             onEnter: function (args: any) {
+                console.log("Read triggered!")
                 var message = getPortsAndAddresses(SSL_get_fd(args[0]) as number, true, addresses)
                 message["ssl_session_id"] = getSslSessionId(args[0])
                 message["function"] = "SSL_read"
@@ -63,6 +86,7 @@ export function execute(moduleName:string) {
                 this.buf = args[1]
             },
             onLeave: function (retval: any) {
+                console.log("Read leave triggered!")
                 retval |= 0 // Cast retval to 32-bit integer.
                 if (retval <= 0) {
                     return
@@ -71,9 +95,11 @@ export function execute(moduleName:string) {
                 send(this.message, this.buf.readByteArray(retval))
             }
         })
+        console.log("Before read attach")
     Interceptor.attach(addresses["SSL_write"],
         {
             onEnter: function (args: any) {
+                console.log("Enter write!")
                 var message = getPortsAndAddresses(SSL_get_fd(args[0]) as number, false, addresses)
                 message["ssl_session_id"] = getSslSessionId(args[0])
                 message["function"] = "SSL_write"
@@ -87,7 +113,7 @@ export function execute(moduleName:string) {
     Interceptor.attach(addresses["SSL_new"],
         {
             onEnter: function (args: any) {
-
+                console.log("Enter new!")
                 SSL_CTX_set_keylog_callback(args[0], keylog_callback)
             }
 
