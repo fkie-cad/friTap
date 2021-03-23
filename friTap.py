@@ -13,6 +13,7 @@ import tempfile
 try:
     import hexdump  # pylint: disable=g-import-not-at-top
 except ImportError:
+    print("Unable to import hexdump module!")
     pass
 
 __author__ = "Max Ufer, Daniel Baier"
@@ -199,7 +200,6 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
             dependent on message type.
         data: The string of captured decrypted data.
         """
-        print("OnMessage")
         if message["type"] == "error":
             pprint.pprint(message)
             os.kill(os.getpid(), signal.SIGTERM)

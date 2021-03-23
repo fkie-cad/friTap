@@ -1,11 +1,20 @@
 #include "WolfSSL.h"
 
+
+HINSTANCE wolfSSL;
+typedef int(__stdcall* _wolfSSL_Init)(WOLFSSL*, void*, int);
+_wolfSSL_Init wRead;
 void report_and_exit(const char* msg) {
     perror(msg);
     exit(-1);
 }
 
 void WOLFSSL_init() {
+
+    wolfSSL = LoadLibrary(L"wolfssl.dll");
+    wRead = (_wolfSSL_Init) GetProcAddress(wolfSSL, "wolfSSL_read");
+    printf("Read pointer: %p\n", wRead);
+
     WSADATA wsa;
 
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
@@ -13,7 +22,6 @@ void WOLFSSL_init() {
         exit(1);
     }
     wolfSSL_Init();
-    wolfSSL_Debugging_ON();
     wolfSSL_load_error_strings();
 }
 
@@ -95,7 +103,6 @@ void WOLFSSL_cleanup(WOLFSSL_Connection* connection) {
 void WOLFSSL_run() {
     const char* message = "Ya yeet!";
     printf("WolfSSL 4.7 Feb 2021\n");
-    printf("%p\n", wolfSSL_CTX_free);
     WOLFSSL_init();
     WOLFSSL_Connection* con;
     while (1) {
