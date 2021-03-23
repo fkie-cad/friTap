@@ -28,7 +28,7 @@ export function readAddresses(library_method_mapping: { [key: string]: Array<Str
             }
             else {
                 
-                log("Found " + method + " " + matches[0].address)
+                //log("Found " + method + " " + matches[0].address)
             }
             if (matches.length == 0) {
                 throw "Could not find " + library_name + "!" + method

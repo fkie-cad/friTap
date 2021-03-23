@@ -22,30 +22,34 @@ function hasRequiredFunctions(libName: string, expectedFuncName: string): boolea
 var moduleNames: Array<string> = []
 Process.enumerateModules().forEach(item => moduleNames.push(item.name))
 
-var module_library_mapping: { [key: string]: Array<[string, (moduleName: string)=>void]> } = {}
-module_library_mapping["windows"] = [["libssl-1_1.dll", boring_execute],["wolfssl.dll", wolf_execute]] //TODO: Map all the other libraries
-module_library_mapping["linux"] = [["libssl.so", boring_execute],["libgnutls.so", gnutls_execute],["libwolfssl.so", wolf_execute],["libnspr.so",nss_execute]]
+var module_library_mapping: { [key: string]: Array<[any, (moduleName: string)=>void]> } = {}
+module_library_mapping["windows"] = [[/libssl-[0-9]+_[0-9]+\.dll/, boring_execute],[/.*wolfssl.*\.dll/, wolf_execute]] //TODO: Map all the other libraries
+module_library_mapping["linux"] = [[/.*libssl\.so/, boring_execute],[/.*libgnutls\.so/, gnutls_execute],[/.*libwolfssl\.so/, wolf_execute],[/.*libnspr\.so/,nss_execute]]
 
 
 if(Process.platform === "windows"){
-    for(var module of module_library_mapping["windows"]){
-        let name = module[0]
-        let func = module[1]
-        if (moduleNames.indexOf(name) != -1){
-            log(`${name} found & will be hooked on windows!`)
-            func(name)
-        } 
+    for(let map of module_library_mapping["windows"]){
+        let regex = map[0]
+        let func = map[1]
+        for(let module of moduleNames){
+            if (regex.test(module)){
+                log(`${module} found & will be hooked on Windows!`)
+                func(module)
+            } 
+        }
     }
+        
 }
 
 if(Process.platform === "linux"){
-    for(var module of module_library_mapping["linux"]){
-        let name = module[0].split(".")[0] //e.g libssl.so -> libssl (module name)
-        let func = module[1]
-
-        if(moduleNames.indexOf(name) != -1){
-            log(`${name} found & will be hooked on linux!`)
-            func(name)
+    for(let map of module_library_mapping["linux"]){
+        let regex = map[0]
+        let func = map[1]
+        for(let module of moduleNames){
+            if (regex.test(module)){
+                log(`${module} found & will be hooked on Linux!`)
+                func(module)
+            } 
         }
     }
 }
