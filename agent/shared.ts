@@ -18,7 +18,6 @@ const AF_INET6 = 10
  * @return {{[key: string]: NativePointer }} A string indexed list of NativePointers, which point to the respective methods
  */
 export function readAddresses(library_method_mapping: { [key: string]: Array<String> }): { [key: string]: NativePointer } {
-
     var resolver = new ApiResolver("module")
     var addresses: { [key: string]: NativePointer } = {}
     for (let library_name in library_method_mapping) {
@@ -28,7 +27,8 @@ export function readAddresses(library_method_mapping: { [key: string]: Array<Str
                 throw "Could not find " + library_name + "!" + method
             }
             else {
-                send("Found " + library_name + "!" + method)
+                
+                log("Found " + method + " " + matches[0].address)
             }
             if (matches.length == 0) {
                 throw "Could not find " + library_name + "!" + method

@@ -23,8 +23,9 @@ var moduleNames: Array<string> = []
 Process.enumerateModules().forEach(item => moduleNames.push(item.name))
 
 var module_library_mapping: { [key: string]: Array<[string, (moduleName: string)=>void]> } = {}
-module_library_mapping["windows"] = [["libssl-1_1.dll", boring_execute]] //TODO: Map all the other libraries
+module_library_mapping["windows"] = [["libssl-1_1.dll", boring_execute],["wolfssl.dll", wolf_execute]] //TODO: Map all the other libraries
 module_library_mapping["linux"] = [["libssl.so", boring_execute],["libgnutls.so", gnutls_execute],["libwolfssl.so", wolf_execute],["libnspr.so",nss_execute]]
+
 
 if(Process.platform === "windows"){
     for(var module of module_library_mapping["windows"]){
@@ -39,7 +40,7 @@ if(Process.platform === "windows"){
 
 if(Process.platform === "linux"){
     for(var module of module_library_mapping["linux"]){
-        let name = module[0].split(".")[0] //libssl.so -> libssl (module name)
+        let name = module[0].split(".")[0] //e.g libssl.so -> libssl (module name)
         let func = module[1]
 
         if(moduleNames.indexOf(name) != -1){
@@ -107,7 +108,7 @@ function hookLinuxDynamicLoader():void{
                     boring_execute("libssl")
                 } else if (this.moduleName.endsWith("libwolfssl.so")) {
                     log("WolfSSL detected.")
-                    wolf_execute()
+                    wolf_execute("libwolfssl")
                 }
             }
 

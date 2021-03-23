@@ -1,10 +1,32 @@
 import { readAddresses, getPortsAndAddresses } from "./shared"
 import { log } from "./log"
 
-export function execute() {
+export function execute(moduleName: string) {
+    
+    var socket_library:string =""
+    switch(Process.platform){
+        case "linux":
+            socket_library = "libc"
+            break
+        case "windows":
+            socket_library = "WS2_32.dll"
+            break
+        case "darwin":
+            //TODO:Darwin implementation pending...
+            break;
+        default:
+            log(`Platform "${Process.platform} currently not supported!`)
+    }
+
     var library_method_mapping: { [key: string]: Array<String> } = {}
-    library_method_mapping["*libwolfssl*"] = ["wolfSSL_read", "wolfSSL_write", "wolfSSL_get_fd", "wolfSSL_get_session", "wolfSSL_connect", "wolfSSL_SESSION_get_master_key", "wolfSSL_get_client_random", "wolfSSL_KeepArrays"]
-    library_method_mapping["*libc*"] = ["getpeername", "getsockname", "ntohs", "ntohl"]
+    library_method_mapping[`*${moduleName}*`] = ["wolfSSL_read", "wolfSSL_write", "wolfSSL_get_fd", "wolfSSL_get_session", "wolfSSL_connect", "wolfSSL_SESSION_get_master_key", "wolfSSL_get_client_random", "wolfSSL_KeepArrays"]
+    
+    //? Just in case darwin methods are different to linux and windows ones
+    if(socket_library === "libc" || socket_library === "WS2_32.dll"){
+        library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
+    }else{
+        //TODO: Darwin implementation pending
+    }
 
     var addresses: { [key: string]: NativePointer } = readAddresses(library_method_mapping)
 
@@ -77,7 +99,7 @@ export function execute() {
         var nullPtr = ptr(0)
         var clientRandomSize = wolfSSL_get_client_random(wolfSslPtr, nullPtr, 0) as number
         var buffer = Memory.alloc(clientRandomSize)
-        console.log(wolfSSL_get_client_random(wolfSslPtr, buffer, clientRandomSize))
+        //console.log(wolfSSL_get_client_random(wolfSslPtr, buffer, clientRandomSize))
 
         var clientRandom = ""
         for (var i = 0; i < clientRandomSize; i++) {

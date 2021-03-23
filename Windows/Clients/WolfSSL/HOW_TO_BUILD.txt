@@ -1,5 +1,5 @@
-Build dynamic lib file
------------------------
+Build and import dynamic lib file
+----------------------------------------------
 
 1.) Get official wolfSSL sourcecode from: https://github.com/wolfSSL/wolfssl
 2.) Add "__declspec(dllexport)" infront of return type of function to export (ssl.h)
@@ -15,3 +15,5 @@ Build dynamic lib file
 8.) lib /def:wolfssl.def /out:wolfssl.lib /machine:x86
 9.) Copy wolfssl.dll to client.exe locations
 10.) Include .lib into Visual studio (Project properties -> Linker -> Input -> Additional Dependencies
+
+

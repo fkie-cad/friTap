@@ -73,12 +73,9 @@ export function execute(moduleName:string) {
     }
 
 
-
-    console.log("Before read attach")
     Interceptor.attach(addresses["SSL_read"],
         {
             onEnter: function (args: any) {
-                console.log("Read triggered!")
                 var message = getPortsAndAddresses(SSL_get_fd(args[0]) as number, true, addresses)
                 message["ssl_session_id"] = getSslSessionId(args[0])
                 message["function"] = "SSL_read"
@@ -86,7 +83,6 @@ export function execute(moduleName:string) {
                 this.buf = args[1]
             },
             onLeave: function (retval: any) {
-                console.log("Read leave triggered!")
                 retval |= 0 // Cast retval to 32-bit integer.
                 if (retval <= 0) {
                     return
@@ -95,11 +91,9 @@ export function execute(moduleName:string) {
                 send(this.message, this.buf.readByteArray(retval))
             }
         })
-        console.log("Before read attach")
     Interceptor.attach(addresses["SSL_write"],
         {
             onEnter: function (args: any) {
-                console.log("Enter write!")
                 var message = getPortsAndAddresses(SSL_get_fd(args[0]) as number, false, addresses)
                 message["ssl_session_id"] = getSslSessionId(args[0])
                 message["function"] = "SSL_write"
@@ -113,7 +107,6 @@ export function execute(moduleName:string) {
     Interceptor.attach(addresses["SSL_new"],
         {
             onEnter: function (args: any) {
-                console.log("Enter new!")
                 SSL_CTX_set_keylog_callback(args[0], keylog_callback)
             }
 
