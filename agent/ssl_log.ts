@@ -22,43 +22,32 @@ function hasRequiredFunctions(libName: string, expectedFuncName: string): boolea
 var moduleNames: Array<string> = []
 Process.enumerateModules().forEach(item => moduleNames.push(item.name))
 
+var module_library_mapping: { [key: string]: Array<[string, (moduleName: string)=>void]> } = {}
+module_library_mapping["windows"] = [["libssl-1_1.dll", boring_execute]] //TODO: Map all the other libraries
+module_library_mapping["linux"] = [["libssl.so", boring_execute],["libgnutls.so", gnutls_execute],["libwolfssl.so", wolf_execute],["libnspr.so",nss_execute]]
 
-
-for (var mod of moduleNames) {
-    if (mod.indexOf("libssl.so") >= 0) {
-        //if (hasRequiredFunctions(mod, "SSL_read")) {
-        log("OpenSSL/BoringSSL detected.")
-        boring_execute("libssl")
-        //}
-        break
+if(Process.platform === "windows"){
+    for(var module of module_library_mapping["windows"]){
+        let name = module[0]
+        let func = module[1]
+        if (moduleNames.indexOf(name) != -1){
+            log(`${name} found & will be hooked on windows!`)
+            func(name)
+        } 
     }
 }
 
-for (var mod of moduleNames) {
-    if (mod.indexOf("libgnutls.so") >= 0) {
-        log("GnuTls detected.")
-        gnutls_execute()
-        break
+if(Process.platform === "linux"){
+    for(var module of module_library_mapping["linux"]){
+        let name = module[0].split(".")[0] //libssl.so -> libssl (module name)
+        let func = module[1]
+
+        if(moduleNames.indexOf(name) != -1){
+            log(`${name} found & will be hooked on linux!`)
+            func(name)
+        }
     }
 }
-
-for (var mod of moduleNames) {
-    if (mod.indexOf("libwolfssl.so") >= 0) {
-        log("WolfSSL detected.")
-        wolf_execute()
-        break
-    }
-}
-
-
-for (var mod of moduleNames) {
-    if (mod.indexOf("libnspr") >= 0) {
-        log("NSS SSL detected.")
-        nss_execute()
-        break
-    }
-}
-
 
 if (Java.available) {
     Java.perform(function () {
@@ -75,8 +64,7 @@ if (Java.available) {
 
 
 
-//Hook the dynamic loader, in case library gets loaded at a later point in time
-//check wether we are on android or linux
+//Hook the dynamic loaders, in case library gets loaded at a later point in time
 
 //! Repeated module loading results in multiple intereceptions. This will cause multiple log entries if module is loaded into the same address space 
 try {
