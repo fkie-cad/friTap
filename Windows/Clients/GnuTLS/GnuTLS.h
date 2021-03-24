@@ -5,7 +5,7 @@
 #pragma warning(suppress : 4996)
 #define CHECK(x) assert((x)>=0)
 #define HOSTNAME "127.0.0.1"
-#define GNUTLS_VERSION "6.3.0"
+#define GNUTLS_VERSION "7.3.0"
 #define TMP_BUFFER_SIZE 1024
 #define MSG "Ya yeet!"
 

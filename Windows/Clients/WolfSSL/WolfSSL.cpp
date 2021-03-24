@@ -10,11 +10,6 @@ void report_and_exit(const char* msg) {
 }
 
 void WOLFSSL_init() {
-
-    wolfSSL = LoadLibrary(L"wolfssl.dll");
-    wRead = (_wolfSSL_Init) GetProcAddress(wolfSSL, "wolfSSL_read");
-    printf("Read pointer: %p\n", wRead);
-
     WSADATA wsa;
 
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
