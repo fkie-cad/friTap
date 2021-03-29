@@ -31,7 +31,7 @@ export function execute(moduleName:string) {
     
     var library_method_mapping: { [key: string]: Array<String> } = {}
     library_method_mapping[`*${moduleName}*`] = ["PR_Write", "PR_Read", "PR_SetEnv", "PR_FileDesc2NativeHandle", "PR_GetPeerName", "PR_GetSockName"]
-    library_method_mapping[Process.platform === "linux" ? "*libssl.so*" : "*ssl3*"] = ["SSL_ImportFD", "SSL_GetSessionID"]
+    library_method_mapping[Process.platform === "linux" ? "*libssl.so*" : "*ssl3.dll*"] = ["SSL_ImportFD", "SSL_GetSessionID"]
 
     //? Just in case darwin methods are different to linux and windows ones
     if(socket_library === "libc" || socket_library === "WS2_32.dll"){
