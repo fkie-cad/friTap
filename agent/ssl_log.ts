@@ -23,7 +23,7 @@ var moduleNames: Array<string> = []
 Process.enumerateModules().forEach(item => moduleNames.push(item.name))
 
 var module_library_mapping: { [key: string]: Array<[any, (moduleName: string)=>void]> } = {}
-module_library_mapping["windows"] = [[/libssl-[0-9]+_[0-9]+\.dll/, boring_execute],[/.*wolfssl.*\.dll/, wolf_execute],[/.*libgnutls-[0-9]+\.dll/, gnutls_execute]] //TODO: Map all the other libraries
+module_library_mapping["windows"] = [[/libssl-[0-9]+_[0-9]+\.dll/, boring_execute],[/.*wolfssl.*\.dll/, wolf_execute],[/.*libgnutls-[0-9]+\.dll/, gnutls_execute],[/nspr[0-9]*\.dll/,nss_execute]] //TODO: Map all the other libraries
 module_library_mapping["linux"] = [[/.*libssl\.so/, boring_execute],[/.*libgnutls\.so/, gnutls_execute],[/.*libwolfssl\.so/, wolf_execute],[/.*libnspr\.so/,nss_execute]]
 
 
