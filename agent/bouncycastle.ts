@@ -1,7 +1,5 @@
 import { log } from "./log"
 import { byteArrayToString, byteArrayToNumber, getAttribute, reflectionByteArrayToString } from "./shared"
-import { inspect } from "util";
-
 export function execute() {
     Java.perform(function () {
 

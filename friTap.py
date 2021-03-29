@@ -66,7 +66,7 @@ def temp_fifo():
         print(f'Failed to create FIFO: {e}')
 
 
-def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, android=False, live=False, isPID = False):
+def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, android=False, live=False):
 
     def log_pcap(pcap_file, ss_family, ssl_session_id, function, src_addr, src_port,
                  dst_addr, dst_port, data):
@@ -287,10 +287,7 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
             pid = device.spawn(app.split(" "))
         process = device.attach(pid)
     else:
-        if isPID:
-            process = device.attach(int(app))
-        else:
-            process = device.attach(app)
+        process = device.attach(int(app) if app.isnumeric() else app)
 
     if live:
         if pcap:
@@ -367,8 +364,6 @@ Examples:
                       help="Name of PCAP file to write")
     args.add_argument("-s", "--spawn", required=False, action="store_const", const=True,
                       help="Spawn the executable/app instead of attaching to a running process")
-    args.add_argument("--isPID", required=False, action="store_const", const=True,
-                      help="Spawn the executable/app instead of attaching to a running process")
     args.add_argument("-v", "--verbose", required=False, action="store_const",
                       const=True, help="Show verbose output")
     args.add_argument("--enable_spawn_gating", required=False, action="store_const", const=True,
@@ -380,7 +375,7 @@ Examples:
     try:
         print("Start logging")
         ssl_log(parsed.exec, parsed.pcap, parsed.verbose,
-                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.android, parsed.live, parsed.isPID)
+                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.android, parsed.live)
     except Exception as ar:
         print(ar)
 
