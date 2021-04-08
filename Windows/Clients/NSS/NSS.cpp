@@ -100,7 +100,7 @@ void NSS_init() {
 }
 
 void NSS_run() {
-    printf("GnuTLS %s\n-------------------\n", NSS_Version);
+    printf("NSS %s\n-------------------\n", NSS_Version);
     NSS_init();
     NSS_Connection* connection = (NSS_Connection*)malloc(sizeof(NSS_Connection));
     while (1) {

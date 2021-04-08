@@ -228,7 +228,7 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
                     raw_dst_addr = bytes.fromhex(p["dst_addr"])
                     dst_addr = socket.inet_ntop(socket.AF_INET6,
                                                 struct.pack(">16s", raw_dst_addr))
-                print("SSL Session: " + p["ssl_session_id"])
+                print("SSL Session: " + str(p["ssl_session_id"]))
                 print("[%s] %s:%d --> %s:%d" % (
                     p["function"],
                     src_addr,
