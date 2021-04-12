@@ -98,7 +98,7 @@ void GNUTLS_run() {
     GNUTLS_Connection* connection = (GNUTLS_Connection*)malloc(sizeof(GNUTLS_Connection));
     while (1) {
         GNUTLS_setup_and_connect(connection, HOSTNAME, 443);
-        gnutls_record_send(connection->session, MSG, strlen(MSG));
+        int sendBytes = gnutls_record_send(connection->session, MSG, strlen(MSG));
         char* response = GNUTLS_get_response(connection);
         printf("%s\n", response);
         Sleep(3000);

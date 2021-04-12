@@ -4,10 +4,10 @@
 #pragma comment(lib, "ws2_32.lib")
 #pragma warning(suppress : 4996)
 #define CHECK(x) assert((x)>=0)
-#define HOSTNAME "127.0.0.1"
+#define HOSTNAME "127.0.0.1"//"216.58.212.163" HTTP request to google not working
 #define GNUTLS_VERSION "7.3.0"
 #define TMP_BUFFER_SIZE 1024
-#define MSG "Ya yeet!"
+#define MSG "GET / HTTP/1.1\r\nHost: www.google.de\r\nConnection: close\r\n\r\n"
 
 typedef struct GNUTLS_Connection {
     int socket;
