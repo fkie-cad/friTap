@@ -7,12 +7,12 @@
 #include <Windows.h>
 #define TMP_BUFFER_SIZE 1024
 #define NSS_Version "3.26"
-#define HOSTNAME "127.0.0.1"
+#define HOSTNAME "216.58.212.163" //IP of google.de
 #define PORT 443
 #pragma comment(lib, "ws2_32.lib")
 int err;
 
-const char* SEND_MSG = "Ya yeet!";
+const char* SEND_MSG = "GET / HTTP/1.1\r\nHost: www.google.de\r\nConnection: close\r\n\r\n"; //Get Request for google main page
 const char* SECU_ErrorString(int err) {
 	switch (err) {
 	case 0: return "No error";

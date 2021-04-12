@@ -3,9 +3,8 @@ import { log } from "./log"
 
 /*
 SSL_ImportFD === SSL_NEW
-
-
 */
+
 
 //GLOBALS
 const AF_INET = 2
@@ -238,7 +237,8 @@ typedef union PRNetAddr PRNetAddr;
 
                 if (addr.readU16() == 2 || addr.readU16() == 10 || addr.readU16() == 100) {
                     var message = getPortsAndAddressesFromNSS(this.fd as NativePointer, true, addresses)
-                    message["ssl_session_id"] = 1//getSslSessionId(this.fd)
+                    console.log("Session ID: ", getSslSessionId(this.fd))
+                    message["ssl_session_id"] = 1 //getSslSessionId(this.fd)
                     message["function"] = "NSS_read"
                     this.message = message
 
@@ -261,7 +261,7 @@ typedef union PRNetAddr PRNetAddr;
                 
                 if (addr.readU16() == 2 || addr.readU16() == 10 || addr.readU16() == 100) {
                     var message = getPortsAndAddressesFromNSS(args[0] as NativePointer, false, addresses)
-                    message["ssl_session_id"] = 1//getSslSessionId(args[0])
+                    message["ssl_session_id"] = getSslSessionId(args[0])
                     message["function"] = "NSS_write"
                     message["contentType"] = "datalog"
                     send(message, args[1].readByteArray(parseInt(args[2])))

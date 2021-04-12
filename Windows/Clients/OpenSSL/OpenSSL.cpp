@@ -186,7 +186,7 @@ void OPENSSL_run() {
 
     while (1) {
         OPENSSL_setup_and_connect(con, HOSTNAME, 443);
-        SSL_write(con->ssl, request, strlen(request));
+        SSL_write(con->ssl, SEND_MSG, strlen(SEND_MSG));
         char* response = OPENSSL_get_response(con);
         printf("%s\n", response);
         OPENSSL_cleanup(con);

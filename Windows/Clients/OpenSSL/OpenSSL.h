@@ -23,7 +23,7 @@ typedef struct OPENSSL_Connection {
 #include <string.h>
 #include <windows.h>
 
-
-#define HOSTNAME "127.0.0.1"
+const char* SEND_MSG = "GET / HTTP/1.1\r\nHost: www.google.de\r\nConnection: close\r\n\r\n"; //Get Request for google main page
+#define HOSTNAME "216.58.212.163"
 #define TMP_BUFFER_SIZE 1024
 #define bzero(b,len) (memset((b), '\0', (len)), (void) 0)
