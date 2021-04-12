@@ -15,5 +15,6 @@ typedef struct WOLFSSL_Connection {
     int socketDescriptor;
     struct sockaddr_in server;
 }WOLFSSL_Connection;
-
+const char* SEND_MSG = "GET / HTTP/1.1\r\nHost: www.google.de\r\nConnection: close\r\n\r\n"; //Get Request for google main page
+#define HOSTNAME "216.58.212.163"
 void WOLFSSL_cleanup(WOLFSSL_Connection* connection);

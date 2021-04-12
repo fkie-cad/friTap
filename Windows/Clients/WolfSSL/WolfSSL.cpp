@@ -35,6 +35,8 @@ void WOLFSSL_setup_and_connect(WOLFSSL_Connection* connection, char* hostname) {
     connection->server.sin_addr.s_addr = inet_addr(hostname);
     connection->server.sin_port = htons(443);
 
+
+    
     /* connect to socket */
     connect(connection->socketDescriptor, (struct sockaddr*)&connection->server, sizeof(connection->server));
     
@@ -44,13 +46,14 @@ void WOLFSSL_setup_and_connect(WOLFSSL_Connection* connection, char* hostname) {
     if (wolfSSL_set_fd(connection->ssl, connection->socketDescriptor) != SSL_SUCCESS) {
         char buffer[80];
         wolfSSL_ERR_error_string(wolfSSL_get_error(connection->ssl, 0), buffer);
-        printf("%s\n", buffer);
+        printf("Setfd: %s\n", buffer);
     }
+
 
     if (wolfSSL_connect(connection->ssl) == SSL_FATAL_ERROR) {
         char buffer[80];
         wolfSSL_ERR_error_string(wolfSSL_get_error(connection->ssl, 0), buffer);
-        printf("%s\n", buffer);
+        printf("Connect: %s\n", buffer);
     }
    
 }
@@ -96,7 +99,6 @@ void WOLFSSL_cleanup(WOLFSSL_Connection* connection) {
 
 
 void WOLFSSL_run() {
-    const char* message = "Ya yeet!";
     printf("WolfSSL 4.7 Feb 2021\n");
     WOLFSSL_init();
     WOLFSSL_Connection* con;
@@ -104,9 +106,9 @@ void WOLFSSL_run() {
         con = (WOLFSSL_Connection*)malloc(sizeof(WOLFSSL_Connection));
         if (con == NULL) report_and_exit("Couldnt allocate memory for WolfSSL connection...");
 
-        WOLFSSL_setup_and_connect(con, (char*)"127.0.0.1");
+        WOLFSSL_setup_and_connect(con, (char*)HOSTNAME);
 
-        int writtenBytesCount = wolfSSL_write(con->ssl, message, strlen(message));
+        int writtenBytesCount = wolfSSL_write(con->ssl, SEND_MSG, strlen(SEND_MSG));
         printf("Request: %s\n", message);
 
         char* response = WOLFSSL_get_response(con);
