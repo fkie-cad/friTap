@@ -5,6 +5,7 @@ import { execute as conscrypt_execute } from "./conscrypt"
 import { execute as nss_execute } from "./nss"
 import { execute as gnutls_execute } from "./gnutls"
 import { log } from "./log"
+import { getModuleNames} from "./shared"
 
 
 
@@ -19,12 +20,11 @@ function hasRequiredFunctions(libName: string, expectedFuncName: string): boolea
 }
 
 
-var moduleNames: Array<string> = []
-Process.enumerateModules().forEach(item => moduleNames.push(item.name))
+var moduleNames: Array<string> = getModuleNames()
 
 var module_library_mapping: { [key: string]: Array<[any, (moduleName: string)=>void]> } = {}
 module_library_mapping["windows"] = [[/libssl-[0-9]+_[0-9]+\.dll/, boring_execute],[/.*wolfssl.*\.dll/, wolf_execute],[/.*libgnutls-[0-9]+\.dll/, gnutls_execute],[/nspr[0-9]*\.dll/,nss_execute]] //TODO: Map all the other libraries
-module_library_mapping["linux"] = [[/.*libssl\.so/, boring_execute],[/.*libgnutls\.so/, gnutls_execute],[/.*libwolfssl\.so/, wolf_execute],[/.*libnspr\.so/,nss_execute]]
+module_library_mapping["linux"] = [[/.*libssl\.so/, boring_execute],[/.*libgnutls\.so/, gnutls_execute],[/.*libwolfssl\.so/, wolf_execute],[/.*libnspr[0-9]?\.so/,nss_execute]]
 
 
 if(Process.platform === "windows"){
@@ -87,11 +87,16 @@ try {
 
     
 } catch (error) {
+    console.log("Loader error: ", error)
     log("No dynamic loader present for hooking.")
 }
 
 function hookLinuxDynamicLoader():void{
-    let dl_exports = Process.getModuleByName("libdl.so").enumerateExports()
+    const regex_libdl = /.*libdl.*\.so/
+    const libdl = moduleNames.find(element => element.match(regex_libdl))
+    if (libdl === undefined) throw "Linux Dynamic loader not found!"
+
+    let dl_exports = Process.getModuleByName(libdl).enumerateExports()
     var dlopen = "dlopen"
     for (var ex of dl_exports) {
         if (ex.name === "android_dlopen_ext") {
@@ -101,7 +106,7 @@ function hookLinuxDynamicLoader():void{
     }
 
 
-    Interceptor.attach(Module.getExportByName("libdl.so", dlopen), {
+    Interceptor.attach(Module.getExportByName(libdl, dlopen), {
         onEnter: function (args) {
             this.moduleName = args[0].readCString()
         },
@@ -142,7 +147,7 @@ function hookWindowsDynamicLoader():void{
                 boring_execute("libssl-1_1.dll");
             }
                        
-            //More module comparisons
+            //TODO:More module comparisons
         }
     })
     console.log("[*] Windows dynamic loader hooked.")
