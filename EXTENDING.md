@@ -63,7 +63,7 @@ $ frida-compile agent/ssl_log.ts -o _ssl_log.js
 
 ```
 
-as this message indicates the util package is missung. Simply install it with npm:
+as this message indicates the util package is missing. Simply install it with npm:
 
 ```bash
 $ npm install util
@@ -77,7 +77,7 @@ $ frida-compile agent/ssl_log.ts -o _ssl_log.js
 ....
 ```
 
-in this case the dependencies for the developemnt are missing. This can easiyl fixed by invoking the following command inside the folder friTap:
+in this case the dependencies for the development are missing. This can easily fixed by invoking the following command inside the folder friTap:
 
 ```bash
 $ npm install .
