@@ -55,7 +55,7 @@ Another possiblites is to use frida-trace or a debugger of our choice.
 
 ## Common errors when compiling changes
 
-This is a common error:
+- **util missing error**:
 
 ```bash
 $ frida-compile agent/ssl_log.ts -o _ssl_log.js
@@ -69,6 +69,7 @@ as this message indicates the util package is missung. Simply install it with np
 $ npm install util
 ```
 
+- **Java missing error**:
 
 ```bash
 $ frida-compile agent/ssl_log.ts -o _ssl_log.js
