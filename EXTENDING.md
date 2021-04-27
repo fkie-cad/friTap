@@ -66,6 +66,20 @@ $ frida-compile agent/ssl_log.ts -o _ssl_log.js
 as this message indicates the util package is missung. Simply install it with npm:
 
 ```bash
-$ sudo npm install util
+$ npm install util
 ```
+
+
+```bash
+$ frida-compile agent/ssl_log.ts -o _ssl_log.js
+[TypeScript error: ../fritap/agent/bouncycastle.ts(4,5): Error TS2304: Cannot find name 'Java'.] {
+....
+```
+
+in this case the dependencies for the developemnt are missing. This can easiyl fixed by invoking the following command inside the folder friTap:
+
+```bash
+$ npm install .
+```
+
 
