@@ -70,7 +70,7 @@ export function execute(moduleName: string) {
        *     current session. For example,
        *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
        */
-    function getMasterKey(wolfSslPtr: NativePointer) {
+    /*function getMasterKey(wolfSslPtr: NativePointer) {
         var session = wolfSSL_get_session(wolfSslPtr)
         var nullPtr = ptr(0)
         var masterKeySize = wolfSSL_SESSION_get_master_key(session, nullPtr, 0) as number
@@ -87,6 +87,7 @@ export function execute(moduleName: string) {
         }
         return masterKey;
     }
+    */
 
     /**
        * Get the clientRandom of the current session and return it as a hex string.
@@ -95,7 +96,7 @@ export function execute(moduleName: string) {
        *     current session. For example,
        *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
        */
-    function getClientRandom(wolfSslPtr: NativePointer) {
+    /*function getClientRandom(wolfSslPtr: NativePointer) {
         var nullPtr = ptr(0)
         var clientRandomSize = wolfSSL_get_client_random(wolfSslPtr, nullPtr, 0) as number
         var buffer = Memory.alloc(clientRandomSize)
@@ -111,7 +112,7 @@ export function execute(moduleName: string) {
         }
         return clientRandom;
     }
-
+    */
 
     Interceptor.attach(addresses["wolfSSL_read"],
         {
@@ -154,11 +155,11 @@ export function execute(moduleName: string) {
                 wolfSSL_KeepArrays(this.wolfSslPtr)
             },
             onLeave: function (retval: any) {
-                var clientRandom = getClientRandom(this.wolfSslPtr)
-                var masterKey = getMasterKey(this.wolfSslPtr)
+                //var clientRandom = getClientRandom(this.wolfSslPtr)
+                //var masterKey = getMasterKey(this.wolfSslPtr)
                 var message: { [key: string]: any } = {}
                 message["contentType"] = "keylog"
-                message["keylog"] = "CLIENT_RANDOM " + clientRandom + " " + masterKey
+                //message["keylog"] = "CLIENT_RANDOM " + clientRandom + " " + masterKey
                 send(message)
 
             }
