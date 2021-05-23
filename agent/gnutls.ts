@@ -3,10 +3,32 @@ import { log } from "./log"
 
 
 
-export function execute() {
+export function execute(moduleName: string) {
+
+    var socket_library:string =""
+    switch(Process.platform){
+        case "linux":
+            socket_library = "libc"
+            break
+        case "windows":
+            socket_library = "WS2_32.dll"
+            break
+        case "darwin":
+            //TODO:Darwin implementation pending...
+            break;
+        default:
+            log(`Platform "${Process.platform} currently not supported!`)
+    }
+
     var library_method_mapping: { [key: string]: Array<String> } = {}
-    library_method_mapping["*libgnutls*"] = ["gnutls_record_recv", "gnutls_record_send", "gnutls_session_set_keylog_function", "gnutls_transport_get_int", "gnutls_session_get_id", "gnutls_init", "gnutls_handshake", "gnutls_session_get_keylog_function", "gnutls_session_get_random"]
-    library_method_mapping["*libc*"] = ["getpeername", "getsockname", "ntohs", "ntohl"]
+    library_method_mapping[`*${moduleName}*`] = ["gnutls_record_recv", "gnutls_record_send", "gnutls_session_set_keylog_function", "gnutls_transport_get_int", "gnutls_session_get_id", "gnutls_init", "gnutls_handshake", "gnutls_session_get_keylog_function", "gnutls_session_get_random"]
+    
+    //? Just in case darwin methods are different to linux and windows ones
+    if(socket_library === "libc" || socket_library === "WS2_32.dll"){
+        library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
+    }else{
+        //TODO: Darwin implementation pending
+    }
 
     var addresses: { [key: string]: NativePointer } = readAddresses(library_method_mapping)
 

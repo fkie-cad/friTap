@@ -13,6 +13,7 @@ import tempfile
 try:
     import hexdump  # pylint: disable=g-import-not-at-top
 except ImportError:
+    print("Unable to import hexdump module!")
     pass
 
 __author__ = "Max Ufer, Daniel Baier"
@@ -227,7 +228,7 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
                     raw_dst_addr = bytes.fromhex(p["dst_addr"])
                     dst_addr = socket.inet_ntop(socket.AF_INET6,
                                                 struct.pack(">16s", raw_dst_addr))
-                print("SSL Session: " + p["ssl_session_id"])
+                print("SSL Session: " + str(p["ssl_session_id"]))
                 print("[%s] %s:%d --> %s:%d" % (
                     p["function"],
                     src_addr,
@@ -274,6 +275,7 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
         device = frida.get_usb_device()
     else:
         device = frida.get_local_device()
+
     device.on("child_added", on_child_added)
     if enable_spawn_gating:
         device.enable_spawn_gating()
@@ -285,7 +287,7 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
             pid = device.spawn(app.split(" "))
         process = device.attach(pid)
     else:
-        process = device.attach(app)
+        process = device.attach(int(app) if app.isnumeric() else app)
 
     if live:
         if pcap:
@@ -318,7 +320,7 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
     if spawn:
         device.resume(pid)
     try:
-        signal.pause()
+        sys.stdin.read()
     except KeyboardInterrupt:
         pass
 
@@ -371,7 +373,11 @@ Examples:
     parsed = parser.parse_args()
 
     try:
+        print("Start logging")
         ssl_log(parsed.exec, parsed.pcap, parsed.verbose,
                 parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.android, parsed.live)
+    except Exception as ar:
+        print(ar)
+
     finally:
         cleanup(parsed.live)

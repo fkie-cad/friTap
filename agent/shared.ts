@@ -12,13 +12,37 @@ import { log } from "./log"
 const AF_INET = 2
 const AF_INET6 = 10
 
+//TODO: 
+export function getSocketLibrary(){
+    var moduleNames: Array<String> = getModuleNames()
+    var socket_library_name = ""
+    switch(Process.platform){
+        case "linux":
+            return moduleNames.find(element => element.match(/libc.*\.so/))
+        case "windows":
+            return "WS2_32.dll"
+        case "darwin":
+            return ""
+            //TODO:Darwin implementation pending...
+            break;
+        default:
+            log(`Platform "${Process.platform} currently not supported!`)
+            return ""
+    }
+}
+
+export function getModuleNames(){
+    var moduleNames: Array<string> = []
+    Process.enumerateModules().forEach(item => moduleNames.push(item.name))
+    return moduleNames;
+}
+
 /**
  * Read the addresses for the given methods from the given modules
  * @param {{[key: string]: Array<String> }} library_method_mapping A string indexed list of arrays, mapping modules to methods
  * @return {{[key: string]: NativePointer }} A string indexed list of NativePointers, which point to the respective methods
  */
 export function readAddresses(library_method_mapping: { [key: string]: Array<String> }): { [key: string]: NativePointer } {
-
     var resolver = new ApiResolver("module")
     var addresses: { [key: string]: NativePointer } = {}
     for (let library_name in library_method_mapping) {
@@ -28,7 +52,8 @@ export function readAddresses(library_method_mapping: { [key: string]: Array<Str
                 throw "Could not find " + library_name + "!" + method
             }
             else {
-                send("Found " + library_name + "!" + method)
+                
+                //log("Found " + method + " " + matches[0].address)
             }
             if (matches.length == 0) {
                 throw "Could not find " + library_name + "!" + method

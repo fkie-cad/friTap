@@ -1,21 +1,36 @@
-import { readAddresses, getPortsAndAddresses } from "./shared"
+import { readAddresses, getPortsAndAddresses, getSocketLibrary, getModuleNames } from "./shared"
 import { log } from "./log"
 
 /*
 SSL_ImportFD === SSL_NEW
-
-
 */
+
 
 //GLOBALS
 const AF_INET = 2
 const AF_INET6 = 100
 
-export function execute() {
+// Exported for use in openssl_boringssl.ts
+export function getSSLLibrary(){
+    var moduleNames = getModuleNames();
+    //TODO: CONTINUE
+}
+
+export function execute(moduleName:string) {
+
+    var socket_library = getSocketLibrary()    
+
+    
     var library_method_mapping: { [key: string]: Array<String> } = {}
-    library_method_mapping["*libssl*"] = ["SSL_ImportFD", "SSL_GetSessionID"]
-    library_method_mapping["*libnspr*"] = ["PR_Write", "PR_Read", "PR_SetEnv", "PR_FileDesc2NativeHandle", "PR_GetPeerName", "PR_GetSockName"]
-    library_method_mapping["*libc*"] = ["getpeername", "getsockname", "ntohs", "ntohl"]
+    library_method_mapping[`*${moduleName}*`] = ["PR_Write", "PR_Read", "PR_SetEnv", "PR_FileDesc2NativeHandle", "PR_GetPeerName", "PR_GetSockName"]
+    library_method_mapping[Process.platform === "linux" ? "*libssl*.so" : "*ssl*.dll"] = ["SSL_ImportFD", "SSL_GetSessionID"]
+
+    //? Just in case darwin methods are different to linux and windows ones
+    if(Process.platform === "linux" || Process.platform === "windows" ){
+        library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
+    }else{
+        //TODO: Darwin implementation pending
+    }
 
     var addresses: { [key: string]: NativePointer } = readAddresses(library_method_mapping)
 
@@ -23,10 +38,12 @@ export function execute() {
     const SET_NSS_ENV = new NativeFunction(addresses["PR_SetEnv"], "pointer", ["pointer"])
     const SSL_SESSION_get_id = new NativeFunction(addresses["SSL_GetSessionID"], "pointer", ["pointer"])
     //var SSL_CTX_set_keylog_callback = new NativeFunction(addresses["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"])
-    const getsockname = new NativeFunction(Module.getExportByName('libnspr4.so', 'PR_GetSockName'), "int", ["pointer", "pointer"]);
-    const getpeername = new NativeFunction(Module.getExportByName('libnspr4.so', 'PR_GetPeerName'), "int", ["pointer", "pointer"]);
-
-
+    const getsockname = new NativeFunction(Module.getExportByName('libnspr4.so', 'PR_GetSockName'), "int", ["pointer", "pointer"]); //? Why libnspr4.so?
+    const getpeername = new NativeFunction(Module.getExportByName('libnspr4.so', 'PR_GetPeerName'), "int", ["pointer", "pointer"]);//? Why libnspr4.so?
+   
+    //Commented out for testing purposes on Linux
+    //const getsockname = new NativeFunction(addresses["PR_GetSockName"], "int", ["pointer", "pointer"]);
+    //const getpeername = new NativeFunction(addresses["PR_GetPeerName"], "int", ["pointer", "pointer"]);
 
 
 
@@ -79,9 +96,8 @@ typedef union PRNetAddr PRNetAddr;
 
 */
     function getPortsAndAddressesFromNSS(sockfd: NativePointer, isRead: boolean, methodAddresses: { [key: string]: NativePointer }): { [key: string]: string | number } {
-        //var getpeername = new NativeFunction(methodAddresses["PR_GetPeerName"], "int", ["pointer", "pointer"])
-
-        //var getsockname = new NativeFunction(methodAddresses["PR_GetSockName"], "int", ["pointer", "pointer"])
+        var getpeername = new NativeFunction(methodAddresses["PR_GetPeerName"], "int", ["pointer", "pointer"])
+        var getsockname = new NativeFunction(methodAddresses["PR_GetSockName"], "int", ["pointer", "pointer"])
         var ntohs = new NativeFunction(methodAddresses["ntohs"], "uint16", ["uint16"])
         var ntohl = new NativeFunction(methodAddresses["ntohl"], "uint32", ["uint32"])
 
@@ -101,6 +117,7 @@ typedef union PRNetAddr PRNetAddr;
             else {
                 getpeername(sockfd, addr)
             }
+
             if (addr.readU16() == AF_INET) {
                 message[src_dst[i] + "_port"] = ntohs(addr.add(2).readU16()) as number
                 message[src_dst[i] + "_addr"] = ntohl(addr.add(4).readU32()) as number
@@ -120,6 +137,7 @@ typedef union PRNetAddr PRNetAddr;
                     message["ss_family"] = "AF_INET6"
                 }
             } else {
+                //FIXME: Sometimes addr.readU16() will be 0, thus this error will be thrown. Why isnt this the case on linux? Something windows specific?
                 throw "Only supporting IPv4/6"
             }
 
@@ -199,36 +217,44 @@ typedef union PRNetAddr PRNetAddr;
     Interceptor.attach(addresses["PR_Read"],
         {
             onEnter: function (args: any) {
-                this.fd = args[0]
-                this.buf = args[1]
+                this.fd = ptr(args[0])
+                this.buf = ptr(args[1])
             },
             onLeave: function (retval: any) {
-                //log("write")
-                retval |= 0 // Cast retval to 32-bit integer.
-                if (retval <= 0) {
-                    return
-                }
-                var addr = Memory.alloc(8);
+                if (retval.toInt32() <= 0) {
+                        return
+                }                    
+                
+                var addr = Memory.alloc(128);
+                var res = getpeername(this.fd, addr); //FIXME: Results in crash! Fix: More Memory: why? Fix: 128 Bytes for addr (libnspr4 needed 8 Bytes for that)
+                //!Der getpeername call gibt bei mir -1 zurück. Wenn ich mir die Daten unte in dem else ausgeben lasse, dann sehen die aber top aus!
+                console.log(res)
 
-                getpeername(this.fd, addr);
                 if (addr.readU16() == 2 || addr.readU16() == 10 || addr.readU16() == 100) {
                     var message = getPortsAndAddressesFromNSS(this.fd as NativePointer, true, addresses)
+                    //console.log("Session ID: ", getSslSessionId(this.fd))
                     message["ssl_session_id"] = getSslSessionId(this.fd)
                     message["function"] = "NSS_read"
                     this.message = message
 
                     this.message["contentType"] = "datalog"
-                    send(this.message, this.buf.readByteArray(retval))
+                    var data = this.buf.readByteArray((new Uint32Array([retval]))[0])
+                    //console.log(this.message)
+                    //send(this.message, data)
+                }else{
+                    var temp = this.buf.readByteArray((new Uint32Array([retval]))[0])
+                    console.log(temp)
                 }
+                
             }
         })
     Interceptor.attach(addresses["PR_Write"],
         {
             onEnter: function (args: any) {
-                //log("write")
-                var addr = Memory.alloc(8);
+                var addr = Memory.alloc(128); 
 
                 getsockname(args[0], addr);
+                
                 if (addr.readU16() == 2 || addr.readU16() == 10 || addr.readU16() == 100) {
                     var message = getPortsAndAddressesFromNSS(args[0] as NativePointer, false, addresses)
                     message["ssl_session_id"] = getSslSessionId(args[0])
@@ -236,7 +262,7 @@ typedef union PRNetAddr PRNetAddr;
                     message["contentType"] = "datalog"
                     send(message, args[1].readByteArray(parseInt(args[2])))
                 }
-
+                
             },
             onLeave: function (retval: any) {
             }
