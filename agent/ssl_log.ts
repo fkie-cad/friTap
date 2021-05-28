@@ -23,7 +23,7 @@ function hasRequiredFunctions(libName: string, expectedFuncName: string): boolea
 var moduleNames: Array<string> = getModuleNames()
 
 var module_library_mapping: { [key: string]: Array<[any, (moduleName: string)=>void]> } = {}
-module_library_mapping["windows"] = [[/libssl-[0-9]+_[0-9]+\.dll/, boring_execute],[/.*wolfssl.*\.dll/, wolf_execute],[/.*libgnutls-[0-9]+\.dll/, gnutls_execute],[/nspr[0-9]*\.dll/,nss_execute]] //TODO: Map all the other libraries
+module_library_mapping["windows"] = [[/libssl-[0-9]+(_[0-9]+)?\.dll/, boring_execute],[/.*wolfssl.*\.dll/, wolf_execute],[/.*libgnutls-[0-9]+\.dll/, gnutls_execute],[/nspr[0-9]*\.dll/,nss_execute]] //TODO: Map all the other libraries
 module_library_mapping["linux"] = [[/.*libssl\.so/, boring_execute],[/.*libgnutls\.so/, gnutls_execute],[/.*libwolfssl\.so/, wolf_execute],[/.*libnspr[0-9]?\.so/,nss_execute]]
 
 
@@ -32,6 +32,7 @@ if(Process.platform === "windows"){
         let regex = map[0]
         let func = map[1]
         for(let module of moduleNames){
+            //console.log(module + "vs" + map[0])
             if (regex.test(module)){
                 log(`${module} found & will be hooked on Windows!`)
                 func(module)
