@@ -109,7 +109,7 @@ void WOLFSSL_run() {
         WOLFSSL_setup_and_connect(con, (char*)HOSTNAME);
 
         int writtenBytesCount = wolfSSL_write(con->ssl, SEND_MSG, strlen(SEND_MSG));
-        printf("Request: %s\n", message);
+        printf("Request: %s\n", SEND_MSG);
 
         char* response = WOLFSSL_get_response(con);
         printf("Response: %s\n", response);
