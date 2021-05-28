@@ -3,7 +3,7 @@
 #include <openssl/bio.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
-#include <openssl/applink.c>
+#include <applink.c>
 #include <windows.h>
 #pragma comment(lib, "ws2_32.lib")
 #pragma warning(suppress : 4996)

@@ -23,7 +23,7 @@ void OPENSSL_cleanup(OPENSSL_Connection* connection) {
 }
 
 void OPENSSL_BIO_setup_and_connect(OPENSSL_Connection* connection, const char* hostname, int port) {
-    connection->method = TLSv1_2_client_method();                                       // Methoden der TLS 1.2 Suite
+    connection->method = TLS_client_method();                                       // Methoden der TLS 1.2 Suite
     if (connection->method == NULL) report_and_exit("Couldnt load TLS 1.2 suite...");
 
     connection->context = SSL_CTX_new(connection->method);                             // Neuen Kontext mit TLS 1.2 Suite initialisieren
@@ -68,7 +68,7 @@ void OPENSSL_setup_and_connect(OPENSSL_Connection* connection, const char* hostn
     addr.sin_port = htons(port);
     addr.sin_addr.s_addr = inet_addr(hostname);
 
-    connection->method = TLSv1_2_client_method();
+    connection->method = TLS_client_method();
     connection->context = SSL_CTX_new(connection->method);
     if (connection->context == NULL) {
         ERR_print_errors_fp(stderr);
