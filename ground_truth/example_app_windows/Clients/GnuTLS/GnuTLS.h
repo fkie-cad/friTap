@@ -1,6 +1,6 @@
 #include <windows.h>
 #include <stdio.h>
-#include <gnutls/gnutls.h>
+#include <gnutls.h>
 #pragma comment(lib, "ws2_32.lib")
 #pragma warning(suppress : 4996)
 #define CHECK(x) assert((x)>=0)
