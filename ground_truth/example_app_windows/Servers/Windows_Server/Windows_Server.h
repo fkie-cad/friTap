@@ -7,7 +7,7 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
-#include <openssl/applink.c>
+#include <applink.c>
 #pragma comment(lib, "Ws2_32.lib")
 #define FAIL    -1
 typedef int socklen_t;
