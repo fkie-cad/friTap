@@ -12,7 +12,7 @@
  5. Build "wolfssl" (right click "wolfssl" in Solution Explorer -> "Build")
  6. Open "Windows_Clients.sln" using Visual Studio
  7. Build WolfSSL (right click "WolfSSL" in Solution Explorer -> "Build")
- 8. Copy wolfssl.dll from "DLL Debug" (contained in previously cloned folder) into the "Debug" folder which is in the same folder as "Windows_Clients.sln"
+ 8. Copy wolfssl.dll from "DLL Debug" (contained in previously cloned folder) next to the built "WolfSSL.exe" located in the "Debug" folder which is in the same folder as "Windows_Clients.sln"
  9. Run "WolfSSL.exe" to start the client
  
 ## OpenSSL
@@ -25,5 +25,21 @@
 	2. nmake test
 5. Open "Windows_Clients.sln" using Visual Studio
 6. Build OpenSSL (right click "OpenSSL" in Solution Explorer -> "Build")
-7. Copy libcrypto-3.dll and libssl-3.dll from cloned "openssl" folder into the "Debug" folder which is in the same folder as "Windows_Clients.sln"
+7. Copy libcrypto-3.dll and libssl-3.dll from cloned "openssl" folder next to the build "OpenSSL.exe" located in the "Debug" folder which is in the same folder as "Windows_Clients.sln"
 8. Run "OpenSSL.exe" to start the client
+
+## NSS (64 Bit only due to NSS' buggy build script)
+1. Install ninja (https://github.com/ninja-build/ninja/releases) preferably to some folder as near to your drives root (eg. C:/nss/ninja/) - NSS' build tool tends to crash using more complex paths, avoid spaces in paths!
+2. Clone gyp (https://gyp.gsrc.io/) preferably to some folder as near to your drives root (eg. C:/nss/gyp/) - NSS' build tool tends to crash using more complex paths, avoid spaces in paths!
+3. Install mozilla-build (https://wiki.mozilla.org/MozillaBuild)
+4. Download latest source code package containing nss and nspr (tested with: https://developer.mozilla.org/en-US/docs/Mozilla/Projects/NSS/NSS_3.64_release_notes)
+5. Unpack both folders "nss" and "nspr" preferably to some folder as near to your drives root (eg. C:/nss/nss-source/) - NSS' build tool tends to crash using more complex paths, avoid spaces in paths!
+6. Navigate into mozilla-build folder and open "start-shell.bat" as administrator
+7. Add your ninja installation and gyap installation to the PATH variable in the linux shell (NOT WINDOWS) - e.g. export PATH=/c/nss/gyp:$PATH && export PATH=/c/nss/ninja:$PATH
+8. In this new shell navigate to the folder containing the two new folders -> go into the one folder named "nss"
+9. Run ./build.sh -v
+10. Copy new "dist" folder into NSS/nss folder (Clients/NSS/nss)
+11. Open "Windows_Clients.sln" using Visual Studio
+12. Build NSS (right click "NSS" in Solution Explorer -> "Build")
+13. Copy every .dll file from /NSS/nss/dist/Debug/lib next to the build "NSS.exe" located in the "x64/Debug" folder which was created in the same folder where "Windows_Clients.sln" is located
+14. Run "NSS.exe" to start the client
