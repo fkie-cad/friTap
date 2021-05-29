@@ -88,13 +88,13 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>C:\Program Files (x86)\nss\include\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>.\nss\dist\Debug\include\nspr\;.\nss\dist\public\nss\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>C:\Program Files (x86)\nss\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>C:\Program Files (x86)\nss\lib\certdb.lib;C:\Program Files (x86)\nss\lib\certhi.lib;C:\Program Files (x86)\nss\lib\crmf.lib;C:\Program Files (x86)\nss\lib\cryptohi.lib;C:\Program Files (x86)\nss\lib\dbm.lib;C:\Program Files (x86)\nss\lib\freebl.lib;C:\Program Files (x86)\nss\lib\gtest.lib;C:\Program Files (x86)\nss\lib\gtest132.lib;C:\Program Files (x86)\nss\lib\jar.lib;C:\Program Files (x86)\nss\lib\nspr4.lib;C:\Program Files (x86)\nss\lib\nspr4_s.lib;C:\Program Files (x86)\nss\lib\nss3.lib;C:\Program Files (x86)\nss\lib\nssb.lib;C:\Program Files (x86)\nss\lib\nssckfw.lib;C:\Program Files (x86)\nss\lib\nssdbm.lib;C:\Program Files (x86)\nss\lib\nssdbm3.lib;C:\Program Files (x86)\nss\lib\nssdev.lib;C:\Program Files (x86)\nss\lib\nsspki.lib;C:\Program Files (x86)\nss\lib\nssutil.lib;C:\Program Files (x86)\nss\lib\nssutil3.lib;C:\Program Files (x86)\nss\lib\pk11wrap.lib;C:\Program Files (x86)\nss\lib\pkcs12.lib;C:\Program Files (x86)\nss\lib\pkcs7.lib;C:\Program Files (x86)\nss\lib\pkixcertsel.lib;C:\Program Files (x86)\nss\lib\pkixchecker.lib;C:\Program Files (x86)\nss\lib\pkixcrlsel.lib;C:\Program Files (x86)\nss\lib\pkixmodule.lib;C:\Program Files (x86)\nss\lib\pkixparams.lib;C:\Program Files (x86)\nss\lib\pkixpki.lib;C:\Program Files (x86)\nss\lib\pkixresults.lib;C:\Program Files (x86)\nss\lib\pkixstore.lib;C:\Program Files (x86)\nss\lib\pkixsystem.lib;C:\Program Files (x86)\nss\lib\pkixtop.lib;C:\Program Files (x86)\nss\lib\pkixutil.lib;C:\Program Files (x86)\nss\lib\plc4.lib;C:\Program Files (x86)\nss\lib\plc4_s.lib;C:\Program Files (x86)\nss\lib\plds4.lib;C:\Program Files (x86)\nss\lib\plds4_s.lib;C:\Program Files (x86)\nss\lib\sectool.lib;C:\Program Files (x86)\nss\lib\smime.lib;C:\Program Files (x86)\nss\lib\smime3.lib;C:\Program Files (x86)\nss\lib\softokn.lib;C:\Program Files (x86)\nss\lib\softokn3.lib;C:\Program Files (x86)\nss\lib\sqlite.lib;C:\Program Files (x86)\nss\lib\sqlite3.lib;C:\Program Files (x86)\nss\lib\ssl.lib;C:\Program Files (x86)\nss\lib\ssl3.lib;C:\Program Files (x86)\nss\lib\zlib.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>.\nss\dist\Debug\lib\freebl3.dll.lib;.\nss\dist\Debug\lib\libnspr4.lib;.\nss\dist\Debug\lib\libnspr4_s.lib;.\nss\dist\Debug\lib\libplc4.lib;.\nss\dist\Debug\lib\libplc4_s.lib;.\nss\dist\Debug\lib\libplds4.lib;.\nss\dist\Debug\lib\libplds4_s.lib;.\nss\dist\Debug\lib\mozpkix.lib;.\nss\dist\Debug\lib\mozpkix-testlib.lib;.\nss\dist\Debug\lib\nss3.dll.lib;.\nss\dist\Debug\lib\nssckbi.dll.lib;.\nss\dist\Debug\lib\nssckbi-testlib.dll.lib;.\nss\dist\Debug\lib\nssutil3.dll.lib;.\nss\dist\Debug\lib\pkcs11testmodule.dll.lib;.\nss\dist\Debug\lib\sectool.lib;.\nss\dist\Debug\lib\smime3.dll.lib;.\nss\dist\Debug\lib\softokn3.dll.lib;.\nss\dist\Debug\lib\sqlite3.dll.lib;.\nss\dist\Debug\lib\ssl3.dll.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -119,10 +119,12 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
+      <AdditionalIncludeDirectories>.\nss\dist\public\nss\;.\nss\dist\Debug\include\nspr\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>.\nss\dist\Debug\lib\freebl3.dll.lib;.\nss\dist\Debug\lib\libnspr4.lib;.\nss\dist\Debug\lib\libnspr4_s.lib;.\nss\dist\Debug\lib\libplc4.lib;.\nss\dist\Debug\lib\libplc4_s.lib;.\nss\dist\Debug\lib\libplds4.lib;.\nss\dist\Debug\lib\libplds4_s.lib;.\nss\dist\Debug\lib\mozpkix.lib;.\nss\dist\Debug\lib\mozpkix-testlib.lib;.\nss\dist\Debug\lib\nss3.dll.lib;.\nss\dist\Debug\lib\nssckbi.dll.lib;.\nss\dist\Debug\lib\nssckbi-testlib.dll.lib;.\nss\dist\Debug\lib\nssutil3.dll.lib;.\nss\dist\Debug\lib\pkcs11testmodule.dll.lib;.\nss\dist\Debug\lib\sectool.lib;.\nss\dist\Debug\lib\smime3.dll.lib;.\nss\dist\Debug\lib\softokn3.dll.lib;.\nss\dist\Debug\lib\sqlite3.dll.lib;.\nss\dist\Debug\lib\ssl3.dll.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">

@@ -1,9 +1,9 @@
-#include <nss/nspr.h>
-#include <nss/nss.h>
-#include <nss/secerr.h>
-#include <nss/sslerr.h>
-#include <nss/ssl.h>
-#include <nss/private/pprio.h>
+#include <nspr.h>
+#include <nss.h>
+#include <secerr.h>
+#include <sslerr.h>
+#include <ssl.h>
+#include <private/pprio.h>
 #include <Windows.h>
 #define TMP_BUFFER_SIZE 1024
 #define NSS_Version "3.26"
