@@ -43,3 +43,18 @@
 12. Build NSS (right click "NSS" in Solution Explorer -> "Build")
 13. Copy every .dll file from /NSS/nss/dist/Debug/lib next to the build "NSS.exe" located in the "x64/Debug" folder which was created in the same folder where "Windows_Clients.sln" is located
 14. Run "NSS.exe" to start the client
+
+## GnuTLS (Communication with local server)
+Luckily Gitlab compiles GnuTLS sourcecode automatically for every support platform. We can just grab the compiled library and import it.
+1. Go to https://gitlab.com/gnutls/gnutls/-/jobs and download the latest "mingw32/archive"
+2. Copy the lib and bin folder into /GnuTLS/gnutls/
+3. Open gnutls.h located in /GnuTLS/gnutls/lib/include modify it as follows:
+	1. Change #include <gnutls/compat.h> into #include <compat.h>
+	2. Add #if defined(_MSC_VER)
+	   #include <BaseTsd.h>
+       typedef SSIZE_T ssize_t;
+       #endif
+	   at the top of the file
+4. Build GnuTLS (right click "GnuTLS" in Solution Explorer -> "Build")
+5. Copy every .dll file from /GnuTLS/gnutls/bin next to the build "GnuTLS.exe" located in the "Debug" folder which was created in the same folder where "Windows_Clients.sln" is located
+6. Run "GnuTLS.exe" to start the client
