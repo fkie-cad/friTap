@@ -44,9 +44,11 @@ The following implementations of SSL/TLS are currently supported as targets:
 
 ## Planned features
 
-- [ ] fix spawning issue on Linux e.g. with Firefox
+- [ ] add the capability to alter the decrypted payload
+- integration with https://github.com/mitmproxy/mitmproxy
+- integration with http://portswigger.net/burp/
 
-- [ ] add wine support for Windows
+- [ ] add wine support
 
 - [ ] add further Linux/Android Libraries (have a look at this [Wikipedia entry](https://en.wikipedia.org/wiki/Comparison_of_TLS_implementations)):
 
@@ -59,6 +61,6 @@ The following implementations of SSL/TLS are currently supported as targets:
 - Add feature to prototype TLS-Read/Write/SSLKEY functions
 
 - [ ] add iOS support
-- [ ] add Windows support 
+
 - [ ] Google traffic analysis
 
