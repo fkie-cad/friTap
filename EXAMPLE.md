@@ -1,11 +1,11 @@
 # Example
-In this file we will show two ways how you can use sslinterceptor to decrypt and analyse TLS traffic of an application. For general information, look at USAGE.md.
+In this file we will show two ways how you can use friTap (formally know as sslinterceptor) to decrypt and analyse TLS traffic of an application. For general information, look at USAGE.md.
 
 The examples are demonstrated using the app from "Flipboard" [1].
 
 ## Setup
 ### Android
-To work with sslinterceptor you can either use a real phone connected to the PC with USB-Debugging enabled or use a emulator. The only important thing is
+To work with friTap you can either use a real phone connected to the PC with USB-Debugging enabled or use a emulator. The only important thing is
 that the phone must be rooted for frida to work. If you use Genymotion, it is rooted per default. For AVD, have a look at [this repository](https://github.com/Frint0/avd-root).
 
 ### Frida
@@ -18,10 +18,10 @@ adb shell "chmod +x /data/local/tmp/frida-server"
 adb shell "/data/local/tmp/frida-server &"
 ```
 
-## Extracting a pcap with sllinterceptor
-The first way is to directly tell sslinterceptor to write all traffic to a pcap file. To do this with flipboard, use the following command:
+## Extracting a pcap with friTap
+The first way is to directly tell friTap to write all traffic to a pcap file. To do this with flipboard, use the following command:
 
-`python3 sslinterceptor.py flipboard.app -spawn -pcap flipboard.pcap`
+`python3 friTap.py -a flipboard.app -spawn -pcap flipboard.pcap`
 
 In this example, we had Flipboard running on a Genymotion instance:
 
@@ -32,11 +32,11 @@ When finished, you can open the resulting `flipboard.pcap` with wireshark and lo
 ![Wireshark view of resulting pcap](/images/flipboard_pcap_2.png)
 
 ## Extracting keys and decrypting with wireshark
-Wireshark offers a way to automatically decrypt TLS traffic when provided a file containing the neccessary keys [2]. Such a file can be created using the `-keylog` option on sslinterceptor:
+Wireshark offers a way to automatically decrypt TLS traffic when provided a file containing the neccessary keys [2]. Such a file can be created using the `-keylog` option on friTap:
 
-`python3 sslinterceptor.py flipboard.app -spawn -keylog flipboard.keylog`
+`python3 friTap.py -a flipboard.app -spawn -keylog flipboard.keylog`
 
-To make use of this, we can simultaniously use sslinterceptor to log the keys and tcpdump (via adb) to record the pcap:
+To make use of this, we can simultaniously use friTap to log the keys and tcpdump (via adb) to record the pcap:
 
 ![Output while logging](/images/flipboard_keylog_1.png)
 
