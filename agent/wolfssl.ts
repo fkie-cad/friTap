@@ -117,8 +117,9 @@ export function execute(moduleName: string) {
     Interceptor.attach(addresses["wolfSSL_read"],
         {
             onEnter: function (args: any) {
+                
                 var message = getPortsAndAddresses(wolfSSL_get_fd(args[0]) as number, true, addresses)
-                message["ssl_session_id"] = getSslSessionId(args[0])
+                
                 message["function"] = "wolfSSL_read"
                 this.message = message
                 this.buf = args[1]
