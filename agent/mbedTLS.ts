@@ -30,6 +30,8 @@ export function execute(moduleName:string) {
             var data = this.buffer.readByteArray(retval);
 
             var message: { [key: string]: string | number } = {}
+            //TODO:Following options could be obtained by having a look at the bio attribute.
+            //There we can find the fd of the socket
             message["ss_family"] = "AF_INET"
             message["src_port"] = 444;
             message["src_addr"] = 222;
@@ -37,6 +39,9 @@ export function execute(moduleName:string) {
             message["dst_addr"] = 222;
             message["function"] = "DecryptMessage"
             message["contentType"] = "datalog"
+            //Obtaining the session id seems to be hard. Parsing the ssl_context object. The session
+            //object holds the id in the form of a char array?
+            //https://tls.mbed.org/api/structmbedtls__ssl__session.html
             message["ssl_session_id"] = 10
             send(message, data)
                     
