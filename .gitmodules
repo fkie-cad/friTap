@@ -1,6 +1,0 @@
-[submodule "ExampleApp/wolfssl"]
-	path = ExampleApp/wolfssl
-	url = git@github.com:wolfSSL/wolfssl.git
-[submodule "ExampleApp/wolfssljni"]
-	path = ExampleApp/wolfssljni
-	url = git@github.com:wolfSSL/wolfssljni.git

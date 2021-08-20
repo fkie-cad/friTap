@@ -21,10 +21,21 @@ $ sudo python3 ./friTap.py --pcap mycapture.pcap thunderbird
 For Android we just have to add the -a parameter to indicate that we are now attaching (or spawning) an Android app:
 
 ```bash
-$ sudo python3 ./friTap.py -a -pcap mycapture.pcap com.example.app
+$ sudo python3 ./friTap.py -a --pcap mycapture.pcap com.example.app
 ```
 
 Further ensure that the frida-server is running on the Android device. More examples on using fritap can be found in the [USAGE.md](./USAGE.md).
+
+## Supported SSL/TLS implementations
+
+The following implementations of SSL/TLS are currently supported as targets:
+- openssl
+- boringssl
+- nss
+- gnutls
+- wolfssl
+- Bouncycastle/Spongycastle
+- Android: Conscrypt installed via [ProviderInstaller](https://developer.android.com/training/articles/security-gms-provider#patching)
 
 ## Dependencies
 
@@ -33,14 +44,15 @@ Further ensure that the frida-server is running on the Android device. More exam
 
 ## Planned features
 
-- [ ] fix spawning issue on Linux e.g. with Firefox
+- [ ] add the capability to alter the decrypted payload
+- integration with https://github.com/mitmproxy/mitmproxy
+- integration with http://portswigger.net/burp/
 
-- [ ] add wine support for Windows
+- [ ] add wine support
 
 - [ ] add further Linux/Android Libraries (have a look at this [Wikipedia entry](https://en.wikipedia.org/wiki/Comparison_of_TLS_implementations)):
 
 - Botan
-- GnuTLS
 - Mbed TLS 
 - MatrixSSL
 - ...
@@ -49,6 +61,6 @@ Further ensure that the frida-server is running on the Android device. More exam
 - Add feature to prototype TLS-Read/Write/SSLKEY functions
 
 - [ ] add iOS support
-- [ ] add Windows support 
+
 - [ ] Google traffic analysis
 

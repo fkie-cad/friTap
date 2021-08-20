@@ -176,3 +176,7 @@ __handlers__
 
 #misc
 fritap_analysis.txt
+
+#windows
+.vs/
+debug/

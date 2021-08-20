@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="ssl_library_array">
+        <item>BoringSSL</item>
+        <item>WolfSSL</item>
+        <item>BouncyCastle</item>
+        <item>GmsCore_OpenSSL</item>
+    </string-array>
+</resources>

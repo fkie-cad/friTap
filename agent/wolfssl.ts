@@ -1,18 +1,40 @@
 import { readAddresses, getPortsAndAddresses } from "./shared"
 import { log } from "./log"
 
-export function execute() {
+export function execute(moduleName: string) {
+    
+    var socket_library:string =""
+    switch(Process.platform){
+        case "linux":
+            socket_library = "libc"
+            break
+        case "windows":
+            socket_library = "WS2_32.dll"
+            break
+        case "darwin":
+            //TODO:Darwin implementation pending...
+            break;
+        default:
+            log(`Platform "${Process.platform} currently not supported!`)
+    }
+
     var library_method_mapping: { [key: string]: Array<String> } = {}
-    library_method_mapping["*libwolfssl*"] = ["wolfSSL_read", "wolfSSL_write", "wolfSSL_get_fd", "wolfSSL_get_session", "wolfSSL_connect", "wolfSSL_SESSION_get_master_key", "wolfSSL_get_client_random", "wolfSSL_KeepArrays"]
-    library_method_mapping["*libc*"] = ["getpeername", "getsockname", "ntohs", "ntohl"]
+    library_method_mapping[`*${moduleName}*`] = ["wolfSSL_read", "wolfSSL_write", "wolfSSL_get_fd", "wolfSSL_get_session", "wolfSSL_connect", "wolfSSL_KeepArrays"]
+    
+    //? Just in case darwin methods are different to linux and windows ones
+    if(socket_library === "libc" || socket_library === "WS2_32.dll"){
+        library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
+    }else{
+        //TODO: Darwin implementation pending
+    }
 
     var addresses: { [key: string]: NativePointer } = readAddresses(library_method_mapping)
 
-    var wolfSSL_get_fd = new NativeFunction(addresses["wolfSSL_get_fd"], "int", ["pointer"])
-    var wolfSSL_get_session = new NativeFunction(addresses["wolfSSL_get_session"], "pointer", ["pointer"])
-    var wolfSSL_SESSION_get_master_key = new NativeFunction(addresses["wolfSSL_SESSION_get_master_key"], "int", ["pointer", "pointer", "int"])
-    var wolfSSL_get_client_random = new NativeFunction(addresses["wolfSSL_get_client_random"], "int", ["pointer", "pointer", "uint"])
-    var wolfSSL_KeepArrays = new NativeFunction(addresses["wolfSSL_KeepArrays"], "void", ["pointer"])
+    const wolfSSL_get_fd = new NativeFunction(addresses["wolfSSL_get_fd"], "int", ["pointer"])
+    const wolfSSL_get_session = new NativeFunction(addresses["wolfSSL_get_session"], "pointer", ["pointer"])
+    //const wolfSSL_SESSION_get_master_key = new NativeFunction(addresses["wolfSSL_SESSION_get_master_key"], "int", ["pointer", "pointer", "int"])
+    //const wolfSSL_get_client_random = new NativeFunction(addresses["wolfSSL_get_client_random"], "int", ["pointer", "pointer", "uint"])
+    const wolfSSL_KeepArrays = new NativeFunction(addresses["wolfSSL_KeepArrays"], "void", ["pointer"])
 
     /**
        * Get the session_id of SSL object and return it as a hex string.
@@ -48,7 +70,7 @@ export function execute() {
        *     current session. For example,
        *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
        */
-    function getMasterKey(wolfSslPtr: NativePointer) {
+    /*function getMasterKey(wolfSslPtr: NativePointer) {
         var session = wolfSSL_get_session(wolfSslPtr)
         var nullPtr = ptr(0)
         var masterKeySize = wolfSSL_SESSION_get_master_key(session, nullPtr, 0) as number
@@ -65,6 +87,7 @@ export function execute() {
         }
         return masterKey;
     }
+    */
 
     /**
        * Get the clientRandom of the current session and return it as a hex string.
@@ -73,11 +96,11 @@ export function execute() {
        *     current session. For example,
        *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
        */
-    function getClientRandom(wolfSslPtr: NativePointer) {
+    /*function getClientRandom(wolfSslPtr: NativePointer) {
         var nullPtr = ptr(0)
         var clientRandomSize = wolfSSL_get_client_random(wolfSslPtr, nullPtr, 0) as number
         var buffer = Memory.alloc(clientRandomSize)
-        console.log(wolfSSL_get_client_random(wolfSslPtr, buffer, clientRandomSize))
+        //console.log(wolfSSL_get_client_random(wolfSslPtr, buffer, clientRandomSize))
 
         var clientRandom = ""
         for (var i = 0; i < clientRandomSize; i++) {
@@ -89,7 +112,7 @@ export function execute() {
         }
         return clientRandom;
     }
-
+    */
 
     Interceptor.attach(addresses["wolfSSL_read"],
         {
@@ -132,11 +155,11 @@ export function execute() {
                 wolfSSL_KeepArrays(this.wolfSslPtr)
             },
             onLeave: function (retval: any) {
-                var clientRandom = getClientRandom(this.wolfSslPtr)
-                var masterKey = getMasterKey(this.wolfSslPtr)
+                //var clientRandom = getClientRandom(this.wolfSslPtr)
+                //var masterKey = getMasterKey(this.wolfSslPtr)
                 var message: { [key: string]: any } = {}
                 message["contentType"] = "keylog"
-                message["keylog"] = "CLIENT_RANDOM " + clientRandom + " " + masterKey
+                //message["keylog"] = "CLIENT_RANDOM " + clientRandom + " " + masterKey
                 send(message)
 
             }

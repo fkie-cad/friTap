@@ -1,18 +1,49 @@
 import { readAddresses, getPortsAndAddresses } from "./shared"
 import { log } from "./log"
 
-export function execute() {
+export function execute(moduleName:string) {
+    
+    var socket_library:string =""
+    switch(Process.platform){
+        case "linux":
+            socket_library = "libc"
+            break
+        case "windows":
+            socket_library = "WS2_32.dll"
+            break
+        case "darwin":
+            //TODO:Darwin implementation pending...
+            break;
+        default:
+            log(`Platform "${Process.platform} currently not supported!`)
+    }
+    
     var library_method_mapping: { [key: string]: Array<String> } = {}
-    library_method_mapping["*libssl*"] = ["SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_keylog_callback", "SSL_get_SSL_CTX"]
-    library_method_mapping["*libc*"] = ["getpeername", "getsockname", "ntohs", "ntohl"]
+    library_method_mapping[`*${moduleName}*`] = ["SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_keylog_callback", "SSL_get_SSL_CTX"]
+    
+    //? Just in case darwin methods are different to linux and windows ones
+    if(socket_library === "libc" || socket_library === "WS2_32.dll"){
+        library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
+    }else{
+        //TODO: Darwin implementation pending
+    }
+    
+
+
 
     var addresses: { [key: string]: NativePointer } = readAddresses(library_method_mapping)
 
-    var SSL_get_fd = new NativeFunction(addresses["SSL_get_fd"], "int", ["pointer"])
-    var SSL_get_session = new NativeFunction(addresses["SSL_get_session"], "pointer", ["pointer"])
-    var SSL_SESSION_get_id = new NativeFunction(addresses["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"])
-    var SSL_CTX_set_keylog_callback = new NativeFunction(addresses["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"])
+    const SSL_get_fd = new NativeFunction(addresses["SSL_get_fd"], "int", ["pointer"])
+    const SSL_get_session = new NativeFunction(addresses["SSL_get_session"], "pointer", ["pointer"])
+    const SSL_SESSION_get_id = new NativeFunction(addresses["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"])
+    const SSL_CTX_set_keylog_callback = new NativeFunction(addresses["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"])
 
+    const keylog_callback = new NativeCallback(function (ctxPtr, linePtr: NativePointer) {
+        var message: { [key: string]: string | number | null } = {}
+        message["contentType"] = "keylog"
+        message["keylog"] = linePtr.readCString()
+        send(message)
+    }, "void", ["pointer", "pointer"])
 
     /**
        * Get the session_id of SSL object and return it as a hex string.
@@ -40,6 +71,7 @@ export function execute() {
         }
         return session_id
     }
+
 
     Interceptor.attach(addresses["SSL_read"],
         {
@@ -71,15 +103,10 @@ export function execute() {
             onLeave: function (retval: any) {
             }
         })
+
     Interceptor.attach(addresses["SSL_new"],
         {
             onEnter: function (args: any) {
-                var keylog_callback = new NativeCallback(function (ctxPtr, linePtr: NativePointer) {
-                    var message: { [key: string]: string | number | null } = {}
-                    message["contentType"] = "keylog"
-                    message["keylog"] = linePtr.readCString()
-                    send(message)
-                }, "void", ["pointer", "pointer"])
                 SSL_CTX_set_keylog_callback(args[0], keylog_callback)
             }
 
