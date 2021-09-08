@@ -82,6 +82,25 @@ static void my_debug(void* ctx, int level,
     fflush((FILE*)ctx);
 }
 
+void string2hexString(char* input, mbedtls_ssl_context ssl)
+{
+    char* output = (char*)malloc(strlen((const char*)ssl.private_session->private_id) * 2);
+    int loop;
+    int i;
+
+
+    int outputCounter = 0;
+
+    for (int i = 0; i < ssl.private_session->private_id_len; i++)
+    {
+        sprintf((char*)(output + outputCounter), "%02X", input[i]);
+        outputCounter += 2;
+    }
+    //insert NULL at the end of the output string
+    output[outputCounter] = '\0';
+    printf("Hex: %s\n", output);
+}
+
 int main(void)
 {
     int ret = 1, len;
@@ -233,9 +252,13 @@ int main(void)
     }
     else
         mbedtls_printf(" ok\n");
-         mbedtls_printf("Bio address: %p\n", ssl.private_p_bio);
+        mbedtls_printf("Session ID Length: %d\n", ssl.private_session->private_id_len);
+        
+        
+        
+        mbedtls_printf("Bio address: %p\n", ssl.private_p_bio);
         mbedtls_printf("FileDescriptor: 0x%04X (%d)\n", server_fd.private_fd, server_fd.private_fd);
-    
+        
         /*
          * 3. Write the GET request
          */

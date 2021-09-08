@@ -10,30 +10,24 @@ function bin2String(array) {
 var readAddress = DebugSymbol.fromName("mbedtls_ssl_read").address;
 var writeAddress = DebugSymbol.fromName("mbedtls_ssl_write").address;
 var getSessionAddress = DebugSymbol.fromName("mbedtls_ssl_get_session").address;
+
 var getSessionId = function(sslcontext){
-    console.log("Arch: " + Process.arch)
-    var sessionSize = 4 + 4 + 4 + 4 + 32 + 48 + Process.pointerSize + 4 + 1 + 4 + 4 + Process.pointerSize + 4 + 4 +100
-    var mem = Memory.alloc(sessionSize);
-    //console.log(mem.readByteArray(sessionSize))
-    //var getSession = new NativeFunction(getSessionAddress, "int", ["pointer", "pointer"]);
-    console.log(`SSLContext: ${sslcontext} - Session: ${mem}`)
-    //var ret = getSession(sslcontext, mem)
-    //console.log(mem.readByteArray(sessionSize))
     
-    var offset = Process.pointerSize * 7 + 4 +4 + 4+ +4 +4 + 4
-    //var sslcontext = sslcontext.readByteArray(1000);
-    //console.log(`Pointersize: ${Process.pointerSize}`)
-    //console.log(sslcontext)
-    var majVersionOffset = Process.pointerSize + 4 + 4+ 4;
-    //var majVersion = sslcontext.slice(majVersionOffset, majVersionOffset + 5);
-    var t = sslcontext.add(offset)
-    //console.log(`SSLContext: ${sslcontext} + ${majVersionOffset} = ${t}`)
-    var sessionPointer = t.readPointer();
+    var offsetSession = Process.pointerSize * 7 + 4 +4 + 4+ +4 +4 + 4
+    var sessionPointer = sslcontext.add(offsetSession).readPointer();
     var offsetSessionId = 8 + 4 + 4 +4 
     var offsetSessionLength = 8 + 4 + 4
     var idLength = sessionPointer.add(offsetSessionLength).readU32();
-    var id = sessionPointer.add(offsetSessionId).readCString(idLength);
-    console.log(id)
+    
+    var idData = sessionPointer.add(offsetSessionId)
+    var session_id = ""
+    
+    for (var byteCounter = 0; byteCounter < idLength; byteCounter++){
+        
+        session_id = `${session_id}${idData.add(byteCounter).readU8().toString(16).toUpperCase()}`
+    }
+
+    return session_id
 }
 
 var getSocketDescriptor = function (sslcontext){
@@ -55,8 +49,8 @@ Interceptor.attach(readAddress, {
         this.buffer = args[1];
         this.len = args[2];
         var sessionId = getSessionId(sslcontext)
-        var sccketDescriptor = getSocketDescriptor(sslcontext);
-        console.log("Read called!")
+        var socketDescriptor = getSocketDescriptor(sslcontext);
+        console.log(`Session Id: ${sessionId}\nSocket descriptor: ${socketDescriptor}`)
     },
 
     onLeave: function(retval){
