@@ -3,8 +3,9 @@ import { readAddresses, getPortsAndAddresses, getSocketLibrary, getModuleNames }
 
 var getSocketDescriptor = function (sslcontext: NativePointer){
     console.log(`Pointersize: ${Process.pointerSize}`)
-    var bioOffset = 48;//Documentation not valid (8 Bytes less)Process.pointerSize + 4 * 6 +  Process.pointerSize *3
-    console.log(sslcontext.readByteArray(100))
+    var bioOffset = Process.platform == 'windows' ? 48 : 56;//Documentation not valid (8 Bytes less)Process.pointerSize + 4 * 6 +  Process.pointerSize *3
+                       //For linux it is valid
+    //console.log(sslcontext.readByteArray(100))
     var p_bio = sslcontext.add(bioOffset).readPointer()
     console.log(`Pointer BIO: ${p_bio}`)
     var bio_value = p_bio.readS32();
@@ -55,6 +56,7 @@ export function execute(moduleName:string) {
             this.sslContext = args[0];
 
             var message = getPortsAndAddresses(getSocketDescriptor(args[0]) as number, true, addresses)
+            message["ssl_session_id"] = getSessionId(args[0])
             message["function"] = "mbedtls_ssl_read"
             this.message = message
         },
