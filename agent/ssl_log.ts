@@ -2,8 +2,10 @@ import { execute as boring_execute } from "./openssl_boringssl"
 import { execute as wolf_execute } from "./wolfssl"
 import { execute as bouncy_execute } from "./bouncycastle"
 import { execute as conscrypt_execute } from "./conscrypt"
+import { execute as sspi_execute } from "./sspi"
 import { execute as nss_execute } from "./nss"
 import { execute as gnutls_execute } from "./gnutls"
+import {execute as mbedtls_execute } from "./mbedTLS"
 import { log } from "./log"
 import { getModuleNames} from "./shared"
 
@@ -23,8 +25,8 @@ function hasRequiredFunctions(libName: string, expectedFuncName: string): boolea
 var moduleNames: Array<string> = getModuleNames()
 
 var module_library_mapping: { [key: string]: Array<[any, (moduleName: string)=>void]> } = {}
-module_library_mapping["windows"] = [[/libssl-[0-9]+(_[0-9]+)?\.dll/, boring_execute],[/.*wolfssl.*\.dll/, wolf_execute],[/.*libgnutls-[0-9]+\.dll/, gnutls_execute],[/nspr[0-9]*\.dll/,nss_execute]] //TODO: Map all the other libraries
-module_library_mapping["linux"] = [[/.*libssl\.so/, boring_execute],[/.*libgnutls\.so/, gnutls_execute],[/.*libwolfssl\.so/, wolf_execute],[/.*libnspr[0-9]?\.so/,nss_execute]]
+module_library_mapping["windows"] = [[/libssl-[0-9]+(_[0-9]+)?\.dll/, boring_execute],[/.*wolfssl.*\.dll/, wolf_execute],[/.*libgnutls-[0-9]+\.dll/, gnutls_execute],[/nspr[0-9]*\.dll/,nss_execute], [/sspicli\.dll/i,sspi_execute]] 
+module_library_mapping["linux"] = [[/.*libssl\.so/, boring_execute],[/.*libgnutls\.so/, gnutls_execute],[/.*libwolfssl\.so/, wolf_execute],[/.*libnspr[0-9]?\.so/,nss_execute], [/libmbedtls\.so.*/, mbedtls_execute]]
 
 
 if(Process.platform === "windows"){

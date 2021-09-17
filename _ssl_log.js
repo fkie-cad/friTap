@@ -1,756 +1,671 @@
 (function(){function r(e,n,t){function o(i,f){if(!n[i]){if(!e[i]){var c="function"==typeof require&&require;if(!f&&c)return c(i,!0);if(u)return u(i,!0);var a=new Error("Cannot find module '"+i+"'");throw a.code="MODULE_NOT_FOUND",a}var p=n[i]={exports:{}};e[i][0].call(p.exports,function(r){var n=e[i][1][r];return o(n||r)},p,p.exports,r,e,n,t)}return n[i].exports}for(var u="function"==typeof require&&require,i=0;i<t.length;i++)o(t[i]);return o}return r})()({1:[function(require,module,exports){
 "use strict";
-
-var _interopRequireDefault = require("@babel/runtime-corejs2/helpers/interopRequireDefault");
-
-var _defineProperty = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/object/define-property"));
-
-(0, _defineProperty["default"])(exports, "__esModule", {
-  value: true
-});
+Object.defineProperty(exports, "__esModule", { value: true });
 exports.execute = void 0;
-
-var log_1 = require("./log");
-
-var shared_1 = require("./shared");
-
+const log_1 = require("./log");
+const shared_1 = require("./shared");
 function execute() {
-  Java.perform(function () {
-    //Hook the inner class "AppDataOutput/input" of ProvSSLSocketDirect, so we can access the 
-    //socket information in its outer class by accessing this.this$0
-    var appDataOutput = Java.use("org.spongycastle.jsse.provider.ProvSSLSocketDirect$AppDataOutput");
-
-    appDataOutput.write.overload('[B', 'int', 'int').implementation = function (buf, offset, len) {
-      var result = [];
-
-      for (var i = 0; i < len; ++i) {
-        result.push(buf[i] & 0xff);
-      }
-
-      var message = {};
-      message["contentType"] = "datalog";
-      message["src_port"] = this.this$0.value.getLocalPort();
-      message["dst_port"] = this.this$0.value.getPort();
-      var localAddress = this.this$0.value.getLocalAddress().getAddress();
-      var inetAddress = this.this$0.value.getInetAddress().getAddress();
-
-      if (localAddress.length == 4) {
-        message["src_addr"] = shared_1.byteArrayToNumber(localAddress);
-        message["dst_addr"] = shared_1.byteArrayToNumber(inetAddress);
-        message["ss_family"] = "AF_INET";
-      } else {
-        message["src_addr"] = shared_1.byteArrayToString(localAddress);
-        message["dst_addr"] = shared_1.byteArrayToString(inetAddress);
-        message["ss_family"] = "AF_INET6";
-      }
-
-      message["ssl_session_id"] = shared_1.byteArrayToString(this.this$0.value.getConnection().getSession().getId()); //log(message["ssl_session_id"])
-
-      message["function"] = "writeApplicationData";
-      send(message, result);
-      return this.write(buf, offset, len);
-    };
-
-    var appDataInput = Java.use("org.spongycastle.jsse.provider.ProvSSLSocketDirect$AppDataInput");
-
-    appDataInput.read.overload('[B', 'int', 'int').implementation = function (buf, offset, len) {
-      var bytesRead = this.read(buf, offset, len);
-      var result = [];
-
-      for (var i = 0; i < bytesRead; ++i) {
-        result.push(buf[i] & 0xff);
-      }
-
-      var message = {};
-      message["contentType"] = "datalog";
-      message["ss_family"] = "AF_INET";
-      message["src_port"] = this.this$0.value.getPort();
-      message["dst_port"] = this.this$0.value.getLocalPort();
-      var localAddress = this.this$0.value.getLocalAddress().getAddress();
-      var inetAddress = this.this$0.value.getInetAddress().getAddress();
-
-      if (localAddress.length == 4) {
-        message["src_addr"] = shared_1.byteArrayToNumber(inetAddress);
-        message["dst_addr"] = shared_1.byteArrayToNumber(localAddress);
-        message["ss_family"] = "AF_INET";
-      } else {
-        message["src_addr"] = shared_1.byteArrayToString(inetAddress);
-        message["dst_addr"] = shared_1.byteArrayToString(localAddress);
-        message["ss_family"] = "AF_INET6";
-      }
-
-      message["ssl_session_id"] = shared_1.byteArrayToString(this.this$0.value.getConnection().getSession().getId());
-      log_1.log(message["ssl_session_id"]);
-      message["function"] = "readApplicationData";
-      send(message, result);
-      return bytesRead;
-    }; //Hook the handshake to read the client random and the master key
-
-
-    var ProvSSLSocketDirect = Java.use("org.spongycastle.jsse.provider.ProvSSLSocketDirect");
-
-    ProvSSLSocketDirect.notifyHandshakeComplete.implementation = function (x) {
-      var protocol = this.protocol.value;
-      var securityParameters = protocol.securityParameters.value;
-      var clientRandom = securityParameters.clientRandom.value;
-      var masterSecretObj = shared_1.getAttribute(securityParameters, "masterSecret"); //The key is in the AbstractTlsSecret, so we need to access the superclass to get the field
-
-      var clazz = Java.use("java.lang.Class");
-      var masterSecretRawField = Java.cast(masterSecretObj.getClass(), clazz).getSuperclass().getDeclaredField("data");
-      masterSecretRawField.setAccessible(true);
-      var masterSecretReflectArray = masterSecretRawField.get(masterSecretObj);
-      var message = {};
-      message["contentType"] = "keylog";
-      message["keylog"] = "CLIENT_RANDOM " + shared_1.byteArrayToString(clientRandom) + " " + shared_1.reflectionByteArrayToString(masterSecretReflectArray);
-      send(message);
-      return this.notifyHandshakeComplete(x);
-    };
-  });
+    Java.perform(function () {
+        //Hook the inner class "AppDataOutput/input" of ProvSSLSocketDirect, so we can access the 
+        //socket information in its outer class by accessing this.this$0
+        var appDataOutput = Java.use("org.spongycastle.jsse.provider.ProvSSLSocketDirect$AppDataOutput");
+        appDataOutput.write.overload('[B', 'int', 'int').implementation = function (buf, offset, len) {
+            var result = [];
+            for (var i = 0; i < len; ++i) {
+                result.push(buf[i] & 0xff);
+            }
+            var message = {};
+            message["contentType"] = "datalog";
+            message["src_port"] = this.this$0.value.getLocalPort();
+            message["dst_port"] = this.this$0.value.getPort();
+            var localAddress = this.this$0.value.getLocalAddress().getAddress();
+            var inetAddress = this.this$0.value.getInetAddress().getAddress();
+            if (localAddress.length == 4) {
+                message["src_addr"] = shared_1.byteArrayToNumber(localAddress);
+                message["dst_addr"] = shared_1.byteArrayToNumber(inetAddress);
+                message["ss_family"] = "AF_INET";
+            }
+            else {
+                message["src_addr"] = shared_1.byteArrayToString(localAddress);
+                message["dst_addr"] = shared_1.byteArrayToString(inetAddress);
+                message["ss_family"] = "AF_INET6";
+            }
+            message["ssl_session_id"] = shared_1.byteArrayToString(this.this$0.value.getConnection().getSession().getId());
+            //log(message["ssl_session_id"])
+            message["function"] = "writeApplicationData";
+            send(message, result);
+            return this.write(buf, offset, len);
+        };
+        var appDataInput = Java.use("org.spongycastle.jsse.provider.ProvSSLSocketDirect$AppDataInput");
+        appDataInput.read.overload('[B', 'int', 'int').implementation = function (buf, offset, len) {
+            var bytesRead = this.read(buf, offset, len);
+            var result = [];
+            for (var i = 0; i < bytesRead; ++i) {
+                result.push(buf[i] & 0xff);
+            }
+            var message = {};
+            message["contentType"] = "datalog";
+            message["ss_family"] = "AF_INET";
+            message["src_port"] = this.this$0.value.getPort();
+            message["dst_port"] = this.this$0.value.getLocalPort();
+            var localAddress = this.this$0.value.getLocalAddress().getAddress();
+            var inetAddress = this.this$0.value.getInetAddress().getAddress();
+            if (localAddress.length == 4) {
+                message["src_addr"] = shared_1.byteArrayToNumber(inetAddress);
+                message["dst_addr"] = shared_1.byteArrayToNumber(localAddress);
+                message["ss_family"] = "AF_INET";
+            }
+            else {
+                message["src_addr"] = shared_1.byteArrayToString(inetAddress);
+                message["dst_addr"] = shared_1.byteArrayToString(localAddress);
+                message["ss_family"] = "AF_INET6";
+            }
+            message["ssl_session_id"] = shared_1.byteArrayToString(this.this$0.value.getConnection().getSession().getId());
+            log_1.log(message["ssl_session_id"]);
+            message["function"] = "readApplicationData";
+            send(message, result);
+            return bytesRead;
+        };
+        //Hook the handshake to read the client random and the master key
+        var ProvSSLSocketDirect = Java.use("org.spongycastle.jsse.provider.ProvSSLSocketDirect");
+        ProvSSLSocketDirect.notifyHandshakeComplete.implementation = function (x) {
+            var protocol = this.protocol.value;
+            var securityParameters = protocol.securityParameters.value;
+            var clientRandom = securityParameters.clientRandom.value;
+            var masterSecretObj = shared_1.getAttribute(securityParameters, "masterSecret");
+            //The key is in the AbstractTlsSecret, so we need to access the superclass to get the field
+            var clazz = Java.use("java.lang.Class");
+            var masterSecretRawField = Java.cast(masterSecretObj.getClass(), clazz).getSuperclass().getDeclaredField("data");
+            masterSecretRawField.setAccessible(true);
+            var masterSecretReflectArray = masterSecretRawField.get(masterSecretObj);
+            var message = {};
+            message["contentType"] = "keylog";
+            message["keylog"] = "CLIENT_RANDOM " + shared_1.byteArrayToString(clientRandom) + " " + shared_1.reflectionByteArrayToString(masterSecretReflectArray);
+            send(message);
+            return this.notifyHandshakeComplete(x);
+        };
+    });
 }
-
 exports.execute = execute;
-
-},{"./log":4,"./shared":7,"@babel/runtime-corejs2/core-js/object/define-property":13,"@babel/runtime-corejs2/helpers/interopRequireDefault":17}],2:[function(require,module,exports){
+},{"./log":4,"./shared":7}],2:[function(require,module,exports){
 "use strict";
-
-var _interopRequireDefault = require("@babel/runtime-corejs2/helpers/interopRequireDefault");
-
-var _getIterator2 = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/get-iterator"));
-
-var _isArray = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/array/is-array"));
-
-var _iterator2 = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/symbol/iterator"));
-
-var _symbol = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/symbol"));
-
-var _from = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/array/from"));
-
-var _defineProperty = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/object/define-property"));
-
-function _createForOfIteratorHelper(o, allowArrayLike) { var it; if (typeof _symbol["default"] === "undefined" || o[_iterator2["default"]] == null) { if ((0, _isArray["default"])(o) || (it = _unsupportedIterableToArray(o)) || allowArrayLike && o && typeof o.length === "number") { if (it) o = it; var i = 0; var F = function F() {}; return { s: F, n: function n() { if (i >= o.length) return { done: true }; return { done: false, value: o[i++] }; }, e: function e(_e) { throw _e; }, f: F }; } throw new TypeError("Invalid attempt to iterate non-iterable instance.\nIn order to be iterable, non-array objects must have a [Symbol.iterator]() method."); } var normalCompletion = true, didErr = false, err; return { s: function s() { it = (0, _getIterator2["default"])(o); }, n: function n() { var step = it.next(); normalCompletion = step.done; return step; }, e: function e(_e2) { didErr = true; err = _e2; }, f: function f() { try { if (!normalCompletion && it["return"] != null) it["return"](); } finally { if (didErr) throw err; } } }; }
-
-function _unsupportedIterableToArray(o, minLen) { if (!o) return; if (typeof o === "string") return _arrayLikeToArray(o, minLen); var n = Object.prototype.toString.call(o).slice(8, -1); if (n === "Object" && o.constructor) n = o.constructor.name; if (n === "Map" || n === "Set") return (0, _from["default"])(o); if (n === "Arguments" || /^(?:Ui|I)nt(?:8|16|32)(?:Clamped)?Array$/.test(n)) return _arrayLikeToArray(o, minLen); }
-
-function _arrayLikeToArray(arr, len) { if (len == null || len > arr.length) len = arr.length; for (var i = 0, arr2 = new Array(len); i < len; i++) { arr2[i] = arr[i]; } return arr2; }
-
-(0, _defineProperty["default"])(exports, "__esModule", {
-  value: true
-});
+Object.defineProperty(exports, "__esModule", { value: true });
 exports.execute = void 0;
-
-var log_1 = require("./log");
-
+const log_1 = require("./log");
 function findProviderInstallerFromClassloaders(currentClassLoader, backupImplementation) {
-  var providerInstallerImpl = null;
-  var classLoaders = Java.enumerateClassLoadersSync();
-
-  var _iterator = _createForOfIteratorHelper(classLoaders),
-      _step;
-
-  try {
-    for (_iterator.s(); !(_step = _iterator.n()).done;) {
-      var cl = _step.value;
-
-      try {
-        var classFactory = Java.ClassFactory.get(cl);
-        providerInstallerImpl = classFactory.use("com.google.android.gms.common.security.ProviderInstallerImpl");
-        break;
-      } catch (error) {// On error we return null
-      }
-    } //Revert the implementation to avoid an infinitloop of "Loadclass"
-
-  } catch (err) {
-    _iterator.e(err);
-  } finally {
-    _iterator.f();
-  }
-
-  currentClassLoader.loadClass.overload("java.lang.String").implementation = backupImplementation;
-  return providerInstallerImpl;
+    var providerInstallerImpl = null;
+    var classLoaders = Java.enumerateClassLoadersSync();
+    for (var cl of classLoaders) {
+        try {
+            var classFactory = Java.ClassFactory.get(cl);
+            providerInstallerImpl = classFactory.use("com.google.android.gms.common.security.ProviderInstallerImpl");
+            break;
+        }
+        catch (error) {
+            // On error we return null
+        }
+    }
+    //Revert the implementation to avoid an infinitloop of "Loadclass"
+    currentClassLoader.loadClass.overload("java.lang.String").implementation = backupImplementation;
+    return providerInstallerImpl;
 }
-
 function execute() {
-  //We have to hook multiple entrypoints: ProviderInstallerImpl and ProviderInstaller
-  Java.perform(function () {
-    //Part one: Hook ProviderInstallerImpl
-    var javaClassLoader = Java.use("java.lang.ClassLoader");
-    var backupImplementation = javaClassLoader.loadClass.overload("java.lang.String").implementation; //The classloader for ProviderInstallerImpl might not be present on startup, so we hook the loadClass method.  
+    //We have to hook multiple entrypoints: ProviderInstallerImpl and ProviderInstaller
+    Java.perform(function () {
+        //Part one: Hook ProviderInstallerImpl
+        var javaClassLoader = Java.use("java.lang.ClassLoader");
+        var backupImplementation = javaClassLoader.loadClass.overload("java.lang.String").implementation;
+        //The classloader for ProviderInstallerImpl might not be present on startup, so we hook the loadClass method.  
+        javaClassLoader.loadClass.overload("java.lang.String").implementation = function (className) {
+            let retval = this.loadClass(className);
+            if (className.endsWith("ProviderInstallerImpl")) {
+                log_1.log("Process is loading ProviderInstallerImpl");
+                var providerInstallerImpl = findProviderInstallerFromClassloaders(javaClassLoader, backupImplementation);
+                if (providerInstallerImpl === null) {
+                    log_1.log("ProviderInstallerImpl could not be found, although it has been loaded");
+                }
+                else {
+                    providerInstallerImpl.insertProvider.implementation = function () {
+                        log_1.log("ProviderinstallerImpl redirection/blocking");
+                    };
+                }
+            }
+            return retval;
+        };
+        /*
+        //Do the same for second overload of javaClassLoader
+        var backupImplementation = javaClassLoader.loadClass.overload("java.lang.String", "boolean").implementation
+        //The classloader for ProviderInstallerImpl might not be present on startup, so we hook the loadClass method.
+        javaClassLoader.loadClass.overload("java.lang.String", "boolean").implementation = function (className: string, resolve: boolean) {
+            if (className.endsWith("ProviderInstallerImpl")) {
+                log("Process is loading ProviderInstallerImpl (Method 2)")
+                var providerInstallerImpl = findProviderInstallerFromClassloaders(javaClassLoader, backupImplementation)
+                if (providerInstallerImpl === null) {
+                    log("ProviderInstallerImpl could not be found, although it has been loaded")
+                } else {
+                    providerInstallerImpl.insertProvider.implementation = function () {
+                        log("ProviderinstallerImpl redirection/blocking")
 
-    javaClassLoader.loadClass.overload("java.lang.String").implementation = function (className) {
-      var retval = this.loadClass(className);
+                    }
 
-      if (className.endsWith("ProviderInstallerImpl")) {
-        log_1.log("Process is loading ProviderInstallerImpl");
-        var providerInstallerImpl = findProviderInstallerFromClassloaders(javaClassLoader, backupImplementation);
-
-        if (providerInstallerImpl === null) {
-          log_1.log("ProviderInstallerImpl could not be found, although it has been loaded");
-        } else {
-          providerInstallerImpl.insertProvider.implementation = function () {
-            log_1.log("ProviderinstallerImpl redirection/blocking");
-          };
+                }
+            }
+            return this.loadClass(className, resolve)
         }
-      }
-
-      return retval;
-    };
-    /*
-    //Do the same for second overload of javaClassLoader
-    var backupImplementation = javaClassLoader.loadClass.overload("java.lang.String", "boolean").implementation
-    //The classloader for ProviderInstallerImpl might not be present on startup, so we hook the loadClass method.
-    javaClassLoader.loadClass.overload("java.lang.String", "boolean").implementation = function (className: string, resolve: boolean) {
-        if (className.endsWith("ProviderInstallerImpl")) {
-            log("Process is loading ProviderInstallerImpl (Method 2)")
-            var providerInstallerImpl = findProviderInstallerFromClassloaders(javaClassLoader, backupImplementation)
-            if (providerInstallerImpl === null) {
-                log("ProviderInstallerImpl could not be found, although it has been loaded")
-            } else {
-                providerInstallerImpl.insertProvider.implementation = function () {
-                    log("ProviderinstallerImpl redirection/blocking")
-                 }
-             }
+        */
+        //Part two: Hook Providerinstaller
+        try {
+            var providerInstaller = Java.use("com.google.android.gms.security.ProviderInstaller");
+            providerInstaller.installIfNeeded.implementation = function (context) {
+                log_1.log("Providerinstaller redirection/blocking");
+            };
+            providerInstaller.installIfNeededAsync.implementation = function (context, callback) {
+                log_1.log("Providerinstaller redirection/blocking");
+                callback.onProviderInstalled();
+            };
         }
-        return this.loadClass(className, resolve)
-    }
-    */
-    //Part two: Hook Providerinstaller
-
-
-    try {
-      var providerInstaller = Java.use("com.google.android.gms.security.ProviderInstaller");
-
-      providerInstaller.installIfNeeded.implementation = function (context) {
-        log_1.log("Providerinstaller redirection/blocking");
-      };
-
-      providerInstaller.installIfNeededAsync.implementation = function (context, callback) {
-        log_1.log("Providerinstaller redirection/blocking");
-        callback.onProviderInstalled();
-      };
-    } catch (error) {// As it is not available, do nothing
-    }
-  });
+        catch (error) {
+            // As it is not available, do nothing
+        }
+    });
 }
-
 exports.execute = execute;
-
-},{"./log":4,"@babel/runtime-corejs2/core-js/array/from":10,"@babel/runtime-corejs2/core-js/array/is-array":11,"@babel/runtime-corejs2/core-js/get-iterator":12,"@babel/runtime-corejs2/core-js/object/define-property":13,"@babel/runtime-corejs2/core-js/symbol":15,"@babel/runtime-corejs2/core-js/symbol/iterator":16,"@babel/runtime-corejs2/helpers/interopRequireDefault":17}],3:[function(require,module,exports){
+},{"./log":4}],3:[function(require,module,exports){
 "use strict";
-
-var _interopRequireDefault = require("@babel/runtime-corejs2/helpers/interopRequireDefault");
-
-var _parseInt2 = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/parse-int"));
-
-var _defineProperty = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/object/define-property"));
-
-(0, _defineProperty["default"])(exports, "__esModule", {
-  value: true
-});
+Object.defineProperty(exports, "__esModule", { value: true });
 exports.execute = void 0;
-
-var shared_1 = require("./shared");
-
-function execute() {
-  var library_method_mapping = {};
-  library_method_mapping["*libgnutls*"] = ["gnutls_record_recv", "gnutls_record_send", "gnutls_session_set_keylog_function", "gnutls_transport_get_int", "gnutls_session_get_id", "gnutls_init", "gnutls_handshake", "gnutls_session_get_keylog_function", "gnutls_session_get_random"];
-  library_method_mapping["*libc*"] = ["getpeername", "getsockname", "ntohs", "ntohl"];
-  var addresses = shared_1.readAddresses(library_method_mapping);
-  var gnutls_transport_get_int = new NativeFunction(addresses["gnutls_transport_get_int"], "int", ["pointer"]);
-  var gnutls_session_get_id = new NativeFunction(addresses["gnutls_session_get_id"], "int", ["pointer", "pointer", "pointer"]);
-  var gnutls_session_set_keylog_function = new NativeFunction(addresses["gnutls_session_set_keylog_function"], "void", ["pointer", "pointer"]);
-  var gnutls_session_get_random = new NativeFunction(addresses["gnutls_session_get_random"], "pointer", ["pointer", "pointer", "pointer"]);
-  var keylog_callback = new NativeCallback(function (session, label, secret) {
-    var message = {};
-    message["contentType"] = "keylog";
-    var secret_len = secret.add(Process.pointerSize).readUInt();
-    var secret_str = "";
-    var p = secret.readPointer();
-
-    for (var i = 0; i < secret_len; i++) {
-      // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
-      // it to secret_str.
-      secret_str += ("0" + p.add(i).readU8().toString(16).toUpperCase()).substr(-2);
+const shared_1 = require("./shared");
+const log_1 = require("./log");
+function execute(moduleName) {
+    var socket_library = "";
+    switch (Process.platform) {
+        case "linux":
+            socket_library = "libc";
+            break;
+        case "windows":
+            socket_library = "WS2_32.dll";
+            break;
+        case "darwin":
+            //TODO:Darwin implementation pending...
+            break;
+        default:
+            log_1.log(`Platform "${Process.platform} currently not supported!`);
     }
-
-    var server_random_ptr = Memory.alloc(Process.pointerSize + 4);
-    var client_random_ptr = Memory.alloc(Process.pointerSize + 4);
-    gnutls_session_get_random(session, client_random_ptr, server_random_ptr);
-    var client_random_str = "";
-    var client_random_len = 32;
-    p = client_random_ptr.readPointer();
-
-    for (i = 0; i < client_random_len; i++) {
-      // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
-      // it to client_random_str.
-      client_random_str += ("0" + p.add(i).readU8().toString(16).toUpperCase()).substr(-2);
+    var library_method_mapping = {};
+    library_method_mapping[`*${moduleName}*`] = ["gnutls_record_recv", "gnutls_record_send", "gnutls_session_set_keylog_function", "gnutls_transport_get_int", "gnutls_session_get_id", "gnutls_init", "gnutls_handshake", "gnutls_session_get_keylog_function", "gnutls_session_get_random"];
+    //? Just in case darwin methods are different to linux and windows ones
+    if (socket_library === "libc" || socket_library === "WS2_32.dll") {
+        library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
     }
-
-    message["keylog"] = label.readCString() + " " + client_random_str + " " + secret_str;
-    send(message);
-    return 0;
-  }, "int", ["pointer", "pointer", "pointer"]);
-  /**
-     * Get the session_id of SSL object and return it as a hex string.
-     * @param {!NativePointer} ssl A pointer to an SSL object.
-     * @return {dict} A string representing the session_id of the SSL object's
-     *     SSL_SESSION. For example,
-     *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
-     */
-
-  function getSslSessionId(session) {
-    var len_pointer = Memory.alloc(4);
-    var err = gnutls_session_get_id(session, NULL, len_pointer);
-
-    if (err != 0) {
-      return "";
+    else {
+        //TODO: Darwin implementation pending
     }
-
-    var len = len_pointer.readU32();
-    var p = Memory.alloc(len);
-    err = gnutls_session_get_id(session, p, len_pointer);
-
-    if (err != 0) {
-      return "";
+    var addresses = shared_1.readAddresses(library_method_mapping);
+    const gnutls_transport_get_int = new NativeFunction(addresses["gnutls_transport_get_int"], "int", ["pointer"]);
+    const gnutls_session_get_id = new NativeFunction(addresses["gnutls_session_get_id"], "int", ["pointer", "pointer", "pointer"]);
+    const gnutls_session_set_keylog_function = new NativeFunction(addresses["gnutls_session_set_keylog_function"], "void", ["pointer", "pointer"]);
+    const gnutls_session_get_random = new NativeFunction(addresses["gnutls_session_get_random"], "pointer", ["pointer", "pointer", "pointer"]);
+    const keylog_callback = new NativeCallback(function (session, label, secret) {
+        var message = {};
+        message["contentType"] = "keylog";
+        var secret_len = secret.add(Process.pointerSize).readUInt();
+        var secret_str = "";
+        var p = secret.readPointer();
+        for (var i = 0; i < secret_len; i++) {
+            // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
+            // it to secret_str.
+            secret_str +=
+                ("0" + p.add(i).readU8().toString(16).toUpperCase()).substr(-2);
+        }
+        var server_random_ptr = Memory.alloc(Process.pointerSize + 4);
+        var client_random_ptr = Memory.alloc(Process.pointerSize + 4);
+        gnutls_session_get_random(session, client_random_ptr, server_random_ptr);
+        var client_random_str = "";
+        var client_random_len = 32;
+        p = client_random_ptr.readPointer();
+        for (i = 0; i < client_random_len; i++) {
+            // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
+            // it to client_random_str.
+            client_random_str +=
+                ("0" + p.add(i).readU8().toString(16).toUpperCase()).substr(-2);
+        }
+        message["keylog"] = label.readCString() + " " + client_random_str + " " + secret_str;
+        send(message);
+        return 0;
+    }, "int", ["pointer", "pointer", "pointer"]);
+    /**
+       * Get the session_id of SSL object and return it as a hex string.
+       * @param {!NativePointer} ssl A pointer to an SSL object.
+       * @return {dict} A string representing the session_id of the SSL object's
+       *     SSL_SESSION. For example,
+       *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
+       */
+    function getSslSessionId(session) {
+        var len_pointer = Memory.alloc(4);
+        var err = gnutls_session_get_id(session, NULL, len_pointer);
+        if (err != 0) {
+            return "";
+        }
+        var len = len_pointer.readU32();
+        var p = Memory.alloc(len);
+        err = gnutls_session_get_id(session, p, len_pointer);
+        if (err != 0) {
+            return "";
+        }
+        var session_id = "";
+        for (var i = 0; i < len; i++) {
+            // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
+            // it to session_id.
+            session_id +=
+                ("0" + p.add(i).readU8().toString(16).toUpperCase()).substr(-2);
+        }
+        return session_id;
     }
-
-    var session_id = "";
-
-    for (var i = 0; i < len; i++) {
-      // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
-      // it to session_id.
-      session_id += ("0" + p.add(i).readU8().toString(16).toUpperCase()).substr(-2);
-    }
-
-    return session_id;
-  }
-
-  Interceptor.attach(addresses["gnutls_record_recv"], {
-    onEnter: function onEnter(args) {
-      var message = shared_1.getPortsAndAddresses(gnutls_transport_get_int(args[0]), true, addresses);
-      message["ssl_session_id"] = getSslSessionId(args[0]);
-      message["function"] = "SSL_read";
-      this.message = message;
-      this.buf = args[1];
-    },
-    onLeave: function onLeave(retval) {
-      retval |= 0; // Cast retval to 32-bit integer.
-
-      if (retval <= 0) {
-        return;
-      }
-
-      this.message["contentType"] = "datalog";
-      send(this.message, this.buf.readByteArray(retval));
-    }
-  });
-  Interceptor.attach(addresses["gnutls_record_send"], {
-    onEnter: function onEnter(args) {
-      var message = shared_1.getPortsAndAddresses(gnutls_transport_get_int(args[0]), false, addresses);
-      message["ssl_session_id"] = getSslSessionId(args[0]);
-      message["function"] = "SSL_write";
-      message["contentType"] = "datalog";
-      send(message, args[1].readByteArray((0, _parseInt2["default"])(args[2])));
-    },
-    onLeave: function onLeave(retval) {}
-  });
-  Interceptor.attach(addresses["gnutls_init"], {
-    onEnter: function onEnter(args) {
-      this.session = args[0];
-    },
-    onLeave: function onLeave(retval) {
-      gnutls_session_set_keylog_function(this.session.readPointer(), keylog_callback);
-    }
-  });
+    Interceptor.attach(addresses["gnutls_record_recv"], {
+        onEnter: function (args) {
+            var message = shared_1.getPortsAndAddresses(gnutls_transport_get_int(args[0]), true, addresses);
+            message["ssl_session_id"] = getSslSessionId(args[0]);
+            message["function"] = "SSL_read";
+            this.message = message;
+            this.buf = args[1];
+        },
+        onLeave: function (retval) {
+            retval |= 0; // Cast retval to 32-bit integer.
+            if (retval <= 0) {
+                return;
+            }
+            this.message["contentType"] = "datalog";
+            send(this.message, this.buf.readByteArray(retval));
+        }
+    });
+    Interceptor.attach(addresses["gnutls_record_send"], {
+        onEnter: function (args) {
+            var message = shared_1.getPortsAndAddresses(gnutls_transport_get_int(args[0]), false, addresses);
+            message["ssl_session_id"] = getSslSessionId(args[0]);
+            message["function"] = "SSL_write";
+            message["contentType"] = "datalog";
+            send(message, args[1].readByteArray(parseInt(args[2])));
+        },
+        onLeave: function (retval) {
+        }
+    });
+    Interceptor.attach(addresses["gnutls_init"], {
+        onEnter: function (args) {
+            this.session = args[0];
+        },
+        onLeave: function (retval) {
+            gnutls_session_set_keylog_function(this.session.readPointer(), keylog_callback);
+        }
+    });
 }
-
 exports.execute = execute;
-
-},{"./shared":7,"@babel/runtime-corejs2/core-js/object/define-property":13,"@babel/runtime-corejs2/core-js/parse-int":14,"@babel/runtime-corejs2/helpers/interopRequireDefault":17}],4:[function(require,module,exports){
+},{"./log":4,"./shared":7}],4:[function(require,module,exports){
 "use strict";
-
-var _interopRequireDefault = require("@babel/runtime-corejs2/helpers/interopRequireDefault");
-
-var _defineProperty = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/object/define-property"));
-
-(0, _defineProperty["default"])(exports, "__esModule", {
-  value: true
-});
+Object.defineProperty(exports, "__esModule", { value: true });
 exports.log = void 0;
-
 function log(str) {
-  var message = {};
-  message["contentType"] = "console";
-  message["console"] = str;
-  send(message);
+    var message = {};
+    message["contentType"] = "console";
+    message["console"] = str;
+    send(message);
 }
-
 exports.log = log;
-
-},{"@babel/runtime-corejs2/core-js/object/define-property":13,"@babel/runtime-corejs2/helpers/interopRequireDefault":17}],5:[function(require,module,exports){
+},{}],5:[function(require,module,exports){
 "use strict";
-
-var _interopRequireDefault = require("@babel/runtime-corejs2/helpers/interopRequireDefault");
-
-var _parseInt2 = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/parse-int"));
-
-var _defineProperty = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/object/define-property"));
-
-(0, _defineProperty["default"])(exports, "__esModule", {
-  value: true
-});
-exports.execute = void 0;
-
-var shared_1 = require("./shared");
-
-var log_1 = require("./log");
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.execute = exports.getSSLLibrary = void 0;
+const shared_1 = require("./shared");
+const log_1 = require("./log");
 /*
 SSL_ImportFD === SSL_NEW
-
-
 */
 //GLOBALS
+const AF_INET = 2;
+const AF_INET6 = 100;
+// Exported for use in openssl_boringssl.ts
+function getSSLLibrary() {
+    var moduleNames = shared_1.getModuleNames();
+    //TODO: CONTINUE
+}
+exports.getSSLLibrary = getSSLLibrary;
+function execute(moduleName) {
+    var socket_library = shared_1.getSocketLibrary();
+    var library_method_mapping = {};
+    library_method_mapping[`*${moduleName}*`] = ["PR_Write", "PR_Read", "PR_SetEnv", "PR_FileDesc2NativeHandle", "PR_GetPeerName", "PR_GetSockName"];
+    library_method_mapping[Process.platform === "linux" ? "*libssl*.so" : "*ssl*.dll"] = ["SSL_ImportFD", "SSL_GetSessionID"];
+    //? Just in case darwin methods are different to linux and windows ones
+    if (Process.platform === "linux" || Process.platform === "windows") {
+        library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
+    }
+    else {
+        //TODO: Darwin implementation pending
+    }
+    var addresses = shared_1.readAddresses(library_method_mapping);
+    const SSL_get_fd = new NativeFunction(addresses["PR_FileDesc2NativeHandle"], "int", ["pointer"]);
+    const SET_NSS_ENV = new NativeFunction(addresses["PR_SetEnv"], "pointer", ["pointer"]);
+    const SSL_SESSION_get_id = new NativeFunction(addresses["SSL_GetSessionID"], "pointer", ["pointer"]);
+    //var SSL_CTX_set_keylog_callback = new NativeFunction(addresses["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"])
+    const getsockname = new NativeFunction(Module.getExportByName('libnspr4.so', 'PR_GetSockName'), "int", ["pointer", "pointer"]); //? Why libnspr4.so?
+    const getpeername = new NativeFunction(Module.getExportByName('libnspr4.so', 'PR_GetPeerName'), "int", ["pointer", "pointer"]); //? Why libnspr4.so?
+    //Commented out for testing purposes on Linux
+    //const getsockname = new NativeFunction(addresses["PR_GetSockName"], "int", ["pointer", "pointer"]);
+    //const getpeername = new NativeFunction(addresses["PR_GetPeerName"], "int", ["pointer", "pointer"]);
+    /**
+* Returns a dictionary of a sockfd's "src_addr", "src_port", "dst_addr", and
+* "dst_port".
+* @param {pointer} sockfd The file descriptor of the socket to inspect as PRFileDesc.
+* @param {boolean} isRead If true, the context is an SSL_read call. If
+*     false, the context is an SSL_write call.
+* @param {{ [key: string]: NativePointer}} methodAddresses Dictionary containing (at least) addresses for getpeername, getsockname, ntohs and ntohl
+* @return {{ [key: string]: string | number }} Dictionary of sockfd's "src_addr", "src_port", "dst_addr",
+*     and "dst_port".
 
-
-var AF_INET = 2;
-var AF_INET6 = 100;
-
-function execute() {
-  var library_method_mapping = {};
-  library_method_mapping["*libssl*"] = ["SSL_ImportFD", "SSL_GetSessionID"];
-  library_method_mapping["*libnspr*"] = ["PR_Write", "PR_Read", "PR_SetEnv", "PR_FileDesc2NativeHandle", "PR_GetPeerName", "PR_GetSockName"];
-  library_method_mapping["*libc*"] = ["getpeername", "getsockname", "ntohs", "ntohl"];
-  var addresses = shared_1.readAddresses(library_method_mapping);
-  var SSL_get_fd = new NativeFunction(addresses["PR_FileDesc2NativeHandle"], "int", ["pointer"]);
-  var SET_NSS_ENV = new NativeFunction(addresses["PR_SetEnv"], "pointer", ["pointer"]);
-  var SSL_SESSION_get_id = new NativeFunction(addresses["SSL_GetSessionID"], "pointer", ["pointer"]); //var SSL_CTX_set_keylog_callback = new NativeFunction(addresses["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"])
-
-  var getsockname = new NativeFunction(Module.getExportByName('libnspr4.so', 'PR_GetSockName'), "int", ["pointer", "pointer"]);
-  var getpeername = new NativeFunction(Module.getExportByName('libnspr4.so', 'PR_GetPeerName'), "int", ["pointer", "pointer"]);
-  /**
-  * Returns a dictionary of a sockfd's "src_addr", "src_port", "dst_addr", and
-  * "dst_port".
-  * @param {pointer} sockfd The file descriptor of the socket to inspect as PRFileDesc.
-  * @param {boolean} isRead If true, the context is an SSL_read call. If
-  *     false, the context is an SSL_write call.
-  * @param {{ [key: string]: NativePointer}} methodAddresses Dictionary containing (at least) addresses for getpeername, getsockname, ntohs and ntohl
-  * @return {{ [key: string]: string | number }} Dictionary of sockfd's "src_addr", "src_port", "dst_addr",
-  *     and "dst_port".
   PRStatus PR_GetPeerName(
-  PRFileDesc *fd,
-  PRNetAddr *addr);
-  PRStatus PR_GetSockName(
-  PRFileDesc *fd,
-  PRNetAddr *addr);
-  PRStatus PR_NetAddrToString(
-  const PRNetAddr *addr,
-  char *string,
-  PRUint32 size);
-  union PRNetAddr {
-  struct {
-  PRUint16 family;
-  char data[14];
-  } raw;
-  struct {
-  PRUint16 family;
-  PRUint16 port;
-  PRUint32 ip;
-  char pad[8];
-  } inet;
-  #if defined(_PR_INET6)
-  struct {
-  PRUint16 family;
-  PRUint16 port;
-  PRUint32 flowinfo;
-  PRIPv6Addr ip;
-  } ipv6;
-  #endif // defined(_PR_INET6)
-  };
-  typedef union PRNetAddr PRNetAddr;
-  */
+PRFileDesc *fd,
+PRNetAddr *addr);
 
-  function getPortsAndAddressesFromNSS(sockfd, isRead, methodAddresses) {
-    //var getpeername = new NativeFunction(methodAddresses["PR_GetPeerName"], "int", ["pointer", "pointer"])
-    //var getsockname = new NativeFunction(methodAddresses["PR_GetSockName"], "int", ["pointer", "pointer"])
-    var ntohs = new NativeFunction(methodAddresses["ntohs"], "uint16", ["uint16"]);
-    var ntohl = new NativeFunction(methodAddresses["ntohl"], "uint32", ["uint32"]);
-    var message = {};
-    var addrType = Memory.alloc(2); // PRUint16 is a 2 byte (16 bit) value on all plattforms
-    //var prNetAddr = Memory.alloc(Process.pointerSize)
+PRStatus PR_GetSockName(
+PRFileDesc *fd,
+PRNetAddr *addr);
 
-    var addrlen = Memory.alloc(4);
-    var addr = Memory.alloc(128);
-    var src_dst = ["src", "dst"];
+PRStatus PR_NetAddrToString(
+const PRNetAddr *addr,
+char *string,
+PRUint32 size);
 
-    for (var i = 0; i < src_dst.length; i++) {
-      addrlen.writeU32(128);
 
-      if (src_dst[i] == "src" !== isRead) {
-        getsockname(sockfd, addr);
-      } else {
-        getpeername(sockfd, addr);
-      }
+union PRNetAddr {
+struct {
+   PRUint16 family;
+   char data[14];
+} raw;
+struct {
+   PRUint16 family;
+   PRUint16 port;
+   PRUint32 ip;
+   char pad[8];
+} inet;
+#if defined(_PR_INET6)
+struct {
+   PRUint16 family;
+   PRUint16 port;
+   PRUint32 flowinfo;
+   PRIPv6Addr ip;
+} ipv6;
+#endif // defined(_PR_INET6)
+};
 
-      if (addr.readU16() == AF_INET) {
-        message[src_dst[i] + "_port"] = ntohs(addr.add(2).readU16());
-        message[src_dst[i] + "_addr"] = ntohl(addr.add(4).readU32());
-        message["ss_family"] = "AF_INET";
-      } else if (addr.readU16() == AF_INET6) {
-        message[src_dst[i] + "_port"] = ntohs(addr.add(2).readU16());
-        message[src_dst[i] + "_addr"] = "";
-        var ipv6_addr = addr.add(8);
+typedef union PRNetAddr PRNetAddr;
 
-        for (var offset = 0; offset < 16; offset += 1) {
-          message[src_dst[i] + "_addr"] += ("0" + ipv6_addr.add(offset).readU8().toString(16).toUpperCase()).substr(-2);
+*/
+    function getPortsAndAddressesFromNSS(sockfd, isRead, methodAddresses) {
+        var getpeername = new NativeFunction(methodAddresses["PR_GetPeerName"], "int", ["pointer", "pointer"]);
+        var getsockname = new NativeFunction(methodAddresses["PR_GetSockName"], "int", ["pointer", "pointer"]);
+        var ntohs = new NativeFunction(methodAddresses["ntohs"], "uint16", ["uint16"]);
+        var ntohl = new NativeFunction(methodAddresses["ntohl"], "uint32", ["uint32"]);
+        var message = {};
+        var addrType = Memory.alloc(2); // PRUint16 is a 2 byte (16 bit) value on all plattforms
+        //var prNetAddr = Memory.alloc(Process.pointerSize)
+        var addrlen = Memory.alloc(4);
+        var addr = Memory.alloc(128);
+        var src_dst = ["src", "dst"];
+        for (var i = 0; i < src_dst.length; i++) {
+            addrlen.writeU32(128);
+            if ((src_dst[i] == "src") !== isRead) {
+                getsockname(sockfd, addr);
+            }
+            else {
+                getpeername(sockfd, addr);
+            }
+            if (addr.readU16() == AF_INET) {
+                message[src_dst[i] + "_port"] = ntohs(addr.add(2).readU16());
+                message[src_dst[i] + "_addr"] = ntohl(addr.add(4).readU32());
+                message["ss_family"] = "AF_INET";
+            }
+            else if (addr.readU16() == AF_INET6) {
+                message[src_dst[i] + "_port"] = ntohs(addr.add(2).readU16());
+                message[src_dst[i] + "_addr"] = "";
+                var ipv6_addr = addr.add(8);
+                for (var offset = 0; offset < 16; offset += 1) {
+                    message[src_dst[i] + "_addr"] += ("0" + ipv6_addr.add(offset).readU8().toString(16).toUpperCase()).substr(-2);
+                }
+                if (message[src_dst[i] + "_addr"].toString().indexOf("00000000000000000000FFFF") === 0) {
+                    message[src_dst[i] + "_addr"] = ntohl(ipv6_addr.add(12).readU32());
+                    message["ss_family"] = "AF_INET";
+                }
+                else {
+                    message["ss_family"] = "AF_INET6";
+                }
+            }
+            else {
+                //FIXME: Sometimes addr.readU16() will be 0, thus this error will be thrown. Why isnt this the case on linux? Something windows specific?
+                throw "Only supporting IPv4/6";
+            }
         }
-
-        if (message[src_dst[i] + "_addr"].toString().indexOf("00000000000000000000FFFF") === 0) {
-          message[src_dst[i] + "_addr"] = ntohl(ipv6_addr.add(12).readU32());
-          message["ss_family"] = "AF_INET";
-        } else {
-          message["ss_family"] = "AF_INET6";
+        return message;
+    }
+    /**
+       * Get the session_id of SSL object and return it as a hex string.
+       * @param {!NativePointer} ssl A pointer to an SSL object.
+       * @return {dict} A string representing the session_id of the SSL object's
+       *     SSL_SESSION. For example,
+       *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
+       *
+       * On NSS the return type of SSL_GetSessionID is a SECItem:
+            typedef enum {
+       * siBuffer = 0,
+       * siClearDataBuffer = 1,
+       * siCipherDataBuffer = 2,
+       * siDERCertBuffer = 3,
+       * siEncodedCertBuffer = 4,
+       * siDERNameBuffer = 5,
+       * siEncodedNameBuffer = 6,
+       * siAsciiNameString = 7,
+       * siAsciiString = 8,
+       * siDEROID = 9,
+       * siUnsignedInteger = 10,
+       * siUTCTime = 11,
+       * siGeneralizedTime = 12,
+       * siVisibleString = 13,
+       * siUTF8String = 14,
+       * siBMPString = 15
+       * } SECItemType;
+       *
+       * typedef struct SECItemStr SECItem;
+       *
+       * struct SECItemStr {
+       * SECItemType type;
+       * unsigned char *data;
+       * unsigned int len;
+       * };
+       *
+       *
+       */
+    function getSslSessionId(sslSessionIdSECItem) {
+        if (sslSessionIdSECItem == null) {
+            log_1.log("Session is null");
+            return 0;
         }
-      } else {
-        throw "Only supporting IPv4/6";
-      }
+        var session_id = "";
+        /*var a = Memory.dup(sslSessionIdSECItem, 32)
+        log(hexdump(a))*/
+        //var type_field = sslSessionIdSECItem.readByteArray(1) // enum should be the same size as char => 1 byte
+        //session_id = sslSessionIdSECItem.add(1+Process.pointerSize).readPointer().readUtf8String() || "";
+        var session_id_ptr = sslSessionIdSECItem.add(8).readPointer();
+        var len_tmp = sslSessionIdSECItem.add(16).readU32();
+        var len = (len_tmp > 32) ? 32 : len_tmp;
+        var session_id = "";
+        var b = Memory.dup(sslSessionIdSECItem, 32);
+        /*log(hexdump(b))
+        log("lenght value")
+        log(len.toString());*/
+        for (var i = 8; i < len; i++) {
+            // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
+            // it to session_id.
+            session_id +=
+                ("0" + session_id_ptr.add(i).readU8().toString(16).toUpperCase()).substr(-2);
+        }
+        return session_id;
     }
-
-    return message;
-  }
-  /**
-     * Get the session_id of SSL object and return it as a hex string.
-     * @param {!NativePointer} ssl A pointer to an SSL object.
-     * @return {dict} A string representing the session_id of the SSL object's
-     *     SSL_SESSION. For example,
-     *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
-     *
-     * On NSS the return type of SSL_GetSessionID is a SECItem:
-          typedef enum {
-     * siBuffer = 0,
-     * siClearDataBuffer = 1,
-     * siCipherDataBuffer = 2,
-     * siDERCertBuffer = 3,
-     * siEncodedCertBuffer = 4,
-     * siDERNameBuffer = 5,
-     * siEncodedNameBuffer = 6,
-     * siAsciiNameString = 7,
-     * siAsciiString = 8,
-     * siDEROID = 9,
-     * siUnsignedInteger = 10,
-     * siUTCTime = 11,
-     * siGeneralizedTime = 12,
-     * siVisibleString = 13,
-     * siUTF8String = 14,
-     * siBMPString = 15
-     * } SECItemType;
-     *
-     * typedef struct SECItemStr SECItem;
-     *
-     * struct SECItemStr {
-     * SECItemType type;
-     * unsigned char *data;
-     * unsigned int len;
-     * };
-     *
-     *
-     */
-
-
-  function getSslSessionId(sslSessionIdSECItem) {
-    if (sslSessionIdSECItem == null) {
-      log_1.log("Session is null");
-      return 0;
-    }
-
-    var session_id = "";
-    /*var a = Memory.dup(sslSessionIdSECItem, 32)
-    log(hexdump(a))*/
-    //var type_field = sslSessionIdSECItem.readByteArray(1) // enum should be the same size as char => 1 byte
-    //session_id = sslSessionIdSECItem.add(1+Process.pointerSize).readPointer().readUtf8String() || "";
-
-    var session_id_ptr = sslSessionIdSECItem.add(8).readPointer();
-    var len_tmp = sslSessionIdSECItem.add(16).readU32();
-    var len = len_tmp > 32 ? 32 : len_tmp;
-    var session_id = "";
-    var b = Memory.dup(sslSessionIdSECItem, 32);
-    /*log(hexdump(b))
-    log("lenght value")
-    log(len.toString());*/
-
-    for (var i = 8; i < len; i++) {
-      // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
-      // it to session_id.
-      session_id += ("0" + session_id_ptr.add(i).readU8().toString(16).toUpperCase()).substr(-2);
-    }
-
-    return session_id;
-  }
-
-  Interceptor.attach(addresses["PR_Read"], {
-    onEnter: function onEnter(args) {
-      this.fd = args[0];
-      this.buf = args[1];
-    },
-    onLeave: function onLeave(retval) {
-      //log("write")
-      retval |= 0; // Cast retval to 32-bit integer.
-
-      if (retval <= 0) {
-        return;
-      }
-
-      var addr = Memory.alloc(8);
-      getpeername(this.fd, addr);
-
-      if (addr.readU16() == 2 || addr.readU16() == 10 || addr.readU16() == 100) {
-        var message = getPortsAndAddressesFromNSS(this.fd, true, addresses);
-        message["ssl_session_id"] = getSslSessionId(this.fd);
-        message["function"] = "NSS_read";
-        this.message = message;
-        this.message["contentType"] = "datalog";
-        send(this.message, this.buf.readByteArray(retval));
-      }
-    }
-  });
-  Interceptor.attach(addresses["PR_Write"], {
-    onEnter: function onEnter(args) {
-      //log("write")
-      var addr = Memory.alloc(8);
-      getsockname(args[0], addr);
-
-      if (addr.readU16() == 2 || addr.readU16() == 10 || addr.readU16() == 100) {
-        var message = getPortsAndAddressesFromNSS(args[0], false, addresses);
-        message["ssl_session_id"] = getSslSessionId(args[0]);
-        message["function"] = "NSS_write";
-        message["contentType"] = "datalog";
-        send(message, args[1].readByteArray((0, _parseInt2["default"])(args[2])));
-      }
-    },
-    onLeave: function onLeave(retval) {}
-  });
-  Interceptor.attach(addresses["SSL_ImportFD"], {
-    onEnter: function onEnter(args) {
-      var keylog = Memory.allocUtf8String("SSLKEYLOGFILE=keylogfile");
-      SET_NSS_ENV(keylog);
-    }
-  });
+    Interceptor.attach(addresses["PR_Read"], {
+        onEnter: function (args) {
+            this.fd = ptr(args[0]);
+            this.buf = ptr(args[1]);
+        },
+        onLeave: function (retval) {
+            if (retval.toInt32() <= 0) {
+                return;
+            }
+            var addr = Memory.alloc(128);
+            var res = getpeername(this.fd, addr); //FIXME: Results in crash! Fix: More Memory: why? Fix: 128 Bytes for addr (libnspr4 needed 8 Bytes for that)
+            //!Der getpeername call gibt bei mir -1 zurück. Wenn ich mir die Daten unte in dem else ausgeben lasse, dann sehen die aber top aus!
+            console.log(res);
+            if (addr.readU16() == 2 || addr.readU16() == 10 || addr.readU16() == 100) {
+                var message = getPortsAndAddressesFromNSS(this.fd, true, addresses);
+                //console.log("Session ID: ", getSslSessionId(this.fd))
+                message["ssl_session_id"] = getSslSessionId(this.fd);
+                message["function"] = "NSS_read";
+                this.message = message;
+                this.message["contentType"] = "datalog";
+                var data = this.buf.readByteArray((new Uint32Array([retval]))[0]);
+                //console.log(this.message)
+                //send(this.message, data)
+            }
+            else {
+                var temp = this.buf.readByteArray((new Uint32Array([retval]))[0]);
+                console.log(temp);
+            }
+        }
+    });
+    Interceptor.attach(addresses["PR_Write"], {
+        onEnter: function (args) {
+            var addr = Memory.alloc(128);
+            getsockname(args[0], addr);
+            if (addr.readU16() == 2 || addr.readU16() == 10 || addr.readU16() == 100) {
+                var message = getPortsAndAddressesFromNSS(args[0], false, addresses);
+                message["ssl_session_id"] = getSslSessionId(args[0]);
+                message["function"] = "NSS_write";
+                message["contentType"] = "datalog";
+                send(message, args[1].readByteArray(parseInt(args[2])));
+            }
+        },
+        onLeave: function (retval) {
+        }
+    });
+    Interceptor.attach(addresses["SSL_ImportFD"], {
+        onEnter: function (args) {
+            var keylog = Memory.allocUtf8String("SSLKEYLOGFILE=keylogfile");
+            SET_NSS_ENV(keylog);
+        }
+    });
 }
-
 exports.execute = execute;
-
-},{"./log":4,"./shared":7,"@babel/runtime-corejs2/core-js/object/define-property":13,"@babel/runtime-corejs2/core-js/parse-int":14,"@babel/runtime-corejs2/helpers/interopRequireDefault":17}],6:[function(require,module,exports){
+},{"./log":4,"./shared":7}],6:[function(require,module,exports){
 "use strict";
-
-var _interopRequireDefault = require("@babel/runtime-corejs2/helpers/interopRequireDefault");
-
-var _parseInt2 = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/parse-int"));
-
-var _defineProperty = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/object/define-property"));
-
-(0, _defineProperty["default"])(exports, "__esModule", {
-  value: true
-});
+Object.defineProperty(exports, "__esModule", { value: true });
 exports.execute = void 0;
-
-var shared_1 = require("./shared");
-
-var log_1 = require("./log");
-
-function execute() {
-  var library_method_mapping = {};
-  library_method_mapping["*libssl*"] = ["SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_keylog_callback", "SSL_get_SSL_CTX"];
-  library_method_mapping["*libc*"] = ["getpeername", "getsockname", "ntohs", "ntohl"];
-  var addresses = shared_1.readAddresses(library_method_mapping);
-  var SSL_get_fd = new NativeFunction(addresses["SSL_get_fd"], "int", ["pointer"]);
-  var SSL_get_session = new NativeFunction(addresses["SSL_get_session"], "pointer", ["pointer"]);
-  var SSL_SESSION_get_id = new NativeFunction(addresses["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
-  var SSL_CTX_set_keylog_callback = new NativeFunction(addresses["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"]);
-  var keylog_callback = new NativeCallback(function (ctxPtr, linePtr) {
-    var message = {};
-    message["contentType"] = "keylog";
-    message["keylog"] = linePtr.readCString();
-    send(message);
-  }, "void", ["pointer", "pointer"]);
-  /**
-     * Get the session_id of SSL object and return it as a hex string.
-     * @param {!NativePointer} ssl A pointer to an SSL object.
-     * @return {dict} A string representing the session_id of the SSL object's
-     *     SSL_SESSION. For example,
-     *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
-     */
-
-  function getSslSessionId(ssl) {
-    var session = SSL_get_session(ssl);
-
-    if (session.isNull()) {
-      log_1.log("Session is null");
-      return 0;
+const shared_1 = require("./shared");
+const log_1 = require("./log");
+function execute(moduleName) {
+    var socket_library = "";
+    switch (Process.platform) {
+        case "linux":
+            socket_library = "libc";
+            break;
+        case "windows":
+            socket_library = "WS2_32.dll";
+            break;
+        case "darwin":
+            //TODO:Darwin implementation pending...
+            break;
+        default:
+            log_1.log(`Platform "${Process.platform} currently not supported!`);
     }
-
-    var len_pointer = Memory.alloc(4);
-    var p = SSL_SESSION_get_id(session, len_pointer);
-    var len = len_pointer.readU32();
-    var session_id = "";
-
-    for (var i = 0; i < len; i++) {
-      // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
-      // it to session_id.
-      session_id += ("0" + p.add(i).readU8().toString(16).toUpperCase()).substr(-2);
+    var library_method_mapping = {};
+    library_method_mapping[`*${moduleName}*`] = ["SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_keylog_callback", "SSL_get_SSL_CTX"];
+    //? Just in case darwin methods are different to linux and windows ones
+    if (socket_library === "libc" || socket_library === "WS2_32.dll") {
+        library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
     }
-
-    return session_id;
-  }
-
-  Interceptor.attach(addresses["SSL_read"], {
-    onEnter: function onEnter(args) {
-      var message = shared_1.getPortsAndAddresses(SSL_get_fd(args[0]), true, addresses);
-      message["ssl_session_id"] = getSslSessionId(args[0]);
-      message["function"] = "SSL_read";
-      this.message = message;
-      this.buf = args[1];
-    },
-    onLeave: function onLeave(retval) {
-      retval |= 0; // Cast retval to 32-bit integer.
-
-      if (retval <= 0) {
-        return;
-      }
-
-      this.message["contentType"] = "datalog";
-      send(this.message, this.buf.readByteArray(retval));
+    else {
+        //TODO: Darwin implementation pending
     }
-  });
-  Interceptor.attach(addresses["SSL_write"], {
-    onEnter: function onEnter(args) {
-      var message = shared_1.getPortsAndAddresses(SSL_get_fd(args[0]), false, addresses);
-      message["ssl_session_id"] = getSslSessionId(args[0]);
-      message["function"] = "SSL_write";
-      message["contentType"] = "datalog";
-      send(message, args[1].readByteArray((0, _parseInt2["default"])(args[2])));
-    },
-    onLeave: function onLeave(retval) {}
-  });
-  Interceptor.attach(addresses["SSL_new"], {
-    onEnter: function onEnter(args) {
-      SSL_CTX_set_keylog_callback(args[0], keylog_callback);
+    var addresses = shared_1.readAddresses(library_method_mapping);
+    const SSL_get_fd = new NativeFunction(addresses["SSL_get_fd"], "int", ["pointer"]);
+    const SSL_get_session = new NativeFunction(addresses["SSL_get_session"], "pointer", ["pointer"]);
+    const SSL_SESSION_get_id = new NativeFunction(addresses["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
+    const SSL_CTX_set_keylog_callback = new NativeFunction(addresses["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"]);
+    const keylog_callback = new NativeCallback(function (ctxPtr, linePtr) {
+        var message = {};
+        message["contentType"] = "keylog";
+        message["keylog"] = linePtr.readCString();
+        send(message);
+    }, "void", ["pointer", "pointer"]);
+    /**
+       * Get the session_id of SSL object and return it as a hex string.
+       * @param {!NativePointer} ssl A pointer to an SSL object.
+       * @return {dict} A string representing the session_id of the SSL object's
+       *     SSL_SESSION. For example,
+       *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
+       */
+    function getSslSessionId(ssl) {
+        var session = SSL_get_session(ssl);
+        if (session.isNull()) {
+            log_1.log("Session is null");
+            return 0;
+        }
+        var len_pointer = Memory.alloc(4);
+        var p = SSL_SESSION_get_id(session, len_pointer);
+        var len = len_pointer.readU32();
+        var session_id = "";
+        for (var i = 0; i < len; i++) {
+            // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
+            // it to session_id.
+            session_id +=
+                ("0" + p.add(i).readU8().toString(16).toUpperCase()).substr(-2);
+        }
+        return session_id;
     }
-  });
+    Interceptor.attach(addresses["SSL_read"], {
+        onEnter: function (args) {
+            var message = shared_1.getPortsAndAddresses(SSL_get_fd(args[0]), true, addresses);
+            message["ssl_session_id"] = getSslSessionId(args[0]);
+            message["function"] = "SSL_read";
+            this.message = message;
+            this.buf = args[1];
+        },
+        onLeave: function (retval) {
+            retval |= 0; // Cast retval to 32-bit integer.
+            if (retval <= 0) {
+                return;
+            }
+            this.message["contentType"] = "datalog";
+            send(this.message, this.buf.readByteArray(retval));
+        }
+    });
+    Interceptor.attach(addresses["SSL_write"], {
+        onEnter: function (args) {
+            var message = shared_1.getPortsAndAddresses(SSL_get_fd(args[0]), false, addresses);
+            message["ssl_session_id"] = getSslSessionId(args[0]);
+            message["function"] = "SSL_write";
+            message["contentType"] = "datalog";
+            send(message, args[1].readByteArray(parseInt(args[2])));
+        },
+        onLeave: function (retval) {
+        }
+    });
+    Interceptor.attach(addresses["SSL_new"], {
+        onEnter: function (args) {
+            SSL_CTX_set_keylog_callback(args[0], keylog_callback);
+        }
+    });
 }
-
 exports.execute = execute;
-
-},{"./log":4,"./shared":7,"@babel/runtime-corejs2/core-js/object/define-property":13,"@babel/runtime-corejs2/core-js/parse-int":14,"@babel/runtime-corejs2/helpers/interopRequireDefault":17}],7:[function(require,module,exports){
+},{"./log":4,"./shared":7}],7:[function(require,module,exports){
 "use strict";
-
-var _interopRequireDefault = require("@babel/runtime-corejs2/helpers/interopRequireDefault");
-
-var _from = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/array/from"));
-
-var _defineProperty = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/object/define-property"));
-
-(0, _defineProperty["default"])(exports, "__esModule", {
-  value: true
-});
-exports.getAttribute = exports.byteArrayToNumber = exports.reflectionByteArrayToString = exports.byteArrayToString = exports.getPortsAndAddresses = exports.readAddresses = void 0;
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.getAttribute = exports.byteArrayToNumber = exports.reflectionByteArrayToString = exports.byteArrayToString = exports.getPortsAndAddresses = exports.readAddresses = exports.getModuleNames = exports.getSocketLibrary = void 0;
+const log_1 = require("./log");
 /**
  * This file contains methods which are shared for reading
  * secrets/data from different libraries. These methods are
@@ -758,67 +673,80 @@ exports.getAttribute = exports.byteArrayToNumber = exports.reflectionByteArrayTo
  * on libc.
  */
 //GLOBALS
-
-var AF_INET = 2;
-var AF_INET6 = 10;
+const AF_INET = 2;
+const AF_INET6 = 10;
+//TODO: 
+function getSocketLibrary() {
+    var moduleNames = getModuleNames();
+    var socket_library_name = "";
+    switch (Process.platform) {
+        case "linux":
+            return moduleNames.find(element => element.match(/libc.*\.so/));
+        case "windows":
+            return "WS2_32.dll";
+        case "darwin":
+            return "";
+            //TODO:Darwin implementation pending...
+            break;
+        default:
+            log_1.log(`Platform "${Process.platform} currently not supported!`);
+            return "";
+    }
+}
+exports.getSocketLibrary = getSocketLibrary;
+function getModuleNames() {
+    var moduleNames = [];
+    Process.enumerateModules().forEach(item => moduleNames.push(item.name));
+    return moduleNames;
+}
+exports.getModuleNames = getModuleNames;
 /**
  * Read the addresses for the given methods from the given modules
  * @param {{[key: string]: Array<String> }} library_method_mapping A string indexed list of arrays, mapping modules to methods
  * @return {{[key: string]: NativePointer }} A string indexed list of NativePointers, which point to the respective methods
  */
-
 function readAddresses(library_method_mapping) {
-  var resolver = new ApiResolver("module");
-  var addresses = {};
-
-  var _loop = function _loop(library_name) {
-    library_method_mapping[library_name].forEach(function (method) {
-      var matches = resolver.enumerateMatches("exports:" + library_name + "!" + method);
-
-      if (matches.length == 0) {
-        throw "Could not find " + library_name + "!" + method;
-      } else {
-        send("Found " + library_name + "!" + method);
-      }
-
-      if (matches.length == 0) {
-        throw "Could not find " + library_name + "!" + method;
-      } else if (matches.length != 1) {
-        // Sometimes Frida returns duplicates.
-        var address = null;
-        var s = "";
-        var duplicates_only = true;
-
-        for (var k = 0; k < matches.length; k++) {
-          if (s.length != 0) {
-            s += ", ";
-          }
-
-          s += matches[k].name + "@" + matches[k].address;
-
-          if (address == null) {
-            address = matches[k].address;
-          } else if (!address.equals(matches[k].address)) {
-            duplicates_only = false;
-          }
-        }
-
-        if (!duplicates_only) {
-          throw "More than one match found for " + library_name + "!" + method + ": " + s;
-        }
-      }
-
-      addresses[method.toString()] = matches[0].address;
-    });
-  };
-
-  for (var library_name in library_method_mapping) {
-    _loop(library_name);
-  }
-
-  return addresses;
+    var resolver = new ApiResolver("module");
+    var addresses = {};
+    for (let library_name in library_method_mapping) {
+        library_method_mapping[library_name].forEach(function (method) {
+            var matches = resolver.enumerateMatches("exports:" + library_name + "!" + method);
+            if (matches.length == 0) {
+                throw "Could not find " + library_name + "!" + method;
+            }
+            else {
+                //log("Found " + method + " " + matches[0].address)
+            }
+            if (matches.length == 0) {
+                throw "Could not find " + library_name + "!" + method;
+            }
+            else if (matches.length != 1) {
+                // Sometimes Frida returns duplicates.
+                var address = null;
+                var s = "";
+                var duplicates_only = true;
+                for (var k = 0; k < matches.length; k++) {
+                    if (s.length != 0) {
+                        s += ", ";
+                    }
+                    s += matches[k].name + "@" + matches[k].address;
+                    if (address == null) {
+                        address = matches[k].address;
+                    }
+                    else if (!address.equals(matches[k].address)) {
+                        duplicates_only = false;
+                    }
+                }
+                if (!duplicates_only) {
+                    throw "More than one match found for " + library_name + "!" + method + ": " +
+                        s;
+                }
+            }
+            addresses[method.toString()] = matches[0].address;
+        });
+    }
+    return addresses;
 }
-
 exports.readAddresses = readAddresses;
 /**
 * Returns a dictionary of a sockfd's "src_addr", "src_port", "dst_addr", and
@@ -830,101 +758,87 @@ exports.readAddresses = readAddresses;
 * @return {{ [key: string]: string | number }} Dictionary of sockfd's "src_addr", "src_port", "dst_addr",
 *     and "dst_port".
 */
-
 function getPortsAndAddresses(sockfd, isRead, methodAddresses) {
-  var getpeername = new NativeFunction(methodAddresses["getpeername"], "int", ["int", "pointer", "pointer"]);
-  var getsockname = new NativeFunction(methodAddresses["getsockname"], "int", ["int", "pointer", "pointer"]);
-  var ntohs = new NativeFunction(methodAddresses["ntohs"], "uint16", ["uint16"]);
-  var ntohl = new NativeFunction(methodAddresses["ntohl"], "uint32", ["uint32"]);
-  var message = {};
-  var addrlen = Memory.alloc(4);
-  var addr = Memory.alloc(128);
-  var src_dst = ["src", "dst"];
-
-  for (var i = 0; i < src_dst.length; i++) {
-    addrlen.writeU32(128);
-
-    if (src_dst[i] == "src" !== isRead) {
-      getsockname(sockfd, addr, addrlen);
-    } else {
-      getpeername(sockfd, addr, addrlen);
+    var getpeername = new NativeFunction(methodAddresses["getpeername"], "int", ["int", "pointer", "pointer"]);
+    var getsockname = new NativeFunction(methodAddresses["getsockname"], "int", ["int", "pointer", "pointer"]);
+    var ntohs = new NativeFunction(methodAddresses["ntohs"], "uint16", ["uint16"]);
+    var ntohl = new NativeFunction(methodAddresses["ntohl"], "uint32", ["uint32"]);
+    var message = {};
+    var addrlen = Memory.alloc(4);
+    var addr = Memory.alloc(128);
+    var src_dst = ["src", "dst"];
+    for (var i = 0; i < src_dst.length; i++) {
+        addrlen.writeU32(128);
+        if ((src_dst[i] == "src") !== isRead) {
+            getsockname(sockfd, addr, addrlen);
+        }
+        else {
+            getpeername(sockfd, addr, addrlen);
+        }
+        if (addr.readU16() == AF_INET) {
+            message[src_dst[i] + "_port"] = ntohs(addr.add(2).readU16());
+            message[src_dst[i] + "_addr"] = ntohl(addr.add(4).readU32());
+            message["ss_family"] = "AF_INET";
+        }
+        else if (addr.readU16() == AF_INET6) {
+            message[src_dst[i] + "_port"] = ntohs(addr.add(2).readU16());
+            message[src_dst[i] + "_addr"] = "";
+            var ipv6_addr = addr.add(8);
+            for (var offset = 0; offset < 16; offset += 1) {
+                message[src_dst[i] + "_addr"] += ("0" + ipv6_addr.add(offset).readU8().toString(16).toUpperCase()).substr(-2);
+            }
+            if (message[src_dst[i] + "_addr"].toString().indexOf("00000000000000000000FFFF") === 0) {
+                message[src_dst[i] + "_addr"] = ntohl(ipv6_addr.add(12).readU32());
+                message["ss_family"] = "AF_INET";
+            }
+            else {
+                message["ss_family"] = "AF_INET6";
+            }
+        }
+        else {
+            throw "Only supporting IPv4/6";
+        }
     }
-
-    if (addr.readU16() == AF_INET) {
-      message[src_dst[i] + "_port"] = ntohs(addr.add(2).readU16());
-      message[src_dst[i] + "_addr"] = ntohl(addr.add(4).readU32());
-      message["ss_family"] = "AF_INET";
-    } else if (addr.readU16() == AF_INET6) {
-      message[src_dst[i] + "_port"] = ntohs(addr.add(2).readU16());
-      message[src_dst[i] + "_addr"] = "";
-      var ipv6_addr = addr.add(8);
-
-      for (var offset = 0; offset < 16; offset += 1) {
-        message[src_dst[i] + "_addr"] += ("0" + ipv6_addr.add(offset).readU8().toString(16).toUpperCase()).substr(-2);
-      }
-
-      if (message[src_dst[i] + "_addr"].toString().indexOf("00000000000000000000FFFF") === 0) {
-        message[src_dst[i] + "_addr"] = ntohl(ipv6_addr.add(12).readU32());
-        message["ss_family"] = "AF_INET";
-      } else {
-        message["ss_family"] = "AF_INET6";
-      }
-    } else {
-      throw "Only supporting IPv4/6";
-    }
-  }
-
-  return message;
+    return message;
 }
-
 exports.getPortsAndAddresses = getPortsAndAddresses;
 /**
  * Convert a Java byte array to string
  * @param byteArray The array to convert
  * @returns {string} The resulting string
  */
-
 function byteArrayToString(byteArray) {
-  return (0, _from["default"])(byteArray, function (_byte) {
-    return ('0' + (_byte & 0xFF).toString(16)).slice(-2);
-  }).join('');
+    return Array.from(byteArray, function (byte) {
+        return ('0' + (byte & 0xFF).toString(16)).slice(-2);
+    }).join('');
 }
-
 exports.byteArrayToString = byteArrayToString;
 /**
  * Convert a Java Reflection array to string
  * @param byteArray The array to convert
  * @returns {string} The resulting string
  */
-
 function reflectionByteArrayToString(byteArray) {
-  var result = "";
-  var arrayReflect = Java.use("java.lang.reflect.Array");
-
-  for (var i = 0; i < arrayReflect.getLength(byteArray); i++) {
-    result += ('0' + (arrayReflect.get(byteArray, i) & 0xFF).toString(16)).slice(-2);
-  }
-
-  return result;
+    var result = "";
+    var arrayReflect = Java.use("java.lang.reflect.Array");
+    for (var i = 0; i < arrayReflect.getLength(byteArray); i++) {
+        result += ('0' + (arrayReflect.get(byteArray, i) & 0xFF).toString(16)).slice(-2);
+    }
+    return result;
 }
-
 exports.reflectionByteArrayToString = reflectionByteArrayToString;
 /**
  * Convert a Java byte arry to number (Big Endian)
  * @param byteArray The array to convert
  * @returns {number} The resulting number
  */
-
 function byteArrayToNumber(byteArray) {
-  var value = 0;
-
-  for (var i = 0; i < byteArray.length; i++) {
-    value = value * 256 + (byteArray[i] & 0xFF);
-  }
-
-  return value;
+    var value = 0;
+    for (var i = 0; i < byteArray.length; i++) {
+        value = (value * 256) + (byteArray[i] & 0xFF);
+    }
+    return value;
 }
-
 exports.byteArrayToNumber = byteArrayToNumber;
 /**
  * Access an attribute of a Java Class
@@ -932,1694 +846,439 @@ exports.byteArrayToNumber = byteArrayToNumber;
  * @param fieldName The name of the attribute
  * @returns The value of the attribute of the requested field
  */
-
 function getAttribute(Instance, fieldName) {
-  var clazz = Java.use("java.lang.Class");
-  var field = Java.cast(Instance.getClass(), clazz).getDeclaredField(fieldName);
-  field.setAccessible(true);
-  return field.get(Instance);
+    var clazz = Java.use("java.lang.Class");
+    var field = Java.cast(Instance.getClass(), clazz).getDeclaredField(fieldName);
+    field.setAccessible(true);
+    return field.get(Instance);
 }
-
 exports.getAttribute = getAttribute;
-
-},{"@babel/runtime-corejs2/core-js/array/from":10,"@babel/runtime-corejs2/core-js/object/define-property":13,"@babel/runtime-corejs2/helpers/interopRequireDefault":17}],8:[function(require,module,exports){
+},{"./log":4}],8:[function(require,module,exports){
 "use strict";
-
-var _interopRequireDefault = require("@babel/runtime-corejs2/helpers/interopRequireDefault");
-
-var _getIterator2 = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/get-iterator"));
-
-var _isArray = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/array/is-array"));
-
-var _iterator2 = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/symbol/iterator"));
-
-var _symbol = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/symbol"));
-
-var _from = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/array/from"));
-
-var _defineProperty = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/object/define-property"));
-
-function _createForOfIteratorHelper(o, allowArrayLike) { var it; if (typeof _symbol["default"] === "undefined" || o[_iterator2["default"]] == null) { if ((0, _isArray["default"])(o) || (it = _unsupportedIterableToArray(o)) || allowArrayLike && o && typeof o.length === "number") { if (it) o = it; var i = 0; var F = function F() {}; return { s: F, n: function n() { if (i >= o.length) return { done: true }; return { done: false, value: o[i++] }; }, e: function e(_e) { throw _e; }, f: F }; } throw new TypeError("Invalid attempt to iterate non-iterable instance.\nIn order to be iterable, non-array objects must have a [Symbol.iterator]() method."); } var normalCompletion = true, didErr = false, err; return { s: function s() { it = (0, _getIterator2["default"])(o); }, n: function n() { var step = it.next(); normalCompletion = step.done; return step; }, e: function e(_e2) { didErr = true; err = _e2; }, f: function f() { try { if (!normalCompletion && it["return"] != null) it["return"](); } finally { if (didErr) throw err; } } }; }
-
-function _unsupportedIterableToArray(o, minLen) { if (!o) return; if (typeof o === "string") return _arrayLikeToArray(o, minLen); var n = Object.prototype.toString.call(o).slice(8, -1); if (n === "Object" && o.constructor) n = o.constructor.name; if (n === "Map" || n === "Set") return (0, _from["default"])(o); if (n === "Arguments" || /^(?:Ui|I)nt(?:8|16|32)(?:Clamped)?Array$/.test(n)) return _arrayLikeToArray(o, minLen); }
-
-function _arrayLikeToArray(arr, len) { if (len == null || len > arr.length) len = arr.length; for (var i = 0, arr2 = new Array(len); i < len; i++) { arr2[i] = arr[i]; } return arr2; }
-
-(0, _defineProperty["default"])(exports, "__esModule", {
-  value: true
-});
-
-var openssl_boringssl_1 = require("./openssl_boringssl");
-
-var wolfssl_1 = require("./wolfssl");
-
-var bouncycastle_1 = require("./bouncycastle");
-
-var conscrypt_1 = require("./conscrypt");
-
-var nss_1 = require("./nss");
-
-var gnutls_1 = require("./gnutls");
-
-var log_1 = require("./log"); // sometimes libraries loaded but don't have function implemented we need to hook
-
-
+Object.defineProperty(exports, "__esModule", { value: true });
+const openssl_boringssl_1 = require("./openssl_boringssl");
+const wolfssl_1 = require("./wolfssl");
+const bouncycastle_1 = require("./bouncycastle");
+const conscrypt_1 = require("./conscrypt");
+const sspi_1 = require("./sspi");
+const nss_1 = require("./nss");
+const gnutls_1 = require("./gnutls");
+const log_1 = require("./log");
+const shared_1 = require("./shared");
+// sometimes libraries loaded but don't have function implemented we need to hook
 function hasRequiredFunctions(libName, expectedFuncName) {
-  var functionList = Process.getModuleByName(libName).enumerateExports().filter(function (exports) {
-    return exports.name.toLowerCase().includes(expectedFuncName);
-  });
-
-  if (functionList.length == 0) {
-    return false;
-  } else {
-    return true;
-  }
-}
-
-var moduleNames = [];
-Process.enumerateModules().forEach(function (item) {
-  return moduleNames.push(item.name);
-});
-
-for (var _i = 0, _moduleNames = moduleNames; _i < _moduleNames.length; _i++) {
-  var mod = _moduleNames[_i];
-
-  if (mod.indexOf("libssl.so") >= 0) {
-    //if (hasRequiredFunctions(mod, "SSL_read")) {
-    log_1.log("OpenSSL/BoringSSL detected.");
-    openssl_boringssl_1.execute(); //}
-
-    break;
-  }
-}
-
-for (var _i2 = 0, _moduleNames2 = moduleNames; _i2 < _moduleNames2.length; _i2++) {
-  var mod = _moduleNames2[_i2];
-
-  if (mod.indexOf("libgnutls.so") >= 0) {
-    log_1.log("GnuTls detected.");
-    gnutls_1.execute();
-    break;
-  }
-}
-
-for (var _i3 = 0, _moduleNames3 = moduleNames; _i3 < _moduleNames3.length; _i3++) {
-  var mod = _moduleNames3[_i3];
-
-  if (mod.indexOf("libwolfssl.so") >= 0) {
-    log_1.log("WolfSSL detected.");
-    wolfssl_1.execute();
-    break;
-  }
-}
-
-for (var _i4 = 0, _moduleNames4 = moduleNames; _i4 < _moduleNames4.length; _i4++) {
-  var mod = _moduleNames4[_i4];
-
-  if (mod.indexOf("libnspr") >= 0) {
-    log_1.log("NSS SSL detected.");
-    nss_1.execute();
-    break;
-  }
-}
-
-if (Java.available) {
-  Java.perform(function () {
-    try {
-      //If we can load a class of spongycastle, we know its present and we have to hook it
-      var testLoad = Java.use("org.spongycastle.jsse.provider.ProvSSLSocketDirect");
-      log_1.log("Bouncycastle/Spongycastle detected.");
-      bouncycastle_1.execute();
-    } catch (error) {//On error, just do nothing
+    var functionList = Process.getModuleByName(libName).enumerateExports().filter(exports => exports.name.toLowerCase().includes(expectedFuncName));
+    if (functionList.length == 0) {
+        return false;
     }
-  });
-} //Hook the dynamic loader, in case library gets loaded at a later point in time
-//check wether we are on android or linux
-
-
-try {
-  var dl_exports = Process.getModuleByName("libdl.so").enumerateExports();
-  var dlopen = "dlopen";
-
-  var _iterator = _createForOfIteratorHelper(dl_exports),
-      _step;
-
-  try {
-    for (_iterator.s(); !(_step = _iterator.n()).done;) {
-      var ex = _step.value;
-
-      if (ex.name === "android_dlopen_ext") {
-        dlopen = "android_dlopen_ext";
-        break;
-      }
+    else {
+        return true;
     }
-  } catch (err) {
-    _iterator.e(err);
-  } finally {
-    _iterator.f();
-  }
-
-  Interceptor.attach(Module.getExportByName("libdl.so", dlopen), {
-    onEnter: function onEnter(args) {
-      this.moduleName = args[0].readCString();
-    },
-    onLeave: function onLeave(retval) {
-      if (this.moduleName != undefined) {
-        if (this.moduleName.endsWith("libssl.so")) {
-          log_1.log("OpenSSL/BoringSSL detected.");
-          openssl_boringssl_1.execute();
-        } else if (this.moduleName.endsWith("libwolfssl.so")) {
-          log_1.log("WolfSSL detected.");
-          wolfssl_1.execute();
+}
+var moduleNames = shared_1.getModuleNames();
+var module_library_mapping = {};
+module_library_mapping["windows"] = [[/libssl-[0-9]+(_[0-9]+)?\.dll/, openssl_boringssl_1.execute], [/.*wolfssl.*\.dll/, wolfssl_1.execute], [/.*libgnutls-[0-9]+\.dll/, gnutls_1.execute], [/nspr[0-9]*\.dll/, nss_1.execute], [/sspicli\.dll/i, sspi_1.execute]];
+module_library_mapping["linux"] = [[/.*libssl\.so/, openssl_boringssl_1.execute], [/.*libgnutls\.so/, gnutls_1.execute], [/.*libwolfssl\.so/, wolfssl_1.execute], [/.*libnspr[0-9]?\.so/, nss_1.execute]];
+if (Process.platform === "windows") {
+    for (let map of module_library_mapping["windows"]) {
+        let regex = map[0];
+        let func = map[1];
+        for (let module of moduleNames) {
+            //console.log(module + "vs" + map[0])
+            if (regex.test(module)) {
+                log_1.log(`${module} found & will be hooked on Windows!`);
+                func(module);
+            }
         }
-      }
     }
-  });
-} catch (error) {
-  log_1.log("No dynamic loader present for hooking.");
 }
-
+if (Process.platform === "linux") {
+    for (let map of module_library_mapping["linux"]) {
+        let regex = map[0];
+        let func = map[1];
+        for (let module of moduleNames) {
+            if (regex.test(module)) {
+                log_1.log(`${module} found & will be hooked on Linux!`);
+                func(module);
+            }
+        }
+    }
+}
 if (Java.available) {
-  Java.perform(function () {
-    //Conscrypt needs early instrumentation as we block the provider installation
-    var Security = Java.use("java.security.Security");
-
-    if (Security.getProviders().toString().includes("GmsCore_OpenSSL")) {
-      log_1.log("WARNING: PID " + Process.id + " Detected GmsCore_OpenSSL Provider. This can be a bit unstable. If you having issues, rerun with -spawn for early instrumentation. Trying to remove it to fall back on default Provider");
-      Security.removeProvider("GmsCore_OpenSSL");
-      log_1.log("Removed GmsCore_OpenSSL");
-    } //As the classloader responsible for loading ProviderInstaller sometimes is not present from the beginning on,
-    //we always have to watch the classloader activity
-
-
-    conscrypt_1.execute(); //Now do the same for Ssl_guard
-
-    if (Security.getProviders().toString().includes("Ssl_Guard")) {
-      log_1.log("Ssl_Guard deteced, removing it to fall back on default Provider");
-      Security.removeProvider("Ssl_Guard");
-      log_1.log("Removed Ssl_Guard");
-    } //Same thing for Conscrypt provider which has been manually inserted (not by providerinstaller)
-
-
-    if (Security.getProviders().toString().includes("Conscrypt version")) {
-      log_1.log("Conscrypt detected");
-      Security.removeProvider("Conscrypt");
-      log_1.log("Removed Conscrypt");
-    } //Uncomment this line to show all remaining providers
-    //log("Remaining: " + Security.getProviders().toString())
-    //Hook insertProviderAt/addprovider for dynamic provider blocking
-
-
-    Security.insertProviderAt.implementation = function (provider, position) {
-      if (provider.getName().includes("Conscrypt") || provider.getName().includes("Ssl_Guard") || provider.getName().includes("GmsCore_OpenSSL")) {
-        log_1.log("Blocking provider registration of " + provider.getName());
-        return position;
-      } else {
-        return this.insertProviderAt(provider, position);
-      }
-    }; //Same for addProvider
-
-
-    Security.insertProviderAt.implementation = function (provider) {
-      if (provider.getName().includes("Conscrypt") || provider.getName().includes("Ssl_Guard") || provider.getName().includes("GmsCore_OpenSSL")) {
-        log_1.log("Blocking provider registration of " + provider.getName());
-        return 1;
-      } else {
-        return this.addProvider(provider);
-      }
-    };
-  });
+    Java.perform(function () {
+        try {
+            //If we can load a class of spongycastle, we know its present and we have to hook it
+            var testLoad = Java.use("org.spongycastle.jsse.provider.ProvSSLSocketDirect");
+            log_1.log("Bouncycastle/Spongycastle detected.");
+            bouncycastle_1.execute();
+        }
+        catch (error) {
+            //On error, just do nothing
+        }
+    });
 }
-
-},{"./bouncycastle":1,"./conscrypt":2,"./gnutls":3,"./log":4,"./nss":5,"./openssl_boringssl":6,"./wolfssl":9,"@babel/runtime-corejs2/core-js/array/from":10,"@babel/runtime-corejs2/core-js/array/is-array":11,"@babel/runtime-corejs2/core-js/get-iterator":12,"@babel/runtime-corejs2/core-js/object/define-property":13,"@babel/runtime-corejs2/core-js/symbol":15,"@babel/runtime-corejs2/core-js/symbol/iterator":16,"@babel/runtime-corejs2/helpers/interopRequireDefault":17}],9:[function(require,module,exports){
-"use strict";
-
-var _interopRequireDefault = require("@babel/runtime-corejs2/helpers/interopRequireDefault");
-
-var _parseInt2 = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/parse-int"));
-
-var _defineProperty = _interopRequireDefault(require("@babel/runtime-corejs2/core-js/object/define-property"));
-
-(0, _defineProperty["default"])(exports, "__esModule", {
-  value: true
-});
-exports.execute = void 0;
-
-var shared_1 = require("./shared");
-
-var log_1 = require("./log");
-
-function execute() {
-  var library_method_mapping = {};
-  library_method_mapping["*libwolfssl*"] = ["wolfSSL_read", "wolfSSL_write", "wolfSSL_get_fd", "wolfSSL_get_session", "wolfSSL_connect", "wolfSSL_SESSION_get_master_key", "wolfSSL_get_client_random", "wolfSSL_KeepArrays"];
-  library_method_mapping["*libc*"] = ["getpeername", "getsockname", "ntohs", "ntohl"];
-  var addresses = shared_1.readAddresses(library_method_mapping);
-  var wolfSSL_get_fd = new NativeFunction(addresses["wolfSSL_get_fd"], "int", ["pointer"]);
-  var wolfSSL_get_session = new NativeFunction(addresses["wolfSSL_get_session"], "pointer", ["pointer"]);
-  var wolfSSL_SESSION_get_master_key = new NativeFunction(addresses["wolfSSL_SESSION_get_master_key"], "int", ["pointer", "pointer", "int"]);
-  var wolfSSL_get_client_random = new NativeFunction(addresses["wolfSSL_get_client_random"], "int", ["pointer", "pointer", "uint"]);
-  var wolfSSL_KeepArrays = new NativeFunction(addresses["wolfSSL_KeepArrays"], "void", ["pointer"]);
-  /**
-     * Get the session_id of SSL object and return it as a hex string.
-     * @param {!NativePointer} ssl A pointer to an SSL object.
-     * @return {dict} A string representing the session_id of the SSL object's
-     *     SSL_SESSION. For example,
-     *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
-     */
-
-  function getSslSessionId(ssl) {
-    var session = wolfSSL_get_session(ssl);
-
-    if (session.isNull()) {
-      log_1.log("Session is null");
-      return 0;
-    }
-
-    var p = session.add(8);
-    var len = 32; // This comes from internals.h. It is untested!
-
-    var session_id = "";
-
-    for (var i = 0; i < len; i++) {
-      // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
-      // it to session_id.
-      session_id += ("0" + p.add(i).readU8().toString(16).toUpperCase()).substr(-2);
-    }
-
-    return session_id;
-  }
-  /**
-     * Get the masterKey of the current session and return it as a hex string.
-     * @param {!NativePointer} wolfSslPtr A pointer to an SSL object.
-     * @return {string} A string representing the masterKey of the SSL object's
-     *     current session. For example,
-     *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
-     */
-
-
-  function getMasterKey(wolfSslPtr) {
-    var session = wolfSSL_get_session(wolfSslPtr);
-    var nullPtr = ptr(0);
-    var masterKeySize = wolfSSL_SESSION_get_master_key(session, nullPtr, 0);
-    var buffer = Memory.alloc(masterKeySize);
-    wolfSSL_SESSION_get_master_key(session, buffer, masterKeySize);
-    var masterKey = "";
-
-    for (var i = 0; i < masterKeySize; i++) {
-      // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
-      // it to message.
-      masterKey += ("0" + buffer.add(i).readU8().toString(16).toUpperCase()).substr(-2);
-    }
-
-    return masterKey;
-  }
-  /**
-     * Get the clientRandom of the current session and return it as a hex string.
-     * @param {!NativePointer} wolfSslPtr A pointer to an SSL object.
-     * @return {string} A string representing the clientRandom of the SSL object's
-     *     current session. For example,
-     *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
-     */
-
-
-  function getClientRandom(wolfSslPtr) {
-    var nullPtr = ptr(0);
-    var clientRandomSize = wolfSSL_get_client_random(wolfSslPtr, nullPtr, 0);
-    var buffer = Memory.alloc(clientRandomSize);
-    console.log(wolfSSL_get_client_random(wolfSslPtr, buffer, clientRandomSize));
-    var clientRandom = "";
-
-    for (var i = 0; i < clientRandomSize; i++) {
-      // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
-      // it to message.
-      clientRandom += ("0" + buffer.add(i).readU8().toString(16).toUpperCase()).substr(-2);
-    }
-
-    return clientRandom;
-  }
-
-  Interceptor.attach(addresses["wolfSSL_read"], {
-    onEnter: function onEnter(args) {
-      var message = shared_1.getPortsAndAddresses(wolfSSL_get_fd(args[0]), true, addresses);
-      message["ssl_session_id"] = getSslSessionId(args[0]);
-      message["function"] = "wolfSSL_read";
-      this.message = message;
-      this.buf = args[1];
-    },
-    onLeave: function onLeave(retval) {
-      retval |= 0; // Cast retval to 32-bit integer.
-
-      if (retval <= 0) {
-        return;
-      }
-
-      this.message["contentType"] = "datalog";
-      send(this.message, this.buf.readByteArray(retval));
-    }
-  });
-  Interceptor.attach(addresses["wolfSSL_write"], {
-    onEnter: function onEnter(args) {
-      var message = shared_1.getPortsAndAddresses(wolfSSL_get_fd(args[0]), false, addresses);
-      message["ssl_session_id"] = getSslSessionId(args[0]);
-      message["function"] = "wolfSSL_write";
-      message["contentType"] = "datalog";
-      send(message, args[1].readByteArray((0, _parseInt2["default"])(args[2])));
-    },
-    onLeave: function onLeave(retval) {}
-  });
-  Interceptor.attach(addresses["wolfSSL_connect"], {
-    onEnter: function onEnter(args) {
-      this.wolfSslPtr = args[0];
-      wolfSSL_KeepArrays(this.wolfSslPtr);
-    },
-    onLeave: function onLeave(retval) {
-      var clientRandom = getClientRandom(this.wolfSslPtr);
-      var masterKey = getMasterKey(this.wolfSslPtr);
-      var message = {};
-      message["contentType"] = "keylog";
-      message["keylog"] = "CLIENT_RANDOM " + clientRandom + " " + masterKey;
-      send(message);
-    }
-  });
-}
-
-exports.execute = execute;
-
-},{"./log":4,"./shared":7,"@babel/runtime-corejs2/core-js/object/define-property":13,"@babel/runtime-corejs2/core-js/parse-int":14,"@babel/runtime-corejs2/helpers/interopRequireDefault":17}],10:[function(require,module,exports){
-module.exports = require("core-js/library/fn/array/from");
-},{"core-js/library/fn/array/from":18}],11:[function(require,module,exports){
-module.exports = require("core-js/library/fn/array/is-array");
-},{"core-js/library/fn/array/is-array":19}],12:[function(require,module,exports){
-module.exports = require("core-js/library/fn/get-iterator");
-},{"core-js/library/fn/get-iterator":20}],13:[function(require,module,exports){
-module.exports = require("core-js/library/fn/object/define-property");
-},{"core-js/library/fn/object/define-property":21}],14:[function(require,module,exports){
-module.exports = require("core-js/library/fn/parse-int");
-},{"core-js/library/fn/parse-int":22}],15:[function(require,module,exports){
-module.exports = require("core-js/library/fn/symbol");
-},{"core-js/library/fn/symbol":23}],16:[function(require,module,exports){
-module.exports = require("core-js/library/fn/symbol/iterator");
-},{"core-js/library/fn/symbol/iterator":24}],17:[function(require,module,exports){
-function _interopRequireDefault(obj) {
-  return obj && obj.__esModule ? obj : {
-    "default": obj
-  };
-}
-
-module.exports = _interopRequireDefault;
-},{}],18:[function(require,module,exports){
-require('../../modules/es6.string.iterator');
-require('../../modules/es6.array.from');
-module.exports = require('../../modules/_core').Array.from;
-
-},{"../../modules/_core":31,"../../modules/es6.array.from":90,"../../modules/es6.string.iterator":96}],19:[function(require,module,exports){
-require('../../modules/es6.array.is-array');
-module.exports = require('../../modules/_core').Array.isArray;
-
-},{"../../modules/_core":31,"../../modules/es6.array.is-array":91}],20:[function(require,module,exports){
-require('../modules/web.dom.iterable');
-require('../modules/es6.string.iterator');
-module.exports = require('../modules/core.get-iterator');
-
-},{"../modules/core.get-iterator":89,"../modules/es6.string.iterator":96,"../modules/web.dom.iterable":100}],21:[function(require,module,exports){
-require('../../modules/es6.object.define-property');
-var $Object = require('../../modules/_core').Object;
-module.exports = function defineProperty(it, key, desc) {
-  return $Object.defineProperty(it, key, desc);
-};
-
-},{"../../modules/_core":31,"../../modules/es6.object.define-property":93}],22:[function(require,module,exports){
-require('../modules/es6.parse-int');
-module.exports = require('../modules/_core').parseInt;
-
-},{"../modules/_core":31,"../modules/es6.parse-int":95}],23:[function(require,module,exports){
-require('../../modules/es6.symbol');
-require('../../modules/es6.object.to-string');
-require('../../modules/es7.symbol.async-iterator');
-require('../../modules/es7.symbol.observable');
-module.exports = require('../../modules/_core').Symbol;
-
-},{"../../modules/_core":31,"../../modules/es6.object.to-string":94,"../../modules/es6.symbol":97,"../../modules/es7.symbol.async-iterator":98,"../../modules/es7.symbol.observable":99}],24:[function(require,module,exports){
-require('../../modules/es6.string.iterator');
-require('../../modules/web.dom.iterable');
-module.exports = require('../../modules/_wks-ext').f('iterator');
-
-},{"../../modules/_wks-ext":86,"../../modules/es6.string.iterator":96,"../../modules/web.dom.iterable":100}],25:[function(require,module,exports){
-module.exports = function (it) {
-  if (typeof it != 'function') throw TypeError(it + ' is not a function!');
-  return it;
-};
-
-},{}],26:[function(require,module,exports){
-module.exports = function () { /* empty */ };
-
-},{}],27:[function(require,module,exports){
-var isObject = require('./_is-object');
-module.exports = function (it) {
-  if (!isObject(it)) throw TypeError(it + ' is not an object!');
-  return it;
-};
-
-},{"./_is-object":49}],28:[function(require,module,exports){
-// false -> Array#indexOf
-// true  -> Array#includes
-var toIObject = require('./_to-iobject');
-var toLength = require('./_to-length');
-var toAbsoluteIndex = require('./_to-absolute-index');
-module.exports = function (IS_INCLUDES) {
-  return function ($this, el, fromIndex) {
-    var O = toIObject($this);
-    var length = toLength(O.length);
-    var index = toAbsoluteIndex(fromIndex, length);
-    var value;
-    // Array#includes uses SameValueZero equality algorithm
-    // eslint-disable-next-line no-self-compare
-    if (IS_INCLUDES && el != el) while (length > index) {
-      value = O[index++];
-      // eslint-disable-next-line no-self-compare
-      if (value != value) return true;
-    // Array#indexOf ignores holes, Array#includes - not
-    } else for (;length > index; index++) if (IS_INCLUDES || index in O) {
-      if (O[index] === el) return IS_INCLUDES || index || 0;
-    } return !IS_INCLUDES && -1;
-  };
-};
-
-},{"./_to-absolute-index":78,"./_to-iobject":80,"./_to-length":81}],29:[function(require,module,exports){
-// getting tag from 19.1.3.6 Object.prototype.toString()
-var cof = require('./_cof');
-var TAG = require('./_wks')('toStringTag');
-// ES3 wrong here
-var ARG = cof(function () { return arguments; }()) == 'Arguments';
-
-// fallback for IE11 Script Access Denied error
-var tryGet = function (it, key) {
-  try {
-    return it[key];
-  } catch (e) { /* empty */ }
-};
-
-module.exports = function (it) {
-  var O, T, B;
-  return it === undefined ? 'Undefined' : it === null ? 'Null'
-    // @@toStringTag case
-    : typeof (T = tryGet(O = Object(it), TAG)) == 'string' ? T
-    // builtinTag case
-    : ARG ? cof(O)
-    // ES3 arguments fallback
-    : (B = cof(O)) == 'Object' && typeof O.callee == 'function' ? 'Arguments' : B;
-};
-
-},{"./_cof":30,"./_wks":87}],30:[function(require,module,exports){
-var toString = {}.toString;
-
-module.exports = function (it) {
-  return toString.call(it).slice(8, -1);
-};
-
-},{}],31:[function(require,module,exports){
-var core = module.exports = { version: '2.6.11' };
-if (typeof __e == 'number') __e = core; // eslint-disable-line no-undef
-
-},{}],32:[function(require,module,exports){
-'use strict';
-var $defineProperty = require('./_object-dp');
-var createDesc = require('./_property-desc');
-
-module.exports = function (object, index, value) {
-  if (index in object) $defineProperty.f(object, index, createDesc(0, value));
-  else object[index] = value;
-};
-
-},{"./_object-dp":59,"./_property-desc":70}],33:[function(require,module,exports){
-// optional / simple context binding
-var aFunction = require('./_a-function');
-module.exports = function (fn, that, length) {
-  aFunction(fn);
-  if (that === undefined) return fn;
-  switch (length) {
-    case 1: return function (a) {
-      return fn.call(that, a);
-    };
-    case 2: return function (a, b) {
-      return fn.call(that, a, b);
-    };
-    case 3: return function (a, b, c) {
-      return fn.call(that, a, b, c);
-    };
-  }
-  return function (/* ...args */) {
-    return fn.apply(that, arguments);
-  };
-};
-
-},{"./_a-function":25}],34:[function(require,module,exports){
-// 7.2.1 RequireObjectCoercible(argument)
-module.exports = function (it) {
-  if (it == undefined) throw TypeError("Can't call method on  " + it);
-  return it;
-};
-
-},{}],35:[function(require,module,exports){
-// Thank's IE8 for his funny defineProperty
-module.exports = !require('./_fails')(function () {
-  return Object.defineProperty({}, 'a', { get: function () { return 7; } }).a != 7;
-});
-
-},{"./_fails":40}],36:[function(require,module,exports){
-var isObject = require('./_is-object');
-var document = require('./_global').document;
-// typeof document.createElement is 'object' in old IE
-var is = isObject(document) && isObject(document.createElement);
-module.exports = function (it) {
-  return is ? document.createElement(it) : {};
-};
-
-},{"./_global":41,"./_is-object":49}],37:[function(require,module,exports){
-// IE 8- don't enum bug keys
-module.exports = (
-  'constructor,hasOwnProperty,isPrototypeOf,propertyIsEnumerable,toLocaleString,toString,valueOf'
-).split(',');
-
-},{}],38:[function(require,module,exports){
-// all enumerable object keys, includes symbols
-var getKeys = require('./_object-keys');
-var gOPS = require('./_object-gops');
-var pIE = require('./_object-pie');
-module.exports = function (it) {
-  var result = getKeys(it);
-  var getSymbols = gOPS.f;
-  if (getSymbols) {
-    var symbols = getSymbols(it);
-    var isEnum = pIE.f;
-    var i = 0;
-    var key;
-    while (symbols.length > i) if (isEnum.call(it, key = symbols[i++])) result.push(key);
-  } return result;
-};
-
-},{"./_object-gops":64,"./_object-keys":67,"./_object-pie":68}],39:[function(require,module,exports){
-var global = require('./_global');
-var core = require('./_core');
-var ctx = require('./_ctx');
-var hide = require('./_hide');
-var has = require('./_has');
-var PROTOTYPE = 'prototype';
-
-var $export = function (type, name, source) {
-  var IS_FORCED = type & $export.F;
-  var IS_GLOBAL = type & $export.G;
-  var IS_STATIC = type & $export.S;
-  var IS_PROTO = type & $export.P;
-  var IS_BIND = type & $export.B;
-  var IS_WRAP = type & $export.W;
-  var exports = IS_GLOBAL ? core : core[name] || (core[name] = {});
-  var expProto = exports[PROTOTYPE];
-  var target = IS_GLOBAL ? global : IS_STATIC ? global[name] : (global[name] || {})[PROTOTYPE];
-  var key, own, out;
-  if (IS_GLOBAL) source = name;
-  for (key in source) {
-    // contains in native
-    own = !IS_FORCED && target && target[key] !== undefined;
-    if (own && has(exports, key)) continue;
-    // export native or passed
-    out = own ? target[key] : source[key];
-    // prevent global pollution for namespaces
-    exports[key] = IS_GLOBAL && typeof target[key] != 'function' ? source[key]
-    // bind timers to global for call from export context
-    : IS_BIND && own ? ctx(out, global)
-    // wrap global constructors for prevent change them in library
-    : IS_WRAP && target[key] == out ? (function (C) {
-      var F = function (a, b, c) {
-        if (this instanceof C) {
-          switch (arguments.length) {
-            case 0: return new C();
-            case 1: return new C(a);
-            case 2: return new C(a, b);
-          } return new C(a, b, c);
-        } return C.apply(this, arguments);
-      };
-      F[PROTOTYPE] = C[PROTOTYPE];
-      return F;
-    // make static versions for prototype methods
-    })(out) : IS_PROTO && typeof out == 'function' ? ctx(Function.call, out) : out;
-    // export proto methods to core.%CONSTRUCTOR%.methods.%NAME%
-    if (IS_PROTO) {
-      (exports.virtual || (exports.virtual = {}))[key] = out;
-      // export proto methods to core.%CONSTRUCTOR%.prototype.%NAME%
-      if (type & $export.R && expProto && !expProto[key]) hide(expProto, key, out);
-    }
-  }
-};
-// type bitmap
-$export.F = 1;   // forced
-$export.G = 2;   // global
-$export.S = 4;   // static
-$export.P = 8;   // proto
-$export.B = 16;  // bind
-$export.W = 32;  // wrap
-$export.U = 64;  // safe
-$export.R = 128; // real proto method for `library`
-module.exports = $export;
-
-},{"./_core":31,"./_ctx":33,"./_global":41,"./_has":42,"./_hide":43}],40:[function(require,module,exports){
-module.exports = function (exec) {
-  try {
-    return !!exec();
-  } catch (e) {
-    return true;
-  }
-};
-
-},{}],41:[function(require,module,exports){
-// https://github.com/zloirock/core-js/issues/86#issuecomment-115759028
-var global = module.exports = typeof window != 'undefined' && window.Math == Math
-  ? window : typeof self != 'undefined' && self.Math == Math ? self
-  // eslint-disable-next-line no-new-func
-  : Function('return this')();
-if (typeof __g == 'number') __g = global; // eslint-disable-line no-undef
-
-},{}],42:[function(require,module,exports){
-var hasOwnProperty = {}.hasOwnProperty;
-module.exports = function (it, key) {
-  return hasOwnProperty.call(it, key);
-};
-
-},{}],43:[function(require,module,exports){
-var dP = require('./_object-dp');
-var createDesc = require('./_property-desc');
-module.exports = require('./_descriptors') ? function (object, key, value) {
-  return dP.f(object, key, createDesc(1, value));
-} : function (object, key, value) {
-  object[key] = value;
-  return object;
-};
-
-},{"./_descriptors":35,"./_object-dp":59,"./_property-desc":70}],44:[function(require,module,exports){
-var document = require('./_global').document;
-module.exports = document && document.documentElement;
-
-},{"./_global":41}],45:[function(require,module,exports){
-module.exports = !require('./_descriptors') && !require('./_fails')(function () {
-  return Object.defineProperty(require('./_dom-create')('div'), 'a', { get: function () { return 7; } }).a != 7;
-});
-
-},{"./_descriptors":35,"./_dom-create":36,"./_fails":40}],46:[function(require,module,exports){
-// fallback for non-array-like ES3 and non-enumerable old V8 strings
-var cof = require('./_cof');
-// eslint-disable-next-line no-prototype-builtins
-module.exports = Object('z').propertyIsEnumerable(0) ? Object : function (it) {
-  return cof(it) == 'String' ? it.split('') : Object(it);
-};
-
-},{"./_cof":30}],47:[function(require,module,exports){
-// check on default Array iterator
-var Iterators = require('./_iterators');
-var ITERATOR = require('./_wks')('iterator');
-var ArrayProto = Array.prototype;
-
-module.exports = function (it) {
-  return it !== undefined && (Iterators.Array === it || ArrayProto[ITERATOR] === it);
-};
-
-},{"./_iterators":55,"./_wks":87}],48:[function(require,module,exports){
-// 7.2.2 IsArray(argument)
-var cof = require('./_cof');
-module.exports = Array.isArray || function isArray(arg) {
-  return cof(arg) == 'Array';
-};
-
-},{"./_cof":30}],49:[function(require,module,exports){
-module.exports = function (it) {
-  return typeof it === 'object' ? it !== null : typeof it === 'function';
-};
-
-},{}],50:[function(require,module,exports){
-// call something on iterator step with safe closing on error
-var anObject = require('./_an-object');
-module.exports = function (iterator, fn, value, entries) {
-  try {
-    return entries ? fn(anObject(value)[0], value[1]) : fn(value);
-  // 7.4.6 IteratorClose(iterator, completion)
-  } catch (e) {
-    var ret = iterator['return'];
-    if (ret !== undefined) anObject(ret.call(iterator));
-    throw e;
-  }
-};
-
-},{"./_an-object":27}],51:[function(require,module,exports){
-'use strict';
-var create = require('./_object-create');
-var descriptor = require('./_property-desc');
-var setToStringTag = require('./_set-to-string-tag');
-var IteratorPrototype = {};
-
-// 25.1.2.1.1 %IteratorPrototype%[@@iterator]()
-require('./_hide')(IteratorPrototype, require('./_wks')('iterator'), function () { return this; });
-
-module.exports = function (Constructor, NAME, next) {
-  Constructor.prototype = create(IteratorPrototype, { next: descriptor(1, next) });
-  setToStringTag(Constructor, NAME + ' Iterator');
-};
-
-},{"./_hide":43,"./_object-create":58,"./_property-desc":70,"./_set-to-string-tag":72,"./_wks":87}],52:[function(require,module,exports){
-'use strict';
-var LIBRARY = require('./_library');
-var $export = require('./_export');
-var redefine = require('./_redefine');
-var hide = require('./_hide');
-var Iterators = require('./_iterators');
-var $iterCreate = require('./_iter-create');
-var setToStringTag = require('./_set-to-string-tag');
-var getPrototypeOf = require('./_object-gpo');
-var ITERATOR = require('./_wks')('iterator');
-var BUGGY = !([].keys && 'next' in [].keys()); // Safari has buggy iterators w/o `next`
-var FF_ITERATOR = '@@iterator';
-var KEYS = 'keys';
-var VALUES = 'values';
-
-var returnThis = function () { return this; };
-
-module.exports = function (Base, NAME, Constructor, next, DEFAULT, IS_SET, FORCED) {
-  $iterCreate(Constructor, NAME, next);
-  var getMethod = function (kind) {
-    if (!BUGGY && kind in proto) return proto[kind];
-    switch (kind) {
-      case KEYS: return function keys() { return new Constructor(this, kind); };
-      case VALUES: return function values() { return new Constructor(this, kind); };
-    } return function entries() { return new Constructor(this, kind); };
-  };
-  var TAG = NAME + ' Iterator';
-  var DEF_VALUES = DEFAULT == VALUES;
-  var VALUES_BUG = false;
-  var proto = Base.prototype;
-  var $native = proto[ITERATOR] || proto[FF_ITERATOR] || DEFAULT && proto[DEFAULT];
-  var $default = $native || getMethod(DEFAULT);
-  var $entries = DEFAULT ? !DEF_VALUES ? $default : getMethod('entries') : undefined;
-  var $anyNative = NAME == 'Array' ? proto.entries || $native : $native;
-  var methods, key, IteratorPrototype;
-  // Fix native
-  if ($anyNative) {
-    IteratorPrototype = getPrototypeOf($anyNative.call(new Base()));
-    if (IteratorPrototype !== Object.prototype && IteratorPrototype.next) {
-      // Set @@toStringTag to native iterators
-      setToStringTag(IteratorPrototype, TAG, true);
-      // fix for some old engines
-      if (!LIBRARY && typeof IteratorPrototype[ITERATOR] != 'function') hide(IteratorPrototype, ITERATOR, returnThis);
-    }
-  }
-  // fix Array#{values, @@iterator}.name in V8 / FF
-  if (DEF_VALUES && $native && $native.name !== VALUES) {
-    VALUES_BUG = true;
-    $default = function values() { return $native.call(this); };
-  }
-  // Define iterator
-  if ((!LIBRARY || FORCED) && (BUGGY || VALUES_BUG || !proto[ITERATOR])) {
-    hide(proto, ITERATOR, $default);
-  }
-  // Plug for library
-  Iterators[NAME] = $default;
-  Iterators[TAG] = returnThis;
-  if (DEFAULT) {
-    methods = {
-      values: DEF_VALUES ? $default : getMethod(VALUES),
-      keys: IS_SET ? $default : getMethod(KEYS),
-      entries: $entries
-    };
-    if (FORCED) for (key in methods) {
-      if (!(key in proto)) redefine(proto, key, methods[key]);
-    } else $export($export.P + $export.F * (BUGGY || VALUES_BUG), NAME, methods);
-  }
-  return methods;
-};
-
-},{"./_export":39,"./_hide":43,"./_iter-create":51,"./_iterators":55,"./_library":56,"./_object-gpo":65,"./_redefine":71,"./_set-to-string-tag":72,"./_wks":87}],53:[function(require,module,exports){
-var ITERATOR = require('./_wks')('iterator');
-var SAFE_CLOSING = false;
-
+//Hook the dynamic loaders, in case library gets loaded at a later point in time
+//! Repeated module loading results in multiple intereceptions. This will cause multiple log entries if module is loaded into the same address space 
 try {
-  var riter = [7][ITERATOR]();
-  riter['return'] = function () { SAFE_CLOSING = true; };
-  // eslint-disable-next-line no-throw-literal
-  Array.from(riter, function () { throw 2; });
-} catch (e) { /* empty */ }
-
-module.exports = function (exec, skipClosing) {
-  if (!skipClosing && !SAFE_CLOSING) return false;
-  var safe = false;
-  try {
-    var arr = [7];
-    var iter = arr[ITERATOR]();
-    iter.next = function () { return { done: safe = true }; };
-    arr[ITERATOR] = function () { return iter; };
-    exec(arr);
-  } catch (e) { /* empty */ }
-  return safe;
-};
-
-},{"./_wks":87}],54:[function(require,module,exports){
-module.exports = function (done, value) {
-  return { value: value, done: !!done };
-};
-
-},{}],55:[function(require,module,exports){
-module.exports = {};
-
-},{}],56:[function(require,module,exports){
-module.exports = true;
-
-},{}],57:[function(require,module,exports){
-var META = require('./_uid')('meta');
-var isObject = require('./_is-object');
-var has = require('./_has');
-var setDesc = require('./_object-dp').f;
-var id = 0;
-var isExtensible = Object.isExtensible || function () {
-  return true;
-};
-var FREEZE = !require('./_fails')(function () {
-  return isExtensible(Object.preventExtensions({}));
-});
-var setMeta = function (it) {
-  setDesc(it, META, { value: {
-    i: 'O' + ++id, // object ID
-    w: {}          // weak collections IDs
-  } });
-};
-var fastKey = function (it, create) {
-  // return primitive with prefix
-  if (!isObject(it)) return typeof it == 'symbol' ? it : (typeof it == 'string' ? 'S' : 'P') + it;
-  if (!has(it, META)) {
-    // can't set metadata to uncaught frozen object
-    if (!isExtensible(it)) return 'F';
-    // not necessary to add metadata
-    if (!create) return 'E';
-    // add missing metadata
-    setMeta(it);
-  // return object ID
-  } return it[META].i;
-};
-var getWeak = function (it, create) {
-  if (!has(it, META)) {
-    // can't set metadata to uncaught frozen object
-    if (!isExtensible(it)) return true;
-    // not necessary to add metadata
-    if (!create) return false;
-    // add missing metadata
-    setMeta(it);
-  // return hash weak collections IDs
-  } return it[META].w;
-};
-// add metadata on freeze-family methods calling
-var onFreeze = function (it) {
-  if (FREEZE && meta.NEED && isExtensible(it) && !has(it, META)) setMeta(it);
-  return it;
-};
-var meta = module.exports = {
-  KEY: META,
-  NEED: false,
-  fastKey: fastKey,
-  getWeak: getWeak,
-  onFreeze: onFreeze
-};
-
-},{"./_fails":40,"./_has":42,"./_is-object":49,"./_object-dp":59,"./_uid":84}],58:[function(require,module,exports){
-// 19.1.2.2 / 15.2.3.5 Object.create(O [, Properties])
-var anObject = require('./_an-object');
-var dPs = require('./_object-dps');
-var enumBugKeys = require('./_enum-bug-keys');
-var IE_PROTO = require('./_shared-key')('IE_PROTO');
-var Empty = function () { /* empty */ };
-var PROTOTYPE = 'prototype';
-
-// Create object with fake `null` prototype: use iframe Object with cleared prototype
-var createDict = function () {
-  // Thrash, waste and sodomy: IE GC bug
-  var iframe = require('./_dom-create')('iframe');
-  var i = enumBugKeys.length;
-  var lt = '<';
-  var gt = '>';
-  var iframeDocument;
-  iframe.style.display = 'none';
-  require('./_html').appendChild(iframe);
-  iframe.src = 'javascript:'; // eslint-disable-line no-script-url
-  // createDict = iframe.contentWindow.Object;
-  // html.removeChild(iframe);
-  iframeDocument = iframe.contentWindow.document;
-  iframeDocument.open();
-  iframeDocument.write(lt + 'script' + gt + 'document.F=Object' + lt + '/script' + gt);
-  iframeDocument.close();
-  createDict = iframeDocument.F;
-  while (i--) delete createDict[PROTOTYPE][enumBugKeys[i]];
-  return createDict();
-};
-
-module.exports = Object.create || function create(O, Properties) {
-  var result;
-  if (O !== null) {
-    Empty[PROTOTYPE] = anObject(O);
-    result = new Empty();
-    Empty[PROTOTYPE] = null;
-    // add "__proto__" for Object.getPrototypeOf polyfill
-    result[IE_PROTO] = O;
-  } else result = createDict();
-  return Properties === undefined ? result : dPs(result, Properties);
-};
-
-},{"./_an-object":27,"./_dom-create":36,"./_enum-bug-keys":37,"./_html":44,"./_object-dps":60,"./_shared-key":73}],59:[function(require,module,exports){
-var anObject = require('./_an-object');
-var IE8_DOM_DEFINE = require('./_ie8-dom-define');
-var toPrimitive = require('./_to-primitive');
-var dP = Object.defineProperty;
-
-exports.f = require('./_descriptors') ? Object.defineProperty : function defineProperty(O, P, Attributes) {
-  anObject(O);
-  P = toPrimitive(P, true);
-  anObject(Attributes);
-  if (IE8_DOM_DEFINE) try {
-    return dP(O, P, Attributes);
-  } catch (e) { /* empty */ }
-  if ('get' in Attributes || 'set' in Attributes) throw TypeError('Accessors not supported!');
-  if ('value' in Attributes) O[P] = Attributes.value;
-  return O;
-};
-
-},{"./_an-object":27,"./_descriptors":35,"./_ie8-dom-define":45,"./_to-primitive":83}],60:[function(require,module,exports){
-var dP = require('./_object-dp');
-var anObject = require('./_an-object');
-var getKeys = require('./_object-keys');
-
-module.exports = require('./_descriptors') ? Object.defineProperties : function defineProperties(O, Properties) {
-  anObject(O);
-  var keys = getKeys(Properties);
-  var length = keys.length;
-  var i = 0;
-  var P;
-  while (length > i) dP.f(O, P = keys[i++], Properties[P]);
-  return O;
-};
-
-},{"./_an-object":27,"./_descriptors":35,"./_object-dp":59,"./_object-keys":67}],61:[function(require,module,exports){
-var pIE = require('./_object-pie');
-var createDesc = require('./_property-desc');
-var toIObject = require('./_to-iobject');
-var toPrimitive = require('./_to-primitive');
-var has = require('./_has');
-var IE8_DOM_DEFINE = require('./_ie8-dom-define');
-var gOPD = Object.getOwnPropertyDescriptor;
-
-exports.f = require('./_descriptors') ? gOPD : function getOwnPropertyDescriptor(O, P) {
-  O = toIObject(O);
-  P = toPrimitive(P, true);
-  if (IE8_DOM_DEFINE) try {
-    return gOPD(O, P);
-  } catch (e) { /* empty */ }
-  if (has(O, P)) return createDesc(!pIE.f.call(O, P), O[P]);
-};
-
-},{"./_descriptors":35,"./_has":42,"./_ie8-dom-define":45,"./_object-pie":68,"./_property-desc":70,"./_to-iobject":80,"./_to-primitive":83}],62:[function(require,module,exports){
-// fallback for IE11 buggy Object.getOwnPropertyNames with iframe and window
-var toIObject = require('./_to-iobject');
-var gOPN = require('./_object-gopn').f;
-var toString = {}.toString;
-
-var windowNames = typeof window == 'object' && window && Object.getOwnPropertyNames
-  ? Object.getOwnPropertyNames(window) : [];
-
-var getWindowNames = function (it) {
-  try {
-    return gOPN(it);
-  } catch (e) {
-    return windowNames.slice();
-  }
-};
-
-module.exports.f = function getOwnPropertyNames(it) {
-  return windowNames && toString.call(it) == '[object Window]' ? getWindowNames(it) : gOPN(toIObject(it));
-};
-
-},{"./_object-gopn":63,"./_to-iobject":80}],63:[function(require,module,exports){
-// 19.1.2.7 / 15.2.3.4 Object.getOwnPropertyNames(O)
-var $keys = require('./_object-keys-internal');
-var hiddenKeys = require('./_enum-bug-keys').concat('length', 'prototype');
-
-exports.f = Object.getOwnPropertyNames || function getOwnPropertyNames(O) {
-  return $keys(O, hiddenKeys);
-};
-
-},{"./_enum-bug-keys":37,"./_object-keys-internal":66}],64:[function(require,module,exports){
-exports.f = Object.getOwnPropertySymbols;
-
-},{}],65:[function(require,module,exports){
-// 19.1.2.9 / 15.2.3.2 Object.getPrototypeOf(O)
-var has = require('./_has');
-var toObject = require('./_to-object');
-var IE_PROTO = require('./_shared-key')('IE_PROTO');
-var ObjectProto = Object.prototype;
-
-module.exports = Object.getPrototypeOf || function (O) {
-  O = toObject(O);
-  if (has(O, IE_PROTO)) return O[IE_PROTO];
-  if (typeof O.constructor == 'function' && O instanceof O.constructor) {
-    return O.constructor.prototype;
-  } return O instanceof Object ? ObjectProto : null;
-};
-
-},{"./_has":42,"./_shared-key":73,"./_to-object":82}],66:[function(require,module,exports){
-var has = require('./_has');
-var toIObject = require('./_to-iobject');
-var arrayIndexOf = require('./_array-includes')(false);
-var IE_PROTO = require('./_shared-key')('IE_PROTO');
-
-module.exports = function (object, names) {
-  var O = toIObject(object);
-  var i = 0;
-  var result = [];
-  var key;
-  for (key in O) if (key != IE_PROTO) has(O, key) && result.push(key);
-  // Don't enum bug & hidden keys
-  while (names.length > i) if (has(O, key = names[i++])) {
-    ~arrayIndexOf(result, key) || result.push(key);
-  }
-  return result;
-};
-
-},{"./_array-includes":28,"./_has":42,"./_shared-key":73,"./_to-iobject":80}],67:[function(require,module,exports){
-// 19.1.2.14 / 15.2.3.14 Object.keys(O)
-var $keys = require('./_object-keys-internal');
-var enumBugKeys = require('./_enum-bug-keys');
-
-module.exports = Object.keys || function keys(O) {
-  return $keys(O, enumBugKeys);
-};
-
-},{"./_enum-bug-keys":37,"./_object-keys-internal":66}],68:[function(require,module,exports){
-exports.f = {}.propertyIsEnumerable;
-
-},{}],69:[function(require,module,exports){
-var $parseInt = require('./_global').parseInt;
-var $trim = require('./_string-trim').trim;
-var ws = require('./_string-ws');
-var hex = /^[-+]?0[xX]/;
-
-module.exports = $parseInt(ws + '08') !== 8 || $parseInt(ws + '0x16') !== 22 ? function parseInt(str, radix) {
-  var string = $trim(String(str), 3);
-  return $parseInt(string, (radix >>> 0) || (hex.test(string) ? 16 : 10));
-} : $parseInt;
-
-},{"./_global":41,"./_string-trim":76,"./_string-ws":77}],70:[function(require,module,exports){
-module.exports = function (bitmap, value) {
-  return {
-    enumerable: !(bitmap & 1),
-    configurable: !(bitmap & 2),
-    writable: !(bitmap & 4),
-    value: value
-  };
-};
-
-},{}],71:[function(require,module,exports){
-module.exports = require('./_hide');
-
-},{"./_hide":43}],72:[function(require,module,exports){
-var def = require('./_object-dp').f;
-var has = require('./_has');
-var TAG = require('./_wks')('toStringTag');
-
-module.exports = function (it, tag, stat) {
-  if (it && !has(it = stat ? it : it.prototype, TAG)) def(it, TAG, { configurable: true, value: tag });
-};
-
-},{"./_has":42,"./_object-dp":59,"./_wks":87}],73:[function(require,module,exports){
-var shared = require('./_shared')('keys');
-var uid = require('./_uid');
-module.exports = function (key) {
-  return shared[key] || (shared[key] = uid(key));
-};
-
-},{"./_shared":74,"./_uid":84}],74:[function(require,module,exports){
-var core = require('./_core');
-var global = require('./_global');
-var SHARED = '__core-js_shared__';
-var store = global[SHARED] || (global[SHARED] = {});
-
-(module.exports = function (key, value) {
-  return store[key] || (store[key] = value !== undefined ? value : {});
-})('versions', []).push({
-  version: core.version,
-  mode: require('./_library') ? 'pure' : 'global',
-  copyright: '© 2019 Denis Pushkarev (zloirock.ru)'
-});
-
-},{"./_core":31,"./_global":41,"./_library":56}],75:[function(require,module,exports){
-var toInteger = require('./_to-integer');
-var defined = require('./_defined');
-// true  -> String#at
-// false -> String#codePointAt
-module.exports = function (TO_STRING) {
-  return function (that, pos) {
-    var s = String(defined(that));
-    var i = toInteger(pos);
-    var l = s.length;
-    var a, b;
-    if (i < 0 || i >= l) return TO_STRING ? '' : undefined;
-    a = s.charCodeAt(i);
-    return a < 0xd800 || a > 0xdbff || i + 1 === l || (b = s.charCodeAt(i + 1)) < 0xdc00 || b > 0xdfff
-      ? TO_STRING ? s.charAt(i) : a
-      : TO_STRING ? s.slice(i, i + 2) : (a - 0xd800 << 10) + (b - 0xdc00) + 0x10000;
-  };
-};
-
-},{"./_defined":34,"./_to-integer":79}],76:[function(require,module,exports){
-var $export = require('./_export');
-var defined = require('./_defined');
-var fails = require('./_fails');
-var spaces = require('./_string-ws');
-var space = '[' + spaces + ']';
-var non = '\u200b\u0085';
-var ltrim = RegExp('^' + space + space + '*');
-var rtrim = RegExp(space + space + '*$');
-
-var exporter = function (KEY, exec, ALIAS) {
-  var exp = {};
-  var FORCE = fails(function () {
-    return !!spaces[KEY]() || non[KEY]() != non;
-  });
-  var fn = exp[KEY] = FORCE ? exec(trim) : spaces[KEY];
-  if (ALIAS) exp[ALIAS] = fn;
-  $export($export.P + $export.F * FORCE, 'String', exp);
-};
-
-// 1 -> String#trimLeft
-// 2 -> String#trimRight
-// 3 -> String#trim
-var trim = exporter.trim = function (string, TYPE) {
-  string = String(defined(string));
-  if (TYPE & 1) string = string.replace(ltrim, '');
-  if (TYPE & 2) string = string.replace(rtrim, '');
-  return string;
-};
-
-module.exports = exporter;
-
-},{"./_defined":34,"./_export":39,"./_fails":40,"./_string-ws":77}],77:[function(require,module,exports){
-module.exports = '\x09\x0A\x0B\x0C\x0D\x20\xA0\u1680\u180E\u2000\u2001\u2002\u2003' +
-  '\u2004\u2005\u2006\u2007\u2008\u2009\u200A\u202F\u205F\u3000\u2028\u2029\uFEFF';
-
-},{}],78:[function(require,module,exports){
-var toInteger = require('./_to-integer');
-var max = Math.max;
-var min = Math.min;
-module.exports = function (index, length) {
-  index = toInteger(index);
-  return index < 0 ? max(index + length, 0) : min(index, length);
-};
-
-},{"./_to-integer":79}],79:[function(require,module,exports){
-// 7.1.4 ToInteger
-var ceil = Math.ceil;
-var floor = Math.floor;
-module.exports = function (it) {
-  return isNaN(it = +it) ? 0 : (it > 0 ? floor : ceil)(it);
-};
-
-},{}],80:[function(require,module,exports){
-// to indexed object, toObject with fallback for non-array-like ES3 strings
-var IObject = require('./_iobject');
-var defined = require('./_defined');
-module.exports = function (it) {
-  return IObject(defined(it));
-};
-
-},{"./_defined":34,"./_iobject":46}],81:[function(require,module,exports){
-// 7.1.15 ToLength
-var toInteger = require('./_to-integer');
-var min = Math.min;
-module.exports = function (it) {
-  return it > 0 ? min(toInteger(it), 0x1fffffffffffff) : 0; // pow(2, 53) - 1 == 9007199254740991
-};
-
-},{"./_to-integer":79}],82:[function(require,module,exports){
-// 7.1.13 ToObject(argument)
-var defined = require('./_defined');
-module.exports = function (it) {
-  return Object(defined(it));
-};
-
-},{"./_defined":34}],83:[function(require,module,exports){
-// 7.1.1 ToPrimitive(input [, PreferredType])
-var isObject = require('./_is-object');
-// instead of the ES6 spec version, we didn't implement @@toPrimitive case
-// and the second argument - flag - preferred type is a string
-module.exports = function (it, S) {
-  if (!isObject(it)) return it;
-  var fn, val;
-  if (S && typeof (fn = it.toString) == 'function' && !isObject(val = fn.call(it))) return val;
-  if (typeof (fn = it.valueOf) == 'function' && !isObject(val = fn.call(it))) return val;
-  if (!S && typeof (fn = it.toString) == 'function' && !isObject(val = fn.call(it))) return val;
-  throw TypeError("Can't convert object to primitive value");
-};
-
-},{"./_is-object":49}],84:[function(require,module,exports){
-var id = 0;
-var px = Math.random();
-module.exports = function (key) {
-  return 'Symbol('.concat(key === undefined ? '' : key, ')_', (++id + px).toString(36));
-};
-
-},{}],85:[function(require,module,exports){
-var global = require('./_global');
-var core = require('./_core');
-var LIBRARY = require('./_library');
-var wksExt = require('./_wks-ext');
-var defineProperty = require('./_object-dp').f;
-module.exports = function (name) {
-  var $Symbol = core.Symbol || (core.Symbol = LIBRARY ? {} : global.Symbol || {});
-  if (name.charAt(0) != '_' && !(name in $Symbol)) defineProperty($Symbol, name, { value: wksExt.f(name) });
-};
-
-},{"./_core":31,"./_global":41,"./_library":56,"./_object-dp":59,"./_wks-ext":86}],86:[function(require,module,exports){
-exports.f = require('./_wks');
-
-},{"./_wks":87}],87:[function(require,module,exports){
-var store = require('./_shared')('wks');
-var uid = require('./_uid');
-var Symbol = require('./_global').Symbol;
-var USE_SYMBOL = typeof Symbol == 'function';
-
-var $exports = module.exports = function (name) {
-  return store[name] || (store[name] =
-    USE_SYMBOL && Symbol[name] || (USE_SYMBOL ? Symbol : uid)('Symbol.' + name));
-};
-
-$exports.store = store;
-
-},{"./_global":41,"./_shared":74,"./_uid":84}],88:[function(require,module,exports){
-var classof = require('./_classof');
-var ITERATOR = require('./_wks')('iterator');
-var Iterators = require('./_iterators');
-module.exports = require('./_core').getIteratorMethod = function (it) {
-  if (it != undefined) return it[ITERATOR]
-    || it['@@iterator']
-    || Iterators[classof(it)];
-};
-
-},{"./_classof":29,"./_core":31,"./_iterators":55,"./_wks":87}],89:[function(require,module,exports){
-var anObject = require('./_an-object');
-var get = require('./core.get-iterator-method');
-module.exports = require('./_core').getIterator = function (it) {
-  var iterFn = get(it);
-  if (typeof iterFn != 'function') throw TypeError(it + ' is not iterable!');
-  return anObject(iterFn.call(it));
-};
-
-},{"./_an-object":27,"./_core":31,"./core.get-iterator-method":88}],90:[function(require,module,exports){
-'use strict';
-var ctx = require('./_ctx');
-var $export = require('./_export');
-var toObject = require('./_to-object');
-var call = require('./_iter-call');
-var isArrayIter = require('./_is-array-iter');
-var toLength = require('./_to-length');
-var createProperty = require('./_create-property');
-var getIterFn = require('./core.get-iterator-method');
-
-$export($export.S + $export.F * !require('./_iter-detect')(function (iter) { Array.from(iter); }), 'Array', {
-  // 22.1.2.1 Array.from(arrayLike, mapfn = undefined, thisArg = undefined)
-  from: function from(arrayLike /* , mapfn = undefined, thisArg = undefined */) {
-    var O = toObject(arrayLike);
-    var C = typeof this == 'function' ? this : Array;
-    var aLen = arguments.length;
-    var mapfn = aLen > 1 ? arguments[1] : undefined;
-    var mapping = mapfn !== undefined;
-    var index = 0;
-    var iterFn = getIterFn(O);
-    var length, result, step, iterator;
-    if (mapping) mapfn = ctx(mapfn, aLen > 2 ? arguments[2] : undefined, 2);
-    // if object isn't iterable or it's array with default iterator - use simple case
-    if (iterFn != undefined && !(C == Array && isArrayIter(iterFn))) {
-      for (iterator = iterFn.call(O), result = new C(); !(step = iterator.next()).done; index++) {
-        createProperty(result, index, mapping ? call(iterator, mapfn, [step.value, index], true) : step.value);
-      }
-    } else {
-      length = toLength(O.length);
-      for (result = new C(length); length > index; index++) {
-        createProperty(result, index, mapping ? mapfn(O[index], index) : O[index]);
-      }
+    switch (Process.platform) {
+        case "windows":
+            hookWindowsDynamicLoader();
+            break;
+        case "linux":
+            hookLinuxDynamicLoader();
+            break;
+        default:
+            console.log("Missing dynamic loader hook implementation!");
     }
-    result.length = index;
-    return result;
-  }
-});
-
-},{"./_create-property":32,"./_ctx":33,"./_export":39,"./_is-array-iter":47,"./_iter-call":50,"./_iter-detect":53,"./_to-length":81,"./_to-object":82,"./core.get-iterator-method":88}],91:[function(require,module,exports){
-// 22.1.2.2 / 15.4.3.2 Array.isArray(arg)
-var $export = require('./_export');
-
-$export($export.S, 'Array', { isArray: require('./_is-array') });
-
-},{"./_export":39,"./_is-array":48}],92:[function(require,module,exports){
-'use strict';
-var addToUnscopables = require('./_add-to-unscopables');
-var step = require('./_iter-step');
-var Iterators = require('./_iterators');
-var toIObject = require('./_to-iobject');
-
-// 22.1.3.4 Array.prototype.entries()
-// 22.1.3.13 Array.prototype.keys()
-// 22.1.3.29 Array.prototype.values()
-// 22.1.3.30 Array.prototype[@@iterator]()
-module.exports = require('./_iter-define')(Array, 'Array', function (iterated, kind) {
-  this._t = toIObject(iterated); // target
-  this._i = 0;                   // next index
-  this._k = kind;                // kind
-// 22.1.5.2.1 %ArrayIteratorPrototype%.next()
-}, function () {
-  var O = this._t;
-  var kind = this._k;
-  var index = this._i++;
-  if (!O || index >= O.length) {
-    this._t = undefined;
-    return step(1);
-  }
-  if (kind == 'keys') return step(0, index);
-  if (kind == 'values') return step(0, O[index]);
-  return step(0, [index, O[index]]);
-}, 'values');
-
-// argumentsList[@@iterator] is %ArrayProto_values% (9.4.4.6, 9.4.4.7)
-Iterators.Arguments = Iterators.Array;
-
-addToUnscopables('keys');
-addToUnscopables('values');
-addToUnscopables('entries');
-
-},{"./_add-to-unscopables":26,"./_iter-define":52,"./_iter-step":54,"./_iterators":55,"./_to-iobject":80}],93:[function(require,module,exports){
-var $export = require('./_export');
-// 19.1.2.4 / 15.2.3.6 Object.defineProperty(O, P, Attributes)
-$export($export.S + $export.F * !require('./_descriptors'), 'Object', { defineProperty: require('./_object-dp').f });
-
-},{"./_descriptors":35,"./_export":39,"./_object-dp":59}],94:[function(require,module,exports){
-
-},{}],95:[function(require,module,exports){
-var $export = require('./_export');
-var $parseInt = require('./_parse-int');
-// 18.2.5 parseInt(string, radix)
-$export($export.G + $export.F * (parseInt != $parseInt), { parseInt: $parseInt });
-
-},{"./_export":39,"./_parse-int":69}],96:[function(require,module,exports){
-'use strict';
-var $at = require('./_string-at')(true);
-
-// 21.1.3.27 String.prototype[@@iterator]()
-require('./_iter-define')(String, 'String', function (iterated) {
-  this._t = String(iterated); // target
-  this._i = 0;                // next index
-// 21.1.5.2.1 %StringIteratorPrototype%.next()
-}, function () {
-  var O = this._t;
-  var index = this._i;
-  var point;
-  if (index >= O.length) return { value: undefined, done: true };
-  point = $at(O, index);
-  this._i += point.length;
-  return { value: point, done: false };
-});
-
-},{"./_iter-define":52,"./_string-at":75}],97:[function(require,module,exports){
-'use strict';
-// ECMAScript 6 symbols shim
-var global = require('./_global');
-var has = require('./_has');
-var DESCRIPTORS = require('./_descriptors');
-var $export = require('./_export');
-var redefine = require('./_redefine');
-var META = require('./_meta').KEY;
-var $fails = require('./_fails');
-var shared = require('./_shared');
-var setToStringTag = require('./_set-to-string-tag');
-var uid = require('./_uid');
-var wks = require('./_wks');
-var wksExt = require('./_wks-ext');
-var wksDefine = require('./_wks-define');
-var enumKeys = require('./_enum-keys');
-var isArray = require('./_is-array');
-var anObject = require('./_an-object');
-var isObject = require('./_is-object');
-var toObject = require('./_to-object');
-var toIObject = require('./_to-iobject');
-var toPrimitive = require('./_to-primitive');
-var createDesc = require('./_property-desc');
-var _create = require('./_object-create');
-var gOPNExt = require('./_object-gopn-ext');
-var $GOPD = require('./_object-gopd');
-var $GOPS = require('./_object-gops');
-var $DP = require('./_object-dp');
-var $keys = require('./_object-keys');
-var gOPD = $GOPD.f;
-var dP = $DP.f;
-var gOPN = gOPNExt.f;
-var $Symbol = global.Symbol;
-var $JSON = global.JSON;
-var _stringify = $JSON && $JSON.stringify;
-var PROTOTYPE = 'prototype';
-var HIDDEN = wks('_hidden');
-var TO_PRIMITIVE = wks('toPrimitive');
-var isEnum = {}.propertyIsEnumerable;
-var SymbolRegistry = shared('symbol-registry');
-var AllSymbols = shared('symbols');
-var OPSymbols = shared('op-symbols');
-var ObjectProto = Object[PROTOTYPE];
-var USE_NATIVE = typeof $Symbol == 'function' && !!$GOPS.f;
-var QObject = global.QObject;
-// Don't use setters in Qt Script, https://github.com/zloirock/core-js/issues/173
-var setter = !QObject || !QObject[PROTOTYPE] || !QObject[PROTOTYPE].findChild;
-
-// fallback for old Android, https://code.google.com/p/v8/issues/detail?id=687
-var setSymbolDesc = DESCRIPTORS && $fails(function () {
-  return _create(dP({}, 'a', {
-    get: function () { return dP(this, 'a', { value: 7 }).a; }
-  })).a != 7;
-}) ? function (it, key, D) {
-  var protoDesc = gOPD(ObjectProto, key);
-  if (protoDesc) delete ObjectProto[key];
-  dP(it, key, D);
-  if (protoDesc && it !== ObjectProto) dP(ObjectProto, key, protoDesc);
-} : dP;
-
-var wrap = function (tag) {
-  var sym = AllSymbols[tag] = _create($Symbol[PROTOTYPE]);
-  sym._k = tag;
-  return sym;
-};
-
-var isSymbol = USE_NATIVE && typeof $Symbol.iterator == 'symbol' ? function (it) {
-  return typeof it == 'symbol';
-} : function (it) {
-  return it instanceof $Symbol;
-};
-
-var $defineProperty = function defineProperty(it, key, D) {
-  if (it === ObjectProto) $defineProperty(OPSymbols, key, D);
-  anObject(it);
-  key = toPrimitive(key, true);
-  anObject(D);
-  if (has(AllSymbols, key)) {
-    if (!D.enumerable) {
-      if (!has(it, HIDDEN)) dP(it, HIDDEN, createDesc(1, {}));
-      it[HIDDEN][key] = true;
-    } else {
-      if (has(it, HIDDEN) && it[HIDDEN][key]) it[HIDDEN][key] = false;
-      D = _create(D, { enumerable: createDesc(0, false) });
-    } return setSymbolDesc(it, key, D);
-  } return dP(it, key, D);
-};
-var $defineProperties = function defineProperties(it, P) {
-  anObject(it);
-  var keys = enumKeys(P = toIObject(P));
-  var i = 0;
-  var l = keys.length;
-  var key;
-  while (l > i) $defineProperty(it, key = keys[i++], P[key]);
-  return it;
-};
-var $create = function create(it, P) {
-  return P === undefined ? _create(it) : $defineProperties(_create(it), P);
-};
-var $propertyIsEnumerable = function propertyIsEnumerable(key) {
-  var E = isEnum.call(this, key = toPrimitive(key, true));
-  if (this === ObjectProto && has(AllSymbols, key) && !has(OPSymbols, key)) return false;
-  return E || !has(this, key) || !has(AllSymbols, key) || has(this, HIDDEN) && this[HIDDEN][key] ? E : true;
-};
-var $getOwnPropertyDescriptor = function getOwnPropertyDescriptor(it, key) {
-  it = toIObject(it);
-  key = toPrimitive(key, true);
-  if (it === ObjectProto && has(AllSymbols, key) && !has(OPSymbols, key)) return;
-  var D = gOPD(it, key);
-  if (D && has(AllSymbols, key) && !(has(it, HIDDEN) && it[HIDDEN][key])) D.enumerable = true;
-  return D;
-};
-var $getOwnPropertyNames = function getOwnPropertyNames(it) {
-  var names = gOPN(toIObject(it));
-  var result = [];
-  var i = 0;
-  var key;
-  while (names.length > i) {
-    if (!has(AllSymbols, key = names[i++]) && key != HIDDEN && key != META) result.push(key);
-  } return result;
-};
-var $getOwnPropertySymbols = function getOwnPropertySymbols(it) {
-  var IS_OP = it === ObjectProto;
-  var names = gOPN(IS_OP ? OPSymbols : toIObject(it));
-  var result = [];
-  var i = 0;
-  var key;
-  while (names.length > i) {
-    if (has(AllSymbols, key = names[i++]) && (IS_OP ? has(ObjectProto, key) : true)) result.push(AllSymbols[key]);
-  } return result;
-};
-
-// 19.4.1.1 Symbol([description])
-if (!USE_NATIVE) {
-  $Symbol = function Symbol() {
-    if (this instanceof $Symbol) throw TypeError('Symbol is not a constructor!');
-    var tag = uid(arguments.length > 0 ? arguments[0] : undefined);
-    var $set = function (value) {
-      if (this === ObjectProto) $set.call(OPSymbols, value);
-      if (has(this, HIDDEN) && has(this[HIDDEN], tag)) this[HIDDEN][tag] = false;
-      setSymbolDesc(this, tag, createDesc(1, value));
-    };
-    if (DESCRIPTORS && setter) setSymbolDesc(ObjectProto, tag, { configurable: true, set: $set });
-    return wrap(tag);
-  };
-  redefine($Symbol[PROTOTYPE], 'toString', function toString() {
-    return this._k;
-  });
-
-  $GOPD.f = $getOwnPropertyDescriptor;
-  $DP.f = $defineProperty;
-  require('./_object-gopn').f = gOPNExt.f = $getOwnPropertyNames;
-  require('./_object-pie').f = $propertyIsEnumerable;
-  $GOPS.f = $getOwnPropertySymbols;
-
-  if (DESCRIPTORS && !require('./_library')) {
-    redefine(ObjectProto, 'propertyIsEnumerable', $propertyIsEnumerable, true);
-  }
-
-  wksExt.f = function (name) {
-    return wrap(wks(name));
-  };
 }
-
-$export($export.G + $export.W + $export.F * !USE_NATIVE, { Symbol: $Symbol });
-
-for (var es6Symbols = (
-  // 19.4.2.2, 19.4.2.3, 19.4.2.4, 19.4.2.6, 19.4.2.8, 19.4.2.9, 19.4.2.10, 19.4.2.11, 19.4.2.12, 19.4.2.13, 19.4.2.14
-  'hasInstance,isConcatSpreadable,iterator,match,replace,search,species,split,toPrimitive,toStringTag,unscopables'
-).split(','), j = 0; es6Symbols.length > j;)wks(es6Symbols[j++]);
-
-for (var wellKnownSymbols = $keys(wks.store), k = 0; wellKnownSymbols.length > k;) wksDefine(wellKnownSymbols[k++]);
-
-$export($export.S + $export.F * !USE_NATIVE, 'Symbol', {
-  // 19.4.2.1 Symbol.for(key)
-  'for': function (key) {
-    return has(SymbolRegistry, key += '')
-      ? SymbolRegistry[key]
-      : SymbolRegistry[key] = $Symbol(key);
-  },
-  // 19.4.2.5 Symbol.keyFor(sym)
-  keyFor: function keyFor(sym) {
-    if (!isSymbol(sym)) throw TypeError(sym + ' is not a symbol!');
-    for (var key in SymbolRegistry) if (SymbolRegistry[key] === sym) return key;
-  },
-  useSetter: function () { setter = true; },
-  useSimple: function () { setter = false; }
-});
-
-$export($export.S + $export.F * !USE_NATIVE, 'Object', {
-  // 19.1.2.2 Object.create(O [, Properties])
-  create: $create,
-  // 19.1.2.4 Object.defineProperty(O, P, Attributes)
-  defineProperty: $defineProperty,
-  // 19.1.2.3 Object.defineProperties(O, Properties)
-  defineProperties: $defineProperties,
-  // 19.1.2.6 Object.getOwnPropertyDescriptor(O, P)
-  getOwnPropertyDescriptor: $getOwnPropertyDescriptor,
-  // 19.1.2.7 Object.getOwnPropertyNames(O)
-  getOwnPropertyNames: $getOwnPropertyNames,
-  // 19.1.2.8 Object.getOwnPropertySymbols(O)
-  getOwnPropertySymbols: $getOwnPropertySymbols
-});
-
-// Chrome 38 and 39 `Object.getOwnPropertySymbols` fails on primitives
-// https://bugs.chromium.org/p/v8/issues/detail?id=3443
-var FAILS_ON_PRIMITIVES = $fails(function () { $GOPS.f(1); });
-
-$export($export.S + $export.F * FAILS_ON_PRIMITIVES, 'Object', {
-  getOwnPropertySymbols: function getOwnPropertySymbols(it) {
-    return $GOPS.f(toObject(it));
-  }
-});
-
-// 24.3.2 JSON.stringify(value [, replacer [, space]])
-$JSON && $export($export.S + $export.F * (!USE_NATIVE || $fails(function () {
-  var S = $Symbol();
-  // MS Edge converts symbol values to JSON as {}
-  // WebKit converts symbol values to JSON as null
-  // V8 throws on boxed symbols
-  return _stringify([S]) != '[null]' || _stringify({ a: S }) != '{}' || _stringify(Object(S)) != '{}';
-})), 'JSON', {
-  stringify: function stringify(it) {
-    var args = [it];
-    var i = 1;
-    var replacer, $replacer;
-    while (arguments.length > i) args.push(arguments[i++]);
-    $replacer = replacer = args[1];
-    if (!isObject(replacer) && it === undefined || isSymbol(it)) return; // IE8 returns string on undefined
-    if (!isArray(replacer)) replacer = function (key, value) {
-      if (typeof $replacer == 'function') value = $replacer.call(this, key, value);
-      if (!isSymbol(value)) return value;
-    };
-    args[1] = replacer;
-    return _stringify.apply($JSON, args);
-  }
-});
-
-// 19.4.3.4 Symbol.prototype[@@toPrimitive](hint)
-$Symbol[PROTOTYPE][TO_PRIMITIVE] || require('./_hide')($Symbol[PROTOTYPE], TO_PRIMITIVE, $Symbol[PROTOTYPE].valueOf);
-// 19.4.3.5 Symbol.prototype[@@toStringTag]
-setToStringTag($Symbol, 'Symbol');
-// 20.2.1.9 Math[@@toStringTag]
-setToStringTag(Math, 'Math', true);
-// 24.3.3 JSON[@@toStringTag]
-setToStringTag(global.JSON, 'JSON', true);
-
-},{"./_an-object":27,"./_descriptors":35,"./_enum-keys":38,"./_export":39,"./_fails":40,"./_global":41,"./_has":42,"./_hide":43,"./_is-array":48,"./_is-object":49,"./_library":56,"./_meta":57,"./_object-create":58,"./_object-dp":59,"./_object-gopd":61,"./_object-gopn":63,"./_object-gopn-ext":62,"./_object-gops":64,"./_object-keys":67,"./_object-pie":68,"./_property-desc":70,"./_redefine":71,"./_set-to-string-tag":72,"./_shared":74,"./_to-iobject":80,"./_to-object":82,"./_to-primitive":83,"./_uid":84,"./_wks":87,"./_wks-define":85,"./_wks-ext":86}],98:[function(require,module,exports){
-require('./_wks-define')('asyncIterator');
-
-},{"./_wks-define":85}],99:[function(require,module,exports){
-require('./_wks-define')('observable');
-
-},{"./_wks-define":85}],100:[function(require,module,exports){
-require('./es6.array.iterator');
-var global = require('./_global');
-var hide = require('./_hide');
-var Iterators = require('./_iterators');
-var TO_STRING_TAG = require('./_wks')('toStringTag');
-
-var DOMIterables = ('CSSRuleList,CSSStyleDeclaration,CSSValueList,ClientRectList,DOMRectList,DOMStringList,' +
-  'DOMTokenList,DataTransferItemList,FileList,HTMLAllCollection,HTMLCollection,HTMLFormElement,HTMLSelectElement,' +
-  'MediaList,MimeTypeArray,NamedNodeMap,NodeList,PaintRequestList,Plugin,PluginArray,SVGLengthList,SVGNumberList,' +
-  'SVGPathSegList,SVGPointList,SVGStringList,SVGTransformList,SourceBufferList,StyleSheetList,TextTrackCueList,' +
-  'TextTrackList,TouchList').split(',');
-
-for (var i = 0; i < DOMIterables.length; i++) {
-  var NAME = DOMIterables[i];
-  var Collection = global[NAME];
-  var proto = Collection && Collection.prototype;
-  if (proto && !proto[TO_STRING_TAG]) hide(proto, TO_STRING_TAG, NAME);
-  Iterators[NAME] = Iterators.Array;
+catch (error) {
+    console.log("Loader error: ", error);
+    log_1.log("No dynamic loader present for hooking.");
 }
+function hookLinuxDynamicLoader() {
+    const regex_libdl = /.*libdl.*\.so/;
+    const libdl = moduleNames.find(element => element.match(regex_libdl));
+    if (libdl === undefined)
+        throw "Linux Dynamic loader not found!";
+    let dl_exports = Process.getModuleByName(libdl).enumerateExports();
+    var dlopen = "dlopen";
+    for (var ex of dl_exports) {
+        if (ex.name === "android_dlopen_ext") {
+            dlopen = "android_dlopen_ext";
+            break;
+        }
+    }
+    Interceptor.attach(Module.getExportByName(libdl, dlopen), {
+        onEnter: function (args) {
+            this.moduleName = args[0].readCString();
+        },
+        onLeave: function (retval) {
+            if (this.moduleName != undefined) {
+                if (this.moduleName.endsWith("libssl.so")) {
+                    log_1.log("OpenSSL/BoringSSL detected.");
+                    openssl_boringssl_1.execute("libssl");
+                }
+                else if (this.moduleName.endsWith("libwolfssl.so")) {
+                    log_1.log("WolfSSL detected.");
+                    wolfssl_1.execute("libwolfssl");
+                }
+            }
+        }
+    });
+    console.log(`[*] ${dlopen.indexOf("android") == -1 ? "Linux" : "Android"} dynamic loader hooked.`);
+}
+function hookWindowsDynamicLoader() {
+    const resolver = new ApiResolver('module');
+    var loadLibraryExW = resolver.enumerateMatches("exports:KERNELBASE.dll!*LoadLibraryExW");
+    if (loadLibraryExW.length == 0)
+        return console.log("[!] Missing windows dynamic loader!");
+    Interceptor.attach(loadLibraryExW[0].address, {
+        onLeave(retval) {
+            let map = new ModuleMap();
+            let moduleName = map.findName(retval);
+            if (moduleName === null)
+                return;
+            if (moduleName.indexOf("libssl-1_1.dll") != -1) {
+                log_1.log("OpenSSL/BoringSSL detected.");
+                openssl_boringssl_1.execute("libssl-1_1.dll");
+            }
+            //TODO:More module comparisons
+        }
+    });
+    console.log("[*] Windows dynamic loader hooked.");
+}
+if (Java.available) {
+    Java.perform(function () {
+        //Conscrypt needs early instrumentation as we block the provider installation
+        var Security = Java.use("java.security.Security");
+        if (Security.getProviders().toString().includes("GmsCore_OpenSSL")) {
+            log_1.log("WARNING: PID " + Process.id + " Detected GmsCore_OpenSSL Provider. This can be a bit unstable. If you having issues, rerun with -spawn for early instrumentation. Trying to remove it to fall back on default Provider");
+            Security.removeProvider("GmsCore_OpenSSL");
+            log_1.log("Removed GmsCore_OpenSSL");
+        }
+        //As the classloader responsible for loading ProviderInstaller sometimes is not present from the beginning on,
+        //we always have to watch the classloader activity
+        conscrypt_1.execute();
+        //Now do the same for Ssl_guard
+        if (Security.getProviders().toString().includes("Ssl_Guard")) {
+            log_1.log("Ssl_Guard deteced, removing it to fall back on default Provider");
+            Security.removeProvider("Ssl_Guard");
+            log_1.log("Removed Ssl_Guard");
+        }
+        //Same thing for Conscrypt provider which has been manually inserted (not by providerinstaller)
+        if (Security.getProviders().toString().includes("Conscrypt version")) {
+            log_1.log("Conscrypt detected");
+            Security.removeProvider("Conscrypt");
+            log_1.log("Removed Conscrypt");
+        }
+        //Uncomment this line to show all remaining providers
+        //log("Remaining: " + Security.getProviders().toString())
+        //Hook insertProviderAt/addprovider for dynamic provider blocking
+        Security.insertProviderAt.implementation = function (provider, position) {
+            if (provider.getName().includes("Conscrypt") || provider.getName().includes("Ssl_Guard") || provider.getName().includes("GmsCore_OpenSSL")) {
+                log_1.log("Blocking provider registration of " + provider.getName());
+                return position;
+            }
+            else {
+                return this.insertProviderAt(provider, position);
+            }
+        };
+        //Same for addProvider
+        Security.insertProviderAt.implementation = function (provider) {
+            if (provider.getName().includes("Conscrypt") || provider.getName().includes("Ssl_Guard") || provider.getName().includes("GmsCore_OpenSSL")) {
+                log_1.log("Blocking provider registration of " + provider.getName());
+                return 1;
+            }
+            else {
+                return this.addProvider(provider);
+            }
+        };
+    });
+}
+},{"./bouncycastle":1,"./conscrypt":2,"./gnutls":3,"./log":4,"./nss":5,"./openssl_boringssl":6,"./shared":7,"./sspi":9,"./wolfssl":10}],9:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.execute = void 0;
+const shared_1 = require("./shared");
+/*
+SspiCli.dll!DecryptMessage called!
+ncrypt.dll!SslDecryptPacket called!
+bcrypt.dll!BCryptDecrypt called!
+*/
+function execute(moduleName) {
+    var socket_library = shared_1.getSocketLibrary();
+    var library_method_mapping = {};
+    library_method_mapping[`*${moduleName}*`] = ["DecryptMessage", "EncryptMessage"];
+    //? Just in case darwin methods are different to linux and windows ones
+    if (Process.platform === "linux" || Process.platform === "windows") {
+        library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
+    }
+    else {
+        //TODO: Darwin implementation pending
+    }
+    var addresses = shared_1.readAddresses(library_method_mapping);
+    Interceptor.attach(addresses["DecryptMessage"], {
+        onEnter: function (args) {
+            this.pMessage = args[1];
+        },
+        onLeave: function () {
+            this.cBuffers = this.pMessage.add(4).readULong(); //unsigned long cBuffers (Count of buffers)
+            this.pBuffers = this.pMessage.add(8).readPointer(); //PSecBuffer  pBuffers (Pointer to array of secBuffers)
+            //https://docs.microsoft.com/en-us/windows/win32/api/sspi/ns-sspi-secbuffer
+            //One SecBuffer got 16 Bytes (unsigned long + unsigned long + pointer (64 Bit))
+            //--> Bytes to read: cBuffers + 16 Bytes
+            this.secBuffers = []; //Addresses of all secBuffers
+            for (let i = 0; i < this.cBuffers; i++) {
+                var secBuffer = this.pBuffers.add(i * 16);
+                this.secBuffers.push(secBuffer);
+            }
+            for (let i = 0; i < this.secBuffers.length; i++) {
+                var size = this.secBuffers[i].add(0).readULong();
+                var type = this.secBuffers[i].add(4).readULong();
+                var bufferPointer = this.secBuffers[i].add(8).readPointer();
+                if (type == 1) {
+                    var bytes = bufferPointer.readByteArray(size);
+                    var message = {};
+                    message["ss_family"] = "AF_INET";
+                    message["src_port"] = 444;
+                    message["src_addr"] = 222;
+                    message["dst_port"] = 443;
+                    message["dst_addr"] = 222;
+                    message["function"] = "DecryptMessage";
+                    message["contentType"] = "datalog";
+                    message["ssl_session_id"] = 10;
+                    console.log(bytes);
+                    send(message, bytes);
+                }
+            }
+        }
+    });
+    Interceptor.attach(addresses["EncryptMessage"], {
+        onEnter: function (args) {
+            this.pMessage = args[2]; //PSecBufferDesc pMessage (https://docs.microsoft.com/en-us/windows/win32/api/sspi/ns-sspi-secbufferdesc)
+            this.cBuffers = this.pMessage.add(4).readULong(); //unsigned long cBuffers (Count of buffers)
+            this.pBuffers = this.pMessage.add(8).readPointer(); //PSecBuffer  pBuffers (Pointer to array of secBuffers)
+            //https://docs.microsoft.com/en-us/windows/win32/api/sspi/ns-sspi-secbuffer
+            //One SecBuffer got 16 Bytes (unsigned long + unsigned long + pointer (64 Bit))
+            //--> Bytes to read: cBuffers + 16 Bytes
+            this.secBuffers = []; //Addresses of all secBuffers
+            for (let i = 0; i < this.cBuffers; i++) {
+                var secBuffer = this.pBuffers.add(i * 16);
+                this.secBuffers.push(secBuffer);
+            }
+            for (let i = 0; i < this.secBuffers.length; i++) {
+                var size = this.secBuffers[i].add(0).readULong();
+                var type = this.secBuffers[i].add(4).readULong();
+                var bufferPointer = this.secBuffers[i].add(8).readPointer();
+                if (type == 1) {
+                    var bytes = bufferPointer.readByteArray(size);
+                    var message = {};
+                    message["ss_family"] = "AF_INET";
+                    message["src_port"] = 443;
+                    message["src_addr"] = 222;
+                    message["dst_port"] = 444;
+                    message["dst_addr"] = 222;
+                    message["function"] = "EncryptMessage";
+                    message["contentType"] = "datalog";
+                    message["ssl_session_id"] = 10;
+                    send(message, bytes);
+                }
+            }
+        }
+    });
+}
+exports.execute = execute;
+},{"./shared":7}],10:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.execute = void 0;
+const shared_1 = require("./shared");
+const log_1 = require("./log");
+function execute(moduleName) {
+    var socket_library = "";
+    switch (Process.platform) {
+        case "linux":
+            socket_library = "libc";
+            break;
+        case "windows":
+            socket_library = "WS2_32.dll";
+            break;
+        case "darwin":
+            //TODO:Darwin implementation pending...
+            break;
+        default:
+            log_1.log(`Platform "${Process.platform} currently not supported!`);
+    }
+    var library_method_mapping = {};
+    library_method_mapping[`*${moduleName}*`] = ["wolfSSL_read", "wolfSSL_write", "wolfSSL_get_fd", "wolfSSL_get_session", "wolfSSL_connect", "wolfSSL_KeepArrays"];
+    //? Just in case darwin methods are different to linux and windows ones
+    if (socket_library === "libc" || socket_library === "WS2_32.dll") {
+        library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
+    }
+    else {
+        //TODO: Darwin implementation pending
+    }
+    var addresses = shared_1.readAddresses(library_method_mapping);
+    const wolfSSL_get_fd = new NativeFunction(addresses["wolfSSL_get_fd"], "int", ["pointer"]);
+    const wolfSSL_get_session = new NativeFunction(addresses["wolfSSL_get_session"], "pointer", ["pointer"]);
+    //const wolfSSL_SESSION_get_master_key = new NativeFunction(addresses["wolfSSL_SESSION_get_master_key"], "int", ["pointer", "pointer", "int"])
+    //const wolfSSL_get_client_random = new NativeFunction(addresses["wolfSSL_get_client_random"], "int", ["pointer", "pointer", "uint"])
+    const wolfSSL_KeepArrays = new NativeFunction(addresses["wolfSSL_KeepArrays"], "void", ["pointer"]);
+    /**
+       * Get the session_id of SSL object and return it as a hex string.
+       * @param {!NativePointer} ssl A pointer to an SSL object.
+       * @return {dict} A string representing the session_id of the SSL object's
+       *     SSL_SESSION. For example,
+       *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
+       */
+    function getSslSessionId(ssl) {
+        var session = wolfSSL_get_session(ssl);
+        if (session.isNull()) {
+            log_1.log("Session is null");
+            return 0;
+        }
+        var p = session.add(8);
+        var len = 32; // This comes from internals.h. It is untested!
+        var session_id = "";
+        for (var i = 0; i < len; i++) {
+            // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
+            // it to session_id.
+            session_id +=
+                ("0" + p.add(i).readU8().toString(16).toUpperCase()).substr(-2);
+        }
+        return session_id;
+    }
+    /**
+       * Get the masterKey of the current session and return it as a hex string.
+       * @param {!NativePointer} wolfSslPtr A pointer to an SSL object.
+       * @return {string} A string representing the masterKey of the SSL object's
+       *     current session. For example,
+       *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
+       */
+    /*function getMasterKey(wolfSslPtr: NativePointer) {
+        var session = wolfSSL_get_session(wolfSslPtr)
+        var nullPtr = ptr(0)
+        var masterKeySize = wolfSSL_SESSION_get_master_key(session, nullPtr, 0) as number
+        var buffer = Memory.alloc(masterKeySize)
+        wolfSSL_SESSION_get_master_key(session, buffer, masterKeySize)
 
-},{"./_global":41,"./_hide":43,"./_iterators":55,"./_wks":87,"./es6.array.iterator":92}]},{},[8])
-//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbIm5vZGVfbW9kdWxlcy9icm93c2VyLXBhY2svX3ByZWx1ZGUuanMiLCJhZ2VudC9ib3VuY3ljYXN0bGUudHMiLCJhZ2VudC9jb25zY3J5cHQudHMiLCJhZ2VudC9nbnV0bHMudHMiLCJhZ2VudC9sb2cudHMiLCJhZ2VudC9uc3MudHMiLCJhZ2VudC9vcGVuc3NsX2JvcmluZ3NzbC50cyIsImFnZW50L3NoYXJlZC50cyIsImFnZW50L3NzbF9sb2cudHMiLCJhZ2VudC93b2xmc3NsLnRzIiwibm9kZV9tb2R1bGVzL0BiYWJlbC9ydW50aW1lLWNvcmVqczIvY29yZS1qcy9hcnJheS9mcm9tLmpzIiwibm9kZV9tb2R1bGVzL0BiYWJlbC9ydW50aW1lLWNvcmVqczIvY29yZS1qcy9hcnJheS9pcy1hcnJheS5qcyIsIm5vZGVfbW9kdWxlcy9AYmFiZWwvcnVudGltZS1jb3JlanMyL2NvcmUtanMvZ2V0LWl0ZXJhdG9yLmpzIiwibm9kZV9tb2R1bGVzL0BiYWJlbC9ydW50aW1lLWNvcmVqczIvY29yZS1qcy9vYmplY3QvZGVmaW5lLXByb3BlcnR5LmpzIiwibm9kZV9tb2R1bGVzL0BiYWJlbC9ydW50aW1lLWNvcmVqczIvY29yZS1qcy9wYXJzZS1pbnQuanMiLCJub2RlX21vZHVsZXMvQGJhYmVsL3J1bnRpbWUtY29yZWpzMi9jb3JlLWpzL3N5bWJvbC5qcyIsIm5vZGVfbW9kdWxlcy9AYmFiZWwvcnVudGltZS1jb3JlanMyL2NvcmUtanMvc3ltYm9sL2l0ZXJhdG9yLmpzIiwibm9kZV9tb2R1bGVzL0BiYWJlbC9ydW50aW1lLWNvcmVqczIvaGVscGVycy9pbnRlcm9wUmVxdWlyZURlZmF1bHQuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L2ZuL2FycmF5L2Zyb20uanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L2ZuL2FycmF5L2lzLWFycmF5LmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9mbi9nZXQtaXRlcmF0b3IuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L2ZuL29iamVjdC9kZWZpbmUtcHJvcGVydHkuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L2ZuL3BhcnNlLWludC5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvZm4vc3ltYm9sL2luZGV4LmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9mbi9zeW1ib2wvaXRlcmF0b3IuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX2EtZnVuY3Rpb24uanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX2FkZC10by11bnNjb3BhYmxlcy5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9fYW4tb2JqZWN0LmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19hcnJheS1pbmNsdWRlcy5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9fY2xhc3NvZi5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9fY29mLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19jb3JlLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19jcmVhdGUtcHJvcGVydHkuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX2N0eC5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9fZGVmaW5lZC5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9fZGVzY3JpcHRvcnMuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX2RvbS1jcmVhdGUuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX2VudW0tYnVnLWtleXMuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX2VudW0ta2V5cy5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9fZXhwb3J0LmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19mYWlscy5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9fZ2xvYmFsLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19oYXMuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX2hpZGUuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX2h0bWwuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX2llOC1kb20tZGVmaW5lLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19pb2JqZWN0LmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19pcy1hcnJheS1pdGVyLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19pcy1hcnJheS5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9faXMtb2JqZWN0LmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19pdGVyLWNhbGwuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX2l0ZXItY3JlYXRlLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19pdGVyLWRlZmluZS5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9faXRlci1kZXRlY3QuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX2l0ZXItc3RlcC5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9faXRlcmF0b3JzLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19saWJyYXJ5LmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19tZXRhLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19vYmplY3QtY3JlYXRlLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19vYmplY3QtZHAuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX29iamVjdC1kcHMuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX29iamVjdC1nb3BkLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19vYmplY3QtZ29wbi1leHQuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX29iamVjdC1nb3BuLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19vYmplY3QtZ29wcy5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9fb2JqZWN0LWdwby5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9fb2JqZWN0LWtleXMtaW50ZXJuYWwuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX29iamVjdC1rZXlzLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19vYmplY3QtcGllLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19wYXJzZS1pbnQuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX3Byb3BlcnR5LWRlc2MuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX3JlZGVmaW5lLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19zZXQtdG8tc3RyaW5nLXRhZy5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9fc2hhcmVkLWtleS5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9fc2hhcmVkLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19zdHJpbmctYXQuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX3N0cmluZy10cmltLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL19zdHJpbmctd3MuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX3RvLWFic29sdXRlLWluZGV4LmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL190by1pbnRlZ2VyLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL190by1pb2JqZWN0LmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL190by1sZW5ndGguanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX3RvLW9iamVjdC5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9fdG8tcHJpbWl0aXZlLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL191aWQuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX3drcy1kZWZpbmUuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX3drcy1leHQuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvX3drcy5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9jb3JlLmdldC1pdGVyYXRvci1tZXRob2QuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvY29yZS5nZXQtaXRlcmF0b3IuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvZXM2LmFycmF5LmZyb20uanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvZXM2LmFycmF5LmlzLWFycmF5LmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL2VzNi5hcnJheS5pdGVyYXRvci5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9lczYub2JqZWN0LmRlZmluZS1wcm9wZXJ0eS5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9lczYub2JqZWN0LnRvLXN0cmluZy5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9lczYucGFyc2UtaW50LmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL2VzNi5zdHJpbmcuaXRlcmF0b3IuanMiLCJub2RlX21vZHVsZXMvY29yZS1qcy9saWJyYXJ5L21vZHVsZXMvZXM2LnN5bWJvbC5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy9lczcuc3ltYm9sLmFzeW5jLWl0ZXJhdG9yLmpzIiwibm9kZV9tb2R1bGVzL2NvcmUtanMvbGlicmFyeS9tb2R1bGVzL2VzNy5zeW1ib2wub2JzZXJ2YWJsZS5qcyIsIm5vZGVfbW9kdWxlcy9jb3JlLWpzL2xpYnJhcnkvbW9kdWxlcy93ZWIuZG9tLml0ZXJhYmxlLmpzIl0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiJBQUFBOzs7Ozs7Ozs7Ozs7QUNBQSxJQUFBLEtBQUEsR0FBQSxPQUFBLENBQUEsT0FBQSxDQUFBOztBQUNBLElBQUEsUUFBQSxHQUFBLE9BQUEsQ0FBQSxVQUFBLENBQUE7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O0FBQ0E7O0FDTEE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ3ZCQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDdkJBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNMQTtBQUNBO0FBQ0E7O0FDRkE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ1JBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNwQkE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ0xBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDSkE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNQQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ0pBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ2ZBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUM5REE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNQQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNOQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ0pBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNSQTtBQUNBO0FBQ0E7O0FDRkE7QUFDQTtBQUNBO0FBQ0E7O0FDSEE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDTkE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ1JBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNMQTtBQUNBO0FBQ0E7QUFDQTs7QUNIQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNaQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ2JBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ3JFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ3RCQTtBQUNBO0FBQ0E7QUFDQTs7QUNIQTtBQUNBOztBQ0RBO0FBQ0E7O0FDREE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ3JEQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDekNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDaEJBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDYkE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNoQkE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNuQkE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNQQTtBQUNBOztBQ0RBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDYkE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ2pCQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ1BBO0FBQ0E7O0FDREE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDVEE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ1JBO0FBQ0E7O0FDREE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNQQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDTEE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDWkE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ2pCQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUM5QkE7QUFDQTtBQUNBOztBQ0ZBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDUEE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDTkE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDTkE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDTkE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ0xBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ1pBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNMQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNUQTtBQUNBOztBQ0RBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNYQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDUkE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUNQQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ3JDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ0pBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDbENBO0FBQ0E7QUFDQTtBQUNBOztBQ0hBOztBQ0FBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FDSkE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQ2pCQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUN0UEE7QUFDQTs7QUNEQTtBQUNBOztBQ0RBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EiLCJmaWxlIjoiZ2VuZXJhdGVkLmpzIiwic291cmNlUm9vdCI6IiJ9
+        var masterKey = ""
+        for (var i = 0; i < masterKeySize; i++) {
+            // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
+            // it to message.
+
+            masterKey +=
+                ("0" + buffer.add(i).readU8().toString(16).toUpperCase()).substr(-2)
+        }
+        return masterKey;
+    }
+    */
+    /**
+       * Get the clientRandom of the current session and return it as a hex string.
+       * @param {!NativePointer} wolfSslPtr A pointer to an SSL object.
+       * @return {string} A string representing the clientRandom of the SSL object's
+       *     current session. For example,
+       *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
+       */
+    /*function getClientRandom(wolfSslPtr: NativePointer) {
+        var nullPtr = ptr(0)
+        var clientRandomSize = wolfSSL_get_client_random(wolfSslPtr, nullPtr, 0) as number
+        var buffer = Memory.alloc(clientRandomSize)
+        //console.log(wolfSSL_get_client_random(wolfSslPtr, buffer, clientRandomSize))
+
+        var clientRandom = ""
+        for (var i = 0; i < clientRandomSize; i++) {
+            // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
+            // it to message.
+
+            clientRandom +=
+                ("0" + buffer.add(i).readU8().toString(16).toUpperCase()).substr(-2)
+        }
+        return clientRandom;
+    }
+    */
+    Interceptor.attach(addresses["wolfSSL_read"], {
+        onEnter: function (args) {
+            var message = shared_1.getPortsAndAddresses(wolfSSL_get_fd(args[0]), true, addresses);
+            message["function"] = "wolfSSL_read";
+            this.message = message;
+            this.buf = args[1];
+        },
+        onLeave: function (retval) {
+            retval |= 0; // Cast retval to 32-bit integer.
+            if (retval <= 0) {
+                return;
+            }
+            this.message["contentType"] = "datalog";
+            send(this.message, this.buf.readByteArray(retval));
+        }
+    });
+    Interceptor.attach(addresses["wolfSSL_write"], {
+        onEnter: function (args) {
+            var message = shared_1.getPortsAndAddresses(wolfSSL_get_fd(args[0]), false, addresses);
+            message["ssl_session_id"] = getSslSessionId(args[0]);
+            message["function"] = "wolfSSL_write";
+            message["contentType"] = "datalog";
+            send(message, args[1].readByteArray(parseInt(args[2])));
+        },
+        onLeave: function (retval) {
+        }
+    });
+    Interceptor.attach(addresses["wolfSSL_connect"], {
+        onEnter: function (args) {
+            this.wolfSslPtr = args[0];
+            wolfSSL_KeepArrays(this.wolfSslPtr);
+        },
+        onLeave: function (retval) {
+            //var clientRandom = getClientRandom(this.wolfSslPtr)
+            //var masterKey = getMasterKey(this.wolfSslPtr)
+            var message = {};
+            message["contentType"] = "keylog";
+            //message["keylog"] = "CLIENT_RANDOM " + clientRandom + " " + masterKey
+            send(message);
+        }
+    });
+}
+exports.execute = execute;
+},{"./log":4,"./shared":7}]},{},[8])
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbIi4uLy4uLy4uLy4uL0FwcERhdGEvUm9hbWluZy9ucG0vbm9kZV9tb2R1bGVzL2ZyaWRhLWNvbXBpbGUvbm9kZV9tb2R1bGVzL2Jyb3dzZXItcGFjay9fcHJlbHVkZS5qcyIsImFnZW50L2JvdW5jeWNhc3RsZS50cyIsImFnZW50L2NvbnNjcnlwdC50cyIsImFnZW50L2dudXRscy50cyIsImFnZW50L2xvZy50cyIsImFnZW50L25zcy50cyIsImFnZW50L29wZW5zc2xfYm9yaW5nc3NsLnRzIiwiYWdlbnQvc2hhcmVkLnRzIiwiYWdlbnQvc3NsX2xvZy50cyIsImFnZW50L3NzcGkudHMiLCJhZ2VudC93b2xmc3NsLnRzIl0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiJBQUFBOzs7O0FDQUEsK0JBQTJCO0FBQzNCLHFDQUEwRztBQUMxRyxTQUFnQixPQUFPO0lBQ25CLElBQUksQ0FBQyxPQUFPLENBQUM7UUFFVCwwRkFBMEY7UUFDMUYsZ0VBQWdFO1FBQ2hFLElBQUksYUFBYSxHQUFHLElBQUksQ0FBQyxHQUFHLENBQUMsa0VBQWtFLENBQUMsQ0FBQTtRQUNoRyxhQUFhLENBQUMsS0FBSyxDQUFDLFFBQVEsQ0FBQyxJQUFJLEVBQUUsS0FBSyxFQUFFLEtBQUssQ0FBQyxDQUFDLGNBQWMsR0FBRyxVQUFVLEdBQVEsRUFBRSxNQUFXLEVBQUUsR0FBUTtZQUN2RyxJQUFJLE1BQU0sR0FBa0IsRUFBRSxDQUFDO1lBQy9CLEtBQUssSUFBSSxDQUFDLEdBQUcsQ0FBQyxFQUFFLENBQUMsR0FBRyxHQUFHLEVBQUUsRUFBRSxDQUFDLEVBQUU7Z0JBQzFCLE1BQU0sQ0FBQyxJQUFJLENBQUMsR0FBRyxDQUFDLENBQUMsQ0FBQyxHQUFHLElBQUksQ0FBQyxDQUFDO2FBQzlCO1lBQ0QsSUFBSSxPQUFPLEdBQTJCLEVBQUUsQ0FBQTtZQUN4QyxPQUFPLENBQUMsYUFBYSxDQUFDLEdBQUcsU0FBUyxDQUFBO1lBQ2xDLE9BQU8sQ0FBQyxVQUFVLENBQUMsR0FBRyxJQUFJLENBQUMs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

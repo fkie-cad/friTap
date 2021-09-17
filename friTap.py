@@ -264,7 +264,7 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
         device.resume(spawn.pid)
 
     def instrument(process):
-        process.enable_child_gating()
+        #process.enable_child_gating() Why?
         with open("_ssl_log.js") as f:
             script = process.create_script(f.read())
         script.on("message", on_message)
