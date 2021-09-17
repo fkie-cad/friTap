@@ -29,11 +29,12 @@ Further ensure that the frida-server is running on the Android device. More exam
 ## Supported SSL/TLS implementations
 
 The following implementations of SSL/TLS are currently supported as targets:
-- openssl
-- boringssl
-- nss
-- gnutls
-- wolfssl
+- openssl (Linux, Windows)
+- boringssl (Linux, Windows)
+- nss (Linux, Windows)
+- gnutls (Linux, Windows)
+- wolfssl (Linux, Windows)
+- mbedTLS (Linux)
 - Bouncycastle/Spongycastle
 - Android: Conscrypt installed via [ProviderInstaller](https://developer.android.com/training/articles/security-gms-provider#patching)
 
@@ -52,8 +53,7 @@ The following implementations of SSL/TLS are currently supported as targets:
 
 - [ ] add further Linux/Android Libraries (have a look at this [Wikipedia entry](https://en.wikipedia.org/wiki/Comparison_of_TLS_implementations)):
 
-- Botan
-- Mbed TLS 
+- Botan 
 - MatrixSSL
 - ...
 
