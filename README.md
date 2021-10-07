@@ -26,16 +26,25 @@ $ sudo python3 ./friTap.py -a --pcap mycapture.pcap com.example.app
 
 Further ensure that the frida-server is running on the Android device. More examples on using fritap can be found in the [USAGE.md](./USAGE.md).
 
-## Supported SSL/TLS implementations
+## Supported SSL/TLS implementations and corresponding logging capabilities
 
-The following implementations of SSL/TLS are currently supported as targets:
-- openssl
-- boringssl
-- nss
-- gnutls
-- wolfssl
-- Bouncycastle/Spongycastle
-- Android: Conscrypt installed via [ProviderInstaller](https://developer.android.com/training/articles/security-gms-provider#patching)
+```markdown
+| Library                   | Linux         | Windows       | MacOSX | Android | iOS |
+|---------------------------|---------------|---------------|--------|---------|-----|
+| OpenSSL                   |     Full      | R/W-Hook only |  TBI   |   TBA   | TBI |
+| BoringSSL                 |     Full      | R/W-Hook only |  TBI   |   TBA   | TBI |
+| NSS                       | R/W-Hook only | R/W-Hook only |  TBI   |   TBA   | TBI |
+| GnuTLS                    | R/W-Hook only | R/W-Hook only |  TBI   |   TBA   | TBI |
+| WolfSSL                   | R/W-Hook only | R/W-Hook only |  TBI   |   TBA   | TBI |
+| MbedTLS                   | R/W-Hook only | R/W-Hook only |  TBI   |   TBA   | TBI |
+| Bouncycastle/Spongycastle |               |               |        |   TBA   | TBI |
+| Conscrypt                 |               |               |        |   TBA   |     |
+```
+**R/W-Hook only** = Logging data sent and received by process<br>
+**Full** = Logging data send and received by process + Logging keys used for secure connection<br>
+**TBA** = To be answered<br>
+**TBI** = To be implemented<br>
+
 
 ## Dependencies
 
@@ -52,8 +61,7 @@ The following implementations of SSL/TLS are currently supported as targets:
 
 - [ ] add further Linux/Android Libraries (have a look at this [Wikipedia entry](https://en.wikipedia.org/wiki/Comparison_of_TLS_implementations)):
 
-- Botan
-- Mbed TLS 
+- Botan 
 - MatrixSSL
 - ...
 
