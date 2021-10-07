@@ -1,20 +1,13 @@
 import { readAddresses, getPortsAndAddresses, getSocketLibrary, getModuleNames } from "./shared"
 import { log } from "./log"
 
-/*
-SSL_ImportFD === SSL_NEW
-*/
+
 
 
 //GLOBALS
 const AF_INET = 2
 const AF_INET6 = 100
 
-// Exported for use in openssl_boringssl.ts
-export function getSSLLibrary(){
-    var moduleNames = getModuleNames();
-    //TODO: CONTINUE
-}
 
 export function execute(moduleName:string) {
 
@@ -34,16 +27,9 @@ export function execute(moduleName:string) {
 
     var addresses: { [key: string]: NativePointer } = readAddresses(library_method_mapping)
 
-    const SSL_get_fd = new NativeFunction(addresses["PR_FileDesc2NativeHandle"], "int", ["pointer"])
     const SET_NSS_ENV = new NativeFunction(addresses["PR_SetEnv"], "pointer", ["pointer"])
-    const SSL_SESSION_get_id = new NativeFunction(addresses["SSL_GetSessionID"], "pointer", ["pointer"])
-    //var SSL_CTX_set_keylog_callback = new NativeFunction(addresses["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"])
-    const getsockname = new NativeFunction(Module.getExportByName('libnspr4.so', 'PR_GetSockName'), "int", ["pointer", "pointer"]); //? Why libnspr4.so?
-    const getpeername = new NativeFunction(Module.getExportByName('libnspr4.so', 'PR_GetPeerName'), "int", ["pointer", "pointer"]);//? Why libnspr4.so?
-   
-    //Commented out for testing purposes on Linux
-    //const getsockname = new NativeFunction(addresses["PR_GetSockName"], "int", ["pointer", "pointer"]);
-    //const getpeername = new NativeFunction(addresses["PR_GetPeerName"], "int", ["pointer", "pointer"]);
+    
+    const getsockname = new NativeFunction(addresses["PR_GetSockName"], "int", ["pointer", "pointer"]);
 
 
 
@@ -56,44 +42,6 @@ export function execute(moduleName:string) {
 * @param {{ [key: string]: NativePointer}} methodAddresses Dictionary containing (at least) addresses for getpeername, getsockname, ntohs and ntohl
 * @return {{ [key: string]: string | number }} Dictionary of sockfd's "src_addr", "src_port", "dst_addr",
 *     and "dst_port".
-
-  PRStatus PR_GetPeerName(
-PRFileDesc *fd, 
-PRNetAddr *addr);
-
-PRStatus PR_GetSockName(
-PRFileDesc *fd, 
-PRNetAddr *addr);
-
-PRStatus PR_NetAddrToString(
-const PRNetAddr *addr, 
-char *string, 
-PRUint32 size);
-
-
-union PRNetAddr {
-struct {
-   PRUint16 family;
-   char data[14];
-} raw;
-struct {
-   PRUint16 family;
-   PRUint16 port;
-   PRUint32 ip;
-   char pad[8];
-} inet;
-#if defined(_PR_INET6)
-struct {
-   PRUint16 family;
-   PRUint16 port;
-   PRUint32 flowinfo;
-   PRIPv6Addr ip;
-} ipv6;
-#endif // defined(_PR_INET6) 
-};
-
-typedef union PRNetAddr PRNetAddr;
-
 */
     function getPortsAndAddressesFromNSS(sockfd: NativePointer, isRead: boolean, methodAddresses: { [key: string]: NativePointer }): { [key: string]: string | number } {
         var getpeername = new NativeFunction(methodAddresses["PR_GetPeerName"], "int", ["pointer", "pointer"])
@@ -102,8 +50,7 @@ typedef union PRNetAddr PRNetAddr;
         var ntohl = new NativeFunction(methodAddresses["ntohl"], "uint32", ["uint32"])
 
         var message: { [key: string]: string | number } = {}
-        var addrType = Memory.alloc(2) // PRUint16 is a 2 byte (16 bit) value on all plattforms
-
+       
 
         //var prNetAddr = Memory.alloc(Process.pointerSize)
         var addrlen = Memory.alloc(4)
@@ -152,36 +99,6 @@ typedef union PRNetAddr PRNetAddr;
        * @return {dict} A string representing the session_id of the SSL object's
        *     SSL_SESSION. For example,
        *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
-       *
-       * On NSS the return type of SSL_GetSessionID is a SECItem:
-            typedef enum {
-       * siBuffer = 0,
-       * siClearDataBuffer = 1,
-       * siCipherDataBuffer = 2,
-       * siDERCertBuffer = 3,
-       * siEncodedCertBuffer = 4,
-       * siDERNameBuffer = 5,
-       * siEncodedNameBuffer = 6,
-       * siAsciiNameString = 7,
-       * siAsciiString = 8,
-       * siDEROID = 9,
-       * siUnsignedInteger = 10,
-       * siUTCTime = 11,
-       * siGeneralizedTime = 12,
-       * siVisibleString = 13,
-       * siUTF8String = 14,
-       * siBMPString = 15
-       * } SECItemType;
-       * 
-       * typedef struct SECItemStr SECItem;
-       * 
-       * struct SECItemStr {
-       * SECItemType type;
-       * unsigned char *data;
-       * unsigned int len;
-       * };
-       * 
-       *
        */
     function getSslSessionId(sslSessionIdSECItem: NativePointer) {
         if (sslSessionIdSECItem == null) {
@@ -189,18 +106,11 @@ typedef union PRNetAddr PRNetAddr;
             return 0
         }
         var session_id = ""
-        /*var a = Memory.dup(sslSessionIdSECItem, 32)
-        log(hexdump(a))*/
-        //var type_field = sslSessionIdSECItem.readByteArray(1) // enum should be the same size as char => 1 byte
-        //session_id = sslSessionIdSECItem.add(1+Process.pointerSize).readPointer().readUtf8String() || "";
         var session_id_ptr = sslSessionIdSECItem.add(8).readPointer()
         var len_tmp = sslSessionIdSECItem.add(16).readU32()
         var len = (len_tmp > 32) ? 32 : len_tmp;
         var session_id = ""
-        var b = Memory.dup(sslSessionIdSECItem, 32)
-        /*log(hexdump(b))
-        log("lenght value")
-        log(len.toString());*/
+        
         for (var i = 8; i < len; i++) {
             // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
             // it to session_id.
@@ -226,21 +136,18 @@ typedef union PRNetAddr PRNetAddr;
                 }                    
                 
                 var addr = Memory.alloc(128);
-                var res = getpeername(this.fd, addr); //FIXME: Results in crash! Fix: More Memory: why? Fix: 128 Bytes for addr (libnspr4 needed 8 Bytes for that)
-                //!Der getpeername call gibt bei mir -1 zurück. Wenn ich mir die Daten unte in dem else ausgeben lasse, dann sehen die aber top aus!
-                console.log(res)
+               
 
                 if (addr.readU16() == 2 || addr.readU16() == 10 || addr.readU16() == 100) {
                     var message = getPortsAndAddressesFromNSS(this.fd as NativePointer, true, addresses)
-                    //console.log("Session ID: ", getSslSessionId(this.fd))
+                    
                     message["ssl_session_id"] = getSslSessionId(this.fd)
                     message["function"] = "NSS_read"
                     this.message = message
 
                     this.message["contentType"] = "datalog"
                     var data = this.buf.readByteArray((new Uint32Array([retval]))[0])
-                    //console.log(this.message)
-                    //send(this.message, data)
+                    send(this.message, data)
                 }else{
                     var temp = this.buf.readByteArray((new Uint32Array([retval]))[0])
                     console.log(temp)
@@ -263,13 +170,14 @@ typedef union PRNetAddr PRNetAddr;
                     send(message, args[1].readByteArray(parseInt(args[2])))
                 }
                 
-            },
-            onLeave: function (retval: any) {
             }
         })
+    
+ 
     Interceptor.attach(addresses["SSL_ImportFD"],
         {
             onEnter: function (args: any) {
+                //TODO: Keylogfile path must be set according to -k parameter
                 var keylog = Memory.allocUtf8String("SSLKEYLOGFILE=keylogfile")
                 SET_NSS_ENV(keylog)
             }

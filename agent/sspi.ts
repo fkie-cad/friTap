@@ -46,7 +46,7 @@ export function execute(moduleName:string) {
                 var type = this.secBuffers[i].add(4).readULong();
                 var bufferPointer = this.secBuffers[i].add(8).readPointer();
                 if (type == 1){
-                            
+                    //TODO: Obtain information from the running process       
                     var bytes = bufferPointer.readByteArray(size);
                     var message: { [key: string]: string | number } = {}
                     message["ss_family"] = "AF_INET"
@@ -87,6 +87,7 @@ export function execute(moduleName:string) {
                         var type = this.secBuffers[i].add(4).readULong();
                         var bufferPointer = this.secBuffers[i].add(8).readPointer();
                         if (type == 1){
+                            //TODO: Obtain information from the running process
                             var bytes = bufferPointer.readByteArray(size);
                             var message: { [key: string]: string | number } = {}
                             message["ss_family"] = "AF_INET"

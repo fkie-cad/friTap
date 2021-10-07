@@ -32,8 +32,6 @@ export function execute(moduleName: string) {
 
     const wolfSSL_get_fd = new NativeFunction(addresses["wolfSSL_get_fd"], "int", ["pointer"])
     const wolfSSL_get_session = new NativeFunction(addresses["wolfSSL_get_session"], "pointer", ["pointer"])
-    //const wolfSSL_SESSION_get_master_key = new NativeFunction(addresses["wolfSSL_SESSION_get_master_key"], "int", ["pointer", "pointer", "int"])
-    //const wolfSSL_get_client_random = new NativeFunction(addresses["wolfSSL_get_client_random"], "int", ["pointer", "pointer", "uint"])
     const wolfSSL_KeepArrays = new NativeFunction(addresses["wolfSSL_KeepArrays"], "void", ["pointer"])
 
     /**
@@ -62,57 +60,6 @@ export function execute(moduleName: string) {
         }
         return session_id
     }
-
-    /**
-       * Get the masterKey of the current session and return it as a hex string.
-       * @param {!NativePointer} wolfSslPtr A pointer to an SSL object.
-       * @return {string} A string representing the masterKey of the SSL object's
-       *     current session. For example,
-       *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
-       */
-    /*function getMasterKey(wolfSslPtr: NativePointer) {
-        var session = wolfSSL_get_session(wolfSslPtr)
-        var nullPtr = ptr(0)
-        var masterKeySize = wolfSSL_SESSION_get_master_key(session, nullPtr, 0) as number
-        var buffer = Memory.alloc(masterKeySize)
-        wolfSSL_SESSION_get_master_key(session, buffer, masterKeySize)
-
-        var masterKey = ""
-        for (var i = 0; i < masterKeySize; i++) {
-            // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
-            // it to message.
-
-            masterKey +=
-                ("0" + buffer.add(i).readU8().toString(16).toUpperCase()).substr(-2)
-        }
-        return masterKey;
-    }
-    */
-
-    /**
-       * Get the clientRandom of the current session and return it as a hex string.
-       * @param {!NativePointer} wolfSslPtr A pointer to an SSL object.
-       * @return {string} A string representing the clientRandom of the SSL object's
-       *     current session. For example,
-       *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
-       */
-    /*function getClientRandom(wolfSslPtr: NativePointer) {
-        var nullPtr = ptr(0)
-        var clientRandomSize = wolfSSL_get_client_random(wolfSslPtr, nullPtr, 0) as number
-        var buffer = Memory.alloc(clientRandomSize)
-        //console.log(wolfSSL_get_client_random(wolfSslPtr, buffer, clientRandomSize))
-
-        var clientRandom = ""
-        for (var i = 0; i < clientRandomSize; i++) {
-            // Read a byte, convert it to a hex string (0xAB ==> "AB"), and append
-            // it to message.
-
-            clientRandom +=
-                ("0" + buffer.add(i).readU8().toString(16).toUpperCase()).substr(-2)
-        }
-        return clientRandom;
-    }
-    */
 
     Interceptor.attach(addresses["wolfSSL_read"],
         {
@@ -146,25 +93,4 @@ export function execute(moduleName: string) {
             onLeave: function (retval: any) {
             }
         })
-
-
-    Interceptor.attach(addresses["wolfSSL_connect"],
-        {
-            onEnter: function (args: any) {
-
-                this.wolfSslPtr = args[0]
-                wolfSSL_KeepArrays(this.wolfSslPtr)
-            },
-            onLeave: function (retval: any) {
-                //var clientRandom = getClientRandom(this.wolfSslPtr)
-                //var masterKey = getMasterKey(this.wolfSslPtr)
-                var message: { [key: string]: any } = {}
-                message["contentType"] = "keylog"
-                //message["keylog"] = "CLIENT_RANDOM " + clientRandom + " " + masterKey
-                send(message)
-
-            }
-        })
-
-
 }

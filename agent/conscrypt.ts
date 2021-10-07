@@ -45,27 +45,7 @@ export function execute() {
             }
             return retval
         }
-        /*
-        //Do the same for second overload of javaClassLoader
-        var backupImplementation = javaClassLoader.loadClass.overload("java.lang.String", "boolean").implementation
-        //The classloader for ProviderInstallerImpl might not be present on startup, so we hook the loadClass method.  
-        javaClassLoader.loadClass.overload("java.lang.String", "boolean").implementation = function (className: string, resolve: boolean) {
-            if (className.endsWith("ProviderInstallerImpl")) {
-                log("Process is loading ProviderInstallerImpl (Method 2)")
-                var providerInstallerImpl = findProviderInstallerFromClassloaders(javaClassLoader, backupImplementation)
-                if (providerInstallerImpl === null) {
-                    log("ProviderInstallerImpl could not be found, although it has been loaded")
-                } else {
-                    providerInstallerImpl.insertProvider.implementation = function () {
-                        log("ProviderinstallerImpl redirection/blocking")
-
-                    }
-
-                }
-            }
-            return this.loadClass(className, resolve)
-        }
-        */
+        
         //Part two: Hook Providerinstaller
         try {
             var providerInstaller = Java.use("com.google.android.gms.security.ProviderInstaller")
