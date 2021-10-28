@@ -91,7 +91,7 @@ void string2hexString(char* input, mbedtls_ssl_context ssl)
 
     int outputCounter = 0;
 
-    for (int i = 0; i < ssl.private_session->private_id_len; i++)
+    for (int i = 0; i < 32; i++)
     {
         sprintf((char*)(output + outputCounter), "%02X", input[i]);
         outputCounter += 2;
@@ -109,7 +109,7 @@ int main(void)
     uint32_t flags;
     unsigned char buf[1024];
     const char* pers = "ssl_client1";
-
+    char* idcpy;
     mbedtls_entropy_context entropy;
     mbedtls_ctr_drbg_context ctr_drbg;
     mbedtls_ssl_context ssl;
@@ -253,6 +253,13 @@ int main(void)
     else
         mbedtls_printf(" ok\n");
         mbedtls_printf("Session ID Length: %d\n", ssl.private_session->private_id_len);
+        mbedtls_printf("Session in ID Length: %d\n", ssl.private_session_in->private_id_len);
+        mbedtls_printf("Session out ID Length: %d\n", ssl.private_session_out->private_id_len);
+        mbedtls_printf("Session ID Length: %d\n", ssl.private_session->private_id_len);
+        mbedtls_printf("Session ID Pointer: %p\n", ssl.private_session->private_id);
+        
+        mbedtls_printf("Session State: %d\n", ssl.private_state);
+        mbedtls_printf("Session Pointer: %p", ssl.private_session);
         
         
         
@@ -294,7 +301,7 @@ int main(void)
         {
             len = sizeof(buf) - 1;
             memset(buf, 0, sizeof(buf));
-            printf("Befor read");
+            printf("Before read");
             ret = mbedtls_ssl_read(&ssl, buf, len);
 
             printf("After read: %d\n", ret);

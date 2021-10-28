@@ -2,29 +2,26 @@ import { readAddresses, getPortsAndAddresses, getSocketLibrary, getModuleNames }
 
 
 var getSocketDescriptor = function (sslcontext: NativePointer){
-    console.log(`Pointersize: ${Process.pointerSize}`)
+    /* console.log(`Pointersize: ${Process.pointerSize}`)
     var bioOffset = Process.platform == 'windows' ? 48 : 56;//Documentation not valid (8 Bytes less)Process.pointerSize + 4 * 6 +  Process.pointerSize *3
     
                        //For linux it is valid
     var p_bio = sslcontext.add(bioOffset).readPointer()
     var bio_value = p_bio.readS32();
-    return bio_value
+    return bio_value */
+    var ssl_context= parse_mbedtls_ssl_context_struct(sslcontext)
+    console.log(ssl_context.p_bio.readS32())
+    return ssl_context.p_bio.readS32()
 }
 
 var getSessionId = function(sslcontext: NativePointer){
     
-    var offsetSession = Process.pointerSize * 7 + 4 +4 + 4+ +4 +4 + 4
-    var sessionPointer = sslcontext.add(offsetSession).readPointer();
-    var offsetSessionId = 8 + 4 + 4 +4 
-    var offsetSessionLength = 8 + 4 + 4
-    var idLength = sessionPointer.add(offsetSessionLength).readU32();
+    var ssl_context = parse_mbedtls_ssl_context_struct(sslcontext)
     
-    var idData = sessionPointer.add(offsetSessionId)
-    var session_id = ""
-    
-    for (var byteCounter = 0; byteCounter < idLength; byteCounter++){
+    var session_id = ''
+    for (var byteCounter = 0; byteCounter < ssl_context.session.id_len; byteCounter++){
         
-        session_id = `${session_id}${idData.add(byteCounter).readU8().toString(16).toUpperCase()}`
+        session_id = `${session_id}${ssl_context.session.id?.unwrap().add(byteCounter).readU8().toString(16).toUpperCase()}`
     }
 
     return session_id
@@ -33,7 +30,7 @@ var getSessionId = function(sslcontext: NativePointer){
 //TODO: Complete for full parsing
 function parse_mbedtls_ssl_context_struct(sslcontext: NativePointer) {
     return {
-        conf: sslcontext.readPonter(),
+        conf: sslcontext.readPointer(),
         state: sslcontext.add(Process.pointerSize).readS32(),
         renego_status: sslcontext.add(Process.pointerSize + 4).readS32(),
         renego_records_seen: sslcontext.add(Process.pointerSize + 4 + 4).readS32(),
@@ -43,7 +40,8 @@ function parse_mbedtls_ssl_context_struct(sslcontext: NativePointer) {
         f_send: sslcontext.add(Process.pointerSize + 4 + 4 + 4 +4 +4 + 4).readPointer(),
         f_recv: sslcontext.add(Process.pointerSize + 4 + 4 + 4 +4 +4 + 4 + Process.pointerSize).readPointer(),
         f_recv_timeout: sslcontext.add(Process.pointerSize + 4 + 4 + 4 +4 +4 + 4 + 2* Process.pointerSize).readPointer(),
-        p_bio: sslcontext.add(Process.pointerSize + 4 + 4 + 4 +4 +4 + 4 + 3 * Process.pointerSize).readPointer(),
+        p_bio: sslcontext.add(Process.platform == 'windows' ? 48 : 56).readPointer()
+        ,
         session_in: sslcontext.add(Process.pointerSize + 4 + 4 + 4 +4 + 4 + 4 + 4 * Process.pointerSize).readPointer(),
         session_out: sslcontext.add(Process.pointerSize + 4 + 4 + 4 +4 +4 + 4 + 5 * Process.pointerSize).readPointer(),
         session: {
