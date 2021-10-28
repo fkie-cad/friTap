@@ -65,7 +65,7 @@ int main(void)
 
 #include <string.h>
 
-#define SERVER_PORT "4433"
+#define SERVER_PORT "443"
 #define SERVER_NAME "localhost"
 #define GET_REQUEST "GET / HTTP/1.0\r\n\r\n"
 
@@ -306,7 +306,7 @@ int main(void)
 
             if (ret < 0)
             {
-                //mbedtls_printf("failed\n  ! mbedtls_ssl_read returned %d\n\n", ret);
+                mbedtls_printf("failed\n  ! mbedtls_ssl_read returned %d\n\n", ret);
                 break;
             }
 
