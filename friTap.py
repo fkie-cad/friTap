@@ -16,7 +16,7 @@ except ImportError:
     print("Unable to import hexdump module!")
     pass
 
-__author__ = "Max Ufer, Daniel Baier"
+__author__ = "Max Ufer, Daniel Baier, Francois Egner"
 __version__ = "1.0"
 
 # ssl_session[<SSL_SESSION id>] = (<bytes sent by client>,
@@ -28,9 +28,9 @@ filename = ""
 tmpdir = ""
 
 # Names of all supported read functions:
-SSL_READ = ["SSL_read", "wolfSSL_read", "readApplicationData", "NSS_read"]
+SSL_READ = ["SSL_read", "wolfSSL_read", "readApplicationData", "NSS_read", "PR_Read", "DecryptMessage", "gnutls_record_recv", "mbedtls_ssl_read"]
 # Names of all supported write functions:
-SSL_WRITE = ["SSL_write", "wolfSSL_write", "writeApplicationData", "NSS_write"]
+SSL_WRITE = ["SSL_write", "wolfSSL_write", "writeApplicationData", "NSS_write", "PR_write", "EncryptMessage", "gnutls_record_send", "mbedtls_ssl_write"]
 
 
 def write_pcap_header(pcap_file):
