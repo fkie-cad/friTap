@@ -34,7 +34,6 @@ if(Process.platform === "windows"){
         let regex = map[0]
         let func = map[1]
         for(let module of moduleNames){
-            //console.log(module + "vs" + map[0])
             if (regex.test(module)){
                 log(`${module} found & will be hooked on Windows!`)
                 func(module)
@@ -121,10 +120,21 @@ function hookLinuxDynamicLoader():void{
                 } else if (this.moduleName.endsWith("libwolfssl.so")) {
                     log("WolfSSL detected.")
                     wolf_execute("libwolfssl")
+                } else if (this.moduleName.endsWith("libgnutls.so")){
+                    log("GnuTLS detected.")
+                    gnutls_execute("libgnutls")
+
+                }else if (this.moduleName.endsWith("libmbedtls.so")){
+                    log("mbedTLS detected.")
+                    mbedtls_execute("mbedtls")
+                }else if (this.moduleName.indexOf("libnspr") != 0){
+                    log("NSS detected.")
+                        nss_execute(this.moduleName.replace(".so", ""))
                 }
             }
-
         }
+
+        
     })
 
     console.log(`[*] ${dlopen.indexOf("android") == -1 ? "Linux" : "Android"} dynamic loader hooked.`)
