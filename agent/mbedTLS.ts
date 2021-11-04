@@ -2,15 +2,7 @@ import { readAddresses, getPortsAndAddresses, getSocketLibrary, getModuleNames }
 
 
 var getSocketDescriptor = function (sslcontext: NativePointer){
-    /* console.log(`Pointersize: ${Process.pointerSize}`)
-    var bioOffset = Process.platform == 'windows' ? 48 : 56;//Documentation not valid (8 Bytes less)Process.pointerSize + 4 * 6 +  Process.pointerSize *3
-    
-                       //For linux it is valid
-    var p_bio = sslcontext.add(bioOffset).readPointer()
-    var bio_value = p_bio.readS32();
-    return bio_value */
     var ssl_context= parse_mbedtls_ssl_context_struct(sslcontext)
-    console.log(ssl_context.p_bio.readS32())
     return ssl_context.p_bio.readS32()
 }
 
@@ -51,7 +43,6 @@ function parse_mbedtls_ssl_context_struct(sslcontext: NativePointer) {
             id_len: sslcontext.add(24 + 7 * Process.pointerSize).readPointer().add(8+4+4).readU32(),
             id: sslcontext.add(24 + 7 * Process.pointerSize).readPointer().add(8+4+4+4).readByteArray(sslcontext.add(24 + 7 * Process.pointerSize).readPointer().add(8+4+4).readU32())
         }
-        //TODO: Complete parsing here
     }
 }
 
