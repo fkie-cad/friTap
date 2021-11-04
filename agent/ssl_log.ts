@@ -25,7 +25,7 @@ function hasRequiredFunctions(libName: string, expectedFuncName: string): boolea
 var moduleNames: Array<string> = getModuleNames()
 
 var module_library_mapping: { [key: string]: Array<[any, (moduleName: string)=>void]> } = {}
-module_library_mapping["windows"] = [[/libssl-[0-9]+(_[0-9]+)?\.dll/, boring_execute],[/.*wolfssl.*\.dll/, wolf_execute],[/.*libgnutls-[0-9]+\.dll/, gnutls_execute],[/nspr[0-9]*\.dll/,nss_execute], [/sspicli\.dll/i,sspi_execute]] 
+module_library_mapping["windows"] = [[/libssl-[0-9]+(_[0-9]+)?\.dll/, boring_execute],[/.*wolfssl.*\.dll/, wolf_execute],[/.*libgnutls-[0-9]+\.dll/, gnutls_execute],[/nspr[0-9]*\.dll/,nss_execute], [/sspicli\.dll/i,sspi_execute], [/mbedTLS\.dll/, mbedtls_execute]] 
 module_library_mapping["linux"] = [[/.*libssl\.so/, boring_execute],[/.*libgnutls\.so/, gnutls_execute],[/.*libwolfssl\.so/, wolf_execute],[/.*libnspr[0-9]?\.so/,nss_execute], [/libmbedtls\.so.*/, mbedtls_execute]]
 
 
@@ -114,22 +114,14 @@ function hookLinuxDynamicLoader():void{
         },
         onLeave: function (retval: any) {
             if (this.moduleName != undefined) {
-                if (this.moduleName.endsWith("libssl.so")) {
-                    log("OpenSSL/BoringSSL detected.")
-                    boring_execute("libssl")
-                } else if (this.moduleName.endsWith("libwolfssl.so")) {
-                    log("WolfSSL detected.")
-                    wolf_execute("libwolfssl")
-                } else if (this.moduleName.endsWith("libgnutls.so")){
-                    log("GnuTLS detected.")
-                    gnutls_execute("libgnutls")
-
-                }else if (this.moduleName.endsWith("libmbedtls.so")){
-                    log("mbedTLS detected.")
-                    mbedtls_execute("mbedtls")
-                }else if (this.moduleName.indexOf("libnspr") != 0){
-                    log("NSS detected.")
-                        nss_execute(this.moduleName.replace(".so", ""))
+                for(let map of module_library_mapping["linux"]){
+                    let regex = map[0]
+                    let func = map[1]
+                    if (regex.test(this.moduleName)){
+                        log(`${this.moduleName} was loaded & will be hooked on Linux!`)
+                        func(this.moduleName)
+                    } 
+                    
                 }
             }
         }
@@ -146,21 +138,24 @@ function hookWindowsDynamicLoader():void{
     
     if(loadLibraryExW.length == 0) return console.log("[!] Missing windows dynamic loader!")
 
-   
+
     Interceptor.attach(loadLibraryExW[0].address, {
         onLeave(retval: NativePointer){
                         
             let map = new ModuleMap();
             let moduleName = map.findName(retval)
-                        
             if(moduleName === null) return
 
-            if(moduleName.indexOf("libssl-1_1.dll") != -1){
-                log("OpenSSL/BoringSSL detected.")
-                boring_execute("libssl-1_1.dll");
+            for(let map of module_library_mapping["windows"]){
+                let regex = map[0]
+                let func = map[1]
+                
+                if (regex.test(moduleName)){
+                    log(`${moduleName} was loaded & will be hooked on Windows!`)
+                    func(moduleName)
+                } 
+                
             }
-                       
-            //TODO:More module comparisons
         }
     })
     console.log("[*] Windows dynamic loader hooked.")
