@@ -9,8 +9,9 @@ import { log } from "./log"
 
 
 //GLOBALS
-const AF_INET = 2
-const AF_INET6 = 10
+export const AF_INET = 2
+export const AF_INET6 = 10
+export const pointerSize = Process.pointerSize;
 
 //TODO: 
 export function getSocketLibrary(){
