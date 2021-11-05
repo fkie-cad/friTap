@@ -9,6 +9,7 @@ import os
 import socket
 import sys
 import tempfile
+import json
 
 try:
     import hexdump  # pylint: disable=g-import-not-at-top
@@ -16,13 +17,14 @@ except ImportError:
     print("Unable to import hexdump module!")
     pass
 
-__author__ = "Max Ufer, Daniel Baier"
+__author__ = "Max Ufer, Daniel Baier, Francois Egner"
 __version__ = "1.0"
 
 # ssl_session[<SSL_SESSION id>] = (<bytes sent by client>,
 #                                  <bytes sent by server>)
 ssl_sessions = {}
 keydump_Set = {*()}
+
 
 filename = ""
 tmpdir = ""
@@ -66,7 +68,7 @@ def temp_fifo():
         print(f'Failed to create FIFO: {e}')
 
 
-def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, android=False, live=False, environment=None):
+def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, android=False, live=False, environment_file=None, debug_output=False):
 
     def log_pcap(pcap_file, ss_family, ssl_session_id, function, src_addr, src_port,
                  dst_addr, dst_port, data):
@@ -209,6 +211,9 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
             return
         if p["contentType"] == "console":
             print("[*] " + p["console"])
+        if debug_output:
+            if p["contentType"] == "console_dev" and p["console_dev"]:
+                print("[***] " + p["console_dev"])    
         if verbose:
             if(p["contentType"] == "keylog"):
                 if p["keylog"] not in keydump_Set:
@@ -268,7 +273,6 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
         device.resume(spawn.pid)
 
     def instrument(process):
-        #process.enable_child_gating()
         with open("_ssl_log.js") as f:
             script = process.create_script(f.read())
         script.on("message", on_message)
@@ -289,8 +293,12 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
         if android:
             pid = device.spawn(app)
         else:
-            #pid = device.spawn(app.split(" "),env={"MOZ_LIBDIR": "/usr/lib/thunderbird",  "MOZ_APP_NAME": "thunderbird" ,  "EXE": "thunderbird" , "MOZ_APP_LAUNCHER": "/usr/bin/thunderbird" , "DICPATH": "$DICPATH:$MOZ_LIBDIR/dictionaries"}) #environment , "SSLKEYLOGFILE": "/tmp/thunderbird.txt"
-            pid = device.spawn("/usr/lib/thunderbird/thunderbird",env={"MOZ_LIBDIR": "/usr/lib/thunderbird",  "MOZ_APP_NAME": "thunderbird" ,  "EXE": "thunderbird" , "MOZ_APP_LAUNCHER": "/usr/bin/thunderbird" , "DICPATH": "$DICPATH:$MOZ_LIBDIR/dictionaries", "SSLKEYLOGFILE": "/tmp/thunderbird.txt"})
+            used_env = {}
+            if environment_file:
+                #used_env = json.loads(environment)
+                with open(environment_file) as json_env_file:
+                    used_env = json.load(json_env_file)
+            pid = device.spawn(app.split(" "),env=used_env)
             device.resume(pid)
             time.sleep(1) #Without it Java.perform silently fails
         process = device.attach(pid)
@@ -364,6 +372,8 @@ Examples:
     args = parser.add_argument_group("Arguments")
     args.add_argument("-a", "--android", required=False, action="store_const",
                       const=True, help="Attach to a process on android")
+    args.add_argument("-d", "--debug", required=False, action="store_const", const=True,
+                      help="Set the debug output of friTap")
     args.add_argument("-k", "--keylog", metavar="<path>", required=False,
                       help="Log the keys used for tls traffic")
     args.add_argument("-l", "--live", required=False, action="store_const", const=True,
@@ -372,8 +382,8 @@ Examples:
                       help="Name of PCAP file to write")
     args.add_argument("-s", "--spawn", required=False, action="store_const", const=True,
                       help="Spawn the executable/app instead of attaching to a running process")
-    args.add_argument("-env","--environment", required=False, action="store_const", const=True,
-                      help="Provide the environment necessary for spawning")
+    args.add_argument("-env","--environment", metavar="<env.json>", required=False,
+                      help="Provide the environment necessary for spawning as an JSON file. For instance: {\"ENV_VAR_NAME\": \"ENV_VAR_VALUE\" }")
     args.add_argument("-v", "--verbose", required=False, action="store_const",
                       const=True, help="Show verbose output")
     args.add_argument("--enable_spawn_gating", required=False, action="store_const", const=True,
@@ -385,7 +395,7 @@ Examples:
     try:
         print("Start logging")
         ssl_log(parsed.exec, parsed.pcap, parsed.verbose,
-                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.android, parsed.live, parsed.environment)
+                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.android, parsed.live, parsed.environment, parsed.debug)
     except Exception as ar:
         print(ar)
 

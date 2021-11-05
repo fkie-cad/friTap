@@ -1311,7 +1311,7 @@ function ssl_RecordKeyLog(sslSocketFD : NativePointer){
                     var data = this.buf.readByteArray((new Uint32Array([retval]))[0])
                 }else{
                     var temp = this.buf.readByteArray((new Uint32Array([retval]))[0])
-                    devlog(temp)
+                    devlog(JSON.stringify(temp))
                 }
                 
             }
