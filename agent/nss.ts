@@ -1,12 +1,12 @@
 import { readAddresses, getPortsAndAddresses, getSocketLibrary, getModuleNames, pointerSize, AF_INET, AF_INET6 } from "./shared"
-import { log } from "./log"
+import { log, devlog } from "./log"
 
 
 /**
  *  Current Todo:
  *  - Make code more readable
  *  - Fix SessionID-Problems
- *  - Fix issue that the hooks wont get applied when spawning thunderbird
+ *  - Fix issue that the hooks wont get applied when spawning thunderbird --> this is related how frida is spawning thunderbird ...
  *  - Fix PR_Read and PR_Write issue when the decrypted content is send via Pipes
  * 
  * 
@@ -681,6 +681,7 @@ typedef union PRNetAddr PRNetAddr;
                     message["ss_family"] = "AF_INET6"
                 }
             } else {
+                devlog("[-] PIPE descriptor error")
                 //FIXME: Sometimes addr.readU16() will be 0 when a PIPE Read oder Write gets interpcepted, thus this error will be thrown.
                 throw "Only supporting IPv4/6"
             }
@@ -742,28 +743,15 @@ function NSS_FindIdentityForName(pRFileDesc : NativePointer,layer_name : string)
     }
 
     if ( !higher_ptr.isNull() ) {
-        log('Have upper')
+        devlog('Have upper')
     }
 
 
     // when we reach this we have some sort of error 
-    console.log("[-] error while getting SSL layer");
+    devlog("[-] error while getting SSL layer");
     return NULL;
 
 }
-
-
-function log(str : string) {
-    var message: { [key: string]: string | number } = {}
-    message["contentType"] = "console";
-    message["console"] = str;
-    send(message);
-}
-
-
-
-
-
 
 
 
@@ -789,7 +777,7 @@ function getSSL_Layer(pRFileDesc : NativePointer) {
 
         var ssl_layer = getIdentitiesLayer(pRFileDesc, ssl_layer_id);
         if(ptr(ssl_layer.toString()).isNull()){
-            log("PR_BAD_DESCRIPTOR_ERROR: "+ssl_layer);
+            devlog("PR_BAD_DESCRIPTOR_ERROR: "+ssl_layer);
 
             return -1;
         }
@@ -888,54 +876,52 @@ function getSSL_Layer(pRFileDesc : NativePointer) {
     
 
     if(sslSessionIdSECItem == null || sslSessionIdSECItem.isNull()){
-        log("---- getSslSessionIdFromFD -----")
-        log("ERROR")
-        log("pRFileDescType: "+getDescType(pRFileDesc))
+        devlog("---- getSslSessionIdFromFD -----")
+        devlog("ERROR")
+        devlog("pRFileDescType: "+getDescType(pRFileDesc))
         if(fdType == 2){
             var c = Memory.dup(pRFileDesc, 32)
             //log(hexdump(c))
             var getLayersIdentity = new NativeFunction(Module.getExportByName('libnspr4.so', 'PR_GetLayersIdentity'), "uint32", ["pointer"])
             var getNameOfIdentityLayer = new NativeFunction(Module.getExportByName('libnspr4.so', 'PR_GetNameForIdentity'), "pointer", ["uint32"])
             var layerID = getLayersIdentity(pRFileDesc);
-            log("LayerID: "+layerID);
-            //log("PRFileDesc *lower dump:");
+            devlog("LayerID: "+layerID);
             var nameIDentity = getNameOfIdentityLayer(layerID)
-            log("name address: "+nameIDentity)
-            log("name: "+ptr(nameIDentity.toString()).readCString())
+            devlog("name address: "+nameIDentity)
+            devlog("name: "+ptr(nameIDentity.toString()).readCString())
 
 
             var sslSessionIdSECItem2 = ptr(getSSL_Layer(pRFileDesc).toString())
-            log("sslSessionIdSECItem2 ="+sslSessionIdSECItem2)
+            devlog("sslSessionIdSECItem2 ="+sslSessionIdSECItem2)
 
             if(sslSessionIdSECItem2.toString().startsWith("0x7f")){
                  var aa = Memory.dup(sslSessionIdSECItem2, 32)
                  //log(hexdump(aa))
 
                  var sslSessionIdSECItem3 = ptr(SSL_SESSION_get_id(sslSessionIdSECItem2).toString())
-                 log("sslSessionIdSECItem3 ="+sslSessionIdSECItem3)
+                 devlog("sslSessionIdSECItem3 ="+sslSessionIdSECItem3)
             }
 
             
             var sslSessionIdSECItem4 = ptr(SSL_SESSION_get_id(pRFileDesc).toString())
-            log("sslSessionIdSECItem4 ="+sslSessionIdSECItem4)
+            devlog("sslSessionIdSECItem4 ="+sslSessionIdSECItem4)
 
-            log("Using Dummy Session ID")
-            log("")
-            log("")
+            devlog("Using Dummy Session ID")
+            devlog("")
         }else if(fdType == 4){
             pRFileDesc = ptr(getSSL_Layer(pRFileDesc).toString())
             var sslSessionIdSECItem = ptr(SSL_SESSION_get_id(pRFileDesc).toString());
 
-            log("new sessionid_ITEM: "+sslSessionIdSECItem)
+            devlog("new sessionid_ITEM: "+sslSessionIdSECItem)
         }else{
-            log("---- SSL Session Analysis ------------");
+            devlog("---- SSL Session Analysis ------------");
             var c = Memory.dup(sslSessionIdSECItem, 32);
-            log(hexdump(c));
+            devlog(hexdump(c));
 
         }
         
-        log("---- getSslSessionIdFromFD finished -----");
-        log("");
+        devlog("---- getSslSessionIdFromFD finished -----");
+        devlog("");
         return dummySSL_SessionID;
         
     }
@@ -954,13 +940,13 @@ function getSSL_Layer(pRFileDesc : NativePointer) {
 function get_SSL_FD(pRFileDesc : NativePointer) : NativePointer{
     var ssl_layer = NSS_FindIdentityForName(pRFileDesc, 'SSL');
     if ( !ssl_layer) {
-        log("error: couldn't get SSL Layer from pRFileDesc");
+        devlog("error: couldn't get SSL Layer from pRFileDesc");
         return NULL;
     }
 
     var sslSocketFD = get_SSL_Socket(ssl_layer);
     if(!sslSocketFD){
-        log("error: couldn't get sslSocketFD");
+        devlog("error: couldn't get sslSocketFD");
         return NULL;
     }
 
@@ -1177,7 +1163,7 @@ function get_Keylog_Dump(type : string, client_random : string, key : string){
 function getTLS_Keys(pRFileDesc : NativePointer, dumping_handshake_secrets : number) {
     var message: { [key: string]: string | number } = {}
     message["contentType"] = "keylog";
-    console.log("[*] trying to log some keying materials ...");
+    devlog("[*] trying to log some keying materials ...");
 
     
     var sslSocketFD = get_SSL_FD(pRFileDesc);
@@ -1198,14 +1184,14 @@ function getTLS_Keys(pRFileDesc : NativePointer, dumping_handshake_secrets : num
     if(doTLS13_RTT0 == 1){
         //var early_exporter_secret = get_Secret_As_HexString(ssl3_struct.add(768).readPointer()); //EARLY_EXPORTER_SECRET
         var early_exporter_secret = get_Secret_As_HexString(ssl3.hs.earlyExporterSecret); //EARLY_EXPORTER_SECRET
-        log(get_Keylog_Dump("EARLY_EXPORTER_SECRET",client_random,early_exporter_secret));
+        devlog(get_Keylog_Dump("EARLY_EXPORTER_SECRET",client_random,early_exporter_secret));
         message["keylog"] = get_Keylog_Dump("EARLY_EXPORTER_SECRET",client_random,early_exporter_secret);
         send(message);
         doTLS13_RTT0 = -1;
     }
     
     if(dumping_handshake_secrets == 1){
-        log("[*] exporting TLS 1.3 handshake keying material");
+        devlog("[*] exporting TLS 1.3 handshake keying material");
         /*
          * Those keys are computed in the beginning of a handshake
          */
@@ -1213,13 +1199,13 @@ function getTLS_Keys(pRFileDesc : NativePointer, dumping_handshake_secrets : num
         var client_handshake_traffic_secret = get_Secret_As_HexString(ssl3.hs.clientHsTrafficSecret); //CLIENT_HANDSHAKE_TRAFFIC_SECRET
         
         //parse_struct_ssl3Str(ssl3_struct)
-        log(get_Keylog_Dump("CLIENT_HANDSHAKE_TRAFFIC_SECRET",client_random,client_handshake_traffic_secret));
+        devlog(get_Keylog_Dump("CLIENT_HANDSHAKE_TRAFFIC_SECRET",client_random,client_handshake_traffic_secret));
         message["keylog"] = get_Keylog_Dump("CLIENT_HANDSHAKE_TRAFFIC_SECRET",client_random,client_handshake_traffic_secret);
         send(message);
 
         //var server_handshake_traffic_secret = get_Secret_As_HexString(ssl3_struct.add(744).readPointer()); //SERVER_HANDSHAKE_TRAFFIC_SECRET
         var server_handshake_traffic_secret = get_Secret_As_HexString(ssl3.hs.serverHsTrafficSecret); //SERVER_HANDSHAKE_TRAFFIC_SECRET
-        log(get_Keylog_Dump("SERVER_HANDSHAKE_TRAFFIC_SECRET",client_random,server_handshake_traffic_secret));
+        devlog(get_Keylog_Dump("SERVER_HANDSHAKE_TRAFFIC_SECRET",client_random,server_handshake_traffic_secret));
 
         
         message["keylog"] = get_Keylog_Dump("SERVER_HANDSHAKE_TRAFFIC_SECRET",client_random,server_handshake_traffic_secret);
@@ -1227,10 +1213,10 @@ function getTLS_Keys(pRFileDesc : NativePointer, dumping_handshake_secrets : num
 
         return;
     }else if(dumping_handshake_secrets == 2){
-        log("[*] exporting TLS 1.3 RTT0 handshake keying material");
+        devlog("[*] exporting TLS 1.3 RTT0 handshake keying material");
         
         var client_early_traffic_secret = get_Secret_As_HexString(ssl3.hs.clientEarlyTrafficSecret); //CLIENT_EARLY_TRAFFIC_SECRET
-        log(get_Keylog_Dump("CLIENT_EARLY_TRAFFIC_SECRET",client_random,client_early_traffic_secret));
+        devlog(get_Keylog_Dump("CLIENT_EARLY_TRAFFIC_SECRET",client_random,client_early_traffic_secret));
         message["keylog"] = get_Keylog_Dump("CLIENT_EARLY_TRAFFIC_SECRET",client_random,client_early_traffic_secret);
         send(message);
         doTLS13_RTT0 = 1; // there is no callback for the EARLY_EXPORTER_SECRET
@@ -1243,30 +1229,30 @@ function getTLS_Keys(pRFileDesc : NativePointer, dumping_handshake_secrets : num
 
 
     if(is_TLS_1_3(ssl_version_internal_Code)){
-        log("[*] exporting TLS 1.3 keying material");
+        devlog("[*] exporting TLS 1.3 keying material");
         
         var client_traffic_secret = get_Secret_As_HexString(ssl3.hs.clientTrafficSecret); //CLIENT_TRAFFIC_SECRET_0
-        log(get_Keylog_Dump("CLIENT_TRAFFIC_SECRET_0",client_random,client_traffic_secret));
+        devlog(get_Keylog_Dump("CLIENT_TRAFFIC_SECRET_0",client_random,client_traffic_secret));
         message["keylog"] = get_Keylog_Dump("CLIENT_TRAFFIC_SECRET_0",client_random,client_traffic_secret);
         send(message);
 
 
         var server_traffic_secret = get_Secret_As_HexString(ssl3.hs.serverTrafficSecret); //SERVER_TRAFFIC_SECRET_0
-        log(get_Keylog_Dump("SERVER_TRAFFIC_SECRET_0",client_random,server_traffic_secret));
+        devlog(get_Keylog_Dump("SERVER_TRAFFIC_SECRET_0",client_random,server_traffic_secret));
         message["keylog"] = get_Keylog_Dump("SERVER_TRAFFIC_SECRET_0",client_random,server_traffic_secret);
         send(message);
 
         var exporter_secret = get_Secret_As_HexString(ssl3.hs.exporterSecret); //EXPORTER_SECRET 
-        log(get_Keylog_Dump("EXPORTER_SECRET",client_random,exporter_secret));
+        devlog(get_Keylog_Dump("EXPORTER_SECRET",client_random,exporter_secret));
         message["keylog"] = get_Keylog_Dump("EXPORTER_SECRET",client_random,exporter_secret);
         send(message);
 
        
     }else{
-        log("[*] exporting TLS 1.2 keying material");
+        devlog("[*] exporting TLS 1.2 keying material");
        
         var master_secret = getMasterSecret(ssl3);
-        log(get_Keylog_Dump("CLIENT_RANDOM",client_random,master_secret));
+        devlog(get_Keylog_Dump("CLIENT_RANDOM",client_random,master_secret));
         message["keylog"] = get_Keylog_Dump("CLIENT_RANDOM",client_random,master_secret);
         send(message);     
 
@@ -1311,12 +1297,12 @@ function ssl_RecordKeyLog(sslSocketFD : NativePointer){
                 
                 var addr = Memory.alloc(8);
                 var res = getpeername(this.fd, addr); 
-                //!Der getpeername call gibt bei mir -1 zurück. Wenn ich mir die Daten unte in dem else ausgeben lasse, dann sehen die aber top aus!
-                console.log(res)
+                // peername return -1 this is due to the fact that a PIPE descriptor is used to read from the SSL socket
+
 
                 if (addr.readU16() == 2 || addr.readU16() == 10 || addr.readU16() == 100) {
                     var message = getPortsAndAddressesFromNSS(this.fd as NativePointer, true, addresses)
-                    //console.log("Session ID: ", getSslSessionId(this.fd))
+                    devlog("Session ID: " + getSslSessionIdFromFD(this.fd))
                     message["ssl_session_id"] = getSslSessionIdFromFD(this.fd)
                     message["function"] = "NSS_read"
                     this.message = message
@@ -1325,7 +1311,7 @@ function ssl_RecordKeyLog(sslSocketFD : NativePointer){
                     var data = this.buf.readByteArray((new Uint32Array([retval]))[0])
                 }else{
                     var temp = this.buf.readByteArray((new Uint32Array([retval]))[0])
-                    console.log(temp)
+                    devlog(temp)
                 }
                 
             }
@@ -1422,7 +1408,7 @@ function parse_epoch_value_from_SSL_SetSecretCallback(sslSocketFD : NativePointe
         return;
         // we intercept this through the handshake_callback
     }else{
-        log("[+] secret_callback invocation: UNKNOWN");
+        devlog("[-] secret_callback invocation: UNKNOWN");
     }
 
 }
@@ -1458,7 +1444,7 @@ function parse_epoch_value_from_SSL_SetSecretCallback(sslSocketFD : NativePointe
     function register_secret_callback(pRFileDesc : NativePointer){
     var sslSocketFD = get_SSL_FD(pRFileDesc);
     if(sslSocketFD.isNull()){
-        log("[-] error while installing secret callback: unable get SSL socket descriptor");
+        devlog("[-] error while installing secret callback: unable get SSL socket descriptor");
         return;
     }
     var sslSocketStr = parse_struct_sslSocketStr(sslSocketFD);
@@ -1470,7 +1456,7 @@ function parse_epoch_value_from_SSL_SetSecretCallback(sslSocketFD : NativePointe
     }
     
     
-    log("[**] secret callback ("+secret_callback+") installed to address: " + sslSocketStr.secretCallback);
+    devlog("[**] secret callback ("+secret_callback+") installed to address: " + sslSocketStr.secretCallback);
     
     
     }
@@ -1484,7 +1470,7 @@ function parse_epoch_value_from_SSL_SetSecretCallback(sslSocketFD : NativePointe
             onLeave(retval : any) { 
                 
                 if(retval.isNull()){
-                    log("unknow null")
+                    devlog("[-] SSL_ImportFD error: unknow null")
                     return
                 }
 
@@ -1495,13 +1481,13 @@ function parse_epoch_value_from_SSL_SetSecretCallback(sslSocketFD : NativePointe
             
                 // typedef enum { PR_FAILURE = -1, PR_SUCCESS = 0 } PRStatus;
                 if(retValue < 0){
-                    log("Callback Error")
+                    devlog("Callback Error")
                     var getErrorText = new NativeFunction(Module.getExportByName('libnspr4.so', 'PR_GetErrorText'), "int", ["pointer"])
                     var outbuffer = Memory.alloc(200); // max out size
                     getErrorText(outbuffer)
-                    log("Error msg: "+ outbuffer)
+                    devlog("Error msg: "+ outbuffer)
                 }else{
-                    log("[*] keylog callback successfull installed")
+                    devlog("[*] keylog callback successfull installed")
                 }
 
             }
@@ -1529,7 +1515,7 @@ function parse_epoch_value_from_SSL_SetSecretCallback(sslSocketFD : NativePointe
                 {
                     onEnter(args : any) {
                         var sslSocketFD = args[0];
-                        log("[*] keylog callback successfull installed via applications callback function");
+                        devlog("[*] keylog callback successfull installed via applications callback function");
                         ssl_RecordKeyLog(sslSocketFD);
                     },
                     onLeave(retval : any) { 

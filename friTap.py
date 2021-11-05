@@ -22,7 +22,7 @@ __version__ = "1.0"
 # ssl_session[<SSL_SESSION id>] = (<bytes sent by client>,
 #                                  <bytes sent by server>)
 ssl_sessions = {}
-
+keydump_Set = {*()}
 
 filename = ""
 tmpdir = ""
@@ -211,7 +211,9 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
             print("[*] " + p["console"])
         if verbose:
             if(p["contentType"] == "keylog"):
-                print(p["keylog"])
+                if p["keylog"] not in keydump_Set:
+                    print(p["keylog"])
+                    keydump_Set.add(p["keylog"])
             elif not data or len(data) == 0:
                 return
             else:
@@ -249,8 +251,10 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
                 cleanup(live)
 
         if keylog and p["contentType"] == "keylog":
-            keylog_file.write(p["keylog"] + "\n")
-            keylog_file.flush()
+            if p["keylog"] not in keydump_Set:
+                keylog_file.write(p["keylog"] + "\n")
+                keylog_file.flush()
+                keydump_Set.add(p["keylog"])
 
     def on_child_added(child):
         print(f"[*] Attached to child process with pid {child.pid}")
@@ -264,7 +268,7 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
         device.resume(spawn.pid)
 
     def instrument(process):
-        process.enable_child_gating()
+        #process.enable_child_gating()
         with open("_ssl_log.js") as f:
             script = process.create_script(f.read())
         script.on("message", on_message)
@@ -285,7 +289,10 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
         if android:
             pid = device.spawn(app)
         else:
-            pid = device.spawn(app.split(" "),env={"MOZ_LIBDIR": "/usr/lib/thunderbird",  "MOZ_APP_NAME": "thunderbird" ,  "EXE": "thunderbird" , "MOZ_APP_LAUNCHER": "/usr/bin/thunderbird" , "DICPATH": "$DICPATH:$MOZ_LIBDIR/dictionaries", "SSLKEYLOGFILE": "/tmp/thunderbird.txt"}) #environment
+            #pid = device.spawn(app.split(" "),env={"MOZ_LIBDIR": "/usr/lib/thunderbird",  "MOZ_APP_NAME": "thunderbird" ,  "EXE": "thunderbird" , "MOZ_APP_LAUNCHER": "/usr/bin/thunderbird" , "DICPATH": "$DICPATH:$MOZ_LIBDIR/dictionaries"}) #environment , "SSLKEYLOGFILE": "/tmp/thunderbird.txt"
+            pid = device.spawn("/usr/lib/thunderbird/thunderbird",env={"MOZ_LIBDIR": "/usr/lib/thunderbird",  "MOZ_APP_NAME": "thunderbird" ,  "EXE": "thunderbird" , "MOZ_APP_LAUNCHER": "/usr/bin/thunderbird" , "DICPATH": "$DICPATH:$MOZ_LIBDIR/dictionaries", "SSLKEYLOGFILE": "/tmp/thunderbird.txt"})
+            device.resume(pid)
+            time.sleep(1) #Without it Java.perform silently fails
         process = device.attach(pid)
     else:
         process = device.attach(int(app) if app.isnumeric() else app)
@@ -318,8 +325,8 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
     if keylog:
         print(f'[*] Logging keylog file to {keylog}')
 
-    if spawn:
-        device.resume(pid)
+    #if spawn:
+    #    device.resume(pid)
     try:
         sys.stdin.read()
     except KeyboardInterrupt:

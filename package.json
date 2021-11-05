@@ -12,8 +12,7 @@
     "devDependencies": {
         "@types/frida-gum": "^16.0.0",
         "@types/node": "^14.17.10",
-        "frida-compile": "^10.2.4",
-        "source-map": "^0.5.7"
+        "frida-compile": "^10.2.4"
     },
     "dependencies": {
         "util": "^0.12.4"
