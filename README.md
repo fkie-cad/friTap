@@ -1,6 +1,6 @@
 # friTap
 
-![](assets/logo.png)
+<img src="assets/logo.png" width="200">
 
 
 
@@ -76,3 +76,12 @@ Further ensure that the frida-server is running on the Android device. More exam
 
 
 
+___
+
+## Support
+
+If you have any suggestions, or bug reports, please create an issue in the Issue Tracker.
+
+In case you have any questions or other problems, feel free to send an email to:
+
+[daniel.baier@fkie.fraunhofer.de](mailto:daniel.baier@fkie.fraunhofer.de).
