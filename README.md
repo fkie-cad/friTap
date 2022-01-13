@@ -62,16 +62,14 @@ Further ensure that the frida-server is running on the Android device. More exam
 
 - [ ] add further Libraries (have a look at this [Wikipedia entry](https://en.wikipedia.org/wiki/Comparison_of_TLS_implementations)):
 
-- Botan 
-- MatrixSSL
-- ...
+  - Botan 
+  - MatrixSSL
+  - ...
 
-- Working with static linked libraries
-- Add feature to prototype TLS-Read/Write/SSLKEY functions
+- [ ] Working with static linked libraries
+- [ ] Add feature to prototype TLS-Read/Write/SSLKEY functions
 
 - [ ] add iOS support (currently under development)
-
-- [ ] Google traffic analysis
 
 
 ## Contribute
