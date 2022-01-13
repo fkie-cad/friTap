@@ -1,0 +1,62 @@
+apply plugin: 'com.android.application'
+apply plugin: 'kotlin-android'
+apply plugin: 'kotlin-android-extensions'
+
+android {
+    compileSdkVersion 30
+    buildToolsVersion "30.0.0"
+
+    defaultConfig {
+        applicationId "com.example.sslplayground"
+        minSdkVersion 21
+        targetSdkVersion 30
+        versionCode 1
+        versionName "1.0"
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        ndk {
+            abiFilters "armeabi-v7a", "arm64-v8a", "x86", "x86_64"
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+    externalNativeBuild {
+        cmake {
+            path file('CMakeLists.txt')
+        }
+    }
+
+    sourceSets {
+        // wolfSSL JNI Java source files are added here
+        main.java.srcDirs += '../wolfssljni/src/java'
+    }
+    ndkVersion '21.3.6528147'
+
+}
+
+
+
+dependencies {
+    implementation fileTree(dir: "libs", include: ["*.jar"])
+    implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlin_version"
+    implementation 'androidx.core:core-ktx:1.1.0'
+    implementation 'androidx.appcompat:appcompat:1.1.0'
+    implementation 'androidx.constraintlayout:constraintlayout:1.1.3'
+    //testImplementation 'junit:junit:4.12'
+    //androidTestImplementation 'androidx.test.ext:junit:1.1.1'
+    //androidTestImplementation 'androidx.test.espresso:espresso-core:3.2.0'
+    implementation "androidx.lifecycle:lifecycle-viewmodel-ktx:2.2.0"
+    //testImplementation 'org.junit.jupiter:junit-jupiter-api:5.3.1'
+    //testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.3.1'
+    implementation 'com.madgag.spongycastle:core:1.58.0.0'
+    implementation 'com.madgag.spongycastle:prov:1.58.0.0'
+    //implementation 'com.madgag.spongycastle:pkix:1.54.0.0'
+    implementation 'com.madgag.spongycastle:bctls-jdk15on:1.58.0.0'
+    implementation 'com.madgag.spongycastle:pg:1.54.0.0'
+    implementation 'com.google.android.gms:play-services-safetynet:17.0.0'
+}
