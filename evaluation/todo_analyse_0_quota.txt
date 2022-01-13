@@ -1,4 +1,0 @@
-cn.danatech.xingseus.apk: Total: 17, decrypted: 0, Quota: 0%
-com.calendar.wom.apk: Total: 3, decrypted: 0, Quota: 0%
-com.kocogames.wartroops1917: Total: 9, decrypted: 0, Quota: 0%
-com.textmeinc.textme: Total: 20, decrypted: 0, Quota: 0%

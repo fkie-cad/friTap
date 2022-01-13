@@ -1,10 +1,10 @@
 # friTap
 
-![](/home/daniel/research/projects/fritap/logo.png)
+![](assets/logo.png)
 
 
 
-The goal of this project is to help researchers to analyze traffic encapsulated in SSL or TLS. For details have a view into the [slides](./friTap.pdf).
+The goal of this project is to help researchers to analyze traffic encapsulated in SSL or TLS. For details have a view into the [slides](assets/friTap.pdf).
 
 This project was inspired by [SSL_Logger](https://github.com/google/ssl_logger ) and ccurrently supports all major operating systems (Linux, Windows, Android). More platforms will be added in future releases.
 
@@ -60,7 +60,7 @@ Further ensure that the frida-server is running on the Android device. More exam
 
 - [ ] add wine support
 
-- [ ] add further Linux/Android Libraries (have a look at this [Wikipedia entry](https://en.wikipedia.org/wiki/Comparison_of_TLS_implementations)):
+- [ ] add further Libraries (have a look at this [Wikipedia entry](https://en.wikipedia.org/wiki/Comparison_of_TLS_implementations)):
 
 - Botan 
 - MatrixSSL
