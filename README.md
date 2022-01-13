@@ -6,7 +6,7 @@
 
 The goal of this project is to help researchers to analyze traffic encapsulated in SSL or TLS. For details have a view into the [slides](./friTap.pdf).
 
-This project was inspired by [SSL_Logger](https://github.com/google/ssl_logger ) and currently supports Android and Linux as well. More platforms will be added in future releases.
+This project was inspired by [SSL_Logger](https://github.com/google/ssl_logger ) and ccurrently supports all major operating systems (Linux, Windows, Android). More platforms will be added in future releases.
 
 ## Usage
 
@@ -29,18 +29,19 @@ Further ensure that the frida-server is running on the Android device. More exam
 ## Supported SSL/TLS implementations and corresponding logging capabilities
 
 ```markdown
-| Library                   | Linux         | Windows       | MacOSX | Android | iOS |
-|---------------------------|---------------|---------------|--------|---------|-----|
-| OpenSSL                   |     Full      | R/W-Hook only |  TBI   |   TBA   | TBI |
-| BoringSSL                 |     Full      | R/W-Hook only |  TBI   |   TBA   | TBI |
-| NSS                       | R/W-Hook only | R/W-Hook only |  TBI   |   TBA   | TBI |
-| GnuTLS                    | R/W-Hook only | R/W-Hook only |  TBI   |   TBA   | TBI |
-| WolfSSL                   | R/W-Hook only | R/W-Hook only |  TBI   |   TBA   | TBI |
-| MbedTLS                   | R/W-Hook only | R/W-Hook only |  TBI   |   TBA   | TBI |
-| Bouncycastle/Spongycastle |               |               |        |   TBA   | TBI |
-| Conscrypt                 |               |               |        |   TBA   |     |
+| Library                   | Linux         | Windows       | MacOSX | Android  | iOS                 |
+|---------------------------|---------------|---------------|--------|----------|---------------------|
+| OpenSSL                   |     Full      | R/W-Hook only |  TBI   |   Full   | TBI                 |
+| BoringSSL                 |     Full      | R/W-Hook only |  TBI   |   Full   | Key extraction only |
+| NSS                       | R/W-Hook only | R/W-Hook only |  TBI   |   TBA    | TBI                 |
+| GnuTLS                    | R/W-Hook only | R/W-Hook only |  TBI   |   Full   | TBI                 |
+| WolfSSL                   | R/W-Hook only | R/W-Hook only |  TBI   |   Full   | TBI                 |
+| MbedTLS                   | R/W-Hook only | R/W-Hook only |  TBI   |   Full   | TBI                 |
+| Bouncycastle/Spongycastle |               |               |        |   Full   | TBI                 |
+| Conscrypt                 |               |               |        |   Full   |                     |
 ```
 **R/W-Hook only** = Logging data sent and received by process<br>
+**Key extraction only** = Only the keying material can be extracted<br>
 **Full** = Logging data send and received by process + Logging keys used for secure connection<br>
 **TBA** = To be answered<br>
 **TBI** = To be implemented<br>
@@ -68,7 +69,10 @@ Further ensure that the frida-server is running on the Android device. More exam
 - Working with static linked libraries
 - Add feature to prototype TLS-Read/Write/SSLKEY functions
 
-- [ ] add iOS support
+- [ ] add iOS support (currently under development)
 
 - [ ] Google traffic analysis
+
+
+
 
