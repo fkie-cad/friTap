@@ -24,7 +24,7 @@ For Android we just have to add the -a parameter to indicate that we are now att
 $ sudo python3 ./friTap.py -a --pcap mycapture.pcap com.example.app
 ```
 
-Further ensure that the frida-server is running on the Android device. More examples on using fritap can be found in the [USAGE.md](./USAGE.md).
+Further ensure that the frida-server is running on the Android device. More examples on using friTap can be found in the [USAGE.md](./USAGE.md).
 
 ## Supported SSL/TLS implementations and corresponding logging capabilities
 
