@@ -74,8 +74,8 @@ Further ensure that the frida-server is running on the Android device. More exam
 - [ ] Google traffic analysis
 
 
-
-
+## Contribute
+Contributions are always welcome. Just fork it and open a pull request!
 ___
 
 ## Support
