@@ -1,6 +1,12 @@
 import { readAddresses, getPortsAndAddresses } from "./shared"
 import { log } from "./log"
 
+/**
+ * 
+ * ToDO
+ *  We need to find a way to calculate the offsets in a automated manner
+ */
+
 export function execute(moduleName:string) {
     
     var socket_library:string =""
@@ -12,31 +18,43 @@ export function execute(moduleName:string) {
             socket_library = "WS2_32.dll"
             break
         case "darwin":
-            //TODO:Darwin implementation pending...
+            socket_library = "libSystem.B.dylib"
             break;
         default:
             log(`Platform "${Process.platform} currently not supported!`)
     }
     
     var library_method_mapping: { [key: string]: Array<String> } = {}
-    library_method_mapping[`*${moduleName}*`] = ["SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_keylog_callback", "SSL_get_SSL_CTX"]
-    
-    //? Just in case darwin methods are different to linux and windows ones
-    if(socket_library === "libc" || socket_library === "WS2_32.dll"){
-        library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
+    if(ObjC.available){
+        // the follwoing functions are avaible SSL_read SSL_write SSL_new SSL_get_session SSL_SESSION_get_id SSL_SESSION_get_id
+
+        /*
+        dont now what these functions are doingß
+        BIO_write/read, boringssl_session_read/write BIO_get_fd
+
+         */
+
+        library_method_mapping[`*${moduleName}*`] = ["SSL_read", "SSL_write", "BIO_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_info_callback"]
     }else{
-        //TODO: Darwin implementation pending
+        library_method_mapping[`*${moduleName}*`] = ["SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_keylog_callback"]
     }
+    
+    
+    // the socket methods are in all systems the same
+    library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
+    
     
 
 
 
     var addresses: { [key: string]: NativePointer } = readAddresses(library_method_mapping)
 
-    const SSL_get_fd = new NativeFunction(addresses["SSL_get_fd"], "int", ["pointer"])
+    
+    const SSL_get_fd = ObjC.available ? new NativeFunction(addresses["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(addresses["SSL_get_fd"], "int", ["pointer"])
     const SSL_get_session = new NativeFunction(addresses["SSL_get_session"], "pointer", ["pointer"])
     const SSL_SESSION_get_id = new NativeFunction(addresses["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"])
-    const SSL_CTX_set_keylog_callback = new NativeFunction(addresses["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"])
+    
+    const SSL_CTX_set_keylog_callback = ObjC.available ? new NativeFunction(addresses["SSL_CTX_set_info_callback"], "void", ["pointer", "pointer"]) : new NativeFunction(addresses["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"])
 
     const keylog_callback = new NativeCallback(function (ctxPtr, linePtr: NativePointer) {
         var message: { [key: string]: string | number | null } = {}
@@ -78,6 +96,8 @@ export function execute(moduleName:string) {
             onEnter: function (args: any) {
                 var message = getPortsAndAddresses(SSL_get_fd(args[0]) as number, true, addresses)
                 message["ssl_session_id"] = getSslSessionId(args[0])
+                /* var my_Bio = args[0] as NativePointer
+                my_Bio.readPointer*/
                 message["function"] = "SSL_read"
                 this.message = message
                 this.buf = args[1]
@@ -104,10 +124,30 @@ export function execute(moduleName:string) {
             }
         })
 
+        if (ObjC.available) { // inspired from https://codeshare.frida.re/@andydavies/ios-tls-keylogger/
+            var CALLBACK_OFFSET = 0x2A8;
+
+            var foundationNumber = Module.findExportByName('CoreFoundation', 'kCFCoreFoundationVersionNumber')?.readDouble();
+            if(foundationNumber == undefined){
+                CALLBACK_OFFSET = 0x2A8;
+            }else if (foundationNumber >= 1751.108) {
+                CALLBACK_OFFSET = 0x2B8; // >= iOS 14.x 
+            }
+            Interceptor.attach(addresses["SSL_CTX_set_info_callback"], {
+              onEnter: function (args : any) {
+                console.log("found boringSSL");
+                ptr(args[0]).add(CALLBACK_OFFSET).writePointer(keylog_callback);
+              }
+            });
+          
+          }
+
     Interceptor.attach(addresses["SSL_new"],
         {
             onEnter: function (args: any) {
-                SSL_CTX_set_keylog_callback(args[0], keylog_callback)
+                if(!ObjC.available){
+                    SSL_CTX_set_keylog_callback(args[0], keylog_callback)
+                }
             }
 
         })

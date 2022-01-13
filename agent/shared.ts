@@ -23,8 +23,8 @@ export function getSocketLibrary(){
         case "windows":
             return "WS2_32.dll"
         case "darwin":
-            return ""
-            //TODO:Darwin implementation pending...
+            return "libSystem.B.dylib"
+            //TODO: improve it with regular expressions. libboringssl.dylib
             break;
         default:
             log(`Platform "${Process.platform} currently not supported!`)

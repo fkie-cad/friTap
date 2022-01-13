@@ -27,6 +27,7 @@ var moduleNames: Array<string> = getModuleNames()
 var module_library_mapping: { [key: string]: Array<[any, (moduleName: string)=>void]> } = {}
 module_library_mapping["windows"] = [[/libssl-[0-9]+(_[0-9]+)?\.dll/, boring_execute],[/.*wolfssl.*\.dll/, wolf_execute],[/.*libgnutls-[0-9]+\.dll/, gnutls_execute],[/nspr[0-9]*\.dll/,nss_execute], [/sspicli\.dll/i,sspi_execute], [/mbedTLS\.dll/, mbedtls_execute]] 
 module_library_mapping["linux"] = [[/.*libssl\.so/, boring_execute],[/.*libgnutls\.so/, gnutls_execute],[/.*libwolfssl\.so/, wolf_execute],[/.*libnspr[0-9]?\.so/,nss_execute], [/libmbedtls\.so.*/, mbedtls_execute]]
+module_library_mapping["darwin"] = [[/.*libboringssl\.dylib/, boring_execute]]
 
 
 if(Process.platform === "windows"){
@@ -50,6 +51,19 @@ if(Process.platform === "linux"){
         for(let module of moduleNames){
             if (regex.test(module)){
                 log(`${module} found & will be hooked on Linux!`)
+                func(module)
+            } 
+        }
+    }
+}
+
+if(Process.platform === "darwin"){
+    for(let map of module_library_mapping["darwin"]){
+        let regex = map[0]
+        let func = map[1]
+        for(let module of moduleNames){
+            if (regex.test(module)){
+                log(`${module} found & will be hooked on Darwin!`)
                 func(module)
             } 
         }

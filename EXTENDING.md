@@ -50,7 +50,28 @@ Interceptor.attach(Module.getExportByName('libnspr4.so', 'PR_Read'), {
 ```
 
 
-Another possiblites is to use frida-trace or a debugger of our choice.
+Another possibility is to use frida-trace or a debugger of our choice.
+
+## Looking for SSL objects in a process
+
+Sometimes when adding a new library or a library to an new platform it might help to have a look for certain functions names in all modules loaded from the process we are analyzing. In those cases the following snipped might help:
+
+```javascript
+modules = Process.enumerateModules()
+for(let i=0; i < modules.length; i++){
+  ssl_object = JSON.stringify(Process.getModuleByName(modules[i].name).enumerateExports().filter(exports => exports.name.toLowerCase().includes("ssl")));
+  if(ssl_object.length > 2){
+    console.log(modules[i].name + " :\n" + ssl_object+ "\n");
+  }
+}
+```
+
+This is just a one-line to do the same:
+
+```javascript
+Process.enumerateModules().forEach( (element) => { if(JSON.stringify(Process.getModuleByName(element.name).enumerateExports().filter(exports => exports.name.toLowerCase().includes("ssl"))).length > 2){ console.log(element.name + " : \n" + JSON.string
+ify(Process.getModuleByName(element.name).enumerateExports().filter(exports => exports.name.toLowerCase().includes("ssl"))));} });
+```
 
 
 ## Common errors when compiling changes
@@ -82,5 +103,4 @@ in this case the dependencies for the development are missing. This can easily f
 ```bash
 $ npm install .
 ```
-
 
