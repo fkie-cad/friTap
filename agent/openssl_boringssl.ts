@@ -4,8 +4,7 @@ import { log } from "./log"
 /**
  * 
  * ToDO
- *  We need to find a way to calculate the offsets in a automated manner. Wdym
- */
+ *  We need to find a way to calculate the offsets in a automated manner.
 
 export function execute(moduleName:string) {
     
