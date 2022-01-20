@@ -19,7 +19,7 @@
 1. Install perl (recommendation/tested with: https://strawberryperl.com/)
 2. Install NASM (recommendation/tested with: https://www.nasm.us/pub/nasm/releasebuilds/2.14.02/win32/)
 3. Clone https://github.com/openssl/openssl.git into the "OpenSSL" directory
-4. Open Developer Command Prompt for VS 20xx and navigate into the cloned repository folder "openssl"
+4. Open Developer Command Prompt for VS 201x and navigate into the cloned repository folder "openssl"
 	1. perl Configure
 	2. nmake
 	2. nmake test
