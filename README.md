@@ -61,9 +61,13 @@ Further ensure that the frida-server is running on the Android device. More exam
 - [ ] add wine support
 
 - [ ] add further Libraries (have a look at this [Wikipedia entry](https://en.wikipedia.org/wiki/Comparison_of_TLS_implementations)):
+- [ ] 
 
-  - Botan 
-  - MatrixSSL
+  - Botan (BSD license, Jack Lloyd)
+  - LibreSSL (OpenBSD)
+  - Cryptlib (Peter Gutmann)
+  - S2n (Amazon)
+  - JSSE (Java Secure Socket Extension, Oracle)
   - ...
 
 - [ ] Working with static linked libraries
