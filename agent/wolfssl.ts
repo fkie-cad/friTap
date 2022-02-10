@@ -1,4 +1,4 @@
-import { readAddresses, getPortsAndAddresses } from "./shared"
+import { readAddresses, getPortsAndAddresses, toHexString } from "./shared"
 import { log } from "./log"
 
 export function execute(moduleName: string) {
@@ -19,7 +19,7 @@ export function execute(moduleName: string) {
     }
 
     var library_method_mapping: { [key: string]: Array<String> } = {}
-    library_method_mapping[`*${moduleName}*`] = ["wolfSSL_read", "wolfSSL_write", "wolfSSL_get_fd", "wolfSSL_get_session", "wolfSSL_connect", "wolfSSL_KeepArrays"]
+    library_method_mapping[`*${moduleName}*`] = ["wolfSSL_read", "wolfSSL_write", "wolfSSL_get_fd", "wolfSSL_get_session", "wolfSSL_connect", "wolfSSL_KeepArrays", "wolfSSL_SESSION_get_master_key"]
     
     //? Just in case darwin methods are different to linux and windows ones
     if(socket_library === "libc" || socket_library === "WS2_32.dll"){
@@ -33,7 +33,11 @@ export function execute(moduleName: string) {
     const wolfSSL_get_fd = new NativeFunction(addresses["wolfSSL_get_fd"], "int", ["pointer"])
     const wolfSSL_get_session = new NativeFunction(addresses["wolfSSL_get_session"], "pointer", ["pointer"])
     const wolfSSL_KeepArrays = new NativeFunction(addresses["wolfSSL_KeepArrays"], "void", ["pointer"])
+    const wolfSSL_connect = new NativeFunction (addresses["wolfSSL_connect"], "int", ["pointer"])
 
+    //https://www.wolfssl.com/doxygen/group__Setup.html#gaf18a029cfeb3150bc245ce66b0a44758
+    const wolfSSL_SESSION_get_master_key = new NativeFunction(addresses["wolfSSL_SESSION_get_master_key"], "int", ["pointer", "pointer", "int"])
+    
     /**
        * Get the session_id of SSL object and return it as a hex string.
        * @param {!NativePointer} ssl A pointer to an SSL object.
@@ -68,6 +72,7 @@ export function execute(moduleName: string) {
                 var message = getPortsAndAddresses(wolfSSL_get_fd(args[0]) as number, true, addresses)
                 
                 message["function"] = "wolfSSL_read"
+                message["ssl_session_id"] = getSslSessionId(args[0])
                 this.message = message
                 this.buf = args[1]
 
@@ -93,4 +98,27 @@ export function execute(moduleName: string) {
             onLeave: function (retval: any) {
             }
         })
+
+
+    Interceptor.attach(addresses["wolfSSL_connect"],{
+        onEnter: function(args: any){
+            this.ssl = args[0]
+        },
+        onLeave: function(retval: any){
+            this.session = wolfSSL_get_session(this.ssl) as NativePointer
+            //wolfSSL_SESSION_get_master_key returns required key buffer length of no buffer and 0 as length was provided
+            var requiredBufferLength = wolfSSL_SESSION_get_master_key(this.session, NULL, 0) as number
+            var keyBuffer = Memory.alloc(requiredBufferLength)
+            var ret = wolfSSL_SESSION_get_master_key(this.session, keyBuffer, requiredBufferLength)
+            var keyBytes = keyBuffer.readByteArray(requiredBufferLength)
+            
+
+            if(ret > 0){
+                var message: { [key: string]: string | number | null } = {}
+                message["contentType"] = "keylog"
+                message["keylog"] = `MASTERKEY OF SESSION ${getSslSessionId(this.ssl)}: ${toHexString(keyBytes)}`
+                send(message)
+            }
+        }
+    })
 }
