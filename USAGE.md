@@ -1,7 +1,7 @@
 # Usage
-Usage: friTap.py [-a] [-k <path>] [-l] [-p  <path>] [-s] [-v] [--enable_spawn_gating] <executable/app name/pid>
+Usage: friTap.py [-m] [-k <path>] [-l] [-p  <path>] [-s] [-v] [--enable_spawn_gating] <executable/app name/pid>
 
-Decrypts and logs an executables or android applications SSL/TLS traffic.
+Decrypts and logs an executables or mobile applications SSL/TLS traffic.
 
 Arguments:
   - `-m`, `--mobile` Attach to a process on android or iOS
