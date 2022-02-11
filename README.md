@@ -25,7 +25,7 @@ $ sudo ./friTap.py --pcap mycapture.pcap thunderbird
 For mobile applications we just have to add the -m parameter to indicate that we are now attaching (or spawning) an Android or iOS app:
 
 ```bash
-$ python3 ./friTap.py -m --pcap mycapture.pcap com.example.app
+$ ./friTap.py -m --pcap mycapture.pcap com.example.app
 ```
 
 Further ensure that the frida-server is running on the Android/iOS device. More examples on using friTap can be found in the [USAGE.md](./USAGE.md).
