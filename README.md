@@ -14,13 +14,11 @@ Just clone the repository and run the `friTap.py`file. Alternatively you can dow
 
 ## Usage
 
-On Linux we can easily attach to a process by entering its name or its PID:
+On Linux/Windows/MacOS we can easily attach to a process by entering its name or its PID:
 
 ```bash
 $ sudo ./friTap.py --pcap mycapture.pcap thunderbird
 ```
-
-
 
 For mobile applications we just have to add the -m parameter to indicate that we are now attaching (or spawning) an Android or iOS app:
 
