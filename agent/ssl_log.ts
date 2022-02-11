@@ -26,7 +26,7 @@ var moduleNames: Array<string> = getModuleNames()
 
 var module_library_mapping: { [key: string]: Array<[any, (moduleName: string)=>void]> } = {}
 module_library_mapping["windows"] = [[/libssl-[0-9]+(_[0-9]+)?\.dll/, boring_execute],[/.*wolfssl.*\.dll/, wolf_execute],[/.*libgnutls-[0-9]+\.dll/, gnutls_execute],[/nspr[0-9]*\.dll/,nss_execute], [/sspicli\.dll/i,sspi_execute], [/mbedTLS\.dll/, mbedtls_execute]] 
-module_library_mapping["linux"] = [[/.*libssl\.so/, boring_execute],[/.*libgnutls\.so/, gnutls_execute],[/.*libwolfssl\.so/, wolf_execute],[/.*libnspr[0-9]?\.so/,nss_execute], [/libmbedtls\.so.*/, mbedtls_execute]]
+module_library_mapping["linux"] = [[/.*libssl_sb.so/, boring_execute],[/.*libssl\.so/, boring_execute],[/.*libgnutls\.so/, gnutls_execute],[/.*libwolfssl\.so/, wolf_execute],[/.*libnspr[0-9]?\.so/,nss_execute], [/libmbedtls\.so.*/, mbedtls_execute]]
 module_library_mapping["darwin"] = [[/.*libboringssl\.dylib/, boring_execute]]
 
 
@@ -51,7 +51,13 @@ if(Process.platform === "linux"){
         for(let module of moduleNames){
             if (regex.test(module)){
                 log(`${module} found & will be hooked on Linux!`)
-                func(module)
+                try{
+                    func(module) // on some Android Apps we encounterd the problem of multiple SSL libraries but only one was used for the SSL encryption/decryption
+                }catch (error) {
+                    log(`error: skipping module ${module}`)
+                    //  {'description': 'Could not find *libssl*.so!SSL_ImportFD', 'type': 'error'}
+                }
+                
             } 
         }
     }

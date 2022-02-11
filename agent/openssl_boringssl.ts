@@ -41,7 +41,7 @@ export function execute(moduleName:string) {
     
     
     // the socket methods are in all systems the same
-    library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
+    library_method_mapping[`*${socket_library}*`] = ["getpeername*", "getsockname*", "ntohs*", "ntohl*"]
     
     
 
@@ -94,6 +94,7 @@ export function execute(moduleName:string) {
     Interceptor.attach(addresses["SSL_read"],
         {
             onEnter: function (args: any) {
+                if (!ObjC.available){
                 var message = getPortsAndAddresses(SSL_get_fd(args[0]) as number, true, addresses)
                 message["ssl_session_id"] = getSslSessionId(args[0])
                 /* var my_Bio = args[0] as NativePointer
@@ -101,24 +102,29 @@ export function execute(moduleName:string) {
                 message["function"] = "SSL_read"
                 this.message = message
                 this.buf = args[1]
+                }  // this is a temporary workaround for the fd problem on iOS
             },
             onLeave: function (retval: any) {
+                if (!ObjC.available){
                 retval |= 0 // Cast retval to 32-bit integer.
                 if (retval <= 0) {
                     return
                 }
                 this.message["contentType"] = "datalog"
                 send(this.message, this.buf.readByteArray(retval))
+                }  // this is a temporary workaround for the fd problem on iOS
             }
         })
     Interceptor.attach(addresses["SSL_write"],
         {
             onEnter: function (args: any) {
+                if (!ObjC.available){
                 var message = getPortsAndAddresses(SSL_get_fd(args[0]) as number, false, addresses)
                 message["ssl_session_id"] = getSslSessionId(args[0])
                 message["function"] = "SSL_write"
                 message["contentType"] = "datalog"
                 send(message, args[1].readByteArray(parseInt(args[2])))
+                } // this is a temporary workaround for the fd problem on iOS
             },
             onLeave: function (retval: any) {
             }
@@ -135,7 +141,7 @@ export function execute(moduleName:string) {
             }
             Interceptor.attach(addresses["SSL_CTX_set_info_callback"], {
               onEnter: function (args : any) {
-                console.log("found boringSSL");
+                log("found boringSSL TLS key");
                 ptr(args[0]).add(CALLBACK_OFFSET).writePointer(keylog_callback);
               }
             });

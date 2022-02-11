@@ -23,6 +23,16 @@ except ImportError:
 __author__ = "Max Ufer, Daniel Baier, Francois Egner"
 __version__ = "1.0"
 
+
+
+
+
+frida_js_code = """
+
+"""
+
+
+
 # ssl_session[<SSL_SESSION id>] = (<bytes sent by client>,
 #                                  <bytes sent by server>)
 ssl_sessions = {}
@@ -73,12 +83,13 @@ def temp_fifo():
 
 def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, mobile=False, live=False, environment_file=None, debug_output=False):
 
-    def log_pcap(pcap_file, ss_family, function, src_addr, src_port,
+    def log_pcap(pcap_file, ss_family, ssl_session_id, function, src_addr, src_port,
                  dst_addr, dst_port, data):
         """Writes the captured data to a pcap file.
         Args:
         pcap_file: The opened pcap file.
         ss_family: The family of the connection, IPv4/IPv6
+        ssl_session_id: The SSL session ID for the communication.
         function: The function that was intercepted ("SSL_read" or "SSL_write").
         src_addr: The source address of the logged packet.
         src_port: The source port of the logged packet.
@@ -250,11 +261,11 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
                 hexdump.hexdump(data)
                 print()
         if pcap and p["contentType"] == "datalog":
-            log_pcap(pcap_file, p["ss_family"], p["function"], p["src_addr"],
+            log_pcap(pcap_file, p["ss_family"], p["ssl_session_id"], p["function"], p["src_addr"],
                      p["src_port"], p["dst_addr"], p["dst_port"], data)
         if live and p["contentType"] == "datalog":
             try:
-                log_pcap(named_pipe, p["ss_family"], p["function"], p["src_addr"],
+                log_pcap(named_pipe, p["ss_family"], p["ssl_session_id"], p["function"], p["src_addr"],
                          p["src_port"], p["dst_addr"], p["dst_port"], data)
             except (BrokenPipeError, IOError):
                 process.detach()
@@ -278,8 +289,8 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
         device.resume(spawn.pid)
 
     def instrument(process):
-        with open("_ssl_log.js") as f:
-            script = process.create_script(f.read())
+        
+        script = process.create_script(frida_js_code)
         script.on("message", on_message)
         script.load()
 
