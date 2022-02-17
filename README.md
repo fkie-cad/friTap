@@ -1,7 +1,7 @@
 # friTap
 
 <img src="assets/logo.png" width="200">
-The goal of this project is to help researchers to analyze traffic encapsulated in SSL or TLS. For details have a view into the [slides(assets/friTap_OSDFCon_webinar.pdf).
+The goal of this project is to help researchers to analyze traffic encapsulated in SSL or TLS. For details have a view into the [slides from our OSDFCon webinar](./assets/friTap_OSDFCon_webinar.pdf).
 
 This project was inspired by [SSL_Logger](https://github.com/google/ssl_logger ) and ccurrently supports all major operating systems (Linux, Windows, Android). More platforms and libraries will be added in future releases.
 
