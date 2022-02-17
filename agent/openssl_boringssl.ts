@@ -41,7 +41,12 @@ export function execute(moduleName:string) {
     
     
     // the socket methods are in all systems the same
-    library_method_mapping[`*${socket_library}*`] = ["getpeername*", "getsockname*", "ntohs*", "ntohl*"]
+    if(ObjC.available){
+        library_method_mapping[`*${socket_library}*`] = ["getpeername*", "getsockname*", "ntohs*", "ntohl*"]
+    }else{
+        library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
+    }
+    
     
     
 
