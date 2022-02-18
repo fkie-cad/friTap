@@ -30,22 +30,23 @@ Further ensure that the frida-server is running on the Android/iOS device. More 
 ## Supported SSL/TLS implementations and corresponding logging capabilities
 
 ```markdown
-| Library                   | Linux         | Windows       | MacOSX | Android  | iOS                 |
-|---------------------------|---------------|---------------|--------|----------|---------------------|
-| OpenSSL                   |     Full      | R/W-Hook only |  TBI   |   Full   | TBI                 |
-| BoringSSL                 |     Full      | R/W-Hook only |  TBI   |   Full   | Key extraction only |
-| NSS                       | R/W-Hook only | R/W-Hook only |  TBI   |   TBA    | TBI                 |
-| GnuTLS                    | R/W-Hook only | R/W-Hook only |  TBI   |   Full   | TBI                 |
-| WolfSSL                   | R/W-Hook only | R/W-Hook only |  TBI   |   Full   | TBI                 |
-| MbedTLS                   | R/W-Hook only | R/W-Hook only |  TBI   |   Full   | TBI                 |
-| Bouncycastle/Spongycastle |               |               |        |   Full   | TBI                 |
-| Conscrypt                 |               |               |        |   Full   |                     |
+| Library                   | Linux         | Windows       | MacOSX   | Android  | iOS          |
+|---------------------------|---------------|---------------|----------|----------|--------------|
+| OpenSSL                   |     Full      | R/W-Hook only |  TBI     |   Full   | TBI          |
+| BoringSSL                 |     Full      | R/W-Hook only |  KeyEo   |   Full   | KeyEo        |
+| NSS                       | R/W-Hook only | R/W-Hook only |  TBI     |   TBA    | TBI          |
+| GnuTLS                    | R/W-Hook only | R/W-Hook only |  TBI     |   Full   | TBI          |
+| WolfSSL                   | R/W-Hook only | R/W-Hook only |  TBI     |   Full   | TBI          |
+| MbedTLS                   | R/W-Hook only | R/W-Hook only |  TBI     |   Full   | TBI          |
+| Bouncycastle/Spongycastle |     TBA       |    TBA        |  TBA     |   Full   | TBA          |
+| Conscrypt                 |     TBA       |    TBA        |  TBA     |   Full   | TBA          |
 ```
 **R/W-Hook only** = Logging data sent and received by process<br>
-**Key extraction only** = Only the keying material can be extracted<br>
+**KeyEo** = Only the keying material can be extracted<br>
 **Full** = Logging data send and received by process + Logging keys used for secure connection<br>
 **TBA** = To be answered<br>
 **TBI** = To be implemented<br>
+**LibNO** = This library is not supported for this plattform<br>
 
 
 ## Dependencies
@@ -75,6 +76,7 @@ Further ensure that the frida-server is running on the Android/iOS device. More 
 ## Contribute
 
 Contributions are always welcome. Just fork it and open a pull request!
+More details can be found in the [CONTRIBUTION.md](./CONTRIBUTION.md).
 ___
 
 ## Support
