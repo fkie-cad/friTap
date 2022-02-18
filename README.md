@@ -1,6 +1,8 @@
-# friTap
+<p align="center">
+    <img src="assets/logo.png" alt="friTap logo" width="50%" height="50%"/>
+</p>
 
-<img src="assets/logo.png" width="200">
+# friTap
 
 The goal of this project is to help researchers to analyze traffic encapsulated in SSL or TLS. For details have a view into the [OSDFCon webinar slides](assets/friTapOSDFConwebinar.pdf).
 
