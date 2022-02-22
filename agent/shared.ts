@@ -154,6 +154,19 @@ export function byteArrayToString(byteArray: any) {
     }).join('')
 }
 
+export function toHexString (byteArray: any) {
+    const byteToHex: any = [];
+
+    for (let n = 0; n <= 0xff; ++n){
+        const hexOctet = n.toString(16).padStart(2, "0");
+        byteToHex.push(hexOctet);
+    }
+    return Array.prototype.map.call(
+        new Uint8Array(byteArray),
+        n => byteToHex[n]
+    ).join("");
+  }
+
 /**
  * Convert a Java Reflection array to string
  * @param byteArray The array to convert

@@ -4,8 +4,7 @@ import { log } from "./log"
 /**
  * 
  * ToDO
- *  We need to find a way to calculate the offsets in a automated manner
- */
+ *  We need to find a way to calculate the offsets in a automated manner.
 
 export function execute(moduleName:string) {
     
@@ -56,6 +55,9 @@ export function execute(moduleName:string) {
     const SSL_get_session = new NativeFunction(addresses["SSL_get_session"], "pointer", ["pointer"])
     const SSL_SESSION_get_id = new NativeFunction(addresses["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"])
     
+	//SSL_CTX_set_keylog_callback not exported by default on windows. 
+	//Alternatives?:SSL_export_keying_material, SSL_SESSION_get_master_key
+	
     const SSL_CTX_set_keylog_callback = ObjC.available ? new NativeFunction(addresses["SSL_CTX_set_info_callback"], "void", ["pointer", "pointer"]) : new NativeFunction(addresses["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"])
 
     const keylog_callback = new NativeCallback(function (ctxPtr, linePtr: NativePointer) {
@@ -131,7 +133,8 @@ export function execute(moduleName:string) {
             onLeave: function (retval: any) {
             }
         })
-
+		
+		
         if (ObjC.available) { // inspired from https://codeshare.frida.re/@andydavies/ios-tls-keylogger/
             var CALLBACK_OFFSET = 0x2A8;
 
