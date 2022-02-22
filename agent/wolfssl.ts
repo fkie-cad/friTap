@@ -19,7 +19,7 @@ export function execute(moduleName: string) {
     }
 
     var library_method_mapping: { [key: string]: Array<String> } = {}
-    library_method_mapping[`*${moduleName}*`] = ["wolfSSL_read", "wolfSSL_write", "wolfSSL_get_fd", "wolfSSL_get_session", "wolfSSL_connect", "wolfSSL_KeepArrays", "wolfSSL_SESSION_get_master_key"]
+    library_method_mapping[`*${moduleName}*`] = ["wolfSSL_read", "wolfSSL_write", "wolfSSL_get_fd", "wolfSSL_get_session", "wolfSSL_connect", "wolfSSL_KeepArrays", "wolfSSL_SESSION_get_master_key", "wolfSSL_get_client_random", "wolfSSL_get_server_random"]
     
     //? Just in case darwin methods are different to linux and windows ones
     if(socket_library === "libc" || socket_library === "WS2_32.dll"){
@@ -32,8 +32,8 @@ export function execute(moduleName: string) {
 
     const wolfSSL_get_fd = new NativeFunction(addresses["wolfSSL_get_fd"], "int", ["pointer"])
     const wolfSSL_get_session = new NativeFunction(addresses["wolfSSL_get_session"], "pointer", ["pointer"])
-    const wolfSSL_KeepArrays = new NativeFunction(addresses["wolfSSL_KeepArrays"], "void", ["pointer"])
-    const wolfSSL_connect = new NativeFunction (addresses["wolfSSL_connect"], "int", ["pointer"])
+    const wolfSSL_get_client_random = new NativeFunction(addresses["wolfSSL_get_client_random"],"int", ["pointer", "pointer", "int"] )
+    const wolfSSL_get_server_random = new NativeFunction(addresses["wolfSSL_get_server_random"],"int", ["pointer", "pointer", "int"] )
 
     //https://www.wolfssl.com/doxygen/group__Setup.html#gaf18a029cfeb3150bc245ce66b0a44758
     const wolfSSL_SESSION_get_master_key = new NativeFunction(addresses["wolfSSL_SESSION_get_master_key"], "int", ["pointer", "pointer", "int"])
@@ -106,19 +106,37 @@ export function execute(moduleName: string) {
         },
         onLeave: function(retval: any){
             this.session = wolfSSL_get_session(this.ssl) as NativePointer
-            //wolfSSL_SESSION_get_master_key returns required key buffer length of no buffer and 0 as length was provided
-            var requiredBufferLength = wolfSSL_SESSION_get_master_key(this.session, NULL, 0) as number
-            var keyBuffer = Memory.alloc(requiredBufferLength)
-            var ret = wolfSSL_SESSION_get_master_key(this.session, keyBuffer, requiredBufferLength)
-            var keyBytes = keyBuffer.readByteArray(requiredBufferLength)
-            
 
-            if(ret > 0){
-                var message: { [key: string]: string | number | null } = {}
-                message["contentType"] = "keylog"
-                message["keylog"] = `MASTERKEY OF SESSION ${getSslSessionId(this.ssl)}: ${toHexString(keyBytes)}`
-                send(message)
-            }
+            var keysString = "";
+            
+            //https://www.wolfssl.com/doxygen/group__Setup.html#ga927e37dc840c228532efa0aa9bbec451
+            var requiredClientRandomLength = wolfSSL_get_client_random(this.session, NULL, 0) as number
+            
+            var clientBuffer = Memory.alloc(requiredClientRandomLength)
+            wolfSSL_get_client_random(this.ssl, clientBuffer, requiredClientRandomLength)
+            var clientBytes = clientBuffer.readByteArray(requiredClientRandomLength)
+            keysString = `${keysString}CLIENT_RANDOM: ${toHexString(clientBytes)}\n`
+            
+            //https://www.wolfssl.com/doxygen/group__Setup.html#ga987035fc600ba9e3b02e2b2718a16a6c
+            var requiredServerRandomLength = wolfSSL_get_server_random(this.session, NULL, 0) as number
+            var serverBuffer = Memory.alloc(requiredServerRandomLength)
+            wolfSSL_get_server_random(this.ssl, serverBuffer, requiredServerRandomLength)
+            var serverBytes = serverBuffer.readByteArray(requiredServerRandomLength)
+            keysString = `${keysString}SERVER_RANDOM: ${toHexString(serverBytes)}\n`
+            
+            //https://www.wolfssl.com/doxygen/group__Setup.html#gaf18a029cfeb3150bc245ce66b0a44758
+            var requiredMasterKeyLength = wolfSSL_SESSION_get_master_key(this.session, NULL, 0) as number
+            var masterBuffer = Memory.alloc(requiredMasterKeyLength)
+            wolfSSL_SESSION_get_master_key(this.session, masterBuffer, requiredMasterKeyLength)
+            var masterBytes = masterBuffer.readByteArray(requiredMasterKeyLength)
+            keysString = `${keysString}MASTER_KEY: ${toHexString(masterBytes)}\n`
+
+            
+            var message: { [key: string]: string | number | null } = {}
+            message["contentType"] = "keylog"
+            message["keylog"] = keysString
+            send(message)
+            
         }
     })
 }

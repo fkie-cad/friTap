@@ -1,4 +1,7 @@
+#define OPENSSL_EXTRA true
+#define DEBUG true
 #include "WolfSSL.h"
+
 
 
 HINSTANCE wolfSSL;
@@ -18,6 +21,39 @@ void WOLFSSL_init() {
     }
     wolfSSL_Init();
     wolfSSL_load_error_strings();
+}
+
+typedef unsigned char ByteData;
+ByteData HexChar(char c)
+{
+    if ('0' <= c && c <= '9') return (ByteData)(c - '0');
+    if ('A' <= c && c <= 'F') return (ByteData)(c - 'A' + 10);
+    if ('a' <= c && c <= 'f') return (ByteData)(c - 'a' + 10);
+    return (ByteData)(-1);
+}
+
+void BinToHex(const ByteData* buff, int length, char* output, int outLength)
+{
+    char binHex[] = "0123456789ABCDEF";
+
+    if (!output || outLength < 4) return (void)(-6);
+    *output = '\0';
+
+    if (!buff || length <= 0 || outLength <= 2 * length)
+    {
+        memcpy(output, "ERR", 4);
+        return (void)(-7);
+    }
+
+    for (; length > 0; --length, outLength -= 2)
+    {
+        ByteData byte = *buff++;
+
+        *output++ = binHex[(byte >> 4) & 0x0F];
+        *output++ = binHex[byte & 0x0F];
+    }
+    if (outLength-- <= 0) return (void)(-8);
+    *output++ = '\0';
 }
 
 
@@ -55,8 +91,20 @@ void WOLFSSL_setup_and_connect(WOLFSSL_Connection* connection, char* hostname) {
         wolfSSL_ERR_error_string(wolfSSL_get_error(connection->ssl, 0), buffer);
         printf("Connect: %s\n", buffer);
     }
+    
+#ifdef DEBUG
+    WOLFSSL_SESSION* session = wolfSSL_get_session(connection->ssl);
+    int bufferSz = wolfSSL_SESSION_get_master_key(session, NULL, 0);
+    printf("Needed length: %d\n", bufferSz);
+    unsigned char* buffer = (unsigned char*)malloc(bufferSz);
+    int ret = wolfSSL_SESSION_get_master_key(session, buffer, bufferSz);
+    printf("%.48s\n", buffer);
+#endif // DEBUG
+
+    
    
 }
+
 
 char* WOLFSSL_get_response(WOLFSSL_Connection* connection) {
     unsigned long responseBufferSize = 0;
@@ -112,7 +160,8 @@ void WOLFSSL_run() {
         printf("Request: %s\n", SEND_MSG);
 
         char* response = WOLFSSL_get_response(con);
-        printf("Response: %s\n", response);
+        
+        //printf("Response: %s\n", response);
         
         WOLFSSL_cleanup(con);
         Sleep(3000);
