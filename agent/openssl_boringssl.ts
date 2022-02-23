@@ -5,6 +5,8 @@ import { log } from "./log"
  * 
  * ToDO
  *  We need to find a way to calculate the offsets in a automated manner.
+ *  Darwin: SSL_read/write need improvments
+ *  Windows: how to extract the key material?
  */
 
 export function execute(moduleName:string) {
@@ -26,16 +28,10 @@ export function execute(moduleName:string) {
     
     var library_method_mapping: { [key: string]: Array<String> } = {}
     if(ObjC.available){
-        // the follwoing functions are avaible SSL_read SSL_write SSL_new SSL_get_session SSL_SESSION_get_id SSL_SESSION_get_id
-
-        /*
-        dont now what these functions are doingß
-        BIO_write/read, boringssl_session_read/write BIO_get_fd
-
-         */
-
+        
+        // the iOS implementation needs some further improvements - currently we are not able to get the sockfd from an SSL_read/write invocation
         library_method_mapping[`*${moduleName}*`] = ["SSL_read", "SSL_write", "BIO_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_info_callback"]
-        library_method_mapping[`*${socket_library}*`] = ["getpeername*", "getsockname*", "ntohs*", "ntohl*"] // currently those
+        library_method_mapping[`*${socket_library}*`] = ["getpeername*", "getsockname*", "ntohs*", "ntohl*"] // currently those functions gets only identified if at an asterisk at the end 
     }else{
         library_method_mapping[`*${moduleName}*`] = ["SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_keylog_callback"]
         library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
