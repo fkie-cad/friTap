@@ -1,4 +1,4 @@
-import { log } from "./log"
+import { log, devlog } from "./log"
 
 /**
  * This file contains methods which are shared for reading
@@ -49,39 +49,32 @@ export function readAddresses(library_method_mapping: { [key: string]: Array<Str
     for (let library_name in library_method_mapping) {
         library_method_mapping[library_name].forEach(function (method) {
             var matches = resolver.enumerateMatches("exports:" + library_name + "!" + method)
+            var match_number = 0;
+            var method_name = method.toString();
+
+            if(method_name.endsWith("*")){ // this is for the temporary iOS bug using fridas ApiResolver
+                method_name = method_name.substring(0,method_name.length-1)
+            }
+
             if (matches.length == 0) {
                 throw "Could not find " + library_name + "!" + method
             }
-            else {
+            else if (matches.length == 1){
                 
-                //log("Found " + method + " " + matches[0].address)
-            }
-            if (matches.length == 0) {
-                throw "Could not find " + library_name + "!" + method
-            }
-            else if (matches.length != 1) {
-                // Sometimes Frida returns duplicates.
-                var address = null
-                var s = ""
-                var duplicates_only = true
+                devlog("Found " + method + " " + matches[0].address)
+            }else{
+                // Sometimes Frida returns duplicates or it finds more than one result.
                 for (var k = 0; k < matches.length; k++) {
-                    if (s.length != 0) {
-                        s += ", "
+                    if(matches[k].name.endsWith(method_name)){
+                        match_number = k;
+                        devlog("Found " + method + " " + matches[match_number].address)
+                        break;
                     }
-                    s += matches[k].name + "@" + matches[k].address
-                    if (address == null) {
-                        address = matches[k].address
-                    }
-                    else if (!address.equals(matches[k].address)) {
-                        duplicates_only = false
-                    }
+                   
                 }
-                if (!duplicates_only) {
-                    throw "More than one match found for " + library_name + "!" + method + ": " +
-                    s
-                }
+     
             }
-            addresses[method.toString()] = matches[0].address
+            addresses[method_name] = matches[match_number].address;
         })
     }
     return addresses

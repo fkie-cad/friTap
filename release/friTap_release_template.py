@@ -20,8 +20,8 @@ except ImportError:
     print("Unable to import hexdump module!")
     pass
 
-__author__ = "Max Ufer, Daniel Baier, Francois Egner"
-__version__ = "1.0"
+__author__ = "Daniel Baier, Francois Egner, Max Ufer"
+__version__ = "1.0.1"
 
 
 
@@ -346,8 +346,8 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
     if keylog:
         print(f'[*] Logging keylog file to {keylog}')
 
-    #if spawn:
-    #    device.resume(pid)
+    if spawn:
+        device.resume(pid)
     try:
         sys.stdin.read()
     except KeyboardInterrupt:
