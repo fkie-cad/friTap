@@ -20,6 +20,7 @@ ExampleLinux/wolfssl/*
 # generated files
 bin/
 gen/
+__pycache__/
 
 # Local configuration file (sdk path, etc)
 local.properties

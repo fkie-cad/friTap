@@ -6,8 +6,9 @@ import { execute as sspi_execute } from "./sspi"
 import { execute as nss_execute } from "./nss"
 import { execute as gnutls_execute } from "./gnutls"
 import {execute as mbedtls_execute } from "./mbedTLS"
-import { log } from "./log"
+import { log, devlog } from "./log"
 import { getModuleNames} from "./shared"
+import { isAndroid } from "./util/process_infos"
 
 
 
@@ -50,9 +51,13 @@ if(Process.platform === "linux"){
         let func = map[1]
         for(let module of moduleNames){
             if (regex.test(module)){
+              if(isAndroid()){
+                log(`${module} found & will be hooked on Android!`)
+              }else{
                 log(`${module} found & will be hooked on Linux!`)
+              }
                 try{
-                    func(module) // on some Android Apps we encounterd the problem of multiple SSL libraries but only one was used for the SSL encryption/decryption
+                    func(module) // on some Android Apps we encounterd the problem of multiple SSL libraries but only one is used for the SSL encryption/decryption
                 }catch (error) {
                     log(`error: skipping module ${module}`)
                     //  {'description': 'Could not find *libssl*.so!SSL_ImportFD', 'type': 'error'}
@@ -104,19 +109,26 @@ try {
             hookLinuxDynamicLoader()
             break;
         default:
-            console.log("Missing dynamic loader hook implementation!");
+            devlog("Missing dynamic loader hook implementation!");
     }
 
     
 } catch (error) {
-    console.log("Loader error: ", error)
+    devlog("Loader error: "+ error)
     log("No dynamic loader present for hooking.")
 }
 
 function hookLinuxDynamicLoader():void{
     const regex_libdl = /.*libdl.*\.so/
     const libdl = moduleNames.find(element => element.match(regex_libdl))
-    if (libdl === undefined) throw "Linux Dynamic loader not found!"
+    if (libdl === undefined){
+        if(isAndroid()){
+            throw "Android Dynamic loader not found!"
+        }else{
+            throw "Linux Dynamic loader not found!"
+        }
+        
+    } 
 
     let dl_exports = Process.getModuleByName(libdl).enumerateExports()
     var dlopen = "dlopen"
@@ -138,7 +150,12 @@ function hookLinuxDynamicLoader():void{
                     let regex = map[0]
                     let func = map[1]
                     if (regex.test(this.moduleName)){
-                        log(`${this.moduleName} was loaded & will be hooked on Linux!`)
+                        if(isAndroid()){
+                            log(`${this.moduleName} was loaded & will be hooked on Android!`)
+                        }else{
+                            log(`${this.moduleName} was loaded & will be hooked on Linux!`)
+                        }
+                        
                         func(this.moduleName)
                     } 
                     
