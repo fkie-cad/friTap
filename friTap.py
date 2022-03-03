@@ -70,7 +70,7 @@ def temp_fifo():
         print(f'Failed to create FIFO: {e}')
 
 
-def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, mobile=False, live=False, environment_file=None, debug_output=False):
+def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, mobile=False, host=False, live=False, environment_file=None, debug_output=False):
 
     def log_pcap(pcap_file, ss_family, function, src_addr, src_port,
                  dst_addr, dst_port, data):
@@ -285,6 +285,8 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
     # Main code
     if mobile:
         device = frida.get_usb_device()
+    elif host:
+        device = frida.get_device_manager().add_remote_device(host)
     else:
         device = frida.get_local_device()
 
@@ -294,7 +296,7 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
         device.on("spawn_added", on_spawn_added)
     if spawn:
         print("spawning "+ app)
-        if mobile:
+        if mobile or host:
             pid = device.spawn(app)
         else:
             used_env = {}
@@ -368,11 +370,14 @@ Examples:
   %(prog)s -m --pcap log.pcap --verbose com.example.app
   %(prog)s -m -k keys.log -v -s com.example.app
   %(prog)s --pcap log.pcap "$(which curl) https://www.google.com"
+  %(prog)s -H --pcap log.pcap 192.168.0.1:1234 com.example.app
 """)
 
     args = parser.add_argument_group("Arguments")
     args.add_argument("-m", "--mobile", required=False, action="store_const",
                       const=True, help="Attach to a process on android or iOS")
+    args.add_argument("-H", "--host", metavar="<ip:port>", required=False,
+                      help="Attach to a process on remote frida device")
     args.add_argument("-d", "--debug", required=False, action="store_const", const=True,
                       help="Set the debug output of friTap")
     args.add_argument("-k", "--keylog", metavar="<path>", required=False,
@@ -396,7 +401,7 @@ Examples:
     try:
         print("Start logging")
         ssl_log(parsed.exec, parsed.pcap, parsed.verbose,
-                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.mobile, parsed.live, parsed.environment, parsed.debug)
+                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.mobile, parsed.host, parsed.live, parsed.environment, parsed.debug)
     except Exception as ar:
         print(ar)
 
