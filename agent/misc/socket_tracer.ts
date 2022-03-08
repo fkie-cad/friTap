@@ -311,6 +311,36 @@ function get_socket_syscall_number(){
     return socket_syscall_lookup_table[get_syscall_intruction()];
 }
 
+function stalking_instructions(){
+    Process.enumerateThreads().map(t => {
+        Stalker.follow(t.id, {
+          events: {
+            call: true, // CALL instructions: yes please
+            // Other events:
+            exec: true //
+          },
+          onReceive(events) {},
+          transform(iterator: { next: () => any; keep: () => void; }){
+            let instruction = iterator.next()
+            do{
+              //I think this reduces overhead
+              if(instruction.mnemonic == "mov"){
+                  //Should provide a good filter for syscalls, might need further filtering
+                  if(instruction.toString() == "mov r10, rcx"){
+                      iterator.keep() //keep the instruction
+                      instruction = iterator.next() //next instruction should have the syscall number
+                     
+                  }
+              }
+              iterator.keep()
+            } while ((instruction = iterator.next()) !== null)
+              
+          }
+        })
+        })
+
+}
+
 /*
 fuction get_socket_syscall(){
     // ARM64    [198,"socket",0xc6,["int","int","int"]],
