@@ -4,6 +4,7 @@ In this file we will show two ways how you can use friTap (formally know as ssli
 The examples are demonstrated using the app from "Flipboard" [1].
 
 ## Setup
+
 ### Android
 To work with friTap you can either use a real phone connected to the PC with USB-Debugging enabled or use a emulator. The only important thing is
 that the phone must be rooted for frida to work. If you use Genymotion, it is rooted per default. For AVD, have a look at [this repository](https://github.com/Frint0/avd-root).
