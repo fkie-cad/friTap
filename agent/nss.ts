@@ -876,6 +876,7 @@ function getSSL_Layer(pRFileDesc : NativePointer) {
     
 
     if(sslSessionIdSECItem == null || sslSessionIdSECItem.isNull()){
+        try {
         devlog("---- getSslSessionIdFromFD -----")
         devlog("ERROR")
         devlog("pRFileDescType: "+getDescType(pRFileDesc))
@@ -922,7 +923,12 @@ function getSSL_Layer(pRFileDesc : NativePointer) {
         
         devlog("---- getSslSessionIdFromFD finished -----");
         devlog("");
+    }catch(error){
+        devlog("Error:"+error)
+
+    }
         return dummySSL_SessionID;
+
         
     }
     

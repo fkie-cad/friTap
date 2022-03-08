@@ -1,45 +1,130 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
+import ntpath
+from threading import Thread, Event
 import random
+import logging
 try:
 	from scapy.all import *
 except ImportError:
 	print('[-]: scapy is not installed, please install it by running: pip3 install scapy')
 	exit(2)
- 
- 
- 
-a =  """
- # ip.dst == 142.250.186.164 and ip.src == 192.168.0.170 --> 19% --> 114 pakete
-pkts = rdpcap("test.pcapng")
 
-filter = "src host 142.250.186.164 and dst host 192.168.0.170"
-filtered = (pkt for pkt in pkts if IP in pkt and (pkt[IP].src == "192.168.0.170" and pkt[IP].dst == "142.250.186.164"))
-wrpcap("filtered.pcap",filtered)
+import android
 
- 
- """
+# ensure that we only see errors from scapy
+logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
  
 
 class PCAP:
     
-    def __init__(self,pcap_file_name,SSL_READ,SSL_WRITE, doFullCapture):
+    def __init__(self,pcap_file_name,SSL_READ,SSL_WRITE, doFullCapture, isMobile, print_debug_infos=False):
         self.pcap_file_name = pcap_file_name
         self.pkt ={}
+        self.print_debug_infos = print_debug_infos
+            
+        self.is_Mobile = isMobile
         
         # ssl_session[<SSL_SESSION id>] = (<bytes sent by client>,
         #                                  <bytes sent by server>)
         self.ssl_sessions = {}
         self.SSL_READ = SSL_READ
         self.SSL_WRITE = SSL_WRITE
+        
         if doFullCapture:
-            self.full_local_capture()
-            self.create_application_traffic_pcap()
+            if isMobile:
+                self.android_Instance = android.Android(self.print_debug_infos)
+            self.full_capture_thread = self.get_instance_of_FullCaptureThread()
+            self.full_capture_thread.start()
         else:
             self.pcap_file = self.__create_plaintext_pcap()
+            
     
-    
+
+    def get_instance_of_FullCaptureThread(self):
+        
+        pcap_class = self
+        
+        class FullCaptureThread(Thread):
+            
+            def __init__(self):
+                super(FullCaptureThread,self).__init__()
+                self.pcap_file_name = pcap_class.pcap_file_name
+                self.daemon = True
+                self.socket = None
+                self.stop_capture = Event()
+                self.tmp_pcap_name = self._get_tmp_pcap_name()
+                
+                self.mobile_pid = -1    
+                self.is_Mobile = pcap_class.is_Mobile
+                
+            
+            def _get_pcap_base_name(self):
+                head, tail = ntpath.split(self.pcap_file_name)
+                return tail or ntpath.basename(head)
+                
+            
+            def _get_pcap_dir_path(self):
+                dirname_wihtout_last_delimiter = ntpath.dirname(self.pcap_file_name)
+                if len(dirname_wihtout_last_delimiter) > 1:
+                    return dirname_wihtout_last_delimiter + self.pcap_file_name[len(dirname_wihtout_last_delimiter):(len(dirname_wihtout_last_delimiter)+1)]
+                else:
+                    return dirname_wihtout_last_delimiter
+            
+            
+            def _get_tmp_pcap_name(self):
+                return self._get_pcap_dir_path()+"_"+self._get_pcap_base_name()
+                
+            
+            def write_packet_to_pcap(self,packet):
+                wrpcap(self.tmp_pcap_name, packet, append=True)  #appends packet to output file
+            
+            
+            def full_local_capture(self):
+                self.socket = conf.L2listen(
+                    type=ETH_P_ALL
+                )
+                
+                print("[*] doing full capture")
+                
+                sniff(
+                    opened_socket=self.socket,
+                    prn=self.write_packet_to_pcap,
+                    stop_filter=self.stop_capture_thread
+                )
+                
+                
+            def run(self):
+                if self.is_Mobile:
+                    self.mobile_pid = self.full_mobile_capture()
+                else:
+                    self.full_local_capture()
+            
+            
+            def join(self, timeout=None):
+                self.stop_capture.set()
+                super().join(timeout)
+            
+            
+            def stop_capture_thread(self, packet):
+                return self.stop_capture.isSet()
+                
+                
+            def full_mobile_capture(self):
+                if pcap_class.android_Instance.is_Android():
+                    pcap_class.android_Instance.push_tcpdump_to_device()
+                    android_capture_process = pcap_class.android_Instance.run_tcpdump_capture("_"+self._get_pcap_base_name())
+                    print("[*] doing full capture on Android")
+                    return android_capture_process
+                else:
+                    print("[-] currently a full capture on iOS is not supported\nAbborting...")
+                    exit(2)
+                    
+        ## End of inner class FullCaptureThread 
+        instance_of_thread_class = FullCaptureThread()
+        return instance_of_thread_class
+   
+     
     def write_pcap_header(self, pcap_file):
         self.pcap_file = pcap_file
         for writes in (
@@ -180,24 +265,48 @@ class PCAP:
             client_sent += len(data)
         self.ssl_sessions[session_unique_key] = (client_sent, server_sent)
         
-        
-    def create_application_traffic_pcap(self,filter):
-        pkts = rdpcap(self.pcap_file_name)
-        filtered = (pkt for pkt in pkts if IP in pkt and (filter))
-        wrpcap(self.pcap_file_name,filtered)
-        # pkt[IP].src == "192.168.0.170" and pkt[IP].dst == "142.250.186.164"
-        
-        
-    def write_pcap(self):
-        wrpcap("_"+self.pcap_file_name, self.pkt, append=True)  #appends packet to output file
     
-    
-    def full_local_capture(self):
+    # creating a filter for scapy or wiresharks display filter depending on the provided socket_trace_set which looks like 
+    @staticmethod
+    def get_filter_from_traced_sockets(socket_trace_set):
+        filter = ""
+        first_element = True
+        for length_of_socket_Set in range(len(socket_trace_set)):
+            if len(socket_trace_set) == 1:
+                filter = socket_trace_set.pop() + " or "  + filter
+                break
+            if first_element:
+                first_element = False
+                filter = socket_trace_set.pop()
+            else:
+                filter = socket_trace_set.pop() + " or " + filter
+                
+            length_of_socket_Set = length_of_socket_Set - 1
+            
+        return filter
+
+        
+    # this function is able to reduce a capture to the traffic from the traced target application by using the information from the socket trace and applying a bpf filter of those traced packets
+    def create_application_traffic_pcap(self,traced_Socket_Set):        
+        bpf_filter = PCAP.get_filter_from_traced_sockets(traced_Socket_Set)
+        print("[*] filtering the capture for the target application this might take a while...")
         try:
-            print("[*] doing full capture")
-            self.pkt = sniff()
-        except KeyboardInterrupt:
-            pass
-        finally:
-            self.write_pcap(self.pkt)
-            print(f"safed to _{self.pcap_file_name}")
+            filtered_capture = sniff(offline="_"+self.pcap_file_name,filter=bpf_filter)
+            wrpcap(self.pcap_file_name,filtered_capture)
+        except Exception as ar:
+            print(ar)
+        print(f"[*] finished and written to {self.pcap_file_name}")
+    
+    
+    
+    @staticmethod
+    def get_display_filter(src_addr,dst_addr):
+        return "ip.src == " +src_addr+  "and ip.dst =="+dst_addr
+    
+    
+    @staticmethod
+    def get_bpf_filter(src_addr,dst_addr):
+        return "(src host " +src_addr+  " and dst host "+dst_addr+")"
+    
+        
+

@@ -22,14 +22,15 @@ except ImportError:
     pass
 
 __author__ = "Daniel Baier, Francois Egner, Max Ufer"
-__version__ = "1.0.2"
+__version__ = "1.0.3"
 
 
 keydump_Set = {*()}
 traced_Socket_Set = {*()}
+traced_scapy_socket_Set = {*()}
 filename = ""
 tmpdir = ""
-pcap = None
+pcap_obj = None
 
 # Names of all supported read functions:
 SSL_READ = ["SSL_read", "wolfSSL_read", "readApplicationData", "NSS_read","Full_read"]
@@ -38,7 +39,8 @@ SSL_WRITE = ["SSL_write", "wolfSSL_write", "writeApplicationData", "NSS_write","
 
 
 
-def cleanup(live=False, socket_trace=False):
+def cleanup(live=False, socket_trace=False, full_capture=False, debug_output=False):
+    global pcap_obj
     if live:
         os.unlink(filename)  # Remove file
         os.rmdir(tmpdir)  # Remove directory
@@ -47,7 +49,12 @@ def cleanup(live=False, socket_trace=False):
         write_socket_trace(socket_trace)
     if socket_trace == True:
         print("[*] Traced sockets")
-        print(get_display_filter())
+        print(pcap.PCAP.get_filter_from_traced_sockets(traced_Socket_Set))
+    
+    if full_capture and len(traced_scapy_socket_Set) > 0:
+        if debug_output:
+            print("[*] traced sockets: "+str(traced_scapy_socket_Set))
+        pcap_obj.create_application_traffic_pcap(traced_scapy_socket_Set)
         
     print("\nThx for using friTap\nHave a nice day\n")
     os._exit(0)
@@ -60,21 +67,12 @@ def get_addr_string(socket_addr,ss_family):
         raw_addr = bytes.fromhex(socket_addr)
         return socket.inet_ntop(socket.AF_INET6, struct.pack(">16s", raw_addr))
     
-def get_display_filter():
-    display_filter = ""
-    for length_of_socket_Set in range(len(traced_Socket_Set)):
-        if length_of_socket_Set == 1:
-            display_filter = traced_Socket_Set.pop()
-            break
-        display_filter = traced_Socket_Set.pop() + " or "
-        length_of_socket_Set = length_of_socket_Set -1
-    return display_filter
+
         
 
 def write_socket_trace(socket_trace_name):
     with open(socket_trace_name, 'a') as trace_file:
-        trace_file.write(get_display_filter() + '\n')
-    
+        trace_file.write(pcap.PCAP.get_filter_from_traced_sockets(traced_Socket_Set) + '\n')
         
 
 def temp_fifo():
@@ -90,9 +88,9 @@ def temp_fifo():
 
 
 def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, mobile=False, live=False, environment_file=None, debug_output=False,full_capture=False, socket_trace=False):
-
     
     def on_message(message, data):
+        global pcap_obj
         """Callback for errors and messages sent from Frida-injected JavaScript.
         Logs captured packet data received from JavaScript to the console and/or a
         pcap file. See https://www.frida.re/docs/messages/ for more detail on
@@ -113,7 +111,8 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
             print("[*] " + p["console"])
         if debug_output:
             if p["contentType"] == "console_dev" and p["console_dev"]:
-                print("[***] " + p["console_dev"])    
+                if len(p["console_dev"]) > 3:
+                    print("[***] " + p["console_dev"])
         if verbose:
             if(p["contentType"] == "keylog") and keylog:
                 if p["keylog"] not in keydump_Set:
@@ -129,18 +128,21 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
                 
                 if socket_trace == False and full_capture  == False:
                     print("SSL Session: " + str(p["ssl_session_id"]))
-                if  socket_trace:
-                    display_filter = "ip.src == " +src_addr+  "and ip.dst =="+dst_addr
+                if full_capture:
+                    scapy_filter = pcap.PCAP.get_bpf_filter(src_addr,dst_addr)
+                    traced_scapy_socket_Set.add(scapy_filter)
+                if socket_trace:
+                    display_filter = pcap.PCAP.get_display_filter(src_addr,dst_addr)
                     traced_Socket_Set.add(display_filter)
                     print("[socket_trace] %s:%d --> %s:%d" % (src_addr, p["src_port"], dst_addr, p["dst_port"]))
                 else:
                     print("[%s] %s:%d --> %s:%d" % (p["function"], src_addr, p["src_port"], dst_addr, p["dst_port"]))
                     hexdump.hexdump(data)
                 print()
-        if pcap_name and p["contentType"] == "datalog":
+        if pcap_name and p["contentType"] == "datalog" and full_capture == False:
             pcap_obj.log_plaintext_payload(p["ss_family"], p["function"], p["src_addr"],
                      p["src_port"], p["dst_addr"], p["dst_port"], data)
-        if live and p["contentType"] == "datalog":
+        if live and p["contentType"] == "datalog" and full_capture == False:
             try:
                 pcap_obj.log_plaintext_payload(p["ss_family"], p["function"], p["src_addr"],
                          p["src_port"], p["dst_addr"], p["dst_port"], data)
@@ -154,11 +156,18 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
                 keylog_file.flush()
                 keydump_Set.add(p["keylog"])
         
-        if socket_trace:
+        if socket_trace or full_capture:
+            if not data or len(data) == 0:
+                return
             src_addr = get_addr_string(p["src_addr"], p["ss_family"])
             dst_addr = get_addr_string(p["dst_addr"], p["ss_family"])
-            display_filter = "ip.src == " +src_addr+  "and ip.dst =="+dst_addr
-            traced_Socket_Set.add(display_filter)
+            if socket_trace:
+                display_filter = pcap.PCAP.get_display_filter(src_addr,dst_addr)
+                traced_Socket_Set.add(display_filter)
+            else:
+                scapy_filter = pcap.PCAP.get_bpf_filter(src_addr,dst_addr)
+                traced_scapy_socket_Set.add(scapy_filter)
+            
 
     def on_child_added(child):
         print(f"[*] Attached to child process with pid {child.pid}")
@@ -178,6 +187,7 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
         script.load()
 
     # Main code
+    global pcap_obj
     if mobile:
         device = frida.get_usb_device()
     else:
@@ -189,6 +199,9 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
         device.on("spawn_added", on_spawn_added)
     if spawn:
         print("spawning "+ app)
+        if full_capture and pcap_name:
+            pcap_obj =  pcap.PCAP(pcap_name,SSL_READ,SSL_WRITE,full_capture, mobile,debug_output)
+            
         if mobile:
             pid = device.spawn(app)
         else:
@@ -212,10 +225,10 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
         print(
             f'[*] Now open this named pipe with Wireshark in another terminal: sudo wireshark -k -i {fifo_file}')
         print(f'[*] friTap will continue after the named pipe is ready....\n')
-        pcap_obj =  pcap.PCAP(fifo_file,SSL_READ,SSL_WRITE,full_capture)
+        pcap_obj =  pcap.PCAP(fifo_file,SSL_READ,SSL_WRITE,full_capture, mobile,debug_output)
 
     elif pcap_name:
-        pcap_obj =  pcap.PCAP(pcap_name,SSL_READ,SSL_WRITE,full_capture)
+        pcap_obj =  pcap.PCAP(pcap_name,SSL_READ,SSL_WRITE,full_capture, mobile,debug_output)
         
 
     if keylog:
@@ -240,8 +253,6 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
         pass
 
     process.detach()
-    if full_capture:
-        pcap_obj.create_application_traffic_pcap()
 
 
 class ArgParser(argparse.ArgumentParser):
@@ -272,11 +283,11 @@ Examples:
 
     args = parser.add_argument_group("Arguments")
     args.add_argument("-m", "--mobile", required=False, action="store_const",
-                      const=True, help="Attach to a process on android or iOS")
+                      const=True, default=False, help="Attach to a process on android or iOS")
     args.add_argument("-d", "--debug", required=False, action="store_const", const=True,
                       help="Set the debug output of friTap")
-    args.add_argument("-f", "--full_capture", required=False, action="store_const", const=True,
-                      help="Do a full packet capture instead of logging only the decrypted TLS payload")
+    args.add_argument("-f", "--full_capture", required=False, action="store_const", const=True, default=False,
+                      help="Do a full packet capture instead of logging only the decrypted TLS payload. Set pcap name with -p <PCAP name>")
     args.add_argument("-k", "--keylog", metavar="<path>", required=False,
                       help="Log the keys used for tls traffic")
     args.add_argument("-l", "--live", required=False, action="store_const", const=True,
@@ -297,6 +308,9 @@ Examples:
                       help="executable/app whose SSL calls to log")
     parsed = parser.parse_args()
     
+    if parsed.full_capture and parsed.pcap is None:
+        parser.error("--full_capture requires -p to set the pcap name")
+        exit(2)
     
     try:
         print("Start logging")
@@ -306,5 +320,18 @@ Examples:
         print(ar)
 
     finally:
-        cleanup(parsed.live,parsed.socket_tracing)
+        if parsed.full_capture:
+            capture_type = "local"
+            pcap_obj.full_capture_thread.join(2.0)
+            if pcap_obj.full_capture_thread.is_alive() and parsed.mobile == False:
+                pcap_obj.full_capture_thread.socket.close()
+            if pcap_obj.full_capture_thread.mobile_pid != -1:
+                capture_type = "mobile"
+                pcap_obj.full_capture_thread.mobile_pid.terminate()
+                pcap_obj.android_Instance.send_ctrlC_over_adb()
+                pcap_obj.android_Instance.pull_pcap_from_device()
+            print(f"[*] full {capture_type} capture safed to _{parsed.pcap}")
+                
+	
+        cleanup(parsed.live,parsed.socket_tracing,parsed.full_capture,parsed.debug)
         
