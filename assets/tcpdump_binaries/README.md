@@ -8,4 +8,4 @@ The precompiled tcpdump version for x86 and x86-64 are taken from [github.com/ex
 
 
 ## ARM based iOS devices
-Currently you have to install on your own to your iPhone
+Currently you have to install tcpdump to your iPhone on your own 
