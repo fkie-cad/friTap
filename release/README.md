@@ -1,6 +1,6 @@
 # Create release build
 
-In order to create a standalone friTap.py script we ensure at first that the used frida Javascript is on its latest version
+In order to create a standalone friTap.pyz script archive we ensure at first that the used frida Javascript is on its latest version
 
 ```bash
 cd <friTap repo>

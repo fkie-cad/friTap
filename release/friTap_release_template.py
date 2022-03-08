@@ -6,13 +6,13 @@ import argparse
 import signal
 import struct
 import time
-import random
 import pprint
 import os
 import socket
 import sys
 import tempfile
 import json
+import pcap
 
 try:
     import hexdump  # pylint: disable=g-import-not-at-top
@@ -21,8 +21,7 @@ except ImportError:
     pass
 
 __author__ = "Daniel Baier, Francois Egner, Max Ufer"
-__version__ = "1.0.1"
-
+__version__ = "1.0.3"
 
 
 
@@ -33,41 +32,57 @@ frida_js_code = """
 
 
 
-# ssl_session[<SSL_SESSION id>] = (<bytes sent by client>,
-#                                  <bytes sent by server>)
-ssl_sessions = {}
+
+
 keydump_Set = {*()}
-
-
+traced_Socket_Set = {*()}
+traced_scapy_socket_Set = {*()}
 filename = ""
 tmpdir = ""
+pcap_obj = None
 
 # Names of all supported read functions:
-SSL_READ = ["SSL_read", "wolfSSL_read", "readApplicationData", "NSS_read"]
+SSL_READ = ["SSL_read", "wolfSSL_read", "readApplicationData", "NSS_read","Full_read"]
 # Names of all supported write functions:
-SSL_WRITE = ["SSL_write", "wolfSSL_write", "writeApplicationData", "NSS_write"]
+SSL_WRITE = ["SSL_write", "wolfSSL_write", "writeApplicationData", "NSS_write","Full_write"]
 
 
-def write_pcap_header(pcap_file):
-    for writes in (
-        ("=I", 0xa1b2c3d4),     # Magic number
-        ("=H", 2),              # Major version number
-        ("=H", 4),              # Minor version number
-        ("=i", time.timezone),  # GMT to local correction
-        ("=I", 0),              # Accuracy of timestamps
-        ("=I", 65535),          # Max length of captured packets
-            ("=I", 101)):           # Data link type (LINKTYPE_IPV4 = 228) CHANGED TO RAW
-        pcap_file.write(struct.pack(writes[0], writes[1]))
-    return pcap_file
 
-
-def cleanup(live=False):
+def cleanup(live=False, socket_trace=False, full_capture=False, debug_output=False):
+    global pcap_obj
     if live:
         os.unlink(filename)  # Remove file
         os.rmdir(tmpdir)  # Remove directory
+    if type(socket_trace) is str:
+        print(f"[*] Write traced sockets into {socket_trace}")
+        write_socket_trace(socket_trace)
+    if socket_trace == True:
+        print("[*] Traced sockets")
+        print(pcap.PCAP.get_filter_from_traced_sockets(traced_Socket_Set))
+    
+    if full_capture and len(traced_scapy_socket_Set) > 0:
+        if debug_output:
+            print("[*] traced sockets: "+str(traced_scapy_socket_Set))
+        pcap_obj.create_application_traffic_pcap(traced_scapy_socket_Set)
+        
     print("\nThx for using friTap\nHave a nice day\n")
     os._exit(0)
+    
+    
+def get_addr_string(socket_addr,ss_family):
+    if ss_family == "AF_INET":
+        return  socket.inet_ntop(socket.AF_INET, struct.pack(">I", socket_addr))
+    else: # this should only be AF_INET6
+        raw_addr = bytes.fromhex(socket_addr)
+        return socket.inet_ntop(socket.AF_INET6, struct.pack(">16s", raw_addr))
+    
 
+        
+
+def write_socket_trace(socket_trace_name):
+    with open(socket_trace_name, 'a') as trace_file:
+        trace_file.write(pcap.PCAP.get_filter_from_traced_sockets(traced_Socket_Set) + '\n')
+        
 
 def temp_fifo():
     global tmpdir
@@ -81,131 +96,11 @@ def temp_fifo():
         print(f'Failed to create FIFO: {e}')
 
 
-def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, mobile=False, live=False, environment_file=None, debug_output=False):
-
-    def log_pcap(pcap_file, ss_family, ssl_session_id, function, src_addr, src_port,
-                 dst_addr, dst_port, data):
-        """Writes the captured data to a pcap file.
-        Args:
-        pcap_file: The opened pcap file.
-        ss_family: The family of the connection, IPv4/IPv6
-        ssl_session_id: The SSL session ID for the communication.
-        function: The function that was intercepted ("SSL_read" or "SSL_write").
-        src_addr: The source address of the logged packet.
-        src_port: The source port of the logged packet.
-        dst_addr: The destination address of the logged packet.
-        dst_port: The destination port of the logged packet.
-        data: The decrypted packet data.
-        """
-        t = time.time()
-
-        if function in SSL_READ:
-            session_unique_key = str(src_addr) + str(src_port) + \
-                str(dst_addr) + str(dst_port)
-        else:
-            session_unique_key = str(dst_addr) + str(dst_port) + \
-                str(src_addr) + str(src_port)
-        if session_unique_key not in ssl_sessions:
-
-            ssl_sessions[session_unique_key] = (random.randint(0, 0xFFFFFFFF),
-                                                random.randint(0, 0xFFFFFFFF))
-
-        client_sent, server_sent = ssl_sessions[session_unique_key]
-
-        if function in SSL_READ:
-            seq, ack = (server_sent, client_sent)
-        else:
-            seq, ack = (client_sent, server_sent)
-        if ss_family == "AF_INET":
-            for writes in (
-                # PCAP record (packet) header
-                # Timestamp seconds
-                ("=I", int(t)),
-                # Timestamp microseconds
-                ("=I", int(t * 1000000) % 1000000),
-                # Number of octets saved
-                ("=I", 40 + len(data)),
-                # Actual length of packet
-                ("=i", 40 + len(data)),
-                # IPv4 header
-                # Version and Header Length
-                (">B", 0x45),
-                # Type of Service
-                (">B", 0),
-                # Total Length
-                (">H", 40 + len(data)),
-                # Identification
-                (">H", 0),
-                # Flags and Fragment Offset
-                (">H", 0x4000),
-                # Time to Live
-                (">B", 0xFF),
-                # Protocol
-                (">B", 6),
-                # Header Checksum
-                (">H", 0),
-                (">I", src_addr),                 # Source Address
-                (">I", dst_addr),                 # Destination Address
-                # TCP header
-                (">H", src_port),                 # Source Port
-                (">H", dst_port),                 # Destination Port
-                (">I", seq),                      # Sequence Number
-                (">I", ack),                      # Acknowledgment Number
-                (">H", 0x5018),                   # Header Length and Flags
-                (">H", 0xFFFF),                   # Window Size
-                (">H", 0),                        # Checksum
-                    (">H", 0)):                       # Urgent Pointer
-                pcap_file.write(struct.pack(writes[0], writes[1]))
-
-            pcap_file.write(data)
-
-        elif ss_family == "AF_INET6":
-            for writes in (
-                # PCAP record (packet) header
-                # Timestamp seconds
-                ("=I", int(t)),
-                # Timestamp microseconds
-                ("=I", int(t * 1000000) % 1000000),
-                # Number of octets saved
-                ("=I", 60 + len(data)),
-                # Actual length of packet
-                ("=i", 60 + len(data)),
-                # IPv6 header
-                # Version, traffic class and Flow label
-                (">I", 0x60000000),
-                # Payload length
-                (">H", 20 + len(data)),
-                # Next Header
-                (">B", 6),
-                # Hop limit
-                (">B", 0xFF),
-                # Source Address
-                (">16s", bytes.fromhex(src_addr)),
-                # Destination Address
-                (">16s", bytes.fromhex(dst_addr)),
-                # TCP header
-                (">H", src_port),                 # Source Port
-                (">H", dst_port),                 # Destination Port
-                (">I", seq),                      # Sequence Number
-                (">I", ack),                      # Acknowledgment Number
-                (">H", 0x5018),                   # Header Length and Flags
-                (">H", 0xFFFF),                   # Window Size
-                (">H", 0),                        # Checksum
-                    (">H", 0)):                       # Urgent Pointer
-                pcap_file.write(struct.pack(writes[0], writes[1]))
-
-            pcap_file.write(data)
-
-        else:
-            print("Packet has unknown/unsupported family!")
-
-        if function in SSL_READ:
-            server_sent += len(data)
-        else:
-            client_sent += len(data)
-        ssl_sessions[session_unique_key] = (client_sent, server_sent)
+def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, mobile=False, live=False, environment_file=None, debug_output=False,full_capture=False, socket_trace=False, host=False):
+    
 
     def on_message(message, data):
+        global pcap_obj
         """Callback for errors and messages sent from Frida-injected JavaScript.
         Logs captured packet data received from JavaScript to the console and/or a
         pcap file. See https://www.frida.re/docs/messages/ for more detail on
@@ -226,46 +121,40 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
             print("[*] " + p["console"])
         if debug_output:
             if p["contentType"] == "console_dev" and p["console_dev"]:
-                print("[***] " + p["console_dev"])    
+                if len(p["console_dev"]) > 3:
+                    print("[***] " + p["console_dev"])
         if verbose:
-            if(p["contentType"] == "keylog"):
+            if(p["contentType"] == "keylog") and keylog:
                 if p["keylog"] not in keydump_Set:
                     print(p["keylog"])
                     keydump_Set.add(p["keylog"])
-                    if keylog:
-                        keylog_file.write(p["keylog"] + "\n")
-                        keylog_file.flush()
+                    keylog_file.write(p["keylog"] + "\n")
+                    keylog_file.flush()    
             elif not data or len(data) == 0:
                 return
             else:
-                if(p["ss_family"] == "AF_INET"):
-                    src_addr = socket.inet_ntop(socket.AF_INET,
-                                                struct.pack(">I", p["src_addr"]))
-                    dst_addr = socket.inet_ntop(socket.AF_INET,
-                                                struct.pack(">I", p["dst_addr"]))
-                elif(p["ss_family"] == "AF_INET6"):
-
-                    raw_src_addr = bytes.fromhex(p["src_addr"])
-                    src_addr = socket.inet_ntop(socket.AF_INET6,
-                                                struct.pack(">16s", raw_src_addr))
-                    raw_dst_addr = bytes.fromhex(p["dst_addr"])
-                    dst_addr = socket.inet_ntop(socket.AF_INET6,
-                                                struct.pack(">16s", raw_dst_addr))
-                print("SSL Session: " + str(p["ssl_session_id"]))
-                print("[%s] %s:%d --> %s:%d" % (
-                    p["function"],
-                    src_addr,
-                    p["src_port"],
-                    dst_addr,
-                    p["dst_port"]))
-                hexdump.hexdump(data)
+                src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                dst_addr = get_addr_string(p["dst_addr"], p["ss_family"])
+                
+                if socket_trace == False and full_capture  == False:
+                    print("SSL Session: " + str(p["ssl_session_id"]))
+                if full_capture:
+                    scapy_filter = pcap.PCAP.get_bpf_filter(src_addr,dst_addr)
+                    traced_scapy_socket_Set.add(scapy_filter)
+                if socket_trace:
+                    display_filter = pcap.PCAP.get_display_filter(src_addr,dst_addr)
+                    traced_Socket_Set.add(display_filter)
+                    print("[socket_trace] %s:%d --> %s:%d" % (src_addr, p["src_port"], dst_addr, p["dst_port"]))
+                else:
+                    print("[%s] %s:%d --> %s:%d" % (p["function"], src_addr, p["src_port"], dst_addr, p["dst_port"]))
+                    hexdump.hexdump(data)
                 print()
-        if pcap and p["contentType"] == "datalog":
-            log_pcap(pcap_file, p["ss_family"], p["ssl_session_id"], p["function"], p["src_addr"],
+        if pcap_name and p["contentType"] == "datalog" and full_capture == False:
+            pcap_obj.log_plaintext_payload(p["ss_family"], p["function"], p["src_addr"],
                      p["src_port"], p["dst_addr"], p["dst_port"], data)
-        if live and p["contentType"] == "datalog":
+        if live and p["contentType"] == "datalog" and full_capture == False:
             try:
-                log_pcap(named_pipe, p["ss_family"], p["ssl_session_id"], p["function"], p["src_addr"],
+                pcap_obj.log_plaintext_payload(p["ss_family"], p["function"], p["src_addr"],
                          p["src_port"], p["dst_addr"], p["dst_port"], data)
             except (BrokenPipeError, IOError):
                 process.detach()
@@ -276,6 +165,19 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
                 keylog_file.write(p["keylog"] + "\n")
                 keylog_file.flush()
                 keydump_Set.add(p["keylog"])
+        
+        if socket_trace or full_capture:
+            if not data or len(data) == 0:
+                return
+            src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+            dst_addr = get_addr_string(p["dst_addr"], p["ss_family"])
+            if socket_trace:
+                display_filter = pcap.PCAP.get_display_filter(src_addr,dst_addr)
+                traced_Socket_Set.add(display_filter)
+            else:
+                scapy_filter = pcap.PCAP.get_bpf_filter(src_addr,dst_addr)
+                traced_scapy_socket_Set.add(scapy_filter)
+            
 
     def on_child_added(child):
         print(f"[*] Attached to child process with pid {child.pid}")
@@ -289,14 +191,17 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
         device.resume(spawn.pid)
 
     def instrument(process):
-        
-        script = process.create_script(frida_js_code)
+        with open("_ssl_log.js") as f:
+            script = process.create_script(f.read())
         script.on("message", on_message)
         script.load()
 
     # Main code
+    global pcap_obj
     if mobile:
         device = frida.get_usb_device()
+    elif host:
+        device = frida.get_device_manager().add_remote_device(host)
     else:
         device = frida.get_local_device()
 
@@ -306,7 +211,11 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
         device.on("spawn_added", on_spawn_added)
     if spawn:
         print("spawning "+ app)
-        if mobile:
+        
+        if full_capture and pcap_name:
+            pcap_obj =  pcap.PCAP(pcap_name,SSL_READ,SSL_WRITE,full_capture, mobile,debug_output)
+            
+        if mobile or host:
             pid = device.spawn(app)
         else:
             used_env = {}
@@ -315,13 +224,13 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
                     used_env = json.load(json_env_file)
             pid = device.spawn(app.split(" "),env=used_env)
             device.resume(pid)
-            time.sleep(1) #Without it Java.perform silently fails
+            time.sleep(1) # without it Java.perform silently fails
         process = device.attach(pid)
     else:
         process = device.attach(int(app) if app.isnumeric() else app)
 
     if live:
-        if pcap:
+        if pcap_name:
             print("[*] YOU ARE TRYING TO WRITE A PCAP AND HAVING A LIVE VIEW\nTHIS IS NOT SUPPORTED!\nWHEN YOU DO A LIVE VIEW YOU CAN SAFE YOUR CAPUTRE WIHT WIRESHARK.")
         fifo_file = temp_fifo()
         print(f'[*] friTap live view on Wireshark')
@@ -329,11 +238,11 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
         print(
             f'[*] Now open this named pipe with Wireshark in another terminal: sudo wireshark -k -i {fifo_file}')
         print(f'[*] friTap will continue after the named pipe is ready....\n')
-        named_pipe = open(fifo_file, "wb", 0)
-        named_pipe = write_pcap_header(named_pipe)
-    elif pcap:
-        pcap_file = open(pcap, "wb", 0)
-        pcap_file = write_pcap_header(pcap_file)
+        pcap_obj =  pcap.PCAP(fifo_file,SSL_READ,SSL_WRITE,full_capture, mobile,debug_output)
+
+    elif pcap_name:
+        pcap_obj =  pcap.PCAP(pcap_name,SSL_READ,SSL_WRITE,full_capture, mobile,debug_output)
+        
 
     if keylog:
         keylog_file = open(keylog, "w")
@@ -341,10 +250,13 @@ def ssl_log(app, pcap=None, verbose=False, spawn=False, keylog=False, enable_spa
     print("Press Ctrl+C to stop logging.")
     print('[*] Running Script')
     instrument(process)
-    if pcap:
-        print(f'[*] Logging pcap to {pcap}')
+    if pcap_name and full_capture:
+        print(f'[*] Logging pcap to {pcap_name}')
+    if pcap_name and full_capture == False:
+        print(f'[*] Logging TLS plaintext as pcap to {pcap_name}')
     if keylog:
         print(f'[*] Logging keylog file to {keylog}')
+        
 
     if spawn:
         device.resume(pid)
@@ -376,17 +288,22 @@ if __name__ == "__main__":
         epilog=r"""
 Examples:
   %(prog)s -m -p ssl.pcap com.example.app
-  %(prog)s -m --verbose com.example.app
   %(prog)s -m --pcap log.pcap --verbose com.example.app
   %(prog)s -m -k keys.log -v -s com.example.app
   %(prog)s --pcap log.pcap "$(which curl) https://www.google.com"
+  %(prog)s -H --pcap log.pcap 192.168.0.1:1234 com.example.app
+  %(prog)s -m -p log.pcap --enable_spawn_gating -v -d --full_capture -k keys.log com.example.app
 """)
 
     args = parser.add_argument_group("Arguments")
     args.add_argument("-m", "--mobile", required=False, action="store_const",
-                      const=True, help="Attach to a process on android or iOS")
+                      const=True, default=False, help="Attach to a process on android or iOS")
+    args.add_argument("-H", "--host", metavar="<ip:port>", required=False,
+                      help="Attach to a process on remote frida device")
     args.add_argument("-d", "--debug", required=False, action="store_const", const=True,
                       help="Set the debug output of friTap")
+    args.add_argument("-f", "--full_capture", required=False, action="store_const", const=True, default=False,
+                      help="Do a full packet capture instead of logging only the decrypted TLS payload. Set pcap name with -p <PCAP name>")
     args.add_argument("-k", "--keylog", metavar="<path>", required=False,
                       help="Log the keys used for tls traffic")
     args.add_argument("-l", "--live", required=False, action="store_const", const=True,
@@ -395,6 +312,8 @@ Examples:
                       help="Name of PCAP file to write")
     args.add_argument("-s", "--spawn", required=False, action="store_const", const=True,
                       help="Spawn the executable/app instead of attaching to a running process")
+    args.add_argument("-sot", "--socket_tracing", metavar="<path>", required=False, nargs='?', const=True,
+                      help="Traces all socket of the target application and provide a prepared wireshark display filter. If pathname is set, it will write the socket trace into a file-")
     args.add_argument("-env","--environment", metavar="<env.json>", required=False,
                       help="Provide the environment necessary for spawning as an JSON file. For instance: {\"ENV_VAR_NAME\": \"ENV_VAR_VALUE\" }")
     args.add_argument("-v", "--verbose", required=False, action="store_const",
@@ -404,13 +323,32 @@ Examples:
     args.add_argument("exec", metavar="<executable/app name/pid>",
                       help="executable/app whose SSL calls to log")
     parsed = parser.parse_args()
-
+    
+    if parsed.full_capture and parsed.pcap is None:
+        parser.error("--full_capture requires -p to set the pcap name")
+        exit(2)
+    
     try:
         print("Start logging")
         ssl_log(parsed.exec, parsed.pcap, parsed.verbose,
-                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.mobile, parsed.live, parsed.environment, parsed.debug)
+                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.mobile, parsed.live, parsed.environment, parsed.debug, parsed.full_capture, parsed.socket_tracing,parsed.host)
+
     except Exception as ar:
         print(ar)
 
     finally:
-        cleanup(parsed.live)
+        if parsed.full_capture:
+            capture_type = "local"
+            pcap_obj.full_capture_thread.join(2.0)
+            if pcap_obj.full_capture_thread.is_alive() and parsed.mobile == False:
+                pcap_obj.full_capture_thread.socket.close()
+            if pcap_obj.full_capture_thread.mobile_pid != -1:
+                capture_type = "mobile"
+                pcap_obj.full_capture_thread.mobile_pid.terminate()
+                pcap_obj.android_Instance.send_ctrlC_over_adb()
+                pcap_obj.android_Instance.pull_pcap_from_device()
+            print(f"[*] full {capture_type} capture safed to _{parsed.pcap}")
+                
+	
+        cleanup(parsed.live,parsed.socket_tracing,parsed.full_capture,parsed.debug)
+        

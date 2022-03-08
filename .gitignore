@@ -10,6 +10,7 @@ ExampleLinux/wolfssl/*
 #built application files
 *.apk
 *.ap_
+*.pyz
 
 # files for the dex VM
 *.dex
