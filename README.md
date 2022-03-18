@@ -56,6 +56,7 @@ Further ensure that the frida-server is running on the Android/iOS device. More 
 - [frida](https://frida.re)
 - >= python3.6
 - hexdump (`pip3 install hexdump`)
+- scapy (`pip3 install scapy`)
 
 ## Planned features
 
