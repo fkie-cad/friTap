@@ -50,11 +50,11 @@ Interceptor.attach(Module.getExportByName('libnspr4.so', 'PR_Read'), {
 ```
 
 
-Another possibility is to use frida-trace or a debugger of our choice.
+Another possibility is to use frida-trace or a debugger of our choice. Besides this we are currently working on adding new library by a known offset(currently under development).
 
 ## Looking for SSL objects in a process
 
-Sometimes when adding a new library or a library to an new platform it might help to have a look for certain functions names in all modules loaded from the process we are analyzing. In those cases the following snipped might help:
+Sometimes when adding a new library or a library to a new platform it might help to have a look for certain functions names in all modules loaded from the process we are analyzing. In those cases the following snipped might help:
 
 ```javascript
 modules = Process.enumerateModules()
