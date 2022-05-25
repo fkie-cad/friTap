@@ -1,5 +1,5 @@
 <p align="center">
-    <img src="assets/logo.png" alt="friTap logo" width="60%" height="60%"/>
+    <img src="assets/logo.png" alt="friTap logo" width="10%" height="10%"/>
 </p>
 
 # friTap
