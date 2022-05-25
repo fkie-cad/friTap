@@ -1,5 +1,5 @@
 <p align="center">
-    <img src="assets/logo.png" alt="friTap logo" width="10%" height="10%"/>
+    <img src="assets/logo.png" alt="friTap logo" width="50%" height="50%"/>
 </p>
 
 # friTap
@@ -64,6 +64,7 @@ Further ensure that the frida-server is running on the Android/iOS device. More 
   - integration with https://github.com/mitmproxy/mitmproxy
   - integration with http://portswigger.net/burp/
 - [ ] add wine support
+- [ ] add Flutter support
 - [ ] add further libraries (have a look at this [Wikipedia entry](https://en.wikipedia.org/wiki/Comparison_of_TLS_implementations)):
   - Botan (BSD license, Jack Lloyd)
   - LibreSSL (OpenBSD)
