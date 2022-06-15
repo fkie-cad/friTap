@@ -1,4 +1,4 @@
-import { readAddresses, getPortsAndAddresses, getSocketLibrary, getModuleNames } from "../shared/shared"
+import { readAddresses } from "../shared/shared_functions"
 import { socket_library } from "./windows_agent";
 
 /*

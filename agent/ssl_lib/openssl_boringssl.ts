@@ -1,4 +1,4 @@
-import { readAddresses, getPortsAndAddresses } from "../shared/shared"
+import { readAddresses, getPortsAndAddresses } from "../shared/shared_functions"
 import { log } from "../util/log"
 
 /**

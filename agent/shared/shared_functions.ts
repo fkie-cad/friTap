@@ -1,4 +1,5 @@
 import { log, devlog } from "../util/log"
+import { AF_INET, AF_INET6 } from "./shared_structures"
 
 /**
  * This file contains methods which are shared for reading
@@ -7,11 +8,28 @@ import { log, devlog } from "../util/log"
  * on libc.
  */
 
+export function ssl_library_loader(plattform_name: string, module_library_mapping: { [key: string]: Array<[any, (moduleName: string)=>void]> }, moduleNames: Array<string> ): void{
+    for(let map of module_library_mapping[plattform_name]){
+        let regex = map[0]
+        let func = map[1]
+        for(let module of moduleNames){
+            if (regex.test(module)){
+                try{
+                    log(`${module} found & will be hooked on ${plattform_name}!`)
+                    func(module) // on some Android Apps we encounterd the problem of multiple SSL libraries but only one is used for the SSL encryption/decryption
+                }catch (error) {
+                    log(`error: skipping module ${module}`)
+                    // when we enable the logging of devlogs we can print the error message as well for further improving this part
+                    devlog("Loader error: "+error)
+                    //  {'description': 'Could not find *libssl*.so!SSL_ImportFD', 'type': 'error'}
+                }
+                
+            } 
+        }
+    }
 
-//GLOBALS
-export const AF_INET = 2
-export const AF_INET6 = 10
-export const pointerSize = Process.pointerSize;
+}
+
 
 //TODO: 
 export function getSocketLibrary(){

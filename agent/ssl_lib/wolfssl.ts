@@ -1,4 +1,4 @@
-import { readAddresses, getPortsAndAddresses, toHexString } from "../shared/shared"
+import { readAddresses, getPortsAndAddresses, toHexString } from "../shared/shared_functions"
 import { log } from "../util/log"
 
 export class WolfSSL {

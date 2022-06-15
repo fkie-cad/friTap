@@ -1,15 +1,16 @@
 import { module_library_mapping } from "../shared/shared_structures"
 import { log, devlog } from "../util/log"
-import { getModuleNames } from "../shared/shared"
+import { getModuleNames, ssl_library_loader } from "../shared/shared_functions"
 import { boring_execute } from "./openssl_boringssl_ios"
 
-module_library_mapping["darwin"] = [[/.*libboringssl\.dylib/, boring_execute]]
+
+var plattform_name = "iOS";
 var moduleNames: Array<string> = getModuleNames()
 
 export const socket_library = "libSystem.B.dylib"
 
 
-function hook_iOS_Dynamic_Loader(): void {
+function hook_iOS_Dynamic_Loader(module_library_mapping: { [key: string]: Array<[any, (moduleName: string)=>void]> }): void {
     try {
         devlog("Missing dynamic loader hook implementation!");
     } catch (error) {
@@ -19,22 +20,14 @@ function hook_iOS_Dynamic_Loader(): void {
 }
 
 
-function hook_iOS_SSL_Libs() {
-    for (let map of module_library_mapping["darwin"]) {
-        let regex = map[0]
-        let func = map[1]
-        for (let module of moduleNames) {
-            if (regex.test(module)) {
-                log(`${module} found & will be hooked on Darwin!`)
-                func(module)
-            }
-        }
-    }
+function hook_iOS_SSL_Libs(module_library_mapping: { [key: string]: Array<[any, (moduleName: string)=>void]> }) {
+    ssl_library_loader(plattform_name, module_library_mapping,moduleNames)
 }
 
 
 
 export function load_ios_hooking_agent() {
-    hook_iOS_SSL_Libs();
-    hook_iOS_Dynamic_Loader();
+    module_library_mapping[plattform_name] = [[/.*libboringssl\.dylib/, boring_execute]]
+    hook_iOS_SSL_Libs(module_library_mapping);
+    hook_iOS_Dynamic_Loader(module_library_mapping);
 }

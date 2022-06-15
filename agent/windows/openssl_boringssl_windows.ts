@@ -1,6 +1,6 @@
 
 import {OpenSSL_BoringSSL } from "../ssl_lib/openssl_boringssl"
-import { readAddresses, getPortsAndAddresses } from "../shared/shared"
+import { readAddresses, getPortsAndAddresses } from "../shared/shared_functions"
 import { socket_library } from "./windows_agent";
 
 export class OpenSSL_BoringSSL_Windows extends OpenSSL_BoringSSL {

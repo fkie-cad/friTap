@@ -1,5 +1,5 @@
 import { log } from "../util/log"
-import { byteArrayToString, byteArrayToNumber, getAttribute, reflectionByteArrayToString } from "../shared/shared"
+import { byteArrayToString, byteArrayToNumber, getAttribute, reflectionByteArrayToString } from "../shared/shared_functions"
 export function execute() {
     Java.perform(function () {
 

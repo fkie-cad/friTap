@@ -1,6 +1,6 @@
 import { log, devlog } from "../util/log"
 import { get_process_architecture } from "../util/process_infos"
-import { readAddresses, getPortsAndAddresses } from "../shared/shared"
+import { readAddresses, getPortsAndAddresses } from "../shared/shared_functions"
 
 
 export function execute(moduleName:string) {

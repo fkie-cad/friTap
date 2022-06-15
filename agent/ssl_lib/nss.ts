@@ -1,4 +1,5 @@
-import { readAddresses, getPortsAndAddresses, getSocketLibrary, getModuleNames, pointerSize, AF_INET, AF_INET6 } from "../shared/shared"
+import { readAddresses} from "../shared/shared_functions"
+import { pointerSize, AF_INET, AF_INET6 } from "../shared/shared_structures"
 import { log, devlog } from "../util/log"
 
 

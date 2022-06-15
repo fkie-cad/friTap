@@ -1,6 +1,6 @@
 import { module_library_mapping } from "../shared/shared_structures"
 import { log, devlog } from "../util/log"
-import { getModuleNames } from "../shared/shared"
+import { getModuleNames, ssl_library_loader } from "../shared/shared_functions"
 import { sspi_execute } from "./sspi"
 import { boring_execute } from "./openssl_boringssl_windows"
 import { gnutls_execute } from "./gnutls_windows"
@@ -10,13 +10,12 @@ import { wolfssl_execute } from "./wolfssl_windows"
 
 
 
-
-module_library_mapping["windows"] = [[/libssl-[0-9]+(_[0-9]+)?\.dll/, boring_execute], [/.*wolfssl.*\.dll/, wolfssl_execute], [/.*libgnutls-[0-9]+\.dll/, gnutls_execute], [/nspr[0-9]*\.dll/, nss_execute], [/sspicli\.dll/i, sspi_execute], [/mbedTLS\.dll/, mbedTLS_execute]]
+var plattform_name = "Windows";
 var moduleNames: Array<string> = getModuleNames()
 
 export const socket_library = "WS2_32.dll";
 
-function hook_Windows_Dynamic_Loader(): void {
+function hook_Windows_Dynamic_Loader(module_library_mapping: { [key: string]: Array<[any, (moduleName: string)=>void]> }): void {
     try {
 
         const resolver: ApiResolver = new ApiResolver('module')
@@ -32,7 +31,7 @@ function hook_Windows_Dynamic_Loader(): void {
                 let moduleName = map.findName(retval)
                 if (moduleName === null) return
 
-                for (let map of module_library_mapping["windows"]) {
+                for (let map of module_library_mapping[plattform_name]) {
                     let regex = map[0]
                     let func = map[1]
 
@@ -51,20 +50,12 @@ function hook_Windows_Dynamic_Loader(): void {
     }
 }
 
-function hook_Windows_SSL_Libs() {
-    for (let map of module_library_mapping["windows"]) {
-        let regex = map[0]
-        let func = map[1]
-        for (let module of moduleNames) {
-            if (regex.test(module)) {
-                log(`${module} found & will be hooked on Windows!`)
-                func(module)
-            }
-        }
-    }
+function hook_Windows_SSL_Libs(module_library_mapping: { [key: string]: Array<[any, (moduleName: string)=>void]> }) {
+    ssl_library_loader(plattform_name, module_library_mapping,moduleNames)
 }
 
 export function load_windows_hooking_agent() {
-    hook_Windows_SSL_Libs();
-    hook_Windows_Dynamic_Loader();
+    module_library_mapping[plattform_name] = [[/libssl-[0-9]+(_[0-9]+)?\.dll/, boring_execute], [/.*wolfssl.*\.dll/, wolfssl_execute], [/.*libgnutls-[0-9]+\.dll/, gnutls_execute], [/nspr[0-9]*\.dll/, nss_execute], [/sspicli\.dll/i, sspi_execute], [/mbedTLS\.dll/, mbedTLS_execute]]
+    hook_Windows_SSL_Libs(module_library_mapping);
+    hook_Windows_Dynamic_Loader(module_library_mapping);
 }
