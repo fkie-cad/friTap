@@ -7,6 +7,16 @@ import { isWindows, isLinux, isAndroid, isiOS, isMacOS } from "./util/process_in
 import { log } from "./util/log"
 
 
+/*
+
+create the TLS library for your first prototpye as a lib in ./ssl_lib and than extend this class for the OS where this new lib was tested.
+
+Further keep in mind, that properties of an class only visible inside the Interceptor-onEnter/onLeave scope when they are static. 
+As an alternative you could make a local variable inside the calling functions which holds an reference to the class property.
+
+*/
+
+
 function load_os_specific_agent() {
     if(isWindows()){
         load_windows_hooking_agent()

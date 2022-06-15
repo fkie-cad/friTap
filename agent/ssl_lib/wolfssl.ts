@@ -6,11 +6,11 @@ export class WolfSSL {
     // global variables
     library_method_mapping: { [key: string]: Array<String> } = {};
     addresses: { [key: string]: NativePointer };
-    wolfSSL_get_server_random: NativeFunction;
-    wolfSSL_get_client_random : NativeFunction;
-    wolfSSL_get_fd: NativeFunction;
-    wolfSSL_get_session: NativeFunction;
-    wolfSSL_SESSION_get_master_key: NativeFunction
+    static wolfSSL_get_server_random: NativeFunction;
+    static wolfSSL_get_client_random : NativeFunction;
+    static wolfSSL_get_fd: NativeFunction;
+    static wolfSSL_get_session: NativeFunction;
+    static wolfSSL_SESSION_get_master_key: NativeFunction
    
 
     constructor(public moduleName:String, public socket_library:String,public passed_library_method_mapping?: { [key: string]: Array<String> }){
@@ -23,12 +23,12 @@ export class WolfSSL {
         
         this.addresses = readAddresses(this.library_method_mapping);
 
-        this.wolfSSL_get_fd = new NativeFunction(this.addresses["wolfSSL_get_fd"], "int", ["pointer"])
-        this.wolfSSL_get_session = new NativeFunction(this.addresses["wolfSSL_get_session"], "pointer", ["pointer"])
-        this.wolfSSL_get_client_random = new NativeFunction(this.addresses["wolfSSL_get_client_random"],"int", ["pointer", "pointer", "int"] )
-        this.wolfSSL_get_server_random = new NativeFunction(this.addresses["wolfSSL_get_server_random"],"int", ["pointer", "pointer", "int"] )
+        WolfSSL.wolfSSL_get_fd = new NativeFunction(this.addresses["wolfSSL_get_fd"], "int", ["pointer"])
+        WolfSSL.wolfSSL_get_session = new NativeFunction(this.addresses["wolfSSL_get_session"], "pointer", ["pointer"])
+        WolfSSL.wolfSSL_get_client_random = new NativeFunction(this.addresses["wolfSSL_get_client_random"],"int", ["pointer", "pointer", "int"] )
+        WolfSSL.wolfSSL_get_server_random = new NativeFunction(this.addresses["wolfSSL_get_server_random"],"int", ["pointer", "pointer", "int"] )
         //https://www.wolfssl.com/doxygen/group__Setup.html#gaf18a029cfeb3150bc245ce66b0a44758
-        this.wolfSSL_SESSION_get_master_key = new NativeFunction(this.addresses["wolfSSL_SESSION_get_master_key"], "int", ["pointer", "pointer", "int"])
+        WolfSSL.wolfSSL_SESSION_get_master_key = new NativeFunction(this.addresses["wolfSSL_SESSION_get_master_key"], "int", ["pointer", "pointer", "int"])
 
     }
 
@@ -40,8 +40,8 @@ export class WolfSSL {
        *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
        */
 
-    getSslSessionId(ssl: NativePointer) {
-        var session = this.wolfSSL_get_session(ssl) as NativePointer
+     static getSslSessionId(ssl: NativePointer) {
+        var session = WolfSSL.wolfSSL_get_session(ssl) as NativePointer
         if (session.isNull()) {
             log("Session is null")
             return 0
@@ -61,14 +61,15 @@ export class WolfSSL {
 
 
     install_plaintext_read_hook(){
+        var lib_addesses = this.addresses;
         Interceptor.attach(this.addresses["wolfSSL_read"],
         {
             onEnter: function (args: any) {
                 
-                var message = getPortsAndAddresses(this.wolfSSL_get_fd(args[0]) as number, true, this.addresses)
+                var message = getPortsAndAddresses(WolfSSL.wolfSSL_get_fd(args[0]) as number, true, lib_addesses)
                 
                 message["function"] = "wolfSSL_read"
-                message["ssl_session_id"] = this.getSslSessionId(args[0])
+                message["ssl_session_id"] = WolfSSL.getSslSessionId(args[0])
                 this.message = message
                 this.buf = args[1]
 
@@ -86,11 +87,12 @@ export class WolfSSL {
 
 
     install_plaintext_write_hook(){
+        var lib_addesses = this.addresses;
         Interceptor.attach(this.addresses["wolfSSL_write"],
         {
             onEnter: function (args: any) {
-                var message = getPortsAndAddresses(this.wolfSSL_get_fd(args[0]) as number, false, this.addresses)
-                message["ssl_session_id"] = this.getSslSessionId(args[0])
+                var message = getPortsAndAddresses(WolfSSL.wolfSSL_get_fd(args[0]) as number, false, lib_addesses)
+                message["ssl_session_id"] = WolfSSL.getSslSessionId(args[0])
                 message["function"] = "wolfSSL_write"
                 message["contentType"] = "datalog"
                 send(message, args[1].readByteArray(parseInt(args[2])))
@@ -106,29 +108,29 @@ export class WolfSSL {
                 this.ssl = args[0]
             },
             onLeave: function(retval: any){
-                this.session = this.wolfSSL_get_session(this.ssl) as NativePointer
+                this.session = WolfSSL.wolfSSL_get_session(this.ssl) as NativePointer
     
                 var keysString = "";
                 
                 //https://www.wolfssl.com/doxygen/group__Setup.html#ga927e37dc840c228532efa0aa9bbec451
-                var requiredClientRandomLength = this.wolfSSL_get_client_random(this.session, NULL, 0) as number
+                var requiredClientRandomLength = WolfSSL.wolfSSL_get_client_random(this.session, NULL, 0) as number
                 
                 var clientBuffer = Memory.alloc(requiredClientRandomLength)
-                this.wolfSSL_get_client_random(this.ssl, clientBuffer, requiredClientRandomLength)
+                WolfSSL.wolfSSL_get_client_random(this.ssl, clientBuffer, requiredClientRandomLength)
                 var clientBytes = clientBuffer.readByteArray(requiredClientRandomLength)
                 keysString = `${keysString}CLIENT_RANDOM: ${toHexString(clientBytes)}\n`
                 
                 //https://www.wolfssl.com/doxygen/group__Setup.html#ga987035fc600ba9e3b02e2b2718a16a6c
-                var requiredServerRandomLength = this.wolfSSL_get_server_random(this.session, NULL, 0) as number
+                var requiredServerRandomLength = WolfSSL.wolfSSL_get_server_random(this.session, NULL, 0) as number
                 var serverBuffer = Memory.alloc(requiredServerRandomLength)
-                this.wolfSSL_get_server_random(this.ssl, serverBuffer, requiredServerRandomLength)
+                WolfSSL.wolfSSL_get_server_random(this.ssl, serverBuffer, requiredServerRandomLength)
                 var serverBytes = serverBuffer.readByteArray(requiredServerRandomLength)
                 keysString = `${keysString}SERVER_RANDOM: ${toHexString(serverBytes)}\n`
                 
                 //https://www.wolfssl.com/doxygen/group__Setup.html#gaf18a029cfeb3150bc245ce66b0a44758
-                var requiredMasterKeyLength = this.wolfSSL_SESSION_get_master_key(this.session, NULL, 0) as number
+                var requiredMasterKeyLength = WolfSSL.wolfSSL_SESSION_get_master_key(this.session, NULL, 0) as number
                 var masterBuffer = Memory.alloc(requiredMasterKeyLength)
-                this.wolfSSL_SESSION_get_master_key(this.session, masterBuffer, requiredMasterKeyLength)
+                WolfSSL.wolfSSL_SESSION_get_master_key(this.session, masterBuffer, requiredMasterKeyLength)
                 var masterBytes = masterBuffer.readByteArray(requiredMasterKeyLength)
                 keysString = `${keysString}MASTER_KEY: ${toHexString(masterBytes)}\n`
     

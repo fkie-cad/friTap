@@ -14,13 +14,13 @@ export class OpenSSL_BoringSSL {
     // global variables
     library_method_mapping: { [key: string]: Array<String> } = {};
     addresses: { [key: string]: NativePointer };
-    SSL_SESSION_get_id: NativeFunction;
-    SSL_CTX_set_keylog_callback : NativeFunction;
-    SSL_get_fd: NativeFunction;
-    SSL_get_session: NativeFunction;
+    static SSL_SESSION_get_id: NativeFunction;
+    static SSL_CTX_set_keylog_callback : NativeFunction;
+    static SSL_get_fd: NativeFunction;
+    static SSL_get_session: NativeFunction;
    
 
-    keylog_callback = new NativeCallback(function (ctxPtr, linePtr: NativePointer) {
+    static keylog_callback = new NativeCallback(function (ctxPtr, linePtr: NativePointer) {
         var message: { [key: string]: string | number | null } = {}
         message["contentType"] = "keylog"
         message["keylog"] = linePtr.readCString()
@@ -40,10 +40,10 @@ export class OpenSSL_BoringSSL {
         
         this.addresses = readAddresses(this.library_method_mapping);
 
-        this.SSL_SESSION_get_id = new NativeFunction(this.addresses["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
-        this.SSL_get_fd = ObjC.available ? new NativeFunction(this.addresses["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(this.addresses["SSL_get_fd"], "int", ["pointer"]);
-        this.SSL_get_session = new NativeFunction(this.addresses["SSL_get_session"], "pointer", ["pointer"]);
-        this.SSL_CTX_set_keylog_callback = ObjC.available ? new NativeFunction(this.addresses["SSL_CTX_set_info_callback"], "void", ["pointer", "pointer"]) : new NativeFunction(this.addresses["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"])    
+        OpenSSL_BoringSSL.SSL_SESSION_get_id = new NativeFunction(this.addresses["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
+        OpenSSL_BoringSSL.SSL_get_fd = ObjC.available ? new NativeFunction(this.addresses["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(this.addresses["SSL_get_fd"], "int", ["pointer"]);
+        OpenSSL_BoringSSL.SSL_get_session = new NativeFunction(this.addresses["SSL_get_session"], "pointer", ["pointer"]);
+        OpenSSL_BoringSSL.SSL_CTX_set_keylog_callback = ObjC.available ? new NativeFunction(this.addresses["SSL_CTX_set_info_callback"], "void", ["pointer", "pointer"]) : new NativeFunction(this.addresses["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"])    
 
     }
 
@@ -53,12 +53,13 @@ export class OpenSSL_BoringSSL {
 
 
     install_plaintext_read_hook(){
+        var lib_addesses = this.addresses;
         Interceptor.attach(this.addresses["SSL_read"],
         {
             onEnter: function (args: any) {
             
-                var message = getPortsAndAddresses(this.SSL_get_fd(args[0]) as number, true, this.addresses)
-                message["ssl_session_id"] = this.getSslSessionId(args[0])
+                var message = getPortsAndAddresses(OpenSSL_BoringSSL.SSL_get_fd(args[0]) as number, true, lib_addesses)
+                message["ssl_session_id"] = OpenSSL_BoringSSL.getSslSessionId(args[0])
                 message["function"] = "SSL_read"
                 this.message = message
                 this.buf = args[1]
@@ -77,12 +78,13 @@ export class OpenSSL_BoringSSL {
     }
 
     install_plaintext_write_hook(){
+        var lib_addesses = this.addresses;
         Interceptor.attach(this.addresses["SSL_write"],
         {
             onEnter: function (args: any) {
                 if (!ObjC.available){
-                var message = getPortsAndAddresses(this.SSL_get_fd(args[0]) as number, false, this.addresses)
-                message["ssl_session_id"] = this.getSslSessionId(args[0])
+                var message = getPortsAndAddresses(OpenSSL_BoringSSL.SSL_get_fd(args[0]) as number, false, lib_addesses)
+                message["ssl_session_id"] = OpenSSL_BoringSSL.getSslSessionId(args[0])
                 message["function"] = "SSL_write"
                 message["contentType"] = "datalog"
                 send(message, args[1].readByteArray(parseInt(args[2])))
@@ -97,7 +99,7 @@ export class OpenSSL_BoringSSL {
         Interceptor.attach(this.addresses["SSL_new"],
         {
             onEnter: function (args: any) {
-                this.SSL_CTX_set_keylog_callback(args[0], this.keylog_callback)
+                OpenSSL_BoringSSL.SSL_CTX_set_keylog_callback(args[0], OpenSSL_BoringSSL.keylog_callback)
             }
 
         })
@@ -110,15 +112,15 @@ export class OpenSSL_BoringSSL {
        *     SSL_SESSION. For example,
        *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
        */
-      getSslSessionId(ssl: NativePointer) {
+      static getSslSessionId(ssl: NativePointer) {
           
-        var session = this.SSL_get_session(ssl) as NativePointer
+        var session = OpenSSL_BoringSSL.SSL_get_session(ssl) as NativePointer
         if (session.isNull()) {
             log("Session is null")
             return 0
         }
         var len_pointer = Memory.alloc(4)
-        var p = this.SSL_SESSION_get_id(session, len_pointer) as NativePointer
+        var p = OpenSSL_BoringSSL.SSL_SESSION_get_id(session, len_pointer) as NativePointer
         var len = len_pointer.readU32()
         var session_id = ""
         for (var i = 0; i < len; i++) {

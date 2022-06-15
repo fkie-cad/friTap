@@ -7,10 +7,10 @@ export class GnuTLS {
     library_method_mapping: { [key: string]: Array<String> } = {};
     addresses: { [key: string]: NativePointer };
     
-    gnutls_transport_get_int : NativeFunction;
-    gnutls_session_get_id: NativeFunction;
-    gnutls_session_get_random: NativeFunction;
-    gnutls_session_set_keylog_function: NativeFunction
+    static gnutls_transport_get_int : NativeFunction;
+    static gnutls_session_get_id: NativeFunction;
+    static gnutls_session_get_random: NativeFunction;
+    static gnutls_session_set_keylog_function: NativeFunction
 
     
    
@@ -25,15 +25,15 @@ export class GnuTLS {
         
         this.addresses = readAddresses(this.library_method_mapping);
 
-        this.gnutls_transport_get_int = new NativeFunction(this.addresses["gnutls_transport_get_int"], "int", ["pointer"])
-        this.gnutls_session_get_id = new NativeFunction(this.addresses["gnutls_session_get_id"], "int", ["pointer", "pointer", "pointer"])
-        this.gnutls_session_set_keylog_function = new NativeFunction(this.addresses["gnutls_session_set_keylog_function"], "void", ["pointer", "pointer"])
-        this.gnutls_session_get_random = new NativeFunction(this.addresses["gnutls_session_get_random"], "pointer", ["pointer", "pointer", "pointer"])
+        GnuTLS.gnutls_transport_get_int = new NativeFunction(this.addresses["gnutls_transport_get_int"], "int", ["pointer"])
+        GnuTLS.gnutls_session_get_id = new NativeFunction(this.addresses["gnutls_session_get_id"], "int", ["pointer", "pointer", "pointer"])
+        GnuTLS.gnutls_session_set_keylog_function = new NativeFunction(this.addresses["gnutls_session_set_keylog_function"], "void", ["pointer", "pointer"])
+        GnuTLS.gnutls_session_get_random = new NativeFunction(this.addresses["gnutls_session_get_random"], "pointer", ["pointer", "pointer", "pointer"])
 
     }
 
 //NativeCallback
-    keylog_callback = new NativeCallback(function (session: NativePointer, label: NativePointer, secret: NativePointer) {
+    static keylog_callback = new NativeCallback(function (session: NativePointer, label: NativePointer, secret: NativePointer) {
         var message: { [key: string]: string | number | null } = {}
         message["contentType"] = "keylog"
 
@@ -51,7 +51,7 @@ export class GnuTLS {
         var server_random_ptr = Memory.alloc(Process.pointerSize + 4)
         var client_random_ptr = Memory.alloc(Process.pointerSize + 4)
         if( typeof this !== "undefined"){
-            this.gnutls_session_get_random(session, client_random_ptr, server_random_ptr)
+            GnuTLS.gnutls_session_get_random(session, client_random_ptr, server_random_ptr)
         }else{
             console.log("[-] Error while installing keylog callback");
         }
@@ -79,15 +79,15 @@ export class GnuTLS {
        *     SSL_SESSION. For example,
        *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
        */
-     getSslSessionId(session: NativePointer) {
+     static getSslSessionId(session: NativePointer) {
         var len_pointer = Memory.alloc(4)
-        var err = this.gnutls_session_get_id(session, NULL, len_pointer)
+        var err = GnuTLS.gnutls_session_get_id(session, NULL, len_pointer)
         if (err != 0) {
             return ""
         }
         var len = len_pointer.readU32()
         var p = Memory.alloc(len)
-        err = this.gnutls_session_get_id(session, p, len_pointer)
+        err = GnuTLS.gnutls_session_get_id(session, p, len_pointer)
         if (err != 0) {
             return ""
         }
@@ -103,11 +103,12 @@ export class GnuTLS {
     }
 
     install_plaintext_read_hook(){
+        var lib_addesses = this.addresses;
         Interceptor.attach(this.addresses["gnutls_record_recv"],
     {
         onEnter: function (args: any) {
-            var message = getPortsAndAddresses(this.gnutls_transport_get_int(args[0]) as number, true, this.addresses)
-            message["ssl_session_id"] = this.getSslSessionId(args[0])
+            var message = getPortsAndAddresses(GnuTLS.gnutls_transport_get_int(args[0]) as number, true, lib_addesses)
+            message["ssl_session_id"] = GnuTLS.getSslSessionId(args[0])
             message["function"] = "SSL_read"
             this.message = message
             this.buf = args[1]
@@ -125,11 +126,12 @@ export class GnuTLS {
     }
     
     install_plaintext_write_hook(){
+        var lib_addesses = this.addresses;
         Interceptor.attach(this.addresses["gnutls_record_send"],
     {
         onEnter: function (args: any) {
-            var message = getPortsAndAddresses(this.gnutls_transport_get_int(args[0]) as number, false, this.addresses)
-            message["ssl_session_id"] = this.getSslSessionId(args[0])
+            var message = getPortsAndAddresses(GnuTLS.gnutls_transport_get_int(args[0]) as number, false, lib_addesses)
+            message["ssl_session_id"] = GnuTLS.getSslSessionId(args[0])
             message["function"] = "SSL_write"
             message["contentType"] = "datalog"
             send(message, args[1].readByteArray(parseInt(args[2])))
@@ -147,7 +149,7 @@ export class GnuTLS {
             this.session = args[0]
         },
         onLeave: function (retval: any) {
-            this.gnutls_session_set_keylog_function(this.session.readPointer(), this.keylog_callback)
+            GnuTLS.gnutls_session_set_keylog_function(this.session.readPointer(), GnuTLS.keylog_callback)
 
         }
     })
