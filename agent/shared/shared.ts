@@ -1,4 +1,4 @@
-import { log, devlog } from "./log"
+import { log, devlog } from "../util/log"
 
 /**
  * This file contains methods which are shared for reading
