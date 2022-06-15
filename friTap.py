@@ -21,7 +21,7 @@ except ImportError:
     pass
 
 __author__ = "Daniel Baier, Francois Egner, Max Ufer"
-__version__ = "1.0.3"
+__version__ = "1.0.4"
 
 
 keydump_Set = {*()}
