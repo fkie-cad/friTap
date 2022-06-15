@@ -1,7 +1,5 @@
 # CONTRIBUTION Guidlines
 
-**currently we are refactoring the whole code - so if you want to add a contribution you might wait a little till we finished**
-
-- each new SSL/TLS library should be implemented in its `<library-name>.ts` inside the assets folder.
+- when adding a new SSL/TLS library it should be created inside the [agent/ssl_lib](https://github.com/fkie-cad/friTap/tree/main/) folder as  `<library-name>.ts`. Than the actual invocation should be done for the appropriate operating system. This means when creating boringssl support for Android we develop our approach inside [agent/ssl_lib](https://github.com/fkie-cad/friTap/tree/main/) folder, but its invocation will be handled by the [android_agent.ts](https://github.com/fkie-cad/friTap/blob/main/agent/android/android_agent.ts) inside the `angent/android/` folder. In order to invocate our new library we need to extend from its superclass ([s. openssl_boringssl_android.ts](https://github.com/fkie-cad/friTap/blob/main/agent/android/openssl_boringssl_android.ts)). All classes of a "library-hook" for an operating system following the same structure and get registered in [android_agent.ts](https://github.com/fkie-cad/friTap/blob/main/agent/android/android_agent.ts).
 - for each new library we want to build a ground truth so that we can ensure that the library is working at least when it is compiled by default
 
