@@ -50,6 +50,7 @@ Further ensure that the frida-server is running on the Android/iOS device. More 
 **TBI** = To be implemented<br>
 **LibNO** = This library is not supported for this plattform<br>
 
+**We verified the Windows implementations only for Windows 10**
 
 ## Dependencies
 
