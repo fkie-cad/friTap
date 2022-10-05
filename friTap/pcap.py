@@ -10,7 +10,7 @@ except ImportError:
 	print('[-]: scapy is not installed, please install it by running: pip3 install scapy')
 	exit(2)
 
-import android
+import friTap.android as android
 
 # ensure that we only see errors from scapy
 logging.getLogger("scapy.runtime").setLevel(logging.ERROR)

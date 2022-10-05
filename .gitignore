@@ -183,3 +183,12 @@ todo.txt
 #windows
 .vs/
 debug/
+
+# some pyhton stuff
+friTap/__pycache__
+__pycache__/
+build/
+dist/
+*.egg-info/
+*.egg
+venv

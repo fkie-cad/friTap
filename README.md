@@ -1,8 +1,9 @@
 <p align="center">
-    <img src="assets/logo.png" alt="friTap logo" width="50%" height="50%"/>
+    <img src="https://raw.githubusercontent.com/fkie-cad/friTap/main/assets/logo.png" alt="friTap logo" width="50%" height="50%"/>
 </p>
 
 # friTap
+[![PyPi](https://badge.fury.io/py/objection.svg)](https://pypi.org/project/friTap)
 
 The goal of this project is to help researchers to analyze traffic encapsulated in SSL or TLS. For details have a view into the [OSDFCon webinar slides](assets/friTapOSDFConwebinar.pdf) or in [this blog post](https://lolcads.github.io/posts/2022/08/fritap/).
 
@@ -11,7 +12,11 @@ This project was inspired by [SSL_Logger](https://github.com/google/ssl_logger )
 
 ## Installation
 
-Just clone the repository and run the `friTap.py`file. Alternatively you can download the friTap standlone version from the release page.
+
+Installation is simply a matter of `pip3 install friTap`. This will give you the `friTap` command. You can update an existing `friTap` installation with `pip3 install --upgrade friTap`.
+
+Alternatively just clone the repository and run the `friTap.py` file or download the friTap standlone version from the release page.
+
 
 ## Usage
 
@@ -27,7 +32,24 @@ For mobile applications we just have to add the -m parameter to indicate that we
 $ ./friTap.py -m --pcap mycapture.pcap com.example.app
 ```
 
-Further ensure that the frida-server is running on the Android/iOS device. More examples on using friTap can be found in the [USAGE.md](./USAGE.md). A detailed introduction using friTap on Android is under [EXAMPLE.md](./EXAMPLE.md) as well.
+Further ensure that the frida-server is running on the Android/iOS device. 
+
+
+Remember when working with the pip installation you have to invoke the `friTap` command with sudo a little bit different. Either as module:
+```bash
+$ sudo -E python3 -m friTap.friTap -m fritap.friTap --pcap mycapture.pcap thunderbird
+```
+or directly invoking the script:
+```bash
+$ which friTap
+/home/daniel/.local/bin/friTap
+
+$ sudo -E /home/daniel/.local/bin/friTap
+```
+
+
+
+More examples on using friTap can be found in the [USAGE.md](./USAGE.md). A detailed introduction using friTap on Android is under [EXAMPLE.md](./EXAMPLE.md) as well.
 
 ## Supported SSL/TLS implementations and corresponding logging capabilities
 
