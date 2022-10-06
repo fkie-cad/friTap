@@ -15,6 +15,7 @@ import json
 import friTap.pcap as pcap
 from friTap.__init__ import __version__
 from friTap.__init__ import __author__
+from friTap.__init__ import debug
 
 try:
     import hexdump  # pylint: disable=g-import-not-at-top
@@ -90,6 +91,8 @@ def temp_fifo():
 
 
 def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, mobile=False, live=False, environment_file=None, debug_output=False,full_capture=False, socket_trace=False, host=False):
+    global debug
+    debug = debug_output
     
 
     def on_message(message, data):
@@ -184,8 +187,15 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
         device.resume(spawn.pid)
 
     def instrument(process):
+        runtime="qjs"
+        if debug:
+            process.enable_debugger(1337)
+            print("[!] running in debug mode")
+            print("Chrome Inspector server listening on port 1337")
+            runtime="v8"
+
         with open(os.path.join(here, '_ssl_log.js')) as f:
-            script = process.create_script(f.read())
+            script = process.create_script(f.read(), runtime=runtime)
         script.on("message", on_message)
         script.load()
 
