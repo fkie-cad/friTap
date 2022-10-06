@@ -15,7 +15,24 @@ export class GnuTLS_Linux extends GnuTLS {
         this.install_tls_keys_callback_hook();
     }
 
+    install_tls_keys_callback_hook(){
+        Interceptor.attach(this.addresses["gnutls_init"],
+    {
+        onEnter: function (args: any) {
+            this.session = args[0]
+        },
+        onLeave: function (retval: any) {
+            console.log(this.session)
+            GnuTLS.gnutls_session_set_keylog_function(this.session.readPointer(), GnuTLS.keylog_callback)
+
+        }
+    })
+
+    }
+
 }
+
+
 
 
 export function gnutls_execute(moduleName:String){

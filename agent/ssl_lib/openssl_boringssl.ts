@@ -43,8 +43,7 @@ export class OpenSSL_BoringSSL {
         OpenSSL_BoringSSL.SSL_SESSION_get_id = new NativeFunction(this.addresses["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
         OpenSSL_BoringSSL.SSL_get_fd = ObjC.available ? new NativeFunction(this.addresses["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(this.addresses["SSL_get_fd"], "int", ["pointer"]);
         OpenSSL_BoringSSL.SSL_get_session = new NativeFunction(this.addresses["SSL_get_session"], "pointer", ["pointer"]);
-        OpenSSL_BoringSSL.SSL_CTX_set_keylog_callback = ObjC.available ? new NativeFunction(this.addresses["SSL_CTX_set_info_callback"], "void", ["pointer", "pointer"]) : new NativeFunction(this.addresses["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"])    
-
+        
     }
 
 
@@ -96,13 +95,7 @@ export class OpenSSL_BoringSSL {
     }
 
     install_tls_keys_callback_hook(){
-        Interceptor.attach(this.addresses["SSL_new"],
-        {
-            onEnter: function (args: any) {
-                OpenSSL_BoringSSL.SSL_CTX_set_keylog_callback(args[0], OpenSSL_BoringSSL.keylog_callback)
-            }
-
-        })
+        log("Error: TLS key extraction not implemented yet.")
     }
 
      /**

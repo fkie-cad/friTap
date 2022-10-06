@@ -1,16 +1,20 @@
 
 import {WolfSSL } from "../ssl_lib/wolfssl";
 import { socket_library } from "./windows_agent";
+import { log } from "../util/log";
 
 export class WolfSSL_Windows extends WolfSSL {
 
     constructor(public moduleName:String, public socket_library:String){
-        super(moduleName,socket_library);
+        let mapping:{ [key: string]: Array<String> } = {};
+        mapping[`${moduleName}`] = ["wolfSSL_read", "wolfSSL_write", "wolfSSL_get_fd", "wolfSSL_get_session", "wolfSSL_connect", "wolfSSL_KeepArrays"]
+        mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
+        super(moduleName,socket_library, mapping);
     }
 
-
+    
     install_tls_keys_callback_hook(){
-
+        log("Key extraction currently not implemented for windows!");
     }
 
 

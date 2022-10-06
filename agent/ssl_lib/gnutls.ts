@@ -32,8 +32,9 @@ export class GnuTLS {
 
     }
 
-//NativeCallback
+    //NativeCallback
     static keylog_callback = new NativeCallback(function (session: NativePointer, label: NativePointer, secret: NativePointer) {
+        
         var message: { [key: string]: string | number | null } = {}
         message["contentType"] = "keylog"
 
@@ -48,14 +49,17 @@ export class GnuTLS {
             secret_str +=
                 ("0" + p.add(i).readU8().toString(16).toUpperCase()).substr(-2)
         }
+        
         var server_random_ptr = Memory.alloc(Process.pointerSize + 4)
         var client_random_ptr = Memory.alloc(Process.pointerSize + 4)
+        
         if( typeof this !== "undefined"){
+            
             GnuTLS.gnutls_session_get_random(session, client_random_ptr, server_random_ptr)
         }else{
             console.log("[-] Error while installing keylog callback");
         }
-
+       
         var client_random_str = ""
         var client_random_len = 32
         p = client_random_ptr.readPointer()
@@ -143,17 +147,7 @@ export class GnuTLS {
     }
     
     install_tls_keys_callback_hook(){
-        Interceptor.attach(this.addresses["gnutls_init"],
-    {
-        onEnter: function (args: any) {
-            this.session = args[0]
-        },
-        onLeave: function (retval: any) {
-            GnuTLS.gnutls_session_set_keylog_function(this.session.readPointer(), GnuTLS.keylog_callback)
-
-        }
-    })
-
+        
     }
 
 

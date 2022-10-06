@@ -13,8 +13,11 @@ export class GnuTLS_Windows extends GnuTLS {
         this.install_plaintext_read_hook();
         this.install_plaintext_write_hook();
 
-        // probably not working and need some testings to verify its working
-        this.install_tls_keys_callback_hook();
+        //this.install_tls_keys_callback_hook();
+    }
+
+    install_tls_keys_callback_hook(){
+        //Not implemented yet
     }
 
 }
