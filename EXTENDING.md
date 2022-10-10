@@ -8,11 +8,19 @@ This project is based on [frida](https://frida.re/) and utilize [frida-compile](
 
 ## Compiling
 
-After setting up your environment to work with frida-compile just invoke the following to compile your new changes:
+For this run our docker compiling instance from the repo root folder:
+
+```bash
+$ ./compile_agent.sh
+```
+Alternative just run frida-compile after setting up your environment to work with frida-compile:
+
 
 ```bash
 $ frida-compile agent/ssl_log.ts -o _ssl_log.js
 ```
+
+In order to debug your contribution you can use the debug feature of friTap. Have a look into [our wiki for more information](https://github.com/fkie-cad/friTap/wiki/Debugging-friTap).
 
 
 ## Verifying a socket read or write function
