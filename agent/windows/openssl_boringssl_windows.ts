@@ -1,12 +1,14 @@
 
 import {OpenSSL_BoringSSL } from "../ssl_lib/openssl_boringssl"
-import { readAddresses, getPortsAndAddresses } from "../shared/shared_functions"
 import { socket_library } from "./windows_agent";
 
 export class OpenSSL_BoringSSL_Windows extends OpenSSL_BoringSSL {
 
     constructor(public moduleName:String, public socket_library:String){
-        super(moduleName,socket_library);
+        let mapping:{ [key: string]: Array<String> } = {};
+        mapping[`${moduleName}`] = ["SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new"]
+        mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
+        super(moduleName,socket_library, mapping);
     }
 
     /*

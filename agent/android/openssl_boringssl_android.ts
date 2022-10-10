@@ -15,6 +15,19 @@ export class OpenSSL_BoringSSL_Android extends OpenSSL_BoringSSL {
         this.install_tls_keys_callback_hook();
     }
 
+    install_tls_keys_callback_hook (){
+
+        OpenSSL_BoringSSL.SSL_CTX_set_keylog_callback = ObjC.available ? new NativeFunction(this.addresses["SSL_CTX_set_info_callback"], "void", ["pointer", "pointer"]) : new NativeFunction(this.addresses["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"])    
+    
+        Interceptor.attach(this.addresses["SSL_new"],
+        {
+            onEnter: function (args: any) {
+                OpenSSL_BoringSSL.SSL_CTX_set_keylog_callback(args[0], OpenSSL_BoringSSL.keylog_callback)
+            }
+    
+        })
+    }
+
 }
 
 
