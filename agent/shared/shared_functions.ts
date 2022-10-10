@@ -104,11 +104,14 @@ export function readAddresses(library_method_mapping: { [key: string]: Array<Str
  * @returns
  */
 export function getBaseAddress(moduleName: String): NativePointer | null {
-    Process.enumerateModules().forEach((module)=>{
-        if(module.name === moduleName){
+    console.log("Module to find:",moduleName)
+    const modules = Process.enumerateModules()
+
+    for(const module of modules){
+        if(module.name == moduleName){
             return module.base;
         }
-    })
+    }
 
     return null;
 }

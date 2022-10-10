@@ -188,20 +188,18 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
         if debug_output:
             process.enable_debugger()
         with open(os.path.join(here, '_ssl_log.js')) as f:
-            script = process.create_script(f.read(), runtime="v8")
+            script_string = f.read()
+            if offsets_data is not None:
+                print(offsets_data)
+                script_string = script_string.replace('"{OFFSETS}"', offsets_data)
+            script = process.create_script(script_string)
         
         script.on("message", on_message)
         script.load()
 
         
-        print("Test")
-        if offsets_data is not None:
-            print(offsets_data)
-            
-            script.post({"type": "offsets_set", "payload": "true"})
-            script.post({"type": "offsets", "payload": offsets_data})
-        else:
-            script.post({"type":"offsets_set", "payload": "false"})
+        
+        
 
     # Main code
     global pcap_obj

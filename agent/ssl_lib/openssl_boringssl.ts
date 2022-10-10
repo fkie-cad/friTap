@@ -40,9 +40,8 @@ export class OpenSSL_BoringSSL {
         }
         
         this.addresses = readAddresses(this.library_method_mapping);
-        console.log("TTT")
-        console.log(getOffsets())
-        if(offsets != null){
+
+        if(offsets != "{OFFSETS}"){
             
             const baseAddress = getBaseAddress(moduleName)
             if(baseAddress == null){
@@ -50,9 +49,19 @@ export class OpenSSL_BoringSSL {
                 return;
             }
 
+            console.log(baseAddress)
+            //@ts-ignore
+            console.log(offsets["SSL_read"])
+            //@ts-ignore
+            console.log(baseAddress.add(ptr(offsets["SSL_read"])))
+            //@ts-ignore
+            console.log(baseAddress.add(ptr(offsets["SSL_write"])))
 
             //@ts-ignore
-            console.log("Address of read:", baseAddress!.add(ptr(offsets!["PR_READ"]!)))
+            this.addresses["SSL_read"] = baseAddress.add(ptr(offsets["SSL_read"]))
+            //@ts-ignore
+            this.addresses["SSL_write"] = baseAddress.add(ptr(offsets["SSL_write"]))
+
         }
 
         OpenSSL_BoringSSL.SSL_SESSION_get_id = new NativeFunction(this.addresses["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
