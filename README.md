@@ -3,7 +3,7 @@
 </p>
 
 # friTap
-![version](https://img.shields.io/badge/version-1.0.5-blue) [![PyPi](https://badge.fury.io/py/objection.svg)](https://pypi.org/project/friTap)
+![version](https://img.shields.io/badge/version-1.0.6-blue) [![PyPi](https://badge.fury.io/py/objection.svg)](https://pypi.org/project/friTap)
 
 The goal of this project is to help researchers to analyze traffic encapsulated in SSL or TLS. For details have a view into the [OSDFCon webinar slides](assets/friTapOSDFConwebinar.pdf) or in [this blog post](https://lolcads.github.io/posts/2022/08/fritap/).
 
@@ -13,7 +13,7 @@ This project was inspired by [SSL_Logger](https://github.com/google/ssl_logger )
 ## Installation
 
 
-Installation is simply a matter of `pip3 install friTap`. This will give you the `friTap` command. You can update an existing `friTap` installation with `pip3 install --upgrade friTap`.
+Installation is simply a matter of `pip3 install fritap`. This will give you the `friTap` command. You can update an existing `friTap` installation with `pip3 install --upgrade friTap`.
 
 Alternatively just clone the repository and run the `friTap.py` file or download the friTap standlone version from the release page.
 
@@ -98,7 +98,7 @@ More examples on using friTap can be found in the [USAGE.md](./USAGE.md). A deta
 - [ ] Working with static linked libraries
 - [ ] Add feature to prototype TLS-Read/Write/SSLKEY functions
 - [ ] improve iOS/MacOS support (currently under development)
-- [ ] provide friTap as PyPI package
+- [x] <strike>provide friTap as PyPI package</strike>
 
 ## Contribute
 
