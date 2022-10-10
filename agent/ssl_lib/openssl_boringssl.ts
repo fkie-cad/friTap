@@ -1,4 +1,5 @@
-import { readAddresses, getPortsAndAddresses } from "../shared/shared_functions"
+import { getOffsets, offsets } from "../ssl_log"
+import { readAddresses, getPortsAndAddresses, getBaseAddress } from "../shared/shared_functions"
 import { log } from "../util/log"
 
 /**
@@ -39,6 +40,20 @@ export class OpenSSL_BoringSSL {
         }
         
         this.addresses = readAddresses(this.library_method_mapping);
+        console.log("TTT")
+        console.log(getOffsets())
+        if(offsets != null){
+            
+            const baseAddress = getBaseAddress(moduleName)
+            if(baseAddress == null){
+                log("Unable to find base address!")
+                return;
+            }
+
+
+            //@ts-ignore
+            console.log("Address of read:", baseAddress!.add(ptr(offsets!["PR_READ"]!)))
+        }
 
         OpenSSL_BoringSSL.SSL_SESSION_get_id = new NativeFunction(this.addresses["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
         OpenSSL_BoringSSL.SSL_get_fd = ObjC.available ? new NativeFunction(this.addresses["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(this.addresses["SSL_get_fd"], "int", ["pointer"]);

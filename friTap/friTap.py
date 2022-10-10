@@ -193,9 +193,15 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
         script.on("message", on_message)
         script.load()
 
+        
+        print("Test")
         if offsets_data is not None:
             print(offsets_data)
+            
+            script.post({"type": "offsets_set", "payload": "true"})
             script.post({"type": "offsets", "payload": offsets_data})
+        else:
+            script.post({"type":"offsets_set", "payload": "false"})
 
     # Main code
     global pcap_obj
@@ -218,6 +224,8 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
                 offsets_data = offsets
             except ValueError as e:
                 print("Log error, defaulting to auto-detection?")
+    else:
+        offsets_data = None
 
     device.on("child_added", on_child_added)
     if enable_spawn_gating:

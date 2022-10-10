@@ -6,7 +6,7 @@ import { load_windows_hooking_agent } from "./windows/windows_agent";
 import { isWindows, isLinux, isAndroid, isiOS, isMacOS } from "./util/process_infos";
 import { log } from "./util/log"
 
-
+export let offsets = null;
 /*
 
 create the TLS library for your first prototpye as a lib in ./ssl_lib and than extend this class for the OS where this new lib was tested.
@@ -15,6 +15,21 @@ Further keep in mind, that properties of an class only visible inside the Interc
 As an alternative you could make a local variable inside the calling functions which holds an reference to the class property.
 
 */
+
+
+
+recv('offsets_set', function onMessage(payloadData: any) {
+    
+    if(payloadData.payload !== "true")
+        return;
+
+    log("Custom address offsets set!")
+    
+}).wait();
+
+export function getOffsets(){
+    return offsets;
+}
 
 
 function load_os_specific_agent() {
@@ -31,10 +46,11 @@ function load_os_specific_agent() {
     }else{
         log("Error: not supported plattform!\nIf you want to have support for this plattform please make an issue at our github page.")
     }
-
 }
 
+
 load_os_specific_agent()
+
 
 
 

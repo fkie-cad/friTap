@@ -99,6 +99,21 @@ export function readAddresses(library_method_mapping: { [key: string]: Array<Str
 }
 
 /**
+ * Returns the base address of a given module
+ * @param {string} moduleName Name of module to return base address from
+ * @returns
+ */
+export function getBaseAddress(moduleName: String): NativePointer | null {
+    Process.enumerateModules().forEach((module)=>{
+        if(module.name === moduleName){
+            return module.base;
+        }
+    })
+
+    return null;
+}
+
+/**
 * Returns a dictionary of a sockfd's "src_addr", "src_port", "dst_addr", and
 * "dst_port".
 * @param {int} sockfd The file descriptor of the socket to inspect.
