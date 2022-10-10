@@ -13,9 +13,9 @@ release_string="friTap.pyz"
 
 def create_tmp_release_folder():
 	os.mkdir(tmp_folder_name)
-	shutil.copy("android.py", tmp_folder_name)
-	shutil.copy("pcap.py", tmp_folder_name)
-	shutil.copy("__init__.py", tmp_folder_name)
+	shutil.copy("../friTap/android.py", tmp_folder_name)
+	shutil.copy("../friTap/pcap.py", tmp_folder_name)
+	shutil.copy("../friTap/__init__.py", tmp_folder_name)
 	shutil.copy("__main__.py", tmp_folder_name)
 
 
@@ -30,7 +30,7 @@ def create_executable_archive():
 	zipapp.create_archive(tmp_folder_name,target=release_string,interpreter="/usr/bin/env python3")
 
 def main():
-	with open('../_ssl_log.js') as js_File:
+	with open('../friTap/_ssl_log.js') as js_File:
 		frida_js_code = js_File.readlines()
 
 	with open("./friTap_release_template.py", "r") as f:

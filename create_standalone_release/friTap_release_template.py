@@ -12,16 +12,16 @@ import socket
 import sys
 import tempfile
 import json
-import pcap
+import pcap as pcap
+from __init__ import __version__
+from __init__ import __author__
+from __init__ import debug
 
 try:
     import hexdump  # pylint: disable=g-import-not-at-top
 except ImportError:
     print("Unable to import hexdump module!")
     pass
-
-__author__ = "Daniel Baier, Francois Egner, Max Ufer"
-__version__ = "1.0.3"
 
 
 
@@ -45,6 +45,9 @@ pcap_obj = None
 SSL_READ = ["SSL_read", "wolfSSL_read", "readApplicationData", "NSS_read","Full_read"]
 # Names of all supported write functions:
 SSL_WRITE = ["SSL_write", "wolfSSL_write", "writeApplicationData", "NSS_write","Full_write"]
+
+# here - where we are.
+here = os.path.abspath(os.path.dirname(__file__))
 
 
 
@@ -96,7 +99,9 @@ def temp_fifo():
         print(f'Failed to create FIFO: {e}')
 
 
-def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, mobile=False, live=False, environment_file=None, debug_output=False,full_capture=False, socket_trace=False, host=False):
+def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, mobile=False, live=False, environment_file=None, debug_output=False,full_capture=False, socket_trace=False, host=False, offsets=None):
+    global debug
+    debug = debug_output
     
 
     def on_message(message, data):
@@ -191,19 +196,53 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
         device.resume(spawn.pid)
 
     def instrument(process):
-        with open("_ssl_log.js") as f:
-            script = process.create_script(f.read())
+        runtime="qjs"
+        if debug:
+            if frida.__version__ < "16":
+                process.enable_debugger(1337)
+            print("\n[!] running in debug mode")
+            print("[!] Chrome Inspector server listening on port 1337\n")
+            runtime="v8"
+
+        with open(os.path.join(here, '_ssl_log.js')) as f:
+            script_string = f.read()
+
+            if offsets_data is not None:
+                print(offsets_data)
+                script_string = script_string.replace('"{OFFSETS}"', offsets_data)
+
+            script = process.create_script(script_string, runtime=runtime)
+
+        if debug and frida.__version__ >= "16":
+            script.enable_debugger(1337)
         script.on("message", on_message)
         script.load()
 
     # Main code
     global pcap_obj
+    global offsets_data
+
     if mobile:
         device = frida.get_usb_device()
     elif host:
         device = frida.get_device_manager().add_remote_device(host)
     else:
         device = frida.get_local_device()
+
+
+    if offsets is not None:
+        if os.path.exists(offsets):
+            file = open(offsets, "r")
+            offsets_data = file.read()
+            file.close()
+        else:
+            try:
+                json.load(offsets)
+                offsets_data = offsets
+            except ValueError as e:
+                print("Log error, defaulting to auto-detection?")
+    else:
+        offsets_data = None
 
     device.on("child_added", on_child_added)
     if enable_spawn_gating:
@@ -279,7 +318,7 @@ class ArgParser(argparse.ArgumentParser):
         self.exit(0)
 
 
-if __name__ == "__main__":
+def main():
 
     parser = ArgParser(
         add_help=False,
@@ -322,6 +361,8 @@ Examples:
                       help="Catch newly spawned processes. ATTENTION: These could be unrelated to the current process!")
     args.add_argument("exec", metavar="<executable/app name/pid>",
                       help="executable/app whose SSL calls to log")
+    args.add_argument("--offsets", required=False, metavar="<offsets.json>",
+                      help="Provide custom offsets for all hooked functions inside a JSON file or a json string containing all offsets. For more details see our example json (offsets_example.json)")
     parsed = parser.parse_args()
     
     if parsed.full_capture and parsed.pcap is None:
@@ -331,7 +372,7 @@ Examples:
     try:
         print("Start logging")
         ssl_log(parsed.exec, parsed.pcap, parsed.verbose,
-                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.mobile, parsed.live, parsed.environment, parsed.debug, parsed.full_capture, parsed.socket_tracing,parsed.host)
+                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.mobile, parsed.live, parsed.environment, parsed.debug, parsed.full_capture, parsed.socket_tracing, parsed.host, parsed.offsets)
 
     except Exception as ar:
         print(ar)
@@ -349,6 +390,9 @@ Examples:
                 pcap_obj.android_Instance.pull_pcap_from_device()
             print(f"[*] full {capture_type} capture safed to _{parsed.pcap}")
                 
-	
+    
         cleanup(parsed.live,parsed.socket_tracing,parsed.full_capture,parsed.debug)
         
+
+if __name__ == "__main__":
+    main()
