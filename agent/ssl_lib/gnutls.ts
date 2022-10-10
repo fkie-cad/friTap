@@ -7,10 +7,10 @@ export class GnuTLS {
     library_method_mapping: { [key: string]: Array<String> } = {};
     addresses: { [key: string]: NativePointer };
     
-    static gnutls_transport_get_int : NativeFunction;
-    static gnutls_session_get_id: NativeFunction;
-    static gnutls_session_get_random: NativeFunction;
-    static gnutls_session_set_keylog_function: NativeFunction
+    static gnutls_transport_get_int : any;
+    static gnutls_session_get_id: any;
+    static gnutls_session_get_random: any;
+    static gnutls_session_set_keylog_function: any;
 
     
    

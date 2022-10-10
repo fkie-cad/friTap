@@ -98,6 +98,27 @@ export function readAddresses(library_method_mapping: { [key: string]: Array<Str
     return addresses
 }
 
+
+
+/**
+ * Returns the base address of a given module
+ * @param {string} moduleName Name of module to return base address from
+ * @returns
+ */
+ export function getBaseAddress(moduleName: String): NativePointer | null {
+    console.log("Module to find:",moduleName)
+    const modules = Process.enumerateModules()
+
+    for(const module of modules){
+        if(module.name == moduleName){
+            return module.base;
+        }
+    }
+
+    return null;
+}
+
+
 /**
 * Returns a dictionary of a sockfd's "src_addr", "src_port", "dst_addr", and
 * "dst_port".

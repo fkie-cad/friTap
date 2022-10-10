@@ -169,14 +169,14 @@ export class NSS {
     library_method_mapping: { [key: string]: Array<String> } = {};
     addresses: { [key: string]: NativePointer };
 
-    static SSL_SESSION_get_id: NativeFunction;
-    static getsockname: NativeFunction;
-    static getpeername: NativeFunction;
-    static getDescType: NativeFunction;
-    static PR_GetNameForIdentity: NativeFunction;
-    static get_SSL_Callback: NativeFunction;
-    static PK11_ExtractKeyValue: NativeFunction;
-    static PK11_GetKeyData: NativeFunction;
+    static SSL_SESSION_get_id: any;
+    static getsockname: any;
+    static getpeername: any;
+    static getDescType: any;
+    static PR_GetNameForIdentity: any;
+    static get_SSL_Callback: any;
+    static PK11_ExtractKeyValue: any;
+    static PK11_GetKeyData: any;
 
 
     constructor(public moduleName: String, public socket_library: String, public passed_library_method_mapping?: { [key: string]: Array<String> }) {
@@ -520,7 +520,7 @@ export class NSS {
     */
     static keylog_callback = new NativeCallback(function (sslSocketFD, client_data) {
         if (typeof this !== "undefined") {
-            this.ssl_RecordKeyLog(sslSocketFD);
+            NSS.ssl_RecordKeyLog(sslSocketFD);
         } else {
             console.log("[-] Error while installing ssl_RecordKeyLog() callback");
         }
@@ -557,7 +557,7 @@ export class NSS {
      */
     static secret_callback = new NativeCallback(function (sslSocketFD: NativePointer, epoch: number, dir: number, secret: NativePointer, arg_ptr: NativePointer) {
         if (typeof this !== "undefined") {
-            this.parse_epoch_value_from_SSL_SetSecretCallback(sslSocketFD, epoch);
+            NSS.parse_epoch_value_from_SSL_SetSecretCallback(sslSocketFD, epoch);
         } else {
             console.log("[-] Error while installing parse_epoch_value_from_SSL_SetSecretCallback()");
         }

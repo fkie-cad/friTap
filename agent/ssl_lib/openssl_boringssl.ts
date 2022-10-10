@@ -1,4 +1,5 @@
-import { readAddresses, getPortsAndAddresses } from "../shared/shared_functions"
+import { readAddresses, getPortsAndAddresses, getBaseAddress } from "../shared/shared_functions"
+import { getOffsets, offsets } from "../ssl_log"
 import { log } from "../util/log"
 
 /**
@@ -14,10 +15,10 @@ export class OpenSSL_BoringSSL {
     // global variables
     library_method_mapping: { [key: string]: Array<String> } = {};
     addresses: { [key: string]: NativePointer };
-    static SSL_SESSION_get_id: NativeFunction;
-    static SSL_CTX_set_keylog_callback : NativeFunction;
-    static SSL_get_fd: NativeFunction;
-    static SSL_get_session: NativeFunction;
+    static SSL_SESSION_get_id: any;
+    static SSL_CTX_set_keylog_callback : any;
+    static SSL_get_fd: any;
+    static SSL_get_session: any;
    
 
     static keylog_callback = new NativeCallback(function (ctxPtr, linePtr: NativePointer) {
@@ -39,6 +40,29 @@ export class OpenSSL_BoringSSL {
         }
         
         this.addresses = readAddresses(this.library_method_mapping);
+
+        if(offsets != "{OFFSETS}"){
+
+            const baseAddress = getBaseAddress(moduleName)
+            if(baseAddress == null){
+                log("Unable to find base address!")
+                return;
+            }
+
+            console.log(baseAddress)
+            //@ts-ignore
+            console.log(offsets["SSL_read"])
+            //@ts-ignore
+            console.log(baseAddress.add(ptr(offsets["SSL_read"])))
+            //@ts-ignore
+            console.log(baseAddress.add(ptr(offsets["SSL_write"])))
+
+            //@ts-ignore
+            this.addresses["SSL_read"] = baseAddress.add(ptr(offsets["SSL_read"]))
+            //@ts-ignore
+            this.addresses["SSL_write"] = baseAddress.add(ptr(offsets["SSL_write"]))
+
+        }
 
         OpenSSL_BoringSSL.SSL_SESSION_get_id = new NativeFunction(this.addresses["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
         OpenSSL_BoringSSL.SSL_get_fd = ObjC.available ? new NativeFunction(this.addresses["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(this.addresses["SSL_get_fd"], "int", ["pointer"]);

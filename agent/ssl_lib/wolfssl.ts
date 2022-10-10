@@ -1,5 +1,4 @@
 import { readAddresses, getPortsAndAddresses, toHexString } from "../shared/shared_functions"
-import { offsets } from "../ssl_log";
 import { log } from "../util/log"
 
 export class WolfSSL {
@@ -7,11 +6,11 @@ export class WolfSSL {
     // global variables
     library_method_mapping: { [key: string]: Array<String> } = {};
     addresses: { [key: string]: NativePointer };
-    static wolfSSL_get_server_random: NativeFunction;
-    static wolfSSL_get_client_random : NativeFunction;
-    static wolfSSL_get_fd: NativeFunction;
-    static wolfSSL_get_session: NativeFunction;
-    static wolfSSL_SESSION_get_master_key: NativeFunction
+    static wolfSSL_get_server_random: any;
+    static wolfSSL_get_client_random : any;
+    static wolfSSL_get_fd: any;
+    static wolfSSL_get_session: any;
+    static wolfSSL_SESSION_get_master_key: any;
    
 
     constructor(public moduleName:String, public socket_library:String,public passed_library_method_mapping?: { [key: string]: Array<String> }){
