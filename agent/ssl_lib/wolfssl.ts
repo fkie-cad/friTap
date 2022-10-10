@@ -24,6 +24,8 @@ export class WolfSSL {
         
         this.addresses = readAddresses(this.library_method_mapping);
 
+        
+
         WolfSSL.wolfSSL_get_fd = new NativeFunction(this.addresses["wolfSSL_get_fd"], "int", ["pointer"])
         WolfSSL.wolfSSL_get_session = new NativeFunction(this.addresses["wolfSSL_get_session"], "pointer", ["pointer"])
        
