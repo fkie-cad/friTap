@@ -1,7 +1,7 @@
 
-import {WolfSSL } from "../ssl_lib/wolfssl";
-import { socket_library } from "./android_agent";
-import { toHexString } from "../shared/shared_functions"
+import {WolfSSL } from "../ssl_lib/wolfssl.js";
+import { socket_library } from "./android_agent.js";
+import { toHexString } from "../shared/shared_functions.js"
 
 export class WolfSSL_Android extends WolfSSL {
 

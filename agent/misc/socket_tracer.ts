@@ -1,6 +1,6 @@
-import { log, devlog } from "../util/log"
-import { get_process_architecture } from "../util/process_infos"
-import { readAddresses, getPortsAndAddresses } from "../shared/shared_functions"
+import { log, devlog } from "../util/log.js"
+import { get_process_architecture } from "../util/process_infos.js"
+import { readAddresses, getPortsAndAddresses } from "../shared/shared_functions.js"
 
 
 export function execute(moduleName:string) {

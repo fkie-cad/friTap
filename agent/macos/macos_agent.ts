@@ -1,8 +1,8 @@
 
-import { module_library_mapping } from "../shared/shared_structures"
-import { log, devlog } from "../util/log"
-import { getModuleNames, ssl_library_loader } from "../shared/shared_functions"
-import { boring_execute } from "./openssl_boringssl_macos"
+import { module_library_mapping } from "../shared/shared_structures.js"
+import { log, devlog } from "../util/log.js"
+import { getModuleNames, ssl_library_loader } from "../shared/shared_functions.js"
+import { boring_execute } from "./openssl_boringssl_macos.js"
 
 
 var plattform_name = "MacOS";

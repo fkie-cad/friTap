@@ -1,7 +1,7 @@
 
-import {WolfSSL } from "../ssl_lib/wolfssl";
-import { socket_library } from "./windows_agent";
-import { log } from "../util/log";
+import {WolfSSL } from "../ssl_lib/wolfssl.js";
+import { socket_library } from "./windows_agent.js";
+import { log } from "../util/log.js";
 
 export class WolfSSL_Windows extends WolfSSL {
 

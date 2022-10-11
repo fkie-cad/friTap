@@ -1,11 +1,11 @@
-import { module_library_mapping } from "../shared/shared_structures"
-import { log, devlog } from "../util/log"
-import { getModuleNames, ssl_library_loader } from "../shared/shared_functions"
-import { gnutls_execute } from "./gnutls_linux"
-import { wolfssl_execute } from "./wolfssl_linux"
-import { nss_execute } from "./nss_linux"
-import { mbedTLS_execute } from "./mbedTLS_linux"
-import { boring_execute } from "./openssl_boringssl_linux"
+import { module_library_mapping } from "../shared/shared_structures.js"
+import { log, devlog } from "../util/log.js"
+import { getModuleNames, ssl_library_loader } from "../shared/shared_functions.js"
+import { gnutls_execute } from "./gnutls_linux.js"
+import { wolfssl_execute } from "./wolfssl_linux.js"
+import { nss_execute } from "./nss_linux.js"
+import { mbedTLS_execute } from "./mbedTLS_linux.js"
+import { boring_execute } from "./openssl_boringssl_linux.js"
 
 var plattform_name = "Linux";
 var moduleNames: Array<string> = getModuleNames()

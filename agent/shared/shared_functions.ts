@@ -1,5 +1,5 @@
-import { log, devlog } from "../util/log"
-import { AF_INET, AF_INET6 } from "./shared_structures"
+import { log, devlog } from "../util/log.js"
+import { AF_INET, AF_INET6 } from "./shared_structures.js"
 
 /**
  * This file contains methods which are shared for reading

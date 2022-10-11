@@ -9,10 +9,17 @@
         "build": "frida-compile agent/ssl_log.ts -o friTap/_ssl_log.js",
         "watch": "frida-compile agent/ssl_log.ts -o friTap/_ssl_log.js -w"
     },
+    "keywords": [
+        "frida",
+        "runtime",
+        "mobile",
+        "security",
+        "friTap"
+  ],
     "devDependencies": {
         "@types/frida-gum": "^18",
         "@types/node": "^18",
-        "frida-compile": "^10"
+        "frida-compile": "^16"
     },
     "dependencies": {
         "frida-fs": "^5.2.1",

@@ -1,4 +1,4 @@
-import { readAddresses, getPortsAndAddresses } from "../shared/shared_functions"
+import { readAddresses, getPortsAndAddresses } from "../shared/shared_functions.js"
 
 /**
  * 

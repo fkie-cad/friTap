@@ -1,6 +1,6 @@
 
-import {GnuTLS } from "../ssl_lib/gnutls"
-import { socket_library } from "./windows_agent";
+import {GnuTLS } from "../ssl_lib/gnutls.js"
+import { socket_library } from "./windows_agent.js";
 
 export class GnuTLS_Windows extends GnuTLS {
 

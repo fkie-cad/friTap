@@ -1,5 +1,5 @@
-import { log } from "../util/log"
-import { execute as conscrypt_execute } from "../android/conscrypt"
+import { log } from "../util/log.js"
+import { execute as conscrypt_execute } from "../android/conscrypt.js"
 
 
 export class SSL_Java {

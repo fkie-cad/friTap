@@ -1,6 +1,6 @@
 
-import {GnuTLS } from "../ssl_lib/gnutls"
-import { socket_library } from "./android_agent";
+import {GnuTLS } from "../ssl_lib/gnutls.js"
+import { socket_library } from "./android_agent.js";
 
 export class GnuTLS_Linux extends GnuTLS {
 

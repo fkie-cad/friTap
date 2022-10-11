@@ -188,14 +188,16 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
 
     def instrument(process):
         runtime="qjs"
+        debug_port = 1337
         if debug:
             if frida.__version__ < "16":
-                process.enable_debugger(1337)
+                process.enable_debugger(debug_port)
             print("\n[!] running in debug mode")
-            print("[!] Chrome Inspector server listening on port 1337\n")
+            print(f"[!] Chrome Inspector server listening on port {debug_port}")
+            print("[!] Open Chrome with chrome://inspect for debugging\n")
             runtime="v8"
 
-        with open(os.path.join(here, '_ssl_log.js')) as f:
+        with open(os.path.join(here, '_ssl_log.js'), encoding='utf8', newline='\n') as f:
             script_string = f.read()
 
             if offsets_data is not None:
@@ -205,7 +207,7 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
             script = process.create_script(script_string, runtime=runtime)
 
         if debug and frida.__version__ >= "16":
-            script.enable_debugger(1337)
+            script.enable_debugger(debug_port)
         script.on("message", on_message)
         script.load()
 

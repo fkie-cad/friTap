@@ -1,5 +1,5 @@
-import { readAddresses, getPortsAndAddresses, toHexString } from "../shared/shared_functions"
-import { log } from "../util/log"
+import { readAddresses, getPortsAndAddresses, toHexString } from "../shared/shared_functions.js"
+import { log } from "../util/log.js"
 
 export class WolfSSL {
 

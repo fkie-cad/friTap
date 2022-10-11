@@ -1,12 +1,12 @@
-import { module_library_mapping } from "../shared/shared_structures"
-import { getModuleNames, ssl_library_loader } from "../shared/shared_functions"
-import { log, devlog } from "../util/log"
-import { gnutls_execute } from "./gnutls_android"
-import { wolfssl_execute } from "./wolfssl_android"
-import { nss_execute } from "./nss_android"
-import { mbedTLS_execute } from "./mbedTLS_android"
-import { boring_execute } from "./openssl_boringssl_android"
-import { java_execute} from "./android_java_tls_libs"
+import { module_library_mapping } from "../shared/shared_structures.js"
+import { getModuleNames, ssl_library_loader } from "../shared/shared_functions.js"
+import { log, devlog } from "../util/log.js"
+import { gnutls_execute } from "./gnutls_android.js"
+import { wolfssl_execute } from "./wolfssl_android.js"
+import { nss_execute } from "./nss_android.js"
+import { mbedTLS_execute } from "./mbedTLS_android.js"
+import { boring_execute } from "./openssl_boringssl_android.js"
+import { java_execute} from "./android_java_tls_libs.js"
 
 
 var plattform_name = "Android";

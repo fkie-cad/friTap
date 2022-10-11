@@ -1,6 +1,6 @@
 
-import {NSS } from "../ssl_lib/nss"
-import { socket_library } from "./android_agent";
+import {NSS } from "../ssl_lib/nss.js"
+import { socket_library } from "./android_agent.js";
 
 export class NSS_Android extends NSS {
 

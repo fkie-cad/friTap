@@ -1,6 +1,6 @@
 //import fs from 'frida-fs';
 import * as fs from "fs";
-import { isAndroid } from "./process_infos"
+import { isAndroid } from "./process_infos.js"
 
 
 // converts a hexstring to a bytearray

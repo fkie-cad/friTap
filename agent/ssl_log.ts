@@ -1,10 +1,10 @@
-import { load_android_hooking_agent } from "./android/android_agent";
-import { load_ios_hooking_agent } from "./ios/ios_agent";
-import { load_macos_hooking_agent } from "./macos/macos_agent";
-import { load_linux_hooking_agent } from "./linux/linux_agent";
-import { load_windows_hooking_agent } from "./windows/windows_agent";
-import { isWindows, isLinux, isAndroid, isiOS, isMacOS } from "./util/process_infos";
-import { log } from "./util/log"
+import { load_android_hooking_agent } from "./android/android_agent.js";
+import { load_ios_hooking_agent } from "./ios/ios_agent.js";
+import { load_macos_hooking_agent } from "./macos/macos_agent.js";
+import { load_linux_hooking_agent } from "./linux/linux_agent.js";
+import { load_windows_hooking_agent } from "./windows/windows_agent.js";
+import { isWindows, isLinux, isAndroid, isiOS, isMacOS } from "./util/process_infos.js";
+import { log } from "./util/log.js"
 
 export let offsets = "{OFFSETS}";
 /*

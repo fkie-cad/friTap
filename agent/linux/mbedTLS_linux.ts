@@ -1,6 +1,6 @@
 
-import {mbed_TLS } from "../ssl_lib/mbedTLS"
-import { socket_library } from "./linux_agent";
+import {mbed_TLS } from "../ssl_lib/mbedTLS.js"
+import { socket_library } from "./linux_agent.js";
 
 export class mbed_TLS_Linux extends mbed_TLS {
 

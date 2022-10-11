@@ -1,6 +1,6 @@
-import { readAddresses } from "../shared/shared_functions"
-import { pointerSize, AF_INET, AF_INET6 } from "../shared/shared_structures"
-import { log, devlog } from "../util/log"
+import { readAddresses } from "../shared/shared_functions.js"
+import { pointerSize, AF_INET, AF_INET6 } from "../shared/shared_structures.js"
+import { log, devlog } from "../util/log.js"
 
 
 /**

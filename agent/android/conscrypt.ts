@@ -1,4 +1,4 @@
-import { log } from "../util/log"
+import { log } from "../util/log.js"
 
 function findProviderInstallerFromClassloaders(currentClassLoader: Java.Wrapper, backupImplementation: any) {
 

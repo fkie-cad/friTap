@@ -1,6 +1,6 @@
 
-import {OpenSSL_BoringSSL } from "../ssl_lib/openssl_boringssl"
-import { socket_library } from "./android_agent";
+import {OpenSSL_BoringSSL } from "../ssl_lib/openssl_boringssl.js"
+import { socket_library } from "./android_agent.js";
 
 export class OpenSSL_BoringSSL_Android extends OpenSSL_BoringSSL {
 

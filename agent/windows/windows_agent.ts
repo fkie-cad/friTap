@@ -1,12 +1,12 @@
-import { module_library_mapping } from "../shared/shared_structures"
-import { log, devlog } from "../util/log"
-import { getModuleNames, ssl_library_loader } from "../shared/shared_functions"
-import { sspi_execute } from "./sspi"
-import { boring_execute } from "./openssl_boringssl_windows"
-import { gnutls_execute } from "./gnutls_windows"
-import { mbedTLS_execute } from "./mbedTLS_windows"
-import { nss_execute } from "./nss_windows"
-import { wolfssl_execute } from "./wolfssl_windows"
+import { module_library_mapping } from "../shared/shared_structures.js"
+import { log, devlog } from "../util/log.js"
+import { getModuleNames, ssl_library_loader } from "../shared/shared_functions.js"
+import { sspi_execute } from "./sspi.js"
+import { boring_execute } from "./openssl_boringssl_windows.js"
+import { gnutls_execute } from "./gnutls_windows.js"
+import { mbedTLS_execute } from "./mbedTLS_windows.js"
+import { nss_execute } from "./nss_windows.js"
+import { wolfssl_execute } from "./wolfssl_windows.js"
 
 
 
