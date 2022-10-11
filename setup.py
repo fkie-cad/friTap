@@ -56,7 +56,9 @@ setup(
         "Operating System :: OS Independent",
         "Natural Language :: English",
         "Programming Language :: Python :: 3 :: Only",
-        "Programming Language :: JavaScript"
+        "Programming Language :: JavaScript",
+        "Topic :: Security",
+        "Topic :: Software Development :: Debuggers"
     ],
 
     # Keywords are tags that identify your project and help searching for it
