@@ -94,6 +94,7 @@ More examples on using friTap can be found in the [USAGE.md](./USAGE.md). A deta
   - Cryptlib (Peter Gutmann)
   - S2n (Amazon)
   - JSSE (Java Secure Socket Extension, Oracle)
+  - [MatrixSSL](https://github.com/matrixssl/matrixssl) 
   - ...
 - [ ] Working with static linked libraries
 - [ ] Add feature to prototype TLS-Read/Write/SSLKEY functions
