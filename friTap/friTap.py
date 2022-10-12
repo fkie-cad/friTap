@@ -31,6 +31,7 @@ traced_scapy_socket_Set = {*()}
 filename = ""
 tmpdir = ""
 pcap_obj = None
+frida_agent_script = "_ssl_log.js"
 
 # Names of all supported read functions:
 SSL_READ = ["SSL_read", "wolfSSL_read", "readApplicationData", "NSS_read","Full_read"]
@@ -214,6 +215,10 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
     # Main code
     global pcap_obj
     global offsets_data
+    global frida_agent_script
+    
+    if frida.__version__ < "16":
+        frida_agent_script = "_ssl_log_legacy.js"
 
     if mobile:
         device = frida.get_usb_device()
