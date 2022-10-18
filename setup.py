@@ -43,8 +43,7 @@ setup(
 
      # include other files
     package_data={
-        '': [os.path.join(here, 'friTap/_ssl_log.js')],  # frida agent
-        '': [os.path.join(here, 'friTap/_ssl_log_legacy.js')],  # frida legacy agent
+        '': [os.path.join(here, 'friTap/_ssl_log.js'), os.path.join(here, 'friTap/_ssl_log_legacy.js') ],  # frida agent + frida legacy agent
     },
 
     python_requires='>=3.6',
