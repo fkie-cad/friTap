@@ -51,9 +51,9 @@ def invoke_frida_compile():
 
 
 def create_legacy_agent_code(agent_folder,verbose):
-	#create_backup_dir()
-	#remove_js_extension(agent_folder_path,verbose)
-	#invoke_frida_compile()
+	create_backup_dir()
+	remove_js_extension(agent_folder_path,verbose)
+	invoke_frida_compile()
 	undo_replacements()
 	#add_js_extension(agent_folder_path,verbose)
 
