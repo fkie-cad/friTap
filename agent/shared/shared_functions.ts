@@ -1,6 +1,16 @@
 import { log, devlog } from "../util/log.js"
 import { AF_INET, AF_INET6 } from "./shared_structures.js"
 
+
+function wait_for_library_loaded(module_name: string){
+    let timeout_library = 5;
+    let module_adress = Module.findBaseAddress(module_name);
+    if(module_adress === NULL || module_adress === null){
+        log("[*] Waiting "+timeout_library+" milliseconds for the loading of "+module_name);
+        setTimeout(wait_for_library_loaded,timeout_library)
+    }
+}
+
 /**
  * This file contains methods which are shared for reading
  * secrets/data from different libraries. These methods are
@@ -16,6 +26,12 @@ export function ssl_library_loader(plattform_name: string, module_library_mappin
             if (regex.test(module)){
                 try{
                     log(`${module} found & will be hooked on ${plattform_name}!`)
+                    try {
+                        Module.ensureInitialized(module);
+                    }catch(error){
+                        wait_for_library_loaded(module);
+                    }
+                    
                     func(module) // on some Android Apps we encounterd the problem of multiple SSL libraries but only one is used for the SSL encryption/decryption
                 }catch (error) {
                     log(`error: skipping module ${module}`)

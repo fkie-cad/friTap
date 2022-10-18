@@ -5,7 +5,7 @@ import { getModuleNames, ssl_library_loader } from "../shared/shared_functions.j
 import { boring_execute } from "./openssl_boringssl_macos.js"
 
 
-var plattform_name = "MacOS";
+var plattform_name = "darwin";
 var moduleNames: Array<string> = getModuleNames()
 
 export const socket_library = "libSystem.B.dylib"

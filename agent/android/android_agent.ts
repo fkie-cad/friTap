@@ -9,7 +9,7 @@ import { boring_execute } from "./openssl_boringssl_android.js"
 import { java_execute} from "./android_java_tls_libs.js"
 
 
-var plattform_name = "Android";
+var plattform_name = "linux";
 var moduleNames: Array<string> = getModuleNames();
 
 export const socket_library = "libc"

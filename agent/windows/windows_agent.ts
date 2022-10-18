@@ -10,7 +10,7 @@ import { wolfssl_execute } from "./wolfssl_windows.js"
 
 
 
-var plattform_name = "Windows";
+var plattform_name = "windows";
 var moduleNames: Array<string> = getModuleNames()
 
 export const socket_library = "WS2_32.dll";

@@ -7,7 +7,7 @@ import { nss_execute } from "./nss_linux.js"
 import { mbedTLS_execute } from "./mbedTLS_linux.js"
 import { boring_execute } from "./openssl_boringssl_linux.js"
 
-var plattform_name = "Linux";
+var plattform_name = "linux";
 var moduleNames: Array<string> = getModuleNames()
 
 export const socket_library = "libc"
