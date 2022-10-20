@@ -60,12 +60,12 @@ function hook_Android_Dynamic_Loader(module_library_mapping: { [key: string]: Ar
     console.log(`[*] Android dynamic loader hooked.`)
 } catch (error) {
     devlog("Loader error: "+ error)
-    log("No dynamic loader present for hooking.")
+    log("No dynamic loader present for hooking on Android.")
 }
 }
 
 function hook_native_Android_SSL_Libs(module_library_mapping: { [key: string]: Array<[any, (moduleName: string)=>void]> }){
-    ssl_library_loader(plattform_name, module_library_mapping,moduleNames)
+    ssl_library_loader(plattform_name, module_library_mapping,moduleNames,"Android")
 
 }
 

@@ -25,16 +25,22 @@ export function getOffsets(){
 
 function load_os_specific_agent() {
     if(isWindows()){
+        log('Running Script on Windows')
         load_windows_hooking_agent()
     }else if(isAndroid()){
+        log('Running Script on Android')
         load_android_hooking_agent()
     }else if(isLinux()){
+        log('Running Script on Linux')
         load_linux_hooking_agent()
     }else if(isiOS()){
+        log('Running Script on iOS')
         load_ios_hooking_agent()
     }else if(isMacOS()){
+        log('Running Script on MacOS')
         load_macos_hooking_agent()
     }else{
+        log('Running Script on unknown plattform')
         log("Error: not supported plattform!\nIf you want to have support for this plattform please make an issue at our github page.")
     }
 

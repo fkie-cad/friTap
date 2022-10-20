@@ -1,30 +1,33 @@
 
 import {OpenSSL_BoringSSL } from "../ssl_lib/openssl_boringssl.js"
 import { socket_library } from "./ios_agent.js";
-
+import { log, devlog } from "../util/log.js"
 
 export class OpenSSL_BoringSSL_iOS extends OpenSSL_BoringSSL {
 
     install_tls_keys_callback_hook(){
-        console.log(this.addresses) // currently only for debugging purposes will be removed in future releases
+        //console.log(this.addresses) // currently only for debugging purposes will be removed in future releases
         if (ObjC.available) { // inspired from https://codeshare.frida.re/@andydavies/ios-tls-keylogger/
             var CALLBACK_OFFSET = 0x2A8;
 
             var foundationNumber = Module.findExportByName('CoreFoundation', 'kCFCoreFoundationVersionNumber')?.readDouble();
             if(foundationNumber == undefined){
+                devlog("Installing callback for iOS < 14");
                 CALLBACK_OFFSET = 0x2A8;
             }else if (foundationNumber >= 1751.108) {
+                devlog("Installing callback for iOS >= 14");
                 CALLBACK_OFFSET = 0x2B8; // >= iOS 14.x 
             }
             Interceptor.attach(this.addresses["SSL_CTX_set_info_callback"], {
               onEnter: function (args : any) {
-                ptr(args[0]).add(CALLBACK_OFFSET).writePointer(this.keylog_callback);
+                ptr(args[0]).add(CALLBACK_OFFSET).writePointer(OpenSSL_BoringSSL.keylog_callback);
               }
             });
           
           }
 
     }
+
 
     constructor(public moduleName:String, public socket_library:String){
 

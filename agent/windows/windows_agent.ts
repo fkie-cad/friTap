@@ -51,7 +51,7 @@ function hook_Windows_Dynamic_Loader(module_library_mapping: { [key: string]: Ar
 }
 
 function hook_Windows_SSL_Libs(module_library_mapping: { [key: string]: Array<[any, (moduleName: string)=>void]> }) {
-    ssl_library_loader(plattform_name, module_library_mapping,moduleNames)
+    ssl_library_loader(plattform_name, module_library_mapping,moduleNames,"Windows")
 }
 
 export function load_windows_hooking_agent() {

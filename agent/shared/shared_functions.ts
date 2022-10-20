@@ -18,14 +18,14 @@ function wait_for_library_loaded(module_name: string){
  * on libc.
  */
 
-export function ssl_library_loader(plattform_name: string, module_library_mapping: { [key: string]: Array<[any, (moduleName: string)=>void]> }, moduleNames: Array<string> ): void{
+export function ssl_library_loader(plattform_name: string, module_library_mapping: { [key: string]: Array<[any, (moduleName: string)=>void]> }, moduleNames: Array<string> , plattform_os: string): void{
     for(let map of module_library_mapping[plattform_name]){
         let regex = map[0]
         let func = map[1]
         for(let module of moduleNames){
             if (regex.test(module)){
                 try{
-                    log(`${module} found & will be hooked on ${plattform_name}!`)
+                    log(`${module} found & will be hooked on ${plattform_os}!`)
                     try {
                         Module.ensureInitialized(module);
                     }catch(error){
@@ -58,8 +58,6 @@ export function getSocketLibrary(){
             return "WS2_32.dll"
         case "darwin":
             return "libSystem.B.dylib"
-            //TODO: improve it with regular expressions. libboringssl.dylib
-            break;
         default:
             log(`Platform "${Process.platform} currently not supported!`)
             return ""

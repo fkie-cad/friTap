@@ -51,7 +51,7 @@ function hook_Linux_Dynamic_Loader(module_library_mapping: { [key: string]: Arra
 }
 
 function hook_Linux_SSL_Libs(module_library_mapping: { [key: string]: Array<[any, (moduleName: string)=>void]> }) {
-    ssl_library_loader(plattform_name, module_library_mapping,moduleNames)
+    ssl_library_loader(plattform_name, module_library_mapping,moduleNames,"Linux")
 }
 
 

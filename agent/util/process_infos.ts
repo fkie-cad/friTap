@@ -41,17 +41,22 @@ export function isMacOS(): boolean{
 }
 
 
-export function isLinux(): boolean{
-    if(Java.available == false && Process.platform == "linux"){
-      return true
-    }else{
-        try{
-            Java.androidVersion // this will raise an error when we are not under Android
-            return false
-        }catch(error){
+export function isLinux(): boolean {
+    if (Process.platform == "linux") {
+
+        if (Java.available == false && Process.platform == "linux") {
             return true
+        } else {
+            try {
+                Java.androidVersion // this will raise an error when we are not under Android
+                return false
+            } catch (error) {
+                return true
+            }
+
         }
-        
+    }else{
+        return false
     }
 }
 

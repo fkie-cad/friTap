@@ -1,6 +1,6 @@
 import { readAddresses, getPortsAndAddresses, getBaseAddress } from "../shared/shared_functions.js"
 import { getOffsets, offsets } from "../ssl_log.js"
-import { log } from "../util/log.js"
+import { devlog, log } from "../util/log.js"
 
 /**
  * 
@@ -22,6 +22,7 @@ export class OpenSSL_BoringSSL {
    
 
     static keylog_callback = new NativeCallback(function (ctxPtr, linePtr: NativePointer) {
+        devlog("invoking keylog_callback from OpenSSL_BoringSSL");
         var message: { [key: string]: string | number | null } = {}
         message["contentType"] = "keylog"
         message["keylog"] = linePtr.readCString()

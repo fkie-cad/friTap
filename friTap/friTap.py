@@ -60,7 +60,7 @@ def cleanup(live=False, socket_trace=False, full_capture=False, debug_output=Fal
             print("[*] traced sockets: "+str(traced_scapy_socket_Set))
         pcap_obj.create_application_traffic_pcap(traced_scapy_socket_Set)
         
-    print("\nThx for using friTap\nHave a nice day\n")
+    print("\n\nThx for using friTap\nHave a nice day\n")
     os._exit(0)
     
     
@@ -91,9 +91,14 @@ def temp_fifo():
         print(f'Failed to create FIFO: {e}')
 
 
-def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, mobile=False, live=False, environment_file=None, debug_output=False,full_capture=False, socket_trace=False, host=False, offsets=None):
+def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, mobile=False, live=False, environment_file=None, debug_mode=False,full_capture=False, socket_trace=False, host=False, offsets=None, debug_output=False):
     global debug
-    debug = debug_output
+    debug = debug_mode
+    
+    def on_detach(reason):
+        print(f"\n[*] Target process stopped: {reason}\n")
+        cleanup(live,socket_trace,full_capture,debug)
+        
     
 
     def on_message(message, data):
@@ -116,7 +121,7 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
             return
         if p["contentType"] == "console":
             print("[*] " + p["console"])
-        if debug_output:
+        if debug_mode or debug_output:
             if p["contentType"] == "console_dev" and p["console_dev"]:
                 if len(p["console_dev"]) > 3:
                     print("[***] " + p["console_dev"])
@@ -211,6 +216,7 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
             script.enable_debugger(debug_port)
         script.on("message", on_message)
         script.load()
+        script.on('detached', on_detach)
 
     # Main code
     global pcap_obj
@@ -250,7 +256,7 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
         print("spawning "+ app)
         
         if full_capture and pcap_name:
-            pcap_obj =  pcap.PCAP(pcap_name,SSL_READ,SSL_WRITE,full_capture, mobile,debug_output)
+            pcap_obj =  pcap.PCAP(pcap_name,SSL_READ,SSL_WRITE,full_capture, mobile,debug_mode)
             
         if mobile or host:
             pid = device.spawn(app)
@@ -275,17 +281,16 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
         print(
             f'[*] Now open this named pipe with Wireshark in another terminal: sudo wireshark -k -i {fifo_file}')
         print(f'[*] friTap will continue after the named pipe is ready....\n')
-        pcap_obj =  pcap.PCAP(fifo_file,SSL_READ,SSL_WRITE,full_capture, mobile,debug_output)
+        pcap_obj =  pcap.PCAP(fifo_file,SSL_READ,SSL_WRITE,full_capture, mobile,debug_mode)
 
     elif pcap_name:
-        pcap_obj =  pcap.PCAP(pcap_name,SSL_READ,SSL_WRITE,full_capture, mobile,debug_output)
+        pcap_obj =  pcap.PCAP(pcap_name,SSL_READ,SSL_WRITE,full_capture, mobile,debug_mode)
         
 
     if keylog:
         keylog_file = open(keylog, "w")
 
     print("Press Ctrl+C to stop logging.")
-    print('[*] Running Script')
     instrument(process)
     if pcap_name and full_capture:
         print(f'[*] Logging pcap to {pcap_name}')
@@ -338,7 +343,9 @@ Examples:
     args.add_argument("-H", "--host", metavar="<ip:port>", required=False,
                       help="Attach to a process on remote frida device")
     args.add_argument("-d", "--debug", required=False, action="store_const", const=True,
-                      help="Set the debug output of friTap")
+                      help="Set friTap into debug mode this include debug output as well as a listening Chrome Inspector server for remote debugging.")
+    args.add_argument("-do", "--debugoutput", required=False, action="store_const", const=True,
+                      help="Activate the debug output only.")
     args.add_argument("-f", "--full_capture", required=False, action="store_const", const=True, default=False,
                       help="Do a full packet capture instead of logging only the decrypted TLS payload. Set pcap name with -p <PCAP name>")
     args.add_argument("-k", "--keylog", metavar="<path>", required=False,
@@ -370,7 +377,7 @@ Examples:
     try:
         print("Start logging")
         ssl_log(parsed.exec, parsed.pcap, parsed.verbose,
-                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.mobile, parsed.live, parsed.environment, parsed.debug, parsed.full_capture, parsed.socket_tracing, parsed.host, parsed.offsets)
+                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.mobile, parsed.live, parsed.environment, parsed.debug, parsed.full_capture, parsed.socket_tracing, parsed.host, parsed.offsets, parsed.debugoutput)
 
     except Exception as ar:
         print(ar)
