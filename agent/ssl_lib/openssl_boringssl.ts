@@ -42,25 +42,34 @@ export class OpenSSL_BoringSSL {
         this.addresses = readAddresses(this.library_method_mapping);
 
         if(offsets != "{OFFSETS}"){
-            
             const baseAddress = getBaseAddress(moduleName)
+            
             if(baseAddress == null){
-                log("Unable to find base address!")
+                log("Unable to find library base address! Given address values will be interpreted as absolute ones!")
                 return;
             }
 
-            console.log(baseAddress)
-            //@ts-ignore
-            console.log(offsets["SSL_read"])
-            //@ts-ignore
-            console.log(baseAddress.add(ptr(offsets["SSL_read"])))
-            //@ts-ignore
-            console.log(baseAddress.add(ptr(offsets["SSL_write"])))
+            
+            if(offsets.openssl?.read != null){
+                this.addresses["SSL_read"] = offsets.openssl.read.absolute || baseAddress == null ? ptr(offsets.openssl.read.address) : baseAddress.add(ptr(offsets.openssl?.read.address));
+            }
+            
+            if(offsets.openssl?.write != null){
+                this.addresses["SSL_write"] = offsets.openssl.write.absolute || baseAddress == null ? ptr(offsets.openssl.write.address) :  baseAddress.add(ptr(offsets.openssl?.write.address));
+            }
 
-            //@ts-ignore
-            this.addresses["SSL_read"] = baseAddress.add(ptr(offsets["SSL_read"]))
-            //@ts-ignore
-            this.addresses["SSL_write"] = baseAddress.add(ptr(offsets["SSL_write"]))
+            if(offsets.openssl?.ssl_session_get_id != null){
+                this.addresses["SSL_SESSION_get_id"] = offsets.openssl.ssl_session_get_id.absolute || baseAddress == null ? ptr(offsets.openssl.ssl_session_get_id.address) : baseAddress.add(ptr(offsets.openssl?.ssl_session_get_id.address));
+            }
+
+            if(offsets.openssl?.bio_get_fd != null){
+                this.addresses["BIO_get_fd"] = offsets.openssl.bio_get_fd.absolute || baseAddress == null ? ptr(offsets.openssl.bio_get_fd.address) :  baseAddress.add(ptr(offsets.openssl?.bio_get_fd.address));
+            }
+            
+            if(offsets.openssl?.ssl_get_session != null){
+                this.addresses["SSL_get_session"] = offsets.openssl.ssl_get_session.absolute || baseAddress == null ?  ptr(offsets.openssl.ssl_get_session.address) :  baseAddress.add(ptr(offsets.openssl?.ssl_get_session.address)) ;
+            }
+
 
         }
 

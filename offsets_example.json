@@ -1,4 +1,23 @@
 {
-    "SSL_read": "0x15b4",
-    "SSL_write": "0x144c"
+    "openssl":{
+        "read": {
+            "address":"0x572115b4",
+            "absolute":true
+        },
+        "write":{
+            "address":"0x144c",
+            "absolute": false
+        },
+        "ssl_session_get_id":{
+            "address": "0x1195",
+            "absolute": false
+        },
+        "ssl_get_session":{
+            "address": "0x572113ed",
+            "absolute": true
+        }
+        
+        
+    }
+    
 }

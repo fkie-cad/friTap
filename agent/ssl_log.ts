@@ -6,7 +6,32 @@ import { load_windows_hooking_agent } from "./windows/windows_agent";
 import { isWindows, isLinux, isAndroid, isiOS, isMacOS } from "./util/process_infos";
 import { log } from "./util/log"
 
-export let offsets = "{OFFSETS}";
+interface IAddress{
+    address: string,
+    absolute: boolean
+}
+
+interface ILibrary{
+    read: IAddress,
+    write: IAddress
+}
+
+interface IOffsets {
+    openssl?: ILibrary & {
+        ssl_session_get_id?: IAddress,
+        bio_get_fd?: IAddress,
+        ssl_get_session?: IAddress,
+        ssl_get_fd?: IAddress
+    },
+    nss?: ILibrary,
+    mbedtls?: ILibrary,
+    gnutls?: ILibrary,
+    wolfssl?: ILibrary
+}
+
+//@ts-ignore
+export let offsets: IOffsets = "{OFFSETS}";
+
 /*
 
 create the TLS library for your first prototpye as a lib in ./ssl_lib and than extend this class for the OS where this new lib was tested.
