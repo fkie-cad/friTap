@@ -3,7 +3,7 @@
 </p>
 
 # friTap
-![version](https://img.shields.io/badge/version-1.0.6-blue) [![PyPi](https://badge.fury.io/py/objection.svg)](https://pypi.org/project/friTap)
+![version](https://img.shields.io/badge/version-1.0.7-blue) [![PyPi](https://badge.fury.io/py/objection.svg)](https://pypi.org/project/friTap)
 
 The goal of this project is to help researchers to analyze traffic encapsulated in SSL or TLS. For details have a view into the [OSDFCon webinar slides](assets/friTapOSDFConwebinar.pdf) or in [this blog post](https://lolcads.github.io/posts/2022/08/fritap/).
 
