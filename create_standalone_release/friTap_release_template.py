@@ -105,6 +105,8 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
     debug = debug_mode
     
     def on_detach(reason):
+        if reason == "application-requested":
+            return
         print(f"\n[*] Target process stopped: {reason}\n")
         cleanup(live,socket_trace,full_capture,debug)
         
@@ -225,7 +227,6 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
             script.enable_debugger(debug_port)
         script.on("message", on_message)
         script.load()
-        script.on('detached', on_detach)
 
     # Main code
     global pcap_obj
@@ -307,6 +308,8 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
         print(f'[*] Logging TLS plaintext as pcap to {pcap_name}')
     if keylog:
         print(f'[*] Logging keylog file to {keylog}')
+        
+    process.on('detached', on_detach)
         
 
     if spawn:
