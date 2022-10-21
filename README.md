@@ -107,6 +107,10 @@ Contributions are always welcome. Just fork it and open a pull request!
 More details can be found in the [CONTRIBUTION.md](./CONTRIBUTION.md).
 ___
 
+## Changelog
+
+See the wiki for [release notes](https://github.com/fkie-cad/friTap/wiki#news).
+
 ## Support
 
 If you have any suggestions, or bug reports, please create an issue in the Issue Tracker.
