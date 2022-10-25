@@ -180,6 +180,7 @@ __handlers__
 #misc
 fritap_analysis.txt
 todo.txt
+*.keylog
 
 #windows
 .vs/

@@ -383,6 +383,7 @@ Examples:
                 parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.mobile, parsed.live, parsed.environment, parsed.debug, parsed.full_capture, parsed.socket_tracing, parsed.host, parsed.offsets, parsed.debugoutput)
 
     except Exception as ar:
+        print("[-] Uknown error:")
         print(ar)
 
     finally:

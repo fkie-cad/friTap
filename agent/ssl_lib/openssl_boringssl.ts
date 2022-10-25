@@ -1,4 +1,5 @@
 import { readAddresses, getPortsAndAddresses, getBaseAddress } from "../shared/shared_functions.js"
+import { pointerSize } from "../shared/shared_structures.js"
 import { getOffsets, offsets } from "../ssl_log.js"
 import { devlog, log } from "../util/log.js"
 
@@ -8,6 +9,7 @@ import { devlog, log } from "../util/log.js"
  *  We need to find a way to calculate the offsets in a automated manner.
  *  Darwin: SSL_read/write need improvments
  *  Windows: how to extract the key material?
+ *  Android: We need to find a way, when on some Android Apps the fd is below 0
  */
 
 export class OpenSSL_BoringSSL {
@@ -72,17 +74,18 @@ export class OpenSSL_BoringSSL {
     }
 
 
-
-    
-
-
     install_plaintext_read_hook(){
         var lib_addesses = this.addresses;
+
         Interceptor.attach(this.addresses["SSL_read"],
         {
             onEnter: function (args: any) {
+                this.fd = OpenSSL_BoringSSL.SSL_get_fd(args[0])
+                if(this.fd < 0) {
+                    return
+                }
             
-                var message = getPortsAndAddresses(OpenSSL_BoringSSL.SSL_get_fd(args[0]) as number, true, lib_addesses)
+                var message = getPortsAndAddresses(this.fd as number, true, lib_addesses)
                 message["ssl_session_id"] = OpenSSL_BoringSSL.getSslSessionId(args[0])
                 message["function"] = "SSL_read"
                 this.message = message
@@ -91,7 +94,7 @@ export class OpenSSL_BoringSSL {
             },
             onLeave: function (retval: any) {
                 retval |= 0 // Cast retval to 32-bit integer.
-                if (retval <= 0) {
+                if (retval <= 0 || this.fd < 0) {
                     return
                 }
                 this.message["contentType"] = "datalog"
@@ -107,7 +110,11 @@ export class OpenSSL_BoringSSL {
         {
             onEnter: function (args: any) {
                 if (!ObjC.available){
-                var message = getPortsAndAddresses(OpenSSL_BoringSSL.SSL_get_fd(args[0]) as number, false, lib_addesses)
+                this.fd = OpenSSL_BoringSSL.SSL_get_fd(args[0])
+                if(this.fd < 0) {
+                    return
+                }
+                var message = getPortsAndAddresses(this.fd as number, false, lib_addesses)
                 message["ssl_session_id"] = OpenSSL_BoringSSL.getSslSessionId(args[0])
                 message["function"] = "SSL_write"
                 message["contentType"] = "datalog"

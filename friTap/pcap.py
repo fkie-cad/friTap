@@ -4,6 +4,9 @@ import ntpath
 from threading import Thread, Event
 import random
 import logging
+# ensure that we only see errors from scapy 
+logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
+
 try:
 	from scapy.all import *
 except ImportError:
@@ -11,9 +14,6 @@ except ImportError:
 	exit(2)
 
 import friTap.android as android
-
-# ensure that we only see errors from scapy
-logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
  
 
 class PCAP:

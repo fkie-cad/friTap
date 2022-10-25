@@ -157,9 +157,11 @@ export function getPortsAndAddresses(sockfd: number, isRead: boolean, methodAddr
     for (var i = 0; i < src_dst.length; i++) {
         addrlen.writeU32(128)
         if ((src_dst[i] == "src") !== isRead) {
+            devlog("src")
             getsockname(sockfd, addr, addrlen)
         }
         else {
+            devlog("dst")
             getpeername(sockfd, addr, addrlen)
         }
         if (addr.readU16() == AF_INET) {
@@ -181,6 +183,7 @@ export function getPortsAndAddresses(sockfd: number, isRead: boolean, methodAddr
                 message["ss_family"] = "AF_INET6"
             }
         } else {
+            devlog("[-] getPortsAndAddresses resolving error:"+addr.readU16())
             throw "Only supporting IPv4/6"
         }
     }
