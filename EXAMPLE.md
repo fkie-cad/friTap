@@ -47,7 +47,7 @@ When finished, pull the pcap from the device and open it in wireshark. To decryp
 
 The first way is the easiest way and also has the advantage, that your pcap only contains packets from this process. However, the second way is more accurate when it comes to information about lower layers. When you use the first method, the program hooks the "SSL_read/write" functions in the program and then artificially crafts packets. For these packets, header data is set to default values, as we can only access application layer data at this point. So, if you are not only interested about the packets payload but need accurate information about the traffic, choose the second method.
 
-Also keep in mind that, when using the `-pcap` option, **only** decrypted TLS traffic is written to the pcap! This means, if the app also has non-TLS communication like pure HTTP or QUIC, this will not be contained in the pcap.
+Also keep in mind that, when using the `--pcap` option, **only** decrypted TLS traffic is written to the pcap! This means, if the app also has non-TLS communication like pure HTTP or QUIC, this will not be contained in the pcap.
 
 [1] https://flipboard.com/
 [2] https://developer.mozilla.org/en-US/docs/Mozilla/Projects/NSS/Key_Log_Format
