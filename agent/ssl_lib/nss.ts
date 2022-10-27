@@ -1,6 +1,7 @@
-import { readAddresses } from "../shared/shared_functions"
+import { readAddresses, getBaseAddress } from "../shared/shared_functions"
 import { pointerSize, AF_INET, AF_INET6 } from "../shared/shared_structures"
 import { log, devlog } from "../util/log"
+import { offsets } from "../ssl_log"
 
 
 /**
@@ -190,6 +191,31 @@ export class NSS {
         }
 
         this.addresses = readAddresses(this.library_method_mapping);
+
+        if(offsets != "{OFFSETS}" && offsets.nss != null){
+
+            if(offsets.sockets != null){
+                const socketBaseAddress = getBaseAddress(socket_library)
+                for(const method of Object.keys(offsets.sockets)){
+                     //@ts-ignore
+                    this.addresses[`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
+                }
+            }
+
+            const libraryBaseAddress = getBaseAddress(moduleName)
+            
+            if(libraryBaseAddress == null){
+                log("Unable to find library base address! Given address values will be interpreted as absolute ones!")
+            }
+
+            
+            for (const method of Object.keys(offsets.nss)){
+                //@ts-ignore
+                this.addresses[`${method}`] = offsets.nss[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.nss[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.nss[`${method}`].address));
+            }
+
+
+        }
 
         NSS.SSL_SESSION_get_id = new NativeFunction(this.addresses["SSL_GetSessionID"], "pointer", ["pointer"])
         NSS.getsockname = new NativeFunction(this.addresses["PR_GetSockName"], "int", ["pointer", "pointer"]);

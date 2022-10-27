@@ -41,35 +41,29 @@ export class OpenSSL_BoringSSL {
         
         this.addresses = readAddresses(this.library_method_mapping);
 
-        if(offsets != "{OFFSETS}"){
-            const baseAddress = getBaseAddress(moduleName)
+        if(offsets != "{OFFSETS}" && offsets.openssl != null){
             
-            if(baseAddress == null){
+            if(offsets.sockets != null){
+                const socketBaseAddress = getBaseAddress(socket_library)
+                for(const method of Object.keys(offsets.sockets)){
+                     //@ts-ignore
+                    this.addresses[`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
+                }
+            }
+
+            const libraryBaseAddress = getBaseAddress(moduleName)
+            
+            if(libraryBaseAddress == null)
                 log("Unable to find library base address! Given address values will be interpreted as absolute ones!")
-                return;
+            
+
+            
+            for (const method of Object.keys(offsets.openssl)){
+                //@ts-ignore
+                this.addresses[`${method}`] = offsets.openssl[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.openssl[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.openssl[`${method}`].address));
             }
 
             
-            if(offsets.openssl?.read != null){
-                this.addresses["SSL_read"] = offsets.openssl.read.absolute || baseAddress == null ? ptr(offsets.openssl.read.address) : baseAddress.add(ptr(offsets.openssl?.read.address));
-            }
-            
-            if(offsets.openssl?.write != null){
-                this.addresses["SSL_write"] = offsets.openssl.write.absolute || baseAddress == null ? ptr(offsets.openssl.write.address) :  baseAddress.add(ptr(offsets.openssl?.write.address));
-            }
-
-            if(offsets.openssl?.ssl_session_get_id != null){
-                this.addresses["SSL_SESSION_get_id"] = offsets.openssl.ssl_session_get_id.absolute || baseAddress == null ? ptr(offsets.openssl.ssl_session_get_id.address) : baseAddress.add(ptr(offsets.openssl?.ssl_session_get_id.address));
-            }
-
-            if(offsets.openssl?.bio_get_fd != null){
-                this.addresses["BIO_get_fd"] = offsets.openssl.bio_get_fd.absolute || baseAddress == null ? ptr(offsets.openssl.bio_get_fd.address) :  baseAddress.add(ptr(offsets.openssl?.bio_get_fd.address));
-            }
-            
-            if(offsets.openssl?.ssl_get_session != null){
-                this.addresses["SSL_get_session"] = offsets.openssl.ssl_get_session.absolute || baseAddress == null ?  ptr(offsets.openssl.ssl_get_session.address) :  baseAddress.add(ptr(offsets.openssl?.ssl_get_session.address)) ;
-            }
-
 
         }
 
@@ -110,12 +104,12 @@ export class OpenSSL_BoringSSL {
     }
 
     install_plaintext_write_hook(){
-        var lib_addesses = this.addresses;
+        var lib_addresses = this.addresses;
         Interceptor.attach(this.addresses["SSL_write"],
         {
             onEnter: function (args: any) {
                 if (!ObjC.available){
-                var message = getPortsAndAddresses(OpenSSL_BoringSSL.SSL_get_fd(args[0]) as number, false, lib_addesses)
+                var message = getPortsAndAddresses(OpenSSL_BoringSSL.SSL_get_fd(args[0]) as number, false, lib_addresses)
                 message["ssl_session_id"] = OpenSSL_BoringSSL.getSslSessionId(args[0])
                 message["function"] = "SSL_write"
                 message["contentType"] = "datalog"

@@ -11,22 +11,62 @@ interface IAddress{
     absolute: boolean
 }
 
-interface ILibrary{
-    read: IAddress,
-    write: IAddress
-}
 
 interface IOffsets {
-    openssl?: ILibrary & {
-        ssl_session_get_id?: IAddress,
-        bio_get_fd?: IAddress,
-        ssl_get_session?: IAddress,
-        ssl_get_fd?: IAddress
+    openssl?: {
+        SSL_read?: IAddress,
+        SSL_write?: IAddress,
+        SSL_SESSION_get_id?: IAddress,
+        BIO_get_fd?: IAddress,
+        SSL_get_session?: IAddress,
+        ssl_get_fd?: IAddress,
+        SSL_new?: IAddress,
+        SSL_CTX_set_keylog_callback?: IAddress
     },
-    nss?: ILibrary,
-    mbedtls?: ILibrary,
-    gnutls?: ILibrary,
-    wolfssl?: ILibrary
+    wolfssl?: {
+        wolfSSL_read?: IAddress,
+        wolfSSL_write?: IAddress,
+        wolfSSL_get_fd?: IAddress,
+        wolfSSL_get_session?: IAddress,
+        wolfSSL_connect?: IAddress,
+        wolfSSL_KeepArrays?: IAddress,
+        wolfSSL_SESSION_get_master_key?: IAddress,
+        wolfSSL_get_client_random?: IAddress,
+        wolfSSL_get_server_random?: IAddress,
+
+    }
+    nss?: {
+        SSL_GetSessionID?: IAddress,
+        PR_GetSockName?: IAddress,
+        PR_GetPeerName?: IAddress
+        PR_Write?: IAddress,
+        PR_Read?: IAddress,
+        PR_FileDesc2NativeHandle?: IAddress,
+        PR_GetNameForIdentity?: IAddress,
+        PR_GetDescType?: IAddress
+    },
+    mbedtls?: {
+        mbedtls_ssl_read?: IAddress,
+        mbedtls_ssl_write?: IAddress
+    },
+    gnutls?: {
+        gnutls_record_recv?: IAddress,
+        gnutls_record_send?: IAddress,
+        gnutls_session_set_keylog_function?: IAddress,
+        gnutls_transport_get_int?: IAddress,
+        gnutls_session_get_id?: IAddress,
+        gnutls_init?: IAddress,
+        gnutls_handshake?: IAddress,
+        gnutls_session_get_keylog_function?: IAddress,
+        gnutls_session_get_random?: IAddress
+    },
+
+    sockets?:{
+        getpeername?: IAddress,
+        getsockname?: IAddress,
+        ntohs?: IAddress,
+        ntohl?: IAddress
+    }
 }
 
 //@ts-ignore
