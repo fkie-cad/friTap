@@ -1,5 +1,7 @@
-import { readAddresses } from "../shared/shared_functions"
+import { readAddresses, getBaseAddress } from "../shared/shared_functions"
 import { socket_library } from "./windows_agent";
+import { log } from "../util/log"
+import { offsets } from "../ssl_log";
 
 /*
 
@@ -27,6 +29,31 @@ export class SSPI_Windows {
         this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
     
         this.addresses = readAddresses(this.library_method_mapping);
+
+        if(offsets != "{OFFSETS}" && offsets.gnutls != null){
+
+            if(offsets.sockets != null){
+                const socketBaseAddress = getBaseAddress(socket_library)
+                for(const method of Object.keys(offsets.sockets)){
+                     //@ts-ignore
+                    this.addresses[`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
+                }
+            }
+
+            const libraryBaseAddress = getBaseAddress(moduleName)
+            
+            if(libraryBaseAddress == null){
+                log("Unable to find library base address! Given address values will be interpreted as absolute ones!")
+            }
+
+            
+            for (const method of Object.keys(offsets.gnutls)){
+                //@ts-ignore
+                this.addresses[`${method}`] = offsets.gnutls[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.gnutls[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.gnutls[`${method}`].address));
+            }
+
+
+        }
         
     }
 
@@ -65,7 +92,6 @@ export class SSPI_Windows {
                         message["function"] = "DecryptMessage"
                         message["contentType"] = "datalog"
                         message["ssl_session_id"] = 10
-                        console.log(bytes)
                         send(message, bytes)
                     }
                 }

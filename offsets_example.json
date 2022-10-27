@@ -32,6 +32,10 @@
     "nss":{
         ...
     },
+    "sspi":{
+        DecryptMessage:{...},
+        EncryptMessage: {...}
+    },
     "sockets":{
         "getpeername":{
             ...

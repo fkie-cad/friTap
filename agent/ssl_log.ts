@@ -60,6 +60,10 @@ interface IOffsets {
         gnutls_session_get_keylog_function?: IAddress,
         gnutls_session_get_random?: IAddress
     },
+    sspi?:{
+        EncryptMessage: IAddress,
+        DecryptMessage: IAddress
+    },
 
     sockets?:{
         getpeername?: IAddress,
