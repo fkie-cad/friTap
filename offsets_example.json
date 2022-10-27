@@ -22,6 +22,30 @@
             "address": "0x2aae",
             "absolute": false
         }
+    },
+    "gnutls":{
+        ...
+    },
+    "mbedtls":{
+        ...
+    },
+    "nss":{
+        ...
+    },
+    "sockets":{
+        "getpeername":{
+            ...
+        },
+        "getsockname":{
+            ...
+        },
+        "ntohs":{
+            ...         
+        },
+        "ntohl":{
+            ...
+        }
     }
+
     
 }
