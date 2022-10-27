@@ -37,7 +37,7 @@ Further ensure that the frida-server is running on the Android/iOS device.
 
 Remember when working with the pip installation you have to invoke the `friTap` command with sudo a little bit different. Either as module:
 ```bash
-$ sudo -E python3 -m friTap.friTap -m fritap.friTap --pcap mycapture.pcap thunderbird
+$ sudo -E python3 -m friTap.friTap --pcap mycapture.pcap thunderbird
 ```
 or directly invoking the script:
 ```bash
