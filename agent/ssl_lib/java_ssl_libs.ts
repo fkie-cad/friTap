@@ -1,5 +1,6 @@
 import { log } from "../util/log.js"
 import { execute as conscrypt_execute } from "../android/conscrypt.js"
+import { isAndroid} from "../util/process_infos.js";
 
 
 export class SSL_Java {
@@ -52,6 +53,22 @@ export class SSL_Java {
                         log("Blocking provider registration of " + provider.getName())
                         return 1
                     } else {
+
+                        if(isAndroid()){
+                            /*
+                            When a NetworkProvider will be installed it is only allow at position 1
+                            s. https://android.googlesource.com/platform/frameworks/base/+/master/core/java/android/security/net/config/NetworkSecurityConfigProvider.java
+                            */
+                            if(provider.getName() === "AndroidNSSP"){
+                                return this.insertProviderAt(provider,1)
+                            }
+
+                            // when the "Failed to install provider as highest priority provider. Provider was installed at position"-error is prompted on logcat please uncomment the following line, recompile the typescript and reopen the following
+                            // https://github.com/fkie-cad/friTap/issues/1
+                            // var android_Version = Java.androidVersion
+                            // devlog("highest priority provider error with: "+provider.getName())
+                        }
+                        
                         return this.addProvider(provider)
                     }
                 }
