@@ -26,7 +26,7 @@ On Linux/Windows/MacOS we can easily attach to a process by entering its name or
 $ sudo ./friTap.py --pcap mycapture.pcap thunderbird
 ```
 
-For mobile applications we just have to add the -m parameter to indicate that we are now attaching (or spawning) an Android or iOS app:
+For mobile applications we just have to add the `-m parameter to indicate that we are now attaching (or spawning) an Android or iOS app:
 
 ```bash
 $ ./friTap.py -m --pcap mycapture.pcap com.example.app
