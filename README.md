@@ -77,7 +77,7 @@ More examples on using friTap can be found in the [USAGE.md](./USAGE.md). A deta
 ## Dependencies
 
 - [frida](https://frida.re)
-- >= python3.6
+- `>= python3.6`
 - hexdump (`pip3 install hexdump`)
 - scapy (`pip3 install scapy`)
 
