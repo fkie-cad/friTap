@@ -75,7 +75,8 @@ interface IOffsets {
 
 //@ts-ignore
 export let offsets: IOffsets = "{OFFSETS}";
-
+//@ts-ignore
+export let experimental: boolean = "{EXPERIMENTAL}"
 /*
 
 create the TLS library for your first prototpye as a lib in ./ssl_lib and than extend this class for the OS where this new lib was tested.
