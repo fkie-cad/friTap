@@ -160,7 +160,7 @@ export class SSPI_Windows {
     
     install_tls_keys_hook(){
 
-        /* Most of the following code fragments were copied from
+        /* Most of the following code fragments are taken from
          * https://github.com/ngo/win-frida-scripts/tree/master/lsasslkeylog-easy
         */
 
