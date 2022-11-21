@@ -1,4 +1,4 @@
-import { readAddresses, getPortsAndAddresses, toHexString } from "../shared/shared_functions.js"
+import { readAddresses, getPortsAndAddresses, getBaseAddress } from "../shared/shared_functions.js"
 import { log } from "../util/log.js"
 
 export class WolfSSL {
@@ -23,7 +23,30 @@ export class WolfSSL {
         
         this.addresses = readAddresses(this.library_method_mapping);
 
-        
+        if(offsets != "{OFFSETS}" && offsets.wolfssl != null){
+
+            if(offsets.sockets != null){
+                const socketBaseAddress = getBaseAddress(socket_library)
+                for(const method of Object.keys(offsets.sockets)){
+                     //@ts-ignore
+                    this.addresses[`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
+                }
+            }
+
+            const libraryBaseAddress = getBaseAddress(moduleName)
+            
+            if(libraryBaseAddress == null){
+                log("Unable to find library base address! Given address values will be interpreted as absolute ones!")
+            }
+
+            
+            for (const method of Object.keys(offsets.wolfssl)){
+                //@ts-ignore
+                this.addresses[`${method}`] = offsets.wolfssl[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.wolfssl[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.wolfssl[`${method}`].address));
+            }
+
+
+        }
 
         WolfSSL.wolfSSL_get_fd = new NativeFunction(this.addresses["wolfSSL_get_fd"], "int", ["pointer"])
         WolfSSL.wolfSSL_get_session = new NativeFunction(this.addresses["wolfSSL_get_session"], "pointer", ["pointer"])
