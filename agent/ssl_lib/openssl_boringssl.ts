@@ -44,26 +44,29 @@ export class OpenSSL_BoringSSL {
         
         this.addresses = readAddresses(this.library_method_mapping);
 
-        if(offsets != "{OFFSETS}"){
-
-            const baseAddress = getBaseAddress(moduleName)
-            if(baseAddress == null){
-                log("Unable to find base address!")
-                return;
+        if(offsets != "{OFFSETS}" && offsets.openssl != null){
+            
+            if(offsets.sockets != null){
+                const socketBaseAddress = getBaseAddress(socket_library)
+                for(const method of Object.keys(offsets.sockets)){
+                     //@ts-ignore
+                    this.addresses[`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
+                }
             }
 
-            console.log(baseAddress)
-            //@ts-ignore
-            console.log(offsets["SSL_read"])
-            //@ts-ignore
-            console.log(baseAddress.add(ptr(offsets["SSL_read"])))
-            //@ts-ignore
-            console.log(baseAddress.add(ptr(offsets["SSL_write"])))
+            const libraryBaseAddress = getBaseAddress(moduleName)
+            
+            if(libraryBaseAddress == null)
+                log("Unable to find library base address! Given address values will be interpreted as absolute ones!")
+            
 
-            //@ts-ignore
-            this.addresses["SSL_read"] = baseAddress.add(ptr(offsets["SSL_read"]))
-            //@ts-ignore
-            this.addresses["SSL_write"] = baseAddress.add(ptr(offsets["SSL_write"]))
+            
+            for (const method of Object.keys(offsets.openssl)){
+                //@ts-ignore
+                this.addresses[`${method}`] = offsets.openssl[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.openssl[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.openssl[`${method}`].address));
+            }
+
+            
 
         }
 
