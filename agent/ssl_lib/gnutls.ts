@@ -1,6 +1,5 @@
-import { readAddresses, getPortsAndAddresses, getBaseAddress } from "../shared/shared_functions"
-import { log } from "../util/log"
-import { offsets } from "../ssl_log";
+import { readAddresses, getPortsAndAddresses, toHexString } from "../shared/shared_functions.js"
+import { log } from "../util/log.js"
 
 export class GnuTLS {
 
@@ -25,31 +24,6 @@ export class GnuTLS {
         }
         
         this.addresses = readAddresses(this.library_method_mapping);
-
-        if(offsets != "{OFFSETS}" && offsets.gnutls != null){
-
-            if(offsets.sockets != null){
-                const socketBaseAddress = getBaseAddress(socket_library)
-                for(const method of Object.keys(offsets.sockets)){
-                     //@ts-ignore
-                    this.addresses[`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
-                }
-            }
-
-            const libraryBaseAddress = getBaseAddress(moduleName)
-            
-            if(libraryBaseAddress == null){
-                log("Unable to find library base address! Given address values will be interpreted as absolute ones!")
-            }
-
-            
-            for (const method of Object.keys(offsets.gnutls)){
-                //@ts-ignore
-                this.addresses[`${method}`] = offsets.gnutls[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.gnutls[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.gnutls[`${method}`].address));
-            }
-
-
-        }
 
         GnuTLS.gnutls_transport_get_int = new NativeFunction(this.addresses["gnutls_transport_get_int"], "int", ["pointer"])
         GnuTLS.gnutls_session_get_id = new NativeFunction(this.addresses["gnutls_session_get_id"], "int", ["pointer", "pointer", "pointer"])
@@ -139,7 +113,7 @@ export class GnuTLS {
         onEnter: function (args: any) {
             var message = getPortsAndAddresses(GnuTLS.gnutls_transport_get_int(args[0]) as number, true, lib_addesses)
             message["ssl_session_id"] = GnuTLS.getSslSessionId(args[0])
-            message["function"] = "gnutls_record_recv"
+            message["function"] = "SSL_read"
             this.message = message
             this.buf = args[1]
         },
@@ -162,7 +136,7 @@ export class GnuTLS {
         onEnter: function (args: any) {
             var message = getPortsAndAddresses(GnuTLS.gnutls_transport_get_int(args[0]) as number, false, lib_addesses)
             message["ssl_session_id"] = GnuTLS.getSslSessionId(args[0])
-            message["function"] = "gnutls_record_send"
+            message["function"] = "SSL_write"
             message["contentType"] = "datalog"
             send(message, args[1].readByteArray(parseInt(args[2])))
         },

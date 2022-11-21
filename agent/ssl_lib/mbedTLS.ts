@@ -1,6 +1,4 @@
-import { readAddresses, getPortsAndAddresses, getBaseAddress } from "../shared/shared_functions"
-import { offsets } from "../ssl_log";
-import { log } from "../util/log"
+import { readAddresses, getPortsAndAddresses } from "../shared/shared_functions.js"
 
 /**
  * 
@@ -107,31 +105,6 @@ export class mbed_TLS {
         } else {
             this.library_method_mapping[`*${moduleName}*`] = ["mbedtls_ssl_read", "mbedtls_ssl_write"];
             this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
-        }
-
-        if(offsets != "{OFFSETS}" && offsets.mbedtls != null){
-
-            if(offsets.sockets != null){
-                const socketBaseAddress = getBaseAddress(socket_library)
-                for(const method of Object.keys(offsets.sockets)){
-                     //@ts-ignore
-                    this.addresses[`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
-                }
-            }
-
-            const libraryBaseAddress = getBaseAddress(moduleName)
-            
-            if(libraryBaseAddress == null){
-                log("Unable to find library base address! Given address values will be interpreted as absolute ones!")
-            }
-
-            
-            for (const method of Object.keys(offsets.mbedtls)){
-                //@ts-ignore
-                this.addresses[`${method}`] = offsets.mbedtls[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.mbedtls[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.mbedtls[`${method}`].address));
-            }
-
-
         }
 
         this.addresses = readAddresses(this.library_method_mapping);

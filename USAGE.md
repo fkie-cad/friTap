@@ -12,9 +12,7 @@ Arguments:
   - `-v`, `--verbose` Show verbose output
   - `--enable_spawn_gating` Catch newly spawned processes. ATTENTION: These could be unrelated to the current process!
   - `<executable/app name/pid>` executable/app whose SSL calls to log
-  - `--offsets <path>` Use custom offsets (from library base address) or absolute addresses for function resolution
-  - `--experimental` Use all experimental features.
-  
+
 The target device needs to have frida-server running when Android or iOS apps are analyzed. Further information about setting up the device can be found [here](https://frida.re/docs/android/).
 # Examples
 ## Spawn an app and show output on screen
@@ -62,53 +60,7 @@ $ sudo wireshark -k -i /tmp/tmp9is_q9_k/fritap_sharkfin &
 Now we can see and analyze all the packets live with Wireshark. As soon as we stop the capturing friTap will exit. For later analysis it is than possible to safe the capture as pcap:
 
 ![](./images/live_view.png) 
+
+
+
 **Note:** It is not possible to safe the PCAP and having a live capture directly through friTap. If you want to safe the PCAP just use the capability of Wireshark to do so.
-```bash
-$ sudo wireshark -k -i /tmp/tmp9is_q9_k/fritap_sharkfin &
-```
-
-
-
-
-## Providing custom offsets/addresses
-FriTap allows to specify user-defined offsets (starting from the base address of the ssl/socket library) and to specify absolute virtual addresses of ssl/socket functions for function resolution. For this a JSON file (see offsets_example.json) must be specified using the `--offsets` parameter.  If the parameter is set, then friTap will overwrite only those addresses of those functions that were specified. For all functions for which nothing was specified, friTap will try to detect an address on its own.
-The `address` field contains the offset or absolute address of the function specified function. The value must be specified as a hexadecimal string!
-If the field `absolute` is set to true or the base address of the socket/ssl library cannot be found, then the values specified for `address` are interpreted as absolute addresses.
-If the field `absolute` is set to false, then the values specified for `address` are interpreted as an **offset based on the library base address**.
-### **Example**:
-Suppose friTap recognizes the base address of the OpenSSL library, but does not find an export of the SSL_read and SSL_write functions, and you know the offsets of those same functions. In addition, if you know the absolute address of the required socket functions, the JSON file could look like this
-```json
-{
-    "openssl":{
-        "SSL_read": {
-            "address":"0x15b4",
-            "absolute":false
-        },
-        "SSL_write":{
-            "address":"0x144c",
-            "absolute": false
-        }
-    },
-    "sockets":{
-        "getpeername":{
-            "address":"0x572115b4",
-            "absolute":true
-        },
-        "getsockname":{
-            "address":"0x5721163",
-            "absolute":true
-        },
-        "ntohs":{
-            "address":"0x572116f2",
-            "absolute":true         
-        },
-        "ntohl":{
-            "address":"0x572116c2",
-            "absolute":true
-        }
-    }  
-}
-```
-
-
-
