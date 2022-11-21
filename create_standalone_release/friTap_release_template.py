@@ -100,7 +100,7 @@ def temp_fifo():
         print(f'Failed to create FIFO: {e}')
 
 
-def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, mobile=False, live=False, environment_file=None, debug_mode=False,full_capture=False, socket_trace=False, host=False, offsets=None, debug_output=False):
+def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, mobile=False, live=False, environment_file=None, debug_mode=False,full_capture=False, socket_trace=False, host=False, offsets=None, debug_output=False, experimental=False):
     global debug
     debug = debug_mode
     
@@ -220,6 +220,7 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
             if offsets_data is not None:
                 print(offsets_data)
                 script_string = script_string.replace('"{OFFSETS}"', offsets_data)
+                script_string = script_string.replace('"{EXPERIMENTAL}"', "true" if (experimental) else "false")
 
             script = process.create_script(script_string, runtime=runtime)
 
@@ -380,6 +381,8 @@ Examples:
                       help="executable/app whose SSL calls to log")
     args.add_argument("--offsets", required=False, metavar="<offsets.json>",
                       help="Provide custom offsets for all hooked functions inside a JSON file or a json string containing all offsets. For more details see our example json (offsets_example.json)")
+    args.add_argument("--experimental", required=False,
+                      help="Activates all existing experimental feature (see documentation for more information)")
     parsed = parser.parse_args()
     
     if parsed.full_capture and parsed.pcap is None:
@@ -389,9 +392,10 @@ Examples:
     try:
         print("Start logging")
         ssl_log(parsed.exec, parsed.pcap, parsed.verbose,
-                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.mobile, parsed.live, parsed.environment, parsed.debug, parsed.full_capture, parsed.socket_tracing, parsed.host, parsed.offsets, parsed.debugoutput)
+                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.mobile, parsed.live, parsed.environment, parsed.debug, parsed.full_capture, parsed.socket_tracing, parsed.host, parsed.offsets, parsed.debugoutput,parsed.experimental)
 
     except Exception as ar:
+        print("[-] Uknown error:")
         print(ar)
 
     finally:
