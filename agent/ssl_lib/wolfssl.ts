@@ -24,6 +24,7 @@ export class WolfSSL {
         
         this.addresses = readAddresses(this.library_method_mapping);
 
+        // @ts-ignore
         if(offsets != "{OFFSETS}" && offsets.wolfssl != null){
 
             if(offsets.sockets != null){

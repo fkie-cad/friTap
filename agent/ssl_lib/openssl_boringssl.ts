@@ -44,6 +44,7 @@ export class OpenSSL_BoringSSL {
         
         this.addresses = readAddresses(this.library_method_mapping);
 
+        // @ts-ignore
         if(offsets != "{OFFSETS}" && offsets.openssl != null){
             
             if(offsets.sockets != null){

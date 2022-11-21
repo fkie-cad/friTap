@@ -1,6 +1,6 @@
 import { readAddresses, getPortsAndAddresses, toHexString, getBaseAddress } from "../shared/shared_functions.js"
 import { log } from "../util/log.js"
-import { offsets } from "../ssl_log";
+import { offsets } from "../ssl_log.js";
 
 export class GnuTLS {
 
@@ -26,6 +26,8 @@ export class GnuTLS {
         
         this.addresses = readAddresses(this.library_method_mapping);
 
+
+        // @ts-ignore
         if(offsets != "{OFFSETS}" && offsets.gnutls != null){
 
             if(offsets.sockets != null){

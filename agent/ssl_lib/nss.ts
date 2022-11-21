@@ -1,7 +1,6 @@
 import { readAddresses, getBaseAddress } from "../shared/shared_functions.js"
 import { pointerSize, AF_INET, AF_INET6 } from "../shared/shared_structures.js"
 import { log, devlog } from "../util/log.js"
-import { log, devlog } from "../util/log.js"
 import { offsets } from "../ssl_log.js"
 
 
@@ -193,6 +192,7 @@ export class NSS {
 
         this.addresses = readAddresses(this.library_method_mapping);
 
+        // @ts-ignore
          if(offsets != "{OFFSETS}" && offsets.nss != null){
 
             if(offsets.sockets != null){

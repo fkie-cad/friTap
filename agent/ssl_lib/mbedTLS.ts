@@ -111,6 +111,7 @@ export class mbed_TLS {
 
         this.addresses = readAddresses(this.library_method_mapping);
 
+        // @ts-ignore
         if(offsets != "{OFFSETS}" && offsets.mbedtls != null){
 
             if(offsets.sockets != null){

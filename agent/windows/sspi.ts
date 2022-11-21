@@ -1,7 +1,7 @@
-import { readAddresses, getBaseAddress } from "../shared/shared_functions"
-import { socket_library } from "./windows_agent";
-import { devlog, log } from "../util/log"
-import { experimental, offsets } from "../ssl_log";
+import { readAddresses, getBaseAddress } from "../shared/shared_functions.js"
+import { socket_library } from "./windows_agent.js";
+import { devlog, log } from "../util/log.js"
+import { experimental, offsets } from "../ssl_log.js";
 
 /*
 ToDo:
@@ -38,6 +38,7 @@ export class SSPI_Windows {
     
         this.addresses = readAddresses(this.library_method_mapping);
 
+        // @ts-ignore
         if(offsets != "{OFFSETS}" && offsets.gnutls != null){
 
             if(offsets.sockets != null){
