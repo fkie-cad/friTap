@@ -13,7 +13,8 @@ Arguments:
   - `--enable_spawn_gating` Catch newly spawned processes. ATTENTION: These could be unrelated to the current process!
   - `<executable/app name/pid>` executable/app whose SSL calls to log
   - `--offsets <path>` Use custom offsets (from library base address) or absolute addresses for function resolution
-
+  - `--experimental` Use all experimental features.
+  
 The target device needs to have frida-server running when Android or iOS apps are analyzed. Further information about setting up the device can be found [here](https://frida.re/docs/android/).
 # Examples
 ## Spawn an app and show output on screen

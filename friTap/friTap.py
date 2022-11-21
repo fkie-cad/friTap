@@ -356,8 +356,8 @@ Examples:
                       help="executable/app whose SSL calls to log")
     args.add_argument("--offsets", required=False, metavar="<offsets.json>",
                       help="Provide custom offsets for all hooked functions inside a JSON file or a json string containing all offsets. For more details see our example json (offsets_example.json)")
-    args.add_argument("--experimental", required=False, metavar="<offsets.json>",
-                      help="Provide custom offsets for all hooked functions inside a JSON file or a json string containing all offsets. For more details see our example json (offsets_example.json)")
+    args.add_argument("--experimental", required=False,
+                      help="Activates all existing experimental feature (see documentation for more information)")
     
     parsed = parser.parse_args()
     

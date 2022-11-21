@@ -160,6 +160,10 @@ export class SSPI_Windows {
     
     install_tls_keys_hook(){
 
+        /* Most of the following code fragments were copied from
+         * https://github.com/ngo/win-frida-scripts/tree/master/lsasslkeylog-easy
+        */
+
         var client_randoms:any = {};
         var buf2hex = function (buffer:any) {
             return Array.prototype.map.call(new Uint8Array(buffer), function(x){ return ('00' + x.toString(16)).slice(-2)} ).join('');
