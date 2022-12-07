@@ -39,7 +39,7 @@ export class SSPI_Windows {
         this.addresses = readAddresses(this.library_method_mapping);
 
         // @ts-ignore
-        if(offsets != "{OFFSETS}" && offsets.gnutls != null){
+        if(offsets != "{OFFSETS}" && offsets.sspi != null){
 
             if(offsets.sockets != null){
                 const socketBaseAddress = getBaseAddress(socket_library)
@@ -56,9 +56,9 @@ export class SSPI_Windows {
             }
 
             
-            for (const method of Object.keys(offsets.gnutls)){
+            for (const method of Object.keys(offsets.sspi)){
                 //@ts-ignore
-                this.addresses[`${method}`] = offsets.gnutls[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.gnutls[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.gnutls[`${method}`].address));
+                this.addresses[`${method}`] = offsets.sspi[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.sspi[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.sspi[`${method}`].address));
             }
 
 

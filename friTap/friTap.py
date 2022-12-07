@@ -205,7 +205,7 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
             print("[!] Open Chrome with chrome://inspect for debugging\n")
             runtime="v8"
 
-        with open(os.path.join(here, '_ssl_log.js'), encoding='utf8', newline='\n') as f:
+        with open(os.path.join(here, frida_agent_script), encoding='utf8', newline='\n') as f:
             script_string = f.read()
 
             if offsets_data is not None:
@@ -372,7 +372,7 @@ Examples:
                       help="executable/app whose SSL calls to log")
     args.add_argument("--offsets", required=False, metavar="<offsets.json>",
                       help="Provide custom offsets for all hooked functions inside a JSON file or a json string containing all offsets. For more details see our example json (offsets_example.json)")
-    args.add_argument("--experimental", required=False,
+    args.add_argument("exp","--experimental", required=False, action="store_const", const=True, default=False,
                       help="Activates all existing experimental feature (see documentation for more information)")
     parsed = parser.parse_args()
     
@@ -386,7 +386,7 @@ Examples:
                 parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.mobile, parsed.live, parsed.environment, parsed.debug, parsed.full_capture, parsed.socket_tracing, parsed.host, parsed.offsets, parsed.debugoutput,parsed.experimental)
 
     except Exception as ar:
-        print("[-] Uknown error:")
+        print("[-] Unknown error:")
         print(ar)
 
     finally:
