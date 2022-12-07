@@ -55,7 +55,7 @@ function hook_Windows_SSL_Libs(module_library_mapping: { [key: string]: Array<[a
 }
 
 export function load_windows_hooking_agent() {
-    module_library_mapping[plattform_name] = [[/^(libssl|LIBSSL)-[0-9]+(_[0-9]+)?\.dll$/, boring_execute], [/^.*(wolfssl|WOLFSSL).*\.dll$/, wolfssl_execute], [/^.*(libgnutls|LIBGNUTLS)-[0-9]+\.dll$/, gnutls_execute], [/^(nspr|NSPR)[0-9]*\.dll/, nss_execute], [/(sspicli|SSPICLI)\.dll$/, sspi_execute], [/mbedTLS\.dll/, mbedTLS_execute]]
+    module_library_mapping[plattform_name] = [[/^(libssl|LIBSSL)-[0-9]+(_[0-9]+)?\.dll$/, boring_execute], [/^.*(wolfssl|WOLFSSL).*\.dll$/, wolfssl_execute], [/^.*(libgnutls|LIBGNUTLS)-[0-9]+\.dll$/, gnutls_execute], [/^(nspr|NSPR)[0-9]*\.dll/, nss_execute], [/(sspicli|SSPICLI|SspiCli)\.dll$/, sspi_execute], [/mbedTLS\.dll/, mbedTLS_execute]]
     hook_Windows_SSL_Libs(module_library_mapping);
     hook_Windows_Dynamic_Loader(module_library_mapping);
 }

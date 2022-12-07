@@ -33,7 +33,8 @@ export class SSPI_Windows {
 
     constructor(public moduleName:String, public socket_library:String){
 
-        this.library_method_mapping[`*${moduleName}*`] = ["DecryptMessage", "EncryptMessage", "SslHashHandshake", "SslGenerateMasterKey", "SslImportMasterKey", "SslGenerateSessionKeys", "SslExpandTrafficKeys", "SslExpandExporterMasterKey"];
+        this.library_method_mapping[`*${moduleName}*`] = ["DecryptMessage", "EncryptMessage"];
+        this.library_method_mapping["*ncrypt*.dll"] = ["SslHashHandshake", "SslGenerateMasterKey", "SslImportMasterKey","SslGenerateSessionKeys","SslExpandExporterMasterKey","SslExpandTrafficKeys"]
         this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
     
         this.addresses = readAddresses(this.library_method_mapping);
@@ -327,6 +328,7 @@ export class SSPI_Windows {
         this.install_plaintext_read_hook();
         this.install_plaintext_write_hook();
         if(experimental){
+            log(`ncrypt.dll was loaded & will be hooked on Windows!`)
             this.install_tls_keys_hook();
         }
     }
