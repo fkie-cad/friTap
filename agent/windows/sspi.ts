@@ -11,7 +11,7 @@ ToDo:
 
 var keylog = (key: string, tlsVersion: TLSVersion) =>{
 
-    devlog(`[*] Exporting TLS 1.${tlsVersion} handshake keying material`);
+    devlog(`Exporting TLS 1.${tlsVersion} handshake keying material`);
 
     var message: { [key: string]: string | number } = {}
     message["contentType"] = "keylog";
@@ -34,7 +34,11 @@ export class SSPI_Windows {
     constructor(public moduleName:String, public socket_library:String){
 
         this.library_method_mapping[`*${moduleName}*`] = ["DecryptMessage", "EncryptMessage"];
-        this.library_method_mapping["*ncrypt*.dll"] = ["SslHashHandshake", "SslGenerateMasterKey", "SslImportMasterKey","SslGenerateSessionKeys","SslExpandExporterMasterKey","SslExpandTrafficKeys"]
+        if(experimental){
+            // ncrypt is used for the TLS keys
+            log(`ncrypt.dll was loaded & will be hooked on Windows!`)
+            this.library_method_mapping["*ncrypt*.dll"] = ["SslHashHandshake", "SslGenerateMasterKey", "SslImportMasterKey","SslGenerateSessionKeys","SslExpandExporterMasterKey","SslExpandTrafficKeys"]
+        }
         this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
     
         this.addresses = readAddresses(this.library_method_mapping);
@@ -220,7 +224,7 @@ export class SSPI_Windows {
                     if (msg_type == 1 && version == 0x0303){
                         // If we have client random, save it tied to current thread
                         var crandom = buf2hex(buf.add(6).readByteArray(32));
-                        devlog("[*] Got client random from SslHashHandshake: " + crandom);
+                        devlog("Got client random from SslHashHandshake: " + crandom);
                         client_randoms[this.threadId] = crandom;
                     }       
                 },
@@ -239,7 +243,7 @@ export class SSPI_Windows {
                 },
                 onLeave: function (retval) {
                     var master_key = parse_h_master_key(this.phMasterKey.readPointer());
-                    devlog("[*] Got masterkey from SslGenerateMasterKey");
+                    devlog("Got masterkey from SslGenerateMasterKey");
                     keylog("CLIENT_RANDOM " + this.client_random + " " + master_key, TLSVersion.ONE_TWO);
                 }
             });
@@ -269,7 +273,7 @@ export class SSPI_Windows {
                     this.pParameterList = ptr(args[4]);
                     this.client_random = parse_parameter_list(this.pParameterList, 'SslGenerateSessionKeys') || client_randoms[this.threadId] || "???";
                     var master_key = parse_h_master_key(this.hMasterKey);
-                    devlog("[*] Got masterkey from SslGenerateSessionKeys");
+                    devlog("Got masterkey from SslGenerateSessionKeys");
                     keylog("CLIENT_RANDOM " + this.client_random + " " + master_key, TLSVersion.ONE_TWO);
                 },
                 onLeave: function (retval) {
@@ -328,7 +332,6 @@ export class SSPI_Windows {
         this.install_plaintext_read_hook();
         this.install_plaintext_write_hook();
         if(experimental){
-            log(`ncrypt.dll was loaded & will be hooked on Windows!`)
             this.install_tls_keys_hook();
         }
     }

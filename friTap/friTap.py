@@ -366,6 +366,7 @@ Examples:
                       help="Provide the environment necessary for spawning as an JSON file. For instance: {\"ENV_VAR_NAME\": \"ENV_VAR_VALUE\" }")
     args.add_argument("-v", "--verbose", required=False, action="store_const",
                       const=True, help="Show verbose output")
+    args.add_argument('--version', action='version',version='friTap v{version}'.format(version=__version__))
     args.add_argument("--enable_spawn_gating", required=False, action="store_const", const=True,
                       help="Catch newly spawned processes. ATTENTION: These could be unrelated to the current process!")
     args.add_argument("exec", metavar="<executable/app name/pid>",
