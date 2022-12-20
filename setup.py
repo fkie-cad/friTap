@@ -43,11 +43,19 @@ setup(
 
      # include other files
     package_data={
-        '': [os.path.join(here, 'friTap/_ssl_log.js'), os.path.join(here, 'friTap/_ssl_log_legacy.js') ],  # frida agent + frida legacy agent
+        '': [os.path.join(here, 'friTap/_ssl_log.js'), os.path.join(here, 'friTap/_ssl_log_legacy.js'), # frida agent + frida legacy agent
+        os.path.join(here, 'fritap/assets/tcpdump_binaries/tcpdump_arm64_android'), # tcpdump binarys 
+        os.path.join(here, 'fritap/assets/tcpdump_binaries/tcpdump_arm32_android'),
+        os.path.join(here, 'fritap/assets/tcpdump_binaries/tcpdump_x86_64_android'),
+        os.path.join(here, 'fritap/assets/tcpdump_binaries/tcpdump_x86_android'), ],  
     },
 
+    exclude_package_data={'': [os.path.join(here, 'create_standalone_release')]},
+
+
+    include_package_data=True,
     python_requires='>=3.6',
-    packages=find_packages(),
+    packages=find_packages(exclude=('create_legacy_agent','create_standalone_release')),
     install_requires=requirements,
 
 

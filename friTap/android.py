@@ -2,8 +2,17 @@
 # -*- coding: utf-8 -*-
 
 from distutils.command.sdist import sdist
+from os.path import exists as file_exists
+import os
 import frida
 import subprocess
+import sys
+
+if sys.version_info >= (3,10):
+    from importlib.resources import files
+else:
+    from importlib_resources import files
+
 
 
  
@@ -66,14 +75,26 @@ class Android:
             exit(2)
             
         return tcpdump_version
+
+
+    def _get_tcpdump_version(self):
+        tcpdump_path = files('assets.tcpdump_binaries').joinpath(self.tcpdump_version)
+
+        if file_exists(tcpdump_path):
+            return tcpdump_path
+        else:
+            print("[-] error: can't find "+str(tcpdump_path))
+            print("[-] ensure that "+str(tcpdump_path)+" exits\n")
+            os._exit(2)
     
     def push_tcpdump_to_device(self):
         self.close_friTap_if_none_android()
-        tcpdump_path = "assets/tcpdump_binaries/"+self.tcpdump_version
+        tcpdump_path = self._get_tcpdump_version()
         return_Value = self._adb_push_file(tcpdump_path,self.dst_path)
         if return_Value.returncode != 0:
             print("[-] error: " +  return_Value.stderr)
-            print("[-] it might help to adjust the dst_path or to ensure that you have adb in your path")
+            print("    it might help to adjust the dst_path or to ensure that you have adb in your path\n")
+            os._exit(2)
         else:
             print(f"[*] pushed tcpdump to {self.dst_path} on your android device")
             
