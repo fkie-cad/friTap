@@ -1,5 +1,5 @@
 
-import {matrix_SSL } from "../ssl_lib/matrixssl"
+import {matrix_SSL } from "../ssl_lib/matrixssl.js"
 import { socket_library } from "./linux_agent.js";
 
 export class matrix_SSL_Linux extends matrix_SSL {
