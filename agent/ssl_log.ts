@@ -49,6 +49,12 @@ interface IOffsets {
         mbedtls_ssl_read?: IAddress,
         mbedtls_ssl_write?: IAddress
     },
+    matrixssl?: {
+        matrixSslReceivedData?: IAddress,
+        matrixSslGetWritebuf?: IAddress,
+        matrixSslGetSid?: IAddress,
+        matrixSslEncodeWritebuf?: IAddress
+    },
     gnutls?: {
         gnutls_record_recv?: IAddress,
         gnutls_record_send?: IAddress,

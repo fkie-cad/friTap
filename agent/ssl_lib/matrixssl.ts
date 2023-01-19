@@ -27,7 +27,7 @@ export class matrix_SSL {
         this.addresses = readAddresses(this.library_method_mapping);
 
         // @ts-ignore
-        if(offsets != "{OFFSETS}" && offsets.mbedtls != null){
+        if(offsets != "{OFFSETS}" && offsets.matrixssl != null){
 
             if(offsets.sockets != null){
                 const socketBaseAddress = getBaseAddress(socket_library)
