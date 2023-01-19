@@ -44,7 +44,7 @@ export class matrix_SSL {
             }
 
             
-            for (const method of Object.keys(offsets.mbedtls)){
+            for (const method of Object.keys(offsets.matrixssl)){
                 //@ts-ignore
                 this.addresses[`${method}`] = offsets.mbedtls[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.mbedtls[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.mbedtls[`${method}`].address));
             }
