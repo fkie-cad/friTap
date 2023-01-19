@@ -24,7 +24,7 @@ export class matrix_SSL_Windows extends matrix_SSL {
 }
 
 
-export function gnutls_execute(moduleName:String){
+export function matrixSSL_execute(moduleName:String){
     var matrix_ssl = new matrix_SSL_Windows(moduleName,socket_library);
     matrix_ssl.execute_hooks();
 

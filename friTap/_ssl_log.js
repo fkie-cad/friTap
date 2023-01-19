@@ -47,6 +47,8 @@
 7001 /agent/ssl_lib/gnutls.js
 2212 /agent/ssl_lib/java_ssl_libs.js.map
 4283 /agent/ssl_lib/java_ssl_libs.js
+5364 /agent/ssl_lib/matrixssl.js.map
+6615 /agent/ssl_lib/matrixssl.js
 6595 /agent/ssl_lib/mbedTLS.js.map
 6716 /agent/ssl_lib/mbedTLS.js
 29470 /agent/ssl_lib/nss.js.map
@@ -61,6 +63,8 @@
 1557 /agent/util/process_infos.js
 657 /agent/windows/gnutls_windows.js.map
 708 /agent/windows/gnutls_windows.js
+702 /agent/windows/matrixssl_windows.js.map
+772 /agent/windows/matrixssl_windows.js
 665 /agent/windows/mbedTLS_windows.js.map
 919 /agent/windows/mbedTLS_windows.js
 905 /agent/windows/nss_windows.js.map
@@ -69,8 +73,8 @@
 1216 /agent/windows/openssl_boringssl_windows.js
 12384 /agent/windows/sspi.js.map
 15804 /agent/windows/sspi.js
-2013 /agent/windows/windows_agent.js.map
-2459 /agent/windows/windows_agent.js
+2092 /agent/windows/windows_agent.js.map
+2559 /agent/windows/windows_agent.js
 975 /agent/windows/wolfssl_windows.js.map
 1098 /agent/windows/wolfssl_windows.js
 ✄
@@ -1483,6 +1487,136 @@ export class SSL_Java {
                 };
             });
         }
+    }
+}
+✄
+{"version":3,"file":"matrixssl.js","sourceRoot":"/fritap/","sources":["agent/ssl_lib/matrixssl.ts"],"names":[],"mappings":"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"}
+✄
+import { readAddresses, getPortsAndAddresses, getBaseAddress } from "../shared/shared_functions.js";
+import { offsets } from "../ssl_log.js";
+import { log } from "../util/log.js";
+export class matrix_SSL {
+    constructor(moduleName, socket_library, passed_library_method_mapping) {
+        this.moduleName = moduleName;
+        this.socket_library = socket_library;
+        this.passed_library_method_mapping = passed_library_method_mapping;
+        // global variables
+        this.library_method_mapping = {};
+        if (typeof passed_library_method_mapping !== 'undefined') {
+            this.library_method_mapping = passed_library_method_mapping;
+        }
+        else {
+            this.library_method_mapping[`*${moduleName}*`] = ["matrixSslReceivedData", "matrixSslGetWritebuf", "matrixSslGetSid", "matrixSslEncodeWritebuf"];
+            this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl", "socket"];
+        }
+        this.addresses = readAddresses(this.library_method_mapping);
+        // @ts-ignore
+        if (offsets != "{OFFSETS}" && offsets.matrixssl != null) {
+            if (offsets.sockets != null) {
+                const socketBaseAddress = getBaseAddress(socket_library);
+                for (const method of Object.keys(offsets.sockets)) {
+                    //@ts-ignore
+                    this.addresses[`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
+                }
+            }
+            const libraryBaseAddress = getBaseAddress(moduleName);
+            if (libraryBaseAddress == null) {
+                log("Unable to find library base address! Given address values will be interpreted as absolute ones!");
+            }
+            for (const method of Object.keys(offsets.matrixssl)) {
+                //@ts-ignore
+                this.addresses[`${method}`] = offsets.matrixssl[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.matrixssl[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.matrixssl[`${method}`].address));
+            }
+        }
+        //Creates a new client session. If this happens we will save the id of this new session
+        matrix_SSL.matrixSslNewCLientSession = new NativeFunction(this.addresses["matrixSslNewClientSession"], "int", ["pointer", "pointer", "pointer", "pointer", "int", "pointer", "pointer", "pointer", "pointer", "pointer"]);
+        //This function extracts the sessionID object out of the ssl object
+        matrix_SSL.matrixSslGetSid = new NativeFunction(this.addresses["matrixSslGetSid"], "pointer", ["pointer"]);
+    }
+    install_plaintext_read_hook() {
+        var lib_addesses = this.addresses;
+        Interceptor.attach(this.addresses["matrixSslReceivedData"], {
+            onEnter: function (args) {
+                this.buffer = args[2];
+                this.len = args[3];
+                var message = getPortsAndAddresses(this.fd, true, lib_addesses);
+                message["ssl_session_id"] = this.addresses["matrixSslGetSid"] === undefined ? matrix_SSL.sessionId : this.getSessionId(args[0]);
+                message["function"] = "matrixSslReceivedData";
+                this.message = message;
+            },
+            onLeave: function (retval) {
+                retval |= 0; // Cast retval to 32-bit integer.
+                if (retval <= 0) {
+                    return;
+                }
+                var data = this.buffer.readByteArray(this.len);
+                this.message["contentType"] = "datalog";
+                send(this.message, data);
+            }
+        });
+    }
+    install_plaintext_write_hook() {
+        var lib_addesses = this.addresses;
+        //This function is needed to extract the buffer address in which the plaintext will be stored before registring this buffer as the "sent data" buffer.
+        Interceptor.attach(this.addresses["matrixSslGetWritebuf"], {
+            onEnter: function (args) {
+                this.outBuffer = args[1];
+            },
+            onLeave: function (retval) {
+                retval |= 0; // Cast retval to 32-bit integer.
+                if (retval <= 0) {
+                    return;
+                }
+                this.outBufferLength = retval;
+            }
+        });
+        //This function actual encodes the plaintext. We need to hook this, because the user will fill the data out buffer between matrixSslGetWritebuf and matrixSslEncodeWritebuf call.
+        //So at the time this function is called, the buffer with the plaintext will be final 
+        Interceptor.attach(this.addresses["matrixSslEncodeWritebuf"], {
+            onEnter: function (args) {
+                var data = this.outBuffer.readByteArray(this.outBufferLength);
+                var message = getPortsAndAddresses(this.fd, false, lib_addesses);
+                message["ssl_session_id"] = this.addresses["matrixSslGetSid"] === undefined ? matrix_SSL.sessionId : this.getSessionId(args[0]);
+                message["function"] = "matrixSslEncodeWritebuf";
+                message["contentType"] = "datalog";
+                send(message, data);
+            }
+        });
+    }
+    install_tls_keys_callback_hook() {
+        // TBD
+    }
+    install_helper_hook() {
+        Interceptor.attach(this.addresses["matrixSslNewSessionId"], {
+            onEnter: function (args) {
+                this.sslSessionPointer = args[0];
+            },
+            onLeave: function (retval) {
+                retval |= 0; // Cast retval to 32-bit integer.
+                if (retval <= 0) {
+                    return;
+                }
+                var sessionIdLength = this.sslSessionPointer.add(2 * Process.pointerSize).readU32();
+                matrix_SSL.sessionId = this.sslSessionPointer.add(Process.pointerSize).readPointer().readCString(sessionIdLength);
+            }
+        });
+        Interceptor.attach(this.addresses["connect"], {
+            onEnter: function (args) {
+            },
+            onLeave: function (retval) {
+                retval |= 0; // Cast retval to 32-bit integer.
+                if (retval <= 0) {
+                    return;
+                }
+                this.fd = retval;
+            }
+        });
+    }
+    getSessionId(ssl) {
+        const sid = matrix_SSL.matrixSslGetSid(ssl);
+        const sessionIdLength = sid.add(2 * Process.pointerSize).readU32();
+        const sessionId = sid.add(Process.pointerSize).readPointer().readCString(sessionIdLength);
+        return sessionId;
     }
 }
 ✄
@@ -3060,6 +3194,31 @@ export function gnutls_execute(moduleName) {
     gnu_ssl.execute_hooks();
 }
 ✄
+{"version":3,"file":"matrixssl_windows.js","sourceRoot":"/fritap/","sources":["agent/windows/matrixssl_windows.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,UAAU,EAAE,MAAM,yBAAyB,CAAA;AACnD,OAAO,EAAE,cAAc,EAAE,MAAM,oBAAoB,CAAC;AAEpD,MAAM,OAAO,kBAAmB,SAAQ,UAAU;IAE9C,YAAmB,UAAiB,EAAS,cAAqB;QAC9D,KAAK,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;QADlB,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAElE,CAAC;IAGD,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;QACpC,IAAI,CAAC,mBAAmB,EAAE,CAAC;QAE3B,wCAAwC;IAC5C,CAAC;IAED,8BAA8B;QAC1B,qBAAqB;IACzB,CAAC;CAEJ;AAGD,MAAM,UAAU,iBAAiB,CAAC,UAAiB;IAC/C,IAAI,UAAU,GAAG,IAAI,kBAAkB,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;IACnE,UAAU,CAAC,aAAa,EAAE,CAAC;AAG/B,CAAC"}
+✄
+import { matrix_SSL } from "../ssl_lib/matrixssl.js";
+import { socket_library } from "./windows_agent.js";
+export class matrix_SSL_Windows extends matrix_SSL {
+    constructor(moduleName, socket_library) {
+        super(moduleName, socket_library);
+        this.moduleName = moduleName;
+        this.socket_library = socket_library;
+    }
+    execute_hooks() {
+        this.install_plaintext_read_hook();
+        this.install_plaintext_write_hook();
+        this.install_helper_hook();
+        //this.install_tls_keys_callback_hook();
+    }
+    install_tls_keys_callback_hook() {
+        //Not implemented yet
+    }
+}
+export function matrixSSL_execute(moduleName) {
+    var matrix_ssl = new matrix_SSL_Windows(moduleName, socket_library);
+    matrix_ssl.execute_hooks();
+}
+✄
 {"version":3,"file":"mbedTLS_windows.js","sourceRoot":"/fritap/","sources":["agent/windows/mbedTLS_windows.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,QAAQ,EAAE,MAAM,uBAAuB,CAAA;AAC/C,OAAO,EAAE,cAAc,EAAE,MAAM,oBAAoB,CAAC;AAEpD,MAAM,OAAO,gBAAiB,SAAQ,QAAQ;IAE1C,YAAmB,UAAiB,EAAS,cAAqB;QAC9D,KAAK,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;QADlB,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAElE,CAAC;IAED;;;;;;MAME;IACF,8BAA8B;QAC1B,8BAA8B;IAClC,CAAC;IAED,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;IACxC,CAAC;CAEJ;AAGD,MAAM,UAAU,eAAe,CAAC,UAAiB;IAC7C,IAAI,WAAW,GAAG,IAAI,gBAAgB,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;IAClE,WAAW,CAAC,aAAa,EAAE,CAAC;AAGhC,CAAC"}
 ✄
 import { mbed_TLS } from "../ssl_lib/mbedTLS.js";
@@ -3442,7 +3601,7 @@ export function sspi_execute(moduleName) {
     sspi_ssl.execute_hooks();
 }
 ✄
-{"version":3,"file":"windows_agent.js","sourceRoot":"/fritap/","sources":["agent/windows/windows_agent.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,sBAAsB,EAAE,MAAM,gCAAgC,CAAA;AACvE,OAAO,EAAE,GAAG,EAAE,MAAM,EAAE,MAAM,gBAAgB,CAAA;AAC5C,OAAO,EAAE,cAAc,EAAE,kBAAkB,EAAE,MAAM,+BAA+B,CAAA;AAClF,OAAO,EAAE,YAAY,EAAE,MAAM,WAAW,CAAA;AACxC,OAAO,EAAE,cAAc,EAAE,MAAM,gCAAgC,CAAA;AAC/D,OAAO,EAAE,cAAc,EAAE,MAAM,qBAAqB,CAAA;AACpD,OAAO,EAAE,eAAe,EAAE,MAAM,sBAAsB,CAAA;AACtD,OAAO,EAAE,WAAW,EAAE,MAAM,kBAAkB,CAAA;AAC9C,OAAO,EAAE,eAAe,EAAE,MAAM,sBAAsB,CAAA;AAItD,IAAI,cAAc,GAAG,SAAS,CAAC;AAC/B,IAAI,WAAW,GAAkB,cAAc,EAAE,CAAA;AAEjD,MAAM,CAAC,MAAM,cAAc,GAAG,YAAY,CAAC;AAE3C,SAAS,2BAA2B,CAAC,sBAAmF;IACpH,IAAI;QAEA,MAAM,QAAQ,GAAgB,IAAI,WAAW,CAAC,QAAQ,CAAC,CAAA;QACvD,IAAI,cAAc,GAAG,QAAQ,CAAC,gBAAgB,CAAC,wCAAwC,CAAC,CAAA;QAExF,IAAI,cAAc,CAAC,MAAM,IAAI,CAAC;YAAE,OAAO,OAAO,CAAC,GAAG,CAAC,qCAAqC,CAAC,CAAA;QAGzF,WAAW,CAAC,MAAM,CAAC,cAAc,CAAC,CAAC,CAAC,CAAC,OAAO,EAAE;YAC1C,OAAO,CAAC,MAAqB;gBAEzB,IAAI,GAAG,GAAG,IAAI,SAAS,EAAE,CAAC;gBAC1B,IAAI,UAAU,GAAG,GAAG,CAAC,QAAQ,CAAC,MAAM,CAAC,CAAA;gBACrC,IAAI,UAAU,KAAK,IAAI;oBAAE,OAAM;gBAE/B,KAAK,IAAI,GAAG,IAAI,sBAAsB,CAAC,cAAc,CAAC,EAAE;oBACpD,IAAI,KAAK,GAAG,GAAG,CAAC,CAAC,CAAC,CAAA;oBAClB,IAAI,IAAI,GAAG,GAAG,CAAC,CAAC,CAAC,CAAA;oBAEjB,IAAI,KAAK,CAAC,IAAI,CAAC,UAAU,CAAC,EAAE;wBACxB,GAAG,CAAC,GAAG,UAAU,0CAA0C,CAAC,CAAA;wBAC5D,IAAI,CAAC,UAAU,CAAC,CAAA;qBACnB;iBAEJ;YACL,CAAC;SACJ,CAAC,CAAA;QACF,OAAO,CAAC,GAAG,CAAC,oCAAoC,CAAC,CAAA;KACpD;IAAC,OAAO,KAAK,EAAE;QACZ,MAAM,CAAC,gBAAgB,GAAG,KAAK,CAAC,CAAA;QAChC,GAAG,CAAC,wCAAwC,CAAC,CAAA;KAChD;AACL,CAAC;AAED,SAAS,qBAAqB,CAAC,sBAAmF;IAC9G,kBAAkB,CAAC,cAAc,EAAE,sBAAsB,EAAC,WAAW,EAAC,SAAS,CAAC,CAAA;AACpF,CAAC;AAED,MAAM,UAAU,0BAA0B;IACtC,sBAAsB,CAAC,cAAc,CAAC,GAAG,CAAC,CAAC,yCAAyC,EAAE,cAAc,CAAC,EAAE,CAAC,8BAA8B,EAAE,eAAe,CAAC,EAAE,CAAC,uCAAuC,EAAE,cAAc,CAAC,EAAE,CAAC,yBAAyB,EAAE,WAAW,CAAC,EAAE,CAAC,iCAAiC,EAAE,YAAY,CAAC,EAAE,CAAC,cAAc,EAAE,eAAe,CAAC,CAAC,CAAA;IACpV,qBAAqB,CAAC,sBAAsB,CAAC,CAAC;IAC9C,2BAA2B,CAAC,sBAAsB,CAAC,CAAC;AACxD,CAAC"}
+{"version":3,"file":"windows_agent.js","sourceRoot":"/fritap/","sources":["agent/windows/windows_agent.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,sBAAsB,EAAE,MAAM,gCAAgC,CAAA;AACvE,OAAO,EAAE,GAAG,EAAE,MAAM,EAAE,MAAM,gBAAgB,CAAA;AAC5C,OAAO,EAAE,cAAc,EAAE,kBAAkB,EAAE,MAAM,+BAA+B,CAAA;AAClF,OAAO,EAAE,YAAY,EAAE,MAAM,WAAW,CAAA;AACxC,OAAO,EAAE,cAAc,EAAE,MAAM,gCAAgC,CAAA;AAC/D,OAAO,EAAE,cAAc,EAAE,MAAM,qBAAqB,CAAA;AACpD,OAAO,EAAE,eAAe,EAAE,MAAM,sBAAsB,CAAA;AACtD,OAAO,EAAE,WAAW,EAAE,MAAM,kBAAkB,CAAA;AAC9C,OAAO,EAAE,eAAe,EAAE,MAAM,sBAAsB,CAAA;AACtD,OAAO,EAAE,iBAAiB,EAAE,MAAM,wBAAwB,CAAA;AAG1D,IAAI,cAAc,GAAG,SAAS,CAAC;AAC/B,IAAI,WAAW,GAAkB,cAAc,EAAE,CAAA;AAEjD,MAAM,CAAC,MAAM,cAAc,GAAG,YAAY,CAAC;AAE3C,SAAS,2BAA2B,CAAC,sBAAmF;IACpH,IAAI;QAEA,MAAM,QAAQ,GAAgB,IAAI,WAAW,CAAC,QAAQ,CAAC,CAAA;QACvD,IAAI,cAAc,GAAG,QAAQ,CAAC,gBAAgB,CAAC,wCAAwC,CAAC,CAAA;QAExF,IAAI,cAAc,CAAC,MAAM,IAAI,CAAC;YAAE,OAAO,OAAO,CAAC,GAAG,CAAC,qCAAqC,CAAC,CAAA;QAGzF,WAAW,CAAC,MAAM,CAAC,cAAc,CAAC,CAAC,CAAC,CAAC,OAAO,EAAE;YAC1C,OAAO,CAAC,MAAqB;gBAEzB,IAAI,GAAG,GAAG,IAAI,SAAS,EAAE,CAAC;gBAC1B,IAAI,UAAU,GAAG,GAAG,CAAC,QAAQ,CAAC,MAAM,CAAC,CAAA;gBACrC,IAAI,UAAU,KAAK,IAAI;oBAAE,OAAM;gBAE/B,KAAK,IAAI,GAAG,IAAI,sBAAsB,CAAC,cAAc,CAAC,EAAE;oBACpD,IAAI,KAAK,GAAG,GAAG,CAAC,CAAC,CAAC,CAAA;oBAClB,IAAI,IAAI,GAAG,GAAG,CAAC,CAAC,CAAC,CAAA;oBAEjB,IAAI,KAAK,CAAC,IAAI,CAAC,UAAU,CAAC,EAAE;wBACxB,GAAG,CAAC,GAAG,UAAU,0CAA0C,CAAC,CAAA;wBAC5D,IAAI,CAAC,UAAU,CAAC,CAAA;qBACnB;iBAEJ;YACL,CAAC;SACJ,CAAC,CAAA;QACF,OAAO,CAAC,GAAG,CAAC,oCAAoC,CAAC,CAAA;KACpD;IAAC,OAAO,KAAK,EAAE;QACZ,MAAM,CAAC,gBAAgB,GAAG,KAAK,CAAC,CAAA;QAChC,GAAG,CAAC,wCAAwC,CAAC,CAAA;KAChD;AACL,CAAC;AAED,SAAS,qBAAqB,CAAC,sBAAmF;IAC9G,kBAAkB,CAAC,cAAc,EAAE,sBAAsB,EAAC,WAAW,EAAC,SAAS,CAAC,CAAA;AACpF,CAAC;AAED,MAAM,UAAU,0BAA0B;IACtC,sBAAsB,CAAC,cAAc,CAAC,GAAG,CAAC,CAAC,yCAAyC,EAAE,cAAc,CAAC,EAAE,CAAC,8BAA8B,EAAE,eAAe,CAAC,EAAE,CAAC,uCAAuC,EAAE,cAAc,CAAC,EAAE,CAAC,yBAAyB,EAAE,WAAW,CAAC,EAAE,CAAC,iCAAiC,EAAE,YAAY,CAAC,EAAE,CAAC,cAAc,EAAE,eAAe,CAAC,EAAE,CAAC,iBAAiB,EAAE,iBAAiB,CAAC,CAAC,CAAA;IAC5X,qBAAqB,CAAC,sBAAsB,CAAC,CAAC;IAC9C,2BAA2B,CAAC,sBAAsB,CAAC,CAAC;AACxD,CAAC"}
 ✄
 import { module_library_mapping } from "../shared/shared_structures.js";
 import { log, devlog } from "../util/log.js";
@@ -3453,6 +3612,7 @@ import { gnutls_execute } from "./gnutls_windows.js";
 import { mbedTLS_execute } from "./mbedTLS_windows.js";
 import { nss_execute } from "./nss_windows.js";
 import { wolfssl_execute } from "./wolfssl_windows.js";
+import { matrixSSL_execute } from "./matrixssl_windows.js";
 var plattform_name = "windows";
 var moduleNames = getModuleNames();
 export const socket_library = "WS2_32.dll";
@@ -3489,7 +3649,7 @@ function hook_Windows_SSL_Libs(module_library_mapping) {
     ssl_library_loader(plattform_name, module_library_mapping, moduleNames, "Windows");
 }
 export function load_windows_hooking_agent() {
-    module_library_mapping[plattform_name] = [[/^(libssl|LIBSSL)-[0-9]+(_[0-9]+)?\.dll$/, boring_execute], [/^.*(wolfssl|WOLFSSL).*\.dll$/, wolfssl_execute], [/^.*(libgnutls|LIBGNUTLS)-[0-9]+\.dll$/, gnutls_execute], [/^(nspr|NSPR)[0-9]*\.dll/, nss_execute], [/(sspicli|SSPICLI|SspiCli)\.dll$/, sspi_execute], [/mbedTLS\.dll/, mbedTLS_execute]];
+    module_library_mapping[plattform_name] = [[/^(libssl|LIBSSL)-[0-9]+(_[0-9]+)?\.dll$/, boring_execute], [/^.*(wolfssl|WOLFSSL).*\.dll$/, wolfssl_execute], [/^.*(libgnutls|LIBGNUTLS)-[0-9]+\.dll$/, gnutls_execute], [/^(nspr|NSPR)[0-9]*\.dll/, nss_execute], [/(sspicli|SSPICLI|SspiCli)\.dll$/, sspi_execute], [/mbedTLS\.dll/, mbedTLS_execute], ["/matrixSSL\.dll", matrixSSL_execute]];
     hook_Windows_SSL_Libs(module_library_mapping);
     hook_Windows_Dynamic_Loader(module_library_mapping);
 }

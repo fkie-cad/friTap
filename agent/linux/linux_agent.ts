@@ -6,6 +6,7 @@ import { wolfssl_execute } from "./wolfssl_linux.js"
 import { nss_execute } from "./nss_linux.js"
 import { mbedTLS_execute } from "./mbedTLS_linux.js"
 import { boring_execute } from "./openssl_boringssl_linux.js"
+import { matrixSSL_execute } from "./matrixssl_linux.js"
 
 var plattform_name = "linux";
 var moduleNames: Array<string> = getModuleNames()
@@ -56,7 +57,7 @@ function hook_Linux_SSL_Libs(module_library_mapping: { [key: string]: Array<[any
 
 
 export function load_linux_hooking_agent() {
-    module_library_mapping[plattform_name] = [[/.*libssl_sb.so/, boring_execute], [/.*libssl\.so/, boring_execute], [/.*libgnutls\.so/, gnutls_execute], [/.*libwolfssl\.so/, wolfssl_execute], [/.*libnspr[0-9]?\.so/, nss_execute], [/libmbedtls\.so.*/, mbedTLS_execute]]
+    module_library_mapping[plattform_name] = [[/.*libssl_sb.so/, boring_execute], [/.*libssl\.so/, boring_execute], [/.*libgnutls\.so/, gnutls_execute], [/.*libwolfssl\.so/, wolfssl_execute], [/.*libnspr[0-9]?\.so/, nss_execute], [/libmbedtls\.so.*/, mbedTLS_execute], [/libssl_s.a/, matrixSSL_execute]]
     hook_Linux_SSL_Libs(module_library_mapping);
     hook_Linux_Dynamic_Loader(module_library_mapping);
 }

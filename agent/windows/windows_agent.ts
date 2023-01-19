@@ -7,7 +7,7 @@ import { gnutls_execute } from "./gnutls_windows.js"
 import { mbedTLS_execute } from "./mbedTLS_windows.js"
 import { nss_execute } from "./nss_windows.js"
 import { wolfssl_execute } from "./wolfssl_windows.js"
-
+import { matrixSSL_execute } from "./matrixssl_windows.js"
 
 
 var plattform_name = "windows";
@@ -55,7 +55,7 @@ function hook_Windows_SSL_Libs(module_library_mapping: { [key: string]: Array<[a
 }
 
 export function load_windows_hooking_agent() {
-    module_library_mapping[plattform_name] = [[/^(libssl|LIBSSL)-[0-9]+(_[0-9]+)?\.dll$/, boring_execute], [/^.*(wolfssl|WOLFSSL).*\.dll$/, wolfssl_execute], [/^.*(libgnutls|LIBGNUTLS)-[0-9]+\.dll$/, gnutls_execute], [/^(nspr|NSPR)[0-9]*\.dll/, nss_execute], [/(sspicli|SSPICLI|SspiCli)\.dll$/, sspi_execute], [/mbedTLS\.dll/, mbedTLS_execute]]
+    module_library_mapping[plattform_name] = [[/^(libssl|LIBSSL)-[0-9]+(_[0-9]+)?\.dll$/, boring_execute], [/^.*(wolfssl|WOLFSSL).*\.dll$/, wolfssl_execute], [/^.*(libgnutls|LIBGNUTLS)-[0-9]+\.dll$/, gnutls_execute], [/^(nspr|NSPR)[0-9]*\.dll/, nss_execute], [/(sspicli|SSPICLI|SspiCli)\.dll$/, sspi_execute], [/mbedTLS\.dll/, mbedTLS_execute], ["/matrixSSL\.dll", matrixSSL_execute]]
     hook_Windows_SSL_Libs(module_library_mapping);
     hook_Windows_Dynamic_Loader(module_library_mapping);
 }
