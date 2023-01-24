@@ -20,7 +20,7 @@ function wait_for_library_loaded(module_name: string){
 
 export function ssl_library_loader(plattform_name: string, module_library_mapping: { [key: string]: Array<[any, (moduleName: string)=>void]> }, moduleNames: Array<string> , plattform_os: string): void{
     for(let map of module_library_mapping[plattform_name]){
-        let regex = map[0]
+        let regex = new RegExp(map[0])
         let func = map[1]
         for(let module of moduleNames){
             if (regex.test(module)){

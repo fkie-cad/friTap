@@ -3,6 +3,44 @@ import { pointerSize } from "../shared/shared_structures.js"
 import { getOffsets, offsets } from "../ssl_log.js"
 import { devlog, log } from "../util/log.js"
 
+
+class ModifyReceiver{
+    public readModification: ArrayBuffer | null = null;
+    public writeModification: ArrayBuffer | null = null;
+    constructor(){
+        recv("readmod", (newBuf)=>{
+            //@ts-ignore
+            this.readModification = new Uint8Array(newBuf.payload.match(/[\da-f]{2}/gi).map(function (h) {
+                return parseInt(h, 16)
+              })).buffer//newBuf.payload; 
+        });
+
+        recv("writemod", (newBuf)=>{
+            this.readModification = newBuf; 
+        });
+
+    
+    }
+
+    get readmod(): ArrayBuffer | null {
+        return this.readModification;
+    }
+
+    get writemod(): ArrayBuffer | null {
+        return this.writeModification;
+    }
+
+    set readmod(val: ArrayBuffer | null) {
+        this.readModification = val;
+    }
+
+    set writemod(val: ArrayBuffer | null){
+        this.writeModification = val;
+    }
+
+
+}
+
 /**
  * 
  * ToDO
@@ -21,6 +59,7 @@ export class OpenSSL_BoringSSL {
     static SSL_CTX_set_keylog_callback : any;
     static SSL_get_fd: any;
     static SSL_get_session: any;
+    static modReceiver: ModifyReceiver;
    
 
     static keylog_callback = new NativeCallback(function (ctxPtr, linePtr: NativePointer) {
@@ -35,6 +74,8 @@ export class OpenSSL_BoringSSL {
 
 
     constructor(public moduleName:String, public socket_library:String,public passed_library_method_mapping?: { [key: string]: Array<String> }){
+        OpenSSL_BoringSSL.modReceiver = new ModifyReceiver();
+
         if(typeof passed_library_method_mapping !== 'undefined'){
             this.library_method_mapping = passed_library_method_mapping;
         }else{
@@ -79,11 +120,28 @@ export class OpenSSL_BoringSSL {
 
 
     install_plaintext_read_hook(){
+        function ab2str(buf: ArrayBuffer) {
+            //@ts-ignore
+            return String.fromCharCode.apply(null, new Uint16Array(buf));
+        }
+        function str2ab(str: string ) {
+            var buf = new ArrayBuffer(str.length + 1); // 2 bytes for each char
+            var bufView = new Uint8Array(buf);
+            for (var i=0, strLen=str.length; i < strLen; i++) {
+            bufView[i] = str.charCodeAt(i);
+            }
+            bufView[str.length] = 0;
+            return buf;
+        }
+
         var lib_addesses = this.addresses;
 
         Interceptor.attach(this.addresses["SSL_read"],
         {
-            onEnter: function (args: any) {
+            
+            onEnter: function (args: any) 
+            {
+                this.bufLen = args[2].toInt32()
                 this.fd = OpenSSL_BoringSSL.SSL_get_fd(args[0])
                 if(this.fd < 0) {
                     return
@@ -93,6 +151,7 @@ export class OpenSSL_BoringSSL {
                 message["ssl_session_id"] = OpenSSL_BoringSSL.getSslSessionId(args[0])
                 message["function"] = "SSL_read"
                 this.message = message
+                
                 this.buf = args[1]
             
             },
@@ -101,14 +160,41 @@ export class OpenSSL_BoringSSL {
                 if (retval <= 0 || this.fd < 0) {
                     return
                 }
+
+                
+                if(OpenSSL_BoringSSL.modReceiver.readmod !== null){
+                    //NULL out buffer
+                    //@ts-ignore
+                    Memory.writeByteArray(this.buf, new Uint8Array(this.bufLen));
+
+                    //@ts-ignore
+                    Memory.writeByteArray(this.buf, OpenSSL_BoringSSL.modReceiver.readmod);
+                    retval = OpenSSL_BoringSSL.modReceiver.readmod.byteLength;                
+                }
+
                 this.message["contentType"] = "datalog"
+                
+                
+                
                 send(this.message, this.buf.readByteArray(retval))
+                
             }
         })
 
     }
 
+    
+
     install_plaintext_write_hook(){
+        function str2ab(str: string ) {
+            var buf = new ArrayBuffer(str.length + 1); // 2 bytes for each char
+            var bufView = new Uint8Array(buf);
+            for (var i=0, strLen=str.length; i < strLen; i++) {
+            bufView[i] = str.charCodeAt(i);
+            }
+            bufView[str.length] = 0;
+            return buf;
+        }
         var lib_addesses = this.addresses;
         Interceptor.attach(this.addresses["SSL_write"],
         {
@@ -122,7 +208,17 @@ export class OpenSSL_BoringSSL {
                 message["ssl_session_id"] = OpenSSL_BoringSSL.getSslSessionId(args[0])
                 message["function"] = "SSL_write"
                 message["contentType"] = "datalog"
-                send(message, args[1].readByteArray(parseInt(args[2])))
+                
+                //OpenSSL_BoringSSL.modReceiver.writemod = str2ab("YA YEET!");
+                if(OpenSSL_BoringSSL.modReceiver.writemod !== null){
+                    const newPointer = Memory.alloc(OpenSSL_BoringSSL.modReceiver.writemod.byteLength)
+                    //@ts-ignore
+                    Memory.writeByteArray(newPointer, OpenSSL_BoringSSL.modReceiver.writemod);                    
+                    args[1] = newPointer;
+                    args[2] = new NativePointer(OpenSSL_BoringSSL.modReceiver.writemod.byteLength); 
+                }
+
+                send(message, args[1].readByteArray(args[2].toInt32()))
                 } // this is a temporary workaround for the fd problem on iOS
             },
             onLeave: function (retval: any) {

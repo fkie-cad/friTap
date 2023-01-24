@@ -32,7 +32,7 @@ function hook_Windows_Dynamic_Loader(module_library_mapping: { [key: string]: Ar
                 if (moduleName === null) return
 
                 for (let map of module_library_mapping[plattform_name]) {
-                    let regex = map[0]
+                    let regex = new RegExp(map[0])
                     let func = map[1]
 
                     if (regex.test(moduleName)) {
