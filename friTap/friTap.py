@@ -16,6 +16,8 @@ import friTap.pcap as pcap
 from friTap.__init__ import __version__
 from friTap.__init__ import __author__
 from friTap.__init__ import debug
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 
 try:
     import hexdump  # pylint: disable=g-import-not-at-top
@@ -204,7 +206,7 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
             print(f"[!] Chrome Inspector server listening on port {debug_port}")
             print("[!] Open Chrome with chrome://inspect for debugging\n")
             runtime="v8"
-
+        print(os.path.join(here, frida_agent_script))
         with open(os.path.join(here, frida_agent_script), encoding='utf8', newline='\n') as f:
             script_string = f.read()
 
@@ -219,6 +221,32 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
             script.enable_debugger(debug_port)
         script.on("message", on_message)
         script.load()
+
+        
+        script.post({'type':'readmod', 'payload': '0x440x410x53'})
+
+        class ModWatcher(FileSystemEventHandler):
+            def __init__(self, process):
+                print("INITIALIZED")
+                self.process = process
+
+            def on_any_event(self, event):
+                try:
+                    print("CHANGE")
+                    with open("readmod.bin") as f:
+                        if(event.event_type == "modified" and event.src_path == "./readmod.bin"):
+                            script.post({'type':'readmod', 'payload': f.read()})
+                except RuntimeError as e:
+                    print(e)
+            
+            
+
+        print("Init watcher")
+        event_handler = ModWatcher(process)
+        
+        observer = Observer()
+        observer.schedule(event_handler, "./")
+        observer.start()
 
     # Main code
     global pcap_obj
@@ -293,7 +321,13 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
         keylog_file = open(keylog, "w")
 
     print("Press Ctrl+C to stop logging.")
+
+    
+
     instrument(process)
+
+    
+
     if pcap_name and full_capture:
         print(f'[*] Logging pcap to {pcap_name}')
     if pcap_name and full_capture == False:
@@ -302,11 +336,11 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
         print(f'[*] Logging keylog file to {keylog}')
         
     process.on('detached', on_detach)
-        
 
     if spawn:
         device.resume(pid)
     try:
+        
         sys.stdin.read()
     except KeyboardInterrupt:
         pass
@@ -380,12 +414,17 @@ Examples:
     if parsed.full_capture and parsed.pcap is None:
         parser.error("--full_capture requires -p to set the pcap name")
         exit(2)
+
+   
     
     try:
+        
+
         print("Start logging")
         ssl_log(parsed.exec, parsed.pcap, parsed.verbose,
                 parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.mobile, parsed.live, parsed.environment, parsed.debug, parsed.full_capture, parsed.socket_tracing, parsed.host, parsed.offsets, parsed.debugoutput,parsed.experimental)
 
+       
     except Exception as ar:
         print("[-] Unknown error:")
         print(ar)
