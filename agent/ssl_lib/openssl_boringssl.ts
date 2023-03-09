@@ -8,18 +8,30 @@ class ModifyReceiver{
     public readModification: ArrayBuffer | null = null;
     public writeModification: ArrayBuffer | null = null;
     constructor(){
+        this.listenForReadMod();
+        this.listenForWriteMod();    
+    }
+
+    private listenForReadMod(){
         recv("readmod", (newBuf)=>{
             //@ts-ignore
             this.readModification = new Uint8Array(newBuf.payload.match(/[\da-f]{2}/gi).map(function (h) {
                 return parseInt(h, 16)
-              })).buffer//newBuf.payload; 
+              })).buffer
+            this.listenForReadMod();
         });
+        
+    }
 
+    private listenForWriteMod(){
         recv("writemod", (newBuf)=>{
-            this.readModification = newBuf; 
+            //@ts-ignore
+            this.writeModification = new Uint8Array(newBuf.payload.match(/[\da-f]{2}/gi).map(function (h) {
+                return parseInt(h, 16)
+              })).buffer;
+            this.listenForWriteMod()
         });
 
-    
     }
 
     get readmod(): ArrayBuffer | null {
@@ -209,7 +221,7 @@ export class OpenSSL_BoringSSL {
                 message["function"] = "SSL_write"
                 message["contentType"] = "datalog"
                 
-                //OpenSSL_BoringSSL.modReceiver.writemod = str2ab("YA YEET!");
+
                 if(OpenSSL_BoringSSL.modReceiver.writemod !== null){
                     const newPointer = Memory.alloc(OpenSSL_BoringSSL.modReceiver.writemod.byteLength)
                     //@ts-ignore

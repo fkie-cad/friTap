@@ -17,7 +17,8 @@ from friTap.__init__ import __version__
 from friTap.__init__ import __author__
 from friTap.__init__ import debug
 from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
+from watchdog.events import FileSystemEventHandler, LoggingEventHandler
+import logging
 
 try:
     import hexdump  # pylint: disable=g-import-not-at-top
@@ -223,7 +224,7 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
         script.load()
 
         
-        script.post({'type':'readmod', 'payload': '0x440x410x53'})
+        #script.post({'type':'readmod', 'payload': '0x440x410x53'})
 
         class ModWatcher(FileSystemEventHandler):
             def __init__(self, process):
@@ -232,10 +233,14 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
 
             def on_any_event(self, event):
                 try:
-                    print("CHANGE")
-                    with open("readmod.bin") as f:
-                        if(event.event_type == "modified" and event.src_path == "./readmod.bin"):
-                            script.post({'type':'readmod', 'payload': f.read()})
+                    if(event.event_type == "modified" and ("readmod" in event.src_path)):
+                        with open("./readmod.bin", "rb") as f:
+                            buffer = f.read()
+                            script.post({'type':'readmod', 'payload': buffer.hex()})
+                    elif(event.event_type == "modified" and ("writemod" in event.src_path)):
+                        with open("./writemod.bin", "rb") as f:
+                            buffer = f.read()
+                            script.post({'type':'writemod', 'payload': buffer.hex()})
                 except RuntimeError as e:
                     print(e)
             
@@ -245,7 +250,8 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
         event_handler = ModWatcher(process)
         
         observer = Observer()
-        observer.schedule(event_handler, "./")
+        print(os.getcwd())
+        observer.schedule(event_handler, os.getcwd())
         observer.start()
 
     # Main code
@@ -340,7 +346,8 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
     if spawn:
         device.resume(pid)
     try:
-        
+        while True:
+            time.sleep(1)
         sys.stdin.read()
     except KeyboardInterrupt:
         pass
