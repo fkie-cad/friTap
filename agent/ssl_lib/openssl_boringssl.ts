@@ -15,9 +15,9 @@ class ModifyReceiver{
     private listenForReadMod(){
         recv("readmod", (newBuf)=>{
             //@ts-ignore
-            this.readModification = new Uint8Array(newBuf.payload.match(/[\da-f]{2}/gi).map(function (h) {
+            this.readModification = newBuf.payload != null ?  new Uint8Array(newBuf.payload.match(/[\da-f]{2}/gi).map(function (h) {
                 return parseInt(h, 16)
-              })).buffer
+              })).buffer : null
             this.listenForReadMod();
         });
         
@@ -26,9 +26,9 @@ class ModifyReceiver{
     private listenForWriteMod(){
         recv("writemod", (newBuf)=>{
             //@ts-ignore
-            this.writeModification = new Uint8Array(newBuf.payload.match(/[\da-f]{2}/gi).map(function (h) {
+            this.writeModification = newBuf.payload != null ? new Uint8Array(newBuf.payload.match(/[\da-f]{2}/gi).map(function (h) {
                 return parseInt(h, 16)
-              })).buffer;
+              })).buffer : null;
             this.listenForWriteMod()
         });
 
