@@ -13,8 +13,10 @@ import sys
 import tempfile
 import json
 import pcap as pcap
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler, LoggingEventHandler
 __author__ = "Daniel Baier, Francois Egner, Max Ufer"
-__version__ = "1.0.9.0"
+__version__ = "1.0.9.6"
 debug = False # are we running in debug mode?
 
 try:
@@ -228,6 +230,35 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
             script.enable_debugger(debug_port)
         script.on("message", on_message)
         script.load()
+
+
+        class ModWatcher(FileSystemEventHandler):
+            def __init__(self, process):
+                print("INITIALIZED")
+                self.process = process
+
+            def on_any_event(self, event):
+                try:
+                    if(event.event_type == "modified" and ("readmod" in event.src_path)):
+                        with open("./readmod.bin", "rb") as f:
+                            buffer = f.read()
+                            script.post({'type':'readmod', 'payload': buffer.hex()})
+                    elif(event.event_type == "modified" and ("writemod" in event.src_path)):
+                        with open("./writemod.bin", "rb") as f:
+                            buffer = f.read()
+                            script.post({'type':'writemod', 'payload': buffer.hex()})
+                except RuntimeError as e:
+                    print(e)
+            
+            
+
+        print("Init watcher")
+        event_handler = ModWatcher(process)
+        
+        observer = Observer()
+        print(os.getcwd())
+        observer.schedule(event_handler, os.getcwd())
+        observer.start()
 
     # Main code
     global pcap_obj

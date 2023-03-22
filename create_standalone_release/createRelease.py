@@ -6,16 +6,16 @@ import stat
 import shutil
 import zipapp
 
-template_index=29
+template_index=31
 fritap_main_entry="./__main__.py"
 tmp_folder_name="release_tmp/"
 release_string="friTap.pyz"
 
 def create_tmp_release_folder():
 	os.mkdir(tmp_folder_name)
-	shutil.copy("../friTap/android.py", tmp_folder_name)
-	shutil.copy("../friTap/pcap.py", tmp_folder_name)
-	shutil.copy("../friTap/__init__.py", tmp_folder_name)
+	shutil.copy("./android.py", tmp_folder_name)
+	shutil.copy("./pcap.py", tmp_folder_name)
+	shutil.copy("./__init__.py", tmp_folder_name)
 	shutil.copy("__main__.py", tmp_folder_name)
 
 

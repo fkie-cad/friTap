@@ -80,6 +80,7 @@ More examples on using friTap can be found in the [USAGE.md](./USAGE.md). A deta
 - `>= python3.6`
 - hexdump (`pip3 install hexdump`)
 - scapy (`pip3 install scapy`)
+- watchdog (`pip3 install watchdog`)
 
 ## Planned features
 
