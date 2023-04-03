@@ -4,6 +4,7 @@ import { load_macos_hooking_agent } from "./macos/macos_agent.js";
 import { load_linux_hooking_agent } from "./linux/linux_agent.js";
 import { load_windows_hooking_agent } from "./windows/windows_agent.js";
 import { isWindows, isLinux, isAndroid, isiOS, isMacOS } from "./util/process_infos.js";
+import { anti_root_execute } from "./util/anti_root.js";
 import { log } from "./util/log.js"
 
 interface IAddress{
@@ -83,6 +84,10 @@ interface IOffsets {
 export let offsets: IOffsets = "{OFFSETS}";
 //@ts-ignore
 export let experimental: boolean = "{EXPERIMENTAL}"
+//@ts-ignore
+export let anti_root: boolean = "{ANTIROOT}"
+
+
 /*
 
 create the TLS library for your first prototpye as a lib in ./ssl_lib and than extend this class for the OS where this new lib was tested.
@@ -105,6 +110,10 @@ function load_os_specific_agent() {
         load_windows_hooking_agent()
     }else if(isAndroid()){
         log('Running Script on Android')
+        if(anti_root){
+            log('Applying anti root checks');
+            anti_root_execute();
+        }
         load_android_hooking_agent()
     }else if(isLinux()){
         log('Running Script on Linux')

@@ -1,4 +1,5 @@
 import { log } from "../util/log.js"
+import { getAndroidVersion } from "../util/process_infos.js";
 
 function findProviderInstallerFromClassloaders(currentClassLoader: Java.Wrapper, backupImplementation: any) {
 
@@ -14,8 +15,13 @@ function findProviderInstallerFromClassloaders(currentClassLoader: Java.Wrapper,
         }
 
     }
-    //Revert the implementation to avoid an infinitloop of "Loadclass"
-    currentClassLoader.loadClass.overload("java.lang.String").implementation = backupImplementation
+
+    var version = getAndroidVersion()
+    
+    if (version <= 12){
+        //Revert the implementation to avoid an infinitloop of "Loadclass"
+        currentClassLoader.loadClass.overload("java.lang.String").implementation = backupImplementation
+    }
 
     return providerInstallerImpl
 }

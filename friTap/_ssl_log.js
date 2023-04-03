@@ -1,14 +1,14 @@
 📦
-1253 /agent/ssl_log.js.map
-1842 /agent/ssl_log.js
+1430 /agent/ssl_log.js.map
+2063 /agent/ssl_log.js
 2436 /agent/android/android_agent.js.map
 2834 /agent/android/android_agent.js
 883 /agent/android/android_java_tls_libs.js.map
 1046 /agent/android/android_java_tls_libs.js
 4259 /agent/android/bouncycastle.js.map
 4751 /agent/android/bouncycastle.js
-1810 /agent/android/conscrypt.js.map
-2750 /agent/android/conscrypt.js
+1928 /agent/android/conscrypt.js.map
+2890 /agent/android/conscrypt.js
 1067 /agent/android/gnutls_android.js.map
 1053 /agent/android/gnutls_android.js
 727 /agent/android/mbedTLS_android.js.map
@@ -59,10 +59,12 @@
 9364 /agent/ssl_lib/openssl_boringssl.js
 4325 /agent/ssl_lib/wolfssl.js.map
 5108 /agent/ssl_lib/wolfssl.js
+14377 /agent/util/anti_root.js.map
+17779 /agent/util/anti_root.js
 543 /agent/util/log.js.map
 290 /agent/util/log.js
-1342 /agent/util/process_infos.js.map
-1557 /agent/util/process_infos.js
+1556 /agent/util/process_infos.js.map
+1820 /agent/util/process_infos.js
 719 /agent/windows/gnutls_windows.js.map
 708 /agent/windows/gnutls_windows.js
 764 /agent/windows/matrixssl_windows.js.map
@@ -80,7 +82,7 @@
 1037 /agent/windows/wolfssl_windows.js.map
 1098 /agent/windows/wolfssl_windows.js
 ✄
-{"version":3,"file":"ssl_log.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/pip_problem/friTap/","sources":["agent/ssl_log.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,0BAA0B,EAAE,MAAM,4BAA4B,CAAC;AACxE,OAAO,EAAE,sBAAsB,EAAE,MAAM,oBAAoB,CAAC;AAC5D,OAAO,EAAE,wBAAwB,EAAE,MAAM,wBAAwB,CAAC;AAClE,OAAO,EAAE,wBAAwB,EAAE,MAAM,wBAAwB,CAAC;AAClE,OAAO,EAAE,0BAA0B,EAAE,MAAM,4BAA4B,CAAC;AACxE,OAAO,EAAE,SAAS,EAAE,OAAO,EAAE,SAAS,EAAE,KAAK,EAAE,OAAO,EAAE,MAAM,yBAAyB,CAAC;AACxF,OAAO,EAAE,GAAG,EAAE,MAAM,eAAe,CAAA;AA2EnC,YAAY;AACZ,MAAM,CAAC,IAAI,OAAO,GAAa,WAAW,CAAC;AAC3C,YAAY;AACZ,MAAM,CAAC,IAAI,YAAY,GAAY,gBAAgB,CAAA;AACnD;;;;;;;EAOE;AAGF,MAAM,UAAU,UAAU;IACtB,OAAO,OAAO,CAAC;AACnB,CAAC;AAID,SAAS,sBAAsB;IAC3B,IAAG,SAAS,EAAE,EAAC;QACX,GAAG,CAAC,2BAA2B,CAAC,CAAA;QAChC,0BAA0B,EAAE,CAAA;KAC/B;SAAK,IAAG,SAAS,EAAE,EAAC;QACjB,GAAG,CAAC,2BAA2B,CAAC,CAAA;QAChC,0BAA0B,EAAE,CAAA;KAC/B;SAAK,IAAG,OAAO,EAAE,EAAC;QACf,GAAG,CAAC,yBAAyB,CAAC,CAAA;QAC9B,wBAAwB,EAAE,CAAA;KAC7B;SAAK,IAAG,KAAK,EAAE,EAAC;QACb,GAAG,CAAC,uBAAuB,CAAC,CAAA;QAC5B,sBAAsB,EAAE,CAAA;KAC3B;SAAK,IAAG,OAAO,EAAE,EAAC;QACf,GAAG,CAAC,yBAAyB,CAAC,CAAA;QAC9B,wBAAwB,EAAE,CAAA;KAC7B;SAAI;QACD,GAAG,CAAC,qCAAqC,CAAC,CAAA;QAC1C,GAAG,CAAC,0HAA0H,CAAC,CAAA;KAClI;AAEL,CAAC;AAED,sBAAsB,EAAE,CAAA"}
+{"version":3,"file":"ssl_log.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/pip_problem/friTap/","sources":["agent/ssl_log.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,0BAA0B,EAAE,MAAM,4BAA4B,CAAC;AACxE,OAAO,EAAE,sBAAsB,EAAE,MAAM,oBAAoB,CAAC;AAC5D,OAAO,EAAE,wBAAwB,EAAE,MAAM,wBAAwB,CAAC;AAClE,OAAO,EAAE,wBAAwB,EAAE,MAAM,wBAAwB,CAAC;AAClE,OAAO,EAAE,0BAA0B,EAAE,MAAM,4BAA4B,CAAC;AACxE,OAAO,EAAE,SAAS,EAAE,OAAO,EAAE,SAAS,EAAE,KAAK,EAAE,OAAO,EAAE,MAAM,yBAAyB,CAAC;AACxF,OAAO,EAAE,iBAAiB,EAAE,MAAM,qBAAqB,CAAC;AACxD,OAAO,EAAE,GAAG,EAAE,MAAM,eAAe,CAAA;AA2EnC,YAAY;AACZ,MAAM,CAAC,IAAI,OAAO,GAAa,WAAW,CAAC;AAC3C,YAAY;AACZ,MAAM,CAAC,IAAI,YAAY,GAAY,gBAAgB,CAAA;AACnD,YAAY;AACZ,MAAM,CAAC,IAAI,SAAS,GAAY,YAAY,CAAA;AAG5C;;;;;;;EAOE;AAGF,MAAM,UAAU,UAAU;IACtB,OAAO,OAAO,CAAC;AACnB,CAAC;AAID,SAAS,sBAAsB;IAC3B,IAAG,SAAS,EAAE,EAAC;QACX,GAAG,CAAC,2BAA2B,CAAC,CAAA;QAChC,0BAA0B,EAAE,CAAA;KAC/B;SAAK,IAAG,SAAS,EAAE,EAAC;QACjB,GAAG,CAAC,2BAA2B,CAAC,CAAA;QAChC,IAAG,SAAS,EAAC;YACT,GAAG,CAAC,2BAA2B,CAAC,CAAC;YACjC,iBAAiB,EAAE,CAAC;SACvB;QACD,0BAA0B,EAAE,CAAA;KAC/B;SAAK,IAAG,OAAO,EAAE,EAAC;QACf,GAAG,CAAC,yBAAyB,CAAC,CAAA;QAC9B,wBAAwB,EAAE,CAAA;KAC7B;SAAK,IAAG,KAAK,EAAE,EAAC;QACb,GAAG,CAAC,uBAAuB,CAAC,CAAA;QAC5B,sBAAsB,EAAE,CAAA;KAC3B;SAAK,IAAG,OAAO,EAAE,EAAC;QACf,GAAG,CAAC,yBAAyB,CAAC,CAAA;QAC9B,wBAAwB,EAAE,CAAA;KAC7B;SAAI;QACD,GAAG,CAAC,qCAAqC,CAAC,CAAA;QAC1C,GAAG,CAAC,0HAA0H,CAAC,CAAA;KAClI;AAEL,CAAC;AAED,sBAAsB,EAAE,CAAA"}
 ✄
 import { load_android_hooking_agent } from "./android/android_agent.js";
 import { load_ios_hooking_agent } from "./ios/ios_agent.js";
@@ -88,11 +90,14 @@ import { load_macos_hooking_agent } from "./macos/macos_agent.js";
 import { load_linux_hooking_agent } from "./linux/linux_agent.js";
 import { load_windows_hooking_agent } from "./windows/windows_agent.js";
 import { isWindows, isLinux, isAndroid, isiOS, isMacOS } from "./util/process_infos.js";
+import { anti_root_execute } from "./util/anti_root.js";
 import { log } from "./util/log.js";
 //@ts-ignore
 export let offsets = "{OFFSETS}";
 //@ts-ignore
 export let experimental = "{EXPERIMENTAL}";
+//@ts-ignore
+export let anti_root = "{ANTIROOT}";
 /*
 
 create the TLS library for your first prototpye as a lib in ./ssl_lib and than extend this class for the OS where this new lib was tested.
@@ -111,6 +116,10 @@ function load_os_specific_agent() {
     }
     else if (isAndroid()) {
         log('Running Script on Android');
+        if (anti_root) {
+            log('Applying anti root checks');
+            anti_root_execute();
+        }
         load_android_hooking_agent();
     }
     else if (isLinux()) {
@@ -317,9 +326,10 @@ export function execute() {
     });
 }
 ✄
-{"version":3,"file":"conscrypt.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/pip_problem/friTap/","sources":["agent/android/conscrypt.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,GAAG,EAAE,MAAM,gBAAgB,CAAA;AAEpC,SAAS,qCAAqC,CAAC,kBAAgC,EAAE,oBAAyB;IAEtG,IAAI,qBAAqB,GAAG,IAAI,CAAA;IAChC,IAAI,YAAY,GAAG,IAAI,CAAC,yBAAyB,EAAE,CAAA;IACnD,KAAK,IAAI,EAAE,IAAI,YAAY,EAAE;QACzB,IAAI;YACA,IAAI,YAAY,GAAG,IAAI,CAAC,YAAY,CAAC,GAAG,CAAC,EAAE,CAAC,CAAA;YAC5C,qBAAqB,GAAG,YAAY,CAAC,GAAG,CAAC,8DAA8D,CAAC,CAAA;YACxG,MAAK;SACR;QAAC,OAAO,KAAK,EAAE;YACZ,0BAA0B;SAC7B;KAEJ;IACD,kEAAkE;IAClE,kBAAkB,CAAC,SAAS,CAAC,QAAQ,CAAC,kBAAkB,CAAC,CAAC,cAAc,GAAG,oBAAoB,CAAA;IAE/F,OAAO,qBAAqB,CAAA;AAChC,CAAC;AAED,MAAM,UAAU,OAAO;IAEnB,mFAAmF;IACnF,IAAI,CAAC,OAAO,CAAC;QACT,sCAAsC;QACtC,IAAI,eAAe,GAAG,IAAI,CAAC,GAAG,CAAC,uBAAuB,CAAC,CAAA;QACvD,IAAI,oBAAoB,GAAG,eAAe,CAAC,SAAS,CAAC,QAAQ,CAAC,kBAAkB,CAAC,CAAC,cAAc,CAAA;QAChG,+GAA+G;QAC/G,eAAe,CAAC,SAAS,CAAC,QAAQ,CAAC,kBAAkB,CAAC,CAAC,cAAc,GAAG,UAAU,SAAiB;YAC/F,IAAI,MAAM,GAAG,IAAI,CAAC,SAAS,CAAC,SAAS,CAAC,CAAA;YACtC,IAAI,SAAS,CAAC,QAAQ,CAAC,uBAAuB,CAAC,EAAE;gBAC7C,GAAG,CAAC,0CAA0C,CAAC,CAAA;gBAC/C,IAAI,qBAAqB,GAAG,qCAAqC,CAAC,eAAe,EAAE,oBAAoB,CAAC,CAAA;gBACxG,IAAI,qBAAqB,KAAK,IAAI,EAAE;oBAChC,GAAG,CAAC,uEAAuE,CAAC,CAAA;iBAC/E;qBAAM;oBACH,qBAAqB,CAAC,cAAc,CAAC,cAAc,GAAG;wBAClD,GAAG,CAAC,4CAA4C,CAAC,CAAA;oBAErD,CAAC,CAAA;iBAEJ;aACJ;YACD,OAAO,MAAM,CAAA;QACjB,CAAC,CAAA;QAED,kCAAkC;QAClC,IAAI;YACA,IAAI,iBAAiB,GAAG,IAAI,CAAC,GAAG,CAAC,mDAAmD,CAAC,CAAA;YACrF,iBAAiB,CAAC,eAAe,CAAC,cAAc,GAAG,UAAU,OAAY;gBACrE,GAAG,CAAC,wCAAwC,CAAC,CAAA;YACjD,CAAC,CAAA;YACD,iBAAiB,CAAC,oBAAoB,CAAC,cAAc,GAAG,UAAU,OAAY,EAAE,QAAa;gBACzF,GAAG,CAAC,wCAAwC,CAAC,CAAA;gBAC7C,QAAQ,CAAC,mBAAmB,EAAE,CAAA;YAClC,CAAC,CAAA;SACJ;QAAC,OAAO,KAAK,EAAE;YACZ,qCAAqC;SACxC;IACL,CAAC,CAAC,CAAA;AAIN,CAAC"}
+{"version":3,"file":"conscrypt.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/pip_problem/friTap/","sources":["agent/android/conscrypt.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,GAAG,EAAE,MAAM,gBAAgB,CAAA;AACpC,OAAO,EAAE,iBAAiB,EAAE,MAAM,0BAA0B,CAAC;AAE7D,SAAS,qCAAqC,CAAC,kBAAgC,EAAE,oBAAyB;IAEtG,IAAI,qBAAqB,GAAG,IAAI,CAAA;IAChC,IAAI,YAAY,GAAG,IAAI,CAAC,yBAAyB,EAAE,CAAA;IACnD,KAAK,IAAI,EAAE,IAAI,YAAY,EAAE;QACzB,IAAI;YACA,IAAI,YAAY,GAAG,IAAI,CAAC,YAAY,CAAC,GAAG,CAAC,EAAE,CAAC,CAAA;YAC5C,qBAAqB,GAAG,YAAY,CAAC,GAAG,CAAC,8DAA8D,CAAC,CAAA;YACxG,MAAK;SACR;QAAC,OAAO,KAAK,EAAE;YACZ,0BAA0B;SAC7B;KAEJ;IAED,IAAI,OAAO,GAAG,iBAAiB,EAAE,CAAA;IAEjC,IAAI,OAAO,IAAI,EAAE,EAAC;QACd,kEAAkE;QAClE,kBAAkB,CAAC,SAAS,CAAC,QAAQ,CAAC,kBAAkB,CAAC,CAAC,cAAc,GAAG,oBAAoB,CAAA;KAClG;IAED,OAAO,qBAAqB,CAAA;AAChC,CAAC;AAED,MAAM,UAAU,OAAO;IAEnB,mFAAmF;IACnF,IAAI,CAAC,OAAO,CAAC;QACT,sCAAsC;QACtC,IAAI,eAAe,GAAG,IAAI,CAAC,GAAG,CAAC,uBAAuB,CAAC,CAAA;QACvD,IAAI,oBAAoB,GAAG,eAAe,CAAC,SAAS,CAAC,QAAQ,CAAC,kBAAkB,CAAC,CAAC,cAAc,CAAA;QAChG,+GAA+G;QAC/G,eAAe,CAAC,SAAS,CAAC,QAAQ,CAAC,kBAAkB,CAAC,CAAC,cAAc,GAAG,UAAU,SAAiB;YAC/F,IAAI,MAAM,GAAG,IAAI,CAAC,SAAS,CAAC,SAAS,CAAC,CAAA;YACtC,IAAI,SAAS,CAAC,QAAQ,CAAC,uBAAuB,CAAC,EAAE;gBAC7C,GAAG,CAAC,0CAA0C,CAAC,CAAA;gBAC/C,IAAI,qBAAqB,GAAG,qCAAqC,CAAC,eAAe,EAAE,oBAAoB,CAAC,CAAA;gBACxG,IAAI,qBAAqB,KAAK,IAAI,EAAE;oBAChC,GAAG,CAAC,uEAAuE,CAAC,CAAA;iBAC/E;qBAAM;oBACH,qBAAqB,CAAC,cAAc,CAAC,cAAc,GAAG;wBAClD,GAAG,CAAC,4CAA4C,CAAC,CAAA;oBAErD,CAAC,CAAA;iBAEJ;aACJ;YACD,OAAO,MAAM,CAAA;QACjB,CAAC,CAAA;QAED,kCAAkC;QAClC,IAAI;YACA,IAAI,iBAAiB,GAAG,IAAI,CAAC,GAAG,CAAC,mDAAmD,CAAC,CAAA;YACrF,iBAAiB,CAAC,eAAe,CAAC,cAAc,GAAG,UAAU,OAAY;gBACrE,GAAG,CAAC,wCAAwC,CAAC,CAAA;YACjD,CAAC,CAAA;YACD,iBAAiB,CAAC,oBAAoB,CAAC,cAAc,GAAG,UAAU,OAAY,EAAE,QAAa;gBACzF,GAAG,CAAC,wCAAwC,CAAC,CAAA;gBAC7C,QAAQ,CAAC,mBAAmB,EAAE,CAAA;YAClC,CAAC,CAAA;SACJ;QAAC,OAAO,KAAK,EAAE;YACZ,qCAAqC;SACxC;IACL,CAAC,CAAC,CAAA;AAIN,CAAC"}
 ✄
 import { log } from "../util/log.js";
+import { getAndroidVersion } from "../util/process_infos.js";
 function findProviderInstallerFromClassloaders(currentClassLoader, backupImplementation) {
     var providerInstallerImpl = null;
     var classLoaders = Java.enumerateClassLoadersSync();
@@ -333,8 +343,11 @@ function findProviderInstallerFromClassloaders(currentClassLoader, backupImpleme
             // On error we return null
         }
     }
-    //Revert the implementation to avoid an infinitloop of "Loadclass"
-    currentClassLoader.loadClass.overload("java.lang.String").implementation = backupImplementation;
+    var version = getAndroidVersion();
+    if (version <= 12) {
+        //Revert the implementation to avoid an infinitloop of "Loadclass"
+        currentClassLoader.loadClass.overload("java.lang.String").implementation = backupImplementation;
+    }
     return providerInstallerImpl;
 }
 export function execute() {
@@ -3196,6 +3209,367 @@ export class WolfSSL {
     }
 }
 ✄
+{"version":3,"file":"anti_root.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/pip_problem/friTap/","sources":["agent/util/anti_root.ts"],"names":[],"mappings":"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"}
+✄
+import { readAddresses } from "../shared/shared_functions.js";
+/*
+ * mostly taken from here: https://codeshare.frida.re/@dzonerzy/fridantiroot/
+ */
+export class AntiRoot {
+    constructor() {
+        this.RootPackages = ["com.noshufou.android.su", "com.noshufou.android.su.elite", "eu.chainfire.supersu",
+            "com.koushikdutta.superuser", "com.thirdparty.superuser", "com.yellowes.su", "com.koushikdutta.rommanager",
+            "com.koushikdutta.rommanager.license", "com.dimonvideo.luckypatcher", "com.chelpus.lackypatch",
+            "com.ramdroid.appquarantine", "com.ramdroid.appquarantinepro", "com.devadvance.rootcloak", "com.devadvance.rootcloakplus",
+            "de.robv.android.xposed.installer", "com.saurik.substrate", "com.zachspong.temprootremovejb", "com.amphoras.hidemyroot",
+            "com.amphoras.hidemyrootadfree", "com.formyhm.hiderootPremium", "com.formyhm.hideroot", "me.phh.superuser",
+            "eu.chainfire.supersu.pro", "com.kingouser.com", "com.topjohnwu.magisk"
+        ];
+        this.RootBinaries = ["su", "busybox", "supersu", "Superuser.apk", "KingoUser.apk", "SuperSu.apk", "magisk"];
+        this.RootProperties = {
+            "ro.build.selinux": "1",
+            "ro.debuggable": "0",
+            "service.adb.root": "0",
+            "ro.secure": "1"
+        };
+        this.RootPropertiesKeys = [];
+        this.library_method_mapping = {};
+        this.library_method_mapping["libc.so"] = ["strstr", "fopen", "system"];
+        this.addresses = readAddresses(this.library_method_mapping);
+        for (var k in this.RootProperties)
+            this.RootPropertiesKeys.push(k);
+    }
+    java_based_bypasses() {
+        Java.perform(function () {
+            var PackageManager = Java.use("android.app.ApplicationPackageManager");
+            var Runtime = Java.use('java.lang.Runtime');
+            var NativeFile = Java.use('java.io.File');
+            var String = Java.use('java.lang.String');
+            var SystemProperties = Java.use('android.os.SystemProperties');
+            var BufferedReader = Java.use('java.io.BufferedReader');
+            var ProcessBuilder = Java.use('java.lang.ProcessBuilder');
+            var StringBuffer = Java.use('java.lang.StringBuffer');
+            var loaded_classes = Java.enumerateLoadedClassesSync();
+            send("Loaded " + loaded_classes.length + " classes!");
+            var useKeyInfo = false;
+            var useProcessManager = false;
+            //@ts-ignore
+            var ProcessManager = NULL;
+            send("loaded: " + loaded_classes.indexOf('java.lang.ProcessManager'));
+            if (loaded_classes.indexOf('java.lang.ProcessManager') != -1) {
+                try {
+                    useProcessManager = true;
+                    ProcessManager = Java.use('java.lang.ProcessManager');
+                }
+                catch (err) {
+                    send("ProcessManager Hook failed: " + err);
+                }
+            }
+            else {
+                //ProcessManager = null;
+                send("ProcessManager hook not loaded");
+            }
+            var KeyInfo = NULL;
+            if (loaded_classes.indexOf('android.security.keystore.KeyInfo') != -1) {
+                try {
+                    useKeyInfo = true;
+                    KeyInfo = Java.use('android.security.keystore.KeyInfo');
+                }
+                catch (err) {
+                    send("KeyInfo Hook failed: " + err);
+                }
+            }
+            else {
+                send("KeyInfo hook not loaded");
+            }
+            PackageManager.getPackageInfo.overload('java.lang.String', 'int').implementation = function (pname, flags) {
+                var shouldFakePackage = (this.RootPackages.indexOf(pname) > -1);
+                if (shouldFakePackage) {
+                    send("Bypass root check for package: " + pname);
+                    pname = "set.package.name.to.a.fake.one.so.we.can.bypass.it";
+                }
+                return this.getPackageInfo.overload('java.lang.String', 'int').call(this, pname, flags);
+            };
+            NativeFile.exists.implementation = function () {
+                var name = NativeFile.getName.call(this);
+                var shouldFakeReturn = (this.RootBinaries.indexOf(name) > -1);
+                if (shouldFakeReturn) {
+                    send("Bypass return value for binary: " + name);
+                    return false;
+                }
+                else {
+                    return this.exists.call(this);
+                }
+            };
+            var exec = Runtime.exec.overload('[Ljava.lang.String;');
+            var exec1 = Runtime.exec.overload('java.lang.String');
+            var exec2 = Runtime.exec.overload('java.lang.String', '[Ljava.lang.String;');
+            var exec3 = Runtime.exec.overload('[Ljava.lang.String;', '[Ljava.lang.String;');
+            var exec4 = Runtime.exec.overload('[Ljava.lang.String;', '[Ljava.lang.String;', 'java.io.File');
+            var exec5 = Runtime.exec.overload('java.lang.String', '[Ljava.lang.String;', 'java.io.File');
+            exec5.implementation = function (cmd, env, dir) {
+                if (cmd.indexOf("getprop") != -1 || cmd == "mount" || cmd.indexOf("build.prop") != -1 || cmd == "id" || cmd == "sh") {
+                    var fakeCmd = "grep";
+                    send("Bypass " + cmd + " command");
+                    return exec1.call(this, fakeCmd);
+                }
+                if (cmd == "su") {
+                    var fakeCmd = "awesome_tool";
+                    send("Bypass " + cmd + " command");
+                    return exec1.call(this, fakeCmd);
+                }
+                return exec5.call(this, cmd, env, dir);
+            };
+            exec4.implementation = function (cmdarr, env, file) {
+                for (var i = 0; i < cmdarr.length; i = i + 1) {
+                    var tmp_cmd = cmdarr[i];
+                    if (tmp_cmd.indexOf("getprop") != -1 || tmp_cmd == "mount" || tmp_cmd.indexOf("build.prop") != -1 || tmp_cmd == "id" || tmp_cmd == "sh") {
+                        var fakeCmd = "grep";
+                        send("Bypass " + cmdarr + " command");
+                        return exec1.call(this, fakeCmd);
+                    }
+                    if (tmp_cmd == "su") {
+                        var fakeCmd = "awesome_tool";
+                        send("Bypass " + cmdarr + " command");
+                        return exec1.call(this, fakeCmd);
+                    }
+                }
+                return exec4.call(this, cmdarr, env, file);
+            };
+            exec3.implementation = function (cmdarr, envp) {
+                for (var i = 0; i < cmdarr.length; i = i + 1) {
+                    var tmp_cmd = cmdarr[i];
+                    if (tmp_cmd.indexOf("getprop") != -1 || tmp_cmd == "mount" || tmp_cmd.indexOf("build.prop") != -1 || tmp_cmd == "id" || tmp_cmd == "sh") {
+                        var fakeCmd = "grep";
+                        send("Bypass " + cmdarr + " command");
+                        return exec1.call(this, fakeCmd);
+                    }
+                    if (tmp_cmd == "su") {
+                        var fakeCmd = "awesome_tool";
+                        send("Bypass " + cmdarr + " command");
+                        return exec1.call(this, fakeCmd);
+                    }
+                }
+                return exec3.call(this, cmdarr, envp);
+            };
+            exec2.implementation = function (cmd, env) {
+                if (cmd.indexOf("getprop") != -1 || cmd == "mount" || cmd.indexOf("build.prop") != -1 || cmd == "id" || cmd == "sh") {
+                    var fakeCmd = "grep";
+                    send("Bypass " + cmd + " command");
+                    return exec1.call(this, fakeCmd);
+                }
+                if (cmd == "su") {
+                    var fakeCmd = "awesome_tool";
+                    send("Bypass " + cmd + " command");
+                    return exec1.call(this, fakeCmd);
+                }
+                return exec2.call(this, cmd, env);
+            };
+            exec.implementation = function (cmd) {
+                for (var i = 0; i < cmd.length; i = i + 1) {
+                    var tmp_cmd = cmd[i];
+                    if (tmp_cmd.indexOf("getprop") != -1 || tmp_cmd == "mount" || tmp_cmd.indexOf("build.prop") != -1 || tmp_cmd == "id" || tmp_cmd == "sh") {
+                        var fakeCmd = "grep";
+                        send("Bypass " + cmd + " command");
+                        return exec1.call(this, fakeCmd);
+                    }
+                    if (tmp_cmd == "su") {
+                        var fakeCmd = "awesome_tool";
+                        send("Bypass " + cmd + " command");
+                        return exec1.call(this, fakeCmd);
+                    }
+                }
+                return exec.call(this, cmd);
+            };
+            exec1.implementation = function (cmd) {
+                if (cmd.indexOf("getprop") != -1 || cmd == "mount" || cmd.indexOf("build.prop") != -1 || cmd == "id" || cmd == "sh") {
+                    var fakeCmd = "grep";
+                    send("Bypass " + cmd + " command");
+                    return exec1.call(this, fakeCmd);
+                }
+                if (cmd == "su") {
+                    var fakeCmd = "awesome_tool";
+                    send("Bypass " + cmd + " command");
+                    return exec1.call(this, fakeCmd);
+                }
+                return exec1.call(this, cmd);
+            };
+            String.contains.implementation = function (name) {
+                if (name == "test-keys") {
+                    send("Bypass test-keys check");
+                    return false;
+                }
+                return this.contains.call(this, name);
+            };
+            var get = SystemProperties.get.overload('java.lang.String');
+            get.implementation = function (name) {
+                if (this.RootPropertiesKeys.indexOf(name) != -1) {
+                    send("Bypass " + name);
+                    return this.RootProperties[name];
+                }
+                return this.get.call(this, name);
+            };
+            BufferedReader.readLine.overload('boolean').implementation = function () {
+                var text = this.readLine.overload('boolean').call(this);
+                if (text === null) {
+                    // just pass , i know it's ugly as hell but test != null won't work :(
+                }
+                else {
+                    var shouldFakeRead = (text.indexOf("ro.build.tags=test-keys") > -1);
+                    if (shouldFakeRead) {
+                        send("Bypass build.prop file read");
+                        text = text.replace("ro.build.tags=test-keys", "ro.build.tags=release-keys");
+                    }
+                }
+                return text;
+            };
+            var executeCommand = ProcessBuilder.command.overload('java.util.List');
+            ProcessBuilder.start.implementation = function () {
+                var cmd = this.command.call(this);
+                var shouldModifyCommand = false;
+                for (var i = 0; i < cmd.size(); i = i + 1) {
+                    var tmp_cmd = cmd.get(i).toString();
+                    if (tmp_cmd.indexOf("getprop") != -1 || tmp_cmd.indexOf("mount") != -1 || tmp_cmd.indexOf("build.prop") != -1 || tmp_cmd.indexOf("id") != -1) {
+                        shouldModifyCommand = true;
+                    }
+                }
+                if (shouldModifyCommand) {
+                    send("Bypass ProcessBuilder " + cmd);
+                    this.command.call(this, ["grep"]);
+                    return this.start.call(this);
+                }
+                if (cmd.indexOf("su") != -1) {
+                    send("Bypass ProcessBuilder " + cmd);
+                    this.command.call(this, ["awesome_tool"]);
+                    return this.start.call(this);
+                }
+                return this.start.call(this);
+            };
+            if (useProcessManager) {
+                //@ts-ignore
+                var ProcManExec = ProcessManager.exec.overload('[Ljava.lang.String;', '[Ljava.lang.String;', 'java.io.File', 'boolean');
+                //@ts-ignore
+                var ProcManExecVariant = ProcessManager.exec.overload('[Ljava.lang.String;', '[Ljava.lang.String;', 'java.lang.String', 'java.io.FileDescriptor', 'java.io.FileDescriptor', 'java.io.FileDescriptor', 'boolean');
+                ProcManExec.implementation = function (cmd, env, workdir, redirectstderr) {
+                    var fake_cmd = cmd;
+                    for (var i = 0; i < cmd.length; i = i + 1) {
+                        var tmp_cmd = cmd[i];
+                        if (tmp_cmd.indexOf("getprop") != -1 || tmp_cmd == "mount" || tmp_cmd.indexOf("build.prop") != -1 || tmp_cmd == "id") {
+                            var fake_cmd = ["grep"];
+                            send("Bypass " + cmd + " command");
+                        }
+                        if (tmp_cmd == "su") {
+                            var fake_cmd = ["awesome_tool"];
+                            send("Bypass " + cmd + " command");
+                        }
+                    }
+                    return ProcManExec.call(this, fake_cmd, env, workdir, redirectstderr);
+                };
+                ProcManExecVariant.implementation = function (cmd, env, directory, stdin, stdout, stderr, redirect) {
+                    var fake_cmd = cmd;
+                    for (var i = 0; i < cmd.length; i = i + 1) {
+                        var tmp_cmd = cmd[i];
+                        if (tmp_cmd.indexOf("getprop") != -1 || tmp_cmd == "mount" || tmp_cmd.indexOf("build.prop") != -1 || tmp_cmd == "id") {
+                            var fake_cmd = ["grep"];
+                            send("Bypass " + cmd + " command");
+                        }
+                        if (tmp_cmd == "su") {
+                            var fake_cmd = ["awesome_tool"];
+                            send("Bypass " + cmd + " command");
+                        }
+                    }
+                    return ProcManExecVariant.call(this, fake_cmd, env, directory, stdin, stdout, stderr, redirect);
+                };
+            }
+            if (useKeyInfo) {
+                //@ts-ignore
+                KeyInfo.isInsideSecureHardware.implementation = function () {
+                    send("Bypass isInsideSecureHardware");
+                    return true;
+                };
+            }
+        });
+    }
+    native_based_bypasses() {
+        // char *strstr(const char *str1, const char *str2);
+        Interceptor.attach(this.addresses["strstr"], {
+            onEnter: function (args) {
+                this.str_source = args[0];
+                this.str_to_look_for = args[1];
+                this.frida = Boolean(0);
+                var haystack = this.str_source.readUtf8String();
+                var needle = this.str_to_look_for.readUtf8String();
+                if (haystack.indexOf("frida") != -1 || haystack.indexOf("xposed") != -1) {
+                    this.frida = Boolean(1);
+                }
+            },
+            onLeave: function (retval) {
+                if (this.frida) {
+                    //send("strstr(frida) was patched!! :) " + haystack);
+                    retval.replace(ptr(0));
+                }
+                return retval;
+            }
+        });
+        Interceptor.attach(this.addresses["fopen"], {
+            onEnter: function (args) {
+                var path = args[0].readCString();
+                //@ts-ignore
+                var path_array = path.split("/");
+                var executable = path_array[path_array.length - 1];
+                var shouldFakeReturn = (this.RootBinaries.indexOf(executable) > -1);
+                if (shouldFakeReturn) {
+                    args[0].writeUtf8String("/notexists");
+                    send("Bypass native fopen");
+                }
+            },
+            onLeave: function (retval) {
+            }
+        });
+        Interceptor.attach(this.addresses["system"], {
+            onEnter: function (args) {
+                var cmd = args[0].readCString();
+                send("SYSTEM CMD: " + cmd);
+                //@ts-ignore
+                if (cmd.indexOf("getprop") != -1 || cmd == "mount" || cmd.indexOf("build.prop") != -1 || cmd == "id") {
+                    send("Bypass native system: " + cmd);
+                    args[0].writeUtf8String("grep");
+                }
+                if (cmd == "su") {
+                    send("Bypass native system: " + cmd);
+                    args[0].writeUtf8String("awesome_tool");
+                }
+            },
+            onLeave: function (retval) {
+            }
+        });
+        /*
+        
+        TO IMPLEMENT:
+        
+        Exec Family
+        
+        int execl(const char *path, const char *arg0, ..., const char *argn, (char *)0);
+        int execle(const char *path, const char *arg0, ..., const char *argn, (char *)0, char *const envp[]);
+        int execlp(const char *file, const char *arg0, ..., const char *argn, (char *)0);
+        int execlpe(const char *file, const char *arg0, ..., const char *argn, (char *)0, char *const envp[]);
+        int execv(const char *path, char *const argv[]);
+        int execve(const char *path, char *const argv[], char *const envp[]);
+        int execvp(const char *file, char *const argv[]);
+        int execvpe(const char *file, char *const argv[], char *const envp[]);
+        
+        */
+    }
+    execute_hooks() {
+        this.java_based_bypasses();
+        this.native_based_bypasses();
+    }
+}
+export function anti_root_execute() {
+    var anti_root = new AntiRoot();
+    anti_root.execute_hooks();
+}
+✄
 {"version":3,"file":"log.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/pip_problem/friTap/","sources":["agent/util/log.ts"],"names":[],"mappings":"AAAA,MAAM,UAAU,GAAG,CAAC,GAAW;IAC3B,IAAI,OAAO,GAA8B,EAAE,CAAA;IAC3C,OAAO,CAAC,aAAa,CAAC,GAAG,SAAS,CAAA;IAClC,OAAO,CAAC,SAAS,CAAC,GAAG,GAAG,CAAA;IACxB,IAAI,CAAC,OAAO,CAAC,CAAA;AACjB,CAAC;AAGD,MAAM,UAAU,MAAM,CAAC,GAAW;IAC9B,IAAI,OAAO,GAA8B,EAAE,CAAA;IAC3C,OAAO,CAAC,aAAa,CAAC,GAAG,aAAa,CAAA;IACtC,OAAO,CAAC,aAAa,CAAC,GAAG,GAAG,CAAA;IAC5B,IAAI,CAAC,OAAO,CAAC,CAAA;AACjB,CAAC"}
 ✄
 export function log(str) {
@@ -3211,7 +3585,7 @@ export function devlog(str) {
     send(message);
 }
 ✄
-{"version":3,"file":"process_infos.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/pip_problem/friTap/","sources":["agent/util/process_infos.ts"],"names":[],"mappings":"AACA,MAAM,UAAU,wBAAwB;IAChC,OAAO,OAAO,CAAC,IAAI,CAAC;AAC5B,CAAC;AAGD,MAAM,UAAU,SAAS;IACrB,IAAG,IAAI,CAAC,SAAS,IAAI,OAAO,CAAC,QAAQ,IAAI,OAAO,EAAC;QAC7C,IAAG;YACC,IAAI,CAAC,cAAc,CAAA,CAAC,yDAAyD;YAC7E,OAAO,IAAI,CAAA;SACd;QAAA,OAAM,KAAK,EAAC;YACT,OAAO,KAAK,CAAA;SACf;KACJ;SAAI;QACD,OAAO,KAAK,CAAA;KACf;AACL,CAAC;AAGD,MAAM,UAAU,KAAK;IACjB,IAAG,wBAAwB,EAAE,KAAK,OAAO,IAAI,OAAO,CAAC,QAAQ,IAAI,QAAQ,EAAC;QACtE,IAAG;YACE,wFAAwF;YACzF,OAAO,IAAI,CAAA;SACd;QAAA,OAAM,KAAK,EAAC;YACT,OAAO,KAAK,CAAA;SACf;KACJ;SAAI;QACD,OAAO,KAAK,CAAA;KACf;AACL,CAAC;AAGD,MAAM,UAAU,OAAO;IACnB,IAAG,wBAAwB,EAAE,KAAK,KAAK,IAAI,OAAO,CAAC,QAAQ,IAAI,QAAQ,EAAC;QACpE,OAAO,IAAI,CAAA;KACd;SAAI;QACD,OAAO,KAAK,CAAA;KACf;AACL,CAAC;AAGD,MAAM,UAAU,OAAO;IACnB,IAAI,OAAO,CAAC,QAAQ,IAAI,OAAO,EAAE;QAE7B,IAAI,IAAI,CAAC,SAAS,IAAI,KAAK,IAAI,OAAO,CAAC,QAAQ,IAAI,OAAO,EAAE;YACxD,OAAO,IAAI,CAAA;SACd;aAAM;YACH,IAAI;gBACA,IAAI,CAAC,cAAc,CAAA,CAAC,yDAAyD;gBAC7E,OAAO,KAAK,CAAA;aACf;YAAC,OAAO,KAAK,EAAE;gBACZ,OAAO,IAAI,CAAA;aACd;SAEJ;KACJ;SAAI;QACD,OAAO,KAAK,CAAA;KACf;AACL,CAAC;AAED,MAAM,UAAU,SAAS;IACrB,IAAI,OAAO,CAAC,QAAQ,IAAI,SAAS,EAAC;QAC9B,OAAO,IAAI,CAAA;KACd;SAAI;QACD,OAAO,KAAK,CAAA;KACf;AACL,CAAC"}
+{"version":3,"file":"process_infos.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/pip_problem/friTap/","sources":["agent/util/process_infos.ts"],"names":[],"mappings":"AACA,MAAM,UAAU,wBAAwB;IAChC,OAAO,OAAO,CAAC,IAAI,CAAC;AAC5B,CAAC;AAGD,MAAM,UAAU,SAAS;IACrB,IAAG,IAAI,CAAC,SAAS,IAAI,OAAO,CAAC,QAAQ,IAAI,OAAO,EAAC;QAC7C,IAAG;YACC,IAAI,CAAC,cAAc,CAAA,CAAC,yDAAyD;YAC7E,OAAO,IAAI,CAAA;SACd;QAAA,OAAM,KAAK,EAAC;YACT,OAAO,KAAK,CAAA;SACf;KACJ;SAAI;QACD,OAAO,KAAK,CAAA;KACf;AACL,CAAC;AAGD,MAAM,UAAU,KAAK;IACjB,IAAG,wBAAwB,EAAE,KAAK,OAAO,IAAI,OAAO,CAAC,QAAQ,IAAI,QAAQ,EAAC;QACtE,IAAG;YACE,wFAAwF;YACzF,OAAO,IAAI,CAAA;SACd;QAAA,OAAM,KAAK,EAAC;YACT,OAAO,KAAK,CAAA;SACf;KACJ;SAAI;QACD,OAAO,KAAK,CAAA;KACf;AACL,CAAC;AAGD,MAAM,UAAU,OAAO;IACnB,IAAG,wBAAwB,EAAE,KAAK,KAAK,IAAI,OAAO,CAAC,QAAQ,IAAI,QAAQ,EAAC;QACpE,OAAO,IAAI,CAAA;KACd;SAAI;QACD,OAAO,KAAK,CAAA;KACf;AACL,CAAC;AAGD,MAAM,UAAU,OAAO;IACnB,IAAI,OAAO,CAAC,QAAQ,IAAI,OAAO,EAAE;QAE7B,IAAI,IAAI,CAAC,SAAS,IAAI,KAAK,IAAI,OAAO,CAAC,QAAQ,IAAI,OAAO,EAAE;YACxD,OAAO,IAAI,CAAA;SACd;aAAM;YACH,IAAI;gBACA,IAAI,CAAC,cAAc,CAAA,CAAC,yDAAyD;gBAC7E,OAAO,KAAK,CAAA;aACf;YAAC,OAAO,KAAK,EAAE;gBACZ,OAAO,IAAI,CAAA;aACd;SAEJ;KACJ;SAAI;QACD,OAAO,KAAK,CAAA;KACf;AACL,CAAC;AAED,MAAM,UAAU,SAAS;IACrB,IAAI,OAAO,CAAC,QAAQ,IAAI,SAAS,EAAC;QAC9B,OAAO,IAAI,CAAA;KACd;SAAI;QACD,OAAO,KAAK,CAAA;KACf;AACL,CAAC;AAGD,MAAM,UAAU,iBAAiB;IAC7B,IAAI,OAAO,GAAG,IAAI,CAAA;IAClB,IAAI,CAAC,OAAO,CAAC;QACT,OAAO,GAAG,IAAI,CAAC,cAAc,CAAC,CAAC,0DAA0D;IACzF,CAAC,CAAC,CAAC;IAEH,IAAI,cAAc,GAAY,CAAC,OAAO,CAAC;IACvC,OAAO,cAAc,CAAC;AAG9B,CAAC"}
 ✄
 export function get_process_architecture() {
     return Process.arch;
@@ -3278,6 +3652,14 @@ export function isWindows() {
     else {
         return false;
     }
+}
+export function getAndroidVersion() {
+    var version = "-1";
+    Java.perform(function () {
+        version = Java.androidVersion; // this will return a value like 12 for Android version 12
+    });
+    var casted_version = +version;
+    return casted_version;
 }
 ✄
 {"version":3,"file":"gnutls_windows.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/pip_problem/friTap/","sources":["agent/windows/gnutls_windows.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,MAAM,EAAE,MAAM,sBAAsB,CAAA;AAC5C,OAAO,EAAE,cAAc,EAAE,MAAM,oBAAoB,CAAC;AAEpD,MAAM,OAAO,cAAe,SAAQ,MAAM;IAEtC,YAAmB,UAAiB,EAAS,cAAqB;QAC9D,KAAK,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;QADlB,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAElE,CAAC;IAGD,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;QAEpC,wCAAwC;IAC5C,CAAC;IAED,8BAA8B;QAC1B,qBAAqB;IACzB,CAAC;CAEJ;AAGD,MAAM,UAAU,cAAc,CAAC,UAAiB;IAC5C,IAAI,OAAO,GAAG,IAAI,cAAc,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;IAC5D,OAAO,CAAC,aAAa,EAAE,CAAC;AAG5B,CAAC"}

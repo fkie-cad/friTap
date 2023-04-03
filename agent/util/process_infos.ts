@@ -69,3 +69,14 @@ export function isWindows(): boolean{
 }
 
 
+export function getAndroidVersion(): number{
+    var version = "-1"
+    Java.perform(function () {
+        version = Java.androidVersion; // this will return a value like 12 for Android version 12
+        });
+
+        var casted_version : number = +version;
+        return casted_version;
+    
+        
+}
