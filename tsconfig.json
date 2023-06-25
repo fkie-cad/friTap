@@ -1,33 +1,12 @@
 {
   "compilerOptions": {
     "target": "es2020",
-    "module": "ES2020",
-    "strict": true,
+    "lib": ["es2020"],
     "allowJs": true,
-    "importHelpers": true,
-    "moduleResolution": "node",
-    "skipLibCheck": true,
+    "noEmit": true,
+    "strict": true,
     "esModuleInterop": true,
-    "allowSyntheticDefaultImports": true,
-    "sourceMap": true,
-    "baseUrl": ".",
-    "paths": {
-      "@/*": [
-        "agent/*"
-      ]
-    },
-    "lib": [
-      "es2020",
-      "dom",
-      "dom.iterable",
-      "scripthost"
-    ]
-  },
-  "include": [
-    "agent/**/*.ts",
-    "agent/*.ts"
-  ],
-  "exclude": [
-    "node_modules"
-  ]
+    "noImplicitAny": false,
+    "strictNullChecks": false
+  }
 }

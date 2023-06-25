@@ -3,7 +3,7 @@
 </p>
 
 # friTap
-![version](https://img.shields.io/badge/version-1.0.9-blue) [![PyPi](https://badge.fury.io/py/objection.svg)](https://pypi.org/project/friTap)
+![version](https://img.shields.io/badge/version-1.1.0-blue) [![PyPi](https://badge.fury.io/py/objection.svg)](https://pypi.org/project/friTap)
 
 The goal of this project is to help researchers to analyze traffic encapsulated in SSL or TLS. For details have a view into the [OSDFCon webinar slides](assets/friTapOSDFConwebinar.pdf) or in [this blog post](https://lolcads.github.io/posts/2022/08/fritap/).
 
@@ -78,9 +78,10 @@ More examples on using friTap can be found in the [USAGE.md](./USAGE.md). A deta
 
 - [frida](https://frida.re)
 - `>= python3.6`
-- hexdump (`pip3 install hexdump`)
-- scapy (`pip3 install scapy`)
-- watchdog (`pip3 install watchdog`)
+- click (`python3 -m pip install click`)
+- hexdump (`python3 -m pip install hexdump`)
+- scapy (`python3 -m pip install scapy`)
+- watchdog (`python3 -m pip install watchdog`)
 
 ## Planned features
 

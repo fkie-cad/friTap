@@ -63,13 +63,7 @@ export class AntiRoot {
             var ProcessBuilder = Java.use('java.lang.ProcessBuilder');
         
             var StringBuffer = Java.use('java.lang.StringBuffer');
-        
-            var loaded_classes = Java.enumerateLoadedClassesSync();
 
-
-        
-            send("Loaded " + loaded_classes.length + " classes!");
-        
             var useKeyInfo = false;
         
             var useProcessManager = false;
@@ -77,174 +71,208 @@ export class AntiRoot {
             //@ts-ignore
             var ProcessManager = NULL;
         
-            send("loaded: " + loaded_classes.indexOf('java.lang.ProcessManager'));
+            var loaded_classes = Java.enumerateLoadedClassesSync();
+
+
+        
+            devlog("Loaded " + loaded_classes.length + " classes!");
+        
+            
+        
+            devlog("loaded: " + loaded_classes.indexOf('java.lang.ProcessManager'));
         
             if (loaded_classes.indexOf('java.lang.ProcessManager') != -1) {
                 try {
                     useProcessManager = true;
                     ProcessManager = Java.use('java.lang.ProcessManager');
                 } catch (err) {
-                    send("ProcessManager Hook failed: " + err);
+                    devlog("ProcessManager Hook failed: " + err);
                 }
             } else {
                 //ProcessManager = null;
-                send("ProcessManager hook not loaded");
+               devlog("ProcessManager hook not loaded");
             }
         
             var KeyInfo = NULL;
+            
         
             if (loaded_classes.indexOf('android.security.keystore.KeyInfo') != -1) {
                 try {
                     useKeyInfo = true;
                     KeyInfo = Java.use('android.security.keystore.KeyInfo') ;
                 } catch (err) {
-                    send("KeyInfo Hook failed: " + err);
+                   log("KeyInfo Hook failed: " + err);
                 }
             } else {
-                send("KeyInfo hook not loaded");
+               log("KeyInfo hook not loaded");
             }
+
+            
         
+            
             PackageManager.getPackageInfo.overload('java.lang.String', 'int').implementation = function(pname :any, flags :any) {
                 var shouldFakePackage = (this.RootPackages.indexOf(pname) > -1);
                 if (shouldFakePackage) {
-                    send("Bypass root check for package: " + pname);
+                   log("Bypass root check for package: " + pname);
                     pname = "set.package.name.to.a.fake.one.so.we.can.bypass.it";
                 }
                 return this.getPackageInfo.overload('java.lang.String', 'int').call(this, pname, flags);
             };
-        
+
+            
+            /*
+            This check results into the following error:
+            {'description': 'Error: expected an unsigned integer', 'type': 'error'}
+
+
             NativeFile.exists.implementation = function() {
                 var name = NativeFile.getName.call(this);
                 var shouldFakeReturn = (this.RootBinaries.indexOf(name) > -1);
+                console.log(shouldFakeReturn);
                 if (shouldFakeReturn) {
-                    send("Bypass return value for binary: " + name);
+                   log("Bypass return value for binary: " + name);
                     return false;
                 } else {
                     return this.exists.call(this);
                 }
-            };
-        
+            };  */
+
+            
             var exec = Runtime.exec.overload('[Ljava.lang.String;');
             var exec1 = Runtime.exec.overload('java.lang.String');
             var exec2 = Runtime.exec.overload('java.lang.String', '[Ljava.lang.String;');
             var exec3 = Runtime.exec.overload('[Ljava.lang.String;', '[Ljava.lang.String;');
             var exec4 = Runtime.exec.overload('[Ljava.lang.String;', '[Ljava.lang.String;', 'java.io.File');
             var exec5 = Runtime.exec.overload('java.lang.String', '[Ljava.lang.String;', 'java.io.File');
-        
+
             exec5.implementation = function(cmd :String, env :any, dir :any) {
                 if (cmd.indexOf("getprop") != -1 || cmd == "mount" || cmd.indexOf("build.prop") != -1 || cmd == "id" || cmd == "sh") {
                     var fakeCmd = "grep";
-                    send("Bypass " + cmd + " command");
+                   log("Bypass " + cmd + " command");
                     return exec1.call(this, fakeCmd);
                 }
                 if (cmd == "su") {
                     var fakeCmd = "awesome_tool";
-                    send("Bypass " + cmd + " command");
+                   log("Bypass " + cmd + " command");
                     return exec1.call(this, fakeCmd);
                 }
                 return exec5.call(this, cmd, env, dir);
             };
+
+            
         
             exec4.implementation = function(cmdarr :String, env :any, file :any) {
                 for (var i = 0; i < cmdarr.length; i = i + 1) {
                     var tmp_cmd = cmdarr[i];
                     if (tmp_cmd.indexOf("getprop") != -1 || tmp_cmd == "mount" || tmp_cmd.indexOf("build.prop") != -1 || tmp_cmd == "id" || tmp_cmd == "sh") {
                         var fakeCmd = "grep";
-                        send("Bypass " + cmdarr + " command");
+                       log("Bypass " + cmdarr + " command");
                         return exec1.call(this, fakeCmd);
                     }
         
                     if (tmp_cmd == "su") {
                         var fakeCmd = "awesome_tool";
-                        send("Bypass " + cmdarr + " command");
+                       log("Bypass " + cmdarr + " command");
                         return exec1.call(this, fakeCmd);
                     }
                 }
                 return exec4.call(this, cmdarr, env, file);
             };
+
+
         
             exec3.implementation = function(cmdarr :String, envp :any) {
                 for (var i = 0; i < cmdarr.length; i = i + 1) {
                     var tmp_cmd = cmdarr[i];
                     if (tmp_cmd.indexOf("getprop") != -1 || tmp_cmd == "mount" || tmp_cmd.indexOf("build.prop") != -1 || tmp_cmd == "id" || tmp_cmd == "sh") {
                         var fakeCmd = "grep";
-                        send("Bypass " + cmdarr + " command");
+                       log("Bypass " + cmdarr + " command");
                         return exec1.call(this, fakeCmd);
                     }
         
                     if (tmp_cmd == "su") {
                         var fakeCmd = "awesome_tool";
-                        send("Bypass " + cmdarr + " command");
+                       log("Bypass " + cmdarr + " command");
                         return exec1.call(this, fakeCmd);
                     }
                 }
                 return exec3.call(this, cmdarr, envp);
             };
+
         
             exec2.implementation = function(cmd :String, env :any) {
                 if (cmd.indexOf("getprop") != -1 || cmd == "mount" || cmd.indexOf("build.prop") != -1 || cmd == "id" || cmd == "sh") {
                     var fakeCmd = "grep";
-                    send("Bypass " + cmd + " command");
+                   log("Bypass " + cmd + " command");
                     return exec1.call(this, fakeCmd);
                 }
                 if (cmd == "su") {
                     var fakeCmd = "awesome_tool";
-                    send("Bypass " + cmd + " command");
+                   log("Bypass " + cmd + " command");
                     return exec1.call(this, fakeCmd);
                 }
                 return exec2.call(this, cmd, env);
             };
+
         
             exec.implementation = function(cmd :String) {
                 for (var i = 0; i < cmd.length; i = i + 1) {
                     var tmp_cmd = cmd[i];
                     if (tmp_cmd.indexOf("getprop") != -1 || tmp_cmd == "mount" || tmp_cmd.indexOf("build.prop") != -1 || tmp_cmd == "id" || tmp_cmd == "sh") {
                         var fakeCmd = "grep";
-                        send("Bypass " + cmd + " command");
+                       log("Bypass " + cmd + " command");
                         return exec1.call(this, fakeCmd);
                     }
         
                     if (tmp_cmd == "su") {
                         var fakeCmd = "awesome_tool";
-                        send("Bypass " + cmd + " command");
+                       log("Bypass " + cmd + " command");
                         return exec1.call(this, fakeCmd);
                     }
                 }
         
                 return exec.call(this, cmd);
             };
+
+            
         
             exec1.implementation = function(cmd :String) {
                 if (cmd.indexOf("getprop") != -1 || cmd == "mount" || cmd.indexOf("build.prop") != -1 || cmd == "id" || cmd == "sh") {
                     var fakeCmd = "grep";
-                    send("Bypass " + cmd + " command");
+                   log("Bypass " + cmd + " command");
                     return exec1.call(this, fakeCmd);
                 }
                 if (cmd == "su") {
                     var fakeCmd = "awesome_tool";
-                    send("Bypass " + cmd + " command");
+                   log("Bypass " + cmd + " command");
                     return exec1.call(this, fakeCmd);
                 }
                 return exec1.call(this, cmd);
             };
+
+            
         
             String.contains.implementation = function(name :String) {
                 if (name == "test-keys") {
-                    send("Bypass test-keys check");
+                   log("Bypass test-keys check");
                     return false;
                 }
                 return this.contains.call(this, name);
             };
         
             var get = SystemProperties.get.overload('java.lang.String');
+
+            
         
             get.implementation = function(name :any) {
                 if (this.RootPropertiesKeys.indexOf(name) != -1) {
-                    send("Bypass " + name);
+                   log("Bypass " + name);
                     return this.RootProperties[name];
                 }
                 return this.get.call(this, name);
             };
+
+            
         
         
         
@@ -255,12 +283,14 @@ export class AntiRoot {
                 } else {
                     var shouldFakeRead = (text.indexOf("ro.build.tags=test-keys") > -1);
                     if (shouldFakeRead) {
-                        send("Bypass build.prop file read");
+                       log("Bypass build.prop file read");
                         text = text.replace("ro.build.tags=test-keys", "ro.build.tags=release-keys");
                     }
                 }
                 return text;
             };
+
+            
         
             var executeCommand = ProcessBuilder.command.overload('java.util.List');
         
@@ -274,19 +304,20 @@ export class AntiRoot {
                     }
                 }
                 if (shouldModifyCommand) {
-                    send("Bypass ProcessBuilder " + cmd);
+                   log("Bypass ProcessBuilder " + cmd);
                     this.command.call(this, ["grep"]);
                     return this.start.call(this);
                 }
                 if (cmd.indexOf("su") != -1) {
-                    send("Bypass ProcessBuilder " + cmd);
+                   log("Bypass ProcessBuilder " + cmd);
                     this.command.call(this, ["awesome_tool"]);
                     return this.start.call(this);
                 }
         
                 return this.start.call(this);
             };
-        
+
+            
             if (useProcessManager) {
                 //@ts-ignore
                 var ProcManExec = ProcessManager.exec.overload('[Ljava.lang.String;', '[Ljava.lang.String;', 'java.io.File', 'boolean');
@@ -299,42 +330,47 @@ export class AntiRoot {
                         var tmp_cmd = cmd[i];
                         if (tmp_cmd.indexOf("getprop") != -1 || tmp_cmd == "mount" || tmp_cmd.indexOf("build.prop") != -1 || tmp_cmd == "id") {
                             var fake_cmd = ["grep"];
-                            send("Bypass " + cmd + " command");
+                           log("Bypass " + cmd + " command");
                         }
         
                         if (tmp_cmd == "su") {
                             var fake_cmd = ["awesome_tool"];
-                            send("Bypass " + cmd + " command");
+                           log("Bypass " + cmd + " command");
                         }
                     }
                     return ProcManExec.call(this, fake_cmd, env, workdir, redirectstderr);
                 };
-        
+
+                
                 ProcManExecVariant.implementation = function(cmd :string[], env :string[], directory :any, stdin :any, stdout :any, stderr :any, redirect :any) {
                     var fake_cmd = cmd;
                     for (var i = 0; i < cmd.length; i = i + 1) {
                         var tmp_cmd = cmd[i];
                         if (tmp_cmd.indexOf("getprop") != -1 || tmp_cmd == "mount" || tmp_cmd.indexOf("build.prop") != -1 || tmp_cmd == "id") {
                             var fake_cmd = ["grep"];
-                            send("Bypass " + cmd + " command");
+                           log("Bypass " + cmd + " command");
                         }
         
                         if (tmp_cmd == "su") {
                             var fake_cmd = ["awesome_tool"];
-                            send("Bypass " + cmd + " command");
+                           log("Bypass " + cmd + " command");
                         }
                     }
                     return ProcManExecVariant.call(this, fake_cmd, env, directory, stdin, stdout, stderr, redirect);
                 };
             }
+            
+            
         
             if (useKeyInfo) {
                 //@ts-ignore
                 KeyInfo.isInsideSecureHardware.implementation = function() {
-                    send("Bypass isInsideSecureHardware");
+                   log("Bypass isInsideSecureHardware");
                     return true;
                 }
             }
+
+            
         
         });
 
@@ -383,7 +419,7 @@ Interceptor.attach(this.addresses["fopen"], {
         var shouldFakeReturn = (this.RootBinaries.indexOf(executable) > -1)
         if (shouldFakeReturn) {
             args[0].writeUtf8String("/notexists");
-            send("Bypass native fopen");
+           log("Bypass native fopen");
         }
     },
     onLeave: function(retval) {
@@ -394,14 +430,14 @@ Interceptor.attach(this.addresses["fopen"], {
 Interceptor.attach(this.addresses["system"], {
     onEnter: function(args) {
         var cmd = args[0].readCString();
-        send("SYSTEM CMD: " + cmd);
+       log("SYSTEM CMD: " + cmd);
         //@ts-ignore
         if (cmd.indexOf("getprop") != -1 || cmd == "mount" || cmd.indexOf("build.prop") != -1 || cmd == "id") {
-            send("Bypass native system: " + cmd);
+           log("Bypass native system: " + cmd);
             args[0].writeUtf8String("grep");
         }
         if (cmd == "su") {
-            send("Bypass native system: " + cmd);
+           log("Bypass native system: " + cmd);
             args[0].writeUtf8String("awesome_tool");
         }
     },

@@ -33,10 +33,12 @@ class PCAP:
         
         if doFullCapture:
             if isMobile:
+                print("[*] capturing whole traffic of target app")
                 self.android_Instance = android.Android(self.print_debug_infos)
             self.full_capture_thread = self.get_instance_of_FullCaptureThread()
             self.full_capture_thread.start()
         else:
+            print("[*] capturing only plaintext data")
             self.pcap_file = self.__create_plaintext_pcap()
             
     
@@ -85,7 +87,7 @@ class PCAP:
                     type=ETH_P_ALL
                 )
                 
-                print("[*] doing full capture")
+                print("[*] doing full local capture")
                 
                 sniff(
                     opened_socket=self.socket,

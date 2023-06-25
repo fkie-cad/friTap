@@ -10,6 +10,7 @@ import pprint
 import os
 import socket
 import sys
+import traceback
 import tempfile
 import json
 import friTap.pcap as pcap
@@ -19,6 +20,7 @@ from friTap.__init__ import debug
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, LoggingEventHandler
 import logging
+import click
 
 try:
     import hexdump  # pylint: disable=g-import-not-at-top
@@ -32,8 +34,10 @@ keydump_Set = {*()}
 traced_Socket_Set = {*()}
 traced_scapy_socket_Set = {*()}
 filename = ""
+keylog_file = ""
 tmpdir = ""
 pcap_obj = None
+script = None
 frida_agent_script = "_ssl_log.js"
 
 # Names of all supported read functions:
@@ -44,7 +48,14 @@ SSL_WRITE = ["SSL_write", "wolfSSL_write", "writeApplicationData", "NSS_write","
 # here - where we are.
 here = os.path.abspath(os.path.dirname(__file__))
 
-
+# usually not needed - but sometimes the replacements of the script result into minor issues
+# than we have to look into generated final frida script we supply
+def write_debug_frida_file(debug_script_version):
+    debug_script_file = "_ssl_log_debug.js"
+    f = open(debug_script_file, 'wt', encoding='utf-8')
+    f.write(debug_script_version)
+    f.close()
+    print(f"[!] written debug version of the frida script: {debug_script_file}")
 
 def cleanup(live=False, socket_trace=False, full_capture=False, debug_output=False):
     global pcap_obj
@@ -61,12 +72,31 @@ def cleanup(live=False, socket_trace=False, full_capture=False, debug_output=Fal
     if full_capture and len(traced_scapy_socket_Set) > 0:
         if debug_output:
             print("[*] traced sockets: "+str(traced_scapy_socket_Set))
+
         pcap_obj.create_application_traffic_pcap(traced_scapy_socket_Set)
         
     print("\n\nThx for using friTap\nHave a nice day\n")
     os._exit(0)
     
-    
+
+def pcap_cleanup(is_full_capture, is_mobile, pcap_name):
+    if is_full_capture and pcap_obj is not None:
+            capture_type = "local"
+            pcap_obj.full_capture_thread.join(2.0)
+            if pcap_obj.full_capture_thread.is_alive() and is_mobile == False:
+                pcap_obj.full_capture_thread.socket.close()
+            if pcap_obj.full_capture_thread.mobile_pid != -1:
+                capture_type = "mobile"
+                pcap_obj.full_capture_thread.mobile_pid.terminate()
+                pcap_obj.android_Instance.send_ctrlC_over_adb()
+                pcap_obj.android_Instance.pull_pcap_from_device()
+            print(f"[*] full {capture_type} capture safed to _{pcap_name}")
+            if keylog_file is None:
+                print(f"[*] remember that the full capture won't contain any decrypted TLS traffic.")
+            else:
+                print(f"[*] remember that the full capture won't contain any decrypted TLS traffic. In order to decrypt it use the logged keys from {keylog_file.name}")
+
+  
 def get_addr_string(socket_addr,ss_family):
     if ss_family == "AF_INET":
         return  socket.inet_ntop(socket.AF_INET, struct.pack(">I", socket_addr))
@@ -75,7 +105,11 @@ def get_addr_string(socket_addr,ss_family):
         return socket.inet_ntop(socket.AF_INET6, struct.pack(">16s", raw_addr))
     
 
-        
+def get_fritap_frida_script(frida_agent_script):
+    with open(os.path.join(here, frida_agent_script), encoding='utf8', newline='\n') as f:
+            script_string = f.read()
+            return script_string
+            
 
 def write_socket_trace(socket_trace_name):
     with open(socket_trace_name, 'a') as trace_file:
@@ -94,20 +128,24 @@ def temp_fifo():
         print(f'Failed to create FIFO: {e}')
 
 
-def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, mobile=False, live=False, environment_file=None, debug_mode=False,full_capture=False, socket_trace=False, host=False, offsets=None, debug_output=False, experimental=False, anti_root=False):
+def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, mobile=False, live=False, environment_file=None, debug_mode=False,full_capture=False, socket_trace=False, host=False, offsets=None, debug_output=False, experimental=False, anti_root=False, payload_modification=False):
     global debug
     debug = debug_mode
     
     def on_detach(reason):
-        if reason == "application-requested":
-            return
-        print(f"\n[*] Target process stopped: {reason}\n")
+        if reason != "application-requested":
+            print(f"\n[*] Target process stopped: {reason}\n")
+            
+        print("can you see me vanishing..........................................")  
+        
+        pcap_cleanup(full_capture,mobile,pcap_name)
         cleanup(live,socket_trace,full_capture,debug)
         
     
 
     def on_message(message, data):
         global pcap_obj
+        global script
         """Callback for errors and messages sent from Frida-injected JavaScript.
         Logs captured packet data received from JavaScript to the console and/or a
         pcap file. See https://www.frida.re/docs/messages/ for more detail on
@@ -117,10 +155,18 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
             dependent on message type.
         data: The string of captured decrypted data.
         """
+        
+        if message['payload'] == 'anti':
+            script.post({'type':'antiroot', 'payload': anti_root})
+            
+        if message['payload'] == 'experimental':
+            script.post({'type':'experimental', 'payload': experimental})
+        
         if message["type"] == "error":
             pprint.pprint(message)
             os.kill(os.getpid(), signal.SIGTERM)
             return
+        
         p = message["payload"]
         if not "contentType" in p:
             return
@@ -198,6 +244,7 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
         device.resume(spawn.pid)
 
     def instrument(process):
+        global script
         runtime="qjs"
         debug_port = 1337
         if debug:
@@ -207,60 +254,65 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
             print(f"[!] Chrome Inspector server listening on port {debug_port}")
             print("[!] Open Chrome with chrome://inspect for debugging\n")
             runtime="v8"
-        print(os.path.join(here, frida_agent_script))
-        with open(os.path.join(here, frida_agent_script), encoding='utf8', newline='\n') as f:
-            script_string = f.read()
+        
+        script_string = get_fritap_frida_script(frida_agent_script)
+        
 
-            if offsets_data is not None:
-                print(offsets_data)
-                script_string = script_string.replace('"{OFFSETS}"', offsets_data)
-                script_string = script_string.replace('"{EXPERIMENTAL}"', "true" if (experimental) else "false")
-            elif anti_root:
-                script_string = script_string.replace('"{ANTIROOT}"', "true" if (anti_root) else "false")
+        if offsets_data is not None:
+            print(f"[*] applying hooks at offset {offsets_data}")
+            script_string = script_string.replace('"{OFFSETS}"', offsets_data)
+            # might lead to a malformed packge in recent frida versions
+                    
 
-            script = process.create_script(script_string, runtime=runtime)
+        script = process.create_script(script_string, runtime=runtime)
 
         if debug and frida.__version__ >= "16":
             script.enable_debugger(debug_port)
         script.on("message", on_message)
         script.load()
+        
+        
 
         
         #script.post({'type':'readmod', 'payload': '0x440x410x53'})
+        if payload_modification:
+            class ModWatcher(FileSystemEventHandler):
+                def __init__(self, process):
+                    
+                    self.process = process
 
-        class ModWatcher(FileSystemEventHandler):
-            def __init__(self, process):
-                print("INITIALIZED")
-                self.process = process
+                def on_any_event(self, event):
+                    try:
+                        if(event.event_type == "modified" and ("readmod" in event.src_path)):
+                            with open("./readmod.bin", "rb") as f:
+                                buffer = f.read()
+                                script.post({'type':'readmod', 'payload': buffer.hex()})
+                        elif(event.event_type == "modified" and ("writemod" in event.src_path)):
+                            with open("./writemod.bin", "rb") as f:
+                                buffer = f.read()
+                                script.post({'type':'writemod', 'payload': buffer.hex()})
+                    except RuntimeError as e:
+                        print(e)
+                
+                
 
-            def on_any_event(self, event):
-                try:
-                    if(event.event_type == "modified" and ("readmod" in event.src_path)):
-                        with open("./readmod.bin", "rb") as f:
-                            buffer = f.read()
-                            script.post({'type':'readmod', 'payload': buffer.hex()})
-                    elif(event.event_type == "modified" and ("writemod" in event.src_path)):
-                        with open("./writemod.bin", "rb") as f:
-                            buffer = f.read()
-                            script.post({'type':'writemod', 'payload': buffer.hex()})
-                except RuntimeError as e:
-                    print(e)
+            print("Init watcher")
+            event_handler = ModWatcher(process)
             
-            
-
-        print("Init watcher")
-        event_handler = ModWatcher(process)
-        
-        observer = Observer()
-        print(os.getcwd())
-        observer.schedule(event_handler, os.getcwd())
-        observer.start()
+            observer = Observer()
+            observer.schedule(event_handler, os.getcwd())
+            observer.start()
 
     # Main code
     global pcap_obj
     global offsets_data
     global frida_agent_script
+    global keylog_file
     
+    #frida_agent_script = "_ssl_log_legacy.js"
+    # derzeit klappt aus irgend einen Grund das kompilieren nicht mehr so richtig bzw. das Interpretieren von 
+    # malformed == komische symbole/emojies im code
+
     if frida.__version__ < "16":
         frida_agent_script = "_ssl_log_legacy.js"
 
@@ -327,9 +379,6 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
 
     if keylog:
         keylog_file = open(keylog, "w")
-
-    print("Press Ctrl+C to stop logging.")
-
     
 
     instrument(process)
@@ -374,6 +423,7 @@ def main():
         add_help=False,
         description="Decrypts and logs an executables or mobile applications SSL/TLS traffic.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False,
         epilog=r"""
 Examples:
   %(prog)s -m -p ssl.pcap com.example.app
@@ -419,42 +469,60 @@ Examples:
                       help="executable/app whose SSL calls to log")
     args.add_argument("--offsets", required=False, metavar="<offsets.json>",
                       help="Provide custom offsets for all hooked functions inside a JSON file or a json string containing all offsets. For more details see our example json (offsets_example.json)")
+    args.add_argument("--payload_modification", required=False, action="store_const", const=True, default=False,
+                      help="Capability to alter the decrypted payload. Be careful here, because this can crash the application.")                  
     args.add_argument("-exp","--experimental", required=False, action="store_const", const=True, default=False,
                       help="Activates all existing experimental feature (see documentation for more information)")
     parsed = parser.parse_args()
+
     
     if parsed.full_capture and parsed.pcap is None:
         parser.error("--full_capture requires -p to set the pcap name")
         exit(2)
 
+    if parsed.full_capture and parsed.keylog is None:
+        print("[*] Are you sure you want to proceed without recording the key material (-k <keys.log>)?\n[*] Without the key material, you have a complete network record, but no way to view the contents of the TLS traffic.")
+        print("[*] Do you want to proceed without recording keys? : <press any key to proceed or Strg+C to abort>")
+        input()
+
+
    
     
     try:
-        
-
         print("Start logging")
+        print("Press Ctrl+C to stop logging")
         ssl_log(parsed.exec, parsed.pcap, parsed.verbose,
-                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.mobile, parsed.live, parsed.environment, parsed.debug, parsed.full_capture, parsed.socket_tracing, parsed.host, parsed.offsets, parsed.debugoutput,parsed.experimental, parsed.anti_root)
+                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.mobile, parsed.live, parsed.environment, parsed.debug, parsed.full_capture, parsed.socket_tracing, parsed.host, parsed.offsets, parsed.debugoutput,parsed.experimental, parsed.anti_root, parsed.payload_modification)
 
        
     except Exception as ar:
         print("[-] Unknown error:")
-        print(ar)
+        
+        # Get current system exception
+        ex_type, ex_value, ex_traceback = sys.exc_info()
+        
+        # Extract unformatter stack traces as tuples
+        trace_back = traceback.extract_tb(ex_traceback)
+        
+        # Format stacktrace
+        stack_trace = list()
+        
+        for trace in trace_back:
+            stack_trace.append("File : %s , Line : %d, Func.Name : %s, Message : %s" % (trace[0], trace[1], trace[2], trace[3]))
+            
+        print("Exception type : %s " % ex_type.__name__)
+        print("Exception message : %s" %ex_value)
+        print("Stack trace : %s" %stack_trace)
+
+
+        if "unable to connect to remote frida-server: closed" in str(ar):
+            print("\n[-] frida-server is not running in remote device. Please run frida-server and rerun")
+            sys.exit(2)
+        if "\nunable to find process with name" in str(ar):
+            sys.exit(2)
 
     finally:
-        if parsed.full_capture:
-            capture_type = "local"
-            pcap_obj.full_capture_thread.join(2.0)
-            if pcap_obj.full_capture_thread.is_alive() and parsed.mobile == False:
-                pcap_obj.full_capture_thread.socket.close()
-            if pcap_obj.full_capture_thread.mobile_pid != -1:
-                capture_type = "mobile"
-                pcap_obj.full_capture_thread.mobile_pid.terminate()
-                pcap_obj.android_Instance.send_ctrlC_over_adb()
-                pcap_obj.android_Instance.pull_pcap_from_device()
-            print(f"[*] full {capture_type} capture safed to _{parsed.pcap}")
-                
-    
+        pcap_cleanup(parsed.full_capture,parsed.mobile,parsed.pcap)
         cleanup(parsed.live,parsed.socket_tracing,parsed.full_capture,parsed.debug)
         
 

@@ -11,12 +11,15 @@ function findProviderInstallerFromClassloaders(currentClassLoader: Java.Wrapper,
             providerInstallerImpl = classFactory.use("com.google.android.gms.common.security.ProviderInstallerImpl")
             break
         } catch (error) {
+            console.log(error);
             // On error we return null
         }
 
     }
 
     var version = getAndroidVersion()
+    log("is here the error")
+    log(typeof version)
     
     if (version <= 12){
         //Revert the implementation to avoid an infinitloop of "Loadclass"

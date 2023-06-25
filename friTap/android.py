@@ -54,6 +54,10 @@ class Android:
         return frida_usb_json_data['arch']
     
     
+    def _adb_make_binary_executable(self, path):
+        output = self.run_adb_command_as_root("chmod +x "+path+self.tcpdump_version)
+    
+    
     def _get_appropriate_android_tcpdump_version(self,passed_arch):
         arch = ""
         if len(passed_arch)  > 2:
@@ -91,11 +95,14 @@ class Android:
         self.close_friTap_if_none_android()
         tcpdump_path = self._get_tcpdump_version()
         return_Value = self._adb_push_file(tcpdump_path,self.dst_path)
+        
+
         if return_Value.returncode != 0:
             print("[-] error: " +  return_Value.stderr)
             print("    it might help to adjust the dst_path or to ensure that you have adb in your path\n")
             os._exit(2)
         else:
+            self._adb_make_binary_executable(self.dst_path)
             print(f"[*] pushed tcpdump to {self.dst_path} on your android device")
             
     def pull_pcap_from_device(self):

@@ -83,9 +83,26 @@ interface IOffsets {
 //@ts-ignore
 export let offsets: IOffsets = "{OFFSETS}";
 //@ts-ignore
-export let experimental: boolean = "{EXPERIMENTAL}"
+export let experimental: boolean = false;
 //@ts-ignore
-export let anti_root: boolean = "{ANTIROOT}"
+export let anti_root: boolean = false;
+
+
+/*
+This way we are providing boolean values from the commandline directly to our frida script
+*/
+
+send("experimental")
+const exp_recv_state = recv('experimental', value => {
+    experimental = value.payload;
+});
+exp_recv_state.wait();
+
+send("anti")
+const antiroot_recv_state = recv('antiroot', value => {
+    anti_root = value.payload;
+});
+antiroot_recv_state.wait();/* */
 
 
 /*
