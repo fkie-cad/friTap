@@ -38,6 +38,7 @@ keylog_file = ""
 tmpdir = ""
 pcap_obj = None
 script = None
+startup = True
 frida_agent_script = "_ssl_log.js"
 
 # Names of all supported read functions:
@@ -57,7 +58,7 @@ def write_debug_frida_file(debug_script_version):
     f.close()
     print(f"[!] written debug version of the frida script: {debug_script_file}")
 
-def cleanup(live=False, socket_trace=False, full_capture=False, debug_output=False):
+def cleanup(live=False, socket_trace=False, full_capture=False, debug_output=False, debug=False):
     global pcap_obj
     if live:
         os.unlink(filename)  # Remove file
@@ -70,10 +71,12 @@ def cleanup(live=False, socket_trace=False, full_capture=False, debug_output=Fal
         print(pcap.PCAP.get_filter_from_traced_sockets(traced_Socket_Set))
     
     if full_capture and len(traced_scapy_socket_Set) > 0:
-        if debug_output:
+        if debug_output or debug:
             print("[*] traced sockets: "+str(traced_scapy_socket_Set))
 
         pcap_obj.create_application_traffic_pcap(traced_scapy_socket_Set)
+    elif full_capture and len(traced_scapy_socket_Set) < 1:
+        print(f"[-] friTap was unable to indentify the used sockets.\n[-] The resulting PCAP will contain all trafic from the device.")
         
     print("\n\nThx for using friTap\nHave a nice day\n")
     os._exit(0)
@@ -135,9 +138,7 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
     def on_detach(reason):
         if reason != "application-requested":
             print(f"\n[*] Target process stopped: {reason}\n")
-            
-        print("can you see me vanishing..........................................")  
-        
+                    
         pcap_cleanup(full_capture,mobile,pcap_name)
         cleanup(live,socket_trace,full_capture,debug)
         
@@ -146,6 +147,7 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
     def on_message(message, data):
         global pcap_obj
         global script
+        global startup
         """Callback for errors and messages sent from Frida-injected JavaScript.
         Logs captured packet data received from JavaScript to the console and/or a
         pcap file. See https://www.frida.re/docs/messages/ for more detail on
@@ -155,12 +157,15 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
             dependent on message type.
         data: The string of captured decrypted data.
         """
-        
-        if message['payload'] == 'anti':
-            script.post({'type':'antiroot', 'payload': anti_root})
             
-        if message['payload'] == 'experimental':
+        if startup and message['payload'] == 'experimental':
             script.post({'type':'experimental', 'payload': experimental})
+        
+        if startup and message['payload'] == 'anti':
+            script.post({'type':'antiroot', 'payload': anti_root})
+            startup = False
+            
+        
         
         if message["type"] == "error":
             pprint.pprint(message)
@@ -220,8 +225,9 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
                 keydump_Set.add(p["keylog"])
         
         if socket_trace or full_capture:
-            if not data or len(data) == 0:
+            if "src_addr" not in p:
                 return
+            
             src_addr = get_addr_string(p["src_addr"], p["ss_family"])
             dst_addr = get_addr_string(p["dst_addr"], p["ss_family"])
             if socket_trace:
@@ -496,8 +502,6 @@ Examples:
 
        
     except Exception as ar:
-        print("[-] Unknown error:")
-        
         # Get current system exception
         ex_type, ex_value, ex_traceback = sys.exc_info()
         
@@ -509,17 +513,20 @@ Examples:
         
         for trace in trace_back:
             stack_trace.append("File : %s , Line : %d, Func.Name : %s, Message : %s" % (trace[0], trace[1], trace[2], trace[3]))
-            
-        print("Exception type : %s " % ex_type.__name__)
-        print("Exception message : %s" %ex_value)
-        print("Stack trace : %s" %stack_trace)
+        
+        if parsed.debug or parsed.debugoutput:
+            print("Exception type : %s " % ex_type.__name__)
+            print("Exception message : %s" %ex_value)
+            print("Stack trace : %s" %stack_trace)
 
 
         if "unable to connect to remote frida-server: closed" in str(ar):
             print("\n[-] frida-server is not running in remote device. Please run frida-server and rerun")
-            sys.exit(2)
-        if "\nunable to find process with name" in str(ar):
-            sys.exit(2)
+            
+        print(f"\n[-] Unknown error: {ex_value}")
+        
+        cleanup(parsed.live,parsed.socket_tracing,parsed.full_capture,parsed.debug,parsed.debugoutput)    
+        os._exit(2)
 
     finally:
         pcap_cleanup(parsed.full_capture,parsed.mobile,parsed.pcap)

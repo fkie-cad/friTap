@@ -300,6 +300,9 @@ class PCAP:
         print(f"[*] finished and written to {self.pcap_file_name}")
     
     
+    def get_pcap_name(self):
+        return self.pcap_file_name
+    
     
     @staticmethod
     def get_display_filter(src_addr,dst_addr):
