@@ -77,11 +77,12 @@ More examples on using friTap can be found in the [USAGE.md](./USAGE.md). A deta
 ## Dependencies
 
 - [frida](https://frida.re)
-- `>= python3.6`
+- `>= python3.7`
 - click (`python3 -m pip install click`)
 - hexdump (`python3 -m pip install hexdump`)
 - scapy (`python3 -m pip install scapy`)
 - watchdog (`python3 -m pip install watchdog`)
+- importlib.resources  (`python3 -m pip install importlib-resources`)
 
 ## Planned features
 
