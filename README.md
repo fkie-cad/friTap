@@ -58,7 +58,7 @@ More examples on using friTap can be found in the [USAGE.md](./USAGE.md). A deta
 |---------------------------|---------------|---------------|----------|----------|--------------|
 | OpenSSL                   |     Full      | R/W-Hook only |  TBI     |   Full   | TBI          |
 | BoringSSL                 |     Full      | R/W-Hook only |  KeyEo   |   Full   | KeyEo        |
-| NSS                       | R/W-Hook only | R/W-Hook only |  TBI     |   TBA    | TBI          |
+| NSS                       |     Full      | R/W-Hook only |  TBI     |   TBA    | TBI          |
 | GnuTLS                    | R/W-Hook only | R/W-Hook only |  TBI     |   Full   | TBI          |
 | WolfSSL                   | R/W-Hook only | R/W-Hook only |  TBI     |   Full   | TBI          |
 | MbedTLS                   | R/W-Hook only | R/W-Hook only |  TBI     |   Full   | TBI          |
