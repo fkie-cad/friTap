@@ -82,7 +82,7 @@ class Android:
 
 
     def _get_tcpdump_version(self):
-        tcpdump_path = files('assets.tcpdump_binaries').joinpath(self.tcpdump_version)
+        tcpdump_path = files('friTap.assets.tcpdump_binaries').joinpath(self.tcpdump_version)
 
         if file_exists(tcpdump_path):
             return tcpdump_path
