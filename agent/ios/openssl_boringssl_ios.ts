@@ -14,9 +14,15 @@ export class OpenSSL_BoringSSL_iOS extends OpenSSL_BoringSSL {
             if(foundationNumber == undefined){
                 devlog("Installing callback for iOS < 14");
                 CALLBACK_OFFSET = 0x2A8;
-            }else if (foundationNumber >= 1751.108) {
+            } else if (foundationNumber >= 1751.108 && foundationNumber < 1946.102) {
                 devlog("Installing callback for iOS >= 14");
                 CALLBACK_OFFSET = 0x2B8; // >= iOS 14.x 
+            } else if (foundationNumber >= 1946.102 && foundationNumber <= 1979.1) {
+                devlog("Installing callback for iOS >= 16");
+                CALLBACK_OFFSET = 0x300; // >= iOS 16.x 
+            } else if (foundationNumber > 1979.1) {
+                devlog("Installing callback for iOS >= 17");
+                CALLBACK_OFFSET = 0x308; // >= iOS 17.x 
             }
             Interceptor.attach(this.addresses["SSL_CTX_set_info_callback"], {
               onEnter: function (args : any) {
