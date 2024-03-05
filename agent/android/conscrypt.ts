@@ -11,6 +11,7 @@ function findProviderInstallerFromClassloaders(currentClassLoader: Java.Wrapper,
             providerInstallerImpl = classFactory.use("com.google.android.gms.common.security.ProviderInstallerImpl")
             break
         } catch (error) {
+            log("Error in hooking ProviderInstallerImpl")
             console.log(error);
             // On error we return null
         }
@@ -18,8 +19,8 @@ function findProviderInstallerFromClassloaders(currentClassLoader: Java.Wrapper,
     }
 
     var version = getAndroidVersion()
-    log("is here the error")
-    log(typeof version)
+    //log("is here the error")
+    //log(typeof version)
     
     if (version <= 12){
         //Revert the implementation to avoid an infinitloop of "Loadclass"
@@ -66,6 +67,8 @@ export function execute() {
                 callback.onProviderInstalled()
             }
         } catch (error) {
+            log("Some error in hooking the Providerinstaller")
+            console.log(error);
             // As it is not available, do nothing
         }
     })

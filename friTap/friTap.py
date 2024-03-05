@@ -248,6 +248,7 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
             f"[*] Process spawned with pid {spawn.pid}. Name: {spawn.identifier}")
         instrument(device.attach(spawn.pid))
         device.resume(spawn.pid)
+        
 
     def instrument(process):
         global script
@@ -351,7 +352,7 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
     if spawn:
         print("spawning "+ app)
         
-        if full_capture and pcap_name:
+        if pcap_name:
             pcap_obj =  pcap.PCAP(pcap_name,SSL_READ,SSL_WRITE,full_capture, mobile,debug_mode)
             
         if mobile or host:
@@ -366,6 +367,8 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
             time.sleep(1) # without it Java.perform silently fails
         process = device.attach(pid)
     else:
+        if pcap_name:
+            pcap_obj =  pcap.PCAP(pcap_name,SSL_READ,SSL_WRITE,full_capture, mobile,debug_mode)
         process = device.attach(int(app) if app.isnumeric() else app)
 
     if live:
@@ -378,9 +381,6 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
             f'[*] Now open this named pipe with Wireshark in another terminal: sudo wireshark -k -i {fifo_file}')
         print(f'[*] friTap will continue after the named pipe is ready....\n')
         pcap_obj =  pcap.PCAP(fifo_file,SSL_READ,SSL_WRITE,full_capture, mobile,debug_mode)
-
-    elif pcap_name:
-        pcap_obj =  pcap.PCAP(pcap_name,SSL_READ,SSL_WRITE,full_capture, mobile,debug_mode)
         
 
     if keylog:

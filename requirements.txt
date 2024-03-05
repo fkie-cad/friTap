@@ -4,3 +4,4 @@ hexdump
 scapy
 watchdog
 click
+importlib-resources
