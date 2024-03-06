@@ -8,17 +8,19 @@ import fileinput
 import sys
 import shutil
 
-__version__ = "1.0.0"
+__version__ = "1.1.0.6"
 agent_folder_path = "../agent"
 
 def create_backup_dir():
 	shutil.copytree(agent_folder_path, 'agent_backup', dirs_exist_ok=True)
 
 def undo_replacements():
+	print("[*] doing undo replacements")
 	shutil.rmtree(agent_folder_path)
 	shutil.copytree('agent_backup', agent_folder_path, dirs_exist_ok=True)
 	shutil.rmtree("agent_backup")
-	shutil.rmtree("node_modules")
+	if os.path.exists("node_modules"):
+		shutil.rmtree("node_modules")
 	
 
 def replace_file_inplace(ts_file,search_expression,replace_expression):
@@ -47,18 +49,28 @@ def replace_pattern_on_files(agent_folder, search_expression, replace_expression
 
 
 def invoke_frida_compile():
+	print("[*] running frida-compile for legacy script")
 	output = subprocess.run(['npm', 'install','.'], capture_output=True, text=True)
+	
+	#command = ["frida-compile", "../agent/ssl_log.ts", "-o", "../friTap/_ssl_log_legacy.js"]
+	#output = subprocess.run(command, capture_output=True, text=True)
+
+	if output.returncode == 0:
+		print(output.stdout)
+	else:
+		print(output.stderr)
 
 
 def create_legacy_agent_code(agent_folder,verbose):
-	create_backup_dir()
-	remove_js_extension(agent_folder_path,verbose)
-	invoke_frida_compile()
-	undo_replacements()
-	#add_js_extension(agent_folder_path,verbose)
+	#create_backup_dir()
+	#remove_js_extension(agent_folder_path,verbose)
+	#invoke_frida_compile()
+	#undo_replacements()
+	add_js_extension(agent_folder_path,verbose)
 
 
 def add_js_extension(agent_folder, verbose):
+	print("[*] add .js to the TypeScript import statements")
 	replace_pattern_on_files(agent_folder,"\";",".js\";",verbose,False)
 
 class ArgParser(argparse.ArgumentParser):

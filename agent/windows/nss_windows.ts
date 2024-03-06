@@ -1,5 +1,5 @@
 
-import {NSS } from "../ssl_lib/nss.js"
+import {NSS } from "../ssl_lib/nss.js";
 import { socket_library } from "./windows_agent.js";
 
 export class NSS_Windows extends NSS {

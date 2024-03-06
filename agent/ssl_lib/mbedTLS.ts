@@ -1,6 +1,6 @@
-import { readAddresses, getPortsAndAddresses, getBaseAddress} from "../shared/shared_functions.js"
-import { offsets } from "../ssl_log.js";
-import { log } from "../util/log.js"
+import { readAddresses, getPortsAndAddresses, getBaseAddress} from "../shared/shared_functions.js";
+import { offsets, enable_default_fd } from "../ssl_log.js";
+import { log } from "../util/log.js";
 
 /**
  * 
@@ -195,7 +195,7 @@ export class mbed_TLS {
                 this.len = args[2];
                 this.sslContext = args[0];
 
-                var message = getPortsAndAddresses(mbed_TLS.getSocketDescriptor(args[0]) as number, true, lib_addesses)
+                var message = getPortsAndAddresses(mbed_TLS.getSocketDescriptor(args[0]) as number, true, lib_addesses, enable_default_fd)
                 message["ssl_session_id"] = mbed_TLS.getSessionId(args[0])
                 message["function"] = "mbedtls_ssl_read"
                 this.message = message
@@ -231,7 +231,7 @@ export class mbed_TLS {
                     return
                 }
                 var data = buffer.readByteArray(len);
-                var message = getPortsAndAddresses(mbed_TLS.getSocketDescriptor(args[0]) as number, false, lib_addesses)
+                var message = getPortsAndAddresses(mbed_TLS.getSocketDescriptor(args[0]) as number, false, lib_addesses, enable_default_fd)
                 message["ssl_session_id"] = mbed_TLS.getSessionId(args[0])
                 message["function"] = "mbedtls_ssl_write"
                 message["contentType"] = "datalog"

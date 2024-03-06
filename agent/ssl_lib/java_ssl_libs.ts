@@ -1,5 +1,5 @@
-import { log } from "../util/log.js"
-import { execute as conscrypt_execute } from "../android/conscrypt.js"
+import { log, devlog } from "../util/log.js";
+import { execute as conscrypt_execute } from "../android/conscrypt.js";
 import { isAndroid } from "../util/process_infos.js";
 
 
@@ -35,13 +35,24 @@ export class SSL_Java {
                         Security.removeProvider("Conscrypt")
                         log("Removed Conscrypt")
                     }
-                    //Uncomment this line to show all remaining providers
-                    log("Remaining: " + Security.getProviders().toString())
+
+                     //Same thing for WolfSSLProvider provider which has been manually inserted (not by providerinstaller)
+                     if (Security.getProviders().toString().includes("WolfSSLProvider")) {
+                        log("WolfSSLProvider detected")
+                        Security.removeProvider("WolfSSLProvider")
+                        log("Removed WolfSSLProvider")
+                    }
+
+
+
+                    // run with -do in order to see which other securiy providers we should remove
+                    devlog("Remaining: " + Security.getProviders().toString())
+                    // TBD: AndroidOpenSSL version 1.0 or BC version 1.61? 
 
 
                     //Hook insertProviderAt/addprovider for dynamic provider blocking
                     Security.insertProviderAt.implementation = function (provider: any, position: number) {
-                        if (provider.getName().includes("Conscrypt") || provider.getName().includes("Ssl_Guard") || provider.getName().includes("GmsCore_OpenSSL")) {
+                        if (provider.getName().includes("Conscrypt") || provider.getName().includes("Ssl_Guard") || provider.getName().includes("GmsCore_OpenSSL")|| provider.getName().includes("WolfSSLProvider")) {
                             log("Blocking provider registration (insertProviderAt) of  " + provider.getName())
                             return position
                         } else {
@@ -50,7 +61,7 @@ export class SSL_Java {
                     }
                     //Same for addProvider
                     Security.insertProviderAt.implementation = function (provider: any) {
-                        if (provider.getName().includes("Conscrypt") || provider.getName().includes("Ssl_Guard") || provider.getName().includes("GmsCore_OpenSSL")) {
+                        if (provider.getName().includes("Conscrypt") || provider.getName().includes("Ssl_Guard") || provider.getName().includes("GmsCore_OpenSSL") || provider.getName().includes("WolfSSLProvider")) {
                             log("Blocking provider registration (addProvider) of " + provider.getName())
                             return 1
                         } else {

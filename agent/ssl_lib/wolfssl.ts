@@ -1,6 +1,6 @@
-import { readAddresses, getPortsAndAddresses, toHexString, getBaseAddress } from "../shared/shared_functions.js"
-import { log } from "../util/log.js"
-import { offsets } from "../ssl_log.js";
+import { readAddresses, getPortsAndAddresses, toHexString, getBaseAddress } from "../shared/shared_functions.js";
+import { log } from "../util/log.js";
+import { offsets, enable_default_fd } from "../ssl_log.js";
 
 export class WolfSSL {
 
@@ -73,6 +73,10 @@ export class WolfSSL {
      static getSslSessionId(ssl: NativePointer) {
         var session = WolfSSL.wolfSSL_get_session(ssl) as NativePointer
         if (session.isNull()) {
+            if(enable_default_fd){
+                log("using dummy SessionID: 59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76338")
+                return "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76338"
+            }
             log("Session is null")
             return 0
         }
@@ -96,7 +100,7 @@ export class WolfSSL {
         {
             onEnter: function (args: any) {
                 
-                var message = getPortsAndAddresses(WolfSSL.wolfSSL_get_fd(args[0]) as number, true, lib_addesses)
+                var message = getPortsAndAddresses(WolfSSL.wolfSSL_get_fd(args[0]) as number, true, lib_addesses, enable_default_fd)
                 
                 message["function"] = "wolfSSL_read"
                 message["ssl_session_id"] = WolfSSL.getSslSessionId(args[0])
@@ -121,7 +125,7 @@ export class WolfSSL {
         Interceptor.attach(this.addresses["wolfSSL_write"],
         {
             onEnter: function (args: any) {
-                var message = getPortsAndAddresses(WolfSSL.wolfSSL_get_fd(args[0]) as number, false, lib_addesses)
+                var message = getPortsAndAddresses(WolfSSL.wolfSSL_get_fd(args[0]) as number, false, lib_addesses, enable_default_fd)
                 message["ssl_session_id"] = WolfSSL.getSslSessionId(args[0])
                 message["function"] = "wolfSSL_write"
                 message["contentType"] = "datalog"

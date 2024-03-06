@@ -23,6 +23,7 @@ class Android:
         self.device = None
         self.pcap_name = ""
         self.print_debug_infos = debug_infos
+        self.is_magisk_mode = False
         self.do_we_have_an_android_device = False
         if self._is_Android():
             self.tcpdump_version = self._get_appropriate_android_tcpdump_version(arch)
@@ -32,13 +33,22 @@ class Android:
 
     
     def adb_check_root(self):
-        return bool(subprocess.run(['adb', 'shell','su -v'], capture_output=True, text=True).stdout)
+        if bool(subprocess.run(['adb', 'shell','su -v'], capture_output=True, text=True).stdout):
+            self.is_magisk_mode = True
+            return True
+
+        return bool(subprocess.run(['adb', 'shell','su 0 id -u'], capture_output=True, text=True).stdout)
     
     def run_adb_command_as_root(self,command):
         if self.adb_check_root() == False:
-            print("[-] none rooted device. Please root it before using friTap and ensure that you are able to run commands with the su-binary....")
+            print("[-] none rooted device. Please root it before using FridaAndroidManager and ensure that you are able to run commands with the su-binary....")
             exit(2)
-        output = subprocess.run(['adb', 'shell','su -c '+command], capture_output=True, text=True)
+
+        if self.is_magisk_mode:
+            output = subprocess.run(['adb', 'shell','su -c '+command], capture_output=True, text=True)
+        else:
+            output = subprocess.run(['adb', 'shell','su 0 '+command], capture_output=True, text=True)
+            
         return output
 
     def _adb_push_file(self,file,dst):

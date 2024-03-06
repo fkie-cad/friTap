@@ -1,7 +1,7 @@
-import { module_library_mapping } from "../shared/shared_structures.js"
-import { log, devlog } from "../util/log.js"
-import { getModuleNames, ssl_library_loader } from "../shared/shared_functions.js"
-import { boring_execute } from "./openssl_boringssl_ios.js"
+import { module_library_mapping } from "../shared/shared_structures.js";
+import { log, devlog } from "../util/log.js";
+import { getModuleNames, ssl_library_loader } from "../shared/shared_functions.js";
+import { boring_execute } from "./openssl_boringssl_ios.js";
 
 
 var plattform_name = "darwin";

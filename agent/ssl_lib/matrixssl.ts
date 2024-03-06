@@ -1,6 +1,6 @@
-import { readAddresses, getPortsAndAddresses, getBaseAddress} from "../shared/shared_functions.js"
-import { offsets } from "../ssl_log.js";
-import { log } from "../util/log.js"
+import { readAddresses, getPortsAndAddresses, getBaseAddress} from "../shared/shared_functions.js";
+import { enable_default_fd, offsets } from "../ssl_log.js";
+import { log } from "../util/log.js";
 
 
 export class matrix_SSL {
@@ -73,7 +73,7 @@ export class matrix_SSL {
                 this.len = args[3];
                 
 
-                var message = getPortsAndAddresses(this.fd as number, true, lib_addesses)
+                var message = getPortsAndAddresses(this.fd as number, true, lib_addesses, enable_default_fd)
                 message["ssl_session_id"] = this.addresses["matrixSslGetSid"] === undefined ? matrix_SSL.sessionId : this.getSessionId(args[0]);
                 message["function"] = "matrixSslReceivedData"
                 this.message = message
@@ -121,7 +121,7 @@ export class matrix_SSL {
 
             onEnter: function (args) {
                 var data = this.outBuffer.readByteArray(this.outBufferLength);
-                var message = getPortsAndAddresses(this.fd, false, lib_addesses)
+                var message = getPortsAndAddresses(this.fd, false, lib_addesses, enable_default_fd)
                 message["ssl_session_id"] = this.addresses["matrixSslGetSid"] === undefined ? matrix_SSL.sessionId : this.getSessionId(args[0]);
                 message["function"] = "matrixSslEncodeWritebuf"
                 message["contentType"] = "datalog"

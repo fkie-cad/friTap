@@ -1,5 +1,5 @@
 
-import {GnuTLS } from "../ssl_lib/gnutls.js"
+import {GnuTLS } from "../ssl_lib/gnutls.js";
 import { socket_library } from "./linux_agent.js";
 
 export class GnuTLS_Linux extends GnuTLS {

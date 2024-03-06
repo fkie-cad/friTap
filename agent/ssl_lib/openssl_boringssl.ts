@@ -1,7 +1,7 @@
-import { readAddresses, getPortsAndAddresses, getBaseAddress } from "../shared/shared_functions.js"
-import { pointerSize } from "../shared/shared_structures.js"
-import { getOffsets, offsets } from "../ssl_log.js"
-import { devlog, log } from "../util/log.js"
+import { readAddresses, getPortsAndAddresses, getBaseAddress } from "../shared/shared_functions.js";
+import { pointerSize } from "../shared/shared_structures.js";
+import { getOffsets, offsets,enable_default_fd } from "../ssl_log.js";
+import { devlog, log } from "../util/log.js";
 
 
 class ModifyReceiver{
@@ -155,11 +155,14 @@ export class OpenSSL_BoringSSL {
             {
                 this.bufLen = args[2].toInt32()
                 this.fd = OpenSSL_BoringSSL.SSL_get_fd(args[0])
-                if(this.fd < 0) {
+                if(this.fd < 0 && enable_default_fd == false) {
                     return
                 }
+
+
+
             
-                var message = getPortsAndAddresses(this.fd as number, true, lib_addesses)
+                var message = getPortsAndAddresses(this.fd as number, true, lib_addesses, enable_default_fd)
                 message["ssl_session_id"] = OpenSSL_BoringSSL.getSslSessionId(args[0])
                 message["function"] = "SSL_read"
                 this.message = message
@@ -213,10 +216,10 @@ export class OpenSSL_BoringSSL {
             onEnter: function (args: any) {
                 if (!ObjC.available){
                 this.fd = OpenSSL_BoringSSL.SSL_get_fd(args[0])
-                if(this.fd < 0) {
+                if(this.fd < 0 && enable_default_fd == false) {
                     return
                 }
-                var message = getPortsAndAddresses(this.fd as number, false, lib_addesses)
+                var message = getPortsAndAddresses(this.fd as number, false, lib_addesses, enable_default_fd)
                 message["ssl_session_id"] = OpenSSL_BoringSSL.getSslSessionId(args[0])
                 message["function"] = "SSL_write"
                 message["contentType"] = "datalog"
@@ -253,6 +256,10 @@ export class OpenSSL_BoringSSL {
           
         var session = OpenSSL_BoringSSL.SSL_get_session(ssl) as NativePointer
         if (session.isNull()) {
+            if(enable_default_fd){
+                log("using dummy SessionID: 59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336")
+                return "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336"
+            }
             log("Session is null")
             return 0
         }

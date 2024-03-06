@@ -1,7 +1,7 @@
 
-import {NSS } from "../ssl_lib/nss.js"
+import {NSS } from "../ssl_lib/nss.js";
 import { socket_library } from "./linux_agent.js";
-import { log, devlog } from "../util/log.js"
+import { log, devlog } from "../util/log.js";
 
 export class NSS_Linux extends NSS {
 

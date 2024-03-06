@@ -5,7 +5,7 @@ import { load_linux_hooking_agent } from "./linux/linux_agent.js";
 import { load_windows_hooking_agent } from "./windows/windows_agent.js";
 import { isWindows, isLinux, isAndroid, isiOS, isMacOS } from "./util/process_infos.js";
 import { anti_root_execute } from "./util/anti_root.js";
-import { log } from "./util/log.js"
+import { log } from "./util/log.js";
 
 interface IAddress{
     address: string,
@@ -86,11 +86,19 @@ export let offsets: IOffsets = "{OFFSETS}";
 export let experimental: boolean = false;
 //@ts-ignore
 export let anti_root: boolean = false;
+//@ts-ignore
+export let enable_default_fd: boolean = false;
 
 
 /*
 This way we are providing boolean values from the commandline directly to our frida script
 */
+
+send("defaultFD")
+const enable_default_fd_state = recv('defaultFD', value => {
+    enable_default_fd = value.payload;
+});
+enable_default_fd_state.wait();
 
 send("experimental")
 const exp_recv_state = recv('experimental', value => {

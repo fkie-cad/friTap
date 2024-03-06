@@ -1,5 +1,5 @@
-import { log } from "../util/log.js"
-import { byteArrayToString, byteArrayToNumber, getAttribute, reflectionByteArrayToString } from "../shared/shared_functions.js"
+import { log } from "../util/log.js";
+import { byteArrayToString, byteArrayToNumber, getAttribute, reflectionByteArrayToString } from "../shared/shared_functions.js";
 export function execute() {
     setTimeout(function () {
         Java.perform(function () {

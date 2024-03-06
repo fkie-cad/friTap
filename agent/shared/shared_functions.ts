@@ -1,5 +1,5 @@
-import { log, devlog } from "../util/log.js"
-import { AF_INET, AF_INET6 } from "./shared_structures.js"
+import { log, devlog } from "../util/log.js";
+import { AF_INET, AF_INET6 } from "./shared_structures.js";
 
 
 function wait_for_library_loaded(module_name: string){
@@ -143,14 +143,25 @@ export function readAddresses(library_method_mapping: { [key: string]: Array<Str
 * @return {{ [key: string]: string | number }} Dictionary of sockfd's "src_addr", "src_port", "dst_addr",
 *     and "dst_port".
 */
-export function getPortsAndAddresses(sockfd: number, isRead: boolean, methodAddresses: { [key: string]: NativePointer }): { [key: string]: string | number } {
+export function getPortsAndAddresses(sockfd: number, isRead: boolean, methodAddresses: { [key: string]: NativePointer }, enable_default_fd : boolean): { [key: string]: string | number } {
+
+    var message: { [key: string]: string | number } = {}
+    if (enable_default_fd && (sockfd < 0)){
+        
+        message["src" + "_port"] = 1234
+        message["src" + "_addr"] = "127.0.0.1"
+        message["dst" + "_port"] = 2345
+        message["dst" + "_addr"] = "127.0.0.1"
+        message["ss_family"] = "AF_INET"
+
+        return message
+    }
 
     var getpeername = new NativeFunction(methodAddresses["getpeername"], "int", ["int", "pointer", "pointer"])
     var getsockname = new NativeFunction(methodAddresses["getsockname"], "int", ["int", "pointer", "pointer"])
     var ntohs = new NativeFunction(methodAddresses["ntohs"], "uint16", ["uint16"])
     var ntohl = new NativeFunction(methodAddresses["ntohl"], "uint32", ["uint32"])
 
-    var message: { [key: string]: string | number } = {}
     var addrlen = Memory.alloc(4)
     var addr = Memory.alloc(128)
     var src_dst = ["src", "dst"]

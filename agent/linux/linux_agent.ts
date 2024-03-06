@@ -1,12 +1,12 @@
-import { module_library_mapping } from "../shared/shared_structures.js"
-import { log, devlog } from "../util/log.js"
-import { getModuleNames, ssl_library_loader } from "../shared/shared_functions.js"
-import { gnutls_execute } from "./gnutls_linux.js"
-import { wolfssl_execute } from "./wolfssl_linux.js"
-import { nss_execute } from "./nss_linux.js"
-import { mbedTLS_execute } from "./mbedTLS_linux.js"
-import { boring_execute } from "./openssl_boringssl_linux.js"
-import { matrixSSL_execute } from "./matrixssl_linux.js"
+import { module_library_mapping } from "../shared/shared_structures.js";
+import { log, devlog } from "../util/log.js";
+import { getModuleNames, ssl_library_loader } from "../shared/shared_functions.js";
+import { gnutls_execute } from "./gnutls_linux.js";
+import { wolfssl_execute } from "./wolfssl_linux.js";
+import { nss_execute } from "./nss_linux.js";
+import { mbedTLS_execute } from "./mbedTLS_linux.js";
+import { boring_execute } from "./openssl_boringssl_linux.js";
+import { matrixSSL_execute } from "./matrixssl_linux.js";
 
 var plattform_name = "linux";
 var moduleNames: Array<string> = getModuleNames()

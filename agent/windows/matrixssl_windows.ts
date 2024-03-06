@@ -1,5 +1,5 @@
 
-import {matrix_SSL } from "../ssl_lib/matrixssl.js"
+import {matrix_SSL } from "../ssl_lib/matrixssl.js";
 import { socket_library } from "./windows_agent.js";
 
 export class matrix_SSL_Windows extends matrix_SSL {

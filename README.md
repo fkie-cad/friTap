@@ -3,7 +3,7 @@
 </p>
 
 # friTap
-![version](https://img.shields.io/badge/version-1.1.0.1-blue) [![PyPi](https://badge.fury.io/py/friTap.svg)](https://pypi.org/project/friTap)
+![version](https://img.shields.io/badge/version-1.1.0.5-blue) [![PyPi](https://badge.fury.io/py/friTap.svg)](https://pypi.org/project/friTap)
 
 The goal of this project is to help researchers to analyze traffic encapsulated in SSL or TLS. For details have a view into the [OSDFCon webinar slides](assets/friTapOSDFConwebinar.pdf) or in [this blog post](https://lolcads.github.io/posts/2022/08/fritap/).
 
@@ -51,6 +51,47 @@ $ sudo -E /home/daniel/.local/bin/friTap
 
 More examples on using friTap can be found in the [USAGE.md](./USAGE.md). A detailed introduction using friTap on Android is under [EXAMPLE.md](./EXAMPLE.md) as well.
 
+
+## Problems
+
+The absence of traffic or incomplete traffic capture in the resulting pcap file (-p <your.pcap>) may stem from various causes. Before submitting a new issue, consider attempting the following solutions:
+
+### Default Socket Information
+
+There might be instances where friTap fails to retrieve socket information. In such scenarios, running friTap with default socket information (`--enable_default_fd`) could resolve the issue. This approach utilizes default socket information (127.0.0.1:1234 to 127.0.0.1:2345) for all traffic when the file descriptor (FD) cannot be used to obtain socket details:
+
+```bash
+friTap -m --enable_default_fd -p plaintext.pcap com.example.app
+```
+
+### Handling Subprocess Traffic
+
+Traffic originating from a subprocess could be another contributing factor. To capture this traffic, friTap can leverage Frida's spawn gating feature, which intercepts newly spawned processes using the `--enable_spawn_gating` parameter:
+
+```bash
+friTap -m -p log.pcap --enable_spawn_gating com.example.app
+```
+
+### Library Support exist only for Key Extraction
+
+In cases where the target library solely supports key extraction (cf. the table below), you can utilize the `-k <key.log>` parameter alongside full packet capture:
+
+```bash
+friTap -m -p log.pcap --full_capture -k keys.log com.example.app
+```
+
+### Seeking Further Assistance
+
+If these approaches do not address your issue, please create a detailed issue report to aid in troubleshooting. To facilitate a more effective diagnosis, include the following information in your report:
+
+- The operating system and its version
+- The specific application encountering the issue or a comparable application that exhibits similar problems
+- The output from executing friTap with the specified parameters, augmented with friTap's debug output:
+```bash
+friTap -do -v com.example.app
+```
+
+
 ## Supported SSL/TLS implementations and corresponding logging capabilities
 
 ```markdown
@@ -83,6 +124,7 @@ More examples on using friTap can be found in the [USAGE.md](./USAGE.md). A deta
 - scapy (`python3 -m pip install scapy`)
 - watchdog (`python3 -m pip install watchdog`)
 - importlib.resources  (`python3 -m pip install importlib-resources`)
+- for hooking on Android ensure that the `adb`-command is in your PATH
 
 ## Planned features
 

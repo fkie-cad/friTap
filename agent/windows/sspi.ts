@@ -1,6 +1,6 @@
-import { readAddresses, getBaseAddress } from "../shared/shared_functions.js"
+import { readAddresses, getBaseAddress } from "../shared/shared_functions.js";
 import { socket_library } from "./windows_agent.js";
-import { devlog, log } from "../util/log.js"
+import { devlog, log } from "../util/log.js";
 import { experimental, offsets } from "../ssl_log.js";
 
 /*

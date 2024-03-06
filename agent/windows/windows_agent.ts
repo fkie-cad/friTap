@@ -1,13 +1,13 @@
-import { module_library_mapping } from "../shared/shared_structures.js"
-import { log, devlog } from "../util/log.js"
-import { getModuleNames, ssl_library_loader } from "../shared/shared_functions.js"
-import { sspi_execute } from "./sspi.js"
-import { boring_execute } from "./openssl_boringssl_windows.js"
-import { gnutls_execute } from "./gnutls_windows.js"
-import { mbedTLS_execute } from "./mbedTLS_windows.js"
-import { nss_execute } from "./nss_windows.js"
-import { wolfssl_execute } from "./wolfssl_windows.js"
-import { matrixSSL_execute } from "./matrixssl_windows.js"
+import { module_library_mapping } from "../shared/shared_structures.js";
+import { log, devlog } from "../util/log.js";
+import { getModuleNames, ssl_library_loader } from "../shared/shared_functions.js";
+import { sspi_execute } from "./sspi.js";
+import { boring_execute } from "./openssl_boringssl_windows.js";
+import { gnutls_execute } from "./gnutls_windows.js";
+import { mbedTLS_execute } from "./mbedTLS_windows.js";
+import { nss_execute } from "./nss_windows.js";
+import { wolfssl_execute } from "./wolfssl_windows.js";
+import { matrixSSL_execute } from "./matrixssl_windows.js";
 
 
 var plattform_name = "windows";

@@ -1,7 +1,7 @@
 
-import {OpenSSL_BoringSSL } from "../ssl_lib/openssl_boringssl.js"
+import {OpenSSL_BoringSSL } from "../ssl_lib/openssl_boringssl.js";
 import { socket_library } from "./ios_agent.js";
-import { log, devlog } from "../util/log.js"
+import { log, devlog } from "../util/log.js";
 
 export class OpenSSL_BoringSSL_iOS extends OpenSSL_BoringSSL {
 

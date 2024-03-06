@@ -131,7 +131,7 @@ def temp_fifo():
         print(f'Failed to create FIFO: {e}')
 
 
-def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, mobile=False, live=False, environment_file=None, debug_mode=False,full_capture=False, socket_trace=False, host=False, offsets=None, debug_output=False, experimental=False, anti_root=False, payload_modification=False):
+def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, mobile=False, live=False, environment_file=None, debug_mode=False,full_capture=False, socket_trace=False, host=False, offsets=None, debug_output=False, experimental=False, anti_root=False, payload_modification=False,enable_default_fd=False):
     global debug
     debug = debug_mode
     
@@ -160,6 +160,9 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
             
         if startup and message['payload'] == 'experimental':
             script.post({'type':'experimental', 'payload': experimental})
+
+        if startup and message['payload'] == 'defaultFD':
+            script.post({'type':'defaultFD', 'payload': enable_default_fd})
         
         if startup and message['payload'] == 'anti':
             script.post({'type':'antiroot', 'payload': anti_root})
@@ -268,7 +271,7 @@ def ssl_log(app, pcap_name=None, verbose=False, spawn=False, keylog=False, enabl
         if offsets_data is not None:
             print(f"[*] applying hooks at offset {offsets_data}")
             script_string = script_string.replace('"{OFFSETS}"', offsets_data)
-            # might lead to a malformed packge in recent frida versions
+            # might lead to a malformed package in recent frida versions
                     
 
         script = process.create_script(script_string, runtime=runtime)
@@ -439,6 +442,7 @@ Examples:
   %(prog)s -H --pcap log.pcap 192.168.0.1:1234 com.example.app
   %(prog)s -m -p log.pcap --enable_spawn_gating -v -do --full_capture -k keys.log com.example.app
   %(prog)s -m -p log.pcap --enable_spawn_gating -v -do --anti_root --full_capture -k keys.log com.example.app
+  %(prog)s -m -p log.pcap --enable_default_fd com.example.app
 """)
 
     args = parser.add_argument_group("Arguments")
@@ -452,6 +456,8 @@ Examples:
                       help="Activate the debug output only.")
     args.add_argument("-ar", "--anti_root", required=False, action="store_const",
                       const=True, help="Activate anti root hooks for Android")
+    args.add_argument("-ed", "--enable_default_fd", required=False, action="store_const",
+                      const=True, help="Activate the fallback socket information (127.0.0.1:1234-127.0.0.1:2345) whenever the file descriptor (FD) of the socket cannot be determined")
     args.add_argument("-f", "--full_capture", required=False, action="store_const", const=True, default=False,
                       help="Do a full packet capture instead of logging only the decrypted TLS payload. Set pcap name with -p <PCAP name>")
     args.add_argument("-k", "--keylog", metavar="<path>", required=False,
@@ -498,7 +504,7 @@ Examples:
         print("Start logging")
         print("Press Ctrl+C to stop logging")
         ssl_log(parsed.exec, parsed.pcap, parsed.verbose,
-                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.mobile, parsed.live, parsed.environment, parsed.debug, parsed.full_capture, parsed.socket_tracing, parsed.host, parsed.offsets, parsed.debugoutput,parsed.experimental, parsed.anti_root, parsed.payload_modification)
+                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.mobile, parsed.live, parsed.environment, parsed.debug, parsed.full_capture, parsed.socket_tracing, parsed.host, parsed.offsets, parsed.debugoutput,parsed.experimental, parsed.anti_root, parsed.payload_modification, parsed.enable_default_fd)
 
        
     except Exception as ar:

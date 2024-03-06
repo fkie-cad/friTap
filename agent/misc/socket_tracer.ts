@@ -1,7 +1,7 @@
-import { log, devlog } from "../util/log.js"
-import { get_process_architecture } from "../util/process_infos.js"
-import { readAddresses, getPortsAndAddresses } from "../shared/shared_functions.js"
-
+import { log, devlog } from "../util/log.js";
+import { get_process_architecture } from "../util/process_infos.js";
+import { readAddresses, getPortsAndAddresses } from "../shared/shared_functions.js";
+import { enable_default_fd } from "../ssl_log.js";
 
 export function execute(moduleName:string) {
 
@@ -57,7 +57,7 @@ Interceptor.attach(addresses["socket"],
             return;
         }
         if(has_valid_socket_type(this.fd)){
-            var message = getPortsAndAddresses(this.fd as number, false, addresses)
+            var message = getPortsAndAddresses(this.fd as number, false, addresses, enable_default_fd)
             message["function"] = "Full_read"
             message["contentType"] = "netlog"
             socketFDs.set(this.fd, message["dst_addr"])
@@ -80,7 +80,7 @@ Interceptor.attach(addresses["connect"],
             return;
         }
         if(has_valid_socket_type(this.fd)){
-            var message = getPortsAndAddresses(this.fd as number, false, addresses)
+            var message = getPortsAndAddresses(this.fd as number, false, addresses, enable_default_fd)
             message["function"] = "Full_read"
             message["contentType"] = "netlog"
             socketFDs.set(this.fd, message["dst_addr"])
@@ -100,7 +100,7 @@ Interceptor.attach(addresses["read"],
             return;
         }
         if(has_valid_socket_type(this.fd)){
-            var message = getPortsAndAddresses(this.fd as number, true, addresses)
+            var message = getPortsAndAddresses(this.fd as number, true, addresses, enable_default_fd)
             message["function"] = "Full_read"
             message["contentType"] = "netlog"
             socketFDs.set(this.fd, message["src_addr"])
@@ -122,7 +122,7 @@ Interceptor.attach(addresses["recv"],
             return;
         }
         if(has_valid_socket_type(this.fd)){
-            var message = getPortsAndAddresses(this.fd as number, true, addresses)
+            var message = getPortsAndAddresses(this.fd as number, true, addresses, enable_default_fd)
             message["function"] = "Full_read"
             message["contentType"] = "netlog"
             socketFDs.set(this.fd, message["src_addr"])
@@ -146,7 +146,7 @@ Interceptor.attach(addresses["recvfrom"],
             return;
         }
         if(has_valid_socket_type(this.fd)){
-            var message = getPortsAndAddresses(this.fd as number, true, addresses)
+            var message = getPortsAndAddresses(this.fd as number, true, addresses, enable_default_fd)
             message["function"] = "Full_read"
             message["contentType"] = "netlog"
             socketFDs.set(this.fd, message["src_addr"])
@@ -168,7 +168,7 @@ Interceptor.attach(addresses["send"],
             return;
         }
         if(has_valid_socket_type(this.fd)){
-            var message = getPortsAndAddresses(this.fd as number, false, addresses)
+            var message = getPortsAndAddresses(this.fd as number, false, addresses, enable_default_fd)
             message["function"] = "Full_write"
             message["contentType"] = "netlog"
             socketFDs.set(this.fd, message["dst_addr"])
@@ -188,7 +188,7 @@ Interceptor.attach(addresses["sendto"],
             return;
         }
         if(has_valid_socket_type(this.fd)){
-            var message = getPortsAndAddresses(this.fd as number, false, addresses)
+            var message = getPortsAndAddresses(this.fd as number, false, addresses, enable_default_fd)
             message["function"] = "Full_write"
             message["contentType"] = "netlog"
             socketFDs.set(this.fd, message["dst_addr"])
@@ -207,7 +207,7 @@ Interceptor.attach(addresses["write"],
             return;
         }
         if(has_valid_socket_type(this.fd)){
-            var message = getPortsAndAddresses(this.fd as number, false, addresses)
+            var message = getPortsAndAddresses(this.fd as number, false, addresses, enable_default_fd)
             message["function"] = "Full_write"
             message["contentType"] = "netlog"
             socketFDs.set(this.fd, message["dst_addr"])
@@ -225,7 +225,7 @@ if(ObjC.available){
             return;
         }
         if(has_valid_socket_type(fd)){
-            var message = getPortsAndAddresses(fd as number, false, addresses)
+            var message = getPortsAndAddresses(fd as number, false, addresses, enable_default_fd)
             message["function"] = "Full_write"
             message["contentType"] = "netlog"
             socketFDs.set(this.fd, message["dst_addr"])
@@ -250,7 +250,7 @@ Interceptor.attach(Module.getExportByName("libsystem_kernel.dylib","read"),
             return;
         }
         if(has_valid_socket_type(this.fd)){
-            var message = getPortsAndAddresses(this.fd as number, true, addresses)
+            var message = getPortsAndAddresses(this.fd as number, true, addresses, enable_default_fd)
             message["function"] = "Full_read"
             message["contentType"] = "netlog"
             socketFDs.set(this.fd, message["src_addr"])

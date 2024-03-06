@@ -1,7 +1,7 @@
-import { readAddresses, getBaseAddress } from "../shared/shared_functions.js"
-import { pointerSize, AF_INET, AF_INET6 } from "../shared/shared_structures.js"
-import { log, devlog } from "../util/log.js"
-import { offsets } from "../ssl_log.js"
+import { readAddresses, getBaseAddress } from "../shared/shared_functions.js";
+import { pointerSize, AF_INET, AF_INET6 } from "../shared/shared_structures.js";
+import { log, devlog } from "../util/log.js";
+import { offsets,enable_default_fd } from "../ssl_log.js";
 
 
 /**
@@ -643,13 +643,24 @@ struct {
 typedef union PRNetAddr PRNetAddr;
 
 */
-    static getPortsAndAddressesFromNSS(sockfd: NativePointer, isRead: boolean, methodAddresses: { [key: string]: NativePointer }): { [key: string]: string | number } {
+    static getPortsAndAddressesFromNSS(sockfd: NativePointer | null, isRead: boolean, methodAddresses: { [key: string]: NativePointer }, enable_default_fd: boolean): { [key: string]: string | number } {
+
+        var message: { [key: string]: string | number } = {}
+        if (enable_default_fd && sockfd === null){
+        
+            message["src" + "_port"] = 1234
+            message["src" + "_addr"] = "127.0.0.1"
+            message["dst" + "_port"] = 2345
+            message["dst" + "_addr"] = "127.0.0.1"
+            message["ss_family"] = "AF_INET"
+    
+            return message
+        }    
         var getpeername = new NativeFunction(methodAddresses["PR_GetPeerName"], "int", ["pointer", "pointer"])
         var getsockname = new NativeFunction(methodAddresses["PR_GetSockName"], "int", ["pointer", "pointer"])
         var ntohs = new NativeFunction(methodAddresses["ntohs"], "uint16", ["uint16"])
         var ntohl = new NativeFunction(methodAddresses["ntohl"], "uint32", ["uint32"])
 
-        var message: { [key: string]: string | number } = {}
         var addrType = Memory.alloc(2) // PRUint16 is a 2 byte (16 bit) value on all plattforms
 
 
@@ -660,10 +671,10 @@ typedef union PRNetAddr PRNetAddr;
         for (var i = 0; i < src_dst.length; i++) {
             addrlen.writeU32(128)
             if ((src_dst[i] == "src") !== isRead) {
-                getsockname(sockfd, addr)
+                getsockname(sockfd as NativePointer, addr)
             }
             else {
-                getpeername(sockfd, addr)
+                getpeername(sockfd as NativePointer, addr)
             }
 
             if (addr.readU16() == AF_INET) {
@@ -1295,9 +1306,11 @@ typedef union PRNetAddr PRNetAddr;
                     this.buf = ptr(args[1])
                 },
                 onLeave: function (retval: any) {
+                    
                     if (retval.toInt32() <= 0 || NSS.getDescType(this.fd) == PRDescType.PR_DESC_FILE) {
                         return
                     }
+                    log("The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys")
 
                     var addr = Memory.alloc(8);
                     var res = NSS.getpeername(this.fd, addr);
@@ -1305,7 +1318,7 @@ typedef union PRNetAddr PRNetAddr;
 
 
                     if (addr.readU16() == 2 || addr.readU16() == 10 || addr.readU16() == 100) {
-                        var message = NSS.getPortsAndAddressesFromNSS(this.fd as NativePointer, true, lib_addesses)
+                        var message = NSS.getPortsAndAddressesFromNSS(this.fd as NativePointer, true, lib_addesses, enable_default_fd)
                         devlog("Session ID: " + NSS.getSslSessionIdFromFD(this.fd))
                         message["ssl_session_id"] = NSS.getSslSessionIdFromFD(this.fd)
                         message["function"] = "NSS_read"
@@ -1313,9 +1326,17 @@ typedef union PRNetAddr PRNetAddr;
 
                         this.message["contentType"] = "datalog"
                         var data = this.buf.readByteArray((new Uint32Array([retval]))[0])
+                        send(message, data)
                     } else {
+                        var message = NSS.getPortsAndAddressesFromNSS( null, true, lib_addesses, enable_default_fd)
+                        message["ssl_session_id"] = NSS.getSslSessionIdFromFD(this.fd)
+                        message["function"] = "NSS_read"
+                        this.message = message
+
+                        this.message["contentType"] = "datalog"
                         var temp = this.buf.readByteArray((new Uint32Array([retval]))[0])
                         devlog(JSON.stringify(temp))
+                        send(message, temp)
                     }
                 }
             })
@@ -1345,11 +1366,22 @@ typedef union PRNetAddr PRNetAddr;
                     NSS.getsockname(this.fd, addr);
 
                     if (addr.readU16() == 2 || addr.readU16() == 10 || addr.readU16() == 100) {
-                        var message = NSS.getPortsAndAddressesFromNSS(this.fd as NativePointer, false, lib_addesses)
+                        var message = NSS.getPortsAndAddressesFromNSS(this.fd as NativePointer, false, lib_addesses, enable_default_fd)
                         message["ssl_session_id"] = NSS.getSslSessionIdFromFD(this.fd)
                         message["function"] = "NSS_write"
                         message["contentType"] = "datalog"
                         send(message, this.buf.readByteArray((parseInt(this.len))))
+                    }else {
+                        log("The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys")
+                        var message = NSS.getPortsAndAddressesFromNSS(null, true, lib_addesses, enable_default_fd)
+                        message["ssl_session_id"] = NSS.getSslSessionIdFromFD(this.fd)
+                        message["function"] = "NSS_write"
+                        this.message = message
+
+                        this.message["contentType"] = "datalog"
+                        var temp = this.buf.readByteArray((new Uint32Array([retval]))[0])
+                        devlog(JSON.stringify(temp))
+                        send(message, temp)
                     }
 
                 }

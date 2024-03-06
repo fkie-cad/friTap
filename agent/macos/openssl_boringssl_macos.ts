@@ -1,5 +1,5 @@
 
-import {OpenSSL_BoringSSL } from "../ssl_lib/openssl_boringssl.js"
+import {OpenSSL_BoringSSL } from "../ssl_lib/openssl_boringssl.js";
 import { socket_library } from "./macos_agent.js";
 
 

@@ -1,6 +1,6 @@
-import { readAddresses, getPortsAndAddresses, toHexString, getBaseAddress } from "../shared/shared_functions.js"
-import { log } from "../util/log.js"
-import { offsets } from "../ssl_log.js";
+import { readAddresses, getPortsAndAddresses, toHexString, getBaseAddress } from "../shared/shared_functions.js";
+import { log } from "../util/log.js";
+import { offsets, enable_default_fd } from "../ssl_log.js";
 
 export class GnuTLS {
 
@@ -115,12 +115,20 @@ export class GnuTLS {
         var len_pointer = Memory.alloc(4)
         var err = GnuTLS.gnutls_session_get_id(session, NULL, len_pointer)
         if (err != 0) {
+            if(enable_default_fd){
+                log("using dummy SessionID: 59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76337")
+                return "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76337"
+            }
             return ""
         }
         var len = len_pointer.readU32()
         var p = Memory.alloc(len)
         err = GnuTLS.gnutls_session_get_id(session, p, len_pointer)
         if (err != 0) {
+            if(enable_default_fd){
+                log("using dummy SessionID: 59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76337")
+                return "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76337"
+            }
             return ""
         }
         var session_id = ""
@@ -139,7 +147,7 @@ export class GnuTLS {
         Interceptor.attach(this.addresses["gnutls_record_recv"],
     {
         onEnter: function (args: any) {
-            var message = getPortsAndAddresses(GnuTLS.gnutls_transport_get_int(args[0]) as number, true, lib_addesses)
+            var message = getPortsAndAddresses(GnuTLS.gnutls_transport_get_int(args[0]) as number, true, lib_addesses, enable_default_fd)
             message["ssl_session_id"] = GnuTLS.getSslSessionId(args[0])
             message["function"] = "SSL_read"
             this.message = message
@@ -162,7 +170,7 @@ export class GnuTLS {
         Interceptor.attach(this.addresses["gnutls_record_send"],
     {
         onEnter: function (args: any) {
-            var message = getPortsAndAddresses(GnuTLS.gnutls_transport_get_int(args[0]) as number, false, lib_addesses)
+            var message = getPortsAndAddresses(GnuTLS.gnutls_transport_get_int(args[0]) as number, false, lib_addesses, enable_default_fd)
             message["ssl_session_id"] = GnuTLS.getSslSessionId(args[0])
             message["function"] = "SSL_write"
             message["contentType"] = "datalog"
