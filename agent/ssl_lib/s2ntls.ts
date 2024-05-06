@@ -7,12 +7,15 @@ export class S2nTLS {
     library_method_mapping: { [key: string]: Array<String> } = {};
     addresses: { [key: string]: NativePointer };
 
+    static s2n_get_fd: any;
+    static s2n_get_session: any;
+
     constructor(public moduleName: String, public socket_library: String, public passed_library_method_mapping?: { [key: string]: Array<String>}){
 
         if(typeof passed_library_method_mapping !== 'undefined'){
             this.library_method_mapping = passed_library_method_mapping;
         }else{
-            this.library_method_mapping[`*${moduleName}*`] = ["s2n_send", "s2n_recv"]; //natürlich noch erweitern
+            this.library_method_mapping[`*${moduleName}*`] = ["s2n_send", "s2n_recv", "s2n_connection_set_fd", "s2n_connection_get_session"]; //natürlich noch erweitern
             this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]; //welche Socketlibraries? an welcher Stelle relevant?
         }
 
@@ -62,7 +65,8 @@ export class S2nTLS {
             }
         }
 
-        
+        S2nTLS.s2n_get_fd = new NativeFunction(this.addresses["s2n_connection_set_fd"], "int", ["pointer"]);
+        S2nTLS.s2n_get_session = new NativeFunction(this.addresses["s2n_connection_get_session"], "pointer", ["pointer"]);
     }
 
     install_tls_keys_callback_hook(){}
