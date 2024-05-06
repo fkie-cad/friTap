@@ -71,6 +71,10 @@ interface IOffsets {
         EncryptMessage: IAddress,
         DecryptMessage: IAddress
     },
+    s2n?:{
+        s2n_send: IAddress;
+        s2n_recv: IAddress;
+    }
 
     sockets?:{
         getpeername?: IAddress,
