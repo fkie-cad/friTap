@@ -1,4 +1,6 @@
-import { readAddresses} from "../shared/shared_functions.js"
+import { readAddresses, getBaseAddress} from "../shared/shared_functions.js"
+import { offsets } from "../ssl_log.js" 
+import { log } from "../util/log.js"
 
 export class S2nTLS {
 
@@ -10,11 +12,57 @@ export class S2nTLS {
         if(typeof passed_library_method_mapping !== 'undefined'){
             this.library_method_mapping = passed_library_method_mapping;
         }else{
-            this.library_method_mapping[`*${moduleName}*`] = ["s2n_send", "s2n_recv"];
-            this.library_method_mapping[`*${socket_library}*`] = ["??"]; //welche Socketlibraries? an welcher Stelle relevant?
+            this.library_method_mapping[`*${moduleName}*`] = ["s2n_send", "s2n_recv"]; //natürlich noch erweitern
+            this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]; //welche Socketlibraries? an welcher Stelle relevant?
         }
 
         this.addresses = readAddresses(this.library_method_mapping);
+
+        //@ts-ignore
+        if(offsets != "{OFFSETS}" && offsets.s2n != null){
+
+            if(offsets.sockets != null){
+                const socketBaseAddress = getBaseAddress(socket_library);
+
+                for(const method of Object.keys(offsets.sockets)){
+                    
+                    const methodOffset = offsets.sockets[`${method}`];
+                    const isAbsolute = methodOffset.absolute;
+                    //@ts-ignore
+                    const methodAddress = ptr(methodOffset.address);
+
+                    if(isAbsolute || socketBaseAddress == null){
+                        this.addresses[`${method}`] = methodAddress;
+                    }else{
+                        this.addresses[`${method}`] = socketBaseAddress.add(methodAddress);
+                    }
+
+                }
+            }
+
+            const libraryBaseAddress = getBaseAddress(moduleName);
+
+            if(libraryBaseAddress == null){
+                log("Unable to find library base address! Given address values will be interpreted as absolute ones!");
+            }
+
+            for(const method of Object.keys(offsets.s2n)){
+
+                const methodOffset = offsets.s2n[`${method}`];
+                const isAbsolute = methodOffset.absolute;
+                //@ts-ignore
+                const methodAddress = ptr(methodOffset.address);
+
+                if(isAbsolute || libraryBaseAddress == null){
+                    this.addresses[`${method}`] = methodAddress;
+                }else{
+                    this.addresses[`${method}`] = libraryBaseAddress.add(methodAddress);
+                }
+
+            }
+        }
+
+        
     }
 
     install_tls_keys_callback_hook(){}
