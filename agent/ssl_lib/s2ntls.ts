@@ -1,4 +1,5 @@
-import { readAddresses, getBaseAddress} from "../shared/shared_functions.js"
+import { enable_default_fd } from "../../friTap/_ssl_log_legacy.js";
+import { readAddresses, getBaseAddress, getPortsAndAddresses} from "../shared/shared_functions.js"
 import { offsets } from "../ssl_log.js" 
 import { log } from "../util/log.js"
 
@@ -67,10 +68,11 @@ export class S2nTLS {
         }
 
         //s2n_connection-get_read_fd und s2n_connection_get_write_fd
-        S2nTLS.s2n_get_read_fd = new NativeFunction(this.addresses["s2n_connection_get_read_fd"], "int", ["pointer"]);
-        S2nTLS.s2n_get_write_fd = new NativeFunction(this.addresses["s2n_connection_get_write_fd"], "int", ["pointer"]);
+        S2nTLS.s2n_get_read_fd = new NativeFunction(this.addresses["s2n_connection_get_read_fd"], "int", ["pointer", "pointer"]);
+        S2nTLS.s2n_get_write_fd = new NativeFunction(this.addresses["s2n_connection_get_write_fd"], "int", ["pointer", "pointer"]);
 
-        S2nTLS.s2n_get_session = new NativeFunction(this.addresses["s2n_connection_get_session"], "pointer", ["pointer"]);
+    
+        S2nTLS.s2n_get_session = new NativeFunction(this.addresses["s2n_connection_get_session"], "int", ["pointer", "pointer", "size_t"]);
     }
 
     install_tls_keys_callback_hook(){}
@@ -78,5 +80,29 @@ export class S2nTLS {
     install_plaintext_read_hook(){}
 
     install_plaintext_write_hook(){}
+
+    static get_Tls_session_id(connection: NativePointer, ses: NativePointer){
+
+        var session = S2nTLS.s2n_get_session(connection, ses, 1) as NativePointer;
+        if(session.isNull()){
+
+            if(enable_default_fd){
+                log("using dummy SessionID: 59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76338");
+                return "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76338";
+            }
+
+            log("Session is null");
+            return 0;
+        }
+        //überprüfen
+        var len = 32;
+        var sessionid = "";
+        var p = 0;
+        for(var i = 0; i < len; i++){
+            sessionid += ("0" + p.add(i).readU8().toString(16).toUpperCase()).substr(-2);
+        }
+        
+        return sessionid;
+    }
 
 }
