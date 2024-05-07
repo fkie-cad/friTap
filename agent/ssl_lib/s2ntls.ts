@@ -17,7 +17,7 @@ export class S2nTLS {
         if(typeof passed_library_method_mapping !== 'undefined'){
             this.library_method_mapping = passed_library_method_mapping;
         }else{
-            this.library_method_mapping[`*${moduleName}*`] = ["s2n_send", "s2n_recv", "s2n_connection_get_read_fd", "s2n_connection_get_write_fs", "s2n_connection_get_session"]; //natürlich noch erweitern
+            this.library_method_mapping[`*${moduleName}*`] = ["s2n_send", "s2n_recv", "s2n_connection_get_read_fd", "s2n_connection_get_write_fs", "2n_connection_set_fd", "s2n_connection_get_session"]; //natürlich noch erweitern
             this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]; //welche Socketlibraries? an welcher Stelle relevant?
         }
 
@@ -77,7 +77,19 @@ export class S2nTLS {
 
     install_tls_keys_callback_hook(){}
 
-    install_plaintext_read_hook(){}
+    install_plaintext_read_hook(){
+
+        var lib_addresses = this.addresses;
+
+        Interceptor.attach(lib_addresses["s2n_send"], {
+
+            onEnter: function(args){
+                //readfd* ??? als zweites arg (deadlock?)
+                var fd = S2nTLS.s2n_get_read_fd(args[0], ) as number;
+                var message = getPortsAndAddresses(fd, true, lib_addresses, enable_default_fd);
+            }
+        })
+    }
 
     install_plaintext_write_hook(){}
 
@@ -97,11 +109,11 @@ export class S2nTLS {
         //überprüfen
         var len = 32;
         var sessionid = "";
-        var p = 0;
+        var p = session.add(0);
         for(var i = 0; i < len; i++){
             sessionid += ("0" + p.add(i).readU8().toString(16).toUpperCase()).substr(-2);
         }
-        
+
         return sessionid;
     }
 
