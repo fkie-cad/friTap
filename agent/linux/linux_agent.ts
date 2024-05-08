@@ -58,7 +58,7 @@ function hook_Linux_SSL_Libs(module_library_mapping: { [key: string]: Array<[any
 
 
 export function load_linux_hooking_agent() {
-    module_library_mapping[plattform_name] = [[/.*libssl_sb.so/, boring_execute], [/.*libssl\.so/, boring_execute], [/.*libgnutls\.so/, gnutls_execute], [/.*libwolfssl\.so/, wolfssl_execute], [/.*libnspr[0-9]?\.so/, nss_execute], [/libmbedtls\.so.*/, mbedTLS_execute], [/libssl_s.a/, matrixSSL_execute]]
+    module_library_mapping[plattform_name] = [[/.*libssl_sb.so/, boring_execute], [/.*libssl\.so/, boring_execute], [/.*libgnutls\.so/, gnutls_execute], [/.*libwolfssl\.so/, wolfssl_execute], [/.*libnspr[0-9]?\.so/, nss_execute], [/libmbedtls\.so.*/, mbedTLS_execute], [/libssl_s.a/, matrixSSL_execute], [/.*libs2n.so/, s2ntls_execute]]
     hook_Linux_SSL_Libs(module_library_mapping);
     hook_Linux_Dynamic_Loader(module_library_mapping);
 }
