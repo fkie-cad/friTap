@@ -7,6 +7,7 @@ import { nss_execute } from "./nss_linux.js";
 import { mbedTLS_execute } from "./mbedTLS_linux.js";
 import { boring_execute } from "./openssl_boringssl_linux.js";
 import { matrixSSL_execute } from "./matrixssl_linux.js";
+import { s2ntls_execute } from "./s2ntls_linux.js";
 
 var plattform_name = "linux";
 var moduleNames: Array<string> = getModuleNames()
