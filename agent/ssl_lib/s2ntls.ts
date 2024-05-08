@@ -95,6 +95,8 @@ export class S2nTLS {
                 this.buf = args[1]; //pointer to buffer
             },
             onLeave: function(retval: any){
+                
+                retval = parseInt(retval);
                 if(retval < 0){ //on Failure: retval = S2N_Failure = -1
                     return;
                 }
@@ -106,7 +108,26 @@ export class S2nTLS {
         })
     }
 
-    install_plaintext_write_hook(){}
+    install_plaintext_write_hook(){
+        //args(conn, buf, size, blocked)
+        var lib_addresses = this.addresses;
+
+        Interceptor.attach(lib_addresses["s2n_recv"], {
+
+            onEnter: function(args: any){
+
+                var writefd;
+                S2nTLS.s2n_get_write_fd(args[0], writefd) as number;
+                var message = getPortsAndAddresses(writefd, false, lib_addresses, enable_default_fd);
+
+                message["function"] = "s2n_recv";
+                message["ssl_session_id"] = "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76338" //no session ids
+                message["contentType"] = "datalog";
+
+                send(message, args[1].readByteArray(parseInt(args[2])));
+            }
+        })
+    }
 
     /*
     static get_Tls_session_id(connection: NativePointer, ses: NativePointer){
