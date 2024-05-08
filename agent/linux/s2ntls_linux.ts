@@ -1,4 +1,4 @@
-import { socket_library } from "../../friTap/_ssl_log_legacy";
+import { socket_library } from "./linux_agent.js";
 import { S2nTLS } from "../ssl_lib/s2ntls";
 
 export class S2nTLS_Linux extends S2nTLS{
