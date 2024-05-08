@@ -83,16 +83,32 @@ export class S2nTLS {
 
         Interceptor.attach(lib_addresses["s2n_send"], {
 
-            onEnter: function(args){
-                //readfd* ??? als zweites arg (deadlock?)
-                var fd = S2nTLS.s2n_get_read_fd(args[0], ) as number;
-                var message = getPortsAndAddresses(fd, true, lib_addresses, enable_default_fd);
+            onEnter: function(args: any){
+                
+                var readfd;
+                S2nTLS.s2n_get_read_fd(args[0], readfd) as number;
+                var message = getPortsAndAddresses(readfd, true, lib_addresses, enable_default_fd);
+
+                message["function"] = "s2n_send";
+                message["ssl_session_id"] = "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76338" //no session ids
+                this.message = message;
+                this.buf = args[1]; //pointer to buffer
+            },
+            onLeave: function(retval: any){
+                if(retval < 0){ //on Failure: retval = S2N_Failure = -1
+                    return;
+                }
+
+                //on Success: retval = number of bytes sent
+                this.message["contentType"] = "datalog";
+                send(this.message, this.buf.readByteArray(retval));
             }
         })
     }
 
     install_plaintext_write_hook(){}
 
+    /*
     static get_Tls_session_id(connection: NativePointer, ses: NativePointer){
 
         var session = S2nTLS.s2n_get_session(connection, ses, 1) as NativePointer;
@@ -116,5 +132,6 @@ export class S2nTLS {
 
         return sessionid;
     }
+    */
 
 }
