@@ -42,9 +42,9 @@ startup = True
 frida_agent_script = "_ssl_log.js"
 
 # Names of all supported read functions:
-SSL_READ = ["SSL_read", "wolfSSL_read", "readApplicationData", "NSS_read","Full_read"]
+SSL_READ = ["SSL_read", "wolfSSL_read", "readApplicationData", "NSS_read","Full_read", "s2n_send"]
 # Names of all supported write functions:
-SSL_WRITE = ["SSL_write", "wolfSSL_write", "writeApplicationData", "NSS_write","Full_write"]
+SSL_WRITE = ["SSL_write", "wolfSSL_write", "writeApplicationData", "NSS_write","Full_write", "s2n_recv"]
 
 # here - where we are.
 here = os.path.abspath(os.path.dirname(__file__))
