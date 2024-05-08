@@ -1,6 +1,5 @@
-import { enable_default_fd } from "../../friTap/_ssl_log_legacy.js";
 import { readAddresses, getBaseAddress, getPortsAndAddresses} from "../shared/shared_functions.js"
-import { offsets } from "../ssl_log.js" 
+import { offsets, enable_default_fd } from "../ssl_log.js" 
 import { log } from "../util/log.js"
 
 export class S2nTLS {
@@ -17,7 +16,7 @@ export class S2nTLS {
         if(typeof passed_library_method_mapping !== 'undefined'){
             this.library_method_mapping = passed_library_method_mapping;
         }else{
-            this.library_method_mapping[`*${moduleName}*`] = ["s2n_send", "s2n_recv", "s2n_connection_get_read_fd", "s2n_connection_get_write_fs", "2n_connection_set_fd", "s2n_connection_get_session"]; //natürlich noch erweitern
+            this.library_method_mapping[`*${moduleName}*`] = ["s2n_send", "s2n_recv", "s2n_connection_get_read_fd", "s2n_connection_get_write_fd", "s2n_connection_get_session"]; //natürlich noch erweitern
             this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]; //welche Socketlibraries? an welcher Stelle relevant?
         }
 

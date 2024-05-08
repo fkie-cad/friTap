@@ -25,8 +25,8 @@
 2855 /agent/ios/openssl_boringssl_ios.js
 999 /agent/linux/gnutls_linux.js.map
 1051 /agent/linux/gnutls_linux.js
-2128 /agent/linux/linux_agent.js.map
-2476 /agent/linux/linux_agent.js
+2201 /agent/linux/linux_agent.js.map
+2561 /agent/linux/linux_agent.js
 665 /agent/linux/matrixssl_linux.js.map
 921 /agent/linux/matrixssl_linux.js
 655 /agent/linux/mbedTLS_linux.js.map
@@ -35,6 +35,8 @@
 4241 /agent/linux/nss_linux.js
 1147 /agent/linux/openssl_boringssl_linux.js.map
 1229 /agent/linux/openssl_boringssl_linux.js
+635 /agent/linux/s2ntls_linux.js.map
+625 /agent/linux/s2ntls_linux.js
 2666 /agent/linux/wolfssl_linux.js.map
 3486 /agent/linux/wolfssl_linux.js
 1729 /agent/macos/macos_agent.js.map
@@ -57,6 +59,8 @@
 51655 /agent/ssl_lib/nss.js
 8352 /agent/ssl_lib/openssl_boringssl.js.map
 9735 /agent/ssl_lib/openssl_boringssl.js
+3944 /agent/ssl_lib/s2ntls.js.map
+5111 /agent/ssl_lib/s2ntls.js
 4385 /agent/ssl_lib/wolfssl.js.map
 5419 /agent/ssl_lib/wolfssl.js
 14014 /agent/util/anti_root.js.map
@@ -777,7 +781,7 @@ export function gnutls_execute(moduleName) {
     gnutls_ssl.execute_hooks();
 }
 ✄
-{"version":3,"file":"linux_agent.js","sourceRoot":"/fritap/","sources":["agent/linux/linux_agent.ts"],"names":[],"mappings":"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"}
+{"version":3,"file":"linux_agent.js","sourceRoot":"/fritap/","sources":["agent/linux/linux_agent.ts"],"names":[],"mappings":"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"}
 ✄
 import { module_library_mapping } from "../shared/shared_structures.js";
 import { log, devlog } from "../util/log.js";
@@ -788,6 +792,7 @@ import { nss_execute } from "./nss_linux.js";
 import { mbedTLS_execute } from "./mbedTLS_linux.js";
 import { boring_execute } from "./openssl_boringssl_linux.js";
 import { matrixSSL_execute } from "./matrixssl_linux.js";
+import { s2ntls_execute } from "./s2ntls_linux.js";
 var plattform_name = "linux";
 var moduleNames = getModuleNames();
 export const socket_library = "libc";
@@ -827,7 +832,7 @@ function hook_Linux_SSL_Libs(module_library_mapping) {
     ssl_library_loader(plattform_name, module_library_mapping, moduleNames, "Linux");
 }
 export function load_linux_hooking_agent() {
-    module_library_mapping[plattform_name] = [[/.*libssl_sb.so/, boring_execute], [/.*libssl\.so/, boring_execute], [/.*libgnutls\.so/, gnutls_execute], [/.*libwolfssl\.so/, wolfssl_execute], [/.*libnspr[0-9]?\.so/, nss_execute], [/libmbedtls\.so.*/, mbedTLS_execute], [/libssl_s.a/, matrixSSL_execute]];
+    module_library_mapping[plattform_name] = [[/.*libssl_sb.so/, boring_execute], [/.*libssl\.so/, boring_execute], [/.*libgnutls\.so/, gnutls_execute], [/.*libwolfssl\.so/, wolfssl_execute], [/.*libnspr[0-9]?\.so/, nss_execute], [/libmbedtls\.so.*/, mbedTLS_execute], [/libssl_s.a/, matrixSSL_execute], [/.*libs2n.so/, s2ntls_execute]];
     hook_Linux_SSL_Libs(module_library_mapping);
     hook_Linux_Dynamic_Loader(module_library_mapping);
 }
@@ -1008,6 +1013,27 @@ export class OpenSSL_BoringSSL_Linux extends OpenSSL_BoringSSL {
 export function boring_execute(moduleName) {
     var boring_ssl = new OpenSSL_BoringSSL_Linux(moduleName, socket_library);
     boring_ssl.execute_hooks();
+}
+✄
+{"version":3,"file":"s2ntls_linux.js","sourceRoot":"/fritap/","sources":["agent/linux/s2ntls_linux.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,cAAc,EAAE,MAAM,kBAAkB,CAAC;AAClD,OAAO,EAAE,MAAM,EAAE,MAAM,sBAAsB,CAAC;AAE9C,MAAM,OAAO,YAAa,SAAQ,MAAM;IAEpC,YAAmB,UAAkB,EAAS,cAAsB;QAChE,KAAK,CAAC,UAAU,EAAE,cAAc,CAAC,CAAC;QADnB,eAAU,GAAV,UAAU,CAAQ;QAAS,mBAAc,GAAd,cAAc,CAAQ;IAEpE,CAAC;IAED,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;QACpC,IAAI,CAAC,8BAA8B,EAAE,CAAC;IAC1C,CAAC;CAGJ;AAED,MAAM,UAAU,cAAc,CAAC,UAAkB;IAC7C,IAAI,OAAO,GAAG,IAAI,YAAY,CAAC,UAAU,EAAE,cAAc,CAAC,CAAC;IAC3D,OAAO,CAAC,aAAa,EAAE,CAAC;AAC5B,CAAC"}
+✄
+import { socket_library } from "./linux_agent.js";
+import { S2nTLS } from "../ssl_lib/s2ntls.js";
+export class S2nTLS_Linux extends S2nTLS {
+    constructor(moduleName, socket_library) {
+        super(moduleName, socket_library);
+        this.moduleName = moduleName;
+        this.socket_library = socket_library;
+    }
+    execute_hooks() {
+        this.install_plaintext_read_hook();
+        this.install_plaintext_write_hook();
+        this.install_tls_keys_callback_hook();
+    }
+}
+export function s2ntls_execute(moduleName) {
+    var s2n_tls = new S2nTLS_Linux(moduleName, socket_library);
+    s2n_tls.execute_hooks();
 }
 ✄
 {"version":3,"file":"wolfssl_linux.js","sourceRoot":"/fritap/","sources":["agent/linux/wolfssl_linux.ts"],"names":[],"mappings":"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"}
@@ -3240,6 +3266,105 @@ OpenSSL_BoringSSL.keylog_callback = new NativeCallback(function (ctxPtr, linePtr
     message["keylog"] = linePtr.readCString();
     send(message);
 }, "void", ["pointer", "pointer"]);
+✄
+{"version":3,"file":"s2ntls.js","sourceRoot":"/fritap/","sources":["agent/ssl_lib/s2ntls.ts"],"names":[],"mappings":"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"}
+✄
+import { readAddresses, getBaseAddress, getPortsAndAddresses } from "../shared/shared_functions.js";
+import { offsets, enable_default_fd } from "../ssl_log.js";
+import { log } from "../util/log.js";
+export class S2nTLS {
+    constructor(moduleName, socket_library, passed_library_method_mapping) {
+        this.moduleName = moduleName;
+        this.socket_library = socket_library;
+        this.passed_library_method_mapping = passed_library_method_mapping;
+        this.library_method_mapping = {};
+        if (typeof passed_library_method_mapping !== 'undefined') {
+            this.library_method_mapping = passed_library_method_mapping;
+        }
+        else {
+            this.library_method_mapping[`*${moduleName}*`] = ["s2n_send", "s2n_recv", "s2n_connection_get_read_fd", "s2n_connection_get_write_fd", "s2n_connection_get_session"]; //natürlich noch erweitern
+            this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]; //welche Socketlibraries? an welcher Stelle relevant?
+        }
+        this.addresses = readAddresses(this.library_method_mapping);
+        //@ts-ignore
+        if (offsets != "{OFFSETS}" && offsets.s2n != null) {
+            if (offsets.sockets != null) {
+                const socketBaseAddress = getBaseAddress(socket_library);
+                for (const method of Object.keys(offsets.sockets)) {
+                    const methodOffset = offsets.sockets[`${method}`];
+                    const isAbsolute = methodOffset.absolute;
+                    //@ts-ignore
+                    const methodAddress = ptr(methodOffset.address);
+                    if (isAbsolute || socketBaseAddress == null) {
+                        this.addresses[`${method}`] = methodAddress;
+                    }
+                    else {
+                        this.addresses[`${method}`] = socketBaseAddress.add(methodAddress);
+                    }
+                }
+            }
+            const libraryBaseAddress = getBaseAddress(moduleName);
+            if (libraryBaseAddress == null) {
+                log("Unable to find library base address! Given address values will be interpreted as absolute ones!");
+            }
+            for (const method of Object.keys(offsets.s2n)) {
+                const methodOffset = offsets.s2n[`${method}`];
+                const isAbsolute = methodOffset.absolute;
+                //@ts-ignore
+                const methodAddress = ptr(methodOffset.address);
+                if (isAbsolute || libraryBaseAddress == null) {
+                    this.addresses[`${method}`] = methodAddress;
+                }
+                else {
+                    this.addresses[`${method}`] = libraryBaseAddress.add(methodAddress);
+                }
+            }
+        }
+        //s2n_connection-get_read_fd und s2n_connection_get_write_fd
+        S2nTLS.s2n_get_read_fd = new NativeFunction(this.addresses["s2n_connection_get_read_fd"], "int", ["pointer", "pointer"]);
+        S2nTLS.s2n_get_write_fd = new NativeFunction(this.addresses["s2n_connection_get_write_fd"], "int", ["pointer", "pointer"]);
+        S2nTLS.s2n_get_session = new NativeFunction(this.addresses["s2n_connection_get_session"], "int", ["pointer", "pointer", "size_t"]);
+    }
+    install_tls_keys_callback_hook() { }
+    install_plaintext_read_hook() {
+        var lib_addresses = this.addresses;
+        Interceptor.attach(lib_addresses["s2n_send"], {
+            onEnter: function (args) {
+                var readfd;
+                S2nTLS.s2n_get_read_fd(args[0], readfd);
+                var message = getPortsAndAddresses(readfd, true, lib_addresses, enable_default_fd);
+                message["function"] = "s2n_send";
+                message["ssl_session_id"] = "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76338"; //no session ids
+                this.message = message;
+                this.buf = args[1]; //pointer to buffer
+            },
+            onLeave: function (retval) {
+                retval = parseInt(retval);
+                if (retval < 0) { //on Failure: retval = S2N_Failure = -1
+                    return;
+                }
+                //on Success: retval = number of bytes sent
+                this.message["contentType"] = "datalog";
+                send(this.message, this.buf.readByteArray(retval));
+            }
+        });
+    }
+    install_plaintext_write_hook() {
+        //args(conn, buf, size, blocked)
+        var lib_addresses = this.addresses;
+        Interceptor.attach(lib_addresses["s2n_recv"], {
+            onEnter: function (args) {
+                var writefd;
+                S2nTLS.s2n_get_write_fd(args[0], writefd);
+                var message = getPortsAndAddresses(writefd, false, lib_addresses, enable_default_fd);
+                message["function"] = "s2n_recv";
+                message["ssl_session_id"] = "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76338"; //no session ids
+                message["contentType"] = "datalog";
+                send(message, args[1].readByteArray(parseInt(args[2])));
+            }
+        });
+    }
+}
 ✄
 {"version":3,"file":"wolfssl.js","sourceRoot":"/fritap/","sources":["agent/ssl_lib/wolfssl.ts"],"names":[],"mappings":"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"}
 ✄
