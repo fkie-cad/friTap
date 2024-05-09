@@ -84,14 +84,15 @@ export class S2nTLS {
 
             onEnter: function(args: any){
                 
-                var readfd;
-                S2nTLS.s2n_get_read_fd(args[0], readfd) as number;
+                var readfdPtr = Memory.alloc(Process.pointerSize) as NativePointer;
+                S2nTLS.s2n_get_read_fd(args[0], readfdPtr);
+                var readfd = readfdPtr.readInt();
                 var message = getPortsAndAddresses(readfd, true, lib_addresses, enable_default_fd);
 
                 message["function"] = "s2n_send";
                 message["ssl_session_id"] = "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76338" //no session ids
                 this.message = message;
-                this.buf = args[1]; //pointer to buffer
+                this.buf = readfdPtr; //pointer to buffer
             },
             onLeave: function(retval: any){
                 
@@ -115,15 +116,16 @@ export class S2nTLS {
 
             onEnter: function(args: any){
 
-                var writefd;
-                S2nTLS.s2n_get_write_fd(args[0], writefd) as number;
+                var writefdPtr = Memory.alloc(Process.pointerSize) as NativePointer;
+                S2nTLS.s2n_get_write_fd(args[0], writefdPtr);
+                var writefd = writefdPtr.readInt();
                 var message = getPortsAndAddresses(writefd, false, lib_addresses, enable_default_fd);
 
                 message["function"] = "s2n_recv";
                 message["ssl_session_id"] = "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76338" //no session ids
                 message["contentType"] = "datalog";
 
-                send(message, args[1].readByteArray(parseInt(args[2])));
+                send(message, writefdPtr.readByteArray(parseInt(args[2])));
             }
         })
     }
