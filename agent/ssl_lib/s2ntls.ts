@@ -92,7 +92,7 @@ export class S2nTLS {
                 message["function"] = "s2n_send";
                 message["ssl_session_id"] = "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76338" //no session ids
                 this.message = message;
-                this.buf = readfdPtr; //pointer to buffer
+                this.buf = args[1];
             },
             onLeave: function(retval: any){
                 
@@ -123,9 +123,18 @@ export class S2nTLS {
 
                 message["function"] = "s2n_recv";
                 message["ssl_session_id"] = "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76338" //no session ids
-                message["contentType"] = "datalog";
+                this.message = message;
+                this.buf = args[1];
 
-                send(message, writefdPtr.readByteArray(parseInt(args[2])));
+            },
+            onLeave: function(retval: any){
+                retval = parseInt(retval);
+                if(retval < 0){ //on Failure: retval = S2N_Failure = -1
+                    return;
+                }
+
+                this.message["contentType"] = "datalog";
+                send(this.message, this.buf.readByteArray(retval));
             }
         })
     }
