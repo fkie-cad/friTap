@@ -1,6 +1,6 @@
 import { readAddresses, getBaseAddress, getPortsAndAddresses} from "../shared/shared_functions.js"
 import { offsets, enable_default_fd } from "../ssl_log.js" 
-import { log } from "../util/log.js"
+import { log, devlog } from "../util/log.js"
 
 export class S2nTLS {
 
@@ -10,14 +10,24 @@ export class S2nTLS {
     static s2n_get_read_fd: any;
     static s2n_get_write_fd: any;
     static s2n_get_session: any;
+    static s2n_set_key_log_cb: any;
+
+    static keylog_callback = new NativeCallback(function(ctxPtr, conn: NativePointer, logline: NativePointer, len: NativePointer){
+        devlog("invoking keylog_callback from s2ntls");
+        var message: { [key: string]: string | number | null } = {}
+        message["contentType"] = "keylog"
+        message["keylog"] = logline.readCString()
+        send(message)
+        return 1;
+    }, "int", ["pointer", "pointer", "pointer", "pointer"]);
 
     constructor(public moduleName: String, public socket_library: String, public passed_library_method_mapping?: { [key: string]: Array<String>}){
 
         if(typeof passed_library_method_mapping !== 'undefined'){
             this.library_method_mapping = passed_library_method_mapping;
         }else{
-            this.library_method_mapping[`*${moduleName}*`] = ["s2n_send", "s2n_recv", "s2n_connection_get_read_fd", "s2n_connection_get_write_fd", "s2n_connection_get_session"]; //natürlich noch erweitern
-            this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]; //welche Socketlibraries? an welcher Stelle relevant?
+            this.library_method_mapping[`*${moduleName}*`] = ["s2n_send", "s2n_recv", "s2n_connection_get_read_fd", "s2n_connection_get_write_fd", "s2n_connection_get_session", "s2n_connection_new", "s2n_config_set_key_log_cb", "s2n_connection_set_config"];
+            this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]; 
         }
 
         this.addresses = readAddresses(this.library_method_mapping);
@@ -69,7 +79,6 @@ export class S2nTLS {
         //s2n_connection-get_read_fd und s2n_connection_get_write_fd
         S2nTLS.s2n_get_read_fd = new NativeFunction(this.addresses["s2n_connection_get_read_fd"], "int", ["pointer", "pointer"]);
         S2nTLS.s2n_get_write_fd = new NativeFunction(this.addresses["s2n_connection_get_write_fd"], "int", ["pointer", "pointer"]);
-
     
         S2nTLS.s2n_get_session = new NativeFunction(this.addresses["s2n_connection_get_session"], "int", ["pointer", "pointer", "size_t"]);
     }
