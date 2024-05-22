@@ -83,7 +83,9 @@ export class S2nTLS {
         S2nTLS.s2n_get_session = new NativeFunction(this.addresses["s2n_connection_get_session"], "int", ["pointer", "pointer", "size_t"]);
     }
 
-    install_tls_keys_callback_hook(){}
+    install_tls_keys_callback_hook(){
+        log("Error: TLS key extraction not implemented yet.");
+    }
 
     install_plaintext_read_hook(){
 

@@ -14,14 +14,18 @@ export class S2nTLS_Linux extends S2nTLS{
     }
 
     install_tls_keys_callback_hook(){
+        
         S2nTLS.s2n_set_key_log_cb = new NativeFunction(this.addresses["s2n_config_set_key_log_cb"], "int", ["pointer", "pointer", "pointer"]); //args=[config, callback, ctx]
-    
+        
         Interceptor.attach(this.addresses["s2n_connection_set_config"], 
-        {
+            {
             onEnter: function(args: any){
-                S2nTLS.s2n_set_key_log_cb(args[0], S2nTLS.keylog_callback, NULL);
+            
+                let emptyPointer = ptr("0");
+                S2nTLS.s2n_set_key_log_cb(args[1], S2nTLS.keylog_callback, emptyPointer);                    
             }
         })
+        
     }
 }
 
