@@ -35,8 +35,8 @@
 4241 /agent/linux/nss_linux.js
 1147 /agent/linux/openssl_boringssl_linux.js.map
 1229 /agent/linux/openssl_boringssl_linux.js
-1238 /agent/linux/s2ntls_linux.js.map
-1481 /agent/linux/s2ntls_linux.js
+1055 /agent/linux/s2ntls_linux.js.map
+1118 /agent/linux/s2ntls_linux.js
 2666 /agent/linux/wolfssl_linux.js.map
 3486 /agent/linux/wolfssl_linux.js
 1729 /agent/macos/macos_agent.js.map
@@ -1015,7 +1015,7 @@ export function boring_execute(moduleName) {
     boring_ssl.execute_hooks();
 }
 ✄
-{"version":3,"file":"s2ntls_linux.js","sourceRoot":"/fritap/","sources":["agent/linux/s2ntls_linux.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,cAAc,EAAE,MAAM,kBAAkB,CAAC;AAClD,OAAO,EAAE,MAAM,EAAE,MAAM,sBAAsB,CAAC;AAE9C,MAAM,OAAO,YAAa,SAAQ,MAAM;IAEpC,YAAmB,UAAkB,EAAS,cAAsB;QAChE,KAAK,CAAC,UAAU,EAAE,cAAc,CAAC,CAAC;QADnB,eAAU,GAAV,UAAU,CAAQ;QAAS,mBAAc,GAAd,cAAc,CAAQ;IAEpE,CAAC;IAED,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;QACpC,IAAI,CAAC,8BAA8B,EAAE,CAAC;IAC1C,CAAC;IAED,8BAA8B;QAC1B,IAAI,IAAI,CAAC,SAAS,CAAC,2BAA2B,CAAC,IAAI,IAAI,CAAC,SAAS,CAAC,2BAA2B,CAAC,EAAE;YAC5F,MAAM,CAAC,kBAAkB,GAAG,IAAI,cAAc,CAAC,IAAI,CAAC,SAAS,CAAC,2BAA2B,CAAC,EAAE,KAAK,EAAE,CAAC,SAAS,EAAE,SAAS,EAAE,SAAS,CAAC,CAAC,CAAC,CAAC,8BAA8B;YAErK,WAAW,CAAC,MAAM,CAAC,IAAI,CAAC,SAAS,CAAC,2BAA2B,CAAC,EAC9D;gBACI,OAAO,EAAE,UAAS,IAAS;oBACvB,IAAI,MAAM,CAAC,eAAe,EAAE;wBACxB,IAAI,YAAY,GAAG,GAAG,CAAC,GAAG,CAAC,CAAC;wBAC5B,MAAM,CAAC,kBAAkB,CAAC,IAAI,CAAC,CAAC,CAAC,EAAE,MAAM,CAAC,eAAe,EAAE,YAAY,CAAC,CAAC;qBAC5E;gBACL,CAAC;aACJ,CAAC,CAAA;SACL;aAAM;YACH,OAAO,CAAC,KAAK,CAAC,qFAAqF,CAAC,CAAC;SACxG;IACL,CAAC;CACJ;AAED,MAAM,UAAU,cAAc,CAAC,UAAkB;IAC7C,IAAI,OAAO,GAAG,IAAI,YAAY,CAAC,UAAU,EAAE,cAAc,CAAC,CAAC;IAC3D,OAAO,CAAC,aAAa,EAAE,CAAC;AAC5B,CAAC"}
+{"version":3,"file":"s2ntls_linux.js","sourceRoot":"/fritap/","sources":["agent/linux/s2ntls_linux.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,cAAc,EAAE,MAAM,kBAAkB,CAAC;AAClD,OAAO,EAAE,MAAM,EAAE,MAAM,sBAAsB,CAAC;AAE9C,MAAM,OAAO,YAAa,SAAQ,MAAM;IAEpC,YAAmB,UAAkB,EAAS,cAAsB;QAChE,KAAK,CAAC,UAAU,EAAE,cAAc,CAAC,CAAC;QADnB,eAAU,GAAV,UAAU,CAAQ;QAAS,mBAAc,GAAd,cAAc,CAAQ;IAEpE,CAAC;IAED,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;QACpC,IAAI,CAAC,8BAA8B,EAAE,CAAC;IAC1C,CAAC;IAED,8BAA8B;QAE1B,MAAM,CAAC,kBAAkB,GAAG,IAAI,cAAc,CAAC,IAAI,CAAC,SAAS,CAAC,2BAA2B,CAAC,EAAE,KAAK,EAAE,CAAC,SAAS,EAAE,SAAS,EAAE,SAAS,CAAC,CAAC,CAAC,CAAC,8BAA8B;QAErK,WAAW,CAAC,MAAM,CAAC,IAAI,CAAC,SAAS,CAAC,2BAA2B,CAAC,EAC1D;YACA,OAAO,EAAE,UAAS,IAAS;gBAEvB,IAAI,YAAY,GAAG,GAAG,CAAC,GAAG,CAAC,CAAC;gBAC5B,MAAM,CAAC,kBAAkB,CAAC,IAAI,CAAC,CAAC,CAAC,EAAE,MAAM,CAAC,eAAe,EAAE,YAAY,CAAC,CAAC;YAC7E,CAAC;SACJ,CAAC,CAAA;IAEN,CAAC;CACJ;AAED,MAAM,UAAU,cAAc,CAAC,UAAkB;IAC7C,IAAI,OAAO,GAAG,IAAI,YAAY,CAAC,UAAU,EAAE,cAAc,CAAC,CAAC;IAC3D,OAAO,CAAC,aAAa,EAAE,CAAC;AAC5B,CAAC"}
 ✄
 import { socket_library } from "./linux_agent.js";
 import { S2nTLS } from "../ssl_lib/s2ntls.js";
@@ -1031,20 +1031,13 @@ export class S2nTLS_Linux extends S2nTLS {
         this.install_tls_keys_callback_hook();
     }
     install_tls_keys_callback_hook() {
-        if (this.addresses["s2n_config_set_key_log_cb"] && this.addresses["s2n_connection_set_config"]) {
-            S2nTLS.s2n_set_key_log_cb = new NativeFunction(this.addresses["s2n_config_set_key_log_cb"], "int", ["pointer", "pointer", "pointer"]); //args=[config, callback, ctx]
-            Interceptor.attach(this.addresses["s2n_connection_set_config"], {
-                onEnter: function (args) {
-                    if (S2nTLS.keylog_callback) {
-                        let emptyPointer = ptr("0");
-                        S2nTLS.s2n_set_key_log_cb(args[0], S2nTLS.keylog_callback, emptyPointer);
-                    }
-                }
-            });
-        }
-        else {
-            console.error("Could not find addresses for s2n_config_set_key_log_cb or s2n_connection_set_config");
-        }
+        S2nTLS.s2n_set_key_log_cb = new NativeFunction(this.addresses["s2n_config_set_key_log_cb"], "int", ["pointer", "pointer", "pointer"]); //args=[config, callback, ctx]
+        Interceptor.attach(this.addresses["s2n_connection_set_config"], {
+            onEnter: function (args) {
+                let emptyPointer = ptr("0");
+                S2nTLS.s2n_set_key_log_cb(args[1], S2nTLS.keylog_callback, emptyPointer);
+            }
+        });
     }
 }
 export function s2ntls_execute(moduleName) {
