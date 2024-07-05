@@ -1,5 +1,11 @@
+#frida-server
+frida-server*
+
 #keys and certs for testing
 *.pem
+
+# venv
+vnev/
 
 ExampleLinux/.devcontainer/*
 ExampleLinux/sslserver
