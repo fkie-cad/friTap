@@ -1,5 +1,5 @@
-import { module_library_mapping } from "../shared/shared_structures.js";
-import { getModuleNames, ssl_library_loader } from "../shared/shared_functions.js";
+import { module_library_mapping, ModuleHookingType } from "../shared/shared_structures.js";
+import { getModuleNames, ssl_library_loader, invokeHookingFunction } from "../shared/shared_functions.js";
 import { log, devlog } from "../util/log.js";
 import { gnutls_execute } from "./gnutls_android.js";
 import { wolfssl_execute } from "./wolfssl_android.js";
@@ -11,6 +11,7 @@ import { java_execute} from "./android_java_tls_libs.js";
 
 var plattform_name = "linux";
 var moduleNames: Array<string> = getModuleNames();
+(global as any).addresses = {};
 
 export const socket_library = "libc"
 
@@ -18,7 +19,7 @@ function install_java_hooks(){
     java_execute();
 }
 
-function hook_Android_Dynamic_Loader(module_library_mapping: { [key: string]: Array<[any, (moduleName: string)=>void]> }): void{
+function hook_Android_Dynamic_Loader(module_library_mapping: { [key: string]: Array<[any, ModuleHookingType]> }, is_base_hook: boolean): void{
     try {
     const regex_libdl = /.*libdl.*\.so/
     const libdl = moduleNames.find(element => element.match(regex_libdl))
@@ -47,7 +48,7 @@ function hook_Android_Dynamic_Loader(module_library_mapping: { [key: string]: Ar
                     let func = map[1]
                     if (regex.test(this.moduleName)){
                         log(`${this.moduleName} was loaded & will be hooked on Android!`)
-                        func(this.moduleName)
+                        func(this.moduleName, is_base_hook)
                     } 
                     
                 }
@@ -64,15 +65,22 @@ function hook_Android_Dynamic_Loader(module_library_mapping: { [key: string]: Ar
 }
 }
 
-function hook_native_Android_SSL_Libs(module_library_mapping: { [key: string]: Array<[any, (moduleName: string)=>void]> }){
-    ssl_library_loader(plattform_name, module_library_mapping,moduleNames,"Android")
+function hook_native_Android_SSL_Libs(module_library_mapping: { [key: string]: Array<[any, ModuleHookingType]> }, is_base_hook: boolean){
+    ssl_library_loader(plattform_name, module_library_mapping,moduleNames,"Android",is_base_hook)
 
 }
 
 
 export function load_android_hooking_agent() {
-    module_library_mapping[plattform_name] = [[/.*libssl_sb.so/, boring_execute],[/.*libssl\.so/, boring_execute],[/.*libgnutls\.so/, gnutls_execute],[/.*libwolfssl\.so/, wolfssl_execute],[/.*libnspr[0-9]?\.so/,nss_execute], [/libmbedtls\.so.*/, mbedTLS_execute]];
+    module_library_mapping[plattform_name] = [
+        [/.*libssl_sb.so/, invokeHookingFunction(boring_execute)],
+        [/.*libssl\.so/, invokeHookingFunction(boring_execute)],
+        [/.*libgnutls\.so/, invokeHookingFunction(gnutls_execute)],
+        [/.*libwolfssl\.so/, invokeHookingFunction(wolfssl_execute)],
+        [/.*libnspr[0-9]?\.so/,invokeHookingFunction(nss_execute)], 
+        [/libmbedtls\.so.*/, invokeHookingFunction(mbedTLS_execute)]];
+
     install_java_hooks();
-    hook_native_Android_SSL_Libs(module_library_mapping);
-    hook_Android_Dynamic_Loader(module_library_mapping);
+    hook_native_Android_SSL_Libs(module_library_mapping, true);
+    hook_Android_Dynamic_Loader(module_library_mapping, false);
 }

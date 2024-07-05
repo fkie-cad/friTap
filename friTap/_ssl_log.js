@@ -1,88 +1,88 @@
 📦
-2040 /agent/ssl_log.js.map
-2622 /agent/ssl_log.js
-2443 /agent/android/android_agent.js.map
-2834 /agent/android/android_agent.js
+2188 /agent/ssl_log.js.map
+2839 /agent/ssl_log.js
+2662 /agent/android/android_agent.js.map
+3141 /agent/android/android_agent.js
 937 /agent/android/android_java_tls_libs.js.map
 1150 /agent/android/android_java_tls_libs.js
 4361 /agent/android/bouncycastle.js.map
 5111 /agent/android/bouncycastle.js
 3203 /agent/android/conscrypt.js.map
 5078 /agent/android/conscrypt.js
-1074 /agent/android/gnutls_android.js.map
-1053 /agent/android/gnutls_android.js
-734 /agent/android/mbedTLS_android.js.map
-917 /agent/android/mbedTLS_android.js
-1100 /agent/android/nss_android.js.map
-1185 /agent/android/nss_android.js
-1085 /agent/android/openssl_boringssl_android.js.map
-1120 /agent/android/openssl_boringssl_android.js
-2742 /agent/android/wolfssl_android.js.map
-3492 /agent/android/wolfssl_android.js
-1788 /agent/ios/ios_agent.js.map
-2005 /agent/ios/ios_agent.js
-1913 /agent/ios/openssl_boringssl_ios.js.map
-2855 /agent/ios/openssl_boringssl_ios.js
-1068 /agent/linux/gnutls_linux.js.map
-1051 /agent/linux/gnutls_linux.js
-2197 /agent/linux/linux_agent.js.map
-2476 /agent/linux/linux_agent.js
-734 /agent/linux/matrixssl_linux.js.map
-921 /agent/linux/matrixssl_linux.js
-724 /agent/linux/mbedTLS_linux.js.map
-911 /agent/linux/mbedTLS_linux.js
-3225 /agent/linux/nss_linux.js.map
-4241 /agent/linux/nss_linux.js
-1216 /agent/linux/openssl_boringssl_linux.js.map
-1229 /agent/linux/openssl_boringssl_linux.js
-2735 /agent/linux/wolfssl_linux.js.map
-3486 /agent/linux/wolfssl_linux.js
-1798 /agent/macos/macos_agent.js.map
-2133 /agent/macos/macos_agent.js
-1592 /agent/macos/openssl_boringssl_macos.js.map
-2257 /agent/macos/openssl_boringssl_macos.js
-7928 /agent/shared/shared_functions.js.map
-9581 /agent/shared/shared_functions.js
+1319 /agent/android/gnutls_android.js.map
+1324 /agent/android/gnutls_android.js
+1180 /agent/android/mbedTLS_android.js.map
+1470 /agent/android/mbedTLS_android.js
+1249 /agent/android/nss_android.js.map
+1367 /agent/android/nss_android.js
+1434 /agent/android/openssl_boringssl_android.js.map
+1754 /agent/android/openssl_boringssl_android.js
+3062 /agent/android/wolfssl_android.js.map
+3815 /agent/android/wolfssl_android.js
+1881 /agent/ios/ios_agent.js.map
+2134 /agent/ios/ios_agent.js
+2300 /agent/ios/openssl_boringssl_ios.js.map
+3348 /agent/ios/openssl_boringssl_ios.js
+1242 /agent/linux/gnutls_linux.js.map
+1254 /agent/linux/gnutls_linux.js
+2398 /agent/linux/linux_agent.js.map
+2791 /agent/linux/linux_agent.js
+883 /agent/linux/matrixssl_linux.js.map
+1106 /agent/linux/matrixssl_linux.js
+852 /agent/linux/mbedTLS_linux.js.map
+1069 /agent/linux/mbedTLS_linux.js
+3528 /agent/linux/nss_linux.js.map
+4521 /agent/linux/nss_linux.js
+1360 /agent/linux/openssl_boringssl_linux.js.map
+1346 /agent/linux/openssl_boringssl_linux.js
+2984 /agent/linux/wolfssl_linux.js.map
+3741 /agent/linux/wolfssl_linux.js
+1891 /agent/macos/macos_agent.js.map
+2262 /agent/macos/macos_agent.js
+1847 /agent/macos/openssl_boringssl_macos.js.map
+2542 /agent/macos/openssl_boringssl_macos.js
+9550 /agent/shared/shared_functions.js.map
+11829 /agent/shared/shared_functions.js
 397 /agent/shared/shared_structures.js.map
 201 /agent/shared/shared_structures.js
-6437 /agent/ssl_lib/gnutls.js.map
-7566 /agent/ssl_lib/gnutls.js
+6803 /agent/ssl_lib/gnutls.js.map
+7899 /agent/ssl_lib/gnutls.js
 2725 /agent/ssl_lib/java_ssl_libs.js.map
 5235 /agent/ssl_lib/java_ssl_libs.js
-5469 /agent/ssl_lib/matrixssl.js.map
-6672 /agent/ssl_lib/matrixssl.js
-6700 /agent/ssl_lib/mbedTLS.js.map
-6773 /agent/ssl_lib/mbedTLS.js
-30916 /agent/ssl_lib/nss.js.map
-51655 /agent/ssl_lib/nss.js
-8421 /agent/ssl_lib/openssl_boringssl.js.map
-9735 /agent/ssl_lib/openssl_boringssl.js
-4454 /agent/ssl_lib/wolfssl.js.map
-5419 /agent/ssl_lib/wolfssl.js
-14083 /agent/util/anti_root.js.map
-17984 /agent/util/anti_root.js
+5910 /agent/ssl_lib/matrixssl.js.map
+7056 /agent/ssl_lib/matrixssl.js
+6966 /agent/ssl_lib/mbedTLS.js.map
+7038 /agent/ssl_lib/mbedTLS.js
+31291 /agent/ssl_lib/nss.js.map
+52013 /agent/ssl_lib/nss.js
+11947 /agent/ssl_lib/openssl_boringssl.js.map
+14573 /agent/ssl_lib/openssl_boringssl.js
+4770 /agent/ssl_lib/wolfssl.js.map
+5718 /agent/ssl_lib/wolfssl.js
+14214 /agent/util/anti_root.js.map
+18094 /agent/util/anti_root.js
 550 /agent/util/log.js.map
 290 /agent/util/log.js
 1563 /agent/util/process_infos.js.map
 1820 /agent/util/process_infos.js
-726 /agent/windows/gnutls_windows.js.map
-708 /agent/windows/gnutls_windows.js
-771 /agent/windows/matrixssl_windows.js.map
-772 /agent/windows/matrixssl_windows.js
-734 /agent/windows/mbedTLS_windows.js.map
-917 /agent/windows/mbedTLS_windows.js
-974 /agent/windows/nss_windows.js.map
-1132 /agent/windows/nss_windows.js
-1006 /agent/windows/openssl_boringssl_windows.js.map
-1214 /agent/windows/openssl_boringssl_windows.js
-12453 /agent/windows/sspi.js.map
-15804 /agent/windows/sspi.js
-2181 /agent/windows/windows_agent.js.map
-2571 /agent/windows/windows_agent.js
-1044 /agent/windows/wolfssl_windows.js.map
-1098 /agent/windows/wolfssl_windows.js
+875 /agent/windows/gnutls_windows.js.map
+890 /agent/windows/gnutls_windows.js
+920 /agent/windows/matrixssl_windows.js.map
+957 /agent/windows/matrixssl_windows.js
+883 /agent/windows/mbedTLS_windows.js.map
+1103 /agent/windows/mbedTLS_windows.js
+1123 /agent/windows/nss_windows.js.map
+1314 /agent/windows/nss_windows.js
+1236 /agent/windows/openssl_boringssl_windows.js.map
+1481 /agent/windows/openssl_boringssl_windows.js
+13048 /agent/windows/sspi.js.map
+16326 /agent/windows/sspi.js
+2382 /agent/windows/windows_agent.js.map
+2886 /agent/windows/windows_agent.js
+1193 /agent/windows/wolfssl_windows.js.map
+1281 /agent/windows/wolfssl_windows.js
 ✄
-{"version":3,"file":"ssl_log.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/ssl_log.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,0BAA0B,EAAE,MAAM,4BAA4B,CAAC;AACxE,OAAO,EAAE,sBAAsB,EAAE,MAAM,oBAAoB,CAAC;AAC5D,OAAO,EAAE,wBAAwB,EAAE,MAAM,wBAAwB,CAAC;AAClE,OAAO,EAAE,wBAAwB,EAAE,MAAM,wBAAwB,CAAC;AAClE,OAAO,EAAE,0BAA0B,EAAE,MAAM,4BAA4B,CAAC;AACxE,OAAO,EAAE,SAAS,EAAE,OAAO,EAAE,SAAS,EAAE,KAAK,EAAE,OAAO,EAAE,MAAM,yBAAyB,CAAC;AACxF,OAAO,EAAE,iBAAiB,EAAE,MAAM,qBAAqB,CAAC;AACxD,OAAO,EAAE,GAAG,EAAE,MAAM,eAAe,CAAC;AA2EpC,YAAY;AACZ,MAAM,CAAC,IAAI,OAAO,GAAa,WAAW,CAAC;AAC3C,YAAY;AACZ,MAAM,CAAC,IAAI,YAAY,GAAY,KAAK,CAAC;AACzC,YAAY;AACZ,MAAM,CAAC,IAAI,SAAS,GAAY,KAAK,CAAC;AACtC,YAAY;AACZ,MAAM,CAAC,IAAI,iBAAiB,GAAY,KAAK,CAAC;AAG9C;;EAEE;AAEF,IAAI,CAAC,WAAW,CAAC,CAAA;AACjB,MAAM,uBAAuB,GAAG,IAAI,CAAC,WAAW,EAAE,KAAK,CAAC,EAAE;IACtD,iBAAiB,GAAG,KAAK,CAAC,OAAO,CAAC;AACtC,CAAC,CAAC,CAAC;AACH,uBAAuB,CAAC,IAAI,EAAE,CAAC;AAE/B,IAAI,CAAC,cAAc,CAAC,CAAA;AACpB,MAAM,cAAc,GAAG,IAAI,CAAC,cAAc,EAAE,KAAK,CAAC,EAAE;IAChD,YAAY,GAAG,KAAK,CAAC,OAAO,CAAC;AACjC,CAAC,CAAC,CAAC;AACH,cAAc,CAAC,IAAI,EAAE,CAAC;AAEtB,IAAI,CAAC,MAAM,CAAC,CAAA;AACZ,MAAM,mBAAmB,GAAG,IAAI,CAAC,UAAU,EAAE,KAAK,CAAC,EAAE;IACjD,SAAS,GAAG,KAAK,CAAC,OAAO,CAAC;AAC9B,CAAC,CAAC,CAAC;AACH,mBAAmB,CAAC,IAAI,EAAE,CAAC,CAAA,KAAK;AAGhC;;;;;;;EAOE;AAGF,MAAM,UAAU,UAAU;IACtB,OAAO,OAAO,CAAC;AACnB,CAAC;AAID,SAAS,sBAAsB;IAC3B,IAAG,SAAS,EAAE,EAAC;QACX,GAAG,CAAC,2BAA2B,CAAC,CAAA;QAChC,0BAA0B,EAAE,CAAA;KAC/B;SAAK,IAAG,SAAS,EAAE,EAAC;QACjB,GAAG,CAAC,2BAA2B,CAAC,CAAA;QAChC,IAAG,SAAS,EAAC;YACT,GAAG,CAAC,2BAA2B,CAAC,CAAC;YACjC,iBAAiB,EAAE,CAAC;SACvB;QACD,0BAA0B,EAAE,CAAA;KAC/B;SAAK,IAAG,OAAO,EAAE,EAAC;QACf,GAAG,CAAC,yBAAyB,CAAC,CAAA;QAC9B,wBAAwB,EAAE,CAAA;KAC7B;SAAK,IAAG,KAAK,EAAE,EAAC;QACb,GAAG,CAAC,uBAAuB,CAAC,CAAA;QAC5B,sBAAsB,EAAE,CAAA;KAC3B;SAAK,IAAG,OAAO,EAAE,EAAC;QACf,GAAG,CAAC,yBAAyB,CAAC,CAAA;QAC9B,wBAAwB,EAAE,CAAA;KAC7B;SAAI;QACD,GAAG,CAAC,qCAAqC,CAAC,CAAA;QAC1C,GAAG,CAAC,0HAA0H,CAAC,CAAA;KAClI;AAEL,CAAC;AAED,sBAAsB,EAAE,CAAA"}
+{"version":3,"file":"ssl_log.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/ssl_log.ts"],"names":[],"mappings":"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"}
 ✄
 import { load_android_hooking_agent } from "./android/android_agent.js";
 import { load_ios_hooking_agent } from "./ios/ios_agent.js";
@@ -92,6 +92,9 @@ import { load_windows_hooking_agent } from "./windows/windows_agent.js";
 import { isWindows, isLinux, isAndroid, isiOS, isMacOS } from "./util/process_infos.js";
 import { anti_root_execute } from "./util/anti_root.js";
 import { log } from "./util/log.js";
+// global address which stores the addresses of the hooked modules which aren't loaded via the dynamic loader
+global.init_addresses = {};
+global.global_counter = 0;
 //@ts-ignore
 export let offsets = "{OFFSETS}";
 //@ts-ignore
@@ -105,6 +108,7 @@ This way we are providing boolean values from the commandline directly to our fr
 */
 send("defaultFD");
 const enable_default_fd_state = recv('defaultFD', value => {
+    console.log("value.payload: " + value.payload);
     enable_default_fd = value.payload;
 });
 enable_default_fd_state.wait();
@@ -161,10 +165,10 @@ function load_os_specific_agent() {
 }
 load_os_specific_agent();
 ✄
-{"version":3,"file":"android_agent.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/android/android_agent.ts"],"names":[],"mappings":"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"}
+{"version":3,"file":"android_agent.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/android/android_agent.ts"],"names":[],"mappings":"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"}
 ✄
 import { module_library_mapping } from "../shared/shared_structures.js";
-import { getModuleNames, ssl_library_loader } from "../shared/shared_functions.js";
+import { getModuleNames, ssl_library_loader, invokeHookingFunction } from "../shared/shared_functions.js";
 import { log, devlog } from "../util/log.js";
 import { gnutls_execute } from "./gnutls_android.js";
 import { wolfssl_execute } from "./wolfssl_android.js";
@@ -174,11 +178,12 @@ import { boring_execute } from "./openssl_boringssl_android.js";
 import { java_execute } from "./android_java_tls_libs.js";
 var plattform_name = "linux";
 var moduleNames = getModuleNames();
+global.addresses = {};
 export const socket_library = "libc";
 function install_java_hooks() {
     java_execute();
 }
-function hook_Android_Dynamic_Loader(module_library_mapping) {
+function hook_Android_Dynamic_Loader(module_library_mapping, is_base_hook) {
     try {
         const regex_libdl = /.*libdl.*\.so/;
         const libdl = moduleNames.find(element => element.match(regex_libdl));
@@ -204,7 +209,7 @@ function hook_Android_Dynamic_Loader(module_library_mapping) {
                         let func = map[1];
                         if (regex.test(this.moduleName)) {
                             log(`${this.moduleName} was loaded & will be hooked on Android!`);
-                            func(this.moduleName);
+                            func(this.moduleName, is_base_hook);
                         }
                     }
                 }
@@ -217,14 +222,21 @@ function hook_Android_Dynamic_Loader(module_library_mapping) {
         log("No dynamic loader present for hooking on Android.");
     }
 }
-function hook_native_Android_SSL_Libs(module_library_mapping) {
-    ssl_library_loader(plattform_name, module_library_mapping, moduleNames, "Android");
+function hook_native_Android_SSL_Libs(module_library_mapping, is_base_hook) {
+    ssl_library_loader(plattform_name, module_library_mapping, moduleNames, "Android", is_base_hook);
 }
 export function load_android_hooking_agent() {
-    module_library_mapping[plattform_name] = [[/.*libssl_sb.so/, boring_execute], [/.*libssl\.so/, boring_execute], [/.*libgnutls\.so/, gnutls_execute], [/.*libwolfssl\.so/, wolfssl_execute], [/.*libnspr[0-9]?\.so/, nss_execute], [/libmbedtls\.so.*/, mbedTLS_execute]];
+    module_library_mapping[plattform_name] = [
+        [/.*libssl_sb.so/, invokeHookingFunction(boring_execute)],
+        [/.*libssl\.so/, invokeHookingFunction(boring_execute)],
+        [/.*libgnutls\.so/, invokeHookingFunction(gnutls_execute)],
+        [/.*libwolfssl\.so/, invokeHookingFunction(wolfssl_execute)],
+        [/.*libnspr[0-9]?\.so/, invokeHookingFunction(nss_execute)],
+        [/libmbedtls\.so.*/, invokeHookingFunction(mbedTLS_execute)]
+    ];
     install_java_hooks();
-    hook_native_Android_SSL_Libs(module_library_mapping);
-    hook_Android_Dynamic_Loader(module_library_mapping);
+    hook_native_Android_SSL_Libs(module_library_mapping, true);
+    hook_Android_Dynamic_Loader(module_library_mapping, false);
 }
 ✄
 {"version":3,"file":"android_java_tls_libs.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/android/android_java_tls_libs.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,GAAG,EAAE,MAAM,gBAAgB,CAAC;AACrC,OAAO,EAAE,OAAO,IAAI,cAAc,EAAE,MAAM,mBAAmB,CAAC;AAC9D,OAAO,EAAE,QAAQ,EAAE,MAAM,6BAA6B,CAAC;AAGvD,MAAM,OAAO,gBAAiB,SAAQ,QAAQ;IAG1C,0BAA0B;QACtB,IAAI,IAAI,CAAC,SAAS,EAAE;YAChB,UAAU,CAAC;gBAEP,IAAI,CAAC,OAAO,CAAC;oBAET,4BAA4B;oBAC5B,IAAI;wBACA,oFAAoF;wBACpF,IAAI,QAAQ,GAAG,IAAI,CAAC,GAAG,CAAC,oDAAoD,CAAC,CAAA;wBAC7E,GAAG,CAAC,qCAAqC,CAAC,CAAA;wBAC1C,cAAc,EAAE,CAAA;qBACnB;oBAAC,OAAO,KAAK,EAAE;wBACZ,2BAA2B;qBAC9B;gBACL,CAAC,CAAC,CAAC;YACP,CAAC,EAAE,CAAC,CAAC,CAAC;SACT;IACL,CAAC;IAGD,aAAa;QACT,IAAI,CAAC,0BAA0B,EAAE,CAAC;QAClC,IAAI,CAAC,kBAAkB,EAAE,CAAC;IAC9B,CAAC;CAEJ;AAGD,MAAM,UAAU,YAAY;IACxB,IAAI,QAAQ,GAAG,IAAI,gBAAgB,EAAE,CAAC;IACtC,QAAQ,CAAC,aAAa,EAAE,CAAC;AAC7B,CAAC"}
@@ -462,12 +474,12 @@ export function execute() {
     });
 }
 ✄
-{"version":3,"file":"gnutls_android.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/android/gnutls_android.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,MAAM,EAAE,MAAM,sBAAsB,CAAC;AAC7C,OAAO,EAAE,cAAc,EAAE,MAAM,oBAAoB,CAAC;AAEpD,MAAM,OAAO,YAAa,SAAQ,MAAM;IAEpC,YAAmB,UAAiB,EAAS,cAAqB;QAC9D,KAAK,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;QADlB,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAElE,CAAC;IAGD,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;QACpC,IAAI,CAAC,8BAA8B,EAAE,CAAC;IAC1C,CAAC;IAED,8BAA8B;QAC1B,WAAW,CAAC,MAAM,CAAC,IAAI,CAAC,SAAS,CAAC,aAAa,CAAC,EACpD;YACI,OAAO,EAAE,UAAU,IAAS;gBACxB,IAAI,CAAC,OAAO,GAAG,IAAI,CAAC,CAAC,CAAC,CAAA;YAC1B,CAAC;YACD,OAAO,EAAE,UAAU,MAAW;gBAC1B,OAAO,CAAC,GAAG,CAAC,IAAI,CAAC,OAAO,CAAC,CAAA;gBACzB,MAAM,CAAC,kCAAkC,CAAC,IAAI,CAAC,OAAO,CAAC,WAAW,EAAE,EAAE,MAAM,CAAC,eAAe,CAAC,CAAA;YAEjG,CAAC;SACJ,CAAC,CAAA;IAEF,CAAC;CACJ;AAGD,MAAM,UAAU,cAAc,CAAC,UAAiB;IAC5C,IAAI,UAAU,GAAG,IAAI,YAAY,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;IAC7D,UAAU,CAAC,aAAa,EAAE,CAAC;AAG/B,CAAC"}
+{"version":3,"file":"gnutls_android.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/android/gnutls_android.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,MAAM,EAAE,MAAM,sBAAsB,CAAC;AAC7C,OAAO,EAAE,cAAc,EAAE,MAAM,oBAAoB,CAAC;AAEpD,MAAM,OAAO,YAAa,SAAQ,MAAM;IAEpC,YAAmB,UAAiB,EAAS,cAAqB,EAAE,YAAqB;QACrF,KAAK,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;QADlB,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAElE,CAAC;IAGD,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;QACpC,IAAI,CAAC,8BAA8B,EAAE,CAAC;IAC1C,CAAC;IAED,8BAA8B;QAC1B,WAAW,CAAC,MAAM,CAAC,IAAI,CAAC,SAAS,CAAC,IAAI,CAAC,WAAW,CAAC,CAAC,aAAa,CAAC,EACtE;YACI,OAAO,EAAE,UAAU,IAAS;gBACxB,IAAI,CAAC,OAAO,GAAG,IAAI,CAAC,CAAC,CAAC,CAAA;YAC1B,CAAC;YACD,OAAO,EAAE,UAAU,MAAW;gBAC1B,OAAO,CAAC,GAAG,CAAC,IAAI,CAAC,OAAO,CAAC,CAAA;gBACzB,MAAM,CAAC,kCAAkC,CAAC,IAAI,CAAC,OAAO,CAAC,WAAW,EAAE,EAAE,MAAM,CAAC,eAAe,CAAC,CAAA;YAEjG,CAAC;SACJ,CAAC,CAAA;IAEF,CAAC;CACJ;AAGD,MAAM,UAAU,cAAc,CAAC,UAAiB,EAAE,YAAqB;IACnE,IAAI,UAAU,GAAG,IAAI,YAAY,CAAC,UAAU,EAAC,cAAc,EAAE,YAAY,CAAC,CAAC;IAC3E,UAAU,CAAC,aAAa,EAAE,CAAC;IAE3B,IAAI,YAAY,EAAE;QACd,MAAM,cAAc,GAAG,UAAU,CAAC,SAAS,CAAC;QAC5C,IAAI,MAAM,CAAC,IAAI,CAAC,cAAc,CAAC,CAAC,MAAM,GAAG,CAAC,EAAE;YACvC,MAAc,CAAC,cAAc,CAAC,UAAU,CAAC,GAAG,cAAc,CAAC;SAC/D;KACJ;AAEL,CAAC"}
 ✄
 import { GnuTLS } from "../ssl_lib/gnutls.js";
 import { socket_library } from "./android_agent.js";
 export class GnuTLS_Linux extends GnuTLS {
-    constructor(moduleName, socket_library) {
+    constructor(moduleName, socket_library, is_base_hook) {
         super(moduleName, socket_library);
         this.moduleName = moduleName;
         this.socket_library = socket_library;
@@ -478,7 +490,7 @@ export class GnuTLS_Linux extends GnuTLS {
         this.install_tls_keys_callback_hook();
     }
     install_tls_keys_callback_hook() {
-        Interceptor.attach(this.addresses["gnutls_init"], {
+        Interceptor.attach(this.addresses[this.module_name]["gnutls_init"], {
             onEnter: function (args) {
                 this.session = args[0];
             },
@@ -489,17 +501,23 @@ export class GnuTLS_Linux extends GnuTLS {
         });
     }
 }
-export function gnutls_execute(moduleName) {
-    var gnutls_ssl = new GnuTLS_Linux(moduleName, socket_library);
+export function gnutls_execute(moduleName, is_base_hook) {
+    var gnutls_ssl = new GnuTLS_Linux(moduleName, socket_library, is_base_hook);
     gnutls_ssl.execute_hooks();
+    if (is_base_hook) {
+        const init_addresses = gnutls_ssl.addresses;
+        if (Object.keys(init_addresses).length > 0) {
+            global.init_addresses[moduleName] = init_addresses;
+        }
+    }
 }
 ✄
-{"version":3,"file":"mbedTLS_android.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/android/mbedTLS_android.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,QAAQ,EAAE,MAAM,uBAAuB,CAAC;AAChD,OAAO,EAAE,cAAc,EAAE,MAAM,oBAAoB,CAAC;AAEpD,MAAM,OAAO,gBAAiB,SAAQ,QAAQ;IAE1C,YAAmB,UAAiB,EAAS,cAAqB;QAC9D,KAAK,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;QADlB,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAElE,CAAC;IAED;;;;;;MAME;IACF,8BAA8B;QAC1B,8BAA8B;IAClC,CAAC;IAED,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;IACxC,CAAC;CAEJ;AAGD,MAAM,UAAU,eAAe,CAAC,UAAiB;IAC7C,IAAI,WAAW,GAAG,IAAI,gBAAgB,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;IAClE,WAAW,CAAC,aAAa,EAAE,CAAC;AAGhC,CAAC"}
+{"version":3,"file":"mbedTLS_android.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/android/mbedTLS_android.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,QAAQ,EAAE,MAAM,uBAAuB,CAAC;AAChD,OAAO,EAAE,cAAc,EAAE,MAAM,oBAAoB,CAAC;AAEpD,MAAM,OAAO,gBAAiB,SAAQ,QAAQ;IAE1C,YAAmB,UAAiB,EAAS,cAAqB,EAAE,YAAqB;QACrF,KAAK,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;QADlB,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAElE,CAAC;IAED;;;;;;MAME;IACF,8BAA8B;QAC1B,8BAA8B;IAClC,CAAC;IAED,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;IACxC,CAAC;CAEJ;AAGD,MAAM,UAAU,eAAe,CAAC,UAAiB,EAAE,YAAqB;IACpE,IAAI,WAAW,GAAG,IAAI,gBAAgB,CAAC,UAAU,EAAC,cAAc,EAAE,YAAY,CAAC,CAAC;IAChF,WAAW,CAAC,aAAa,EAAE,CAAC;IAE5B,IAAI,YAAY,EAAE;QACd,MAAM,cAAc,GAAG,WAAW,CAAC,SAAS,CAAC;QAC7C,IAAI,MAAM,CAAC,IAAI,CAAC,cAAc,CAAC,CAAC,MAAM,GAAG,CAAC,EAAE;YACvC,MAAc,CAAC,cAAc,CAAC,UAAU,CAAC,GAAG,cAAc,CAAC;SAC/D;QAED,uCAAuC;QACvC,MAAM,mBAAmB,GAAI,MAAc,CAAC,cAAc,CAAC;QAC3D,KAAK,MAAM,GAAG,IAAI,mBAAmB,EAAE;YACnC,IAAI,MAAM,CAAC,IAAI,CAAC,mBAAmB,CAAC,GAAG,CAAC,CAAC,CAAC,MAAM,KAAK,CAAC,EAAE;gBACpD,OAAO,mBAAmB,CAAC,GAAG,CAAC,CAAC;aACnC;SACJ;KACJ;AAGL,CAAC"}
 ✄
 import { mbed_TLS } from "../ssl_lib/mbedTLS.js";
 import { socket_library } from "./android_agent.js";
 export class mbed_TLS_Android extends mbed_TLS {
-    constructor(moduleName, socket_library) {
+    constructor(moduleName, socket_library, is_base_hook) {
         super(moduleName, socket_library);
         this.moduleName = moduleName;
         this.socket_library = socket_library;
@@ -519,17 +537,30 @@ export class mbed_TLS_Android extends mbed_TLS {
         this.install_plaintext_write_hook();
     }
 }
-export function mbedTLS_execute(moduleName) {
-    var mbedTLS_ssl = new mbed_TLS_Android(moduleName, socket_library);
+export function mbedTLS_execute(moduleName, is_base_hook) {
+    var mbedTLS_ssl = new mbed_TLS_Android(moduleName, socket_library, is_base_hook);
     mbedTLS_ssl.execute_hooks();
+    if (is_base_hook) {
+        const init_addresses = mbedTLS_ssl.addresses;
+        if (Object.keys(init_addresses).length > 0) {
+            global.init_addresses[moduleName] = init_addresses;
+        }
+        // Cleanup step to remove empty entries
+        const globalInitAddresses = global.init_addresses;
+        for (const key in globalInitAddresses) {
+            if (Object.keys(globalInitAddresses[key]).length === 0) {
+                delete globalInitAddresses[key];
+            }
+        }
+    }
 }
 ✄
-{"version":3,"file":"nss_android.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/android/nss_android.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,GAAG,EAAE,MAAM,mBAAmB,CAAC;AACvC,OAAO,EAAE,cAAc,EAAE,MAAM,oBAAoB,CAAC;AAEpD,MAAM,OAAO,WAAY,SAAQ,GAAG;IAEhC,YAAmB,UAAiB,EAAS,cAAqB;QAC9D,IAAI,sBAAsB,GAAqC,EAAE,CAAC;QAClE,sBAAsB,CAAC,IAAI,UAAU,GAAG,CAAC,GAAG,CAAC,UAAU,EAAE,SAAS,EAAE,0BAA0B,EAAE,gBAAgB,EAAE,gBAAgB,EAAE,uBAAuB,EAAE,gBAAgB,CAAC,CAAA;QAC9K,sBAAsB,CAAC,UAAU,CAAC,GAAG,CAAC,sBAAsB,EAAE,iBAAiB,CAAC,CAAA;QAChF,sBAAsB,CAAC,aAAa,CAAC,GAAG,CAAC,cAAc,EAAE,kBAAkB,EAAE,uBAAuB,CAAC,CAAA;QACrG,sBAAsB,CAAC,IAAI,cAAc,GAAG,CAAC,GAAG,CAAC,aAAa,EAAE,aAAa,EAAE,OAAO,EAAE,OAAO,CAAC,CAAA;QAEhG,KAAK,CAAC,UAAU,EAAC,cAAc,EAAC,sBAAsB,CAAC,CAAC;QAPzC,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAQlE,CAAC;IAGD,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;QACpC,sDAAsD;IAC1D,CAAC;CAEJ;AAGD,MAAM,UAAU,WAAW,CAAC,UAAiB;IACzC,IAAI,OAAO,GAAG,IAAI,WAAW,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;IACzD,OAAO,CAAC,aAAa,EAAE,CAAC;AAG5B,CAAC"}
+{"version":3,"file":"nss_android.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/android/nss_android.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,GAAG,EAAE,MAAM,mBAAmB,CAAC;AACvC,OAAO,EAAE,cAAc,EAAE,MAAM,oBAAoB,CAAC;AAEpD,MAAM,OAAO,WAAY,SAAQ,GAAG;IAEhC,YAAmB,UAAiB,EAAS,cAAqB,EAAE,YAAqB;QACrF,IAAI,sBAAsB,GAAqC,EAAE,CAAC;QAClE,sBAAsB,CAAC,IAAI,UAAU,GAAG,CAAC,GAAG,CAAC,UAAU,EAAE,SAAS,EAAE,0BAA0B,EAAE,gBAAgB,EAAE,gBAAgB,EAAE,uBAAuB,EAAE,gBAAgB,CAAC,CAAA;QAC9K,sBAAsB,CAAC,UAAU,CAAC,GAAG,CAAC,sBAAsB,EAAE,iBAAiB,CAAC,CAAA;QAChF,sBAAsB,CAAC,aAAa,CAAC,GAAG,CAAC,cAAc,EAAE,kBAAkB,EAAE,uBAAuB,CAAC,CAAA;QACrG,sBAAsB,CAAC,IAAI,cAAc,GAAG,CAAC,GAAG,CAAC,aAAa,EAAE,aAAa,EAAE,OAAO,EAAE,OAAO,CAAC,CAAA;QAEhG,KAAK,CAAC,UAAU,EAAC,cAAc,EAAC,sBAAsB,CAAC,CAAC;QAPzC,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAQlE,CAAC;IAGD,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;QACpC,sDAAsD;IAC1D,CAAC;CAEJ;AAGD,MAAM,UAAU,WAAW,CAAC,UAAiB,EAAE,YAAqB;IAChE,IAAI,OAAO,GAAG,IAAI,WAAW,CAAC,UAAU,EAAC,cAAc,EAAE,YAAY,CAAC,CAAC;IACvE,OAAO,CAAC,aAAa,EAAE,CAAC;IAExB,IAAI,YAAY,EAAE;QACd,MAAM,cAAc,GAAG,OAAO,CAAC,SAAS,CAAC;QACxC,MAAc,CAAC,cAAc,CAAC,UAAU,CAAC,GAAG,cAAc,CAAC;KAC/D;AAEL,CAAC"}
 ✄
 import { NSS } from "../ssl_lib/nss.js";
 import { socket_library } from "./android_agent.js";
 export class NSS_Android extends NSS {
-    constructor(moduleName, socket_library) {
+    constructor(moduleName, socket_library, is_base_hook) {
         var library_method_mapping = {};
         library_method_mapping[`*${moduleName}*`] = ["PR_Write", "PR_Read", "PR_FileDesc2NativeHandle", "PR_GetPeerName", "PR_GetSockName", "PR_GetNameForIdentity", "PR_GetDescType"];
         library_method_mapping[`*libnss*`] = ["PK11_ExtractKeyValue", "PK11_GetKeyData"];
@@ -545,18 +576,22 @@ export class NSS_Android extends NSS {
         //this.install_tls_keys_callback_hook() // might fail 
     }
 }
-export function nss_execute(moduleName) {
-    var nss_ssl = new NSS_Android(moduleName, socket_library);
+export function nss_execute(moduleName, is_base_hook) {
+    var nss_ssl = new NSS_Android(moduleName, socket_library, is_base_hook);
     nss_ssl.execute_hooks();
+    if (is_base_hook) {
+        const init_addresses = nss_ssl.addresses;
+        global.init_addresses[moduleName] = init_addresses;
+    }
 }
 ✄
-{"version":3,"file":"openssl_boringssl_android.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/android/openssl_boringssl_android.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,iBAAiB,EAAE,MAAM,iCAAiC,CAAC;AACnE,OAAO,EAAE,cAAc,EAAE,MAAM,oBAAoB,CAAC;AAEpD,MAAM,OAAO,yBAA0B,SAAQ,iBAAiB;IAE5D,YAAmB,UAAiB,EAAS,cAAqB;QAC9D,KAAK,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;QADlB,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAElE,CAAC;IAGD,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;QACpC,IAAI,CAAC,8BAA8B,EAAE,CAAC;IAC1C,CAAC;IAED,8BAA8B;QAE1B,iBAAiB,CAAC,2BAA2B,GAAG,IAAI,cAAc,CAAC,IAAI,CAAC,SAAS,CAAC,6BAA6B,CAAC,EAAE,MAAM,EAAE,CAAC,SAAS,EAAE,SAAS,CAAC,CAAC,CAAA;QAEjJ,WAAW,CAAC,MAAM,CAAC,IAAI,CAAC,SAAS,CAAC,SAAS,CAAC,EAC5C;YACI,OAAO,EAAE,UAAU,IAAS;gBACxB,iBAAiB,CAAC,2BAA2B,CAAC,IAAI,CAAC,CAAC,CAAC,EAAE,iBAAiB,CAAC,eAAe,CAAC,CAAA;YAC7F,CAAC;SAEJ,CAAC,CAAA;IACN,CAAC;CAEJ;AAGD,MAAM,UAAU,cAAc,CAAC,UAAiB;IAC5C,IAAI,UAAU,GAAG,IAAI,yBAAyB,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;IAC1E,UAAU,CAAC,aAAa,EAAE,CAAC;AAG/B,CAAC"}
+{"version":3,"file":"openssl_boringssl_android.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/android/openssl_boringssl_android.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,iBAAiB,EAAE,MAAM,iCAAiC,CAAC;AACnE,OAAO,EAAE,cAAc,EAAE,MAAM,oBAAoB,CAAC;AAEpD,MAAM,OAAO,yBAA0B,SAAQ,iBAAiB;IAE5D,YAAmB,UAAiB,EAAS,cAAqB,EAAE,YAAqB;QACrF,KAAK,CAAC,UAAU,EAAC,cAAc,EAAC,YAAY,CAAC,CAAC;QAD/B,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAElE,CAAC;IAGD,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;QACpC,IAAI,CAAC,8BAA8B,EAAE,CAAC;IAC1C,CAAC;IAED,8BAA8B;QAE1B,IAAI,CAAC,2BAA2B,GAAG,IAAI,cAAc,CAAC,IAAI,CAAC,SAAS,CAAC,IAAI,CAAC,WAAW,CAAC,CAAC,6BAA6B,CAAC,EAAE,MAAM,EAAE,CAAC,SAAS,EAAE,SAAS,CAAC,CAAC,CAAC;QACvJ,IAAI,QAAQ,GAAG,IAAI,CAAC;QAGpB,WAAW,CAAC,MAAM,CAAC,IAAI,CAAC,SAAS,CAAC,IAAI,CAAC,WAAW,CAAC,CAAC,SAAS,CAAC,EAC9D;YACI,OAAO,EAAE,UAAU,IAAS;gBACxB,QAAQ,CAAC,2BAA2B,CAAC,IAAI,CAAC,CAAC,CAAC,EAAE,iBAAiB,CAAC,eAAe,CAAC,CAAA;YACpF,CAAC;SAEJ,CAAC,CAAA;IACN,CAAC;CAEJ;AAGD,MAAM,UAAU,cAAc,CAAC,UAAiB,EAAE,YAAqB;IACnE,IAAI,UAAU,GAAG,IAAI,yBAAyB,CAAC,UAAU,EAAC,cAAc,EAAC,YAAY,CAAC,CAAC;IACvF,UAAU,CAAC,aAAa,EAAE,CAAC;IAE3B,IAAI,YAAY,EAAE;QACd,MAAM,cAAc,GAAG,UAAU,CAAC,SAAS,CAAC,UAAU,CAAC,CAAC;QACxD,IAAI,MAAM,CAAC,IAAI,CAAC,cAAc,CAAC,CAAC,MAAM,GAAG,CAAC,EAAE;YACvC,MAAc,CAAC,cAAc,CAAC,UAAU,CAAC,GAAG,cAAc,CAAC;SAC/D;QAED,uCAAuC;QACvC;;;;;WAKG;KACN;AAEL,CAAC"}
 ✄
 import { OpenSSL_BoringSSL } from "../ssl_lib/openssl_boringssl.js";
 import { socket_library } from "./android_agent.js";
 export class OpenSSL_BoringSSL_Android extends OpenSSL_BoringSSL {
-    constructor(moduleName, socket_library) {
-        super(moduleName, socket_library);
+    constructor(moduleName, socket_library, is_base_hook) {
+        super(moduleName, socket_library, is_base_hook);
         this.moduleName = moduleName;
         this.socket_library = socket_library;
     }
@@ -566,26 +601,40 @@ export class OpenSSL_BoringSSL_Android extends OpenSSL_BoringSSL {
         this.install_tls_keys_callback_hook();
     }
     install_tls_keys_callback_hook() {
-        OpenSSL_BoringSSL.SSL_CTX_set_keylog_callback = new NativeFunction(this.addresses["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"]);
-        Interceptor.attach(this.addresses["SSL_new"], {
+        this.SSL_CTX_set_keylog_callback = new NativeFunction(this.addresses[this.module_name]["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"]);
+        var instance = this;
+        Interceptor.attach(this.addresses[this.module_name]["SSL_new"], {
             onEnter: function (args) {
-                OpenSSL_BoringSSL.SSL_CTX_set_keylog_callback(args[0], OpenSSL_BoringSSL.keylog_callback);
+                instance.SSL_CTX_set_keylog_callback(args[0], OpenSSL_BoringSSL.keylog_callback);
             }
         });
     }
 }
-export function boring_execute(moduleName) {
-    var boring_ssl = new OpenSSL_BoringSSL_Android(moduleName, socket_library);
+export function boring_execute(moduleName, is_base_hook) {
+    var boring_ssl = new OpenSSL_BoringSSL_Android(moduleName, socket_library, is_base_hook);
     boring_ssl.execute_hooks();
+    if (is_base_hook) {
+        const init_addresses = boring_ssl.addresses[moduleName];
+        if (Object.keys(init_addresses).length > 0) {
+            global.init_addresses[moduleName] = init_addresses;
+        }
+        // Cleanup step to remove empty entries
+        /*const globalInitAddresses = (global as any).init_addresses;
+        for (const key in globalInitAddresses) {
+            if (Object.keys(globalInitAddresses[key]).length === 0) {
+                delete globalInitAddresses[key];
+            }
+        }*/
+    }
 }
 ✄
-{"version":3,"file":"wolfssl_android.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/android/wolfssl_android.ts"],"names":[],"mappings":"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"}
+{"version":3,"file":"wolfssl_android.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/android/wolfssl_android.ts"],"names":[],"mappings":"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"}
 ✄
 import { WolfSSL } from "../ssl_lib/wolfssl.js";
 import { socket_library } from "./android_agent.js";
 import { toHexString } from "../shared/shared_functions.js";
 export class WolfSSL_Android extends WolfSSL {
-    constructor(moduleName, socket_library) {
+    constructor(moduleName, socket_library, is_base_hook) {
         super(moduleName, socket_library);
         this.moduleName = moduleName;
         this.socket_library = socket_library;
@@ -596,11 +645,11 @@ export class WolfSSL_Android extends WolfSSL {
         this.install_tls_keys_callback_hook();
     }
     install_tls_keys_callback_hook() {
-        WolfSSL.wolfSSL_get_client_random = new NativeFunction(this.addresses["wolfSSL_get_client_random"], "int", ["pointer", "pointer", "int"]);
-        WolfSSL.wolfSSL_get_server_random = new NativeFunction(this.addresses["wolfSSL_get_server_random"], "int", ["pointer", "pointer", "int"]);
+        WolfSSL.wolfSSL_get_client_random = new NativeFunction(this.addresses[this.module_name]["wolfSSL_get_client_random"], "int", ["pointer", "pointer", "int"]);
+        WolfSSL.wolfSSL_get_server_random = new NativeFunction(this.addresses[this.module_name]["wolfSSL_get_server_random"], "int", ["pointer", "pointer", "int"]);
         //https://www.wolfssl.com/doxygen/group__Setup.html#gaf18a029cfeb3150bc245ce66b0a44758
-        WolfSSL.wolfSSL_SESSION_get_master_key = new NativeFunction(this.addresses["wolfSSL_SESSION_get_master_key"], "int", ["pointer", "pointer", "int"]);
-        Interceptor.attach(this.addresses["wolfSSL_connect"], {
+        WolfSSL.wolfSSL_SESSION_get_master_key = new NativeFunction(this.addresses[this.module_name]["wolfSSL_SESSION_get_master_key"], "int", ["pointer", "pointer", "int"]);
+        Interceptor.attach(this.addresses[this.module_name]["wolfSSL_connect"], {
             onEnter: function (args) {
                 this.ssl = args[0];
             },
@@ -633,21 +682,27 @@ export class WolfSSL_Android extends WolfSSL {
         });
     }
 }
-export function wolfssl_execute(moduleName) {
-    var wolf_ssl = new WolfSSL_Android(moduleName, socket_library);
+export function wolfssl_execute(moduleName, is_base_hook) {
+    var wolf_ssl = new WolfSSL_Android(moduleName, socket_library, is_base_hook);
     wolf_ssl.execute_hooks();
+    if (is_base_hook) {
+        const init_addresses = wolf_ssl.addresses;
+        if (Object.keys(init_addresses).length > 0) {
+            global.init_addresses[moduleName] = init_addresses;
+        }
+    }
 }
 ✄
-{"version":3,"file":"ios_agent.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/ios/ios_agent.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,sBAAsB,EAAE,MAAM,gCAAgC,CAAC;AACxE,OAAO,EAAE,GAAG,EAAE,MAAM,EAAE,MAAM,gBAAgB,CAAC;AAC7C,OAAO,EAAE,cAAc,EAAE,kBAAkB,EAAE,MAAM,+BAA+B,CAAC;AACnF,OAAO,EAAE,cAAc,EAAE,MAAM,4BAA4B,CAAC;AAG5D,IAAI,cAAc,GAAG,QAAQ,CAAC;AAC9B,IAAI,WAAW,GAAkB,cAAc,EAAE,CAAA;AAEjD,MAAM,CAAC,MAAM,cAAc,GAAG,mBAAmB,CAAA;AAGjD,SAAS,uBAAuB,CAAC,sBAAmF;IAChH,IAAI;QACA,MAAM,WAAW,GAAG,mBAAmB,CAAA;QACvC,MAAM,KAAK,GAAG,WAAW,CAAC,IAAI,CAAC,OAAO,CAAC,EAAE,CAAC,OAAO,CAAC,KAAK,CAAC,WAAW,CAAC,CAAC,CAAA;QACrE,IAAI,KAAK,KAAK,SAAS,EAAE;YACrB,MAAM,kCAAkC,CAAA;SAC3C;QAED,IAAI,MAAM,GAAG,QAAQ,CAAA;QAErB,WAAW,CAAC,MAAM,CAAC,MAAM,CAAC,eAAe,CAAC,KAAK,EAAE,MAAM,CAAC,EAAE;YACtD,OAAO,EAAE,UAAU,IAAI;gBACnB,IAAI,CAAC,UAAU,GAAG,IAAI,CAAC,CAAC,CAAC,CAAC,WAAW,EAAE,CAAA;YAC3C,CAAC;YACD,OAAO,EAAE,UAAU,MAAW;gBAC1B,IAAI,IAAI,CAAC,UAAU,IAAI,SAAS,EAAE;oBAC9B,KAAK,IAAI,GAAG,IAAI,sBAAsB,CAAC,cAAc,CAAC,EAAE;wBACpD,IAAI,KAAK,GAAG,GAAG,CAAC,CAAC,CAAC,CAAA;wBAClB,IAAI,IAAI,GAAG,GAAG,CAAC,CAAC,CAAC,CAAA;wBACjB,IAAI,KAAK,CAAC,IAAI,CAAC,IAAI,CAAC,UAAU,CAAC,EAAE;4BAC7B,GAAG,CAAC,GAAG,IAAI,CAAC,UAAU,sCAAsC,CAAC,CAAA;4BAC7D,IAAI,CAAC,IAAI,CAAC,UAAU,CAAC,CAAA;yBACxB;qBAEJ;iBACJ;YACL,CAAC;SAGJ,CAAC,CAAA;QAEF,OAAO,CAAC,GAAG,CAAC,gCAAgC,CAAC,CAAA;KAChD;IAAC,OAAO,KAAK,EAAE;QACZ,MAAM,CAAC,gBAAgB,GAAG,KAAK,CAAC,CAAA;QAChC,GAAG,CAAC,+CAA+C,CAAC,CAAA;KACvD;AACL,CAAC;AAGD,SAAS,iBAAiB,CAAC,sBAAmF;IAC1G,kBAAkB,CAAC,cAAc,EAAE,sBAAsB,EAAC,WAAW,EAAC,KAAK,CAAC,CAAA;AAChF,CAAC;AAID,MAAM,UAAU,sBAAsB;IAClC,sBAAsB,CAAC,cAAc,CAAC,GAAG,CAAC,CAAC,uBAAuB,EAAE,cAAc,CAAC,CAAC,CAAA;IACpF,iBAAiB,CAAC,sBAAsB,CAAC,CAAC;IAC1C,uBAAuB,CAAC,sBAAsB,CAAC,CAAC;AACpD,CAAC"}
+{"version":3,"file":"ios_agent.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/ios/ios_agent.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,sBAAsB,EAAqB,MAAM,gCAAgC,CAAC;AAC3F,OAAO,EAAE,GAAG,EAAE,MAAM,EAAE,MAAM,gBAAgB,CAAC;AAC7C,OAAO,EAAE,cAAc,EAAE,kBAAkB,EAAE,qBAAqB,EAAE,MAAM,+BAA+B,CAAC;AAC1G,OAAO,EAAE,cAAc,EAAE,MAAM,4BAA4B,CAAC;AAG5D,IAAI,cAAc,GAAG,QAAQ,CAAC;AAC9B,IAAI,WAAW,GAAkB,cAAc,EAAE,CAAA;AAEjD,MAAM,CAAC,MAAM,cAAc,GAAG,mBAAmB,CAAA;AAGjD,SAAS,uBAAuB,CAAC,sBAA0E,EAAE,YAAqB;IAC9H,IAAI;QACA,MAAM,WAAW,GAAG,mBAAmB,CAAA;QACvC,MAAM,KAAK,GAAG,WAAW,CAAC,IAAI,CAAC,OAAO,CAAC,EAAE,CAAC,OAAO,CAAC,KAAK,CAAC,WAAW,CAAC,CAAC,CAAA;QACrE,IAAI,KAAK,KAAK,SAAS,EAAE;YACrB,MAAM,kCAAkC,CAAA;SAC3C;QAED,IAAI,MAAM,GAAG,QAAQ,CAAA;QAErB,WAAW,CAAC,MAAM,CAAC,MAAM,CAAC,eAAe,CAAC,KAAK,EAAE,MAAM,CAAC,EAAE;YACtD,OAAO,EAAE,UAAU,IAAI;gBACnB,IAAI,CAAC,UAAU,GAAG,IAAI,CAAC,CAAC,CAAC,CAAC,WAAW,EAAE,CAAA;YAC3C,CAAC;YACD,OAAO,EAAE,UAAU,MAAW;gBAC1B,IAAI,IAAI,CAAC,UAAU,IAAI,SAAS,EAAE;oBAC9B,KAAK,IAAI,GAAG,IAAI,sBAAsB,CAAC,cAAc,CAAC,EAAE;wBACpD,IAAI,KAAK,GAAG,GAAG,CAAC,CAAC,CAAC,CAAA;wBAClB,IAAI,IAAI,GAAG,GAAG,CAAC,CAAC,CAAC,CAAA;wBACjB,IAAI,KAAK,CAAC,IAAI,CAAC,IAAI,CAAC,UAAU,CAAC,EAAE;4BAC7B,GAAG,CAAC,GAAG,IAAI,CAAC,UAAU,sCAAsC,CAAC,CAAA;4BAC7D,IAAI,CAAC,IAAI,CAAC,UAAU,EAAE,YAAY,CAAC,CAAA;yBACtC;qBAEJ;iBACJ;YACL,CAAC;SAGJ,CAAC,CAAA;QAEF,OAAO,CAAC,GAAG,CAAC,gCAAgC,CAAC,CAAA;KAChD;IAAC,OAAO,KAAK,EAAE;QACZ,MAAM,CAAC,gBAAgB,GAAG,KAAK,CAAC,CAAA;QAChC,GAAG,CAAC,+CAA+C,CAAC,CAAA;KACvD;AACL,CAAC;AAGD,SAAS,iBAAiB,CAAC,sBAA0E,EAAE,YAAqB;IACxH,kBAAkB,CAAC,cAAc,EAAE,sBAAsB,EAAC,WAAW,EAAC,KAAK,EAAC,YAAY,CAAC,CAAA;AAC7F,CAAC;AAID,MAAM,UAAU,sBAAsB;IAClC,sBAAsB,CAAC,cAAc,CAAC,GAAG;QACrC,CAAC,uBAAuB,EAAE,qBAAqB,CAAC,cAAc,CAAC,CAAC;KAAC,CAAA;IAErE,iBAAiB,CAAC,sBAAsB,EAAE,IAAI,CAAC,CAAC;IAChD,uBAAuB,CAAC,sBAAsB,EAAE,KAAK,CAAC,CAAC;AAC3D,CAAC"}
 ✄
 import { module_library_mapping } from "../shared/shared_structures.js";
 import { log, devlog } from "../util/log.js";
-import { getModuleNames, ssl_library_loader } from "../shared/shared_functions.js";
+import { getModuleNames, ssl_library_loader, invokeHookingFunction } from "../shared/shared_functions.js";
 import { boring_execute } from "./openssl_boringssl_ios.js";
 var plattform_name = "darwin";
 var moduleNames = getModuleNames();
 export const socket_library = "libSystem.B.dylib";
-function hook_iOS_Dynamic_Loader(module_library_mapping) {
+function hook_iOS_Dynamic_Loader(module_library_mapping, is_base_hook) {
     try {
         const regex_libdl = /libSystem.B.dylib/;
         const libdl = moduleNames.find(element => element.match(regex_libdl));
@@ -666,7 +721,7 @@ function hook_iOS_Dynamic_Loader(module_library_mapping) {
                         let func = map[1];
                         if (regex.test(this.moduleName)) {
                             log(`${this.moduleName} was loaded & will be hooked on iOS!`);
-                            func(this.moduleName);
+                            func(this.moduleName, is_base_hook);
                         }
                     }
                 }
@@ -679,16 +734,18 @@ function hook_iOS_Dynamic_Loader(module_library_mapping) {
         log("No dynamic loader present for hooking on iOS.");
     }
 }
-function hook_iOS_SSL_Libs(module_library_mapping) {
-    ssl_library_loader(plattform_name, module_library_mapping, moduleNames, "iOS");
+function hook_iOS_SSL_Libs(module_library_mapping, is_base_hook) {
+    ssl_library_loader(plattform_name, module_library_mapping, moduleNames, "iOS", is_base_hook);
 }
 export function load_ios_hooking_agent() {
-    module_library_mapping[plattform_name] = [[/.*libboringssl\.dylib/, boring_execute]];
-    hook_iOS_SSL_Libs(module_library_mapping);
-    hook_iOS_Dynamic_Loader(module_library_mapping);
+    module_library_mapping[plattform_name] = [
+        [/.*libboringssl\.dylib/, invokeHookingFunction(boring_execute)]
+    ];
+    hook_iOS_SSL_Libs(module_library_mapping, true);
+    hook_iOS_Dynamic_Loader(module_library_mapping, false);
 }
 ✄
-{"version":3,"file":"openssl_boringssl_ios.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/ios/openssl_boringssl_ios.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,iBAAiB,EAAE,MAAM,iCAAiC,CAAC;AACnE,OAAO,EAAE,cAAc,EAAE,MAAM,gBAAgB,CAAC;AAChD,OAAO,EAAO,MAAM,EAAE,MAAM,gBAAgB,CAAC;AAE7C,MAAM,OAAO,qBAAsB,SAAQ,iBAAiB;IAExD,8BAA8B;QAC1B,yGAAyG;QACzG,IAAI,IAAI,CAAC,SAAS,EAAE,EAAE,0EAA0E;YAC5F,IAAI,eAAe,GAAG,KAAK,CAAC;YAE5B,IAAI,gBAAgB,GAAG,MAAM,CAAC,gBAAgB,CAAC,gBAAgB,EAAE,gCAAgC,CAAC,EAAE,UAAU,EAAE,CAAC;YACjH,IAAG,gBAAgB,IAAI,SAAS,EAAC;gBAC7B,MAAM,CAAC,kCAAkC,CAAC,CAAC;gBAC3C,eAAe,GAAG,KAAK,CAAC;aAC3B;iBAAM,IAAI,gBAAgB,IAAI,QAAQ,IAAI,gBAAgB,GAAG,QAAQ,EAAE;gBACpE,MAAM,CAAC,mCAAmC,CAAC,CAAC;gBAC5C,eAAe,GAAG,KAAK,CAAC,CAAC,eAAe;aAC3C;iBAAM,IAAI,gBAAgB,IAAI,QAAQ,IAAI,gBAAgB,IAAI,MAAM,EAAE;gBACnE,MAAM,CAAC,mCAAmC,CAAC,CAAC;gBAC5C,eAAe,GAAG,KAAK,CAAC,CAAC,eAAe;aAC3C;iBAAM,IAAI,gBAAgB,GAAG,MAAM,EAAE;gBAClC,MAAM,CAAC,mCAAmC,CAAC,CAAC;gBAC5C,eAAe,GAAG,KAAK,CAAC,CAAC,eAAe;aAC3C;YACD,WAAW,CAAC,MAAM,CAAC,IAAI,CAAC,SAAS,CAAC,2BAA2B,CAAC,EAAE;gBAC9D,OAAO,EAAE,UAAU,IAAU;oBAC3B,GAAG,CAAC,IAAI,CAAC,CAAC,CAAC,CAAC,CAAC,GAAG,CAAC,eAAe,CAAC,CAAC,YAAY,CAAC,iBAAiB,CAAC,eAAe,CAAC,CAAC;gBACpF,CAAC;aACF,CAAC,CAAC;SAEJ;IAEP,CAAC;IAGD,YAAmB,UAAiB,EAAS,cAAqB;QAE9D,IAAI,sBAAsB,GAAqC,EAAE,CAAA;QAEjE,yIAAyI;QACzI,sBAAsB,CAAC,IAAI,UAAU,GAAG,CAAC,GAAG,CAAC,UAAU,EAAE,WAAW,EAAE,YAAY,EAAE,iBAAiB,EAAE,oBAAoB,EAAE,SAAS,EAAE,2BAA2B,CAAC,CAAA;QACpK,sBAAsB,CAAC,IAAI,cAAc,GAAG,CAAC,GAAG,CAAC,cAAc,EAAE,cAAc,EAAE,QAAQ,EAAE,QAAQ,CAAC,CAAA,CAAC,kFAAkF;QAEvL,KAAK,CAAC,UAAU,EAAC,cAAc,EAAC,sBAAsB,CAAC,CAAC;QARzC,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IASlE,CAAC;IAED,aAAa;QAET;;;;UAIE;QAEF,IAAI,CAAC,8BAA8B,EAAE,CAAC;IAC1C,CAAC;CAIJ;AAGD,MAAM,UAAU,cAAc,CAAC,UAAiB;IAC5C,IAAI,UAAU,GAAG,IAAI,qBAAqB,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;IACtE,UAAU,CAAC,aAAa,EAAE,CAAC;AAG/B,CAAC"}
+{"version":3,"file":"openssl_boringssl_ios.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/ios/openssl_boringssl_ios.ts"],"names":[],"mappings":"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"}
 ✄
 import { OpenSSL_BoringSSL } from "../ssl_lib/openssl_boringssl.js";
 import { socket_library } from "./ios_agent.js";
@@ -703,9 +760,13 @@ export class OpenSSL_BoringSSL_iOS extends OpenSSL_BoringSSL {
                 devlog("Installing callback for iOS < 14");
                 CALLBACK_OFFSET = 0x2A8;
             }
-            else if (foundationNumber >= 1751.108 && foundationNumber < 1946.102) {
+            else if (foundationNumber >= 1751.108 && foundationNumber < 1854) {
                 devlog("Installing callback for iOS >= 14");
                 CALLBACK_OFFSET = 0x2B8; // >= iOS 14.x 
+            }
+            else if (foundationNumber >= 1854 && foundationNumber < 1946.102) {
+                devlog("Installing callback for iOS >= 15");
+                CALLBACK_OFFSET = 0x2F8; // >= iOS 15.x 
             }
             else if (foundationNumber >= 1946.102 && foundationNumber <= 1979.1) {
                 devlog("Installing callback for iOS >= 16");
@@ -715,19 +776,19 @@ export class OpenSSL_BoringSSL_iOS extends OpenSSL_BoringSSL {
                 devlog("Installing callback for iOS >= 17");
                 CALLBACK_OFFSET = 0x308; // >= iOS 17.x 
             }
-            Interceptor.attach(this.addresses["SSL_CTX_set_info_callback"], {
+            Interceptor.attach(this.addresses[this.module_name]["SSL_CTX_set_info_callback"], {
                 onEnter: function (args) {
                     ptr(args[0]).add(CALLBACK_OFFSET).writePointer(OpenSSL_BoringSSL.keylog_callback);
                 }
             });
         }
     }
-    constructor(moduleName, socket_library) {
+    constructor(moduleName, socket_library, is_base_hook) {
         var library_method_mapping = {};
         // the iOS implementation needs some further improvements - currently we are not able to get the sockfd from an SSL_read/write invocation
         library_method_mapping[`*${moduleName}*`] = ["SSL_read", "SSL_write", "BIO_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_info_callback"];
         library_method_mapping[`*${socket_library}*`] = ["getpeername*", "getsockname*", "ntohs*", "ntohl*"]; // currently those functions gets only identified if we at an asterisk at the end 
-        super(moduleName, socket_library, library_method_mapping);
+        super(moduleName, socket_library, is_base_hook, library_method_mapping);
         this.moduleName = moduleName;
         this.socket_library = socket_library;
     }
@@ -740,17 +801,23 @@ export class OpenSSL_BoringSSL_iOS extends OpenSSL_BoringSSL {
         this.install_tls_keys_callback_hook();
     }
 }
-export function boring_execute(moduleName) {
-    var boring_ssl = new OpenSSL_BoringSSL_iOS(moduleName, socket_library);
+export function boring_execute(moduleName, is_base_hook) {
+    var boring_ssl = new OpenSSL_BoringSSL_iOS(moduleName, socket_library, is_base_hook);
     boring_ssl.execute_hooks();
+    if (is_base_hook) {
+        const init_addresses = boring_ssl.addresses;
+        if (Object.keys(init_addresses).length > 0) {
+            global.init_addresses[moduleName] = init_addresses;
+        }
+    }
 }
 ✄
-{"version":3,"file":"gnutls_linux.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/linux/gnutls_linux.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,MAAM,EAAE,MAAM,sBAAsB,CAAC;AAC7C,OAAO,EAAE,cAAc,EAAE,MAAM,kBAAkB,CAAC;AAElD,MAAM,OAAO,YAAa,SAAQ,MAAM;IAEpC,YAAmB,UAAiB,EAAS,cAAqB;QAC9D,KAAK,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;QADlB,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAElE,CAAC;IAGD,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;QACpC,IAAI,CAAC,8BAA8B,EAAE,CAAC;IAC1C,CAAC;IAED,8BAA8B;QAC1B,WAAW,CAAC,MAAM,CAAC,IAAI,CAAC,SAAS,CAAC,aAAa,CAAC,EACpD;YACI,OAAO,EAAE,UAAU,IAAS;gBACxB,IAAI,CAAC,OAAO,GAAG,IAAI,CAAC,CAAC,CAAC,CAAA;YAC1B,CAAC;YACD,OAAO,EAAE,UAAU,MAAW;gBAC1B,OAAO,CAAC,GAAG,CAAC,IAAI,CAAC,OAAO,CAAC,CAAA;gBACzB,MAAM,CAAC,kCAAkC,CAAC,IAAI,CAAC,OAAO,CAAC,WAAW,EAAE,EAAE,MAAM,CAAC,eAAe,CAAC,CAAA;YAEjG,CAAC;SACJ,CAAC,CAAA;IAEF,CAAC;CAEJ;AAKD,MAAM,UAAU,cAAc,CAAC,UAAiB;IAC5C,IAAI,UAAU,GAAG,IAAI,YAAY,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;IAC7D,UAAU,CAAC,aAAa,EAAE,CAAC;AAG/B,CAAC"}
+{"version":3,"file":"gnutls_linux.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/linux/gnutls_linux.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,MAAM,EAAE,MAAM,sBAAsB,CAAC;AAC7C,OAAO,EAAE,cAAc,EAAE,MAAM,kBAAkB,CAAC;AAElD,MAAM,OAAO,YAAa,SAAQ,MAAM;IAEpC,YAAmB,UAAiB,EAAS,cAAqB,EAAE,YAAqB;QACrF,KAAK,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;QADlB,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAElE,CAAC;IAGD,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;QACpC,IAAI,CAAC,8BAA8B,EAAE,CAAC;IAC1C,CAAC;IAED,8BAA8B;QAC1B,WAAW,CAAC,MAAM,CAAC,IAAI,CAAC,SAAS,CAAC,IAAI,CAAC,WAAW,CAAC,CAAC,aAAa,CAAC,EACtE;YACI,OAAO,EAAE,UAAU,IAAS;gBACxB,IAAI,CAAC,OAAO,GAAG,IAAI,CAAC,CAAC,CAAC,CAAA;YAC1B,CAAC;YACD,OAAO,EAAE,UAAU,MAAW;gBAC1B,OAAO,CAAC,GAAG,CAAC,IAAI,CAAC,OAAO,CAAC,CAAA;gBACzB,MAAM,CAAC,kCAAkC,CAAC,IAAI,CAAC,OAAO,CAAC,WAAW,EAAE,EAAE,MAAM,CAAC,eAAe,CAAC,CAAA;YAEjG,CAAC;SACJ,CAAC,CAAA;IAEF,CAAC;CAEJ;AAKD,MAAM,UAAU,cAAc,CAAC,UAAiB,EAAE,YAAqB;IACnE,IAAI,UAAU,GAAG,IAAI,YAAY,CAAC,UAAU,EAAC,cAAc,EAAE,YAAY,CAAC,CAAC;IAC3E,UAAU,CAAC,aAAa,EAAE,CAAC;IAE3B,IAAI,YAAY,EAAE;QACd,MAAM,cAAc,GAAG,UAAU,CAAC,SAAS,CAAC;QAC3C,MAAc,CAAC,cAAc,CAAC,UAAU,CAAC,GAAG,cAAc,CAAC;KAC/D;AAEL,CAAC"}
 ✄
 import { GnuTLS } from "../ssl_lib/gnutls.js";
 import { socket_library } from "./linux_agent.js";
 export class GnuTLS_Linux extends GnuTLS {
-    constructor(moduleName, socket_library) {
+    constructor(moduleName, socket_library, is_base_hook) {
         super(moduleName, socket_library);
         this.moduleName = moduleName;
         this.socket_library = socket_library;
@@ -761,7 +828,7 @@ export class GnuTLS_Linux extends GnuTLS {
         this.install_tls_keys_callback_hook();
     }
     install_tls_keys_callback_hook() {
-        Interceptor.attach(this.addresses["gnutls_init"], {
+        Interceptor.attach(this.addresses[this.module_name]["gnutls_init"], {
             onEnter: function (args) {
                 this.session = args[0];
             },
@@ -772,16 +839,20 @@ export class GnuTLS_Linux extends GnuTLS {
         });
     }
 }
-export function gnutls_execute(moduleName) {
-    var gnutls_ssl = new GnuTLS_Linux(moduleName, socket_library);
+export function gnutls_execute(moduleName, is_base_hook) {
+    var gnutls_ssl = new GnuTLS_Linux(moduleName, socket_library, is_base_hook);
     gnutls_ssl.execute_hooks();
+    if (is_base_hook) {
+        const init_addresses = gnutls_ssl.addresses;
+        global.init_addresses[moduleName] = init_addresses;
+    }
 }
 ✄
-{"version":3,"file":"linux_agent.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/linux/linux_agent.ts"],"names":[],"mappings":"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"}
+{"version":3,"file":"linux_agent.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/linux/linux_agent.ts"],"names":[],"mappings":"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"}
 ✄
 import { module_library_mapping } from "../shared/shared_structures.js";
 import { log, devlog } from "../util/log.js";
-import { getModuleNames, ssl_library_loader } from "../shared/shared_functions.js";
+import { getModuleNames, ssl_library_loader, invokeHookingFunction } from "../shared/shared_functions.js";
 import { gnutls_execute } from "./gnutls_linux.js";
 import { wolfssl_execute } from "./wolfssl_linux.js";
 import { nss_execute } from "./nss_linux.js";
@@ -791,7 +862,7 @@ import { matrixSSL_execute } from "./matrixssl_linux.js";
 var plattform_name = "linux";
 var moduleNames = getModuleNames();
 export const socket_library = "libc";
-function hook_Linux_Dynamic_Loader(module_library_mapping) {
+function hook_Linux_Dynamic_Loader(module_library_mapping, is_base_hook) {
     try {
         const regex_libdl = /.*libdl.*\.so/;
         const libdl = moduleNames.find(element => element.match(regex_libdl));
@@ -810,7 +881,7 @@ function hook_Linux_Dynamic_Loader(module_library_mapping) {
                         let func = map[1];
                         if (regex.test(this.moduleName)) {
                             log(`${this.moduleName} was loaded & will be hooked on Linux!`);
-                            func(this.moduleName);
+                            func(this.moduleName, is_base_hook);
                         }
                     }
                 }
@@ -823,21 +894,29 @@ function hook_Linux_Dynamic_Loader(module_library_mapping) {
         log("No dynamic loader present for hooking.");
     }
 }
-function hook_Linux_SSL_Libs(module_library_mapping) {
-    ssl_library_loader(plattform_name, module_library_mapping, moduleNames, "Linux");
+function hook_Linux_SSL_Libs(module_library_mapping, is_base_hook) {
+    ssl_library_loader(plattform_name, module_library_mapping, moduleNames, "Linux", is_base_hook);
 }
 export function load_linux_hooking_agent() {
-    module_library_mapping[plattform_name] = [[/.*libssl_sb.so/, boring_execute], [/.*libssl\.so/, boring_execute], [/.*libgnutls\.so/, gnutls_execute], [/.*libwolfssl\.so/, wolfssl_execute], [/.*libnspr[0-9]?\.so/, nss_execute], [/libmbedtls\.so.*/, mbedTLS_execute], [/libssl_s.a/, matrixSSL_execute]];
-    hook_Linux_SSL_Libs(module_library_mapping);
-    hook_Linux_Dynamic_Loader(module_library_mapping);
+    module_library_mapping[plattform_name] = [
+        [/.*libssl_sb.so/, invokeHookingFunction(boring_execute)],
+        [/.*libssl\.so/, invokeHookingFunction(boring_execute)],
+        [/.*libgnutls\.so/, invokeHookingFunction(gnutls_execute)],
+        [/.*libwolfssl\.so/, invokeHookingFunction(wolfssl_execute)],
+        [/.*libnspr[0-9]?\.so/, invokeHookingFunction(nss_execute)],
+        [/libmbedtls\.so.*/, invokeHookingFunction(mbedTLS_execute)],
+        [/libssl_s.a/, invokeHookingFunction(matrixSSL_execute)]
+    ];
+    hook_Linux_SSL_Libs(module_library_mapping, true);
+    hook_Linux_Dynamic_Loader(module_library_mapping, false);
 }
 ✄
-{"version":3,"file":"matrixssl_linux.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/linux/matrixssl_linux.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,UAAU,EAAE,MAAM,yBAAyB,CAAC;AACpD,OAAO,EAAE,cAAc,EAAE,MAAM,kBAAkB,CAAC;AAElD,MAAM,OAAO,gBAAiB,SAAQ,UAAU;IAE5C,YAAmB,UAAiB,EAAS,cAAqB;QAC9D,KAAK,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;QADlB,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAElE,CAAC;IAED;;;;;;MAME;IACF,8BAA8B;QAC1B,8BAA8B;IAClC,CAAC;IAED,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;IACxC,CAAC;CAEJ;AAGD,MAAM,UAAU,iBAAiB,CAAC,UAAiB;IAC/C,IAAI,UAAU,GAAG,IAAI,gBAAgB,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;IACjE,UAAU,CAAC,aAAa,EAAE,CAAC;AAG/B,CAAC"}
+{"version":3,"file":"matrixssl_linux.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/linux/matrixssl_linux.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,UAAU,EAAE,MAAM,yBAAyB,CAAC;AACpD,OAAO,EAAE,cAAc,EAAE,MAAM,kBAAkB,CAAC;AAElD,MAAM,OAAO,gBAAiB,SAAQ,UAAU;IAE5C,YAAmB,UAAiB,EAAS,cAAqB,EAAE,YAAqB;QACrF,KAAK,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;QADlB,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAElE,CAAC;IAED;;;;;;MAME;IACF,8BAA8B;QAC1B,8BAA8B;IAClC,CAAC;IAED,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;IACxC,CAAC;CAEJ;AAGD,MAAM,UAAU,iBAAiB,CAAC,UAAiB,EAAE,YAAqB;IACtE,IAAI,UAAU,GAAG,IAAI,gBAAgB,CAAC,UAAU,EAAC,cAAc,EAAE,YAAY,CAAC,CAAC;IAC/E,UAAU,CAAC,aAAa,EAAE,CAAC;IAE3B,IAAI,YAAY,EAAE;QACd,MAAM,cAAc,GAAG,UAAU,CAAC,SAAS,CAAC;QAC3C,MAAc,CAAC,cAAc,CAAC,UAAU,CAAC,GAAG,cAAc,CAAC;KAC/D;AACL,CAAC"}
 ✄
 import { matrix_SSL } from "../ssl_lib/matrixssl.js";
 import { socket_library } from "./linux_agent.js";
 export class matrix_SSL_Linux extends matrix_SSL {
-    constructor(moduleName, socket_library) {
+    constructor(moduleName, socket_library, is_base_hook) {
         super(moduleName, socket_library);
         this.moduleName = moduleName;
         this.socket_library = socket_library;
@@ -857,12 +936,16 @@ export class matrix_SSL_Linux extends matrix_SSL {
         this.install_plaintext_write_hook();
     }
 }
-export function matrixSSL_execute(moduleName) {
-    var matrix_ssl = new matrix_SSL_Linux(moduleName, socket_library);
+export function matrixSSL_execute(moduleName, is_base_hook) {
+    var matrix_ssl = new matrix_SSL_Linux(moduleName, socket_library, is_base_hook);
     matrix_ssl.execute_hooks();
+    if (is_base_hook) {
+        const init_addresses = matrix_ssl.addresses;
+        global.init_addresses[moduleName] = init_addresses;
+    }
 }
 ✄
-{"version":3,"file":"mbedTLS_linux.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/linux/mbedTLS_linux.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,QAAQ,EAAE,MAAM,uBAAuB,CAAC;AAChD,OAAO,EAAE,cAAc,EAAE,MAAM,kBAAkB,CAAC;AAElD,MAAM,OAAO,cAAe,SAAQ,QAAQ;IAExC,YAAmB,UAAiB,EAAS,cAAqB;QAC9D,KAAK,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;QADlB,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAElE,CAAC;IAED;;;;;;MAME;IACF,8BAA8B;QAC1B,8BAA8B;IAClC,CAAC;IAED,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;IACxC,CAAC;CAEJ;AAGD,MAAM,UAAU,eAAe,CAAC,UAAiB;IAC7C,IAAI,WAAW,GAAG,IAAI,cAAc,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;IAChE,WAAW,CAAC,aAAa,EAAE,CAAC;AAGhC,CAAC"}
+{"version":3,"file":"mbedTLS_linux.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/linux/mbedTLS_linux.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,QAAQ,EAAE,MAAM,uBAAuB,CAAC;AAChD,OAAO,EAAE,cAAc,EAAE,MAAM,kBAAkB,CAAC;AAElD,MAAM,OAAO,cAAe,SAAQ,QAAQ;IAExC,YAAmB,UAAiB,EAAS,cAAqB;QAC9D,KAAK,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;QADlB,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAElE,CAAC;IAED;;;;;;MAME;IACF,8BAA8B;QAC1B,8BAA8B;IAClC,CAAC;IAED,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;IACxC,CAAC;CAEJ;AAGD,MAAM,UAAU,eAAe,CAAC,UAAiB,EAAE,YAAqB;IACpE,IAAI,WAAW,GAAG,IAAI,cAAc,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;IAChE,WAAW,CAAC,aAAa,EAAE,CAAC;IAE5B,IAAI,YAAY,EAAE;QACd,MAAM,cAAc,GAAG,WAAW,CAAC,SAAS,CAAC;QAC5C,MAAc,CAAC,cAAc,CAAC,UAAU,CAAC,GAAG,cAAc,CAAC;KAC/D;AACL,CAAC"}
 ✄
 import { mbed_TLS } from "../ssl_lib/mbedTLS.js";
 import { socket_library } from "./linux_agent.js";
@@ -887,12 +970,16 @@ export class mbed_TLS_Linux extends mbed_TLS {
         this.install_plaintext_write_hook();
     }
 }
-export function mbedTLS_execute(moduleName) {
+export function mbedTLS_execute(moduleName, is_base_hook) {
     var mbedTLS_ssl = new mbed_TLS_Linux(moduleName, socket_library);
     mbedTLS_ssl.execute_hooks();
+    if (is_base_hook) {
+        const init_addresses = mbedTLS_ssl.addresses;
+        global.init_addresses[moduleName] = init_addresses;
+    }
 }
 ✄
-{"version":3,"file":"nss_linux.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/linux/nss_linux.ts"],"names":[],"mappings":"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"}
+{"version":3,"file":"nss_linux.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/linux/nss_linux.ts"],"names":[],"mappings":"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"}
 ✄
 import { NSS } from "../ssl_lib/nss.js";
 import { socket_library } from "./linux_agent.js";
@@ -914,18 +1001,18 @@ export class NSS_Linux extends NSS {
         this.install_tls_keys_callback_hook();
     }
     install_tls_keys_callback_hook() {
-        NSS.getDescType = new NativeFunction(this.addresses['PR_GetDescType'], "int", ["pointer"]);
+        NSS.getDescType = new NativeFunction(this.addresses[this.module_name]['PR_GetDescType'], "int", ["pointer"]);
         // SSL Handshake Functions:
-        NSS.PR_GetNameForIdentity = new NativeFunction(this.addresses['PR_GetNameForIdentity'], "pointer", ["pointer"]);
+        NSS.PR_GetNameForIdentity = new NativeFunction(this.addresses[this.module_name]['PR_GetNameForIdentity'], "pointer", ["pointer"]);
         /*
                 SECStatus SSL_HandshakeCallback(PRFileDesc *fd, SSLHandshakeCallback cb, void *client_data);
                 more at https://developer.mozilla.org/en-US/docs/Mozilla/Projects/NSS/SSL_functions/sslfnc#1112702
         */
-        NSS.get_SSL_Callback = new NativeFunction(this.addresses["SSL_HandshakeCallback"], "int", ["pointer", "pointer", "pointer"]);
+        NSS.get_SSL_Callback = new NativeFunction(this.addresses[this.module_name]["SSL_HandshakeCallback"], "int", ["pointer", "pointer", "pointer"]);
         // SSL Key helper Functions 
-        NSS.PK11_ExtractKeyValue = new NativeFunction(this.addresses["PK11_ExtractKeyValue"], "int", ["pointer"]);
-        NSS.PK11_GetKeyData = new NativeFunction(this.addresses["PK11_GetKeyData"], "pointer", ["pointer"]);
-        Interceptor.attach(this.addresses["SSL_ImportFD"], {
+        NSS.PK11_ExtractKeyValue = new NativeFunction(this.addresses[this.module_name]["PK11_ExtractKeyValue"], "int", ["pointer"]);
+        NSS.PK11_GetKeyData = new NativeFunction(this.addresses[this.module_name]["PK11_GetKeyData"], "pointer", ["pointer"]);
+        Interceptor.attach(this.addresses[this.module_name]["SSL_ImportFD"], {
             onEnter(args) {
                 this.fd = args[1];
             },
@@ -958,7 +1045,7 @@ export class NSS_Linux extends NSS {
                 void *client_data
             );
          */
-        Interceptor.attach(this.addresses["SSL_HandshakeCallback"], {
+        Interceptor.attach(this.addresses[this.module_name]["SSL_HandshakeCallback"], {
             onEnter(args) {
                 this.originalCallback = args[1];
                 Interceptor.attach(ptr(this.originalCallback), {
@@ -976,18 +1063,22 @@ export class NSS_Linux extends NSS {
         });
     }
 }
-export function nss_execute(moduleName) {
+export function nss_execute(moduleName, is_base_hook) {
     var nss_ssl = new NSS_Linux(moduleName, socket_library);
     nss_ssl.execute_hooks();
+    if (is_base_hook) {
+        const init_addresses = nss_ssl.addresses;
+        global.init_addresses[moduleName] = init_addresses;
+    }
 }
 ✄
-{"version":3,"file":"openssl_boringssl_linux.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/linux/openssl_boringssl_linux.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,iBAAiB,EAAE,MAAM,iCAAiC,CAAC;AACnE,OAAO,EAAE,cAAc,EAAE,MAAM,kBAAkB,CAAC;AAElD,MAAM,OAAO,uBAAwB,SAAQ,iBAAiB;IAE1D,YAAmB,UAAiB,EAAS,cAAqB;QAC9D,KAAK,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;QADlB,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAElE,CAAC;IAGD,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;QACpC,IAAI,CAAC,8BAA8B,EAAE,CAAC;IAC1C,CAAC;IAED,8BAA8B;QAE1B,iBAAiB,CAAC,2BAA2B,GAAG,IAAI,CAAC,SAAS,CAAC,CAAC,CAAC,IAAI,cAAc,CAAC,IAAI,CAAC,SAAS,CAAC,2BAA2B,CAAC,EAAE,MAAM,EAAE,CAAC,SAAS,EAAE,SAAS,CAAC,CAAC,CAAC,CAAC,CAAC,IAAI,cAAc,CAAC,IAAI,CAAC,SAAS,CAAC,6BAA6B,CAAC,EAAE,MAAM,EAAE,CAAC,SAAS,EAAE,SAAS,CAAC,CAAC,CAAA;QAEpQ,WAAW,CAAC,MAAM,CAAC,IAAI,CAAC,SAAS,CAAC,SAAS,CAAC,EAC5C;YACI,OAAO,EAAE,UAAU,IAAS;gBACxB,iBAAiB,CAAC,2BAA2B,CAAC,IAAI,CAAC,CAAC,CAAC,EAAE,iBAAiB,CAAC,eAAe,CAAC,CAAA;YAC7F,CAAC;SAEJ,CAAC,CAAA;IACN,CAAC;CAEJ;AAOD,MAAM,UAAU,cAAc,CAAC,UAAiB;IAC5C,IAAI,UAAU,GAAG,IAAI,uBAAuB,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;IACxE,UAAU,CAAC,aAAa,EAAE,CAAC;AAG/B,CAAC"}
+{"version":3,"file":"openssl_boringssl_linux.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/linux/openssl_boringssl_linux.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,iBAAiB,EAAE,MAAM,iCAAiC,CAAC;AACnE,OAAO,EAAE,cAAc,EAAE,MAAM,kBAAkB,CAAC;AAElD,MAAM,OAAO,uBAAwB,SAAQ,iBAAiB;IAE1D,YAAmB,UAAiB,EAAS,cAAqB,EAAE,YAAqB;QACrF,KAAK,CAAC,UAAU,EAAC,cAAc,EAAC,YAAY,CAAC,CAAC;QAD/B,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAElE,CAAC;IAGD,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;QACpC,IAAI,CAAC,8BAA8B,EAAE,CAAC;IAC1C,CAAC;IAED,8BAA8B;QAE1B,IAAI,CAAC,2BAA2B,GAAG,IAAI,CAAC,SAAS,CAAC,CAAC,CAAC,IAAI,cAAc,CAAC,IAAI,CAAC,SAAS,CAAC,IAAI,CAAC,WAAW,CAAC,CAAC,2BAA2B,CAAC,EAAE,MAAM,EAAE,CAAC,SAAS,EAAE,SAAS,CAAC,CAAC,CAAC,CAAC,CAAC,IAAI,cAAc,CAAC,IAAI,CAAC,SAAS,CAAC,IAAI,CAAC,WAAW,CAAC,CAAC,6BAA6B,CAAC,EAAE,MAAM,EAAE,CAAC,SAAS,EAAE,SAAS,CAAC,CAAC,CAAC;QAC5R,IAAI,QAAQ,GAAG,IAAI,CAAC;QAEpB,WAAW,CAAC,MAAM,CAAC,IAAI,CAAC,SAAS,CAAC,IAAI,CAAC,WAAW,CAAC,CAAC,SAAS,CAAC,EAC9D;YACI,OAAO,EAAE,UAAU,IAAS;gBACxB,QAAQ,CAAC,2BAA2B,CAAC,IAAI,CAAC,CAAC,CAAC,EAAE,iBAAiB,CAAC,eAAe,CAAC,CAAA;YACpF,CAAC;SAEJ,CAAC,CAAA;IACN,CAAC;CAEJ;AAOD,MAAM,UAAU,cAAc,CAAC,UAAiB,EAAE,YAAqB;IACnE,IAAI,UAAU,GAAG,IAAI,uBAAuB,CAAC,UAAU,EAAC,cAAc,EAAE,YAAY,CAAC,CAAC;IACtF,UAAU,CAAC,aAAa,EAAE,CAAC;AAG/B,CAAC"}
 ✄
 import { OpenSSL_BoringSSL } from "../ssl_lib/openssl_boringssl.js";
 import { socket_library } from "./linux_agent.js";
 export class OpenSSL_BoringSSL_Linux extends OpenSSL_BoringSSL {
-    constructor(moduleName, socket_library) {
-        super(moduleName, socket_library);
+    constructor(moduleName, socket_library, is_base_hook) {
+        super(moduleName, socket_library, is_base_hook);
         this.moduleName = moduleName;
         this.socket_library = socket_library;
     }
@@ -997,26 +1088,27 @@ export class OpenSSL_BoringSSL_Linux extends OpenSSL_BoringSSL {
         this.install_tls_keys_callback_hook();
     }
     install_tls_keys_callback_hook() {
-        OpenSSL_BoringSSL.SSL_CTX_set_keylog_callback = ObjC.available ? new NativeFunction(this.addresses["SSL_CTX_set_info_callback"], "void", ["pointer", "pointer"]) : new NativeFunction(this.addresses["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"]);
-        Interceptor.attach(this.addresses["SSL_new"], {
+        this.SSL_CTX_set_keylog_callback = ObjC.available ? new NativeFunction(this.addresses[this.module_name]["SSL_CTX_set_info_callback"], "void", ["pointer", "pointer"]) : new NativeFunction(this.addresses[this.module_name]["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"]);
+        var instance = this;
+        Interceptor.attach(this.addresses[this.module_name]["SSL_new"], {
             onEnter: function (args) {
-                OpenSSL_BoringSSL.SSL_CTX_set_keylog_callback(args[0], OpenSSL_BoringSSL.keylog_callback);
+                instance.SSL_CTX_set_keylog_callback(args[0], OpenSSL_BoringSSL.keylog_callback);
             }
         });
     }
 }
-export function boring_execute(moduleName) {
-    var boring_ssl = new OpenSSL_BoringSSL_Linux(moduleName, socket_library);
+export function boring_execute(moduleName, is_base_hook) {
+    var boring_ssl = new OpenSSL_BoringSSL_Linux(moduleName, socket_library, is_base_hook);
     boring_ssl.execute_hooks();
 }
 ✄
-{"version":3,"file":"wolfssl_linux.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/linux/wolfssl_linux.ts"],"names":[],"mappings":"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"}
+{"version":3,"file":"wolfssl_linux.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/linux/wolfssl_linux.ts"],"names":[],"mappings":"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"}
 ✄
 import { WolfSSL } from "../ssl_lib/wolfssl.js";
 import { socket_library } from "./linux_agent.js";
 import { toHexString } from "../shared/shared_functions.js";
 export class WolfSSL_Linux extends WolfSSL {
-    constructor(moduleName, socket_library) {
+    constructor(moduleName, socket_library, is_base_hook) {
         super(moduleName, socket_library);
         this.moduleName = moduleName;
         this.socket_library = socket_library;
@@ -1027,11 +1119,11 @@ export class WolfSSL_Linux extends WolfSSL {
         this.install_tls_keys_callback_hook();
     }
     install_tls_keys_callback_hook() {
-        WolfSSL.wolfSSL_get_client_random = new NativeFunction(this.addresses["wolfSSL_get_client_random"], "int", ["pointer", "pointer", "int"]);
-        WolfSSL.wolfSSL_get_server_random = new NativeFunction(this.addresses["wolfSSL_get_server_random"], "int", ["pointer", "pointer", "int"]);
+        WolfSSL.wolfSSL_get_client_random = new NativeFunction(this.addresses[this.module_name]["wolfSSL_get_client_random"], "int", ["pointer", "pointer", "int"]);
+        WolfSSL.wolfSSL_get_server_random = new NativeFunction(this.addresses[this.module_name]["wolfSSL_get_server_random"], "int", ["pointer", "pointer", "int"]);
         //https://www.wolfssl.com/doxygen/group__Setup.html#gaf18a029cfeb3150bc245ce66b0a44758
-        WolfSSL.wolfSSL_SESSION_get_master_key = new NativeFunction(this.addresses["wolfSSL_SESSION_get_master_key"], "int", ["pointer", "pointer", "int"]);
-        Interceptor.attach(this.addresses["wolfSSL_connect"], {
+        WolfSSL.wolfSSL_SESSION_get_master_key = new NativeFunction(this.addresses[this.module_name]["wolfSSL_SESSION_get_master_key"], "int", ["pointer", "pointer", "int"]);
+        Interceptor.attach(this.addresses[this.module_name]["wolfSSL_connect"], {
             onEnter: function (args) {
                 this.ssl = args[0];
             },
@@ -1064,21 +1156,25 @@ export class WolfSSL_Linux extends WolfSSL {
         });
     }
 }
-export function wolfssl_execute(moduleName) {
-    var wolf_ssl = new WolfSSL_Linux(moduleName, socket_library);
+export function wolfssl_execute(moduleName, is_base_hook) {
+    var wolf_ssl = new WolfSSL_Linux(moduleName, socket_library, is_base_hook);
     wolf_ssl.execute_hooks();
+    if (is_base_hook) {
+        const init_addresses = wolf_ssl.addresses;
+        global.init_addresses[moduleName] = init_addresses;
+    }
 }
 ✄
-{"version":3,"file":"macos_agent.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/macos/macos_agent.ts"],"names":[],"mappings":"AACA,OAAO,EAAE,sBAAsB,EAAE,MAAM,gCAAgC,CAAC;AACxE,OAAO,EAAE,GAAG,EAAE,MAAM,EAAE,MAAM,gBAAgB,CAAC;AAC7C,OAAO,EAAE,cAAc,EAAE,kBAAkB,EAAE,MAAM,+BAA+B,CAAC;AACnF,OAAO,EAAE,cAAc,EAAE,MAAM,8BAA8B,CAAC;AAG9D,IAAI,cAAc,GAAG,QAAQ,CAAC;AAC9B,IAAI,WAAW,GAAkB,cAAc,EAAE,CAAA;AAEjD,MAAM,CAAC,MAAM,cAAc,GAAG,mBAAmB,CAAA;AAGjD,SAAS,yBAAyB,CAAC,sBAAmF;IAClH,IAAI;QACA,MAAM,WAAW,GAAG,mBAAmB,CAAA;QACvC,MAAM,KAAK,GAAG,WAAW,CAAC,IAAI,CAAC,OAAO,CAAC,EAAE,CAAC,OAAO,CAAC,KAAK,CAAC,WAAW,CAAC,CAAC,CAAA;QACrE,IAAI,KAAK,KAAK,SAAS,EAAE;YACrB,MAAM,kCAAkC,CAAA;SAC3C;QAED,IAAI,MAAM,GAAG,QAAQ,CAAA;QAErB,WAAW,CAAC,MAAM,CAAC,MAAM,CAAC,eAAe,CAAC,mBAAmB,EAAE,MAAM,CAAC,EAAE;YACpE,OAAO,EAAE,UAAU,IAAI;gBACnB,IAAI,CAAC,UAAU,GAAG,IAAI,CAAC,CAAC,CAAC,CAAC,WAAW,EAAE,CAAA;YAC3C,CAAC;YACD,OAAO,EAAE,UAAU,MAAW;gBAC1B,IAAI,IAAI,CAAC,UAAU,IAAI,SAAS,EAAE;oBAC9B,KAAK,IAAI,GAAG,IAAI,sBAAsB,CAAC,cAAc,CAAC,EAAE;wBACpD,IAAI,KAAK,GAAG,GAAG,CAAC,CAAC,CAAC,CAAA;wBAClB,IAAI,IAAI,GAAG,GAAG,CAAC,CAAC,CAAC,CAAA;wBACjB,IAAI,KAAK,CAAC,IAAI,CAAC,IAAI,CAAC,UAAU,CAAC,EAAE;4BAC7B,GAAG,CAAC,GAAG,IAAI,CAAC,UAAU,wCAAwC,CAAC,CAAA;4BAC/D,IAAI,CAAC,IAAI,CAAC,UAAU,CAAC,CAAA;yBACxB;qBAEJ;iBACJ;YACL,CAAC;SAGJ,CAAC,CAAA;QAEF,GAAG,CAAC,8BAA8B,CAAC,CAAA;KACtC;IAAC,OAAO,KAAK,EAAE;QACZ,MAAM,CAAC,gBAAgB,GAAG,KAAK,CAAC,CAAA;QAChC,GAAG,CAAC,iDAAiD,CAAC,CAAA;KACzD;AACL,CAAC;AAGD,SAAS,mBAAmB,CAAC,sBAAmF;IAC5G,kBAAkB,CAAC,cAAc,EAAE,sBAAsB,EAAC,WAAW,EAAC,OAAO,CAAC,CAAA;AAClF,CAAC;AAID,MAAM,UAAU,wBAAwB;IACpC,sBAAsB,CAAC,cAAc,CAAC,GAAG,CAAC,CAAC,uBAAuB,EAAE,cAAc,CAAC,CAAC,CAAA;IACpF,mBAAmB,CAAC,sBAAsB,CAAC,CAAC,CAAC,yGAAyG;IACtJ,yBAAyB,CAAC,sBAAsB,CAAC,CAAC;AACtD,CAAC"}
+{"version":3,"file":"macos_agent.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/macos/macos_agent.ts"],"names":[],"mappings":"AACA,OAAO,EAAE,sBAAsB,EAAqB,MAAM,gCAAgC,CAAC;AAC3F,OAAO,EAAE,GAAG,EAAE,MAAM,EAAE,MAAM,gBAAgB,CAAC;AAC7C,OAAO,EAAE,cAAc,EAAE,kBAAkB,EAAE,qBAAqB,EAAE,MAAM,+BAA+B,CAAC;AAC1G,OAAO,EAAE,cAAc,EAAE,MAAM,8BAA8B,CAAC;AAG9D,IAAI,cAAc,GAAG,QAAQ,CAAC;AAC9B,IAAI,WAAW,GAAkB,cAAc,EAAE,CAAA;AAEjD,MAAM,CAAC,MAAM,cAAc,GAAG,mBAAmB,CAAA;AAGjD,SAAS,yBAAyB,CAAC,sBAA0E,EAAE,YAAqB;IAChI,IAAI;QACA,MAAM,WAAW,GAAG,mBAAmB,CAAA;QACvC,MAAM,KAAK,GAAG,WAAW,CAAC,IAAI,CAAC,OAAO,CAAC,EAAE,CAAC,OAAO,CAAC,KAAK,CAAC,WAAW,CAAC,CAAC,CAAA;QACrE,IAAI,KAAK,KAAK,SAAS,EAAE;YACrB,MAAM,kCAAkC,CAAA;SAC3C;QAED,IAAI,MAAM,GAAG,QAAQ,CAAA;QAErB,WAAW,CAAC,MAAM,CAAC,MAAM,CAAC,eAAe,CAAC,mBAAmB,EAAE,MAAM,CAAC,EAAE;YACpE,OAAO,EAAE,UAAU,IAAI;gBACnB,IAAI,CAAC,UAAU,GAAG,IAAI,CAAC,CAAC,CAAC,CAAC,WAAW,EAAE,CAAA;YAC3C,CAAC;YACD,OAAO,EAAE,UAAU,MAAW;gBAC1B,IAAI,IAAI,CAAC,UAAU,IAAI,SAAS,EAAE;oBAC9B,KAAK,IAAI,GAAG,IAAI,sBAAsB,CAAC,cAAc,CAAC,EAAE;wBACpD,IAAI,KAAK,GAAG,GAAG,CAAC,CAAC,CAAC,CAAA;wBAClB,IAAI,IAAI,GAAG,GAAG,CAAC,CAAC,CAAC,CAAA;wBACjB,IAAI,KAAK,CAAC,IAAI,CAAC,IAAI,CAAC,UAAU,CAAC,EAAE;4BAC7B,GAAG,CAAC,GAAG,IAAI,CAAC,UAAU,wCAAwC,CAAC,CAAA;4BAC/D,IAAI,CAAC,IAAI,CAAC,UAAU,EAAE,YAAY,CAAC,CAAA;yBACtC;qBAEJ;iBACJ;YACL,CAAC;SAGJ,CAAC,CAAA;QAEF,GAAG,CAAC,8BAA8B,CAAC,CAAA;KACtC;IAAC,OAAO,KAAK,EAAE;QACZ,MAAM,CAAC,gBAAgB,GAAG,KAAK,CAAC,CAAA;QAChC,GAAG,CAAC,iDAAiD,CAAC,CAAA;KACzD;AACL,CAAC;AAGD,SAAS,mBAAmB,CAAC,sBAA0E,EAAE,YAAqB;IAC1H,kBAAkB,CAAC,cAAc,EAAE,sBAAsB,EAAC,WAAW,EAAC,OAAO,EAAE,YAAY,CAAC,CAAA;AAChG,CAAC;AAID,MAAM,UAAU,wBAAwB;IACpC,sBAAsB,CAAC,cAAc,CAAC,GAAG;QACrC,CAAC,uBAAuB,EAAE,qBAAqB,CAAC,cAAc,CAAC,CAAC;KAAC,CAAA;IAErE,mBAAmB,CAAC,sBAAsB,EAAE,IAAI,CAAC,CAAC,CAAC,yGAAyG;IAC5J,yBAAyB,CAAC,sBAAsB,EAAE,KAAK,CAAC,CAAC;AAC7D,CAAC"}
 ✄
 import { module_library_mapping } from "../shared/shared_structures.js";
 import { log, devlog } from "../util/log.js";
-import { getModuleNames, ssl_library_loader } from "../shared/shared_functions.js";
+import { getModuleNames, ssl_library_loader, invokeHookingFunction } from "../shared/shared_functions.js";
 import { boring_execute } from "./openssl_boringssl_macos.js";
 var plattform_name = "darwin";
 var moduleNames = getModuleNames();
 export const socket_library = "libSystem.B.dylib";
-function hook_macOS_Dynamic_Loader(module_library_mapping) {
+function hook_macOS_Dynamic_Loader(module_library_mapping, is_base_hook) {
     try {
         const regex_libdl = /libSystem.B.dylib/;
         const libdl = moduleNames.find(element => element.match(regex_libdl));
@@ -1097,7 +1193,7 @@ function hook_macOS_Dynamic_Loader(module_library_mapping) {
                         let func = map[1];
                         if (regex.test(this.moduleName)) {
                             log(`${this.moduleName} was loaded & will be hooked on MacOS!`);
-                            func(this.moduleName);
+                            func(this.moduleName, is_base_hook);
                         }
                     }
                 }
@@ -1110,16 +1206,18 @@ function hook_macOS_Dynamic_Loader(module_library_mapping) {
         log("No dynamic loader present for hooking on MacOS.");
     }
 }
-function hook_macOS_SSL_Libs(module_library_mapping) {
-    ssl_library_loader(plattform_name, module_library_mapping, moduleNames, "MacOS");
+function hook_macOS_SSL_Libs(module_library_mapping, is_base_hook) {
+    ssl_library_loader(plattform_name, module_library_mapping, moduleNames, "MacOS", is_base_hook);
 }
 export function load_macos_hooking_agent() {
-    module_library_mapping[plattform_name] = [[/.*libboringssl\.dylib/, boring_execute]];
-    hook_macOS_SSL_Libs(module_library_mapping); // actually we are using the same implementation as we did on iOS, therefore this needs addtional testing
-    hook_macOS_Dynamic_Loader(module_library_mapping);
+    module_library_mapping[plattform_name] = [
+        [/.*libboringssl\.dylib/, invokeHookingFunction(boring_execute)]
+    ];
+    hook_macOS_SSL_Libs(module_library_mapping, true); // actually we are using the same implementation as we did on iOS, therefore this needs addtional testing
+    hook_macOS_Dynamic_Loader(module_library_mapping, false);
 }
 ✄
-{"version":3,"file":"openssl_boringssl_macos.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/macos/openssl_boringssl_macos.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,iBAAiB,EAAE,MAAM,iCAAiC,CAAC;AACnE,OAAO,EAAE,cAAc,EAAE,MAAM,kBAAkB,CAAC;AAGlD,MAAM,OAAO,uBAAwB,SAAQ,iBAAiB;IAE1D,8BAA8B;QAC1B,OAAO,CAAC,GAAG,CAAC,IAAI,CAAC,SAAS,CAAC,CAAA,CAAC,2EAA2E;QACvG,IAAI,IAAI,CAAC,SAAS,EAAE,EAAE,0EAA0E;YAC5F,IAAI,eAAe,GAAG,KAAK,CAAC;YAE5B,IAAI,gBAAgB,GAAG,MAAM,CAAC,gBAAgB,CAAC,gBAAgB,EAAE,gCAAgC,CAAC,EAAE,UAAU,EAAE,CAAC;YACjH,IAAG,gBAAgB,IAAI,SAAS,EAAC;gBAC7B,eAAe,GAAG,KAAK,CAAC;aAC3B;iBAAK,IAAI,gBAAgB,IAAI,QAAQ,EAAE;gBACpC,eAAe,GAAG,KAAK,CAAC,CAAC,eAAe;aAC3C;YACD,WAAW,CAAC,MAAM,CAAC,IAAI,CAAC,SAAS,CAAC,2BAA2B,CAAC,EAAE;gBAC9D,OAAO,EAAE,UAAU,IAAU;oBAC3B,GAAG,CAAC,IAAI,CAAC,CAAC,CAAC,CAAC,CAAC,GAAG,CAAC,eAAe,CAAC,CAAC,YAAY,CAAC,IAAI,CAAC,eAAe,CAAC,CAAC;gBACvE,CAAC;aACF,CAAC,CAAC;SAEJ;IAEP,CAAC;IAED,YAAmB,UAAiB,EAAS,cAAqB;QAE9D,IAAI,sBAAsB,GAAqC,EAAE,CAAA;QAEjE,yIAAyI;QACzI,sBAAsB,CAAC,IAAI,UAAU,GAAG,CAAC,GAAG,CAAC,UAAU,EAAE,WAAW,EAAE,YAAY,EAAE,iBAAiB,EAAE,oBAAoB,EAAE,SAAS,EAAE,2BAA2B,CAAC,CAAA;QACpK,sBAAsB,CAAC,IAAI,cAAc,GAAG,CAAC,GAAG,CAAC,cAAc,EAAE,cAAc,EAAE,QAAQ,EAAE,QAAQ,CAAC,CAAA,CAAC,kFAAkF;QAEvL,KAAK,CAAC,UAAU,EAAC,cAAc,EAAC,sBAAsB,CAAC,CAAC;QARzC,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IASlE,CAAC;IAED,aAAa;QAET;;;;UAIE;QAEF,IAAI,CAAC,8BAA8B,EAAE,CAAC;IAC1C,CAAC;CAIJ;AAGD,MAAM,UAAU,cAAc,CAAC,UAAiB;IAC5C,IAAI,UAAU,GAAG,IAAI,uBAAuB,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;IACxE,UAAU,CAAC,aAAa,EAAE,CAAC;AAG/B,CAAC"}
+{"version":3,"file":"openssl_boringssl_macos.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/macos/openssl_boringssl_macos.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,iBAAiB,EAAE,MAAM,iCAAiC,CAAC;AACnE,OAAO,EAAE,cAAc,EAAE,MAAM,kBAAkB,CAAC;AAGlD,MAAM,OAAO,uBAAwB,SAAQ,iBAAiB;IAE1D,8BAA8B;QAC1B,OAAO,CAAC,GAAG,CAAC,IAAI,CAAC,SAAS,CAAC,CAAA,CAAC,2EAA2E;QACvG,IAAI,IAAI,CAAC,SAAS,EAAE,EAAE,0EAA0E;YAC5F,IAAI,eAAe,GAAG,KAAK,CAAC;YAE5B,IAAI,gBAAgB,GAAG,MAAM,CAAC,gBAAgB,CAAC,gBAAgB,EAAE,gCAAgC,CAAC,EAAE,UAAU,EAAE,CAAC;YACjH,IAAG,gBAAgB,IAAI,SAAS,EAAC;gBAC7B,eAAe,GAAG,KAAK,CAAC;aAC3B;iBAAK,IAAI,gBAAgB,IAAI,QAAQ,EAAE;gBACpC,eAAe,GAAG,KAAK,CAAC,CAAC,eAAe;aAC3C;YACD,WAAW,CAAC,MAAM,CAAC,IAAI,CAAC,SAAS,CAAC,IAAI,CAAC,WAAW,CAAC,CAAC,2BAA2B,CAAC,EAAE;gBAChF,OAAO,EAAE,UAAU,IAAU;oBAC3B,GAAG,CAAC,IAAI,CAAC,CAAC,CAAC,CAAC,CAAC,GAAG,CAAC,eAAe,CAAC,CAAC,YAAY,CAAC,IAAI,CAAC,eAAe,CAAC,CAAC;gBACvE,CAAC;aACF,CAAC,CAAC;SAEJ;IAEP,CAAC;IAED,YAAmB,UAAiB,EAAS,cAAqB,EAAE,YAAqB;QAErF,IAAI,sBAAsB,GAAqC,EAAE,CAAA;QAEjE,yIAAyI;QACzI,sBAAsB,CAAC,IAAI,UAAU,GAAG,CAAC,GAAG,CAAC,UAAU,EAAE,WAAW,EAAE,YAAY,EAAE,iBAAiB,EAAE,oBAAoB,EAAE,SAAS,EAAE,2BAA2B,CAAC,CAAA;QACpK,sBAAsB,CAAC,IAAI,cAAc,GAAG,CAAC,GAAG,CAAC,cAAc,EAAE,cAAc,EAAE,QAAQ,EAAE,QAAQ,CAAC,CAAA,CAAC,kFAAkF;QAEvL,KAAK,CAAC,UAAU,EAAE,cAAc,EAAE,YAAY,EAAE,sBAAsB,CAAC,CAAC;QARzD,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IASlE,CAAC;IAED,aAAa;QAET;;;;UAIE;QAEF,IAAI,CAAC,8BAA8B,EAAE,CAAC;IAC1C,CAAC;CAIJ;AAGD,MAAM,UAAU,cAAc,CAAC,UAAiB,EAAE,YAAqB;IACnE,IAAI,UAAU,GAAG,IAAI,uBAAuB,CAAC,UAAU,EAAC,cAAc,EAAE,YAAY,CAAC,CAAC;IACtF,UAAU,CAAC,aAAa,EAAE,CAAC;IAE3B,IAAI,YAAY,EAAE;QACd,MAAM,cAAc,GAAG,UAAU,CAAC,SAAS,CAAC;QAC5C,IAAI,MAAM,CAAC,IAAI,CAAC,cAAc,CAAC,CAAC,MAAM,GAAG,CAAC,EAAE;YACvC,MAAc,CAAC,cAAc,CAAC,UAAU,CAAC,GAAG,cAAc,CAAC;SAC/D;KACJ;AACL,CAAC"}
 ✄
 import { OpenSSL_BoringSSL } from "../ssl_lib/openssl_boringssl.js";
 import { socket_library } from "./macos_agent.js";
@@ -1135,19 +1233,19 @@ export class OpenSSL_BoringSSL_MacOS extends OpenSSL_BoringSSL {
             else if (foundationNumber >= 1751.108) {
                 CALLBACK_OFFSET = 0x2B8; // >= iOS 14.x 
             }
-            Interceptor.attach(this.addresses["SSL_CTX_set_info_callback"], {
+            Interceptor.attach(this.addresses[this.module_name]["SSL_CTX_set_info_callback"], {
                 onEnter: function (args) {
                     ptr(args[0]).add(CALLBACK_OFFSET).writePointer(this.keylog_callback);
                 }
             });
         }
     }
-    constructor(moduleName, socket_library) {
+    constructor(moduleName, socket_library, is_base_hook) {
         var library_method_mapping = {};
         // the iOS implementation needs some further improvements - currently we are not able to get the sockfd from an SSL_read/write invocation
         library_method_mapping[`*${moduleName}*`] = ["SSL_read", "SSL_write", "BIO_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_info_callback"];
         library_method_mapping[`*${socket_library}*`] = ["getpeername*", "getsockname*", "ntohs*", "ntohl*"]; // currently those functions gets only identified if we at an asterisk at the end 
-        super(moduleName, socket_library, library_method_mapping);
+        super(moduleName, socket_library, is_base_hook, library_method_mapping);
         this.moduleName = moduleName;
         this.socket_library = socket_library;
     }
@@ -1160,12 +1258,18 @@ export class OpenSSL_BoringSSL_MacOS extends OpenSSL_BoringSSL {
         this.install_tls_keys_callback_hook();
     }
 }
-export function boring_execute(moduleName) {
-    var boring_ssl = new OpenSSL_BoringSSL_MacOS(moduleName, socket_library);
+export function boring_execute(moduleName, is_base_hook) {
+    var boring_ssl = new OpenSSL_BoringSSL_MacOS(moduleName, socket_library, is_base_hook);
     boring_ssl.execute_hooks();
+    if (is_base_hook) {
+        const init_addresses = boring_ssl.addresses;
+        if (Object.keys(init_addresses).length > 0) {
+            global.init_addresses[moduleName] = init_addresses;
+        }
+    }
 }
 ✄
-{"version":3,"file":"shared_functions.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/shared/shared_functions.ts"],"names":[],"mappings":"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"}
+{"version":3,"file":"shared_functions.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/shared/shared_functions.ts"],"names":[],"mappings":"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"}
 ✄
 import { log, devlog } from "../util/log.js";
 import { AF_INET, AF_INET6 } from "./shared_structures.js";
@@ -1183,7 +1287,7 @@ function wait_for_library_loaded(module_name) {
  * indipendent from the implementation of ssl/tls, but they depend
  * on libc.
  */
-export function ssl_library_loader(plattform_name, module_library_mapping, moduleNames, plattform_os) {
+export function ssl_library_loader(plattform_name, module_library_mapping, moduleNames, plattform_os, is_base_hook) {
     for (let map of module_library_mapping[plattform_name]) {
         let regex = new RegExp(map[0]);
         let func = map[1];
@@ -1197,7 +1301,8 @@ export function ssl_library_loader(plattform_name, module_library_mapping, modul
                     catch (error) {
                         wait_for_library_loaded(module);
                     }
-                    func(module); // on some Android Apps we encounterd the problem of multiple SSL libraries but only one is used for the SSL encryption/decryption
+                    // on some Android Apps we encounterd the problem of multiple SSL libraries but only one is used for the SSL encryption/decryption
+                    func(module, is_base_hook);
                 }
                 catch (error) {
                     log(`error: skipping module ${module}`);
@@ -1230,20 +1335,61 @@ export function getModuleNames() {
     Process.enumerateModules().forEach(item => moduleNames.push(item.name));
     return moduleNames;
 }
+export function readAddresses(moduleName, library_method_mapping) {
+    const resolver = new ApiResolver("module");
+    const addresses = {};
+    // Initialize addresses[moduleName] as an empty object if not already initialized
+    if (!addresses[moduleName]) {
+        addresses[moduleName] = {};
+    }
+    for (const library_name in library_method_mapping) {
+        library_method_mapping[library_name].forEach(function (method) {
+            const matches = resolver.enumerateMatches("exports:" + library_name + "!" + method);
+            let match_number = 0;
+            let method_name = method.toString();
+            if (method_name.endsWith("*")) { // this is for the temporary iOS bug using Frida's ApiResolver
+                method_name = method_name.substring(0, method_name.length - 1);
+            }
+            if (matches.length == 0) {
+                throw "Could not find " + library_name + "!" + method;
+            }
+            else if (matches.length == 1) {
+                devlog("Found " + method + " " + matches[0].address);
+            }
+            else {
+                // Sometimes Frida returns duplicates or it finds more than one result.
+                for (let k = 0; k < matches.length; k++) {
+                    if (matches[k].name.endsWith(method_name)) {
+                        match_number = k;
+                        devlog("Found " + method + " " + matches[match_number].address);
+                        break;
+                    }
+                }
+            }
+            addresses[moduleName][method_name] = matches[match_number].address;
+        });
+    }
+    return addresses;
+}
 /**
  * Read the addresses for the given methods from the given modules
  * @param {{[key: string]: Array<String> }} library_method_mapping A string indexed list of arrays, mapping modules to methods
- * @return {{[key: string]: NativePointer }} A string indexed list of NativePointers, which point to the respective methods
+ * @param is_base_hook a boolean value to indicate if this hooks are done on the start or during dynamic library loading
+ * @return {{[key: string]: { [functionName: string]: NativePointer } }} A string indexed list of NativePointers, which point to the respective methods
  */
-export function readAddresses(library_method_mapping) {
+export function readAddresses2(moduleName, library_method_mapping) {
     var resolver = new ApiResolver("module");
     var addresses = {};
+    // Initialize addresses[library_name] as an empty object if not already initialized
+    if (!addresses[moduleName]) {
+        addresses[moduleName] = {};
+    }
     for (let library_name in library_method_mapping) {
         library_method_mapping[library_name].forEach(function (method) {
             var matches = resolver.enumerateMatches("exports:" + library_name + "!" + method);
             var match_number = 0;
             var method_name = method.toString();
-            if (method_name.endsWith("*")) { // this is for the temporary iOS bug using fridas ApiResolver
+            if (method_name.endsWith("*")) { // this is for the temporary iOS bug using Frida's ApiResolver
                 method_name = method_name.substring(0, method_name.length - 1);
             }
             if (matches.length == 0) {
@@ -1262,7 +1408,7 @@ export function readAddresses(library_method_mapping) {
                     }
                 }
             }
-            addresses[method_name] = matches[match_number].address;
+            addresses[moduleName][method_name] = matches[match_number].address;
         });
     }
     return addresses;
@@ -1401,8 +1547,14 @@ export function getAttribute(Instance, fieldName) {
     field.setAccessible(true);
     return field.get(Instance);
 }
+// Wrapper function to ensure all execute functions conform to the required signature
+export function invokeHookingFunction(func) {
+    return (moduleName, is_base_hook) => {
+        func(moduleName, is_base_hook);
+    };
+}
 ✄
-{"version":3,"file":"shared_structures.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/shared/shared_structures.ts"],"names":[],"mappings":"AAAA,2DAA2D;AAG3D,MAAM,CAAC,IAAI,sBAAsB,GAAgE,EAAE,CAAA;AAGnG,MAAM,CAAC,MAAM,OAAO,GAAG,CAAC,CAAA;AACxB,MAAM,CAAC,MAAM,QAAQ,GAAG,EAAE,CAAA;AAC1B,MAAM,CAAC,MAAM,WAAW,GAAG,OAAO,CAAC,WAAW,CAAC"}
+{"version":3,"file":"shared_structures.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/shared/shared_structures.ts"],"names":[],"mappings":"AAAA,2DAA2D;AAG3D,MAAM,CAAC,IAAI,sBAAsB,GAAuD,EAAE,CAAC;AAG3F,MAAM,CAAC,MAAM,OAAO,GAAG,CAAC,CAAA;AACxB,MAAM,CAAC,MAAM,QAAQ,GAAG,EAAE,CAAA;AAC1B,MAAM,CAAC,MAAM,WAAW,GAAG,OAAO,CAAC,WAAW,CAAC"}
 ✄
 /* In this file we store global variables and structures */
 export var module_library_mapping = {};
@@ -1410,7 +1562,7 @@ export const AF_INET = 2;
 export const AF_INET6 = 10;
 export const pointerSize = Process.pointerSize;
 ✄
-{"version":3,"file":"gnutls.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/ssl_lib/gnutls.ts"],"names":[],"mappings":"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"}
+{"version":3,"file":"gnutls.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/ssl_lib/gnutls.ts"],"names":[],"mappings":"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"}
 ✄
 import { readAddresses, getPortsAndAddresses, getBaseAddress } from "../shared/shared_functions.js";
 import { log } from "../util/log.js";
@@ -1429,14 +1581,15 @@ export class GnuTLS {
             this.library_method_mapping[`*${moduleName}*`] = ["gnutls_record_recv", "gnutls_record_send", "gnutls_session_set_keylog_function", "gnutls_transport_get_int", "gnutls_session_get_id", "gnutls_init", "gnutls_handshake", "gnutls_session_get_keylog_function", "gnutls_session_get_random"];
             this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
         }
-        this.addresses = readAddresses(this.library_method_mapping);
+        this.addresses = readAddresses(moduleName, this.library_method_mapping);
+        this.module_name = moduleName;
         // @ts-ignore
         if (offsets != "{OFFSETS}" && offsets.gnutls != null) {
             if (offsets.sockets != null) {
                 const socketBaseAddress = getBaseAddress(socket_library);
                 for (const method of Object.keys(offsets.sockets)) {
                     //@ts-ignore
-                    this.addresses[`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
+                    this.addresses[this.moduleName][`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
                 }
             }
             const libraryBaseAddress = getBaseAddress(moduleName);
@@ -1445,13 +1598,13 @@ export class GnuTLS {
             }
             for (const method of Object.keys(offsets.gnutls)) {
                 //@ts-ignore
-                this.addresses[`${method}`] = offsets.gnutls[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.gnutls[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.gnutls[`${method}`].address));
+                this.addresses[this.moduleName][`${method}`] = offsets.gnutls[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.gnutls[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.gnutls[`${method}`].address));
             }
         }
-        GnuTLS.gnutls_transport_get_int = new NativeFunction(this.addresses["gnutls_transport_get_int"], "int", ["pointer"]);
-        GnuTLS.gnutls_session_get_id = new NativeFunction(this.addresses["gnutls_session_get_id"], "int", ["pointer", "pointer", "pointer"]);
-        GnuTLS.gnutls_session_set_keylog_function = new NativeFunction(this.addresses["gnutls_session_set_keylog_function"], "void", ["pointer", "pointer"]);
-        GnuTLS.gnutls_session_get_random = new NativeFunction(this.addresses["gnutls_session_get_random"], "pointer", ["pointer", "pointer", "pointer"]);
+        GnuTLS.gnutls_transport_get_int = new NativeFunction(this.addresses[this.moduleName]["gnutls_transport_get_int"], "int", ["pointer"]);
+        GnuTLS.gnutls_session_get_id = new NativeFunction(this.addresses[this.moduleName]["gnutls_session_get_id"], "int", ["pointer", "pointer", "pointer"]);
+        GnuTLS.gnutls_session_set_keylog_function = new NativeFunction(this.addresses[this.moduleName]["gnutls_session_set_keylog_function"], "void", ["pointer", "pointer"]);
+        GnuTLS.gnutls_session_get_random = new NativeFunction(this.addresses[this.moduleName]["gnutls_session_get_random"], "pointer", ["pointer", "pointer", "pointer"]);
     }
     /**
        * Get the session_id of SSL object and return it as a hex string.
@@ -1490,10 +1643,11 @@ export class GnuTLS {
         return session_id;
     }
     install_plaintext_read_hook() {
+        var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
-        Interceptor.attach(this.addresses["gnutls_record_recv"], {
+        Interceptor.attach(this.addresses[this.moduleName]["gnutls_record_recv"], {
             onEnter: function (args) {
-                var message = getPortsAndAddresses(GnuTLS.gnutls_transport_get_int(args[0]), true, lib_addesses, enable_default_fd);
+                var message = getPortsAndAddresses(GnuTLS.gnutls_transport_get_int(args[0]), true, lib_addesses[current_module_name], enable_default_fd);
                 message["ssl_session_id"] = GnuTLS.getSslSessionId(args[0]);
                 message["function"] = "SSL_read";
                 this.message = message;
@@ -1510,10 +1664,11 @@ export class GnuTLS {
         });
     }
     install_plaintext_write_hook() {
+        var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
-        Interceptor.attach(this.addresses["gnutls_record_send"], {
+        Interceptor.attach(this.addresses[this.moduleName]["gnutls_record_send"], {
             onEnter: function (args) {
-                var message = getPortsAndAddresses(GnuTLS.gnutls_transport_get_int(args[0]), false, lib_addesses, enable_default_fd);
+                var message = getPortsAndAddresses(GnuTLS.gnutls_transport_get_int(args[0]), false, lib_addesses[current_module_name], enable_default_fd);
                 message["ssl_session_id"] = GnuTLS.getSslSessionId(args[0]);
                 message["function"] = "SSL_write";
                 message["contentType"] = "datalog";
@@ -1641,7 +1796,7 @@ export class SSL_Java {
     }
 }
 ✄
-{"version":3,"file":"matrixssl.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/ssl_lib/matrixssl.ts"],"names":[],"mappings":"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"}
+{"version":3,"file":"matrixssl.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/ssl_lib/matrixssl.ts"],"names":[],"mappings":"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"}
 ✄
 import { readAddresses, getPortsAndAddresses, getBaseAddress } from "../shared/shared_functions.js";
 import { enable_default_fd, offsets } from "../ssl_log.js";
@@ -1660,14 +1815,15 @@ export class matrix_SSL {
             this.library_method_mapping[`*${moduleName}*`] = ["matrixSslReceivedData", "matrixSslGetWritebuf", "matrixSslGetSid", "matrixSslEncodeWritebuf"];
             this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl", "socket"];
         }
-        this.addresses = readAddresses(this.library_method_mapping);
+        this.addresses = readAddresses(moduleName, this.library_method_mapping);
+        this.module_name = moduleName;
         // @ts-ignore
         if (offsets != "{OFFSETS}" && offsets.matrixssl != null) {
             if (offsets.sockets != null) {
                 const socketBaseAddress = getBaseAddress(socket_library);
                 for (const method of Object.keys(offsets.sockets)) {
                     //@ts-ignore
-                    this.addresses[`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
+                    this.addresses[this.moduleName][`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
                 }
             }
             const libraryBaseAddress = getBaseAddress(moduleName);
@@ -1676,22 +1832,23 @@ export class matrix_SSL {
             }
             for (const method of Object.keys(offsets.matrixssl)) {
                 //@ts-ignore
-                this.addresses[`${method}`] = offsets.matrixssl[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.matrixssl[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.matrixssl[`${method}`].address));
+                this.addresses[this.moduleName][`${method}`] = offsets.matrixssl[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.matrixssl[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.matrixssl[`${method}`].address));
             }
         }
         //Creates a new client session. If this happens we will save the id of this new session
-        matrix_SSL.matrixSslNewCLientSession = new NativeFunction(this.addresses["matrixSslNewClientSession"], "int", ["pointer", "pointer", "pointer", "pointer", "int", "pointer", "pointer", "pointer", "pointer", "pointer"]);
+        matrix_SSL.matrixSslNewCLientSession = new NativeFunction(this.addresses[this.moduleName]["matrixSslNewClientSession"], "int", ["pointer", "pointer", "pointer", "pointer", "int", "pointer", "pointer", "pointer", "pointer", "pointer"]);
         //This function extracts the sessionID object out of the ssl object
-        matrix_SSL.matrixSslGetSid = new NativeFunction(this.addresses["matrixSslGetSid"], "pointer", ["pointer"]);
+        matrix_SSL.matrixSslGetSid = new NativeFunction(this.addresses[this.moduleName]["matrixSslGetSid"], "pointer", ["pointer"]);
     }
     install_plaintext_read_hook() {
+        var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
-        Interceptor.attach(this.addresses["matrixSslReceivedData"], {
+        Interceptor.attach(this.addresses[this.moduleName]["matrixSslReceivedData"], {
             onEnter: function (args) {
                 this.buffer = args[2];
                 this.len = args[3];
-                var message = getPortsAndAddresses(this.fd, true, lib_addesses, enable_default_fd);
-                message["ssl_session_id"] = this.addresses["matrixSslGetSid"] === undefined ? matrix_SSL.sessionId : this.getSessionId(args[0]);
+                var message = getPortsAndAddresses(this.fd, true, lib_addesses[current_module_name], enable_default_fd);
+                message["ssl_session_id"] = this.addresses[this.moduleName]["matrixSslGetSid"] === undefined ? matrix_SSL.sessionId : this.getSessionId(args[0]);
                 message["function"] = "matrixSslReceivedData";
                 this.message = message;
             },
@@ -1707,9 +1864,10 @@ export class matrix_SSL {
         });
     }
     install_plaintext_write_hook() {
+        var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
         //This function is needed to extract the buffer address in which the plaintext will be stored before registring this buffer as the "sent data" buffer.
-        Interceptor.attach(this.addresses["matrixSslGetWritebuf"], {
+        Interceptor.attach(this.addresses[this.moduleName]["matrixSslGetWritebuf"], {
             onEnter: function (args) {
                 this.outBuffer = args[1];
             },
@@ -1723,11 +1881,11 @@ export class matrix_SSL {
         });
         //This function actual encodes the plaintext. We need to hook this, because the user will fill the data out buffer between matrixSslGetWritebuf and matrixSslEncodeWritebuf call.
         //So at the time this function is called, the buffer with the plaintext will be final 
-        Interceptor.attach(this.addresses["matrixSslEncodeWritebuf"], {
+        Interceptor.attach(this.addresses[this.moduleName]["matrixSslEncodeWritebuf"], {
             onEnter: function (args) {
                 var data = this.outBuffer.readByteArray(this.outBufferLength);
-                var message = getPortsAndAddresses(this.fd, false, lib_addesses, enable_default_fd);
-                message["ssl_session_id"] = this.addresses["matrixSslGetSid"] === undefined ? matrix_SSL.sessionId : this.getSessionId(args[0]);
+                var message = getPortsAndAddresses(this.fd, false, lib_addesses[current_module_name], enable_default_fd);
+                message["ssl_session_id"] = this.addresses[this.moduleName]["matrixSslGetSid"] === undefined ? matrix_SSL.sessionId : this.getSessionId(args[0]);
                 message["function"] = "matrixSslEncodeWritebuf";
                 message["contentType"] = "datalog";
                 send(message, data);
@@ -1738,7 +1896,7 @@ export class matrix_SSL {
         // TBD
     }
     install_helper_hook() {
-        Interceptor.attach(this.addresses["matrixSslNewSessionId"], {
+        Interceptor.attach(this.addresses[this.moduleName]["matrixSslNewSessionId"], {
             onEnter: function (args) {
                 this.sslSessionPointer = args[0];
             },
@@ -1751,7 +1909,7 @@ export class matrix_SSL {
                 matrix_SSL.sessionId = this.sslSessionPointer.add(Process.pointerSize).readPointer().readCString(sessionIdLength);
             }
         });
-        Interceptor.attach(this.addresses["connect"], {
+        Interceptor.attach(this.addresses[this.moduleName]["connect"], {
             onEnter: function (args) {
             },
             onLeave: function (retval) {
@@ -1771,7 +1929,7 @@ export class matrix_SSL {
     }
 }
 ✄
-{"version":3,"file":"mbedTLS.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/ssl_lib/mbedTLS.ts"],"names":[],"mappings":"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"}
+{"version":3,"file":"mbedTLS.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/ssl_lib/mbedTLS.ts"],"names":[],"mappings":"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"}
 ✄
 import { readAddresses, getPortsAndAddresses, getBaseAddress } from "../shared/shared_functions.js";
 import { offsets, enable_default_fd } from "../ssl_log.js";
@@ -1790,14 +1948,15 @@ export class mbed_TLS {
             this.library_method_mapping[`*${moduleName}*`] = ["mbedtls_ssl_read", "mbedtls_ssl_write"];
             this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
         }
-        this.addresses = readAddresses(this.library_method_mapping);
+        this.addresses = readAddresses(moduleName, this.library_method_mapping);
+        this.module_name = moduleName;
         // @ts-ignore
         if (offsets != "{OFFSETS}" && offsets.mbedtls != null) {
             if (offsets.sockets != null) {
                 const socketBaseAddress = getBaseAddress(socket_library);
                 for (const method of Object.keys(offsets.sockets)) {
                     //@ts-ignore
-                    this.addresses[`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
+                    this.addresses[this.moduleName][`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
                 }
             }
             const libraryBaseAddress = getBaseAddress(moduleName);
@@ -1806,7 +1965,7 @@ export class mbed_TLS {
             }
             for (const method of Object.keys(offsets.mbedtls)) {
                 //@ts-ignore
-                this.addresses[`${method}`] = offsets.mbedtls[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.mbedtls[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.mbedtls[`${method}`].address));
+                this.addresses[this.moduleName][`${method}`] = offsets.mbedtls[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.mbedtls[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.mbedtls[`${method}`].address));
             }
         }
     }
@@ -1847,14 +2006,15 @@ export class mbed_TLS {
         return session_id;
     }
     install_plaintext_read_hook() {
+        var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
         //https://tls.mbed.org/api/ssl_8h.html#aa2c29eeb1deaf5ad9f01a7515006ede5
-        Interceptor.attach(this.addresses["mbedtls_ssl_read"], {
+        Interceptor.attach(this.addresses[this.moduleName]["mbedtls_ssl_read"], {
             onEnter: function (args) {
                 this.buffer = args[1];
                 this.len = args[2];
                 this.sslContext = args[0];
-                var message = getPortsAndAddresses(mbed_TLS.getSocketDescriptor(args[0]), true, lib_addesses, enable_default_fd);
+                var message = getPortsAndAddresses(mbed_TLS.getSocketDescriptor(args[0]), true, lib_addesses[current_module_name], enable_default_fd);
                 message["ssl_session_id"] = mbed_TLS.getSessionId(args[0]);
                 message["function"] = "mbedtls_ssl_read";
                 this.message = message;
@@ -1871,9 +2031,10 @@ export class mbed_TLS {
         });
     }
     install_plaintext_write_hook() {
+        var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
         //https://tls.mbed.org/api/ssl_8h.html#a5bbda87d484de82df730758b475f32e5
-        Interceptor.attach(this.addresses["mbedtls_ssl_write"], {
+        Interceptor.attach(this.addresses[this.moduleName]["mbedtls_ssl_write"], {
             onEnter: function (args) {
                 var buffer = args[1];
                 var len = args[2];
@@ -1882,7 +2043,7 @@ export class mbed_TLS {
                     return;
                 }
                 var data = buffer.readByteArray(len);
-                var message = getPortsAndAddresses(mbed_TLS.getSocketDescriptor(args[0]), false, lib_addesses, enable_default_fd);
+                var message = getPortsAndAddresses(mbed_TLS.getSocketDescriptor(args[0]), false, lib_addesses[current_module_name], enable_default_fd);
                 message["ssl_session_id"] = mbed_TLS.getSessionId(args[0]);
                 message["function"] = "mbedtls_ssl_write";
                 message["contentType"] = "datalog";
@@ -1895,7 +2056,7 @@ export class mbed_TLS {
     }
 }
 ✄
-{"version":3,"file":"nss.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/ssl_lib/nss.ts"],"names":[],"mappings":"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"}
+{"version":3,"file":"nss.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/ssl_lib/nss.ts"],"names":[],"mappings":"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"}
 ✄
 import { readAddresses, getBaseAddress } from "../shared/shared_functions.js";
 import { pointerSize, AF_INET, AF_INET6 } from "../shared/shared_structures.js";
@@ -1935,14 +2096,15 @@ export class NSS {
             this.library_method_mapping["*libssl*.so"] = ["SSL_ImportFD", "SSL_GetSessionID", "SSL_HandshakeCallback"];
             this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
         }
-        this.addresses = readAddresses(this.library_method_mapping);
+        this.addresses = readAddresses(moduleName, this.library_method_mapping);
+        this.module_name = moduleName;
         // @ts-ignore
         if (offsets != "{OFFSETS}" && offsets.nss != null) {
             if (offsets.sockets != null) {
                 const socketBaseAddress = getBaseAddress(socket_library);
                 for (const method of Object.keys(offsets.sockets)) {
                     //@ts-ignore
-                    this.addresses[`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
+                    this.addresses[this.moduleName][`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
                 }
             }
             const libraryBaseAddress = getBaseAddress(moduleName);
@@ -1951,12 +2113,12 @@ export class NSS {
             }
             for (const method of Object.keys(offsets.nss)) {
                 //@ts-ignore
-                this.addresses[`${method}`] = offsets.nss[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.nss[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.nss[`${method}`].address));
+                this.addresses[this.moduleName][`${method}`] = offsets.nss[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.nss[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.nss[`${method}`].address));
             }
         }
-        NSS.SSL_SESSION_get_id = new NativeFunction(this.addresses["SSL_GetSessionID"], "pointer", ["pointer"]);
-        NSS.getsockname = new NativeFunction(this.addresses["PR_GetSockName"], "int", ["pointer", "pointer"]);
-        NSS.getpeername = new NativeFunction(this.addresses["PR_GetPeerName"], "int", ["pointer", "pointer"]);
+        NSS.SSL_SESSION_get_id = new NativeFunction(this.addresses[this.moduleName]["SSL_GetSessionID"], "pointer", ["pointer"]);
+        NSS.getsockname = new NativeFunction(this.addresses[this.moduleName]["PR_GetSockName"], "int", ["pointer", "pointer"]);
+        NSS.getpeername = new NativeFunction(this.addresses[this.moduleName]["PR_GetPeerName"], "int", ["pointer", "pointer"]);
     }
     /* PARSING functions */
     static parse_struct_SECItem(secitem) {
@@ -2800,8 +2962,9 @@ typedef union PRNetAddr PRNetAddr;
     }
     /***** Installing the hooks *****/
     install_plaintext_read_hook() {
+        var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
-        Interceptor.attach(this.addresses["PR_Read"], {
+        Interceptor.attach(this.addresses[this.moduleName]["PR_Read"], {
             onEnter: function (args) {
                 // ab hier nicht mehr
                 this.fd = ptr(args[0]);
@@ -2816,7 +2979,7 @@ typedef union PRNetAddr PRNetAddr;
                 var res = NSS.getpeername(this.fd, addr);
                 // peername return -1 this is due to the fact that a PIPE descriptor is used to read from the SSL socket
                 if (addr.readU16() == 2 || addr.readU16() == 10 || addr.readU16() == 100) {
-                    var message = NSS.getPortsAndAddressesFromNSS(this.fd, true, lib_addesses, enable_default_fd);
+                    var message = NSS.getPortsAndAddressesFromNSS(this.fd, true, lib_addesses[current_module_name], enable_default_fd);
                     devlog("Session ID: " + NSS.getSslSessionIdFromFD(this.fd));
                     message["ssl_session_id"] = NSS.getSslSessionIdFromFD(this.fd);
                     message["function"] = "NSS_read";
@@ -2826,7 +2989,7 @@ typedef union PRNetAddr PRNetAddr;
                     send(message, data);
                 }
                 else {
-                    var message = NSS.getPortsAndAddressesFromNSS(null, true, lib_addesses, enable_default_fd);
+                    var message = NSS.getPortsAndAddressesFromNSS(null, true, lib_addesses[current_module_name], enable_default_fd);
                     message["ssl_session_id"] = NSS.getSslSessionIdFromFD(this.fd);
                     message["function"] = "NSS_read";
                     this.message = message;
@@ -2839,8 +3002,9 @@ typedef union PRNetAddr PRNetAddr;
         });
     }
     install_plaintext_write_hook() {
+        var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
-        Interceptor.attach(this.addresses["PR_Write"], {
+        Interceptor.attach(this.addresses[this.moduleName]["PR_Write"], {
             onEnter: function (args) {
                 this.fd = ptr(args[0]);
                 this.buf = args[1];
@@ -2853,7 +3017,7 @@ typedef union PRNetAddr PRNetAddr;
                 var addr = Memory.alloc(8);
                 NSS.getsockname(this.fd, addr);
                 if (addr.readU16() == 2 || addr.readU16() == 10 || addr.readU16() == 100) {
-                    var message = NSS.getPortsAndAddressesFromNSS(this.fd, false, lib_addesses, enable_default_fd);
+                    var message = NSS.getPortsAndAddressesFromNSS(this.fd, false, lib_addesses[current_module_name], enable_default_fd);
                     message["ssl_session_id"] = NSS.getSslSessionIdFromFD(this.fd);
                     message["function"] = "NSS_write";
                     message["contentType"] = "datalog";
@@ -2861,7 +3025,7 @@ typedef union PRNetAddr PRNetAddr;
                 }
                 else {
                     log("The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys");
-                    var message = NSS.getPortsAndAddressesFromNSS(null, true, lib_addesses, enable_default_fd);
+                    var message = NSS.getPortsAndAddressesFromNSS(null, true, lib_addesses[current_module_name], enable_default_fd);
                     message["ssl_session_id"] = NSS.getSslSessionIdFromFD(this.fd);
                     message["function"] = "NSS_write";
                     this.message = message;
@@ -3030,7 +3194,7 @@ NSS.secret_callback = new NativeCallback(function (sslSocketFD, epoch, dir, secr
     return;
 }, "void", ["pointer", "uint16", "uint16", "pointer", "pointer"]);
 ✄
-{"version":3,"file":"openssl_boringssl.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/ssl_lib/openssl_boringssl.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,aAAa,EAAE,oBAAoB,EAAE,cAAc,EAAE,MAAM,+BAA+B,CAAC;AAEpG,OAAO,EAAc,OAAO,EAAC,iBAAiB,EAAE,MAAM,eAAe,CAAC;AACtE,OAAO,EAAE,MAAM,EAAE,GAAG,EAAE,MAAM,gBAAgB,CAAC;AAG7C,MAAM,cAAc;IAGhB;QAFO,qBAAgB,GAAuB,IAAI,CAAC;QAC5C,sBAAiB,GAAuB,IAAI,CAAC;QAEhD,IAAI,CAAC,gBAAgB,EAAE,CAAC;QACxB,IAAI,CAAC,iBAAiB,EAAE,CAAC;IAC7B,CAAC;IAEO,gBAAgB;QACpB,IAAI,CAAC,SAAS,EAAE,CAAC,MAAM,EAAC,EAAE;YACtB,YAAY;YACZ,IAAI,CAAC,gBAAgB,GAAG,MAAM,CAAC,OAAO,IAAI,IAAI,CAAC,CAAC,CAAE,IAAI,UAAU,CAAC,MAAM,CAAC,OAAO,CAAC,KAAK,CAAC,cAAc,CAAC,CAAC,GAAG,CAAC,UAAU,CAAC;gBACjH,OAAO,QAAQ,CAAC,CAAC,EAAE,EAAE,CAAC,CAAA;YACxB,CAAC,CAAC,CAAC,CAAC,MAAM,CAAC,CAAC,CAAC,IAAI,CAAA;YACnB,IAAI,CAAC,gBAAgB,EAAE,CAAC;QAC5B,CAAC,CAAC,CAAC;IAEP,CAAC;IAEO,iBAAiB;QACrB,IAAI,CAAC,UAAU,EAAE,CAAC,MAAM,EAAC,EAAE;YACvB,YAAY;YACZ,IAAI,CAAC,iBAAiB,GAAG,MAAM,CAAC,OAAO,IAAI,IAAI,CAAC,CAAC,CAAC,IAAI,UAAU,CAAC,MAAM,CAAC,OAAO,CAAC,KAAK,CAAC,cAAc,CAAC,CAAC,GAAG,CAAC,UAAU,CAAC;gBACjH,OAAO,QAAQ,CAAC,CAAC,EAAE,EAAE,CAAC,CAAA;YACxB,CAAC,CAAC,CAAC,CAAC,MAAM,CAAC,CAAC,CAAC,IAAI,CAAC;YACpB,IAAI,CAAC,iBAAiB,EAAE,CAAA;QAC5B,CAAC,CAAC,CAAC;IAEP,CAAC;IAED,IAAI,OAAO;QACP,OAAO,IAAI,CAAC,gBAAgB,CAAC;IACjC,CAAC;IAED,IAAI,QAAQ;QACR,OAAO,IAAI,CAAC,iBAAiB,CAAC;IAClC,CAAC;IAED,IAAI,OAAO,CAAC,GAAuB;QAC/B,IAAI,CAAC,gBAAgB,GAAG,GAAG,CAAC;IAChC,CAAC;IAED,IAAI,QAAQ,CAAC,GAAuB;QAChC,IAAI,CAAC,iBAAiB,GAAG,GAAG,CAAC;IACjC,CAAC;CAGJ;AAED;;;;;;;GAOG;AAEH,MAAM,OAAO,iBAAiB;IAuB1B,YAAmB,UAAiB,EAAS,cAAqB,EAAQ,6BAAgE;QAAvH,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;QAAQ,kCAA6B,GAA7B,6BAA6B,CAAmC;QArB1I,mBAAmB;QACnB,2BAAsB,GAAqC,EAAE,CAAC;QAqB1D,iBAAiB,CAAC,WAAW,GAAG,IAAI,cAAc,EAAE,CAAC;QAErD,IAAG,OAAO,6BAA6B,KAAK,WAAW,EAAC;YACpD,IAAI,CAAC,sBAAsB,GAAG,6BAA6B,CAAC;SAC/D;aAAI;YACD,IAAI,CAAC,sBAAsB,CAAC,IAAI,UAAU,GAAG,CAAC,GAAG,CAAC,UAAU,EAAE,WAAW,EAAE,YAAY,EAAE,iBAAiB,EAAE,oBAAoB,EAAE,SAAS,EAAE,6BAA6B,CAAC,CAAA;YAC3K,IAAI,CAAC,sBAAsB,CAAC,IAAI,cAAc,GAAG,CAAC,GAAG,CAAC,aAAa,EAAE,aAAa,EAAE,OAAO,EAAE,OAAO,CAAC,CAAA;SACxG;QAED,IAAI,CAAC,SAAS,GAAG,aAAa,CAAC,IAAI,CAAC,sBAAsB,CAAC,CAAC;QAE5D,aAAa;QACb,IAAG,OAAO,IAAI,WAAW,IAAI,OAAO,CAAC,OAAO,IAAI,IAAI,EAAC;YAEjD,IAAG,OAAO,CAAC,OAAO,IAAI,IAAI,EAAC;gBACvB,MAAM,iBAAiB,GAAG,cAAc,CAAC,cAAc,CAAC,CAAA;gBACxD,KAAI,MAAM,MAAM,IAAI,MAAM,CAAC,IAAI,CAAC,OAAO,CAAC,OAAO,CAAC,EAAC;oBAC5C,YAAY;oBACb,IAAI,CAAC,SAAS,CAAC,GAAG,MAAM,EAAE,CAAC,GAAG,OAAO,CAAC,OAAO,CAAC,GAAG,MAAM,EAAE,CAAC,CAAC,QAAQ,IAAI,iBAAiB,IAAI,IAAI,CAAC,CAAC,CAAC,GAAG,CAAC,OAAO,CAAC,OAAO,CAAC,GAAG,MAAM,EAAE,CAAC,CAAC,OAAO,CAAC,CAAC,CAAC,CAAC,iBAAiB,CAAC,GAAG,CAAC,GAAG,CAAC,OAAO,CAAC,OAAO,CAAC,GAAG,MAAM,EAAE,CAAC,CAAC,OAAO,CAAC,CAAC,CAAC;iBACnN;aACJ;YAED,MAAM,kBAAkB,GAAG,cAAc,CAAC,UAAU,CAAC,CAAA;YAErD,IAAG,kBAAkB,IAAI,IAAI;gBACzB,GAAG,CAAC,iGAAiG,CAAC,CAAA;YAI1G,KAAK,MAAM,MAAM,IAAI,MAAM,CAAC,IAAI,CAAC,OAAO,CAAC,OAAO,CAAC,EAAC;gBAC9C,YAAY;gBACZ,IAAI,CAAC,SAAS,CAAC,GAAG,MAAM,EAAE,CAAC,GAAG,OAAO,CAAC,OAAO,CAAC,GAAG,MAAM,EAAE,CAAC,CAAC,QAAQ,IAAI,kBAAkB,IAAI,IAAI,CAAC,CAAC,CAAC,GAAG,CAAC,OAAO,CAAC,OAAO,CAAC,GAAG,MAAM,EAAE,CAAC,CAAC,OAAO,CAAC,CAAC,CAAC,CAAC,kBAAkB,CAAC,GAAG,CAAC,GAAG,CAAC,OAAO,CAAC,OAAO,CAAC,GAAG,MAAM,EAAE,CAAC,CAAC,OAAO,CAAC,CAAC,CAAC;aACrN;SAIJ;QAED,iBAAiB,CAAC,kBAAkB,GAAG,IAAI,cAAc,CAAC,IAAI,CAAC,SAAS,CAAC,oBAAoB,CAAC,EAAE,SAAS,EAAE,CAAC,SAAS,EAAE,SAAS,CAAC,CAAC,CAAC;QACnI,iBAAiB,CAAC,UAAU,GAAG,IAAI,CAAC,SAAS,CAAC,CAAC,CAAC,IAAI,cAAc,CAAC,IAAI,CAAC,SAAS,CAAC,YAAY,CAAC,EAAE,KAAK,EAAE,CAAC,SAAS,CAAC,CAAC,CAAC,CAAC,CAAC,IAAI,cAAc,CAAC,IAAI,CAAC,SAAS,CAAC,YAAY,CAAC,EAAE,KAAK,EAAE,CAAC,SAAS,CAAC,CAAC,CAAC;QAC5L,iBAAiB,CAAC,eAAe,GAAG,IAAI,cAAc,CAAC,IAAI,CAAC,SAAS,CAAC,iBAAiB,CAAC,EAAE,SAAS,EAAE,CAAC,SAAS,CAAC,CAAC,CAAC;IAEtH,CAAC;IAGD,2BAA2B;QACvB,SAAS,MAAM,CAAC,GAAgB;YAC5B,YAAY;YACZ,OAAO,MAAM,CAAC,YAAY,CAAC,KAAK,CAAC,IAAI,EAAE,IAAI,WAAW,CAAC,GAAG,CAAC,CAAC,CAAC;QACjE,CAAC;QACD,SAAS,MAAM,CAAC,GAAW;YACvB,IAAI,GAAG,GAAG,IAAI,WAAW,CAAC,GAAG,CAAC,MAAM,GAAG,CAAC,CAAC,CAAC,CAAC,wBAAwB;YACnE,IAAI,OAAO,GAAG,IAAI,UAAU,CAAC,GAAG,CAAC,CAAC;YAClC,KAAK,IAAI,CAAC,GAAC,CAAC,EAAE,MAAM,GAAC,GAAG,CAAC,MAAM,EAAE,CAAC,GAAG,MAAM,EAAE,CAAC,EAAE,EAAE;gBAClD,OAAO,CAAC,CAAC,CAAC,GAAG,GAAG,CAAC,UAAU,CAAC,CAAC,CAAC,CAAC;aAC9B;YACD,OAAO,CAAC,GAAG,CAAC,MAAM,CAAC,GAAG,CAAC,CAAC;YACxB,OAAO,GAAG,CAAC;QACf,CAAC;QAED,IAAI,YAAY,GAAG,IAAI,CAAC,SAAS,CAAC;QAElC,WAAW,CAAC,MAAM,CAAC,IAAI,CAAC,SAAS,CAAC,UAAU,CAAC,EAC7C;YAEI,OAAO,EAAE,UAAU,IAAS;gBAExB,IAAI,CAAC,MAAM,GAAG,IAAI,CAAC,CAAC,CAAC,CAAC,OAAO,EAAE,CAAA;gBAC/B,IAAI,CAAC,EAAE,GAAG,iBAAiB,CAAC,UAAU,CAAC,IAAI,CAAC,CAAC,CAAC,CAAC,CAAA;gBAC/C,IAAG,IAAI,CAAC,EAAE,GAAG,CAAC,IAAI,iBAAiB,IAAI,KAAK,EAAE;oBAC1C,OAAM;iBACT;gBAKD,IAAI,OAAO,GAAG,oBAAoB,CAAC,IAAI,CAAC,EAAY,EAAE,IAAI,EAAE,YAAY,EAAE,iBAAiB,CAAC,CAAA;gBAC5F,OAAO,CAAC,gBAAgB,CAAC,GAAG,iBAAiB,CAAC,eAAe,CAAC,IAAI,CAAC,CAAC,CAAC,CAAC,CAAA;gBACtE,OAAO,CAAC,UAAU,CAAC,GAAG,UAAU,CAAA;gBAChC,IAAI,CAAC,OAAO,GAAG,OAAO,CAAA;gBAEtB,IAAI,CAAC,GAAG,GAAG,IAAI,CAAC,CAAC,CAAC,CAAA;YAEtB,CAAC;YACD,OAAO,EAAE,UAAU,MAAW;gBAC1B,MAAM,IAAI,CAAC,CAAA,CAAC,iCAAiC;gBAC7C,IAAI,MAAM,IAAI,CAAC,IAAI,IAAI,CAAC,EAAE,GAAG,CAAC,EAAE;oBAC5B,OAAM;iBACT;gBAGD,IAAG,iBAAiB,CAAC,WAAW,CAAC,OAAO,KAAK,IAAI,EAAC;oBAC9C,iBAAiB;oBACjB,YAAY;oBACZ,MAAM,CAAC,cAAc,CAAC,IAAI,CAAC,GAAG,EAAE,IAAI,UAAU,CAAC,IAAI,CAAC,MAAM,CAAC,CAAC,CAAC;oBAE7D,YAAY;oBACZ,MAAM,CAAC,cAAc,CAAC,IAAI,CAAC,GAAG,EAAE,iBAAiB,CAAC,WAAW,CAAC,OAAO,CAAC,CAAC;oBACvE,MAAM,GAAG,iBAAiB,CAAC,WAAW,CAAC,OAAO,CAAC,UAAU,CAAC;iBAC7D;gBAED,IAAI,CAAC,OAAO,CAAC,aAAa,CAAC,GAAG,SAAS,CAAA;gBAIvC,IAAI,CAAC,IAAI,CAAC,OAAO,EAAE,IAAI,CAAC,GAAG,CAAC,aAAa,CAAC,MAAM,CAAC,CAAC,CAAA;YAEtD,CAAC;SACJ,CAAC,CAAA;IAEN,CAAC;IAID,4BAA4B;QACxB,SAAS,MAAM,CAAC,GAAW;YACvB,IAAI,GAAG,GAAG,IAAI,WAAW,CAAC,GAAG,CAAC,MAAM,GAAG,CAAC,CAAC,CAAC,CAAC,wBAAwB;YACnE,IAAI,OAAO,GAAG,IAAI,UAAU,CAAC,GAAG,CAAC,CAAC;YAClC,KAAK,IAAI,CAAC,GAAC,CAAC,EAAE,MAAM,GAAC,GAAG,CAAC,MAAM,EAAE,CAAC,GAAG,MAAM,EAAE,CAAC,EAAE,EAAE;gBAClD,OAAO,CAAC,CAAC,CAAC,GAAG,GAAG,CAAC,UAAU,CAAC,CAAC,CAAC,CAAC;aAC9B;YACD,OAAO,CAAC,GAAG,CAAC,MAAM,CAAC,GAAG,CAAC,CAAC;YACxB,OAAO,GAAG,CAAC;QACf,CAAC;QACD,IAAI,YAAY,GAAG,IAAI,CAAC,SAAS,CAAC;QAClC,WAAW,CAAC,MAAM,CAAC,IAAI,CAAC,SAAS,CAAC,WAAW,CAAC,EAC9C;YACI,OAAO,EAAE,UAAU,IAAS;gBACxB,IAAI,CAAC,IAAI,CAAC,SAAS,EAAC;oBACpB,IAAI,CAAC,EAAE,GAAG,iBAAiB,CAAC,UAAU,CAAC,IAAI,CAAC,CAAC,CAAC,CAAC,CAAA;oBAC/C,IAAG,IAAI,CAAC,EAAE,GAAG,CAAC,IAAI,iBAAiB,IAAI,KAAK,EAAE;wBAC1C,OAAM;qBACT;oBACD,IAAI,OAAO,GAAG,oBAAoB,CAAC,IAAI,CAAC,EAAY,EAAE,KAAK,EAAE,YAAY,EAAE,iBAAiB,CAAC,CAAA;oBAC7F,OAAO,CAAC,gBAAgB,CAAC,GAAG,iBAAiB,CAAC,eAAe,CAAC,IAAI,CAAC,CAAC,CAAC,CAAC,CAAA;oBACtE,OAAO,CAAC,UAAU,CAAC,GAAG,WAAW,CAAA;oBACjC,OAAO,CAAC,aAAa,CAAC,GAAG,SAAS,CAAA;oBAGlC,IAAG,iBAAiB,CAAC,WAAW,CAAC,QAAQ,KAAK,IAAI,EAAC;wBAC/C,MAAM,UAAU,GAAG,MAAM,CAAC,KAAK,CAAC,iBAAiB,CAAC,WAAW,CAAC,QAAQ,CAAC,UAAU,CAAC,CAAA;wBAClF,YAAY;wBACZ,MAAM,CAAC,cAAc,CAAC,UAAU,EAAE,iBAAiB,CAAC,WAAW,CAAC,QAAQ,CAAC,CAAC;wBAC1E,IAAI,CAAC,CAAC,CAAC,GAAG,UAAU,CAAC;wBACrB,IAAI,CAAC,CAAC,CAAC,GAAG,IAAI,aAAa,CAAC,iBAAiB,CAAC,WAAW,CAAC,QAAQ,CAAC,UAAU,CAAC,CAAC;qBAClF;oBAED,IAAI,CAAC,OAAO,EAAE,IAAI,CAAC,CAAC,CAAC,CAAC,aAAa,CAAC,IAAI,CAAC,CAAC,CAAC,CAAC,OAAO,EAAE,CAAC,CAAC,CAAA;iBACtD,CAAC,2DAA2D;YACjE,CAAC;YACD,OAAO,EAAE,UAAU,MAAW;YAC9B,CAAC;SACJ,CAAC,CAAA;IACN,CAAC;IAED,8BAA8B;QAC1B,GAAG,CAAC,gDAAgD,CAAC,CAAA;IACzD,CAAC;IAEA;;;;;;QAMI;IACH,MAAM,CAAC,eAAe,CAAC,GAAkB;QAEvC,IAAI,OAAO,GAAG,iBAAiB,CAAC,eAAe,CAAC,GAAG,CAAkB,CAAA;QACrE,IAAI,OAAO,CAAC,MAAM,EAAE,EAAE;YAClB,IAAG,iBAAiB,EAAC;gBACjB,GAAG,CAAC,yFAAyF,CAAC,CAAA;gBAC9F,OAAO,kEAAkE,CAAA;aAC5E;YACD,GAAG,CAAC,iBAAiB,CAAC,CAAA;YACtB,OAAO,CAAC,CAAA;SACX;QACD,IAAI,WAAW,GAAG,MAAM,CAAC,KAAK,CAAC,CAAC,CAAC,CAAA;QACjC,IAAI,CAAC,GAAG,iBAAiB,CAAC,kBAAkB,CAAC,OAAO,EAAE,WAAW,CAAkB,CAAA;QACnF,IAAI,GAAG,GAAG,WAAW,CAAC,OAAO,EAAE,CAAA;QAC/B,IAAI,UAAU,GAAG,EAAE,CAAA;QACnB,KAAK,IAAI,CAAC,GAAG,CAAC,EAAE,CAAC,GAAG,GAAG,EAAE,CAAC,EAAE,EAAE;YAC1B,sEAAsE;YACtE,oBAAoB;YAEpB,UAAU;gBACN,CAAC,GAAG,GAAG,CAAC,CAAC,GAAG,CAAC,CAAC,CAAC,CAAC,MAAM,EAAE,CAAC,QAAQ,CAAC,EAAE,CAAC,CAAC,WAAW,EAAE,CAAC,CAAC,MAAM,CAAC,CAAC,CAAC,CAAC,CAAA;SACtE;QACD,OAAO,UAAU,CAAA;IACrB,CAAC;;AAzMM,iCAAe,GAAG,IAAI,cAAc,CAAC,UAAU,MAAM,EAAE,OAAsB;IAChF,MAAM,CAAC,iDAAiD,CAAC,CAAC;IAC1D,IAAI,OAAO,GAA8C,EAAE,CAAA;IAC3D,OAAO,CAAC,aAAa,CAAC,GAAG,QAAQ,CAAA;IACjC,OAAO,CAAC,QAAQ,CAAC,GAAG,OAAO,CAAC,WAAW,EAAE,CAAA;IACzC,IAAI,CAAC,OAAO,CAAC,CAAA;AACjB,CAAC,EAAE,MAAM,EAAE,CAAC,SAAS,EAAE,SAAS,CAAC,CAAC,AANZ,CAMY"}
+{"version":3,"file":"openssl_boringssl.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/ssl_lib/openssl_boringssl.ts"],"names":[],"mappings":"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"}
 ✄
 import { readAddresses, getPortsAndAddresses, getBaseAddress } from "../shared/shared_functions.js";
 import { offsets, enable_default_fd } from "../ssl_log.js";
@@ -3082,13 +3246,15 @@ class ModifyReceiver {
  *  Android: We need to find a way, when on some Android Apps the fd is below 0
  */
 export class OpenSSL_BoringSSL {
-    constructor(moduleName, socket_library, passed_library_method_mapping) {
+    constructor(moduleName, socket_library, is_base_hook, passed_library_method_mapping) {
         this.moduleName = moduleName;
         this.socket_library = socket_library;
         this.passed_library_method_mapping = passed_library_method_mapping;
         // global variables
         this.library_method_mapping = {};
         OpenSSL_BoringSSL.modReceiver = new ModifyReceiver();
+        global.global_counter++;
+        console.log("Hooking Module[" + global.global_counter + "]: " + moduleName);
         if (typeof passed_library_method_mapping !== 'undefined') {
             this.library_method_mapping = passed_library_method_mapping;
         }
@@ -3096,14 +3262,31 @@ export class OpenSSL_BoringSSL {
             this.library_method_mapping[`*${moduleName}*`] = ["SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_keylog_callback"];
             this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
         }
-        this.addresses = readAddresses(this.library_method_mapping);
+        this.is_base_hook = is_base_hook;
+        this.addresses = readAddresses(moduleName, this.library_method_mapping);
+        this.module_name = moduleName;
+        /*
+        if (is_base_hook) {
+            const init_addresses = this.addresses[moduleName];
+            if (Object.keys(init_addresses).length > 0) {
+                (global as any).init_addresses[moduleName] = init_addresses;
+            }
+
+            // Cleanup step to remove empty entries
+            const globalInitAddresses = (global as any).init_addresses;
+            for (const key in globalInitAddresses) {
+                if (Object.keys(globalInitAddresses[key]).length === 0) {
+                    delete globalInitAddresses[key];
+                }
+            }
+        }*/
         // @ts-ignore
         if (offsets != "{OFFSETS}" && offsets.openssl != null) {
             if (offsets.sockets != null) {
                 const socketBaseAddress = getBaseAddress(socket_library);
                 for (const method of Object.keys(offsets.sockets)) {
                     //@ts-ignore
-                    this.addresses[`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
+                    this.addresses[this.moduleName][`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
                 }
             }
             const libraryBaseAddress = getBaseAddress(moduleName);
@@ -3111,12 +3294,12 @@ export class OpenSSL_BoringSSL {
                 log("Unable to find library base address! Given address values will be interpreted as absolute ones!");
             for (const method of Object.keys(offsets.openssl)) {
                 //@ts-ignore
-                this.addresses[`${method}`] = offsets.openssl[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.openssl[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.openssl[`${method}`].address));
+                this.addresses[this.moduleName][`${method}`] = offsets.openssl[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.openssl[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.openssl[`${method}`].address));
             }
         }
-        OpenSSL_BoringSSL.SSL_SESSION_get_id = new NativeFunction(this.addresses["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
-        OpenSSL_BoringSSL.SSL_get_fd = ObjC.available ? new NativeFunction(this.addresses["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(this.addresses["SSL_get_fd"], "int", ["pointer"]);
-        OpenSSL_BoringSSL.SSL_get_session = new NativeFunction(this.addresses["SSL_get_session"], "pointer", ["pointer"]);
+        this.SSL_SESSION_get_id = new NativeFunction(this.addresses[this.moduleName]["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
+        this.SSL_get_fd = ObjC.available ? new NativeFunction(this.addresses[this.moduleName]["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(this.addresses[this.moduleName]["SSL_get_fd"], "int", ["pointer"]);
+        this.SSL_get_session = new NativeFunction(this.addresses[this.moduleName]["SSL_get_session"], "pointer", ["pointer"]);
     }
     install_plaintext_read_hook() {
         function ab2str(buf) {
@@ -3133,15 +3316,17 @@ export class OpenSSL_BoringSSL {
             return buf;
         }
         var lib_addesses = this.addresses;
-        Interceptor.attach(this.addresses["SSL_read"], {
+        var instance = this;
+        var current_module_name = this.module_name;
+        Interceptor.attach(this.addresses[this.moduleName]["SSL_read"], {
             onEnter: function (args) {
                 this.bufLen = args[2].toInt32();
-                this.fd = OpenSSL_BoringSSL.SSL_get_fd(args[0]);
+                this.fd = instance.SSL_get_fd(args[0]);
                 if (this.fd < 0 && enable_default_fd == false) {
                     return;
                 }
-                var message = getPortsAndAddresses(this.fd, true, lib_addesses, enable_default_fd);
-                message["ssl_session_id"] = OpenSSL_BoringSSL.getSslSessionId(args[0]);
+                var message = getPortsAndAddresses(this.fd, true, lib_addesses[current_module_name], enable_default_fd);
+                message["ssl_session_id"] = instance.getSslSessionId(args[0]);
                 message["function"] = "SSL_read";
                 this.message = message;
                 this.buf = args[1];
@@ -3174,16 +3359,71 @@ export class OpenSSL_BoringSSL {
             bufView[str.length] = 0;
             return buf;
         }
+        var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
-        Interceptor.attach(this.addresses["SSL_write"], {
+        var instance = this;
+        Interceptor.attach(this.addresses[this.moduleName]["SSL_write"], {
             onEnter: function (args) {
                 if (!ObjC.available) {
-                    this.fd = OpenSSL_BoringSSL.SSL_get_fd(args[0]);
+                    try {
+                        console.log("SSL_WRITE addr:" + lib_addesses[current_module_name]["SSL_write"]);
+                        console.log(Process.platform);
+                        console.log("---------------------------------\n");
+                        console.log(JSON.stringify(lib_addesses));
+                        console.log("arg0: " + args[0]);
+                        // Check if arg[0] is a valid pointer
+                        if (args[0].isNull()) {
+                            console.log("arg0 is a null pointer");
+                            return;
+                        }
+                        var fd_1 = Module.getExportByName('libssl.so', 'SSL_get_fd');
+                        var fd_2 = Module.getExportByName('libssl_sb.so', 'SSL_get_fd');
+                        var my_Write1 = Module.getExportByName('libssl.so', 'SSL_write');
+                        var my_Write2 = Module.getExportByName('libssl_sb.so', 'SSL_write');
+                        var get_fd_1 = new NativeFunction(fd_1, "int", ["pointer"]);
+                        var get_fd_2 = new NativeFunction(fd_2, "int", ["pointer"]);
+                        console.log("get_fd_1 address: " + get_fd_1);
+                        console.log("get_fd_2 address: " + get_fd_2);
+                        console.log("get fd address: " + instance.SSL_get_fd);
+                        console.log("get fd address (current): " + lib_addesses[current_module_name]["SSL_get_fd"]);
+                        console.log("write1 address: " + my_Write1);
+                        console.log("write2 address: " + my_Write2);
+                        console.log("write address (current): " + lib_addesses[current_module_name]["SSL_write"]);
+                        this.fd = instance.SSL_get_fd(args[0]);
+                        console.log("this.fd: " + this.fd);
+                        var my_fd_1 = get_fd_1(args[0]);
+                        console.log("get_fd_1 result: " + my_fd_1);
+                        console.log("arg0: " + args[0]);
+                        console.log("get_fd_2 address: " + get_fd_2);
+                        var my_fd_2 = get_fd_2(args[0]);
+                        console.log("get_fd_2 result: " + my_fd_2);
+                    }
+                    catch (error) {
+                        if (error instanceof Error) {
+                            console.log("Error: " + error.message);
+                            console.log("Stack: " + error.stack);
+                        }
+                        else {
+                            console.log("Unexpected error:", error);
+                        }
+                        if (!this.is_base_hook) {
+                            const fallback_addresses = global.init_addresses;
+                            console.log("Current ModuleName: " + current_module_name);
+                            let keys = Object.keys(fallback_addresses);
+                            let firstKey = keys[0];
+                            console.log("ModuleName of init: " + firstKey);
+                            console.log("fallback_addresses2: " + JSON.stringify(fallback_addresses) + "\n");
+                            console.log("fallback_addresses: " + fallback_addresses[firstKey]["SSL_SESSION_get_id"]);
+                            instance.SSL_SESSION_get_id = new NativeFunction(fallback_addresses["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
+                            instance.SSL_get_fd = ObjC.available ? new NativeFunction(fallback_addresses["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(fallback_addresses["SSL_get_fd"], "int", ["pointer"]);
+                            instance.SSL_get_session = new NativeFunction(fallback_addresses["SSL_get_session"], "pointer", ["pointer"]);
+                        }
+                    }
                     if (this.fd < 0 && enable_default_fd == false) {
                         return;
                     }
-                    var message = getPortsAndAddresses(this.fd, false, lib_addesses, enable_default_fd);
-                    message["ssl_session_id"] = OpenSSL_BoringSSL.getSslSessionId(args[0]);
+                    var message = getPortsAndAddresses(this.fd, false, lib_addesses[current_module_name], enable_default_fd);
+                    message["ssl_session_id"] = instance.getSslSessionId(args[0]);
                     message["function"] = "SSL_write";
                     message["contentType"] = "datalog";
                     if (OpenSSL_BoringSSL.modReceiver.writemod !== null) {
@@ -3210,8 +3450,8 @@ export class OpenSSL_BoringSSL {
       *     SSL_SESSION. For example,
       *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
       */
-    static getSslSessionId(ssl) {
-        var session = OpenSSL_BoringSSL.SSL_get_session(ssl);
+    getSslSessionId(ssl) {
+        var session = this.SSL_get_session(ssl);
         if (session.isNull()) {
             if (enable_default_fd) {
                 log("using dummy SessionID: 59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336");
@@ -3221,7 +3461,7 @@ export class OpenSSL_BoringSSL {
             return 0;
         }
         var len_pointer = Memory.alloc(4);
-        var p = OpenSSL_BoringSSL.SSL_SESSION_get_id(session, len_pointer);
+        var p = this.SSL_SESSION_get_id(session, len_pointer);
         var len = len_pointer.readU32();
         var session_id = "";
         for (var i = 0; i < len; i++) {
@@ -3241,7 +3481,7 @@ OpenSSL_BoringSSL.keylog_callback = new NativeCallback(function (ctxPtr, linePtr
     send(message);
 }, "void", ["pointer", "pointer"]);
 ✄
-{"version":3,"file":"wolfssl.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/ssl_lib/wolfssl.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,aAAa,EAAE,oBAAoB,EAAe,cAAc,EAAE,MAAM,+BAA+B,CAAC;AACjH,OAAO,EAAE,GAAG,EAAE,MAAM,gBAAgB,CAAC;AACrC,OAAO,EAAE,OAAO,EAAE,iBAAiB,EAAE,MAAM,eAAe,CAAC;AAE3D,MAAM,OAAO,OAAO;IAYhB,YAAmB,UAAiB,EAAS,cAAqB,EAAQ,6BAAgE;QAAvH,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;QAAQ,kCAA6B,GAA7B,6BAA6B,CAAmC;QAV1I,mBAAmB;QACnB,2BAAsB,GAAqC,EAAE,CAAC;QAU1D,IAAG,OAAO,6BAA6B,KAAK,WAAW,EAAC;YACpD,IAAI,CAAC,sBAAsB,GAAG,6BAA6B,CAAC;SAC/D;aAAI;YACD,IAAI,CAAC,sBAAsB,CAAC,IAAI,UAAU,GAAG,CAAC,GAAG,CAAC,cAAc,EAAE,eAAe,EAAE,gBAAgB,EAAE,qBAAqB,EAAE,iBAAiB,EAAE,oBAAoB,EAAE,gCAAgC,EAAE,2BAA2B,EAAE,2BAA2B,CAAC,CAAA;YAChQ,IAAI,CAAC,sBAAsB,CAAC,IAAI,cAAc,GAAG,CAAC,GAAG,CAAC,aAAa,EAAE,aAAa,EAAE,OAAO,EAAE,OAAO,CAAC,CAAA;SACxG;QAED,IAAI,CAAC,SAAS,GAAG,aAAa,CAAC,IAAI,CAAC,sBAAsB,CAAC,CAAC;QAE5D,aAAa;QACb,IAAG,OAAO,IAAI,WAAW,IAAI,OAAO,CAAC,OAAO,IAAI,IAAI,EAAC;YAEjD,IAAG,OAAO,CAAC,OAAO,IAAI,IAAI,EAAC;gBACvB,MAAM,iBAAiB,GAAG,cAAc,CAAC,cAAc,CAAC,CAAA;gBACxD,KAAI,MAAM,MAAM,IAAI,MAAM,CAAC,IAAI,CAAC,OAAO,CAAC,OAAO,CAAC,EAAC;oBAC5C,YAAY;oBACb,IAAI,CAAC,SAAS,CAAC,GAAG,MAAM,EAAE,CAAC,GAAG,OAAO,CAAC,OAAO,CAAC,GAAG,MAAM,EAAE,CAAC,CAAC,QAAQ,IAAI,iBAAiB,IAAI,IAAI,CAAC,CAAC,CAAC,GAAG,CAAC,OAAO,CAAC,OAAO,CAAC,GAAG,MAAM,EAAE,CAAC,CAAC,OAAO,CAAC,CAAC,CAAC,CAAC,iBAAiB,CAAC,GAAG,CAAC,GAAG,CAAC,OAAO,CAAC,OAAO,CAAC,GAAG,MAAM,EAAE,CAAC,CAAC,OAAO,CAAC,CAAC,CAAC;iBACnN;aACJ;YAED,MAAM,kBAAkB,GAAG,cAAc,CAAC,UAAU,CAAC,CAAA;YAErD,IAAG,kBAAkB,IAAI,IAAI,EAAC;gBAC1B,GAAG,CAAC,iGAAiG,CAAC,CAAA;aACzG;YAGD,KAAK,MAAM,MAAM,IAAI,MAAM,CAAC,IAAI,CAAC,OAAO,CAAC,OAAO,CAAC,EAAC;gBAC9C,YAAY;gBACZ,IAAI,CAAC,SAAS,CAAC,GAAG,MAAM,EAAE,CAAC,GAAG,OAAO,CAAC,OAAO,CAAC,GAAG,MAAM,EAAE,CAAC,CAAC,QAAQ,IAAI,kBAAkB,IAAI,IAAI,CAAC,CAAC,CAAC,GAAG,CAAC,OAAO,CAAC,OAAO,CAAC,GAAG,MAAM,EAAE,CAAC,CAAC,OAAO,CAAC,CAAC,CAAC,CAAC,kBAAkB,CAAC,GAAG,CAAC,GAAG,CAAC,OAAO,CAAC,OAAO,CAAC,GAAG,MAAM,EAAE,CAAC,CAAC,OAAO,CAAC,CAAC,CAAC;aACrN;SAGJ;QAID,OAAO,CAAC,cAAc,GAAG,IAAI,cAAc,CAAC,IAAI,CAAC,SAAS,CAAC,gBAAgB,CAAC,EAAE,KAAK,EAAE,CAAC,SAAS,CAAC,CAAC,CAAA;QACjG,OAAO,CAAC,mBAAmB,GAAG,IAAI,cAAc,CAAC,IAAI,CAAC,SAAS,CAAC,qBAAqB,CAAC,EAAE,SAAS,EAAE,CAAC,SAAS,CAAC,CAAC,CAAA;IAGnH,CAAC;IAED,8BAA8B;QAC1B,GAAG,CAAC,gDAAgD,CAAC,CAAA;IACzD,CAAC;IAED;;;;;;SAMK;IAEJ,MAAM,CAAC,eAAe,CAAC,GAAkB;QACtC,IAAI,OAAO,GAAG,OAAO,CAAC,mBAAmB,CAAC,GAAG,CAAkB,CAAA;QAC/D,IAAI,OAAO,CAAC,MAAM,EAAE,EAAE;YAClB,IAAG,iBAAiB,EAAC;gBACjB,GAAG,CAAC,yFAAyF,CAAC,CAAA;gBAC9F,OAAO,kEAAkE,CAAA;aAC5E;YACD,GAAG,CAAC,iBAAiB,CAAC,CAAA;YACtB,OAAO,CAAC,CAAA;SACX;QACD,IAAI,CAAC,GAAG,OAAO,CAAC,GAAG,CAAC,CAAC,CAAC,CAAA;QACtB,IAAI,GAAG,GAAG,EAAE,CAAA,CAAC,+CAA+C;QAC5D,IAAI,UAAU,GAAG,EAAE,CAAA;QACnB,KAAK,IAAI,CAAC,GAAG,CAAC,EAAE,CAAC,GAAG,GAAG,EAAE,CAAC,EAAE,EAAE;YAC1B,sEAAsE;YACtE,oBAAoB;YAEpB,UAAU;gBACN,CAAC,GAAG,GAAG,CAAC,CAAC,GAAG,CAAC,CAAC,CAAC,CAAC,MAAM,EAAE,CAAC,QAAQ,CAAC,EAAE,CAAC,CAAC,WAAW,EAAE,CAAC,CAAC,MAAM,CAAC,CAAC,CAAC,CAAC,CAAA;SACtE;QACD,OAAO,UAAU,CAAA;IACrB,CAAC;IAGD,2BAA2B;QACvB,IAAI,YAAY,GAAG,IAAI,CAAC,SAAS,CAAC;QAClC,WAAW,CAAC,MAAM,CAAC,IAAI,CAAC,SAAS,CAAC,cAAc,CAAC,EACjD;YACI,OAAO,EAAE,UAAU,IAAS;gBAExB,IAAI,OAAO,GAAG,oBAAoB,CAAC,OAAO,CAAC,cAAc,CAAC,IAAI,CAAC,CAAC,CAAC,CAAW,EAAE,IAAI,EAAE,YAAY,EAAE,iBAAiB,CAAC,CAAA;gBAEpH,OAAO,CAAC,UAAU,CAAC,GAAG,cAAc,CAAA;gBACpC,OAAO,CAAC,gBAAgB,CAAC,GAAG,OAAO,CAAC,eAAe,CAAC,IAAI,CAAC,CAAC,CAAC,CAAC,CAAA;gBAC5D,IAAI,CAAC,OAAO,GAAG,OAAO,CAAA;gBACtB,IAAI,CAAC,GAAG,GAAG,IAAI,CAAC,CAAC,CAAC,CAAA;YAEtB,CAAC;YACD,OAAO,EAAE,UAAU,MAAW;gBAC1B,MAAM,IAAI,CAAC,CAAA,CAAC,iCAAiC;gBAC7C,IAAI,MAAM,IAAI,CAAC,EAAE;oBACb,OAAM;iBACT;gBACD,IAAI,CAAC,OAAO,CAAC,aAAa,CAAC,GAAG,SAAS,CAAA;gBACvC,IAAI,CAAC,IAAI,CAAC,OAAO,EAAE,IAAI,CAAC,GAAG,CAAC,aAAa,CAAC,MAAM,CAAC,CAAC,CAAA;YACtD,CAAC;SACJ,CAAC,CAAA;IACN,CAAC;IAGD,4BAA4B;QACxB,IAAI,YAAY,GAAG,IAAI,CAAC,SAAS,CAAC;QAClC,WAAW,CAAC,MAAM,CAAC,IAAI,CAAC,SAAS,CAAC,eAAe,CAAC,EAClD;YACI,OAAO,EAAE,UAAU,IAAS;gBACxB,IAAI,OAAO,GAAG,oBAAoB,CAAC,OAAO,CAAC,cAAc,CAAC,IAAI,CAAC,CAAC,CAAC,CAAW,EAAE,KAAK,EAAE,YAAY,EAAE,iBAAiB,CAAC,CAAA;gBACrH,OAAO,CAAC,gBAAgB,CAAC,GAAG,OAAO,CAAC,eAAe,CAAC,IAAI,CAAC,CAAC,CAAC,CAAC,CAAA;gBAC5D,OAAO,CAAC,UAAU,CAAC,GAAG,eAAe,CAAA;gBACrC,OAAO,CAAC,aAAa,CAAC,GAAG,SAAS,CAAA;gBAClC,IAAI,CAAC,OAAO,EAAE,IAAI,CAAC,CAAC,CAAC,CAAC,aAAa,CAAC,QAAQ,CAAC,IAAI,CAAC,CAAC,CAAC,CAAC,CAAC,CAAC,CAAA;YAC3D,CAAC;YACD,OAAO,EAAE,UAAU,MAAW;YAC9B,CAAC;SACJ,CAAC,CAAA;IACN,CAAC;CAIJ"}
+{"version":3,"file":"wolfssl.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/ssl_lib/wolfssl.ts"],"names":[],"mappings":"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"}
 ✄
 import { readAddresses, getPortsAndAddresses, getBaseAddress } from "../shared/shared_functions.js";
 import { log } from "../util/log.js";
@@ -3260,14 +3500,15 @@ export class WolfSSL {
             this.library_method_mapping[`*${moduleName}*`] = ["wolfSSL_read", "wolfSSL_write", "wolfSSL_get_fd", "wolfSSL_get_session", "wolfSSL_connect", "wolfSSL_KeepArrays", "wolfSSL_SESSION_get_master_key", "wolfSSL_get_client_random", "wolfSSL_get_server_random"];
             this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
         }
-        this.addresses = readAddresses(this.library_method_mapping);
+        this.addresses = readAddresses(moduleName, this.library_method_mapping);
+        this.module_name = moduleName;
         // @ts-ignore
         if (offsets != "{OFFSETS}" && offsets.wolfssl != null) {
             if (offsets.sockets != null) {
                 const socketBaseAddress = getBaseAddress(socket_library);
                 for (const method of Object.keys(offsets.sockets)) {
                     //@ts-ignore
-                    this.addresses[`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
+                    this.addresses[this.moduleName][`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
                 }
             }
             const libraryBaseAddress = getBaseAddress(moduleName);
@@ -3276,11 +3517,11 @@ export class WolfSSL {
             }
             for (const method of Object.keys(offsets.wolfssl)) {
                 //@ts-ignore
-                this.addresses[`${method}`] = offsets.wolfssl[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.wolfssl[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.wolfssl[`${method}`].address));
+                this.addresses[this.moduleName][`${method}`] = offsets.wolfssl[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.wolfssl[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.wolfssl[`${method}`].address));
             }
         }
-        WolfSSL.wolfSSL_get_fd = new NativeFunction(this.addresses["wolfSSL_get_fd"], "int", ["pointer"]);
-        WolfSSL.wolfSSL_get_session = new NativeFunction(this.addresses["wolfSSL_get_session"], "pointer", ["pointer"]);
+        WolfSSL.wolfSSL_get_fd = new NativeFunction(this.addresses[this.moduleName]["wolfSSL_get_fd"], "int", ["pointer"]);
+        WolfSSL.wolfSSL_get_session = new NativeFunction(this.addresses[this.moduleName]["wolfSSL_get_session"], "pointer", ["pointer"]);
     }
     install_tls_keys_callback_hook() {
         log("Error: TLS key extraction not implemented yet.");
@@ -3314,10 +3555,11 @@ export class WolfSSL {
         return session_id;
     }
     install_plaintext_read_hook() {
+        var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
-        Interceptor.attach(this.addresses["wolfSSL_read"], {
+        Interceptor.attach(this.addresses[this.moduleName]["wolfSSL_read"], {
             onEnter: function (args) {
-                var message = getPortsAndAddresses(WolfSSL.wolfSSL_get_fd(args[0]), true, lib_addesses, enable_default_fd);
+                var message = getPortsAndAddresses(WolfSSL.wolfSSL_get_fd(args[0]), true, lib_addesses[current_module_name], enable_default_fd);
                 message["function"] = "wolfSSL_read";
                 message["ssl_session_id"] = WolfSSL.getSslSessionId(args[0]);
                 this.message = message;
@@ -3334,10 +3576,11 @@ export class WolfSSL {
         });
     }
     install_plaintext_write_hook() {
+        var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
-        Interceptor.attach(this.addresses["wolfSSL_write"], {
+        Interceptor.attach(this.addresses[this.moduleName]["wolfSSL_write"], {
             onEnter: function (args) {
-                var message = getPortsAndAddresses(WolfSSL.wolfSSL_get_fd(args[0]), false, lib_addesses, enable_default_fd);
+                var message = getPortsAndAddresses(WolfSSL.wolfSSL_get_fd(args[0]), false, lib_addesses[current_module_name], enable_default_fd);
                 message["ssl_session_id"] = WolfSSL.getSslSessionId(args[0]);
                 message["function"] = "wolfSSL_write";
                 message["contentType"] = "datalog";
@@ -3349,7 +3592,7 @@ export class WolfSSL {
     }
 }
 ✄
-{"version":3,"file":"anti_root.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/util/anti_root.ts"],"names":[],"mappings":"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"}
+{"version":3,"file":"anti_root.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/util/anti_root.ts"],"names":[],"mappings":"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"}
 ✄
 import { log, devlog } from "./log.js";
 import { readAddresses } from "../shared/shared_functions.js";
@@ -3376,7 +3619,8 @@ export class AntiRoot {
         this.RootPropertiesKeys = [];
         this.library_method_mapping = {};
         this.library_method_mapping["libc.so"] = ["strstr", "fopen", "system"];
-        this.addresses = readAddresses(this.library_method_mapping);
+        this.module_name = "libc.so";
+        this.addresses = readAddresses(this.module_name, this.library_method_mapping);
         for (var k in this.RootProperties)
             this.RootPropertiesKeys.push(k);
     }
@@ -3638,7 +3882,7 @@ export class AntiRoot {
     }
     native_based_bypasses() {
         // char *strstr(const char *str1, const char *str2);
-        Interceptor.attach(this.addresses["strstr"], {
+        Interceptor.attach(this.addresses[this.module_name]["strstr"], {
             onEnter: function (args) {
                 this.str_source = args[0];
                 this.str_to_look_for = args[1];
@@ -3657,7 +3901,7 @@ export class AntiRoot {
                 return retval;
             }
         });
-        Interceptor.attach(this.addresses["fopen"], {
+        Interceptor.attach(this.addresses[this.module_name]["fopen"], {
             onEnter: function (args) {
                 var path = args[0].readCString();
                 //@ts-ignore
@@ -3672,7 +3916,7 @@ export class AntiRoot {
             onLeave: function (retval) {
             }
         });
-        Interceptor.attach(this.addresses["system"], {
+        Interceptor.attach(this.addresses[this.module_name]["system"], {
             onEnter: function (args) {
                 var cmd = args[0].readCString();
                 log("SYSTEM CMD: " + cmd);
@@ -3808,12 +4052,12 @@ export function getAndroidVersion() {
     return casted_version;
 }
 ✄
-{"version":3,"file":"gnutls_windows.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/windows/gnutls_windows.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,MAAM,EAAE,MAAM,sBAAsB,CAAC;AAC7C,OAAO,EAAE,cAAc,EAAE,MAAM,oBAAoB,CAAC;AAEpD,MAAM,OAAO,cAAe,SAAQ,MAAM;IAEtC,YAAmB,UAAiB,EAAS,cAAqB;QAC9D,KAAK,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;QADlB,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAElE,CAAC;IAGD,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;QAEpC,wCAAwC;IAC5C,CAAC;IAED,8BAA8B;QAC1B,qBAAqB;IACzB,CAAC;CAEJ;AAGD,MAAM,UAAU,cAAc,CAAC,UAAiB;IAC5C,IAAI,OAAO,GAAG,IAAI,cAAc,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;IAC5D,OAAO,CAAC,aAAa,EAAE,CAAC;AAG5B,CAAC"}
+{"version":3,"file":"gnutls_windows.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/windows/gnutls_windows.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,MAAM,EAAE,MAAM,sBAAsB,CAAC;AAC7C,OAAO,EAAE,cAAc,EAAE,MAAM,oBAAoB,CAAC;AAEpD,MAAM,OAAO,cAAe,SAAQ,MAAM;IAEtC,YAAmB,UAAiB,EAAS,cAAqB,EAAE,YAAqB;QACrF,KAAK,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;QADlB,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAElE,CAAC;IAGD,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;QAEpC,wCAAwC;IAC5C,CAAC;IAED,8BAA8B;QAC1B,qBAAqB;IACzB,CAAC;CAEJ;AAGD,MAAM,UAAU,cAAc,CAAC,UAAiB,EAAE,YAAqB;IACnE,IAAI,OAAO,GAAG,IAAI,cAAc,CAAC,UAAU,EAAC,cAAc,EAAE,YAAY,CAAC,CAAC;IAC1E,OAAO,CAAC,aAAa,EAAE,CAAC;IAExB,IAAI,YAAY,EAAE;QACd,MAAM,cAAc,GAAG,OAAO,CAAC,SAAS,CAAC;QACxC,MAAc,CAAC,cAAc,CAAC,UAAU,CAAC,GAAG,cAAc,CAAC;KAC/D;AACL,CAAC"}
 ✄
 import { GnuTLS } from "../ssl_lib/gnutls.js";
 import { socket_library } from "./windows_agent.js";
 export class GnuTLS_Windows extends GnuTLS {
-    constructor(moduleName, socket_library) {
+    constructor(moduleName, socket_library, is_base_hook) {
         super(moduleName, socket_library);
         this.moduleName = moduleName;
         this.socket_library = socket_library;
@@ -3827,17 +4071,21 @@ export class GnuTLS_Windows extends GnuTLS {
         //Not implemented yet
     }
 }
-export function gnutls_execute(moduleName) {
-    var gnu_ssl = new GnuTLS_Windows(moduleName, socket_library);
+export function gnutls_execute(moduleName, is_base_hook) {
+    var gnu_ssl = new GnuTLS_Windows(moduleName, socket_library, is_base_hook);
     gnu_ssl.execute_hooks();
+    if (is_base_hook) {
+        const init_addresses = gnu_ssl.addresses;
+        global.init_addresses[moduleName] = init_addresses;
+    }
 }
 ✄
-{"version":3,"file":"matrixssl_windows.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/windows/matrixssl_windows.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,UAAU,EAAE,MAAM,yBAAyB,CAAC;AACpD,OAAO,EAAE,cAAc,EAAE,MAAM,oBAAoB,CAAC;AAEpD,MAAM,OAAO,kBAAmB,SAAQ,UAAU;IAE9C,YAAmB,UAAiB,EAAS,cAAqB;QAC9D,KAAK,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;QADlB,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAElE,CAAC;IAGD,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;QACpC,IAAI,CAAC,mBAAmB,EAAE,CAAC;QAE3B,wCAAwC;IAC5C,CAAC;IAED,8BAA8B;QAC1B,qBAAqB;IACzB,CAAC;CAEJ;AAGD,MAAM,UAAU,iBAAiB,CAAC,UAAiB;IAC/C,IAAI,UAAU,GAAG,IAAI,kBAAkB,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;IACnE,UAAU,CAAC,aAAa,EAAE,CAAC;AAG/B,CAAC"}
+{"version":3,"file":"matrixssl_windows.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/windows/matrixssl_windows.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,UAAU,EAAE,MAAM,yBAAyB,CAAC;AACpD,OAAO,EAAE,cAAc,EAAE,MAAM,oBAAoB,CAAC;AAEpD,MAAM,OAAO,kBAAmB,SAAQ,UAAU;IAE9C,YAAmB,UAAiB,EAAS,cAAqB,EAAE,YAAqB;QACrF,KAAK,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;QADlB,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAElE,CAAC;IAGD,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;QACpC,IAAI,CAAC,mBAAmB,EAAE,CAAC;QAE3B,wCAAwC;IAC5C,CAAC;IAED,8BAA8B;QAC1B,qBAAqB;IACzB,CAAC;CAEJ;AAGD,MAAM,UAAU,iBAAiB,CAAC,UAAiB,EAAE,YAAqB;IACtE,IAAI,UAAU,GAAG,IAAI,kBAAkB,CAAC,UAAU,EAAC,cAAc,EAAE,YAAY,CAAC,CAAC;IACjF,UAAU,CAAC,aAAa,EAAE,CAAC;IAE3B,IAAI,YAAY,EAAE;QACd,MAAM,cAAc,GAAG,UAAU,CAAC,SAAS,CAAC;QAC3C,MAAc,CAAC,cAAc,CAAC,UAAU,CAAC,GAAG,cAAc,CAAC;KAC/D;AACL,CAAC"}
 ✄
 import { matrix_SSL } from "../ssl_lib/matrixssl.js";
 import { socket_library } from "./windows_agent.js";
 export class matrix_SSL_Windows extends matrix_SSL {
-    constructor(moduleName, socket_library) {
+    constructor(moduleName, socket_library, is_base_hook) {
         super(moduleName, socket_library);
         this.moduleName = moduleName;
         this.socket_library = socket_library;
@@ -3852,17 +4100,21 @@ export class matrix_SSL_Windows extends matrix_SSL {
         //Not implemented yet
     }
 }
-export function matrixSSL_execute(moduleName) {
-    var matrix_ssl = new matrix_SSL_Windows(moduleName, socket_library);
+export function matrixSSL_execute(moduleName, is_base_hook) {
+    var matrix_ssl = new matrix_SSL_Windows(moduleName, socket_library, is_base_hook);
     matrix_ssl.execute_hooks();
+    if (is_base_hook) {
+        const init_addresses = matrix_ssl.addresses;
+        global.init_addresses[moduleName] = init_addresses;
+    }
 }
 ✄
-{"version":3,"file":"mbedTLS_windows.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/windows/mbedTLS_windows.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,QAAQ,EAAE,MAAM,uBAAuB,CAAC;AAChD,OAAO,EAAE,cAAc,EAAE,MAAM,oBAAoB,CAAC;AAEpD,MAAM,OAAO,gBAAiB,SAAQ,QAAQ;IAE1C,YAAmB,UAAiB,EAAS,cAAqB;QAC9D,KAAK,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;QADlB,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAElE,CAAC;IAED;;;;;;MAME;IACF,8BAA8B;QAC1B,8BAA8B;IAClC,CAAC;IAED,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;IACxC,CAAC;CAEJ;AAGD,MAAM,UAAU,eAAe,CAAC,UAAiB;IAC7C,IAAI,WAAW,GAAG,IAAI,gBAAgB,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;IAClE,WAAW,CAAC,aAAa,EAAE,CAAC;AAGhC,CAAC"}
+{"version":3,"file":"mbedTLS_windows.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/windows/mbedTLS_windows.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,QAAQ,EAAE,MAAM,uBAAuB,CAAC;AAChD,OAAO,EAAE,cAAc,EAAE,MAAM,oBAAoB,CAAC;AAEpD,MAAM,OAAO,gBAAiB,SAAQ,QAAQ;IAE1C,YAAmB,UAAiB,EAAS,cAAqB,EAAE,YAAqB;QACrF,KAAK,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;QADlB,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAElE,CAAC;IAED;;;;;;MAME;IACF,8BAA8B;QAC1B,8BAA8B;IAClC,CAAC;IAED,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;IACxC,CAAC;CAEJ;AAGD,MAAM,UAAU,eAAe,CAAC,UAAiB,EAAE,YAAqB;IACpE,IAAI,WAAW,GAAG,IAAI,gBAAgB,CAAC,UAAU,EAAC,cAAc,EAAE,YAAY,CAAC,CAAC;IAChF,WAAW,CAAC,aAAa,EAAE,CAAC;IAE5B,IAAI,YAAY,EAAE;QACd,MAAM,cAAc,GAAG,WAAW,CAAC,SAAS,CAAC;QAC5C,MAAc,CAAC,cAAc,CAAC,UAAU,CAAC,GAAG,cAAc,CAAC;KAC/D;AACL,CAAC"}
 ✄
 import { mbed_TLS } from "../ssl_lib/mbedTLS.js";
 import { socket_library } from "./windows_agent.js";
 export class mbed_TLS_Windows extends mbed_TLS {
-    constructor(moduleName, socket_library) {
+    constructor(moduleName, socket_library, is_base_hook) {
         super(moduleName, socket_library);
         this.moduleName = moduleName;
         this.socket_library = socket_library;
@@ -3882,17 +4134,21 @@ export class mbed_TLS_Windows extends mbed_TLS {
         this.install_plaintext_write_hook();
     }
 }
-export function mbedTLS_execute(moduleName) {
-    var mbedTLS_ssl = new mbed_TLS_Windows(moduleName, socket_library);
+export function mbedTLS_execute(moduleName, is_base_hook) {
+    var mbedTLS_ssl = new mbed_TLS_Windows(moduleName, socket_library, is_base_hook);
     mbedTLS_ssl.execute_hooks();
+    if (is_base_hook) {
+        const init_addresses = mbedTLS_ssl.addresses;
+        global.init_addresses[moduleName] = init_addresses;
+    }
 }
 ✄
-{"version":3,"file":"nss_windows.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/windows/nss_windows.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,GAAG,EAAE,MAAM,mBAAmB,CAAC;AACvC,OAAO,EAAE,cAAc,EAAE,MAAM,oBAAoB,CAAC;AAEpD,MAAM,OAAO,WAAY,SAAQ,GAAG;IAEhC,YAAmB,UAAiB,EAAS,cAAqB;QAC9D,IAAI,sBAAsB,GAAqC,EAAE,CAAC;QAClE,sBAAsB,CAAC,IAAI,UAAU,GAAG,CAAC,GAAG,CAAC,UAAU,EAAE,SAAS,EAAE,0BAA0B,EAAE,gBAAgB,EAAE,gBAAgB,EAAE,uBAAuB,CAAC,CAAA;QAC5J,mFAAmF;QACnF,sBAAsB,CAAC,WAAW,CAAC,GAAG,CAAC,cAAc,EAAE,kBAAkB,EAAE,uBAAuB,CAAC,CAAA;QAEnG,KAAK,CAAC,UAAU,EAAC,cAAc,EAAC,sBAAsB,CAAC,CAAC;QANzC,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAOlE,CAAC;IAED,8BAA8B;QAC1B,MAAM;IACV,CAAC;IAGD,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;QACpC,iEAAiE;IACrE,CAAC;CAEJ;AAGD,MAAM,UAAU,WAAW,CAAC,UAAiB;IACzC,IAAI,OAAO,GAAG,IAAI,WAAW,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;IACzD,OAAO,CAAC,aAAa,EAAE,CAAC;AAG5B,CAAC"}
+{"version":3,"file":"nss_windows.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/windows/nss_windows.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,GAAG,EAAE,MAAM,mBAAmB,CAAC;AACvC,OAAO,EAAE,cAAc,EAAE,MAAM,oBAAoB,CAAC;AAEpD,MAAM,OAAO,WAAY,SAAQ,GAAG;IAEhC,YAAmB,UAAiB,EAAS,cAAqB,EAAE,YAAqB;QACrF,IAAI,sBAAsB,GAAqC,EAAE,CAAC;QAClE,sBAAsB,CAAC,IAAI,UAAU,GAAG,CAAC,GAAG,CAAC,UAAU,EAAE,SAAS,EAAE,0BAA0B,EAAE,gBAAgB,EAAE,gBAAgB,EAAE,uBAAuB,CAAC,CAAA;QAC5J,mFAAmF;QACnF,sBAAsB,CAAC,WAAW,CAAC,GAAG,CAAC,cAAc,EAAE,kBAAkB,EAAE,uBAAuB,CAAC,CAAA;QAEnG,KAAK,CAAC,UAAU,EAAC,cAAc,EAAC,sBAAsB,CAAC,CAAC;QANzC,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAOlE,CAAC;IAED,8BAA8B;QAC1B,MAAM;IACV,CAAC;IAGD,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;QACpC,iEAAiE;IACrE,CAAC;CAEJ;AAGD,MAAM,UAAU,WAAW,CAAC,UAAiB,EAAE,YAAqB;IAChE,IAAI,OAAO,GAAG,IAAI,WAAW,CAAC,UAAU,EAAC,cAAc,EAAE,YAAY,CAAC,CAAC;IACvE,OAAO,CAAC,aAAa,EAAE,CAAC;IAExB,IAAI,YAAY,EAAE;QACd,MAAM,cAAc,GAAG,OAAO,CAAC,SAAS,CAAC;QACxC,MAAc,CAAC,cAAc,CAAC,UAAU,CAAC,GAAG,cAAc,CAAC;KAC/D;AAEL,CAAC"}
 ✄
 import { NSS } from "../ssl_lib/nss.js";
 import { socket_library } from "./windows_agent.js";
 export class NSS_Windows extends NSS {
-    constructor(moduleName, socket_library) {
+    constructor(moduleName, socket_library, is_base_hook) {
         var library_method_mapping = {};
         library_method_mapping[`*${moduleName}*`] = ["PR_Write", "PR_Read", "PR_FileDesc2NativeHandle", "PR_GetPeerName", "PR_GetSockName", "PR_GetNameForIdentity"];
         // library_method_mapping[`*libnss*`] = ["PK11_ExtractKeyValue", "PK11_GetKeyData"]
@@ -3910,21 +4166,25 @@ export class NSS_Windows extends NSS {
         // this.install_tls_keys_callback_hook(); needs to be implemented
     }
 }
-export function nss_execute(moduleName) {
-    var nss_ssl = new NSS_Windows(moduleName, socket_library);
+export function nss_execute(moduleName, is_base_hook) {
+    var nss_ssl = new NSS_Windows(moduleName, socket_library, is_base_hook);
     nss_ssl.execute_hooks();
+    if (is_base_hook) {
+        const init_addresses = nss_ssl.addresses;
+        global.init_addresses[moduleName] = init_addresses;
+    }
 }
 ✄
-{"version":3,"file":"openssl_boringssl_windows.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/windows/openssl_boringssl_windows.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,iBAAiB,EAAE,MAAM,iCAAiC,CAAC;AACnE,OAAO,EAAE,cAAc,EAAE,MAAM,oBAAoB,CAAC;AAEpD,MAAM,OAAO,yBAA0B,SAAQ,iBAAiB;IAE5D,YAAmB,UAAiB,EAAS,cAAqB;QAC9D,IAAI,OAAO,GAAoC,EAAE,CAAC;QAClD,OAAO,CAAC,GAAG,UAAU,EAAE,CAAC,GAAG,CAAC,UAAU,EAAE,WAAW,EAAE,YAAY,EAAE,iBAAiB,EAAE,oBAAoB,EAAE,SAAS,CAAC,CAAA;QACtH,OAAO,CAAC,IAAI,cAAc,GAAG,CAAC,GAAG,CAAC,aAAa,EAAE,aAAa,EAAE,OAAO,EAAE,OAAO,CAAC,CAAA;QACjF,KAAK,CAAC,UAAU,EAAC,cAAc,EAAE,OAAO,CAAC,CAAC;QAJ3B,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAKlE,CAAC;IAED;;;;;;MAME;IACF,8BAA8B;QAC1B,8BAA8B;IAClC,CAAC;IAED,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;IACxC,CAAC;CAEJ;AAGD,MAAM,UAAU,cAAc,CAAC,UAAiB;IAC5C,IAAI,UAAU,GAAG,IAAI,yBAAyB,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;IAC1E,UAAU,CAAC,aAAa,EAAE,CAAC;AAG/B,CAAC"}
+{"version":3,"file":"openssl_boringssl_windows.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/windows/openssl_boringssl_windows.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,iBAAiB,EAAE,MAAM,iCAAiC,CAAC;AACnE,OAAO,EAAE,cAAc,EAAE,MAAM,oBAAoB,CAAC;AAEpD,MAAM,OAAO,yBAA0B,SAAQ,iBAAiB;IAE5D,YAAmB,UAAiB,EAAS,cAAqB,EAAE,YAAqB;QACrF,IAAI,OAAO,GAAoC,EAAE,CAAC;QAClD,OAAO,CAAC,GAAG,UAAU,EAAE,CAAC,GAAG,CAAC,UAAU,EAAE,WAAW,EAAE,YAAY,EAAE,iBAAiB,EAAE,oBAAoB,EAAE,SAAS,CAAC,CAAA;QACtH,OAAO,CAAC,IAAI,cAAc,GAAG,CAAC,GAAG,CAAC,aAAa,EAAE,aAAa,EAAE,OAAO,EAAE,OAAO,CAAC,CAAA;QACjF,KAAK,CAAC,UAAU,EAAC,cAAc,EAAE,YAAY,EAAE,OAAO,CAAC,CAAC;QAJzC,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAKlE,CAAC;IAED;;;;;;MAME;IACF,8BAA8B;QAC1B,8BAA8B;IAClC,CAAC;IAED,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;IACxC,CAAC;CAEJ;AAGD,MAAM,UAAU,cAAc,CAAC,UAAiB,EAAE,YAAqB;IACnE,IAAI,UAAU,GAAG,IAAI,yBAAyB,CAAC,UAAU,EAAC,cAAc,EAAE,YAAY,CAAC,CAAC;IACxF,UAAU,CAAC,aAAa,EAAE,CAAC;IAE3B,IAAI,YAAY,EAAE;QACd,MAAM,cAAc,GAAG,UAAU,CAAC,SAAS,CAAC;QAC5C,IAAI,MAAM,CAAC,IAAI,CAAC,cAAc,CAAC,CAAC,MAAM,GAAG,CAAC,EAAE;YACvC,MAAc,CAAC,cAAc,CAAC,UAAU,CAAC,GAAG,cAAc,CAAC;SAC/D;KACJ;AACL,CAAC"}
 ✄
 import { OpenSSL_BoringSSL } from "../ssl_lib/openssl_boringssl.js";
 import { socket_library } from "./windows_agent.js";
 export class OpenSSL_BoringSSL_Windows extends OpenSSL_BoringSSL {
-    constructor(moduleName, socket_library) {
+    constructor(moduleName, socket_library, is_base_hook) {
         let mapping = {};
         mapping[`${moduleName}`] = ["SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new"];
         mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
-        super(moduleName, socket_library, mapping);
+        super(moduleName, socket_library, is_base_hook, mapping);
         this.moduleName = moduleName;
         this.socket_library = socket_library;
     }
@@ -3943,12 +4203,18 @@ export class OpenSSL_BoringSSL_Windows extends OpenSSL_BoringSSL {
         this.install_plaintext_write_hook();
     }
 }
-export function boring_execute(moduleName) {
-    var boring_ssl = new OpenSSL_BoringSSL_Windows(moduleName, socket_library);
+export function boring_execute(moduleName, is_base_hook) {
+    var boring_ssl = new OpenSSL_BoringSSL_Windows(moduleName, socket_library, is_base_hook);
     boring_ssl.execute_hooks();
+    if (is_base_hook) {
+        const init_addresses = boring_ssl.addresses;
+        if (Object.keys(init_addresses).length > 0) {
+            global.init_addresses[moduleName] = init_addresses;
+        }
+    }
 }
 ✄
-{"version":3,"file":"sspi.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/windows/sspi.ts"],"names":[],"mappings":"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"}
+{"version":3,"file":"sspi.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/windows/sspi.ts"],"names":[],"mappings":"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"}
 ✄
 import { readAddresses, getBaseAddress } from "../shared/shared_functions.js";
 import { socket_library } from "./windows_agent.js";
@@ -3968,7 +4234,7 @@ var keylog = (key, tlsVersion) => {
 };
 // This library is only existend under Windows therefore there is no Superclass
 export class SSPI_Windows {
-    constructor(moduleName, socket_library) {
+    constructor(moduleName, socket_library, is_base_hook) {
         this.moduleName = moduleName;
         this.socket_library = socket_library;
         // global variables
@@ -3980,14 +4246,15 @@ export class SSPI_Windows {
             this.library_method_mapping["*ncrypt*.dll"] = ["SslHashHandshake", "SslGenerateMasterKey", "SslImportMasterKey", "SslGenerateSessionKeys", "SslExpandExporterMasterKey", "SslExpandTrafficKeys"];
         }
         this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
-        this.addresses = readAddresses(this.library_method_mapping);
+        this.addresses = readAddresses(moduleName, this.library_method_mapping);
+        this.module_name = moduleName;
         // @ts-ignore
         if (offsets != "{OFFSETS}" && offsets.sspi != null) {
             if (offsets.sockets != null) {
                 const socketBaseAddress = getBaseAddress(socket_library);
                 for (const method of Object.keys(offsets.sockets)) {
                     //@ts-ignore
-                    this.addresses[`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
+                    this.addresses[this.module_name][`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
                 }
             }
             const libraryBaseAddress = getBaseAddress(moduleName);
@@ -3996,12 +4263,12 @@ export class SSPI_Windows {
             }
             for (const method of Object.keys(offsets.sspi)) {
                 //@ts-ignore
-                this.addresses[`${method}`] = offsets.sspi[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.sspi[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.sspi[`${method}`].address));
+                this.addresses[this.module_name][`${method}`] = offsets.sspi[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.sspi[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.sspi[`${method}`].address));
             }
         }
     }
     install_plaintext_read_hook() {
-        Interceptor.attach(this.addresses["DecryptMessage"], {
+        Interceptor.attach(this.addresses[this.module_name]["DecryptMessage"], {
             onEnter: function (args) {
                 this.pMessage = args[1];
             },
@@ -4039,7 +4306,7 @@ export class SSPI_Windows {
         });
     }
     install_plaintext_write_hook() {
-        Interceptor.attach(this.addresses["EncryptMessage"], {
+        Interceptor.attach(this.addresses[this.module_name]["EncryptMessage"], {
             onEnter: function (args) {
                 this.pMessage = args[2]; //PSecBufferDesc pMessage (https://docs.microsoft.com/en-us/windows/win32/api/sspi/ns-sspi-secbufferdesc)
                 this.cBuffers = this.pMessage.add(4).readULong(); //unsigned long cBuffers (Count of buffers)
@@ -4118,8 +4385,8 @@ export class SSPI_Windows {
             }
             return null;
         };
-        if (this.addresses["SslHashHandshake"] != null)
-            Interceptor.attach(this.addresses["SslHashHandshake"], {
+        if (this.addresses[this.module_name]["SslHashHandshake"] != null)
+            Interceptor.attach(this.addresses[this.module_name]["SslHashHandshake"], {
                 onEnter: function (args) {
                     // https://docs.microsoft.com/en-us/windows/win32/seccng/sslhashhandshake
                     var buf = ptr(args[2]);
@@ -4137,8 +4404,8 @@ export class SSPI_Windows {
                 onLeave: function (retval) {
                 }
             });
-        if (this.addresses["SslGenerateMasterKey"] != null)
-            Interceptor.attach(this.addresses["SslGenerateMasterKey"], {
+        if (this.addresses[this.module_name]["SslGenerateMasterKey"] != null)
+            Interceptor.attach(this.addresses[this.module_name]["SslGenerateMasterKey"], {
                 onEnter: function (args) {
                     // https://docs.microsoft.com/en-us/windows/win32/seccng/sslgeneratemasterkey
                     this.phMasterKey = ptr(args[3]);
@@ -4152,8 +4419,8 @@ export class SSPI_Windows {
                     keylog("CLIENT_RANDOM " + this.client_random + " " + master_key, 2 /* TLSVersion.ONE_TWO */);
                 }
             });
-        if (this.addresses["SslImportMasterKey"] != null)
-            Interceptor.attach(this.addresses["SslImportMasterKey"], {
+        if (this.addresses[this.module_name]["SslImportMasterKey"] != null)
+            Interceptor.attach(this.addresses[this.module_name]["SslImportMasterKey"], {
                 onEnter: function (args) {
                     // https://docs.microsoft.com/en-us/windows/win32/seccng/sslimportmasterkey
                     this.phMasterKey = ptr(args[2]);
@@ -4167,8 +4434,8 @@ export class SSPI_Windows {
                     keylog("CLIENT_RANDOM " + this.client_random + " " + master_key, 2 /* TLSVersion.ONE_TWO */);
                 }
             });
-        if (this.addresses["SslGenerateSessionKeys"] != null)
-            Interceptor.attach(this.addresses["SslGenerateSessionKeys"], {
+        if (this.addresses[this.module_name]["SslGenerateSessionKeys"] != null)
+            Interceptor.attach(this.addresses[this.module_name]["SslGenerateSessionKeys"], {
                 onEnter: function (args) {
                     // https://docs.microsoft.com/en-us/windows/win32/seccng/sslgeneratesessionkeys
                     this.hMasterKey = ptr(args[1]);
@@ -4192,8 +4459,8 @@ export class SSPI_Windows {
             var size = struct_YKSM.add(0x10).readU32();
             return secret_ptr.readByteArray(size);
         };
-        if (this.addresses["SslExpandTrafficKeys"] != null)
-            Interceptor.attach(this.addresses["SslExpandTrafficKeys"], {
+        if (this.addresses[this.module_name]["SslExpandTrafficKeys"] != null)
+            Interceptor.attach(this.addresses[this.module_name]["SslExpandTrafficKeys"], {
                 onEnter: function (args) {
                     this.retkey1 = ptr(args[3]);
                     this.retkey2 = ptr(args[4]);
@@ -4214,8 +4481,8 @@ export class SSPI_Windows {
                     keylog("SERVER_" + this.suffix + " " + this.client_random + " " + buf2hex(key2), 3 /* TLSVersion.ONE_THREE */);
                 }
             });
-        if (this.addresses["SslExpandExporterMasterKey"] != null)
-            Interceptor.attach(this.addresses["SslExpandExporterMasterKey"], {
+        if (this.addresses[this.module_name]["SslExpandExporterMasterKey"] != null)
+            Interceptor.attach(this.addresses[this.module_name]["SslExpandExporterMasterKey"], {
                 onEnter: function (args) {
                     this.retkey = ptr(args[3]);
                     this.client_random = client_randoms[this.threadId] || "???";
@@ -4234,16 +4501,20 @@ export class SSPI_Windows {
         }
     }
 }
-export function sspi_execute(moduleName) {
-    var sspi_ssl = new SSPI_Windows(moduleName, socket_library);
+export function sspi_execute(moduleName, is_base_hook) {
+    var sspi_ssl = new SSPI_Windows(moduleName, socket_library, is_base_hook);
     sspi_ssl.execute_hooks();
+    if (is_base_hook) {
+        const init_addresses = sspi_ssl.addresses;
+        global.init_addresses[moduleName] = init_addresses;
+    }
 }
 ✄
-{"version":3,"file":"windows_agent.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/windows/windows_agent.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,sBAAsB,EAAE,MAAM,gCAAgC,CAAC;AACxE,OAAO,EAAE,GAAG,EAAE,MAAM,EAAE,MAAM,gBAAgB,CAAC;AAC7C,OAAO,EAAE,cAAc,EAAE,kBAAkB,EAAE,MAAM,+BAA+B,CAAC;AACnF,OAAO,EAAE,YAAY,EAAE,MAAM,WAAW,CAAC;AACzC,OAAO,EAAE,cAAc,EAAE,MAAM,gCAAgC,CAAC;AAChE,OAAO,EAAE,cAAc,EAAE,MAAM,qBAAqB,CAAC;AACrD,OAAO,EAAE,eAAe,EAAE,MAAM,sBAAsB,CAAC;AACvD,OAAO,EAAE,WAAW,EAAE,MAAM,kBAAkB,CAAC;AAC/C,OAAO,EAAE,eAAe,EAAE,MAAM,sBAAsB,CAAC;AACvD,OAAO,EAAE,iBAAiB,EAAE,MAAM,wBAAwB,CAAC;AAG3D,IAAI,cAAc,GAAG,SAAS,CAAC;AAC/B,IAAI,WAAW,GAAkB,cAAc,EAAE,CAAA;AAEjD,MAAM,CAAC,MAAM,cAAc,GAAG,YAAY,CAAC;AAE3C,SAAS,2BAA2B,CAAC,sBAAmF;IACpH,IAAI;QAEA,MAAM,QAAQ,GAAgB,IAAI,WAAW,CAAC,QAAQ,CAAC,CAAA;QACvD,IAAI,cAAc,GAAG,QAAQ,CAAC,gBAAgB,CAAC,wCAAwC,CAAC,CAAA;QAExF,IAAI,cAAc,CAAC,MAAM,IAAI,CAAC;YAAE,OAAO,OAAO,CAAC,GAAG,CAAC,qCAAqC,CAAC,CAAA;QAGzF,WAAW,CAAC,MAAM,CAAC,cAAc,CAAC,CAAC,CAAC,CAAC,OAAO,EAAE;YAC1C,OAAO,CAAC,MAAqB;gBAEzB,IAAI,GAAG,GAAG,IAAI,SAAS,EAAE,CAAC;gBAC1B,IAAI,UAAU,GAAG,GAAG,CAAC,QAAQ,CAAC,MAAM,CAAC,CAAA;gBACrC,IAAI,UAAU,KAAK,IAAI;oBAAE,OAAM;gBAE/B,KAAK,IAAI,GAAG,IAAI,sBAAsB,CAAC,cAAc,CAAC,EAAE;oBACpD,IAAI,KAAK,GAAG,IAAI,MAAM,CAAC,GAAG,CAAC,CAAC,CAAC,CAAC,CAAA;oBAC9B,IAAI,IAAI,GAAG,GAAG,CAAC,CAAC,CAAC,CAAA;oBAEjB,IAAI,KAAK,CAAC,IAAI,CAAC,UAAU,CAAC,EAAE;wBACxB,GAAG,CAAC,GAAG,UAAU,0CAA0C,CAAC,CAAA;wBAC5D,IAAI,CAAC,UAAU,CAAC,CAAA;qBACnB;iBAEJ;YACL,CAAC;SACJ,CAAC,CAAA;QACF,OAAO,CAAC,GAAG,CAAC,oCAAoC,CAAC,CAAA;KACpD;IAAC,OAAO,KAAK,EAAE;QACZ,MAAM,CAAC,gBAAgB,GAAG,KAAK,CAAC,CAAA;QAChC,GAAG,CAAC,wCAAwC,CAAC,CAAA;KAChD;AACL,CAAC;AAED,SAAS,qBAAqB,CAAC,sBAAmF;IAC9G,kBAAkB,CAAC,cAAc,EAAE,sBAAsB,EAAC,WAAW,EAAC,SAAS,CAAC,CAAA;AACpF,CAAC;AAED,MAAM,UAAU,0BAA0B;IACtC,sBAAsB,CAAC,cAAc,CAAC,GAAG,CAAC,CAAC,yCAAyC,EAAE,cAAc,CAAC,EAAE,CAAC,8BAA8B,EAAE,eAAe,CAAC,EAAE,CAAC,uCAAuC,EAAE,cAAc,CAAC,EAAE,CAAC,yBAAyB,EAAE,WAAW,CAAC,EAAE,CAAC,iCAAiC,EAAE,YAAY,CAAC,EAAE,CAAC,cAAc,EAAE,eAAe,CAAC,EAAE,CAAC,iBAAiB,EAAE,iBAAiB,CAAC,CAAC,CAAA;IAC5X,qBAAqB,CAAC,sBAAsB,CAAC,CAAC;IAC9C,2BAA2B,CAAC,sBAAsB,CAAC,CAAC;AACxD,CAAC"}
+{"version":3,"file":"windows_agent.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/windows/windows_agent.ts"],"names":[],"mappings":"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"}
 ✄
 import { module_library_mapping } from "../shared/shared_structures.js";
 import { log, devlog } from "../util/log.js";
-import { getModuleNames, ssl_library_loader } from "../shared/shared_functions.js";
+import { getModuleNames, ssl_library_loader, invokeHookingFunction } from "../shared/shared_functions.js";
 import { sspi_execute } from "./sspi.js";
 import { boring_execute } from "./openssl_boringssl_windows.js";
 import { gnutls_execute } from "./gnutls_windows.js";
@@ -4254,7 +4525,7 @@ import { matrixSSL_execute } from "./matrixssl_windows.js";
 var plattform_name = "windows";
 var moduleNames = getModuleNames();
 export const socket_library = "WS2_32.dll";
-function hook_Windows_Dynamic_Loader(module_library_mapping) {
+function hook_Windows_Dynamic_Loader(module_library_mapping, is_base_hook) {
     try {
         const resolver = new ApiResolver('module');
         var loadLibraryExW = resolver.enumerateMatches("exports:KERNELBASE.dll!*LoadLibraryExW");
@@ -4271,7 +4542,7 @@ function hook_Windows_Dynamic_Loader(module_library_mapping) {
                     let func = map[1];
                     if (regex.test(moduleName)) {
                         log(`${moduleName} was loaded & will be hooked on Windows!`);
-                        func(moduleName);
+                        func(moduleName, is_base_hook);
                     }
                 }
             }
@@ -4283,22 +4554,30 @@ function hook_Windows_Dynamic_Loader(module_library_mapping) {
         log("No dynamic loader present for hooking.");
     }
 }
-function hook_Windows_SSL_Libs(module_library_mapping) {
-    ssl_library_loader(plattform_name, module_library_mapping, moduleNames, "Windows");
+function hook_Windows_SSL_Libs(module_library_mapping, is_base_hook) {
+    ssl_library_loader(plattform_name, module_library_mapping, moduleNames, "Windows", is_base_hook);
 }
 export function load_windows_hooking_agent() {
-    module_library_mapping[plattform_name] = [[/^(libssl|LIBSSL)-[0-9]+(_[0-9]+)?\.dll$/, boring_execute], [/^.*(wolfssl|WOLFSSL).*\.dll$/, wolfssl_execute], [/^.*(libgnutls|LIBGNUTLS)-[0-9]+\.dll$/, gnutls_execute], [/^(nspr|NSPR)[0-9]*\.dll/, nss_execute], [/(sspicli|SSPICLI|SspiCli)\.dll$/, sspi_execute], [/mbedTLS\.dll/, mbedTLS_execute], ["/matrixSSL\.dll", matrixSSL_execute]];
-    hook_Windows_SSL_Libs(module_library_mapping);
-    hook_Windows_Dynamic_Loader(module_library_mapping);
+    module_library_mapping[plattform_name] = [
+        [/^(libssl|LIBSSL)-[0-9]+(_[0-9]+)?\.dll$/, invokeHookingFunction(boring_execute)],
+        [/^.*(wolfssl|WOLFSSL).*\.dll$/, invokeHookingFunction(wolfssl_execute)],
+        [/^.*(libgnutls|LIBGNUTLS)-[0-9]+\.dll$/, invokeHookingFunction(gnutls_execute)],
+        [/^(nspr|NSPR)[0-9]*\.dll/, invokeHookingFunction(nss_execute)],
+        [/(sspicli|SSPICLI|SspiCli)\.dll$/, invokeHookingFunction(sspi_execute)],
+        [/mbedTLS\.dll/, invokeHookingFunction(mbedTLS_execute)],
+        ["/matrixSSL\.dll", invokeHookingFunction(matrixSSL_execute)]
+    ];
+    hook_Windows_SSL_Libs(module_library_mapping, true);
+    hook_Windows_Dynamic_Loader(module_library_mapping, false);
 }
 ✄
-{"version":3,"file":"wolfssl_windows.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/windows/wolfssl_windows.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,OAAO,EAAE,MAAM,uBAAuB,CAAC;AAC/C,OAAO,EAAE,cAAc,EAAE,MAAM,oBAAoB,CAAC;AACpD,OAAO,EAAE,GAAG,EAAE,MAAM,gBAAgB,CAAC;AAErC,MAAM,OAAO,eAAgB,SAAQ,OAAO;IAExC,YAAmB,UAAiB,EAAS,cAAqB;QAC9D,IAAI,OAAO,GAAoC,EAAE,CAAC;QAClD,OAAO,CAAC,GAAG,UAAU,EAAE,CAAC,GAAG,CAAC,cAAc,EAAE,eAAe,EAAE,gBAAgB,EAAE,qBAAqB,EAAE,iBAAiB,EAAE,oBAAoB,CAAC,CAAA;QAC9I,OAAO,CAAC,IAAI,cAAc,GAAG,CAAC,GAAG,CAAC,aAAa,EAAE,aAAa,EAAE,OAAO,EAAE,OAAO,CAAC,CAAA;QACjF,KAAK,CAAC,UAAU,EAAC,cAAc,EAAE,OAAO,CAAC,CAAC;QAJ3B,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAKlE,CAAC;IAGD,8BAA8B;QAC1B,GAAG,CAAC,uDAAuD,CAAC,CAAC;IACjE,CAAC;IAKD,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;QACpC,kEAAkE;IACtE,CAAC;CAEJ;AAGD,MAAM,UAAU,eAAe,CAAC,UAAiB;IAC7C,IAAI,QAAQ,GAAG,IAAI,eAAe,CAAC,UAAU,EAAC,cAAc,CAAC,CAAC;IAC9D,QAAQ,CAAC,aAAa,EAAE,CAAC;AAG7B,CAAC"}
+{"version":3,"file":"wolfssl_windows.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/windows/wolfssl_windows.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,OAAO,EAAE,MAAM,uBAAuB,CAAC;AAC/C,OAAO,EAAE,cAAc,EAAE,MAAM,oBAAoB,CAAC;AACpD,OAAO,EAAE,GAAG,EAAE,MAAM,gBAAgB,CAAC;AAErC,MAAM,OAAO,eAAgB,SAAQ,OAAO;IAExC,YAAmB,UAAiB,EAAS,cAAqB,EAAE,YAAqB;QACrF,IAAI,OAAO,GAAoC,EAAE,CAAC;QAClD,OAAO,CAAC,GAAG,UAAU,EAAE,CAAC,GAAG,CAAC,cAAc,EAAE,eAAe,EAAE,gBAAgB,EAAE,qBAAqB,EAAE,iBAAiB,EAAE,oBAAoB,CAAC,CAAA;QAC9I,OAAO,CAAC,IAAI,cAAc,GAAG,CAAC,GAAG,CAAC,aAAa,EAAE,aAAa,EAAE,OAAO,EAAE,OAAO,CAAC,CAAA;QACjF,KAAK,CAAC,UAAU,EAAC,cAAc,EAAE,OAAO,CAAC,CAAC;QAJ3B,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAKlE,CAAC;IAGD,8BAA8B;QAC1B,GAAG,CAAC,uDAAuD,CAAC,CAAC;IACjE,CAAC;IAKD,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;QACpC,kEAAkE;IACtE,CAAC;CAEJ;AAGD,MAAM,UAAU,eAAe,CAAC,UAAiB,EAAE,YAAqB;IACpE,IAAI,QAAQ,GAAG,IAAI,eAAe,CAAC,UAAU,EAAC,cAAc,EAAE,YAAY,CAAC,CAAC;IAC5E,QAAQ,CAAC,aAAa,EAAE,CAAC;IAEzB,IAAI,YAAY,EAAE;QACd,MAAM,cAAc,GAAG,QAAQ,CAAC,SAAS,CAAC;QACzC,MAAc,CAAC,cAAc,CAAC,UAAU,CAAC,GAAG,cAAc,CAAC;KAC/D;AACL,CAAC"}
 ✄
 import { WolfSSL } from "../ssl_lib/wolfssl.js";
 import { socket_library } from "./windows_agent.js";
 import { log } from "../util/log.js";
 export class WolfSSL_Windows extends WolfSSL {
-    constructor(moduleName, socket_library) {
+    constructor(moduleName, socket_library, is_base_hook) {
         let mapping = {};
         mapping[`${moduleName}`] = ["wolfSSL_read", "wolfSSL_write", "wolfSSL_get_fd", "wolfSSL_get_session", "wolfSSL_connect", "wolfSSL_KeepArrays"];
         mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
@@ -4315,7 +4594,11 @@ export class WolfSSL_Windows extends WolfSSL {
         //this.install_tls_keys_callback_hook(); currently not implemented
     }
 }
-export function wolfssl_execute(moduleName) {
-    var wolf_ssl = new WolfSSL_Windows(moduleName, socket_library);
+export function wolfssl_execute(moduleName, is_base_hook) {
+    var wolf_ssl = new WolfSSL_Windows(moduleName, socket_library, is_base_hook);
     wolf_ssl.execute_hooks();
+    if (is_base_hook) {
+        const init_addresses = wolf_ssl.addresses;
+        global.init_addresses[moduleName] = init_addresses;
+    }
 }

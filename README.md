@@ -23,13 +23,13 @@ Alternatively just clone the repository and run the `friTap.py` file or download
 On Linux/Windows/MacOS we can easily attach to a process by entering its name or its PID:
 
 ```bash
-$ sudo ./friTap.py --pcap mycapture.pcap thunderbird
+$ sudo fritap --pcap mycapture.pcap thunderbird
 ```
 
 For mobile applications we just have to add the `-m` parameter to indicate that we are now attaching (or spawning) an Android or iOS app:
 
 ```bash
-$ ./friTap.py -m --pcap mycapture.pcap com.example.app
+$ fritap -m --pcap mycapture.pcap com.example.app
 ```
 
 Further ensure that the frida-server is running on the Android/iOS device. 
@@ -61,7 +61,7 @@ The absence of traffic or incomplete traffic capture in the resulting pcap file 
 There might be instances where friTap fails to retrieve socket information. In such scenarios, running friTap with default socket information (`--enable_default_fd`) could resolve the issue. This approach utilizes default socket information (127.0.0.1:1234 to 127.0.0.1:2345) for all traffic when the file descriptor (FD) cannot be used to obtain socket details:
 
 ```bash
-friTap -m --enable_default_fd -p plaintext.pcap com.example.app
+fritap -m --enable_default_fd -p plaintext.pcap com.example.app
 ```
 
 ### Handling Subprocess Traffic
@@ -69,7 +69,7 @@ friTap -m --enable_default_fd -p plaintext.pcap com.example.app
 Traffic originating from a subprocess could be another contributing factor. To capture this traffic, friTap can leverage Frida's spawn gating feature, which intercepts newly spawned processes using the `--enable_spawn_gating` parameter:
 
 ```bash
-friTap -m -p log.pcap --enable_spawn_gating com.example.app
+fritap -m -p log.pcap --enable_spawn_gating com.example.app
 ```
 
 ### Library Support exist only for Key Extraction
@@ -77,7 +77,7 @@ friTap -m -p log.pcap --enable_spawn_gating com.example.app
 In cases where the target library solely supports key extraction (cf. the table below), you can utilize the `-k <key.log>` parameter alongside full packet capture:
 
 ```bash
-friTap -m -p log.pcap --full_capture -k keys.log com.example.app
+fritap -m -p log.pcap --full_capture -k keys.log com.example.app
 ```
 
 ### Seeking Further Assistance
@@ -88,7 +88,7 @@ If these approaches do not address your issue, please create a detailed issue re
 - The specific application encountering the issue or a comparable application that exhibits similar problems
 - The output from executing friTap with the specified parameters, augmented with friTap's debug output:
 ```bash
-friTap -do -v com.example.app
+fritap -do -v com.example.app
 ```
 
 

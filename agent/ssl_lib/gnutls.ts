@@ -5,8 +5,9 @@ import { offsets, enable_default_fd } from "../ssl_log.js";
 export class GnuTLS {
 
     // global variables
-    library_method_mapping: { [key: string]: Array<String> } = {};
-    addresses: { [key: string]: NativePointer };
+    library_method_mapping: { [key: string]: Array<string> } = {};
+    addresses: { [libraryName: string]: { [functionName: string]: NativePointer } };
+    module_name: string;
     
     static gnutls_transport_get_int : any;
     static gnutls_session_get_id: any;
@@ -16,7 +17,7 @@ export class GnuTLS {
     
    
 
-    constructor(public moduleName:String, public socket_library:String,public passed_library_method_mapping?: { [key: string]: Array<String> }){
+    constructor(public moduleName:string, public socket_library:String,public passed_library_method_mapping?: { [key: string]: Array<string> }){
         if(typeof passed_library_method_mapping !== 'undefined'){
             this.library_method_mapping = passed_library_method_mapping;
         }else{
@@ -24,7 +25,8 @@ export class GnuTLS {
             this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
         }
         
-        this.addresses = readAddresses(this.library_method_mapping);
+        this.addresses = readAddresses(moduleName,this.library_method_mapping);
+        this.module_name = moduleName;
 
 
         // @ts-ignore
@@ -34,7 +36,7 @@ export class GnuTLS {
                 const socketBaseAddress = getBaseAddress(socket_library)
                 for(const method of Object.keys(offsets.sockets)){
                      //@ts-ignore
-                    this.addresses[`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
+                    this.addresses[this.moduleName][`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
                 }
             }
 
@@ -47,16 +49,16 @@ export class GnuTLS {
             
             for (const method of Object.keys(offsets.gnutls)){
                 //@ts-ignore
-                this.addresses[`${method}`] = offsets.gnutls[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.gnutls[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.gnutls[`${method}`].address));
+                this.addresses[this.moduleName][`${method}`] = offsets.gnutls[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.gnutls[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.gnutls[`${method}`].address));
             }
 
 
         }
 
-        GnuTLS.gnutls_transport_get_int = new NativeFunction(this.addresses["gnutls_transport_get_int"], "int", ["pointer"])
-        GnuTLS.gnutls_session_get_id = new NativeFunction(this.addresses["gnutls_session_get_id"], "int", ["pointer", "pointer", "pointer"])
-        GnuTLS.gnutls_session_set_keylog_function = new NativeFunction(this.addresses["gnutls_session_set_keylog_function"], "void", ["pointer", "pointer"])
-        GnuTLS.gnutls_session_get_random = new NativeFunction(this.addresses["gnutls_session_get_random"], "pointer", ["pointer", "pointer", "pointer"])
+        GnuTLS.gnutls_transport_get_int = new NativeFunction(this.addresses[this.moduleName]["gnutls_transport_get_int"], "int", ["pointer"])
+        GnuTLS.gnutls_session_get_id = new NativeFunction(this.addresses[this.moduleName]["gnutls_session_get_id"], "int", ["pointer", "pointer", "pointer"])
+        GnuTLS.gnutls_session_set_keylog_function = new NativeFunction(this.addresses[this.moduleName]["gnutls_session_set_keylog_function"], "void", ["pointer", "pointer"])
+        GnuTLS.gnutls_session_get_random = new NativeFunction(this.addresses[this.moduleName]["gnutls_session_get_random"], "pointer", ["pointer", "pointer", "pointer"])
 
     }
 
@@ -143,11 +145,12 @@ export class GnuTLS {
     }
 
     install_plaintext_read_hook(){
+        var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
-        Interceptor.attach(this.addresses["gnutls_record_recv"],
+        Interceptor.attach(this.addresses[this.moduleName]["gnutls_record_recv"],
     {
         onEnter: function (args: any) {
-            var message = getPortsAndAddresses(GnuTLS.gnutls_transport_get_int(args[0]) as number, true, lib_addesses, enable_default_fd)
+            var message = getPortsAndAddresses(GnuTLS.gnutls_transport_get_int(args[0]) as number, true, lib_addesses[current_module_name], enable_default_fd)
             message["ssl_session_id"] = GnuTLS.getSslSessionId(args[0])
             message["function"] = "SSL_read"
             this.message = message
@@ -166,11 +169,12 @@ export class GnuTLS {
     }
     
     install_plaintext_write_hook(){
+        var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
-        Interceptor.attach(this.addresses["gnutls_record_send"],
+        Interceptor.attach(this.addresses[this.moduleName]["gnutls_record_send"],
     {
         onEnter: function (args: any) {
-            var message = getPortsAndAddresses(GnuTLS.gnutls_transport_get_int(args[0]) as number, false, lib_addesses, enable_default_fd)
+            var message = getPortsAndAddresses(GnuTLS.gnutls_transport_get_int(args[0]) as number, false, lib_addesses[current_module_name], enable_default_fd)
             message["ssl_session_id"] = GnuTLS.getSslSessionId(args[0])
             message["function"] = "SSL_write"
             message["contentType"] = "datalog"

@@ -92,7 +92,7 @@ export function execute() {
                 log("Providerinstaller redirection/blocking")
             }
             providerInstaller.installIfNeededAsync.implementation = function (context: any, callback: any) {
-                log("Providerinstaller redirection/blocking")
+                log("ProviderinstallerAsncy redirection/blocking")
                 callback.onProviderInstalled()
             }
         } catch (error) {
@@ -106,7 +106,7 @@ export function execute() {
                         log("Providerinstaller redirection/blocking")
                     }
                     providerInstallerFromClassloder.installIfNeededAsync.implementation = function (context: any, callback: any) {
-                        log("Providerinstaller redirection/blocking")
+                        log("ProviderinstallerAsync redirection/blocking")
                         callback.onProviderInstalled()
                     }
                 }

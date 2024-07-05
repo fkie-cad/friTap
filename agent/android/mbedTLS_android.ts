@@ -4,7 +4,7 @@ import { socket_library } from "./android_agent.js";
 
 export class mbed_TLS_Android extends mbed_TLS {
 
-    constructor(public moduleName:String, public socket_library:String){
+    constructor(public moduleName:string, public socket_library:String, is_base_hook: boolean){
         super(moduleName,socket_library);
     }
 
@@ -27,9 +27,17 @@ export class mbed_TLS_Android extends mbed_TLS {
 }
 
 
-export function mbedTLS_execute(moduleName:String){
-    var mbedTLS_ssl = new mbed_TLS_Android(moduleName,socket_library);
+export function mbedTLS_execute(moduleName:string, is_base_hook: boolean){
+    var mbedTLS_ssl = new mbed_TLS_Android(moduleName,socket_library, is_base_hook);
     mbedTLS_ssl.execute_hooks();
+
+    if (is_base_hook) {
+        const init_addresses = mbedTLS_ssl.addresses[moduleName];
+        // ensure that we only add it to global when we are not 
+        if (Object.keys(init_addresses).length > 0) {
+            (global as any).init_addresses[moduleName] = init_addresses;
+        }
+    }
 
 
 }

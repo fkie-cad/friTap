@@ -28,10 +28,11 @@ const enum TLSVersion{
 export class SSPI_Windows {
 
     // global variables
-    library_method_mapping: { [key: string]: Array<String> } = {};
-    addresses: { [key: string]: NativePointer };
+    library_method_mapping: { [key: string]: Array<string> } = {};
+    addresses: { [libraryName: string]: { [functionName: string]: NativePointer } };
+    module_name: string;
 
-    constructor(public moduleName:String, public socket_library:String){
+    constructor(public moduleName:string, public socket_library:String, is_base_hook: boolean){
 
         this.library_method_mapping[`*${moduleName}*`] = ["DecryptMessage", "EncryptMessage"];
         if(experimental){
@@ -41,7 +42,8 @@ export class SSPI_Windows {
         }
         this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
     
-        this.addresses = readAddresses(this.library_method_mapping);
+        this.addresses = readAddresses(moduleName,this.library_method_mapping);
+        this.module_name = moduleName;
 
         // @ts-ignore
         if(offsets != "{OFFSETS}" && offsets.sspi != null){
@@ -50,7 +52,7 @@ export class SSPI_Windows {
                 const socketBaseAddress = getBaseAddress(socket_library)
                 for(const method of Object.keys(offsets.sockets)){
                      //@ts-ignore
-                    this.addresses[`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
+                    this.addresses[this.module_name][`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
                 }
             }
 
@@ -63,7 +65,7 @@ export class SSPI_Windows {
             
             for (const method of Object.keys(offsets.sspi)){
                 //@ts-ignore
-                this.addresses[`${method}`] = offsets.sspi[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.sspi[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.sspi[`${method}`].address));
+                this.addresses[this.module_name][`${method}`] = offsets.sspi[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.sspi[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.sspi[`${method}`].address));
             }
 
 
@@ -74,7 +76,7 @@ export class SSPI_Windows {
     
 
     install_plaintext_read_hook(){
-        Interceptor.attach(this.addresses["DecryptMessage"], {
+        Interceptor.attach(this.addresses[this.module_name]["DecryptMessage"], {
             onEnter: function(args){
                 this.pMessage = args[1];
             },
@@ -118,7 +120,7 @@ export class SSPI_Windows {
     }
 
     install_plaintext_write_hook(){
-        Interceptor.attach(this.addresses["EncryptMessage"], {
+        Interceptor.attach(this.addresses[this.module_name]["EncryptMessage"], {
         
             onEnter: function(args){
                         this.pMessage = args[2]; //PSecBufferDesc pMessage (https://docs.microsoft.com/en-us/windows/win32/api/sspi/ns-sspi-secbufferdesc)
@@ -212,8 +214,8 @@ export class SSPI_Windows {
         }
 
         
-        if(this.addresses["SslHashHandshake"] != null)
-            Interceptor.attach(this.addresses["SslHashHandshake"], {
+        if(this.addresses[this.module_name]["SslHashHandshake"] != null)
+            Interceptor.attach(this.addresses[this.module_name]["SslHashHandshake"], {
                 onEnter: function (args: any) {
                     // https://docs.microsoft.com/en-us/windows/win32/seccng/sslhashhandshake
                     var buf = ptr(args[2]);
@@ -232,8 +234,8 @@ export class SSPI_Windows {
                 }
             });
 
-        if(this.addresses["SslGenerateMasterKey"] != null)
-            Interceptor.attach(this.addresses["SslGenerateMasterKey"], {
+        if(this.addresses[this.module_name]["SslGenerateMasterKey"] != null)
+            Interceptor.attach(this.addresses[this.module_name]["SslGenerateMasterKey"], {
                 onEnter: function (args: any) {
                     // https://docs.microsoft.com/en-us/windows/win32/seccng/sslgeneratemasterkey
                     this.phMasterKey = ptr(args[3]);
@@ -248,8 +250,8 @@ export class SSPI_Windows {
                 }
             });
 
-        if(this.addresses["SslImportMasterKey"] != null)
-            Interceptor.attach(this.addresses["SslImportMasterKey"], {
+        if(this.addresses[this.module_name]["SslImportMasterKey"] != null)
+            Interceptor.attach(this.addresses[this.module_name]["SslImportMasterKey"], {
                 onEnter: function (args: any) {
                     // https://docs.microsoft.com/en-us/windows/win32/seccng/sslimportmasterkey
                     this.phMasterKey = ptr(args[2]);
@@ -264,8 +266,8 @@ export class SSPI_Windows {
                 }
             });
 
-        if(this.addresses["SslGenerateSessionKeys"] != null)
-            Interceptor.attach(this.addresses["SslGenerateSessionKeys"], {
+        if(this.addresses[this.module_name]["SslGenerateSessionKeys"] != null)
+            Interceptor.attach(this.addresses[this.module_name]["SslGenerateSessionKeys"], {
                 onEnter: function (args: any) {
                     // https://docs.microsoft.com/en-us/windows/win32/seccng/sslgeneratesessionkeys
                     this.hMasterKey = ptr(args[1]);
@@ -292,8 +294,8 @@ export class SSPI_Windows {
             return secret_ptr.readByteArray(size);
         }
 
-        if(this.addresses["SslExpandTrafficKeys"] != null)
-            Interceptor.attach(this.addresses["SslExpandTrafficKeys"], {
+        if(this.addresses[this.module_name]["SslExpandTrafficKeys"] != null)
+            Interceptor.attach(this.addresses[this.module_name]["SslExpandTrafficKeys"], {
                 onEnter: function (args: any) {
                     this.retkey1 = ptr(args[3]);
                     this.retkey2 = ptr(args[4]);
@@ -314,8 +316,8 @@ export class SSPI_Windows {
                 }
             });
 
-        if(this.addresses["SslExpandExporterMasterKey"] != null)
-            Interceptor.attach(this.addresses["SslExpandExporterMasterKey"], {
+        if(this.addresses[this.module_name]["SslExpandExporterMasterKey"] != null)
+            Interceptor.attach(this.addresses[this.module_name]["SslExpandExporterMasterKey"], {
                 onEnter: function (args: any) {
                     this.retkey = ptr(args[3]);
                     this.client_random = client_randoms[this.threadId] || "???";
@@ -339,9 +341,15 @@ export class SSPI_Windows {
 }
 
 
-export function sspi_execute(moduleName:String){
-    var sspi_ssl = new SSPI_Windows(moduleName,socket_library);
+export function sspi_execute(moduleName:string, is_base_hook: boolean){
+    var sspi_ssl = new SSPI_Windows(moduleName,socket_library, is_base_hook);
     sspi_ssl.execute_hooks();
 
-
+    if (is_base_hook) {
+        const init_addresses = sspi_ssl.addresses[moduleName];
+        // ensure that we only add it to global when we are not 
+        if (Object.keys(init_addresses).length > 0) {
+            (global as any).init_addresses[moduleName] = init_addresses;
+        }
+    }
 }

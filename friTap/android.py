@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from distutils.command.sdist import sdist
 from os.path import exists as file_exists
 import os
 import frida
@@ -10,12 +9,8 @@ import sys
 
 if sys.version_info >= (3,10):
     from importlib.resources import files
-else:
-    from importlib_resources import files
 
 
-
- 
 class Android:
     
     def __init__(self,debug_infos=False, arch=""):
@@ -29,9 +24,6 @@ class Android:
             self.tcpdump_version = self._get_appropriate_android_tcpdump_version(arch)
 
         
-
-
-    
     def adb_check_root(self):
         if bool(subprocess.run(['adb', 'shell','su -v'], capture_output=True, text=True).stdout):
             self.is_magisk_mode = True
@@ -138,7 +130,11 @@ class Android:
     def run_tcpdump_capture(self,pcap_name):
         self.close_friTap_if_none_android()
         self.pcap_name = pcap_name
-        return subprocess.Popen(['adb', 'shell','su -c '+self.dst_path+'./'+self.tcpdump_version+' -i any -s 0 -w '+self.dst_path+pcap_name])
+        if self.is_magisk_mode:
+            # don't capture tcp ports 5555 (adb) or 27042 (frida)
+            return subprocess.Popen(['adb', 'shell','su -c '+self.dst_path+'./' + self.tcpdump_version+' -i any -s 0 -w ' + self.dst_path+pcap_name + ' "not (tcp port 5555 or tcp port 27042)"'])
+        else:
+            return subprocess.Popen(['adb', 'shell','su 0 '+self.dst_path+'./' + self.tcpdump_version+' -i any -s 0 -w ' + self.dst_path+pcap_name + ' "not (tcp port 5555 or tcp port 27042)"'])
     
     def _is_Android(self):
         try:

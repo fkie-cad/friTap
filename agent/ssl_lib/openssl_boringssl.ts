@@ -1,6 +1,6 @@
 import { readAddresses, getPortsAndAddresses, getBaseAddress } from "../shared/shared_functions.js";
 import { pointerSize } from "../shared/shared_structures.js";
-import { getOffsets, offsets,enable_default_fd } from "../ssl_log.js";
+import { getOffsets, offsets, enable_default_fd } from "../ssl_log.js";
 import { devlog, log } from "../util/log.js";
 
 
@@ -65,12 +65,13 @@ class ModifyReceiver{
 export class OpenSSL_BoringSSL {
 
     // global variables
-    library_method_mapping: { [key: string]: Array<String> } = {};
-    addresses: { [key: string]: NativePointer };
-    static SSL_SESSION_get_id: any;
-    static SSL_CTX_set_keylog_callback : any;
-    static SSL_get_fd: any;
-    static SSL_get_session: any;
+    library_method_mapping: { [key: string]: Array<string> } = {};
+    addresses: { [libraryName: string]: { [functionName: string]: NativePointer } };
+    module_name: string;
+    SSL_SESSION_get_id: any;
+    SSL_CTX_set_keylog_callback : any;
+    SSL_get_fd: any;
+    SSL_get_session: any;
     static modReceiver: ModifyReceiver;
    
 
@@ -82,11 +83,15 @@ export class OpenSSL_BoringSSL {
         send(message)
     }, "void", ["pointer", "pointer"])
 
+    is_base_hook: boolean;
+
    
 
 
-    constructor(public moduleName:String, public socket_library:String,public passed_library_method_mapping?: { [key: string]: Array<String> }){
+    constructor(public moduleName:string, public socket_library:String,is_base_hook: boolean ,public passed_library_method_mapping?: { [key: string]: Array<string> } ){
         OpenSSL_BoringSSL.modReceiver = new ModifyReceiver();
+        (global as any).global_counter++;
+        console.log("Hooking Module["+(global as any).global_counter+"]: "+moduleName);
 
         if(typeof passed_library_method_mapping !== 'undefined'){
             this.library_method_mapping = passed_library_method_mapping;
@@ -94,8 +99,26 @@ export class OpenSSL_BoringSSL {
             this.library_method_mapping[`*${moduleName}*`] = ["SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_keylog_callback"]
             this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
         }
-        
-        this.addresses = readAddresses(this.library_method_mapping);
+
+        this.is_base_hook = is_base_hook;
+        this.addresses = readAddresses(moduleName,this.library_method_mapping);
+        this.module_name = moduleName;
+
+        /*
+        if (is_base_hook) {
+            const init_addresses = this.addresses[moduleName];
+            if (Object.keys(init_addresses).length > 0) {
+                (global as any).init_addresses[moduleName] = init_addresses;
+            }
+
+            // Cleanup step to remove empty entries
+            const globalInitAddresses = (global as any).init_addresses;
+            for (const key in globalInitAddresses) {
+                if (Object.keys(globalInitAddresses[key]).length === 0) {
+                    delete globalInitAddresses[key];
+                }
+            }
+        }*/
 
         // @ts-ignore
         if(offsets != "{OFFSETS}" && offsets.openssl != null){
@@ -104,7 +127,7 @@ export class OpenSSL_BoringSSL {
                 const socketBaseAddress = getBaseAddress(socket_library)
                 for(const method of Object.keys(offsets.sockets)){
                      //@ts-ignore
-                    this.addresses[`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
+                    this.addresses[this.moduleName][`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
                 }
             }
 
@@ -117,16 +140,16 @@ export class OpenSSL_BoringSSL {
             
             for (const method of Object.keys(offsets.openssl)){
                 //@ts-ignore
-                this.addresses[`${method}`] = offsets.openssl[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.openssl[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.openssl[`${method}`].address));
+                this.addresses[this.moduleName][`${method}`] = offsets.openssl[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.openssl[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.openssl[`${method}`].address));
             }
 
             
 
         }
 
-        OpenSSL_BoringSSL.SSL_SESSION_get_id = new NativeFunction(this.addresses["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
-        OpenSSL_BoringSSL.SSL_get_fd = ObjC.available ? new NativeFunction(this.addresses["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(this.addresses["SSL_get_fd"], "int", ["pointer"]);
-        OpenSSL_BoringSSL.SSL_get_session = new NativeFunction(this.addresses["SSL_get_session"], "pointer", ["pointer"]);
+        this.SSL_SESSION_get_id = new NativeFunction(this.addresses[this.moduleName]["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
+        this.SSL_get_fd = ObjC.available ? new NativeFunction(this.addresses[this.moduleName]["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(this.addresses[this.moduleName]["SSL_get_fd"], "int", ["pointer"]);
+        this.SSL_get_session = new NativeFunction(this.addresses[this.moduleName]["SSL_get_session"], "pointer", ["pointer"]);
         
     }
 
@@ -147,14 +170,16 @@ export class OpenSSL_BoringSSL {
         }
 
         var lib_addesses = this.addresses;
+        var instance = this;
+        var current_module_name = this.module_name;
 
-        Interceptor.attach(this.addresses["SSL_read"],
+        Interceptor.attach(this.addresses[this.moduleName]["SSL_read"],
         {
             
             onEnter: function (args: any) 
             {
                 this.bufLen = args[2].toInt32()
-                this.fd = OpenSSL_BoringSSL.SSL_get_fd(args[0])
+                this.fd = instance.SSL_get_fd(args[0])
                 if(this.fd < 0 && enable_default_fd == false) {
                     return
                 }
@@ -162,8 +187,8 @@ export class OpenSSL_BoringSSL {
 
 
             
-                var message = getPortsAndAddresses(this.fd as number, true, lib_addesses, enable_default_fd)
-                message["ssl_session_id"] = OpenSSL_BoringSSL.getSslSessionId(args[0])
+                var message = getPortsAndAddresses(this.fd as number, true, lib_addesses[current_module_name], enable_default_fd)
+                message["ssl_session_id"] = instance.getSslSessionId(args[0])
                 message["function"] = "SSL_read"
                 this.message = message
                 
@@ -210,17 +235,86 @@ export class OpenSSL_BoringSSL {
             bufView[str.length] = 0;
             return buf;
         }
+
+        var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
-        Interceptor.attach(this.addresses["SSL_write"],
+        var instance = this;
+        Interceptor.attach(this.addresses[this.moduleName]["SSL_write"],
         {
             onEnter: function (args: any) {
                 if (!ObjC.available){
-                this.fd = OpenSSL_BoringSSL.SSL_get_fd(args[0])
+                    try {
+                        console.log("SSL_WRITE addr:"+lib_addesses[current_module_name]["SSL_write"]);
+                        console.log(Process.platform);
+                        console.log("---------------------------------\n")
+                        console.log(JSON.stringify(lib_addesses))
+                        console.log("arg0: " + args[0]);
+                        
+                        // Check if arg[0] is a valid pointer
+                        if (args[0].isNull()) {
+                            console.log("arg0 is a null pointer");
+                            return;
+                        }
+                        
+                        var fd_1 = Module.getExportByName('libssl.so', 'SSL_get_fd');
+                        var fd_2 = Module.getExportByName('libssl_sb.so', 'SSL_get_fd');
+                        var my_Write1 = Module.getExportByName('libssl.so', 'SSL_write');
+                        var my_Write2 = Module.getExportByName('libssl_sb.so', 'SSL_write');
+                        
+                        
+            
+                        var get_fd_1 = new NativeFunction(fd_1, "int", ["pointer"]);
+                        var get_fd_2 = new NativeFunction(fd_2, "int", ["pointer"]);
+            
+                        console.log("get_fd_1 address: " + get_fd_1);
+                        console.log("get_fd_2 address: " + get_fd_2);
+                        console.log("get fd address: " + instance.SSL_get_fd);
+                        console.log("get fd address (current): " + lib_addesses[current_module_name]["SSL_get_fd"]);
+                        console.log("write1 address: " + my_Write1);
+                        console.log("write2 address: " + my_Write2);
+                        console.log("write address (current): " + lib_addesses[current_module_name]["SSL_write"]);
+
+                        this.fd = instance.SSL_get_fd(args[0]);
+                        console.log("this.fd: "+this.fd);
+            
+                        var my_fd_1 = get_fd_1(args[0]);
+                        console.log("get_fd_1 result: " + my_fd_1);
+            
+                        console.log("arg0: "+args[0]);
+                        console.log("get_fd_2 address: " + get_fd_2);
+                        var my_fd_2 = get_fd_2(args[0]);
+                        console.log("get_fd_2 result: " + my_fd_2);
+            
+                    
+                    
+                }catch (error) {
+                        if (error instanceof Error) {
+                            console.log("Error: " + error.message);
+                            console.log("Stack: " + error.stack);
+                        } else {
+                            console.log("Unexpected error:", error);
+                        }
+                        if (!this.is_base_hook) {
+                            const fallback_addresses = (global as any).init_addresses;
+
+                            console.log("Current ModuleName: "+current_module_name);
+                            let keys = Object.keys(fallback_addresses);
+                            let firstKey = keys[0];
+                            console.log("ModuleName of init: "+firstKey);
+
+    
+                            console.log("fallback_addresses2: "+JSON.stringify(fallback_addresses)+"\n")
+                            console.log("fallback_addresses: "+fallback_addresses[firstKey]["SSL_SESSION_get_id"])
+                            instance.SSL_SESSION_get_id = new NativeFunction(fallback_addresses["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
+                            instance.SSL_get_fd = ObjC.available ? new NativeFunction(fallback_addresses["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(fallback_addresses["SSL_get_fd"], "int", ["pointer"]);
+                            instance.SSL_get_session = new NativeFunction(fallback_addresses["SSL_get_session"], "pointer", ["pointer"]);
+                        }
+                    }
                 if(this.fd < 0 && enable_default_fd == false) {
                     return
                 }
-                var message = getPortsAndAddresses(this.fd as number, false, lib_addesses, enable_default_fd)
-                message["ssl_session_id"] = OpenSSL_BoringSSL.getSslSessionId(args[0])
+                var message = getPortsAndAddresses(this.fd as number, false, lib_addesses[current_module_name], enable_default_fd)
+                message["ssl_session_id"] = instance.getSslSessionId(args[0])
                 message["function"] = "SSL_write"
                 message["contentType"] = "datalog"
                 
@@ -252,9 +346,9 @@ export class OpenSSL_BoringSSL {
        *     SSL_SESSION. For example,
        *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
        */
-      static getSslSessionId(ssl: NativePointer) {
+      getSslSessionId(ssl: NativePointer) {
           
-        var session = OpenSSL_BoringSSL.SSL_get_session(ssl) as NativePointer
+        var session = this.SSL_get_session(ssl) as NativePointer
         if (session.isNull()) {
             if(enable_default_fd){
                 log("using dummy SessionID: 59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336")
@@ -264,7 +358,7 @@ export class OpenSSL_BoringSSL {
             return 0
         }
         var len_pointer = Memory.alloc(4)
-        var p = OpenSSL_BoringSSL.SSL_SESSION_get_id(session, len_pointer) as NativePointer
+        var p = this.SSL_SESSION_get_id(session, len_pointer) as NativePointer
         var len = len_pointer.readU32()
         var session_id = ""
         for (var i = 0; i < len; i++) {

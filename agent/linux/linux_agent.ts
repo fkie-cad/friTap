@@ -1,6 +1,6 @@
-import { module_library_mapping } from "../shared/shared_structures.js";
+import { module_library_mapping, ModuleHookingType } from "../shared/shared_structures.js";
 import { log, devlog } from "../util/log.js";
-import { getModuleNames, ssl_library_loader } from "../shared/shared_functions.js";
+import { getModuleNames, ssl_library_loader, invokeHookingFunction } from "../shared/shared_functions.js";
 import { gnutls_execute } from "./gnutls_linux.js";
 import { wolfssl_execute } from "./wolfssl_linux.js";
 import { nss_execute } from "./nss_linux.js";
@@ -13,7 +13,7 @@ var moduleNames: Array<string> = getModuleNames()
 
 export const socket_library = "libc"
 
-function hook_Linux_Dynamic_Loader(module_library_mapping: { [key: string]: Array<[any, (moduleName: string)=>void]> }): void {
+function hook_Linux_Dynamic_Loader(module_library_mapping: { [key: string]: Array<[any, ModuleHookingType]> }, is_base_hook: boolean): void {
     try {
         const regex_libdl = /.*libdl.*\.so/
         const libdl = moduleNames.find(element => element.match(regex_libdl))
@@ -34,7 +34,7 @@ function hook_Linux_Dynamic_Loader(module_library_mapping: { [key: string]: Arra
                         let func = map[1]
                         if (regex.test(this.moduleName)) {
                             log(`${this.moduleName} was loaded & will be hooked on Linux!`)
-                            func(this.moduleName)
+                            func(this.moduleName, is_base_hook)
                         }
 
                     }
@@ -51,13 +51,21 @@ function hook_Linux_Dynamic_Loader(module_library_mapping: { [key: string]: Arra
     }
 }
 
-function hook_Linux_SSL_Libs(module_library_mapping: { [key: string]: Array<[any, (moduleName: string)=>void]> }) {
-    ssl_library_loader(plattform_name, module_library_mapping,moduleNames,"Linux")
+function hook_Linux_SSL_Libs(module_library_mapping: { [key: string]: Array<[any, ModuleHookingType]> }, is_base_hook: boolean) {
+    ssl_library_loader(plattform_name, module_library_mapping,moduleNames,"Linux", is_base_hook)
 }
 
 
 export function load_linux_hooking_agent() {
-    module_library_mapping[plattform_name] = [[/.*libssl_sb.so/, boring_execute], [/.*libssl\.so/, boring_execute], [/.*libgnutls\.so/, gnutls_execute], [/.*libwolfssl\.so/, wolfssl_execute], [/.*libnspr[0-9]?\.so/, nss_execute], [/libmbedtls\.so.*/, mbedTLS_execute], [/libssl_s.a/, matrixSSL_execute]]
-    hook_Linux_SSL_Libs(module_library_mapping);
-    hook_Linux_Dynamic_Loader(module_library_mapping);
+    module_library_mapping[plattform_name] = [
+        [/.*libssl_sb.so/, invokeHookingFunction(boring_execute)], 
+        [/.*libssl\.so/, invokeHookingFunction(boring_execute)], 
+        [/.*libgnutls\.so/, invokeHookingFunction(gnutls_execute)], 
+        [/.*libwolfssl\.so/, invokeHookingFunction(wolfssl_execute)], 
+        [/.*libnspr[0-9]?\.so/, invokeHookingFunction(nss_execute)], 
+        [/libmbedtls\.so.*/, invokeHookingFunction(mbedTLS_execute)], 
+        [/libssl_s.a/, invokeHookingFunction(matrixSSL_execute)]]
+
+    hook_Linux_SSL_Libs(module_library_mapping, true);
+    hook_Linux_Dynamic_Loader(module_library_mapping, false);
 }

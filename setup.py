@@ -2,15 +2,19 @@ import os
 from setuptools import setup, find_packages
 from os.path import abspath, dirname, join
 
-from friTap.__init__ import __version__
-from friTap.__init__ import __author__
-
 # Fetches the content from README.md
 # This will be used for the "long_description" field.
 README_MD = open(join(dirname(abspath(__file__)), "README.md")).read()
 
 # here - where we are.
 here = os.path.abspath(os.path.dirname(__file__))
+
+# Path to the about.py file
+init_py_path = join(here, "friTap", "about.py")
+
+# Read version and author from about.py
+with open(init_py_path) as f:
+    exec(f.read())
 
 # read the package requirements for install_requires
 with open(os.path.join(here, 'requirements.txt'), 'r') as f:
@@ -25,7 +29,7 @@ setup(
     version=__version__,
 
     # The description that will be shown on PyPI.
-    description="Decrypts and logs a process's SSL/TLS traffic on all major platforms.",
+    description="Decrypts and logs a process's SSL/TLS traffic on all major platforms. Further it allows the TLS key extraction.",
 
     # The content that will be shown on your project page.
     # In this case, we're displaying whatever is there in our README.md file
@@ -76,6 +80,7 @@ setup(
     entry_points={
             'console_scripts': [
             'friTap=friTap.friTap:main',
+            'fritap=friTap.friTap:main',
         ],
     },
 )

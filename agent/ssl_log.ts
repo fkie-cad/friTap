@@ -7,6 +7,10 @@ import { isWindows, isLinux, isAndroid, isiOS, isMacOS } from "./util/process_in
 import { anti_root_execute } from "./util/anti_root.js";
 import { log } from "./util/log.js";
 
+// global address which stores the addresses of the hooked modules which aren't loaded via the dynamic loader
+(global as any).init_addresses = {};
+(global as any).global_counter = 0;
+
 interface IAddress{
     address: string,
     absolute: boolean
@@ -96,6 +100,7 @@ This way we are providing boolean values from the commandline directly to our fr
 
 send("defaultFD")
 const enable_default_fd_state = recv('defaultFD', value => {
+    console.log("value.payload: "+value.payload)
     enable_default_fd = value.payload;
 });
 enable_default_fd_state.wait();
