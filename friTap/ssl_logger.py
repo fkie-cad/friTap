@@ -60,7 +60,7 @@ class SSL_Logger():
 
         self.process = None
         self.device = None
-        self.keylog_file = ""
+        self.keylog_file = None
 
         if frida.__version__ < "16":
             self.frida_agent_script = "_ssl_log_legacy.js"

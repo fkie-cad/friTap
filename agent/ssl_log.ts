@@ -100,7 +100,7 @@ This way we are providing boolean values from the commandline directly to our fr
 
 send("defaultFD")
 const enable_default_fd_state = recv('defaultFD', value => {
-    console.log("value.payload: "+value.payload)
+    //console.log("value.payload: "+value.payload)
     enable_default_fd = value.payload;
 });
 enable_default_fd_state.wait();

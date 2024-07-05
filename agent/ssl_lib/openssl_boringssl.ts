@@ -91,7 +91,7 @@ export class OpenSSL_BoringSSL {
     constructor(public moduleName:string, public socket_library:String,is_base_hook: boolean ,public passed_library_method_mapping?: { [key: string]: Array<string> } ){
         OpenSSL_BoringSSL.modReceiver = new ModifyReceiver();
         (global as any).global_counter++;
-        console.log("Hooking Module["+(global as any).global_counter+"]: "+moduleName);
+        //console.log("Hooking Module["+(global as any).global_counter+"]: "+moduleName);
 
         if(typeof passed_library_method_mapping !== 'undefined'){
             this.library_method_mapping = passed_library_method_mapping;
@@ -103,22 +103,6 @@ export class OpenSSL_BoringSSL {
         this.is_base_hook = is_base_hook;
         this.addresses = readAddresses(moduleName,this.library_method_mapping);
         this.module_name = moduleName;
-
-        /*
-        if (is_base_hook) {
-            const init_addresses = this.addresses[moduleName];
-            if (Object.keys(init_addresses).length > 0) {
-                (global as any).init_addresses[moduleName] = init_addresses;
-            }
-
-            // Cleanup step to remove empty entries
-            const globalInitAddresses = (global as any).init_addresses;
-            for (const key in globalInitAddresses) {
-                if (Object.keys(globalInitAddresses[key]).length === 0) {
-                    delete globalInitAddresses[key];
-                }
-            }
-        }*/
 
         // @ts-ignore
         if(offsets != "{OFFSETS}" && offsets.openssl != null){
@@ -244,71 +228,29 @@ export class OpenSSL_BoringSSL {
             onEnter: function (args: any) {
                 if (!ObjC.available){
                     try {
-                        console.log("SSL_WRITE addr:"+lib_addesses[current_module_name]["SSL_write"]);
-                        console.log(Process.platform);
-                        console.log("---------------------------------\n")
-                        console.log(JSON.stringify(lib_addesses))
-                        console.log("arg0: " + args[0]);
-                        
-                        // Check if arg[0] is a valid pointer
-                        if (args[0].isNull()) {
-                            console.log("arg0 is a null pointer");
-                            return;
-                        }
-                        
-                        var fd_1 = Module.getExportByName('libssl.so', 'SSL_get_fd');
-                        var fd_2 = Module.getExportByName('libssl_sb.so', 'SSL_get_fd');
-                        var my_Write1 = Module.getExportByName('libssl.so', 'SSL_write');
-                        var my_Write2 = Module.getExportByName('libssl_sb.so', 'SSL_write');
-                        
-                        
-            
-                        var get_fd_1 = new NativeFunction(fd_1, "int", ["pointer"]);
-                        var get_fd_2 = new NativeFunction(fd_2, "int", ["pointer"]);
-            
-                        console.log("get_fd_1 address: " + get_fd_1);
-                        console.log("get_fd_2 address: " + get_fd_2);
-                        console.log("get fd address: " + instance.SSL_get_fd);
-                        console.log("get fd address (current): " + lib_addesses[current_module_name]["SSL_get_fd"]);
-                        console.log("write1 address: " + my_Write1);
-                        console.log("write2 address: " + my_Write2);
-                        console.log("write address (current): " + lib_addesses[current_module_name]["SSL_write"]);
-
+                       
                         this.fd = instance.SSL_get_fd(args[0]);
-                        console.log("this.fd: "+this.fd);
-            
-                        var my_fd_1 = get_fd_1(args[0]);
-                        console.log("get_fd_1 result: " + my_fd_1);
-            
-                        console.log("arg0: "+args[0]);
-                        console.log("get_fd_2 address: " + get_fd_2);
-                        var my_fd_2 = get_fd_2(args[0]);
-                        console.log("get_fd_2 result: " + my_fd_2);
-            
-                    
+                        
                     
                 }catch (error) {
+                    if (!this.is_base_hook) {
+                        const fallback_addresses = (global as any).init_addresses;
+
+                        //console.log("Current ModuleName: "+current_module_name);
+                        let keys = Object.keys(fallback_addresses);
+                        let firstKey = keys[0];
+                        instance.SSL_SESSION_get_id = new NativeFunction(fallback_addresses[firstKey]["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
+                        instance.SSL_get_fd = ObjC.available ? new NativeFunction(fallback_addresses[firstKey]["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(fallback_addresses["SSL_get_fd"], "int", ["pointer"]);
+                        instance.SSL_get_session = new NativeFunction(fallback_addresses[firstKey]["SSL_get_session"], "pointer", ["pointer"]);
+                    }else{
                         if (error instanceof Error) {
                             console.log("Error: " + error.message);
                             console.log("Stack: " + error.stack);
                         } else {
                             console.log("Unexpected error:", error);
                         }
-                        if (!this.is_base_hook) {
-                            const fallback_addresses = (global as any).init_addresses;
-
-                            console.log("Current ModuleName: "+current_module_name);
-                            let keys = Object.keys(fallback_addresses);
-                            let firstKey = keys[0];
-                            console.log("ModuleName of init: "+firstKey);
-
-    
-                            console.log("fallback_addresses2: "+JSON.stringify(fallback_addresses)+"\n")
-                            console.log("fallback_addresses: "+fallback_addresses[firstKey]["SSL_SESSION_get_id"])
-                            instance.SSL_SESSION_get_id = new NativeFunction(fallback_addresses["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
-                            instance.SSL_get_fd = ObjC.available ? new NativeFunction(fallback_addresses["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(fallback_addresses["SSL_get_fd"], "int", ["pointer"]);
-                            instance.SSL_get_session = new NativeFunction(fallback_addresses["SSL_get_session"], "pointer", ["pointer"]);
-                        }
+                    }
+                        
                     }
                 if(this.fd < 0 && enable_default_fd == false) {
                     return
