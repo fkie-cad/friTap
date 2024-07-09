@@ -96,7 +96,7 @@ export class OpenSSL_BoringSSL {
         if(typeof passed_library_method_mapping !== 'undefined'){
             this.library_method_mapping = passed_library_method_mapping;
         }else{
-            this.library_method_mapping[`*${moduleName}*`] = ["SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_keylog_callback"]
+            this.library_method_mapping[`*${moduleName}*`] = ["SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new","SSL_do_handshake", "SSL_CTX_set_keylog_callback"]
             this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
         }
 

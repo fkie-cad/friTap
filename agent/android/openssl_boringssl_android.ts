@@ -27,7 +27,15 @@ export class OpenSSL_BoringSSL_Android extends OpenSSL_BoringSSL {
                 instance.SSL_CTX_set_keylog_callback(args[0], OpenSSL_BoringSSL.keylog_callback)
             }
     
-        })
+        });
+
+        Interceptor.attach(this.addresses[this.module_name]["SSL_do_handshake"],
+        {
+            onEnter: function (args: any) {
+                instance.SSL_CTX_set_keylog_callback(args[0], OpenSSL_BoringSSL.keylog_callback)
+            }
+    
+        });
     }
 
 }
