@@ -302,7 +302,7 @@ class SSL_Logger():
             self.process = self.device.attach(pid)
         else:
             if self.pcap_name:
-                self.pcap_obj =  PCAP(self.pcap_name,SSL_READ,SSL_WRITE,self.full_capture, self.mobile,self.debug_mode)
+                self.pcap_obj =  PCAP(self.pcap_name,SSL_READ,SSL_WRITE,self.full_capture, self.mobile,self.debug)
             self.process = self.device.attach(int(self.target_app) if self.target_app.isnumeric() else self.target_app)
 
         if self.live:
