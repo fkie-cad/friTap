@@ -6,7 +6,8 @@ import { wolfssl_execute } from "./wolfssl_android.js";
 import { nss_execute } from "./nss_android.js";
 import { mbedTLS_execute } from "./mbedTLS_android.js";
 import { boring_execute } from "./openssl_boringssl_android.js";
-import { java_execute} from "./android_java_tls_libs.js";
+import { java_execute } from "./android_java_tls_libs.js";
+import { s2ntls_excute } from "./s2ntls_android.js";
 
 
 var plattform_name = "linux";
@@ -71,7 +72,7 @@ function hook_native_Android_SSL_Libs(module_library_mapping: { [key: string]: A
 
 
 export function load_android_hooking_agent() {
-    module_library_mapping[plattform_name] = [[/.*libssl_sb.so/, boring_execute],[/.*libssl\.so/, boring_execute],[/.*libgnutls\.so/, gnutls_execute],[/.*libwolfssl\.so/, wolfssl_execute],[/.*libnspr[0-9]?\.so/,nss_execute], [/libmbedtls\.so.*/, mbedTLS_execute]];
+    module_library_mapping[plattform_name] = [[/.*libssl_sb.so/, boring_execute],[/.*libssl\.so/, boring_execute],[/.*libgnutls\.so/, gnutls_execute],[/.*libwolfssl\.so/, wolfssl_execute],[/.*libnspr[0-9]?\.so/,nss_execute], [/libmbedtls\.so.*/, mbedTLS_execute], [/.*libs2n.so/, s2ntls_excute]];
     install_java_hooks();
     hook_native_Android_SSL_Libs(module_library_mapping);
     hook_Android_Dynamic_Loader(module_library_mapping);
