@@ -1,7 +1,7 @@
-import { socket_library } from "./linux_agent.js";
+import { socket_library } from "./android_agent.js";
 import { S2nTLS } from "../ssl_lib/s2ntls.js";
 
-export class S2nTLS_Linux extends S2nTLS{
+export class S2nTLS_Android extends S2nTLS{
 
     constructor(public moduleName: String, public socket_library: String){
         super(moduleName, socket_library);
@@ -30,6 +30,6 @@ export class S2nTLS_Linux extends S2nTLS{
 }
 
 export function s2ntls_execute(moduleName: String){
-    var s2n_tls = new S2nTLS_Linux(moduleName, socket_library);
+    var s2n_tls = new S2nTLS_Android(moduleName, socket_library);
     s2n_tls.execute_hooks();
 }
