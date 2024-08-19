@@ -26,7 +26,7 @@ export class S2nTLS {
         if(typeof passed_library_method_mapping !== 'undefined'){
             this.library_method_mapping = passed_library_method_mapping;
         }else{
-            this.library_method_mapping[`*${moduleName}*`] = ["s2n_send", "s2n_recv", "s2n_connection_get_read_fd", "s2n_connection_get_write_fd", "s2n_connection_get_session", "s2n_connection_new", "s2n_config_set_key_log_cb", "s2n_connection_set_config"];
+            this.library_method_mapping[`*${moduleName}*`] = ["s2n_send", "s2n_recv", "s2n_connection_get_read_fd", "s2n_connection_get_write_fd", "s2n_connection_new", "s2n_config_set_key_log_cb", "s2n_connection_set_config"];
             this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]; 
         }
 
@@ -101,7 +101,7 @@ export class S2nTLS {
                 var message = getPortsAndAddresses(readfd, true, lib_addresses, enable_default_fd);
 
                 message["function"] = "s2n_send";
-                message["ssl_session_id"] = "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76338" //no session ids
+                message["ssl_session_id"] = "0"
                 this.message = message;
                 this.buf = args[1];
             },
@@ -133,7 +133,7 @@ export class S2nTLS {
                 var message = getPortsAndAddresses(writefd, false, lib_addresses, enable_default_fd);
 
                 message["function"] = "s2n_recv";
-                message["ssl_session_id"] = "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76338" //no session ids
+                message["ssl_session_id"] = "0"
                 this.message = message;
                 this.buf = args[1];
 
@@ -149,31 +149,5 @@ export class S2nTLS {
             }
         })
     }
-
-    /*
-    static get_Tls_session_id(connection: NativePointer, ses: NativePointer){
-
-        var session = S2nTLS.s2n_get_session(connection, ses, 1) as NativePointer;
-        if(session.isNull()){
-
-            if(enable_default_fd){
-                log("using dummy SessionID: 59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76338");
-                return "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76338";
-            }
-
-            log("Session is null");
-            return 0;
-        }
-        //überprüfen
-        var len = 32;
-        var sessionid = "";
-        var p = session.add(0);
-        for(var i = 0; i < len; i++){
-            sessionid += ("0" + p.add(i).readU8().toString(16).toUpperCase()).substr(-2);
-        }
-
-        return sessionid;
-    }
-    */
 
 }
