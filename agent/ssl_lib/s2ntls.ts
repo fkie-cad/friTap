@@ -79,8 +79,6 @@ export class S2nTLS {
         //s2n_connection-get_read_fd und s2n_connection_get_write_fd
         S2nTLS.s2n_get_read_fd = new NativeFunction(this.addresses["s2n_connection_get_read_fd"], "int", ["pointer", "pointer"]);
         S2nTLS.s2n_get_write_fd = new NativeFunction(this.addresses["s2n_connection_get_write_fd"], "int", ["pointer", "pointer"]);
-    
-        S2nTLS.s2n_get_session = new NativeFunction(this.addresses["s2n_connection_get_session"], "int", ["pointer", "pointer", "size_t"]);
     }
 
     install_tls_keys_callback_hook(){
