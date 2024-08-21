@@ -14,10 +14,10 @@ export class S2nTLS {
 
     static keylog_callback = new NativeCallback(function(ctxPtr, conn: NativePointer, logline: NativePointer, len: NativePointer){
         devlog("invoking keylog_callback from s2ntls");
-        var message: { [key: string]: string | number | null } = {}
-        message["contentType"] = "keylog"
-        message["keylog"] = logline.readCString()
-        send(message)
+        var message: { [key: string]: string | number | null } = {};
+        message["contentType"] = "keylog";
+        message["keylog"] = logline.readCString();
+        send(message);
         return 1;
     }, "int", ["pointer", "pointer", "pointer", "pointer"]);
 
@@ -137,13 +137,22 @@ export class S2nTLS {
 
             },
             onLeave: function(retval: any){
-                retval = parseInt(retval);
-                if(retval < 0){ //on Failure: retval = S2N_Failure = -1
-                    return;
+                try {
+                    retval = parseInt(retval);
+                    if (retval <= 0 || retval > 184332) { // on Failure: retval = S2N_Failure = -1
+                        return;
+                    }
+            
+                    // Ensure this.buf is valid before accessing it
+                    if (this.buf && this.buf.readByteArray) {
+                        this.message["contentType"] = "datalog";
+                        send(this.message, this.buf.readByteArray(retval));
+                    } else {
+                        console.error("Buffer is not valid or readByteArray method is missing.");
+                    }
+                } catch (error) {
+                    console.error("Error in onLeave (retval: "+retval+ "):", error);
                 }
-
-                this.message["contentType"] = "datalog";
-                send(this.message, this.buf.readByteArray(retval));
             }
         })
     }
