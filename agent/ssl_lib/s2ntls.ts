@@ -93,10 +93,10 @@ export class S2nTLS {
 
             onEnter: function(args: any){
                 
-                var readfdPtr = Memory.alloc(Process.pointerSize) as NativePointer;
-                S2nTLS.s2n_get_read_fd(args[0], readfdPtr);
-                var readfd = readfdPtr.readInt();
-                var message = getPortsAndAddresses(readfd, true, lib_addresses, enable_default_fd);
+                var writefdPtr = Memory.alloc(Process.pointerSize) as NativePointer;
+                S2nTLS.s2n_get_write_fd(args[0], writefdPtr);
+                var writefd = writefdPtr.readInt();
+                var message = getPortsAndAddresses(writefd, false, lib_addresses, enable_default_fd);
 
                 message["function"] = "s2n_send";
                 message["ssl_session_id"] = "0"
@@ -125,10 +125,10 @@ export class S2nTLS {
 
             onEnter: function(args: any){
 
-                var writefdPtr = Memory.alloc(Process.pointerSize) as NativePointer;
-                S2nTLS.s2n_get_write_fd(args[0], writefdPtr);
-                var writefd = writefdPtr.readInt();
-                var message = getPortsAndAddresses(writefd, false, lib_addresses, enable_default_fd);
+                var readfdPtr = Memory.alloc(Process.pointerSize) as NativePointer;
+                S2nTLS.s2n_get_read_fd(args[0], readfdPtr);
+                var readfd = readfdPtr.readInt();
+                var message = getPortsAndAddresses(readfd, true, lib_addresses, enable_default_fd);
 
                 message["function"] = "s2n_recv";
                 message["ssl_session_id"] = "0"
