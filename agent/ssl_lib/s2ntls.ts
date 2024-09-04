@@ -2,6 +2,7 @@ import { readAddresses, getBaseAddress, getPortsAndAddresses} from "../shared/sh
 import { offsets, enable_default_fd } from "../ssl_log.js" 
 import { log, devlog } from "../util/log.js"
 
+
 export class S2nTLS {
 
     library_method_mapping: { [key: string]: Array<String> } = {};
@@ -9,9 +10,9 @@ export class S2nTLS {
 
     static s2n_get_read_fd: any;
     static s2n_get_write_fd: any;
-    static s2n_get_session: any;
     static s2n_set_key_log_cb: any;
 
+    //this function logs the given keylog line
     static keylog_callback = new NativeCallback(function(ctxPtr, conn: NativePointer, logline: NativePointer, len: NativePointer){
         devlog("invoking keylog_callback from s2ntls");
         var message: { [key: string]: string | number | null } = {};
@@ -76,15 +77,15 @@ export class S2nTLS {
             }
         }
 
-        //s2n_connection-get_read_fd und s2n_connection_get_write_fd
+        //s2n_connection-get_read_fd and s2n_connection_get_write_fd return the corresponding file descriptors
         S2nTLS.s2n_get_read_fd = new NativeFunction(this.addresses["s2n_connection_get_read_fd"], "int", ["pointer", "pointer"]);
         S2nTLS.s2n_get_write_fd = new NativeFunction(this.addresses["s2n_connection_get_write_fd"], "int", ["pointer", "pointer"]);
     }
 
-    install_tls_keys_callback_hook(){
-        log("Error: TLS key extraction not implemented yet.");
-    }
+    install_tls_keys_callback_hook(){}
 
+    //Hooks the s2n_send function
+    //Get the buffer on enter and read the data from it
     install_plaintext_read_hook(){
 
         var lib_addresses = this.addresses;
@@ -106,19 +107,19 @@ export class S2nTLS {
             onLeave: function(retval: any){
                 
                 retval = parseInt(retval);
-                if(retval < 0){ //on Failure: retval = S2N_Failure = -1
+                if(retval < 0){ 
                     return;
                 }
 
-                //on Success: retval = number of bytes sent
                 this.message["contentType"] = "datalog";
                 send(this.message, this.buf.readByteArray(retval));
             }
         })
     }
 
+    //Hooks the s2n_recv function
+    //Get the buffer on enter and read the retval bytes from it on leave
     install_plaintext_write_hook(){
-        //args(conn, buf, size, blocked)
         var lib_addresses = this.addresses;
 
         Interceptor.attach(lib_addresses["s2n_recv"], {
@@ -139,7 +140,7 @@ export class S2nTLS {
             onLeave: function(retval: any){
                 try {
                     retval = parseInt(retval);
-                    if (retval <= 0 || retval > 184332) { // on Failure: retval = S2N_Failure = -1
+                    if (retval <= 0 || retval > 184332) { 
                         return;
                     }
             

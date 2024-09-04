@@ -14,9 +14,10 @@ export class S2nTLS_Android extends S2nTLS{
         this.install_tls_keys_callback_hook();
     }
 
+    //if set_config is called, the keylog callback is set
     install_tls_keys_callback_hook(){
         
-        S2nTLS.s2n_set_key_log_cb = new NativeFunction(this.addresses["s2n_config_set_key_log_cb"], "int", ["pointer", "pointer", "pointer"]); //args=[config, callback, ctx]
+        S2nTLS.s2n_set_key_log_cb = new NativeFunction(this.addresses["s2n_config_set_key_log_cb"], "int", ["pointer", "pointer", "pointer"]);
         
         Interceptor.attach(this.addresses["s2n_connection_set_config"], 
             {
