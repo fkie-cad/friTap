@@ -1,6 +1,10 @@
 #frida-server
 frida-server*
 
+# debug output from testing stuff
+*.log
+*.key
+
 #keys and certs for testing
 *.pem
 

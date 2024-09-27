@@ -1,6 +1,5 @@
-import { get_hex_string_from_byte_array } from "../shared/shared_functions.js";
-import { getOffsets, offsets, enable_default_fd } from "../ssl_log.js";
-import { devlog, log } from "../util/log.js";
+import { get_hex_string_from_byte_array, readAddresses } from "../shared/shared_functions.js";
+import { devlog } from "../util/log.js";
 
 
 
@@ -18,6 +17,14 @@ export class Cronet {
     constructor(public moduleName:string, public socket_library:String,is_base_hook: boolean ,public passed_library_method_mapping?: { [key: string]: Array<string> } ){
         this.module_name = moduleName;
         this.is_base_hook = is_base_hook;
+
+        if(typeof passed_library_method_mapping !== 'undefined'){
+            this.library_method_mapping = passed_library_method_mapping;
+        }else{
+            this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
+        }
+
+        this.addresses = readAddresses(moduleName,this.library_method_mapping);
     }
 
     get_client_random(s3_ptr: NativePointer, SSL3_RANDOM_SIZE: number): string {
@@ -97,7 +104,7 @@ export class Cronet {
             devlog("[Error] Argument 'key' is NULL");
         }
 
-        devlog("invoking ssl_log_secret() from BoringSSL statically linked into Cronet");
+        //devlog("invoking ssl_log_secret() from BoringSSL statically linked into Cronet");
         var message: { [key: string]: string | number | null } = {}
         message["contentType"] = "keylog"
         message["keylog"] = labelStr+" "+client_random+" "+secret_key;

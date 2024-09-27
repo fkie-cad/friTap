@@ -34,6 +34,7 @@ export function ssl_library_loader(plattform_name: string, module_library_mappin
                     
                     // on some Android Apps we encounterd the problem of multiple SSL libraries but only one is used for the SSL encryption/decryption
                     func(module, is_base_hook)
+
                     
                     
                 }catch (error) {
@@ -50,10 +51,9 @@ export function ssl_library_loader(plattform_name: string, module_library_mappin
 }
 
 
-//TODO: 
+
 export function getSocketLibrary(){
     var moduleNames: Array<String> = getModuleNames()
-    var socket_library_name = ""
     switch(Process.platform){
         case "linux":
             return moduleNames.find(element => element.match(/libc.*\.so/))

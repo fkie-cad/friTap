@@ -11,8 +11,10 @@ function findProviderInstallerImplFromClassloaders(currentClassLoader: Java.Wrap
             providerInstallerImpl = classFactory.use("com.google.android.gms.common.security.ProviderInstallerImpl")
             break
         } catch (error) {
-            devlog("Error in hooking ProviderInstallerImpl (findProviderInstallerImplFromClassloaders):")
-            devlog("[-] Error message: "+error);
+            if(!error.toString().includes("java.lang.ClassNotFoundException")){
+                devlog("Error in hooking ProviderInstallerImpl (findProviderInstallerImplFromClassloaders):")
+                devlog("[-] Error message: (findProviderInstallerImplFromClassloaders): "+error);
+            }
             providerInstallerImpl = null;
             // On error we return null
         }
@@ -39,9 +41,10 @@ function findProviderInstallerFromClassloaders(currentClassLoader: Java.Wrapper,
             providerInstaller = classFactory.use("com.google.android.gms.security.ProviderInstaller")
             break
         } catch (error) {
-            devlog("Error in hooking ProviderInstallerImpl (findProviderInstallerFromClassloaders):")
+            
             if(!error.toString().includes("java.lang.ClassNotFoundException")){
-                devlog("[-] Error message: "+error);
+                devlog("Error in hooking ProviderInstallerImpl (findProviderInstallerFromClassloaders):")
+                devlog("[-] Error message (findProviderInstallerFromClassloaders): "+error);
             }
             providerInstaller = null;
             // On error we return null

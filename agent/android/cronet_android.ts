@@ -3,6 +3,7 @@ import {Cronet } from "../ssl_lib/cronet.js";
 import { socket_library } from "./android_agent.js";
 import {PatternBasedHooking } from "../shared/pattern_based_hooking.js";
 import { patterns, isPatternReplaced } from "../ssl_log.js"
+import { devlog } from "../util/log.js";
 
 export class Cronet_Android extends Cronet {
 
@@ -15,7 +16,8 @@ export class Cronet_Android extends Cronet {
         const hooker = new PatternBasedHooking(cronetModule);
 
         if (isPatternReplaced()){
-            hooker.hook_with_pattern_from_json(patterns,(args: any[]) => {
+            devlog("Hooking libcronet functions by pattern");
+            hooker.hook_with_pattern_from_json(this.module_name,"libcronet.so",patterns,(args: any[]) => {
                 this.dumpKeys(args[1], args[0], args[2]);  // Unpack args into dumpKeys
             });
         }else{

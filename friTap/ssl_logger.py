@@ -112,6 +112,9 @@ class SSL_Logger():
 
         if self.startup and message['payload'] == 'defaultFD':
             script.post({'type':'defaultFD', 'payload': self.enable_default_fd})
+
+        if self.startup and message['payload'] == 'pattern_hooking':
+            script.post({'type':'pattern_hooking', 'payload': self.pattern_data})
         
         if self.startup and message['payload'] == 'anti':
             script.post({'type':'antiroot', 'payload': self.anti_root})
@@ -219,13 +222,11 @@ class SSL_Logger():
 
         if self.offsets_data is not None:
             print(f"[*] applying hooks at offset {self.offsets_data}")
-            script_string = script_string.replace('"{OFFSETS}"', self.offsets_data)
-            # might lead to a malformed package in recent frida versions
+            #script_string = script_string.replace('"{OFFSETS}"', "'"+self.offsets_data+"'")
 
 
         if self.pattern_data is not None:
             print(f"[*] Using pattern provided by pattern.json for hooking")
-            script_string = script_string.replace('"{PATTERNS}"', self.pattern_data)
                     
 
         script = process.create_script(script_string, runtime=runtime)
@@ -266,8 +267,8 @@ class SSL_Logger():
             observer = Observer()
             observer.schedule(event_handler, os.getcwd())
             observer.start()
+     
     
-
     def load_patterns(self):
         if os.path.exists(self.patterns):
             try:
@@ -277,7 +278,7 @@ class SSL_Logger():
 
                 # Try parsing the JSON to verify it's valid
                 json_data = json.loads(pattern_file)
-                self.pattern_data = json.dumps(json_data)  # Ensure pattern_data is a JSON string
+                self.pattern_data = json.dumps(json_data, ensure_ascii=False).encode('utf-8').decode('utf-8')  # Ensure pattern_data is a JSON string in utf-8
 
             except (UnicodeDecodeError, json.JSONDecodeError) as e:
                 print(f"[-] UnicodeDecodeError: {e}")
@@ -426,7 +427,7 @@ def get_addr_string(socket_addr,ss_family):
     
 
 def get_fritap_frida_script(frida_agent_script):
-    with open(os.path.join(here, frida_agent_script), encoding='utf8', newline='\n') as f:
+    with open(os.path.join(here, frida_agent_script), encoding='utf-8', newline='\n') as f:
             script_string = f.read()
             return script_string
             

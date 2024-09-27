@@ -95,6 +95,16 @@ export let enable_default_fd: boolean = false;
 //@ts-ignore
 export let patterns: string = "{PATTERNS}";
 
+/* 
+Our way to get the JSON strings into the loaded frida script 
+*/
+
+send("pattern_hooking")
+const enable_pattern_based_hooking_state = recv('pattern_hooking', value => {
+    patterns = value.payload;
+});
+enable_pattern_based_hooking_state.wait();
+
 
 /*
 This way we are providing boolean values from the commandline directly to our frida script
@@ -102,7 +112,6 @@ This way we are providing boolean values from the commandline directly to our fr
 
 send("defaultFD")
 const enable_default_fd_state = recv('defaultFD', value => {
-    //console.log("value.payload: "+value.payload)
     enable_default_fd = value.payload;
 });
 enable_default_fd_state.wait();
@@ -119,6 +128,7 @@ const antiroot_recv_state = recv('antiroot', value => {
     anti_root = value.payload;
 });
 antiroot_recv_state.wait();/* */
+
 
 
 /*

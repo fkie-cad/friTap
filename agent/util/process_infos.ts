@@ -22,6 +22,7 @@ export function isiOS(): boolean{
     if(get_process_architecture() === "arm64" && Process.platform == "darwin"){
         try{
              // check if iOS or MacOS (currently we handle MacOS with ARM Processor as an iOS device)
+             // maybe Kernel.available could be used for that or a file which is unique
             return true
         }catch(error){
             return false
