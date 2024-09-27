@@ -3,7 +3,7 @@ frida-server*
 
 # debug output from testing stuff
 *.log
-*.key
+*.keys
 
 #keys and certs for testing
 *.pem
