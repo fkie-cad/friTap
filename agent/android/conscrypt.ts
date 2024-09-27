@@ -20,8 +20,6 @@ function findProviderInstallerImplFromClassloaders(currentClassLoader: Java.Wrap
     }
 
     var version = getAndroidVersion()
-    //log("is here the error")
-    //log(typeof version)
     
     if (version <= 12){
         //Revert the implementation to avoid an infinitloop of "Loadclass"
@@ -42,7 +40,9 @@ function findProviderInstallerFromClassloaders(currentClassLoader: Java.Wrapper,
             break
         } catch (error) {
             devlog("Error in hooking ProviderInstallerImpl (findProviderInstallerFromClassloaders):")
-            devlog("[-] Error message: "+error);
+            if(!error.toString().includes("java.lang.ClassNotFoundException")){
+                devlog("[-] Error message: "+error);
+            }
             providerInstaller = null;
             // On error we return null
         }
@@ -91,10 +91,10 @@ export function execute() {
         try {
             var providerInstaller = Java.use("com.google.android.gms.security.ProviderInstaller")
             providerInstaller.installIfNeeded.implementation = function (context: any) {
-                log("Providerinstaller redirection/blocking")
+                devlog("Providerinstaller redirection/blocking")
             }
             providerInstaller.installIfNeededAsync.implementation = function (context: any, callback: any) {
-                log("ProviderinstallerAsncy redirection/blocking")
+                devlog("ProviderinstallerAsncy redirection/blocking")
                 callback.onProviderInstalled()
             }
         } catch (error) {
@@ -108,28 +108,30 @@ export function execute() {
 
 
                 if (providerInstallerFromClassloder === null && providerInstallerImpl  === null || providerInstallerFromClassloder === undefined) {
-                    log("ProviderInstaller could not be found, although it has been loaded")
+                    devlog("ProviderInstaller could not be found, although it has been loaded")
                 }else{
 
                     if(providerInstallerImpl !== null){
                         providerInstallerImpl.insertProvider.implementation = function () {
-                            log("ProviderinstallerImpl redirection/blocking")
+                            devlog("ProviderinstallerImpl redirection/blocking")
     
                         }
                     }else{
 
                     providerInstallerFromClassloder.installIfNeeded.implementation = function (context: any) {
-                        log("Providerinstaller redirection/blocking")
+                        devlog("Providerinstaller redirection/blocking")
                     }
                     providerInstallerFromClassloder.installIfNeededAsync.implementation = function (context: any, callback: any) {
-                        log("ProviderinstallerAsync redirection/blocking")
+                        devlog("ProviderinstallerAsync redirection/blocking")
                         callback.onProviderInstalled()
                     }
                 }
                 }
             }catch (error) {
-                log("Some error in hooking the Providerinstaller")
-                console.log(error);
+                devlog("Some error in hooking the Providerinstaller")
+                if(!error.toString().includes("java.lang.ClassNotFoundException")){
+                    devlog("[-] Error message: "+error);
+                }
                 // As it is not available, do nothing
             }
             

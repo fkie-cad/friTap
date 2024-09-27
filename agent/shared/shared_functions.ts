@@ -37,7 +37,7 @@ export function ssl_library_loader(plattform_name: string, module_library_mappin
                     
                     
                 }catch (error) {
-                    log(`error: skipping module ${module}`)
+                    devlog(`error: skipping module ${module}`)
                     // when we enable the logging of devlogs we can print the error message as well for further improving this part
                     devlog("Loader error: "+error)
                     //  {'description': 'Could not find *libssl*.so!SSL_ImportFD', 'type': 'error'}

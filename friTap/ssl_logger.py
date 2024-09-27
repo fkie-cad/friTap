@@ -69,7 +69,9 @@ class SSL_Logger():
             self.frida_agent_script = "_ssl_log_legacy.js"
         else:
             self.frida_agent_script = "_ssl_log.js"
-        print("[***] loading frida script: " + self.frida_agent_script)
+        
+        if self.debug_output:
+            print("[***] loading frida script: " + self.frida_agent_script)
 
         self.keydump_Set = {*()}
         self.traced_Socket_Set = {*()}
@@ -269,13 +271,16 @@ class SSL_Logger():
     def load_patterns(self):
         if os.path.exists(self.patterns):
             try:
-                with open(self.patterns, "r") as file:
-                    pattern_file = file.read()
+                with open(self.patterns, "rb") as file:
+                    raw_data = file.read()
+                    pattern_file = raw_data.decode("utf-8")
 
                 # Try parsing the JSON to verify it's valid
                 json_data = json.loads(pattern_file)
                 self.pattern_data = json.dumps(json_data)  # Ensure pattern_data is a JSON string
 
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                print(f"[-] UnicodeDecodeError: {e}")
             except (ValueError, json.JSONDecodeError) as e:
                 print(f"[-] Error loading JSON file, defaulting to auto-detection: {e}")
             except OSError as e:

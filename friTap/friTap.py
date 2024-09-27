@@ -57,7 +57,7 @@ Examples:
   %(prog)s -m -p ssl.pcap com.example.app
   %(prog)s -m --pcap log.pcap --verbose com.example.app
   %(prog)s -m -k keys.log -v -s com.example.app
-  %(prog)s -m -p pattern.json -k keys.log -s youtube.com
+  %(prog)s -m --patterns pattern.json -k keys.log -s com.google.android.youtube
   %(prog)s --pcap log.pcap "$(which curl) https://www.google.com"
   %(prog)s -H --pcap log.pcap 192.168.0.1:1234 com.example.app
   %(prog)s -m -p log.pcap --enable_spawn_gating -v -do --full_capture -k keys.log com.example.app

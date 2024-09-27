@@ -82,7 +82,7 @@ export class PatternBasedHooking {
         // Load patterns from the JSON file
         this.loadPatternsFromJSON(jsonContent);
 
-        const platform = Process.platform; // e.g., linux, windows
+        const platform = Process.platform; // e.g., linux, android
         const arch = Process.arch; // e.g., x64, arm64
 
         // Access the relevant pattern for the module based on platform and architecture
