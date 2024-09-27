@@ -1,18 +1,12 @@
 
 import {OpenSSL_BoringSSL } from "../ssl_lib/openssl_boringssl.js";
 import { socket_library } from "./linux_agent.js";
+import { getOffsets, offsets, enable_default_fd } from "../ssl_log.js";
 
 export class OpenSSL_BoringSSL_Linux extends OpenSSL_BoringSSL {
 
     constructor(public moduleName:string, public socket_library:String, is_base_hook: boolean){
         super(moduleName,socket_library,is_base_hook);
-    }
-
-
-    execute_hooks(){
-        this.install_plaintext_read_hook();
-        this.install_plaintext_write_hook();
-        this.install_tls_keys_callback_hook();
     }
 
     install_tls_keys_callback_hook (){
@@ -26,7 +20,25 @@ export class OpenSSL_BoringSSL_Linux extends OpenSSL_BoringSSL {
                 instance.SSL_CTX_set_keylog_callback(args[0], OpenSSL_BoringSSL.keylog_callback)
             }
     
-        })
+        });
+
+
+        Interceptor.attach(this.addresses[this.module_name]["SSL_do_handshake"],
+        {
+            onEnter: function (args: any) {
+                instance.SSL_CTX_set_keylog_callback(args[0], OpenSSL_BoringSSL.keylog_callback)
+            }
+    
+        });
+    }
+
+
+
+    execute_hooks(){
+        this.install_plaintext_read_hook();
+        this.install_plaintext_write_hook();
+        this.install_tls_keys_callback_hook();
+        this.install_extended_hooks();
     }
 
 }

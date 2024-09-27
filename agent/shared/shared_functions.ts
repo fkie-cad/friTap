@@ -319,9 +319,31 @@ export function getAttribute(Instance: Java.Wrapper, fieldName: string) {
     return field.get(Instance)
 }
 
+/**
+ * 
+ * @param moduleName String of the name of the module e.g. libssl.so
+ * @param symbolName the symbol where we do our check e.g. SSL_write_ex
+ * @returns 
+ */
+export function isSymbolAvailable(moduleName: string, symbolName: string): boolean {
+    const resolver = new ApiResolver("module");
+    const matches = resolver.enumerateMatches("exports:" + moduleName + "!" + symbolName);
+
+    return matches.length > 0;
+}
+
+
 // Wrapper function to ensure all execute functions conform to the required signature
 export function invokeHookingFunction(func: (moduleName: string, is_base_hook: boolean) => void): (moduleName: string, is_base_hook: boolean) => void {
     return (moduleName: string, is_base_hook: boolean) => {
         func(moduleName, is_base_hook);
     };
+}
+
+
+export function get_hex_string_from_byte_array(keyData: ArrayBuffer | Uint8Array): string{
+    return Array
+        .from(new Uint8Array(keyData)) // Convert byte array to Uint8Array and then to Array
+        .map(byte => byte.toString(16).padStart(2, '0').toUpperCase()) // Convert each byte to a 2-digit hex string
+        .join(''); // Join all the hex values with a space
 }

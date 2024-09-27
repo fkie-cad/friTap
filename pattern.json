@@ -1,0 +1,23 @@
+{
+    "modules": {
+      "libcronet.so": {
+        "android": {
+          "x64": {
+            "primary": "55 41 57 41 56 41 55 41 54 53 48 83 EC 48 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84 FE 00 00 00",
+            "fallback": "55 41 57 41 56 41 55 41 54 53 48 83 EC 48 48 8B 47 68 48 83 B8 20 02 00 00 00"
+          },
+          "arm64": {
+            "primary": "3F 23 03 D5 FF C3 01 D1 FD 7B 04 A9 F6 57 05 A9 F4 4F 06 A9 FD 03 01 91 08 34 40 F9 08 11 41 F9 C8 07 00 B4",
+            "fallback": "3F 23 03 D5 FF 03 02 D1 FD 7B 04 A9 F7 2B 00 F9 F6 57 06 A9 F4 4F 07 A9 FD 03 01 91 08 34 40 F9 08 11 41 F9 E8 0F 00 B4"
+          }
+        },
+        "linux": {
+          "ia32": {
+            "primary": "pattern_for_linux_x86_primary",
+            "fallback": "pattern_for_linux_x86_fallback"
+          }
+        }
+      }
+    }
+}
+  

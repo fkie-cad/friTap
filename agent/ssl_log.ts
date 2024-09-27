@@ -92,6 +92,8 @@ export let experimental: boolean = false;
 export let anti_root: boolean = false;
 //@ts-ignore
 export let enable_default_fd: boolean = false;
+//@ts-ignore
+export let patterns: string = "{PATTERNS}";
 
 
 /*
@@ -104,6 +106,7 @@ const enable_default_fd_state = recv('defaultFD', value => {
     enable_default_fd = value.payload;
 });
 enable_default_fd_state.wait();
+
 
 send("experimental")
 const exp_recv_state = recv('experimental', value => {
@@ -132,6 +135,11 @@ export function getOffsets(){
     return offsets;
 }
 
+// Function to check if the patterns have been replaced
+export function isPatternReplaced(): boolean {
+    // The default placeholder is quite short, so if the length exceeds a certain threshold, we assume it's replaced
+    return patterns.length > 10;
+}
 
 
 function load_os_specific_agent() {

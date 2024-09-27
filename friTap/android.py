@@ -155,7 +155,8 @@ class Android:
         self.pcap_name = pcap_name
 
         if self.is_tcpdump_available:
-            tcpdump_cmd = f'tcpdump -i any -s 0 -w {self.dst_path}{pcap_name} \\"not \\(tcp port 5555 or tcp port 27042\\)\\"'
+            tcpdump_cmd = f'tcpdump -i any -s 0 -w {self.dst_path}{pcap_name} not \\(tcp port 5555 or tcp port 27042\\)'
+            #testen
         else:
             tcpdump_cmd = f'{self.dst_path}./{self.tcpdump_version} -i any -s 0 -w {self.dst_path}{pcap_name} \\"not \\(tcp port 5555 or tcp port 27042\\)\\"'
 

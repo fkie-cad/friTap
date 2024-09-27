@@ -57,6 +57,7 @@ Examples:
   %(prog)s -m -p ssl.pcap com.example.app
   %(prog)s -m --pcap log.pcap --verbose com.example.app
   %(prog)s -m -k keys.log -v -s com.example.app
+  %(prog)s -m -p pattern.json -k keys.log -s youtube.com
   %(prog)s --pcap log.pcap "$(which curl) https://www.google.com"
   %(prog)s -H --pcap log.pcap 192.168.0.1:1234 com.example.app
   %(prog)s -m -p log.pcap --enable_spawn_gating -v -do --full_capture -k keys.log com.example.app
@@ -98,6 +99,8 @@ Examples:
                       help="executable/app whose SSL calls to log")
     args.add_argument("--offsets", required=False, metavar="<offsets.json>",
                       help="Provide custom offsets for all hooked functions inside a JSON file or a json string containing all offsets. For more details see our example json (offsets_example.json)")
+    args.add_argument("--patterns", required=False, metavar="<pattern.json>",
+                  help="Provide custom patterns for module hooking inside a JSON file or a JSON string containing platform-specific patterns. For more details see our provided JSON (pattern.json)")
     args.add_argument("--payload_modification", required=False, action="store_const", const=True, default=False,
                       help="Capability to alter the decrypted payload. Be careful here, because this can crash the application.")                  
     args.add_argument("-exp","--experimental", required=False, action="store_const", const=True, default=False,
@@ -117,7 +120,7 @@ Examples:
         print("Start logging")
         print("Press Ctrl+C to stop logging")
         ssl_log = SSL_Logger(parsed.exec, parsed.pcap, parsed.verbose,
-                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.mobile, parsed.live, parsed.environment, parsed.debug, parsed.full_capture, parsed.socket_tracing, parsed.host, parsed.offsets, parsed.debugoutput, parsed.experimental, parsed.anti_root, parsed.payload_modification, parsed.enable_default_fd)
+                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.mobile, parsed.live, parsed.environment, parsed.debug, parsed.full_capture, parsed.socket_tracing, parsed.host, parsed.offsets, parsed.debugoutput, parsed.experimental, parsed.anti_root, parsed.payload_modification, parsed.enable_default_fd, parsed.patterns)
         
         process = ssl_log.start_fritap_session()      
         sys.stdin.read()

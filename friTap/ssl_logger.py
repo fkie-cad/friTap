@@ -31,7 +31,7 @@ SSL_WRITE = ["SSL_write", "wolfSSL_write", "writeApplicationData", "NSS_write","
 
 class SSL_Logger():
 
-    def __init__(self, app, pcap_name=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, mobile=False, live=False, environment_file=None, debug_mode=False,full_capture=False, socket_trace=False, host=False, offsets=None, debug_output=False, experimental=False, anti_root=False, payload_modification=False,enable_default_fd=False):
+    def __init__(self, app, pcap_name=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, mobile=False, live=False, environment_file=None, debug_mode=False,full_capture=False, socket_trace=False, host=False, offsets=None, debug_output=False, experimental=False, anti_root=False, payload_modification=False,enable_default_fd=False, patterns=None):
         self.debug = debug_mode
         self.anti_root = anti_root
         self.pcap_name = pcap_name
@@ -61,6 +61,9 @@ class SSL_Logger():
         self.process = None
         self.device = None
         self.keylog_file = None
+
+        self.patterns = patterns
+        self.pattern_data = None
 
         if frida.__version__ < "16":
             self.frida_agent_script = "_ssl_log_legacy.js"
@@ -216,6 +219,11 @@ class SSL_Logger():
             print(f"[*] applying hooks at offset {self.offsets_data}")
             script_string = script_string.replace('"{OFFSETS}"', self.offsets_data)
             # might lead to a malformed package in recent frida versions
+
+
+        if self.pattern_data is not None:
+            print(f"[*] Using pattern provided by pattern.json for hooking")
+            script_string = script_string.replace('"{PATTERNS}"', self.pattern_data)
                     
 
         script = process.create_script(script_string, runtime=runtime)
@@ -258,6 +266,25 @@ class SSL_Logger():
             observer.start()
     
 
+    def load_patterns(self):
+        if os.path.exists(self.patterns):
+            try:
+                with open(self.patterns, "r") as file:
+                    pattern_file = file.read()
+
+                # Try parsing the JSON to verify it's valid
+                json_data = json.loads(pattern_file)
+                self.pattern_data = json.dumps(json_data)  # Ensure pattern_data is a JSON string
+
+            except (ValueError, json.JSONDecodeError) as e:
+                print(f"[-] Error loading JSON file, defaulting to auto-detection: {e}")
+            except OSError as e:
+                print(f"[-] Error reading the file: {e}")
+        else:
+            print(f"[-] Pattern file {self.patterns} does not exist.")
+    
+    
+    
     def start_fritap_session(self):
 
         if self.mobile:
@@ -278,6 +305,10 @@ class SSL_Logger():
                     self.offsets_data = self.offsets
                 except ValueError as e:
                     print(f"Log error, defaulting to auto-detection: {e}")
+
+        if self.patterns is not None:
+            self.load_patterns()
+
 
         self.device.on("child_added", self.on_child_added)
         if self.enable_spawn_gating:
@@ -302,12 +333,12 @@ class SSL_Logger():
             self.process = self.device.attach(pid)
         else:
             if self.pcap_name:
-                self.pcap_obj =  PCAP(self.pcap_name,SSL_READ,SSL_WRITE,self.full_capture, self.mobile,self.debug_mode)
+                self.pcap_obj =  PCAP(self.pcap_name,SSL_READ,SSL_WRITE,self.full_capture, self.mobile,self.debug)
             self.process = self.device.attach(int(self.target_app) if self.target_app.isnumeric() else self.target_app)
 
         if self.live:
             if self.pcap_name:
-                print("[*] YOU ARE TRYING TO WRITE A PCAP AND HAVING A LIVE VIEW\nTHIS IS NOT SUPPORTED!\nWHEN YOU DO A LIVE VIEW YOU CAN SAFE YOUR CAPUTRE WIHT WIRESHARK.")
+                print("[*] YOU ARE TRYING TO WRITE A PCAP AND HAVING A LIVE VIEW\nTHIS IS NOT SUPPORTED!\nWHEN YOU DO A LIVE VIEW YOU CAN SAFE YOUR CAPUTRE WITH WIRESHARK.")
             fifo_file = self.temp_fifo()
             print(f'[*] friTap live view on Wireshark')
             print(f'[*] Created named pipe for Wireshark live view to {fifo_file}')

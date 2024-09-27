@@ -8,19 +8,12 @@ export class OpenSSL_BoringSSL_Android extends OpenSSL_BoringSSL {
         super(moduleName,socket_library,is_base_hook);
     }
 
-
-    execute_hooks(){
-        this.install_plaintext_read_hook();
-        this.install_plaintext_write_hook();
-        this.install_tls_keys_callback_hook();
-    }
-
     install_tls_keys_callback_hook (){
 
         this.SSL_CTX_set_keylog_callback = new NativeFunction(this.addresses[this.module_name]["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"]);
         var instance = this;
 
-    
+        
         Interceptor.attach(this.addresses[this.module_name]["SSL_new"],
         {
             onEnter: function (args: any) {
@@ -29,13 +22,25 @@ export class OpenSSL_BoringSSL_Android extends OpenSSL_BoringSSL {
     
         });
 
+        /*
+        // right now this won't work because we need the context 
+        // in SSL_do_handshake args[0] is actually a SSL object
+
         Interceptor.attach(this.addresses[this.module_name]["SSL_do_handshake"],
         {
             onEnter: function (args: any) {
-                instance.SSL_CTX_set_keylog_callback(args[0], OpenSSL_BoringSSL.keylog_callback)
+             instance.SSL_CTX_set_keylog_callback(args[0], OpenSSL_BoringSSL.keylog_callback)
             }
     
         });
+        */
+    }
+
+    execute_hooks(){
+        this.install_plaintext_read_hook();
+        this.install_plaintext_write_hook();
+        this.install_tls_keys_callback_hook();
+        this.install_extended_hooks();
     }
 
 }
