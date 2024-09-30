@@ -115,6 +115,9 @@ class SSL_Logger():
 
         if self.startup and message['payload'] == 'pattern_hooking':
             script.post({'type':'pattern_hooking', 'payload': self.pattern_data})
+
+        if self.startup and message['payload'] == 'offset_hooking':
+            script.post({'type':'offset_hooking', 'payload': self.offsets_data})
         
         if self.startup and message['payload'] == 'anti':
             script.post({'type':'antiroot', 'payload': self.anti_root})
@@ -222,7 +225,6 @@ class SSL_Logger():
 
         if self.offsets_data is not None:
             print(f"[*] applying hooks at offset {self.offsets_data}")
-            #script_string = script_string.replace('"{OFFSETS}"', "'"+self.offsets_data+"'")
 
 
         if self.pattern_data is not None:

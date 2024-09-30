@@ -98,6 +98,11 @@ export let patterns: string = "{PATTERNS}";
 /* 
 Our way to get the JSON strings into the loaded frida script 
 */
+send("offset_hooking")
+const enable_offset_based_hooking_state = recv('offset_hooking', value => {
+    offsets = value.payload;
+});
+enable_offset_based_hooking_state.wait();
 
 send("pattern_hooking")
 const enable_pattern_based_hooking_state = recv('pattern_hooking', value => {
