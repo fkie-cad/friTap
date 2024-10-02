@@ -3,6 +3,7 @@ import { module_library_mapping, ModuleHookingType } from "../shared/shared_stru
 import { log, devlog } from "../util/log.js";
 import { getModuleNames, ssl_library_loader, invokeHookingFunction } from "../shared/shared_functions.js";
 import { boring_execute } from "./openssl_boringssl_macos.js";
+import { cronet_execute } from "./cronet_macos.js"
 
 
 var plattform_name = "darwin";
@@ -58,7 +59,8 @@ function hook_macOS_SSL_Libs(module_library_mapping: { [key: string]: Array<[any
 
 export function load_macos_hooking_agent() {
     module_library_mapping[plattform_name] = [
-        [/.*libboringssl\.dylib/, invokeHookingFunction(boring_execute)]]
+        [/.*libboringssl\.dylib/, invokeHookingFunction(boring_execute)],
+        [/.*cronet.*\.dylib/, invokeHookingFunction(cronet_execute)]]
         
     hook_macOS_SSL_Libs(module_library_mapping, true); // actually we are using the same implementation as we did on iOS, therefore this needs addtional testing
     hook_macOS_Dynamic_Loader(module_library_mapping, false);

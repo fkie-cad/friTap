@@ -1,6 +1,19 @@
 import { devlog, log } from "../util/log.js";
 import { isAndroid, isiOS,isMacOS } from "../util/process_infos.js"
 
+type Pattern = {
+    primary: string;
+    fallback: string;
+};
+
+type ActionPatterns = {
+    "Dump-Keys": Pattern;
+    "SSL_Read": Pattern;
+    "SSL_Write": Pattern;
+    "Install-Key-Log-Callback": Pattern;
+    "KeyLogCallback-Function": Pattern;
+};
+
 export class PatternBasedHooking {
     found_ssl_log_secret: boolean;
     module: Module;
@@ -87,19 +100,47 @@ export class PatternBasedHooking {
         }
     }
 
-    private invoke_pattern_based_hooking(module_name: string, platform: string, arch: string, hookCallback: (args: any[]) => void){
-        const modulePatterns = this.patterns.modules[module_name][platform][arch];
+    private invoke_pattern_based_hooking(action: keyof ActionPatterns, module_name: string, platform: string, arch: string, hookCallback: (args: any[]) => void){
+        /*const modulePatterns = this.patterns.modules[module_name][platform][0];
         const primaryPattern = modulePatterns.primary;
-        const fallbackPattern = modulePatterns.fallback;
+        const fallbackPattern = modulePatterns.fallback;*/
 
-        devlog(`Using patterns for ${platform} and ${arch}`);
+        var action_specific_patterns = this.get_action_specific_pattern(module_name, platform, arch,action);
+
+        devlog(`Using ${action} patterns for ${platform} and ${arch}`);
 
         // Hook the module using the patterns
-        this.hookModuleByPattern({ primary: primaryPattern, fallback: fallbackPattern }, hookCallback);
+        //this.hookModuleByPattern({ primary: primaryPattern, fallback: fallbackPattern }, hookCallback);
+        this.hookModuleByPattern(action_specific_patterns, hookCallback);
+    }
+
+     // Function to retrieve patterns based on the current CPU architecture and action
+     private get_action_specific_pattern(module_name: string, platform: string, arch: string, action: keyof ActionPatterns): Pattern {
+            const archPatterns = this.patterns.modules[module_name][platform][arch];
+            if (archPatterns[action]) {
+                return archPatterns[action];
+            } else {
+                devlog(`No patterns found for action: ${action} on architecture: ${arch}`);
+            }    
+    }
+
+
+    public hook_DumpKeys(module_name: string, json_module_name: string, jsonContent: string, hookCallback: (args: any[]) => void): void {
+        this.hook_with_pattern_from_json("Dump-Keys",module_name, json_module_name, jsonContent, hookCallback);
+    }
+
+    public hook_tls_keylog_callback(module_name: string, json_module_name: string, jsonContent: string, hookCallback: (args: any[]) => void): void {
+        this.hook_with_pattern_from_json("KeyLogCallback-Function",module_name, json_module_name, jsonContent, hookCallback);
+        this.hook_with_pattern_from_json("Install-Key-Log-Callback",module_name, json_module_name, jsonContent, hookCallback);
+    }
+
+    public hook_ssl_read_and_write(module_name: string, json_module_name: string, jsonContent: string, hookCallback: (args: any[]) => void): void {
+        this.hook_with_pattern_from_json("SSL_Read",module_name, json_module_name, jsonContent, hookCallback);
+        this.hook_with_pattern_from_json("SSL_Write",module_name, json_module_name, jsonContent, hookCallback);
     }
 
     // Method to hook functions using patterns from JSON
-    hook_with_pattern_from_json(module_name: string, json_module_name: string, jsonContent: string, hookCallback: (args: any[]) => void): void {
+    private hook_with_pattern_from_json(action_type:keyof ActionPatterns, module_name: string, json_module_name: string, jsonContent: string, hookCallback: (args: any[]) => void): void {
         // Load patterns from the JSON file
         this.loadPatternsFromJSON(jsonContent);
 
@@ -111,23 +152,26 @@ export class PatternBasedHooking {
         }else if(isMacOS()){
             platform = "macos";
         }
-        const arch = Process.arch.toString(); // e.g., x64, arm64
+        let arch = Process.arch.toString(); // e.g., x64, arm64
+        if(arch == "ia32"){
+            arch = "x86"
+        }
         const regex = this.createRegexFromModule(module_name);
 
         // Access the relevant pattern for the module based on platform and architecture
         if (this.patterns.modules[module_name] && 
             this.patterns.modules[module_name][platform] && 
             this.patterns.modules[module_name][platform][arch]) {
-                this.invoke_pattern_based_hooking(module_name, platform, arch, hookCallback);
+                this.invoke_pattern_based_hooking(action_type, module_name, platform, arch, hookCallback);
         }else if (this.patterns.modules[json_module_name] && 
             this.patterns.modules[json_module_name][platform] && 
             this.patterns.modules[json_module_name][platform][arch]) {
-                this.invoke_pattern_based_hooking(json_module_name, platform, arch, hookCallback);
+                this.invoke_pattern_based_hooking(action_type, json_module_name, platform, arch, hookCallback);
         }else {
             for (const jsonModuleName in this.patterns.modules) {
                 if (regex.test(module_name)) {
                     if (this.patterns.modules[jsonModuleName][platform] && this.patterns.modules[jsonModuleName][platform][arch]) {
-                        this.invoke_pattern_based_hooking(jsonModuleName, platform, arch, hookCallback);   
+                        this.invoke_pattern_based_hooking(action_type, jsonModuleName, platform, arch, hookCallback);   
                     }
                 }else{
                     devlog("[-] No patterns available for the current platform or architecture.");

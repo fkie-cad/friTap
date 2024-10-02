@@ -8,6 +8,7 @@ import { mbedTLS_execute } from "./mbedTLS_windows.js";
 import { nss_execute } from "./nss_windows.js";
 import { wolfssl_execute } from "./wolfssl_windows.js";
 import { matrixSSL_execute } from "./matrixssl_windows.js";
+import { cronet_execute } from "./cronet_windows.js";
 
 
 var plattform_name = "windows";
@@ -61,7 +62,8 @@ export function load_windows_hooking_agent() {
         [/^.*(libgnutls|LIBGNUTLS)-[0-9]+\.dll$/, invokeHookingFunction(gnutls_execute)], 
         [/^(nspr|NSPR)[0-9]*\.dll/, invokeHookingFunction(nss_execute)], 
         [/(sspicli|SSPICLI|SspiCli)\.dll$/, invokeHookingFunction(sspi_execute)], 
-        [/mbedTLS\.dll/, invokeHookingFunction(mbedTLS_execute)], 
+        [/mbedTLS\.dll/, invokeHookingFunction(mbedTLS_execute)],
+        [/^.*(cronet|CRONET).*\.dll/, invokeHookingFunction(cronet_execute)], 
         ["/matrixSSL\.dll", invokeHookingFunction(matrixSSL_execute)]]
 
     hook_Windows_SSL_Libs(module_library_mapping, true);

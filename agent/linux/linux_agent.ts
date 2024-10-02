@@ -7,6 +7,7 @@ import { nss_execute } from "./nss_linux.js";
 import { mbedTLS_execute } from "./mbedTLS_linux.js";
 import { boring_execute } from "./openssl_boringssl_linux.js";
 import { matrixSSL_execute } from "./matrixssl_linux.js";
+import { cronet_execute } from "./cronet_linux.js";
 
 var plattform_name = "linux";
 var moduleNames: Array<string> = getModuleNames()
@@ -59,7 +60,8 @@ function hook_Linux_SSL_Libs(module_library_mapping: { [key: string]: Array<[any
 export function load_linux_hooking_agent() {
     module_library_mapping[plattform_name] = [
         [/.*libssl_sb.so/, invokeHookingFunction(boring_execute)], 
-        [/.*libssl\.so/, invokeHookingFunction(boring_execute)], 
+        [/.*libssl\.so/, invokeHookingFunction(boring_execute)],
+        [/.*cronet.*\.so/, invokeHookingFunction(cronet_execute)], 
         [/.*libgnutls\.so/, invokeHookingFunction(gnutls_execute)], 
         [/.*libwolfssl\.so/, invokeHookingFunction(wolfssl_execute)], 
         [/.*libnspr[0-9]?\.so/, invokeHookingFunction(nss_execute)], 

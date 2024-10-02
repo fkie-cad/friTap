@@ -1,23 +1,64 @@
 {
-    "modules": {
-      "libcronet.so": {
-        "android": {
-          "x64": {
-            "primary": "55 41 57 41 56 41 55 41 54 53 48 83 EC 48 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84 FE 00 00 00",
+  "modules": {
+    "libcronet.so": {
+      "android": {
+        "x64": {
+          "Dump-Keys": {
+            "primary": "55 41 57 41 56 41 55 41 54 53 48 83 EC 48 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84 FE 00 00 00", 
             "fallback": "55 41 57 41 56 41 55 41 54 53 48 83 EC 48 48 8B 47 68 48 83 B8 20 02 00 00 00"
           },
-          "arm64": {
-            "primary": "3F 23 03 D5 FF C3 01 D1 FD 7B 04 A9 F6 57 05 A9 F4 4F 06 A9 FD 03 01 91 08 34 40 F9 08 11 41 F9 C8 07 00 B4",
-            "fallback": "3F 23 03 D5 FF 03 02 D1 FD 7B 04 A9 F7 2B 00 F9 F6 57 06 A9 F4 4F 07 A9 FD 03 01 91 08 34 40 F9 08 11 41 F9 E8 0F 00 B4"
+          "Install-Key-Log-Callback": {
+            "primary": "11 22 33 44 55 66 ...",
+            "fallback": "66 55 44 33 22 11 ..."
+          },
+          "KeyLogCallback-Function": {
+            "primary": "77 88 99 AA BB CC ...",
+            "fallback": "CC BB AA 99 88 77 ..."
+          },
+          "SSL_Read": {
+            "primary": "AA 55 FF 00 11 22 ...",
+            "fallback": "22 11 00 FF 55 AA ..."
+          },
+          "SSL_Write": {
+            "primary": "BB CC DD EE FF 00 ...",
+            "fallback": "00 FF EE DD CC BB ..."
           }
         },
-        "linux": {
-          "ia32": {
-            "primary": "pattern_for_linux_x86_primary",
-            "fallback": "pattern_for_linux_x86_fallback"
+        "arm64": {
+          "Dump-Keys": {
+            "primary": "3F 23 03 D5 FF C3 01 D1 FD 7B 04 A9 F6 57 05 A9 F4 4F 06 A9 FD 03 01 91 08 34 40 F9 08 11 41 F9 C8 07 00 B4", 
+            "fallback": "3F 23 03 D5 FF 03 02 D1 FD 7B 04 A9 F7 2B 00 F9 F6 57 06 A9 F4 4F 07 A9 FD 03 01 91 08 34 40 F9 08 11 41 F9 E8 0F 00 B4"
+          },
+          "Install-Key-Log-Callback": {
+            "primary": "11 22 33 44 55 66 ...",
+            "fallback": "66 55 44 33 22 11 ..."
+          },
+          "KeyLogCallback-Function": {
+            "primary": "77 88 99 AA BB CC ...",
+            "fallback": "CC BB AA 99 88 77 ..."
+          },
+          "SSL_Read": {
+            "primary": "AA 55 FF 00 11 22 ...",
+            "fallback": "22 11 00 FF 55 AA ..."
+          },
+          "SSL_Write": {
+            "primary": "BB CC DD EE FF 00 ...",
+            "fallback": "00 FF EE DD CC BB ..."
+          }
+        },
+        "arm": {
+          "Dump-Keys": {
+            "primary": "2D E9 F0 43 89 B0 04 46 40 6B D0 F8 2C 01 00 28 49 D0",
+            "fallback": "2D E9 F0 43 89 B0 04 46 40 6B D0 F8 2C 01 00 28 49 D0"
+          }
+        },
+        "x86": {
+          "Dump-Keys": {
+            "primary": "55 53 57 56 83 EC 4C E8 00 00 00 00 5B 81 C3 A9 CB 13 00 8B 44 24 60 8B 40 34",
+            "fallback": "55 53 57 56 83 EC 4C E8 00 00 00 00 5B 81 C3 A9 CB 13 00 8B 44 24 60"
           }
         }
       }
     }
+  }
 }
-  

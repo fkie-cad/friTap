@@ -1,5 +1,6 @@
 
 import {OpenSSL_BoringSSL } from "../ssl_lib/openssl_boringssl.js";
+import { devlog } from "../util/log.js";
 import { socket_library } from "./android_agent.js";
 
 export class OpenSSL_BoringSSL_Android extends OpenSSL_BoringSSL {
@@ -48,13 +49,20 @@ export class OpenSSL_BoringSSL_Android extends OpenSSL_BoringSSL {
 
 export function boring_execute(moduleName:string, is_base_hook: boolean){
     var boring_ssl = new OpenSSL_BoringSSL_Android(moduleName,socket_library,is_base_hook);
-    boring_ssl.execute_hooks();
+    try {
+        boring_ssl.execute_hooks();
+    }catch(error_msg){
+        devlog(`boring_execute error: ${error_msg}`)
+    }
 
     if (is_base_hook) {
+        try {
         const init_addresses = boring_ssl.addresses[moduleName];
         // ensure that we only add it to global when we are not 
         if (Object.keys(init_addresses).length > 0) {
             (global as any).init_addresses[moduleName] = init_addresses;
+        }}catch(error_msg){
+            devlog(`boring_execute base-hook error: ${error_msg}`)
         }
     }
 

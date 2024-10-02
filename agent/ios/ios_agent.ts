@@ -2,6 +2,7 @@ import { module_library_mapping, ModuleHookingType } from "../shared/shared_stru
 import { log, devlog } from "../util/log.js";
 import { getModuleNames, ssl_library_loader, invokeHookingFunction } from "../shared/shared_functions.js";
 import { boring_execute } from "./openssl_boringssl_ios.js";
+import { cronet_execute } from "./cronet_ios.js"
 
 
 var plattform_name = "darwin";
@@ -57,7 +58,8 @@ function hook_iOS_SSL_Libs(module_library_mapping: { [key: string]: Array<[any, 
 
 export function load_ios_hooking_agent() {
     module_library_mapping[plattform_name] = [
-        [/.*libboringssl\.dylib/, invokeHookingFunction(boring_execute)]]
+        [/.*libboringssl\.dylib/, invokeHookingFunction(boring_execute)],
+        [/.*cronet.*\.dylib/, invokeHookingFunction(cronet_execute)]]
         
     hook_iOS_SSL_Libs(module_library_mapping, true);
     hook_iOS_Dynamic_Loader(module_library_mapping, false);

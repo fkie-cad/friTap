@@ -5,7 +5,7 @@ import { load_linux_hooking_agent } from "./linux/linux_agent.js";
 import { load_windows_hooking_agent } from "./windows/windows_agent.js";
 import { isWindows, isLinux, isAndroid, isiOS, isMacOS } from "./util/process_infos.js";
 import { anti_root_execute } from "./util/anti_root.js";
-import { log } from "./util/log.js";
+import { devlog, log } from "./util/log.js";
 
 // global address which stores the addresses of the hooked modules which aren't loaded via the dynamic loader
 (global as any).init_addresses = {};
@@ -100,13 +100,17 @@ Our way to get the JSON strings into the loaded frida script
 */
 send("offset_hooking")
 const enable_offset_based_hooking_state = recv('offset_hooking', value => {
-    offsets = value.payload;
+    if (value.payload !== null && value.payload !== undefined) {
+        offsets = value.payload;
+    }
 });
 enable_offset_based_hooking_state.wait();
 
 send("pattern_hooking")
 const enable_pattern_based_hooking_state = recv('pattern_hooking', value => {
-    patterns = value.payload;
+    if (value.payload !== null && value.payload !== undefined) {
+        patterns = value.payload;
+    }
 });
 enable_pattern_based_hooking_state.wait();
 
@@ -152,6 +156,9 @@ export function getOffsets(){
 
 // Function to check if the patterns have been replaced
 export function isPatternReplaced(): boolean {
+    if(patterns === null){
+        return false;
+    }
     // The default placeholder is quite short, so if the length exceeds a certain threshold, we assume it's replaced
     return patterns.length > 10;
 }

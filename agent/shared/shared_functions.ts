@@ -33,9 +33,7 @@ export function ssl_library_loader(plattform_name: string, module_library_mappin
                     }
                     
                     // on some Android Apps we encounterd the problem of multiple SSL libraries but only one is used for the SSL encryption/decryption
-                    func(module, is_base_hook)
-
-                    
+                    func(module, is_base_hook); 
                     
                 }catch (error) {
                     devlog(`error: skipping module ${module}`)
@@ -90,6 +88,11 @@ export function readAddresses(moduleName: string, library_method_mapping: { [key
 
             if (method_name.endsWith("*")) { // this is for the temporary iOS bug using Frida's ApiResolver
                 method_name = method_name.substring(0, method_name.length - 1);
+            }
+            
+            if(!matches || matches === null){
+                devlog(`Unable to retrieve any matches for statement: exports: ${library_name}!${method}`);
+                return
             }
 
             if (matches.length == 0) {
@@ -173,7 +176,7 @@ export function readAddresses(moduleName: string, library_method_mapping: { [key
  * @returns
  */
  export function getBaseAddress(moduleName: String): NativePointer | null {
-    console.log("Module to find:",moduleName)
+    devlog("Module to find: "+moduleName);
     const modules = Process.enumerateModules()
 
     for(const module of modules){
@@ -328,8 +331,15 @@ export function getAttribute(Instance: Java.Wrapper, fieldName: string) {
 export function isSymbolAvailable(moduleName: string, symbolName: string): boolean {
     const resolver = new ApiResolver("module");
     const matches = resolver.enumerateMatches("exports:" + moduleName + "!" + symbolName);
+    //devlog(`Matches content: ${matches}`);
 
-    return matches.length > 0;
+    if(matches){
+        return matches.length > 0;
+    }else{
+        return false;
+    }
+
+    
 }
 
 

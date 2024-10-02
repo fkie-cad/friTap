@@ -17,16 +17,33 @@ with open(init_py_path) as f:
     exec(f.read())
 
 # read the package requirements for install_requires
-with open(os.path.join(here, 'requirements.txt'), 'r') as f:
-    requirements = f.readlines()
+#with open(os.path.join(here, 'requirements.txt'), 'r') as f:
+#    requirements = f.readlines()
+
+def get_version():
+    about = {}
+    with open(init_py_path) as f:
+        exec(f.read(), about)
+    return about["__version__"]
 
 
+# Define dependencies directly in setup.py
+requirements = [
+    'frida>=15.0.0',
+    'frida-tools>=10.0.0',
+    'AndroidFridaManager',
+    'hexdump',
+    'scapy',
+    'watchdog',
+    'click',
+    'importlib-resources'
+]
 
 
 setup(
     # pip install friTap
     name="friTap",
-    version=__version__,
+    version=get_version(),  # Dynamically get the version from about.py
 
     # The description that will be shown on PyPI.
     description="Decrypts and logs a process's SSL/TLS traffic on all major platforms. Further it allows the TLS key extraction.",
