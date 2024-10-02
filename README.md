@@ -15,7 +15,7 @@ This project was inspired by [SSL_Logger](https://github.com/google/ssl_logger )
 
 Installation is simply a matter of `pip3 install fritap`. This will give you the `friTap` command. You can update an existing `friTap` installation with `pip3 install --upgrade friTap`.
 
-Alternatively just clone the repository and run the `friTap.py` file or download the friTap standlone version from the release page.
+Alternatively just clone the repository and run the `friTap.py` file.
 
 
 ## Usage
@@ -53,9 +53,7 @@ More examples on using friTap can be found in the [USAGE.md](./USAGE.md). A deta
 
 ## Hooking Libraries Without Symbols
 
-In certain scenarios, the library we want to hook offers no symbols or is statically linked with other libraries, making it challenging to directly hook functions. For example:
-
-    Cronet (`libcronet.so`) and Flutter (`libflutter.so`) are often statically linked with **BoringSSL**.
+In certain scenarios, the library we want to hook offers no symbols or is statically linked with other libraries, making it challenging to directly hook functions. For example Cronet (`libcronet.so`) and Flutter (`libflutter.so`) are often statically linked with **BoringSSL**.
 
 Despite the absence of symbols, we can still use friTap for parsing and hooking.
 
