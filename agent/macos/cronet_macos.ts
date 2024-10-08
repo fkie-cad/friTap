@@ -6,7 +6,7 @@ import { patterns, isPatternReplaced } from "../ssl_log.js"
 import { devlog } from "../util/log.js";
 
 
-export class Cronet_Android extends Cronet {
+export class Cronet_MacOS extends Cronet {
 
     constructor(public moduleName:string, public socket_library:String, is_base_hook: boolean){
         super(moduleName,socket_library,is_base_hook);
@@ -17,8 +17,8 @@ export class Cronet_Android extends Cronet {
         const hooker = new PatternBasedHooking(cronetModule);
 
         if (isPatternReplaced()){
-            devlog("Hooking libcronet functions by pattern");
-            hooker.hook_DumpKeys(this.module_name,"libcronet.so",patterns,(args: any[]) => {
+            devlog("Hooking Cronet functions by pattern");
+            hooker.hook_DumpKeys(this.module_name,"Cronet",patterns,(args: any[]) => {
                 this.dumpKeys(args[1], args[0], args[2]);  // Unpack args into dumpKeys
             });
         }
@@ -38,7 +38,7 @@ export class Cronet_Android extends Cronet {
 
 
 export function cronet_execute(moduleName:string, is_base_hook: boolean){
-    var cronet = new Cronet_Android(moduleName,socket_library,is_base_hook);
+    var cronet = new Cronet_MacOS(moduleName,socket_library,is_base_hook);
     cronet.execute_hooks();
 
     if (is_base_hook) {

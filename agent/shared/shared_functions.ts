@@ -1,4 +1,4 @@
-import { log, devlog } from "../util/log.js";
+import { log, devlog, devlog_error } from "../util/log.js";
 import { AF_INET, AF_INET6, ModuleHookingType } from "./shared_structures.js";
 
 
@@ -36,9 +36,9 @@ export function ssl_library_loader(plattform_name: string, module_library_mappin
                     func(module, is_base_hook); 
                     
                 }catch (error) {
-                    devlog(`error: skipping module ${module}`)
+                    devlog_error(`error: skipping module ${module}`)
                     // when we enable the logging of devlogs we can print the error message as well for further improving this part
-                    devlog("Loader error: "+error)
+                    devlog_error("Loader error: "+error)
                     //  {'description': 'Could not find *libssl*.so!SSL_ImportFD', 'type': 'error'}
                 }
                 
@@ -250,7 +250,7 @@ export function getPortsAndAddresses(sockfd: number, isRead: boolean, methodAddr
                 message["ss_family"] = "AF_INET6"
             }
         } else {
-            devlog("[-] getPortsAndAddresses resolving error:"+addr.readU16())
+            devlog("[-] getPortsAndAddresses resolving error: "+addr.readU16())
             throw "Only supporting IPv4/6"
         }
     }

@@ -12,3 +12,11 @@ export function devlog(str: string) {
     message["console_dev"] = str
     send(message)
 }
+
+
+export function devlog_error(str: string) {
+    var message: { [key: string]: string } = {}
+    message["contentType"] = "console_error"
+    message["console_error"] = str
+    send(message)
+}

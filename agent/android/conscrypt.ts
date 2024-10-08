@@ -1,4 +1,4 @@
-import { devlog, log } from "../util/log.js";
+import { devlog, devlog_error, log } from "../util/log.js";
 import { getAndroidVersion } from "../util/process_infos.js";
 
 function findProviderInstallerImplFromClassloaders(currentClassLoader: Java.Wrapper, backupImplementation: any) : Java.Wrapper | null {
@@ -12,8 +12,8 @@ function findProviderInstallerImplFromClassloaders(currentClassLoader: Java.Wrap
             break
         } catch (error) {
             if(!error.toString().includes("java.lang.ClassNotFoundException")){
-                devlog("Error in hooking ProviderInstallerImpl (findProviderInstallerImplFromClassloaders):")
-                devlog("[-] Error message: (findProviderInstallerImplFromClassloaders): "+error);
+                devlog_error("Error in hooking ProviderInstallerImpl (findProviderInstallerImplFromClassloaders):")
+                devlog_error("Error message: (findProviderInstallerImplFromClassloaders): "+error);
             }
             providerInstallerImpl = null;
             // On error we return null
@@ -43,8 +43,8 @@ function findProviderInstallerFromClassloaders(currentClassLoader: Java.Wrapper,
         } catch (error) {
             
             if(!error.toString().includes("java.lang.ClassNotFoundException")){
-                devlog("Error in hooking ProviderInstallerImpl (findProviderInstallerFromClassloaders):")
-                devlog("[-] Error message (findProviderInstallerFromClassloaders): "+error);
+                devlog_error("Error in hooking ProviderInstallerImpl (findProviderInstallerFromClassloaders):")
+                devlog_error("Error message (findProviderInstallerFromClassloaders): "+error);
             }
             providerInstaller = null;
             // On error we return null
@@ -131,9 +131,9 @@ export function execute() {
                 }
                 }
             }catch (error) {
-                devlog("Some error in hooking the Providerinstaller")
+                devlog_error("Some error in hooking the Providerinstaller")
                 if(!error.toString().includes("java.lang.ClassNotFoundException")){
-                    devlog("[-] Error message: "+error);
+                    devlog_error("[-] Error message: "+error);
                 }
                 // As it is not available, do nothing
             }

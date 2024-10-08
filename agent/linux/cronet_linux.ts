@@ -5,7 +5,7 @@ import {PatternBasedHooking } from "../shared/pattern_based_hooking.js";
 import { patterns, isPatternReplaced } from "../ssl_log.js"
 import { devlog } from "../util/log.js";
 
-export class Cronet_Android extends Cronet {
+export class Cronet_Linux extends Cronet {
 
     constructor(public moduleName:string, public socket_library:String, is_base_hook: boolean){
         super(moduleName,socket_library,is_base_hook);
@@ -37,7 +37,7 @@ export class Cronet_Android extends Cronet {
 
 
 export function cronet_execute(moduleName:string, is_base_hook: boolean){
-    var cronet = new Cronet_Android(moduleName,socket_library,is_base_hook);
+    var cronet = new Cronet_Linux(moduleName,socket_library,is_base_hook);
     cronet.execute_hooks();
 
     if (is_base_hook) {

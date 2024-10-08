@@ -1,7 +1,7 @@
 
 import {Cronet } from "../ssl_lib/cronet.js";
 import { socket_library } from "./android_agent.js";
-import {PatternBasedHooking } from "../shared/pattern_based_hooking.js";
+import {PatternBasedHooking, get_CPU_specific_pattern } from "../shared/pattern_based_hooking.js";
 import { patterns, isPatternReplaced } from "../ssl_log.js"
 import { devlog } from "../util/log.js";
 
@@ -27,28 +27,13 @@ export class Cronet_Android extends Cronet {
             },
             "arm": {
                 primary: "2D E9 F0 43 89 B0 04 46 40 6B D0 F8 2C 01 00 28 49 D0", // Primary pattern
-                fallback: "2D E9 F0 43 89 B0 04 46 40 6B D0 F8 2C 01 00 28 49 D0"  // Fallback pattern (right now we don't have any)
+                fallback: "2D E9 F0 41 86 B0 04 46 40 6B D0 F8 30 01 00 28 53 D0"  // Fallback pattern
             }
         };
     }
 
     
-    
-    // Simulated JSON object (you can replace this with actual file loading)
-    
 
-    private get_CPU_specific_pattern(): { primary: string; fallback: string } {
-        let arch = Process.arch.toString(); // Get architecture, e.g., "x64", "arm64"
-        if(arch == "ia32"){
-            arch = "x86"
-        }
-        
-        if (this.default_pattern[arch]) {
-            return this.default_pattern[arch];  // Return the pattern for the architecture
-        } else {
-            throw new Error(`No patterns found for CPU architecture: ${arch}`);
-        }
-    }
 
     install_key_extraction_hook(){
         const cronetModule = Process.findModuleByName(this.module_name);
@@ -62,7 +47,7 @@ export class Cronet_Android extends Cronet {
         }else{
             // This are the default patterns for hooking ssl_log_secret in BoringSSL inside Cronet
             hooker.hookModuleByPattern(
-                this.get_CPU_specific_pattern(),
+                get_CPU_specific_pattern(this.default_pattern),
                 (args) => {
                     this.dumpKeys(args[1], args[0], args[2]);  // Hook args passed to dumpKeys
                 }

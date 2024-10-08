@@ -8,6 +8,7 @@ import { mbedTLS_execute } from "./mbedTLS_android.js";
 import { boring_execute } from "./openssl_boringssl_android.js";
 import { java_execute} from "./android_java_tls_libs.js";
 import { cronet_execute } from "./cronet_android.js";
+import { flutter_execute } from "./flutter_android.js";
 
 
 var plattform_name = "linux";
@@ -77,6 +78,7 @@ export function load_android_hooking_agent() {
         [/.*libssl_sb.so/, invokeHookingFunction(boring_execute)],
         [/.*libssl\.so/, invokeHookingFunction(boring_execute)],
         [/.*cronet.*\.so/, invokeHookingFunction(cronet_execute)],
+        [/.*flutter.*\.so/, invokeHookingFunction(flutter_execute)],
         [/.*libgnutls\.so/, invokeHookingFunction(gnutls_execute)],
         [/.*libwolfssl\.so/, invokeHookingFunction(wolfssl_execute)],
         [/.*libnspr[0-9]?\.so/,invokeHookingFunction(nss_execute)], 

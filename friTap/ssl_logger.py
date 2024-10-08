@@ -138,6 +138,9 @@ class SSL_Logger():
             if p["contentType"] == "console_dev" and p["console_dev"]:
                 if len(p["console_dev"]) > 3:
                     print("[***] " + p["console_dev"])
+            elif p["contentType"] == "console_error" and p["console_error"]:
+                if len(p["console_error"]) > 3:
+                    print("[---] " + p["console_error"])
         if self.verbose:
             if(p["contentType"] == "keylog") and self.keylog:
                 if p["keylog"] not in self.keydump_Set:
