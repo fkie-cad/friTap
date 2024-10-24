@@ -3,7 +3,7 @@
 </p>
 
 # friTap
-![version](https://img.shields.io/badge/version-1.1.0.5-blue) [![PyPI version](https://d25lcipzij17d.cloudfront.net/badge.svg?id=py&r=r&ts=1683906897&type=6e&v=1.1.0.5&x2=0)](https://badge.fury.io/py/friTap)
+![version](https://img.shields.io/badge/version-1.2.2.8-blue) [![PyPI version](https://d25lcipzij17d.cloudfront.net/badge.svg?id=py&r=r&ts=1683906897&type=6e&v=1.2.2.8&x2=0)](https://badge.fury.io/py/friTap)
 
 The goal of this project is to help researchers to analyze traffic encapsulated in SSL or TLS. For details have a view into the [OSDFCon webinar slides](assets/friTapOSDFConwebinar.pdf) or in [this blog post](https://lolcads.github.io/posts/2022/08/fritap/).
 
@@ -15,7 +15,7 @@ This project was inspired by [SSL_Logger](https://github.com/google/ssl_logger )
 
 Installation is simply a matter of `pip3 install fritap`. This will give you the `friTap` command. You can update an existing `friTap` installation with `pip3 install --upgrade friTap`.
 
-Alternatively just clone the repository and run the `friTap.py` file or download the friTap standlone version from the release page.
+Alternatively just clone the repository and run the `friTap.py` file.
 
 
 ## Usage
@@ -23,13 +23,13 @@ Alternatively just clone the repository and run the `friTap.py` file or download
 On Linux/Windows/MacOS we can easily attach to a process by entering its name or its PID:
 
 ```bash
-$ sudo ./friTap.py --pcap mycapture.pcap thunderbird
+$ sudo fritap --pcap mycapture.pcap thunderbird
 ```
 
 For mobile applications we just have to add the `-m` parameter to indicate that we are now attaching (or spawning) an Android or iOS app:
 
 ```bash
-$ ./friTap.py -m --pcap mycapture.pcap com.example.app
+$ fritap -m --pcap mycapture.pcap com.example.app
 ```
 
 Further ensure that the frida-server is running on the Android/iOS device. 
@@ -51,6 +51,33 @@ $ sudo -E /home/daniel/.local/bin/friTap
 
 More examples on using friTap can be found in the [USAGE.md](./USAGE.md). A detailed introduction using friTap on Android is under [EXAMPLE.md](./EXAMPLE.md) as well.
 
+## Hooking Libraries Without Symbols
+
+In certain scenarios, the library we want to hook offers no symbols or is statically linked with other libraries, making it challenging to directly hook functions. For example Cronet (`libcronet.so`) and Flutter (`libflutter.so`) are often statically linked with **BoringSSL**.
+
+Despite the absence of symbols, we can still use friTap for parsing and hooking.
+
+### Hooking by Byte Patterns
+
+To solve this, we can use friTap with byte patterns to hook the desired functions. You can provide friTap with a JSON file that contains byte patterns for hooking specific functions, based on architecture and platform using the `--patterns <byte-pattern-file.json>` option.
+In order to apply the apprioate hooks for the various byte patterns we distinguish between different hooking categories.
+These categories include:
+
+  -  Dump-Keys
+  -  Install-Key-Log-Callback
+  -  KeyLogCallback-Function
+  -  SSL_Read
+  -  SSL_Write
+
+Each category has a primary and fallback byte pattern, allowing flexibility when the primary pattern fails.
+For libraries like BoringSSL, where TLS functionality is often statically linked into other binaries, we developed a tool called [BoringSecretHunter](https://github.com/monkeywave/BoringSecretHunter). This tool automatically identifies the necessary byte patterns to hook BoringSSL by byte-pattern matching. Specifically, BoringSecretHunter focuses on identifying the byte patterns for functions in the Dump-Keys category, allowing you to extract encryption keys during TLS sessions with minimal effort. More about the different hooking categories can be found in [usage of byte-patterns in friTap](./USAGE.md#hooking-by-byte-patterns).
+
+### Hooking by Offsets
+
+Alternatively, you can use the `--offsets <offset-file.json>` option to hook functions using known offsets. friTap allows you to specify user-defined offsets (relative to the base address of the targeting SSL/socket library) or absolute virtual addresses for function resolution. This is done through a JSON file, which is passed using the `--offsets` parameter.
+
+If the `--offsets` parameter is used, friTap will only overwrite the function addresses specified in the JSON file. For functions that are not specified, friTap will attempt to detect the addresses automatically (using symbols).
+
 
 ## Problems
 
@@ -61,7 +88,7 @@ The absence of traffic or incomplete traffic capture in the resulting pcap file 
 There might be instances where friTap fails to retrieve socket information. In such scenarios, running friTap with default socket information (`--enable_default_fd`) could resolve the issue. This approach utilizes default socket information (127.0.0.1:1234 to 127.0.0.1:2345) for all traffic when the file descriptor (FD) cannot be used to obtain socket details:
 
 ```bash
-friTap -m --enable_default_fd -p plaintext.pcap com.example.app
+fritap -m --enable_default_fd -p plaintext.pcap com.example.app
 ```
 
 ### Handling Subprocess Traffic
@@ -69,7 +96,7 @@ friTap -m --enable_default_fd -p plaintext.pcap com.example.app
 Traffic originating from a subprocess could be another contributing factor. To capture this traffic, friTap can leverage Frida's spawn gating feature, which intercepts newly spawned processes using the `--enable_spawn_gating` parameter:
 
 ```bash
-friTap -m -p log.pcap --enable_spawn_gating com.example.app
+fritap -m -p log.pcap --enable_spawn_gating com.example.app
 ```
 
 ### Library Support exist only for Key Extraction
@@ -77,7 +104,7 @@ friTap -m -p log.pcap --enable_spawn_gating com.example.app
 In cases where the target library solely supports key extraction (cf. the table below), you can utilize the `-k <key.log>` parameter alongside full packet capture:
 
 ```bash
-friTap -m -p log.pcap --full_capture -k keys.log com.example.app
+fritap -m -p log.pcap --full_capture -k keys.log com.example.app
 ```
 
 ### Seeking Further Assistance
@@ -88,7 +115,7 @@ If these approaches do not address your issue, please create a detailed issue re
 - The specific application encountering the issue or a comparable application that exhibits similar problems
 - The output from executing friTap with the specified parameters, augmented with friTap's debug output:
 ```bash
-friTap -do -v com.example.app
+fritap -do -v com.example.app
 ```
 
 

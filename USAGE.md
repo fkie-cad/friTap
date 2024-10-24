@@ -72,12 +72,18 @@ Now we can see and analyze all the packets live with Wireshark. As soon as we st
 
 FriTap allows to specify user-defined offsets (starting from the base address of the ssl/socket library) and to specify absolute virtual addresses of ssl/socket functions for function resolution. For this a JSON file (see offsets_example.json) must be specified using the `--offsets` parameter.  If the parameter is set, then friTap will overwrite only those addresses of those functions that were specified. For all functions for which nothing was specified, friTap will try to detect an address on its own.
 
-The `address` field contains the offset or absolute address of the function specified function. The value must be specified as a hexadecimal string!
-If the field `absolute` is set to true or the base address of the socket/ssl library cannot be found, then the values specified for `address` are interpreted as absolute addresses.
-If the field `absolute` is set to false, then the values specified for `address` are interpreted as an **offset based on the library base address**.
+The JSON file consists of the following fields:
+
+    - `address`: The offset or absolute address of the specified function, formatted as a hexadecimal string.
+    - `absolute`:
+        If `true`, the value in the `address` field is interpreted as an absolute address.
+        If `false`, the value is treated as an offset from the base address of the SSL/socket library.
+
+If friTap cannot find the base address of the socket/SSL library, or if the `absolute` field is set to `true`, the specified addresses will be interpreted as absolute addresses.
 
 ### **Example**:
-Suppose friTap recognizes the base address of the OpenSSL library, but does not find an export of the SSL_read and SSL_write functions, and you know the offsets of those same functions. In addition, if you know the absolute address of the required socket functions, the JSON file could look like this
+Suppose friTap detects the base address of the OpenSSL library, but it fails to find exports for the `SSL_read` and `SSL_write` functions. If you know the offsets for these functions and the absolute addresses for certain socket functions, your JSON file could look like this:
+
 ```json
 {
     "openssl":{
@@ -110,3 +116,89 @@ Suppose friTap recognizes the base address of the OpenSSL library, but does not 
     }  
 }
 ```
+## Hooking by Byte-Patterns
+
+In certain scenarios, the library we want to hook offers no symbols or is statically linked with other libraries, making it challenging to directly hook functions. For example:
+
+    Cronet (libcronet.so) and Flutter (libflutter.so) are often statically linked with BoringSSL.
+
+To solve this, we can use friTap with byte patterns to hook the desired functions. You can provide friTap with a JSON file that contains byte patterns for hooking specific functions, based on architecture and platform.
+Hooking Categories
+
+We define different hooking categories for which specific byte patterns are used. These categories include:
+
+    Dump-Keys
+    Install-Key-Log-Callback
+    KeyLogCallback-Function
+    SSL_Read
+    SSL_Write
+
+Each category has a primary and fallback byte pattern, allowing flexibility when the primary pattern fails.
+
+
+### 1. Dump-Keys
+
+This category is responsible for dumping keys directly from the process. The primary and fallback byte patterns in this category are used to hook functions that deal with key management and extraction. friTap provides than the parsing in order to extract the keys:
+
+```json
+"Dump-Keys": {
+  "primary": "AA BB CC DD EE FF ...", 
+  "fallback": "FF EE DD CC BB AA ..."
+}
+```
+    Primary Pattern: Used to hook the function that allows key dumping.
+    Fallback Pattern: If the primary pattern fails, the fallback pattern is tried.
+
+Our developed tool [BoringSecretHunter](https://github.com/monkeywave/BoringSecretHunter) can be used to automatically extract these patterns from a target library.
+
+### 2. Install-Key-Log-Callback
+
+This category installs a callback for logging TLS keys. It typically works alongside `KeyLogCallback-Function`. Both must be specified together in the JSON. As the name suggests it is responsbile for installing the keylog callback function:
+
+```json
+"Install-Key-Log-Callback": {
+  "primary": "11 22 33 44 55 66 ...",
+  "fallback": "66 55 44 33 22 11 ..."
+}
+```
+    Primary Pattern: Hook the function responsible for installing the key log callback.
+    Fallback Pattern: If the primary pattern fails, this fallback pattern is tried.
+
+### 3. KeyLogCallback-Function
+
+This category hooks the function that is triggered by the installed key log callback. It must be used alongside the Install-Key-Log-Callback category. It is also used for extracting the TLS key material but **no parsing** has to be done:
+
+```json
+"KeyLogCallback-Function": {
+  "primary": "77 88 99 AA BB CC ...",
+  "fallback": "CC BB AA 99 88 77 ..."
+}
+```
+    Primary Pattern: Hook the function where the key log callback processes keys.
+    Fallback Pattern: If the primary pattern fails, this fallback pattern is tried.
+
+###  4. SSL_Read
+
+This category hooks the SSL_Read function, which is responsible for reading encrypted SSL/TLS data. It works alongside the SSL_Write category.
+
+```json
+"SSL_Read": {
+  "primary": "AA 55 FF 00 11 22 ...",
+  "fallback": "22 11 00 FF 55 AA ..."
+}
+```
+    Primary Pattern: Hook the SSL_Read function.
+    Fallback Pattern: If the primary pattern fails, the fallback pattern is tried.
+
+### 5. SSL_Write
+
+This category hooks the SSL_Write function, which is responsible for writing encrypted SSL/TLS data. It must be used with the SSL_Read category.
+
+```json
+"SSL_Write": {
+  "primary": "BB CC DD EE FF 00 ...",
+  "fallback": "00 FF EE DD CC BB ..."
+}
+```
+    Primary Pattern: Hook the SSL_Write function.
+    Fallback Pattern: If the primary pattern fails, the fallback pattern is tried.

@@ -167,8 +167,9 @@ export class NSS {
 
 
     // global variables
-    library_method_mapping: { [key: string]: Array<String> } = {};
-    addresses: { [key: string]: NativePointer };
+    library_method_mapping: { [key: string]: Array<string> } = {};
+    addresses: { [libraryName: string]: { [functionName: string]: NativePointer } };
+    module_name: string;
 
     static SSL_SESSION_get_id: any;
     static getsockname: any;
@@ -180,7 +181,7 @@ export class NSS {
     static PK11_GetKeyData: any;
 
 
-    constructor(public moduleName: String, public socket_library: String, public passed_library_method_mapping?: { [key: string]: Array<String> }) {
+    constructor(public moduleName: string, public socket_library: String, public passed_library_method_mapping?: { [key: string]: Array<string> }) {
         if (typeof passed_library_method_mapping !== 'undefined') {
             this.library_method_mapping = passed_library_method_mapping;
         } else {
@@ -190,7 +191,8 @@ export class NSS {
             this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
         }
 
-        this.addresses = readAddresses(this.library_method_mapping);
+        this.addresses = readAddresses(moduleName,this.library_method_mapping);
+        this.module_name = moduleName;
 
         // @ts-ignore
          if(offsets != "{OFFSETS}" && offsets.nss != null){
@@ -199,7 +201,7 @@ export class NSS {
                 const socketBaseAddress = getBaseAddress(socket_library)
                 for(const method of Object.keys(offsets.sockets)){
                      //@ts-ignore
-                    this.addresses[`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
+                    this.addresses[this.moduleName][`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
                 }
             }
 
@@ -212,15 +214,15 @@ export class NSS {
             
             for (const method of Object.keys(offsets.nss)){
                 //@ts-ignore
-                this.addresses[`${method}`] = offsets.nss[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.nss[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.nss[`${method}`].address));
+                this.addresses[this.moduleName][`${method}`] = offsets.nss[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.nss[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.nss[`${method}`].address));
             }
 
 
         }
 
-        NSS.SSL_SESSION_get_id = new NativeFunction(this.addresses["SSL_GetSessionID"], "pointer", ["pointer"])
-        NSS.getsockname = new NativeFunction(this.addresses["PR_GetSockName"], "int", ["pointer", "pointer"]);
-        NSS.getpeername = new NativeFunction(this.addresses["PR_GetPeerName"], "int", ["pointer", "pointer"]);
+        NSS.SSL_SESSION_get_id = new NativeFunction(this.addresses[this.moduleName]["SSL_GetSessionID"], "pointer", ["pointer"])
+        NSS.getsockname = new NativeFunction(this.addresses[this.moduleName]["PR_GetSockName"], "int", ["pointer", "pointer"]);
+        NSS.getpeername = new NativeFunction(this.addresses[this.moduleName]["PR_GetPeerName"], "int", ["pointer", "pointer"]);
 
        
 
@@ -1295,10 +1297,11 @@ typedef union PRNetAddr PRNetAddr;
     /***** Installing the hooks *****/
 
     install_plaintext_read_hook() {
+        var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
 
 
-        Interceptor.attach(this.addresses["PR_Read"],
+        Interceptor.attach(this.addresses[this.moduleName]["PR_Read"],
             {
                 onEnter: function (args: any) {
                     // ab hier nicht mehr
@@ -1318,7 +1321,7 @@ typedef union PRNetAddr PRNetAddr;
 
 
                     if (addr.readU16() == 2 || addr.readU16() == 10 || addr.readU16() == 100) {
-                        var message = NSS.getPortsAndAddressesFromNSS(this.fd as NativePointer, true, lib_addesses, enable_default_fd)
+                        var message = NSS.getPortsAndAddressesFromNSS(this.fd as NativePointer, true, lib_addesses[current_module_name], enable_default_fd)
                         devlog("Session ID: " + NSS.getSslSessionIdFromFD(this.fd))
                         message["ssl_session_id"] = NSS.getSslSessionIdFromFD(this.fd)
                         message["function"] = "NSS_read"
@@ -1328,7 +1331,7 @@ typedef union PRNetAddr PRNetAddr;
                         var data = this.buf.readByteArray((new Uint32Array([retval]))[0])
                         send(message, data)
                     } else {
-                        var message = NSS.getPortsAndAddressesFromNSS( null, true, lib_addesses, enable_default_fd)
+                        var message = NSS.getPortsAndAddressesFromNSS( null, true, lib_addesses[current_module_name], enable_default_fd)
                         message["ssl_session_id"] = NSS.getSslSessionIdFromFD(this.fd)
                         message["function"] = "NSS_read"
                         this.message = message
@@ -1347,9 +1350,10 @@ typedef union PRNetAddr PRNetAddr;
 
 
     install_plaintext_write_hook() {
+        var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
 
-        Interceptor.attach(this.addresses["PR_Write"],
+        Interceptor.attach(this.addresses[this.moduleName]["PR_Write"],
             {
                 onEnter: function (args: any) {
                     this.fd = ptr(args[0]);
@@ -1366,14 +1370,14 @@ typedef union PRNetAddr PRNetAddr;
                     NSS.getsockname(this.fd, addr);
 
                     if (addr.readU16() == 2 || addr.readU16() == 10 || addr.readU16() == 100) {
-                        var message = NSS.getPortsAndAddressesFromNSS(this.fd as NativePointer, false, lib_addesses, enable_default_fd)
+                        var message = NSS.getPortsAndAddressesFromNSS(this.fd as NativePointer, false, lib_addesses[current_module_name], enable_default_fd)
                         message["ssl_session_id"] = NSS.getSslSessionIdFromFD(this.fd)
                         message["function"] = "NSS_write"
                         message["contentType"] = "datalog"
                         send(message, this.buf.readByteArray((parseInt(this.len))))
                     }else {
                         log("The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys")
-                        var message = NSS.getPortsAndAddressesFromNSS(null, true, lib_addesses, enable_default_fd)
+                        var message = NSS.getPortsAndAddressesFromNSS(null, true, lib_addesses[current_module_name], enable_default_fd)
                         message["ssl_session_id"] = NSS.getSslSessionIdFromFD(this.fd)
                         message["function"] = "NSS_write"
                         this.message = message

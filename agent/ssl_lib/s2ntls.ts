@@ -6,7 +6,8 @@ import { log, devlog } from "../util/log.js"
 export class S2nTLS {
 
     library_method_mapping: { [key: string]: Array<String> } = {};
-    addresses: { [key: string]: NativePointer };
+    addresses: { [libraryName: string]: { [functionName: string]: NativePointer } };
+    module_name: string;
 
     static s2n_get_read_fd: any;
     static s2n_get_write_fd: any;
@@ -22,7 +23,7 @@ export class S2nTLS {
         return 1;
     }, "int", ["pointer", "pointer", "pointer", "pointer"]);
 
-    constructor(public moduleName: String, public socket_library: String, public passed_library_method_mapping?: { [key: string]: Array<String>}){
+    constructor(public moduleName: string, public socket_library: String, public passed_library_method_mapping?: { [key: string]: Array<string>}){
 
         if(typeof passed_library_method_mapping !== 'undefined'){
             this.library_method_mapping = passed_library_method_mapping;
@@ -31,7 +32,8 @@ export class S2nTLS {
             this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]; 
         }
 
-        this.addresses = readAddresses(this.library_method_mapping);
+        this.addresses = readAddresses(moduleName, this.library_method_mapping);
+        this.module_name = moduleName;
 
         //@ts-ignore
         if(offsets != "{OFFSETS}" && offsets.s2n != null){
@@ -47,9 +49,9 @@ export class S2nTLS {
                     const methodAddress = ptr(methodOffset.address);
 
                     if(isAbsolute || socketBaseAddress == null){
-                        this.addresses[`${method}`] = methodAddress;
+                        this.addresses[this.moduleName][`${method}`] = methodAddress;
                     }else{
-                        this.addresses[`${method}`] = socketBaseAddress.add(methodAddress);
+                        this.addresses[this.moduleName][`${method}`] = socketBaseAddress.add(methodAddress);
                     }
 
                 }
@@ -69,17 +71,17 @@ export class S2nTLS {
                 const methodAddress = ptr(methodOffset.address);
 
                 if(isAbsolute || libraryBaseAddress == null){
-                    this.addresses[`${method}`] = methodAddress;
+                    this.addresses[this.moduleName][`${method}`] = methodAddress;
                 }else{
-                    this.addresses[`${method}`] = libraryBaseAddress.add(methodAddress);
+                    this.addresses[this.moduleName][`${method}`] = libraryBaseAddress.add(methodAddress);
                 }
 
             }
         }
 
         //s2n_connection-get_read_fd and s2n_connection_get_write_fd return the corresponding file descriptors
-        S2nTLS.s2n_get_read_fd = new NativeFunction(this.addresses["s2n_connection_get_read_fd"], "int", ["pointer", "pointer"]);
-        S2nTLS.s2n_get_write_fd = new NativeFunction(this.addresses["s2n_connection_get_write_fd"], "int", ["pointer", "pointer"]);
+        S2nTLS.s2n_get_read_fd = new NativeFunction(this.addresses[this.moduleName]["s2n_connection_get_read_fd"], "int", ["pointer", "pointer"]);
+        S2nTLS.s2n_get_write_fd = new NativeFunction(this.addresses[this.moduleName]["s2n_connection_get_write_fd"], "int", ["pointer", "pointer"]);
     }
 
     install_tls_keys_callback_hook(){}
@@ -87,17 +89,17 @@ export class S2nTLS {
     //Hooks the s2n_send function
     //Get the buffer on enter and read the data from it
     install_plaintext_read_hook(){
-
+        var current_module_name = this.module_name;
         var lib_addresses = this.addresses;
 
-        Interceptor.attach(lib_addresses["s2n_send"], {
+        Interceptor.attach(lib_addresses[this.moduleName]["s2n_send"], {
 
             onEnter: function(args: any){
                 
                 var writefdPtr = Memory.alloc(Process.pointerSize) as NativePointer;
                 S2nTLS.s2n_get_write_fd(args[0], writefdPtr);
                 var writefd = writefdPtr.readInt();
-                var message = getPortsAndAddresses(writefd, false, lib_addresses, enable_default_fd);
+                var message = getPortsAndAddresses(writefd, false, lib_addresses[current_module_name], enable_default_fd);
 
                 message["function"] = "s2n_send";
                 message["ssl_session_id"] = "0"
@@ -120,6 +122,7 @@ export class S2nTLS {
     //Hooks the s2n_recv function
     //Get the buffer on enter and read the retval bytes from it on leave
     install_plaintext_write_hook(){
+        var current_module_name = this.module_name;
         var lib_addresses = this.addresses;
 
         Interceptor.attach(lib_addresses["s2n_recv"], {
@@ -129,7 +132,7 @@ export class S2nTLS {
                 var readfdPtr = Memory.alloc(Process.pointerSize) as NativePointer;
                 S2nTLS.s2n_get_read_fd(args[0], readfdPtr);
                 var readfd = readfdPtr.readInt();
-                var message = getPortsAndAddresses(readfd, true, lib_addresses, enable_default_fd);
+                var message = getPortsAndAddresses(readfd, true, lib_addresses[current_module_name], enable_default_fd);
 
                 message["function"] = "s2n_recv";
                 message["ssl_session_id"] = "0"

@@ -1,6 +1,6 @@
 //import fs from 'frida-fs';
-import * as fs from "fs.js";
-import { isAndroid } from "./process_infos.js";
+//import * as fs from "fs.js";
+//import { isAndroid } from "./process_infos.js";
 
 
 // converts a hexstring to a bytearray
@@ -13,6 +13,8 @@ function hexStringToBytes(str: string): Uint8Array{
     return new Uint8Array(a);
   };
 
+/*
+currently not needed
 
 export function fileUpload(path: string, data: string): void{
 
@@ -33,7 +35,7 @@ export function fileUpload(path: string, data: string): void{
     
 
 
-    }
+    }*/
 
 
 

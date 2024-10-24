@@ -5,7 +5,11 @@ import { load_linux_hooking_agent } from "./linux/linux_agent.js";
 import { load_windows_hooking_agent } from "./windows/windows_agent.js";
 import { isWindows, isLinux, isAndroid, isiOS, isMacOS } from "./util/process_infos.js";
 import { anti_root_execute } from "./util/anti_root.js";
-import { log } from "./util/log.js";
+import { devlog, log } from "./util/log.js";
+
+// global address which stores the addresses of the hooked modules which aren't loaded via the dynamic loader
+(global as any).init_addresses = {};
+(global as any).global_counter = 0;
 
 interface IAddress{
     address: string,
@@ -92,6 +96,27 @@ export let experimental: boolean = false;
 export let anti_root: boolean = false;
 //@ts-ignore
 export let enable_default_fd: boolean = false;
+//@ts-ignore
+export let patterns: string = "{PATTERNS}";
+
+/* 
+Our way to get the JSON strings into the loaded frida script 
+*/
+send("offset_hooking")
+const enable_offset_based_hooking_state = recv('offset_hooking', value => {
+    if (value.payload !== null && value.payload !== undefined) {
+        offsets = value.payload;
+    }
+});
+enable_offset_based_hooking_state.wait();
+
+send("pattern_hooking")
+const enable_pattern_based_hooking_state = recv('pattern_hooking', value => {
+    if (value.payload !== null && value.payload !== undefined) {
+        patterns = value.payload;
+    }
+});
+enable_pattern_based_hooking_state.wait();
 
 
 /*
@@ -104,6 +129,7 @@ const enable_default_fd_state = recv('defaultFD', value => {
 });
 enable_default_fd_state.wait();
 
+
 send("experimental")
 const exp_recv_state = recv('experimental', value => {
     experimental = value.payload;
@@ -115,6 +141,7 @@ const antiroot_recv_state = recv('antiroot', value => {
     anti_root = value.payload;
 });
 antiroot_recv_state.wait();/* */
+
 
 
 /*
@@ -131,6 +158,14 @@ export function getOffsets(){
     return offsets;
 }
 
+// Function to check if the patterns have been replaced
+export function isPatternReplaced(): boolean {
+    if(patterns === null){
+        return false;
+    }
+    // The default placeholder is quite short, so if the length exceeds a certain threshold, we assume it's replaced
+    return patterns.length > 10;
+}
 
 
 function load_os_specific_agent() {

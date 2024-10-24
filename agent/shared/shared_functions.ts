@@ -1,5 +1,5 @@
-import { log, devlog } from "../util/log.js";
-import { AF_INET, AF_INET6 } from "./shared_structures.js";
+import { log, devlog, devlog_error } from "../util/log.js";
+import { AF_INET, AF_INET6, ModuleHookingType } from "./shared_structures.js";
 
 
 function wait_for_library_loaded(module_name: string){
@@ -18,7 +18,7 @@ function wait_for_library_loaded(module_name: string){
  * on libc.
  */
 
-export function ssl_library_loader(plattform_name: string, module_library_mapping: { [key: string]: Array<[any, (moduleName: string)=>void]> }, moduleNames: Array<string> , plattform_os: string): void{
+export function ssl_library_loader(plattform_name: string, module_library_mapping: { [key: string]: Array<[any, ModuleHookingType]> }, moduleNames: Array<string> , plattform_os: string, is_base_hook: boolean): void{
     for(let map of module_library_mapping[plattform_name]){
         let regex = new RegExp(map[0])
         let func = map[1]
@@ -32,11 +32,13 @@ export function ssl_library_loader(plattform_name: string, module_library_mappin
                         wait_for_library_loaded(module);
                     }
                     
-                    func(module) // on some Android Apps we encounterd the problem of multiple SSL libraries but only one is used for the SSL encryption/decryption
+                    // on some Android Apps we encounterd the problem of multiple SSL libraries but only one is used for the SSL encryption/decryption
+                    func(module, is_base_hook); 
+                    
                 }catch (error) {
-                    log(`error: skipping module ${module}`)
+                    devlog_error(`error: skipping module ${module}`)
                     // when we enable the logging of devlogs we can print the error message as well for further improving this part
-                    devlog("Loader error: "+error)
+                    devlog_error("Loader error: "+error)
                     //  {'description': 'Could not find *libssl*.so!SSL_ImportFD', 'type': 'error'}
                 }
                 
@@ -47,10 +49,9 @@ export function ssl_library_loader(plattform_name: string, module_library_mappin
 }
 
 
-//TODO: 
+
 export function getSocketLibrary(){
     var moduleNames: Array<String> = getModuleNames()
-    var socket_library_name = ""
     switch(Process.platform){
         case "linux":
             return moduleNames.find(element => element.match(/libc.*\.so/))
@@ -70,46 +71,101 @@ export function getModuleNames(){
     return moduleNames;
 }
 
-/**
- * Read the addresses for the given methods from the given modules
- * @param {{[key: string]: Array<String> }} library_method_mapping A string indexed list of arrays, mapping modules to methods
- * @return {{[key: string]: NativePointer }} A string indexed list of NativePointers, which point to the respective methods
- */
-export function readAddresses(library_method_mapping: { [key: string]: Array<String> }): { [key: string]: NativePointer } {
-    var resolver = new ApiResolver("module")
-    var addresses: { [key: string]: NativePointer } = {}
-    for (let library_name in library_method_mapping) {
-        library_method_mapping[library_name].forEach(function (method) {
-            var matches = resolver.enumerateMatches("exports:" + library_name + "!" + method)
-            var match_number = 0;
-            var method_name = method.toString();
+export function readAddresses(moduleName: string, library_method_mapping: { [key: string]: Array<string> }): { [library_name: string]: { [functionName: string]: NativePointer } } {
+    const resolver = new ApiResolver("module");
+    const addresses: { [library_name: string]: { [functionName: string]: NativePointer } } = {};
 
-            if(method_name.endsWith("*")){ // this is for the temporary iOS bug using fridas ApiResolver
-                method_name = method_name.substring(0,method_name.length-1)
+    // Initialize addresses[moduleName] as an empty object if not already initialized
+    if (!addresses[moduleName]) {
+        addresses[moduleName] = {};
+    }
+
+    for (const library_name in library_method_mapping) {
+        library_method_mapping[library_name].forEach(function (method) {
+            const matches = resolver.enumerateMatches("exports:" + library_name + "!" + method);
+            let match_number = 0;
+            let method_name = method.toString();
+
+            if (method_name.endsWith("*")) { // this is for the temporary iOS bug using Frida's ApiResolver
+                method_name = method_name.substring(0, method_name.length - 1);
+            }
+            
+            if(!matches || matches === null){
+                devlog(`Unable to retrieve any matches for statement: exports: ${library_name}!${method}`);
+                return
             }
 
             if (matches.length == 0) {
-                throw "Could not find " + library_name + "!" + method
-            }
-            else if (matches.length == 1){
-                
-                devlog("Found " + method + " " + matches[0].address)
-            }else{
+                throw "Could not find " + library_name + "!" + method;
+            } else if (matches.length == 1) {
+                devlog("Found " + method + " " + matches[0].address);
+            } else {
                 // Sometimes Frida returns duplicates or it finds more than one result.
-                for (var k = 0; k < matches.length; k++) {
-                    if(matches[k].name.endsWith(method_name)){
+                for (let k = 0; k < matches.length; k++) {
+                    if (matches[k].name.endsWith(method_name)) {
                         match_number = k;
-                        devlog("Found " + method + " " + matches[match_number].address)
+                        devlog("Found " + method + " " + matches[match_number].address);
                         break;
                     }
-                   
                 }
-     
             }
-            addresses[method_name] = matches[match_number].address;
-        })
+
+            addresses[moduleName][method_name] = matches[match_number].address;
+        });
     }
-    return addresses
+
+    return addresses;
+}
+
+
+
+/**
+ * Read the addresses for the given methods from the given modules
+ * @param {{[key: string]: Array<String> }} library_method_mapping A string indexed list of arrays, mapping modules to methods
+ * @param is_base_hook a boolean value to indicate if this hooks are done on the start or during dynamic library loading
+ * @return {{[key: string]: { [functionName: string]: NativePointer } }} A string indexed list of NativePointers, which point to the respective methods
+ */
+ export function readAddresses2(moduleName: string, library_method_mapping: { [key: string]: Array<string> }): { [library_name: string]: { [functionName: string]: NativePointer } } {
+    var resolver = new ApiResolver("module");
+    var addresses: { [library_name: string]: { [functionName: string]: NativePointer } } = {};
+    
+
+    // Initialize addresses[library_name] as an empty object if not already initialized
+    if (!addresses[moduleName]) {
+        addresses[moduleName] = {};
+    }
+
+    for (let library_name in library_method_mapping) {
+
+        library_method_mapping[library_name].forEach(function (method) {
+            var matches = resolver.enumerateMatches("exports:" + library_name + "!" + method);
+            var match_number = 0;
+            var method_name = method.toString();
+
+            if (method_name.endsWith("*")) { // this is for the temporary iOS bug using Frida's ApiResolver
+                method_name = method_name.substring(0, method_name.length - 1);
+            }
+
+            if (matches.length == 0) {
+                throw "Could not find " + library_name + "!" + method;
+            } else if (matches.length == 1) {
+                devlog("Found " + method + " " + matches[0].address);
+            } else {
+                // Sometimes Frida returns duplicates or it finds more than one result.
+                for (var k = 0; k < matches.length; k++) {
+                    if (matches[k].name.endsWith(method_name)) {
+                        match_number = k;
+                        devlog("Found " + method + " " + matches[match_number].address);
+                        break;
+                    }
+                }
+            }
+
+            addresses[moduleName][method_name] = matches[match_number].address;
+        });
+    }
+
+    return addresses;
 }
 
 
@@ -120,7 +176,7 @@ export function readAddresses(library_method_mapping: { [key: string]: Array<Str
  * @returns
  */
  export function getBaseAddress(moduleName: String): NativePointer | null {
-    console.log("Module to find:",moduleName)
+    devlog("Module to find: "+moduleName);
     const modules = Process.enumerateModules()
 
     for(const module of modules){
@@ -194,7 +250,7 @@ export function getPortsAndAddresses(sockfd: number, isRead: boolean, methodAddr
                 message["ss_family"] = "AF_INET6"
             }
         } else {
-            devlog("[-] getPortsAndAddresses resolving error:"+addr.readU16())
+            devlog("[-] getPortsAndAddresses resolving error: "+addr.readU16())
             throw "Only supporting IPv4/6"
         }
     }
@@ -264,4 +320,40 @@ export function getAttribute(Instance: Java.Wrapper, fieldName: string) {
     var field = Java.cast(Instance.getClass(), clazz).getDeclaredField(fieldName)
     field.setAccessible(true)
     return field.get(Instance)
+}
+
+/**
+ * 
+ * @param moduleName String of the name of the module e.g. libssl.so
+ * @param symbolName the symbol where we do our check e.g. SSL_write_ex
+ * @returns 
+ */
+export function isSymbolAvailable(moduleName: string, symbolName: string): boolean {
+    const resolver = new ApiResolver("module");
+    const matches = resolver.enumerateMatches("exports:" + moduleName + "!" + symbolName);
+    //devlog(`Matches content: ${matches}`);
+
+    if(matches){
+        return matches.length > 0;
+    }else{
+        return false;
+    }
+
+    
+}
+
+
+// Wrapper function to ensure all execute functions conform to the required signature
+export function invokeHookingFunction(func: (moduleName: string, is_base_hook: boolean) => void): (moduleName: string, is_base_hook: boolean) => void {
+    return (moduleName: string, is_base_hook: boolean) => {
+        func(moduleName, is_base_hook);
+    };
+}
+
+
+export function get_hex_string_from_byte_array(keyData: ArrayBuffer | Uint8Array): string{
+    return Array
+        .from(new Uint8Array(keyData)) // Convert byte array to Uint8Array and then to Array
+        .map(byte => byte.toString(16).padStart(2, '0').toUpperCase()) // Convert each byte to a 2-digit hex string
+        .join(''); // Join all the hex values with a space
 }

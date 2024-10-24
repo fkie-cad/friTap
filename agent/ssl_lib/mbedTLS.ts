@@ -96,12 +96,13 @@ export class mbed_TLS {
 
 
     // global variables
-    library_method_mapping: { [key: string]: Array<String> } = {};
-    addresses: { [key: string]: NativePointer };
+    library_method_mapping: { [key: string]: Array<string> } = {};
+    addresses: { [libraryName: string]: { [functionName: string]: NativePointer } };
+    module_name: string;
 
 
 
-    constructor(public moduleName: String, public socket_library: String, public passed_library_method_mapping?: { [key: string]: Array<String> }) {
+    constructor(public moduleName: string, public socket_library: String, public passed_library_method_mapping?: { [key: string]: Array<string> }) {
         if (typeof passed_library_method_mapping !== 'undefined') {
             this.library_method_mapping = passed_library_method_mapping;
         } else {
@@ -109,7 +110,8 @@ export class mbed_TLS {
             this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
         }
 
-        this.addresses = readAddresses(this.library_method_mapping);
+        this.addresses = readAddresses(moduleName,this.library_method_mapping);
+        this.module_name = moduleName;
 
         // @ts-ignore
         if(offsets != "{OFFSETS}" && offsets.mbedtls != null){
@@ -118,7 +120,7 @@ export class mbed_TLS {
                 const socketBaseAddress = getBaseAddress(socket_library)
                 for(const method of Object.keys(offsets.sockets)){
                      //@ts-ignore
-                    this.addresses[`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
+                    this.addresses[this.moduleName][`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
                 }
             }
 
@@ -131,7 +133,7 @@ export class mbed_TLS {
             
             for (const method of Object.keys(offsets.mbedtls)){
                 //@ts-ignore
-                this.addresses[`${method}`] = offsets.mbedtls[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.mbedtls[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.mbedtls[`${method}`].address));
+                this.addresses[this.moduleName][`${method}`] = offsets.mbedtls[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.mbedtls[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.mbedtls[`${method}`].address));
             }
 
 
@@ -187,15 +189,16 @@ export class mbed_TLS {
 
 
     install_plaintext_read_hook() {
+        var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
         //https://tls.mbed.org/api/ssl_8h.html#aa2c29eeb1deaf5ad9f01a7515006ede5
-        Interceptor.attach(this.addresses["mbedtls_ssl_read"], {
+        Interceptor.attach(this.addresses[this.moduleName]["mbedtls_ssl_read"], {
             onEnter: function (args) {
                 this.buffer = args[1];
                 this.len = args[2];
                 this.sslContext = args[0];
 
-                var message = getPortsAndAddresses(mbed_TLS.getSocketDescriptor(args[0]) as number, true, lib_addesses, enable_default_fd)
+                var message = getPortsAndAddresses(mbed_TLS.getSocketDescriptor(args[0]) as number, true, lib_addesses[current_module_name], enable_default_fd)
                 message["ssl_session_id"] = mbed_TLS.getSessionId(args[0])
                 message["function"] = "mbedtls_ssl_read"
                 this.message = message
@@ -219,9 +222,10 @@ export class mbed_TLS {
 
 
     install_plaintext_write_hook() {
+        var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
         //https://tls.mbed.org/api/ssl_8h.html#a5bbda87d484de82df730758b475f32e5
-        Interceptor.attach(this.addresses["mbedtls_ssl_write"], {
+        Interceptor.attach(this.addresses[this.moduleName]["mbedtls_ssl_write"], {
 
             onEnter: function (args) {
                 var buffer = args[1];
@@ -231,7 +235,7 @@ export class mbed_TLS {
                     return
                 }
                 var data = buffer.readByteArray(len);
-                var message = getPortsAndAddresses(mbed_TLS.getSocketDescriptor(args[0]) as number, false, lib_addesses, enable_default_fd)
+                var message = getPortsAndAddresses(mbed_TLS.getSocketDescriptor(args[0]) as number, false, lib_addesses[current_module_name], enable_default_fd)
                 message["ssl_session_id"] = mbed_TLS.getSessionId(args[0])
                 message["function"] = "mbedtls_ssl_write"
                 message["contentType"] = "datalog"

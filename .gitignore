@@ -1,11 +1,21 @@
-# Android Studio specific files
-/.idea
-/.gradle
-/local.properties
+#frida-server
+frida-server*
 
-# Gradle cache
-.gradle/
-/build/
+# debug output from testing stuff
+*.log
+*.keys
+
+#keys and certs for testing
+*.pem
+
+# venv
+vnev/
+
+ExampleLinux/.devcontainer/*
+ExampleLinux/sslserver
+ExampleLinux/wolfssl/*
+!ExampleLinux/wolfssl/.gitkeep
+*.o
 
 # Gradle Wrapper files
 /gradle/wrapper/gradle-wrapper.properties

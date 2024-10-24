@@ -1,21 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from distutils.command.sdist import sdist
 from os.path import exists as file_exists
 import os
 import frida
 import subprocess
 import sys
+import shlex
 
 if sys.version_info >= (3,10):
     from importlib.resources import files
-else:
-    from importlib_resources import files
 
 
-
- 
 class Android:
     
     def __init__(self,debug_infos=False, arch=""):
@@ -27,11 +23,9 @@ class Android:
         self.do_we_have_an_android_device = False
         if self._is_Android():
             self.tcpdump_version = self._get_appropriate_android_tcpdump_version(arch)
+            self.adb_check_root() # set is_magisk_mode
 
         
-
-
-    
     def adb_check_root(self):
         if bool(subprocess.run(['adb', 'shell','su -v'], capture_output=True, text=True).stdout):
             self.is_magisk_mode = True
@@ -91,10 +85,31 @@ class Android:
         return tcpdump_version
 
 
+    def is_tcpdump_available():
+        try:
+            # Check if tcpdump is available on the device
+            result = subprocess.run(['adb', 'shell', 'tcpdump', '--version'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if result.returncode == 0:
+                #print("tcpdump is available on the device.")
+                return True
+            else:
+                #print("tcpdump is not available on the device.")
+                return False
+        except Exception as e:
+            print(f"Error checking tcpdump availability: {e}")
+            return False
+            
+    
     def _get_tcpdump_version(self):
-        tcpdump_path = files('friTap.assets.tcpdump_binaries').joinpath(self.tcpdump_version)
+        # Get the path to the current file
+        current_dir = os.path.dirname(__file__)
+
+        # Construct the path to the assets directory
+        tcpdump_path = os.path.join(current_dir, 'assets', 'tcpdump_binaries', self.tcpdump_version)
+        #tcpdump_path = files('friTap.assets.tcpdump_binaries').joinpath(self.tcpdump_version)
 
         if file_exists(tcpdump_path):
+            print(f"[*] installing tcpdump to Android device: {tcpdump_path}")
             return tcpdump_path
         else:
             print("[-] error: can't find "+str(tcpdump_path))
@@ -138,7 +153,26 @@ class Android:
     def run_tcpdump_capture(self,pcap_name):
         self.close_friTap_if_none_android()
         self.pcap_name = pcap_name
-        return subprocess.Popen(['adb', 'shell','su -c '+self.dst_path+'./'+self.tcpdump_version+' -i any -s 0 -w '+self.dst_path+pcap_name])
+
+        if self.is_tcpdump_available:
+            tcpdump_cmd = f'tcpdump -i any -s 0 -w {self.dst_path}{pcap_name} not \\(tcp port 5555 or tcp port 27042\\)'
+            #testen
+        else:
+            tcpdump_cmd = f'{self.dst_path}./{self.tcpdump_version} -i any -s 0 -w {self.dst_path}{pcap_name} \\"not \\(tcp port 5555 or tcp port 27042\\)\\"'
+
+        
+        if self.is_magisk_mode:
+            cmd = f'adb shell su -c "{tcpdump_cmd}"'
+        else:
+            cmd = f'adb shell su 0 "{tcpdump_cmd}"'
+
+        print("[*] Running tcpdump in background:", cmd)
+        process = subprocess.Popen(shlex.split(cmd), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+
+        return process
+
     
     def _is_Android(self):
         try:

@@ -4,6 +4,8 @@ import ntpath
 from threading import Thread, Event
 import random
 import logging
+import time
+import struct
 # ensure that we only see errors from scapy 
 logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 
@@ -13,7 +15,7 @@ except ImportError:
 	print('[-]: scapy is not installed, please install it by running: pip3 install scapy')
 	exit(2)
 
-import friTap.android as android
+from .android import Android
  
 
 class PCAP:
@@ -34,7 +36,7 @@ class PCAP:
         if doFullCapture:
             if isMobile:
                 print("[*] capturing whole traffic of target app")
-                self.android_Instance = android.Android(self.print_debug_infos)
+                self.android_Instance = Android(self.print_debug_infos)
             self.full_capture_thread = self.get_instance_of_FullCaptureThread()
             self.full_capture_thread.start()
         else:
@@ -114,8 +116,10 @@ class PCAP:
                 
             def full_mobile_capture(self):
                 if pcap_class.android_Instance.is_Android():
-                    pcap_class.android_Instance.push_tcpdump_to_device()
+                    if pcap_class.android_Instance.is_tcpdump_available == False:
+                        pcap_class.android_Instance.push_tcpdump_to_device()
                     android_capture_process = pcap_class.android_Instance.run_tcpdump_capture("_"+self._get_pcap_base_name())
+                    
                     print("[*] doing full capture on Android")
                     return android_capture_process
                 else:

@@ -29,13 +29,15 @@ export class AntiRoot {
     RootPropertiesKeys: string[] = [];
 
 
-    addresses: { [key: string]: NativePointer };
-    library_method_mapping: { [key: string]: Array<String> } = {};
+    addresses: { [libraryName: string]: { [functionName: string]: NativePointer } };
+    module_name: string;
+    library_method_mapping: { [key: string]: Array<string> } = {};
 
     constructor(){
         this.library_method_mapping["libc.so"] = ["strstr", "fopen", "system"]
-
-        this.addresses = readAddresses(this.library_method_mapping);
+        this.module_name = "libc.so";
+        this.addresses = readAddresses(this.module_name,this.library_method_mapping);
+        
 
         for (var k in this.RootProperties) this.RootPropertiesKeys.push(k);
 
@@ -380,7 +382,7 @@ export class AntiRoot {
 
 
         // char *strstr(const char *str1, const char *str2);
-Interceptor.attach(this.addresses["strstr"], {
+Interceptor.attach(this.addresses[this.module_name]["strstr"], {
 
     onEnter: function (args) {
 
@@ -410,7 +412,7 @@ Interceptor.attach(this.addresses["strstr"], {
 
 
 
-Interceptor.attach(this.addresses["fopen"], {
+Interceptor.attach(this.addresses[this.module_name]["fopen"], {
     onEnter: function(args) {
         var path = args[0].readCString();
         //@ts-ignore
@@ -427,7 +429,7 @@ Interceptor.attach(this.addresses["fopen"], {
     }
 });
 
-Interceptor.attach(this.addresses["system"], {
+Interceptor.attach(this.addresses[this.module_name]["system"], {
     onEnter: function(args) {
         var cmd = args[0].readCString();
        log("SYSTEM CMD: " + cmd);

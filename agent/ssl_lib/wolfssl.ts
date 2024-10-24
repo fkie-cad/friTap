@@ -5,8 +5,9 @@ import { offsets, enable_default_fd } from "../ssl_log.js";
 export class WolfSSL {
 
     // global variables
-    library_method_mapping: { [key: string]: Array<String> } = {};
-    addresses: { [key: string]: NativePointer };
+    library_method_mapping: { [key: string]: Array<string> } = {};
+    addresses: { [libraryName: string]: { [functionName: string]: NativePointer } };
+    module_name: string;
     static wolfSSL_get_server_random: any;
     static wolfSSL_get_client_random : any;
     static wolfSSL_get_fd: any;
@@ -14,7 +15,7 @@ export class WolfSSL {
     static wolfSSL_SESSION_get_master_key: any;
    
 
-    constructor(public moduleName:String, public socket_library:String,public passed_library_method_mapping?: { [key: string]: Array<String> }){
+    constructor(public moduleName:string, public socket_library:String,public passed_library_method_mapping?: { [key: string]: Array<string> }){
         if(typeof passed_library_method_mapping !== 'undefined'){
             this.library_method_mapping = passed_library_method_mapping;
         }else{
@@ -22,7 +23,8 @@ export class WolfSSL {
             this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
         }
         
-        this.addresses = readAddresses(this.library_method_mapping);
+        this.addresses = readAddresses(moduleName,this.library_method_mapping);
+        this.module_name = moduleName;
 
         // @ts-ignore
         if(offsets != "{OFFSETS}" && offsets.wolfssl != null){
@@ -31,7 +33,7 @@ export class WolfSSL {
                 const socketBaseAddress = getBaseAddress(socket_library)
                 for(const method of Object.keys(offsets.sockets)){
                      //@ts-ignore
-                    this.addresses[`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
+                    this.addresses[this.moduleName][`${method}`] = offsets.sockets[`${method}`].absolute || socketBaseAddress == null ? ptr(offsets.sockets[`${method}`].address) : socketBaseAddress.add(ptr(offsets.sockets[`${method}`].address));
                 }
             }
 
@@ -44,7 +46,7 @@ export class WolfSSL {
             
             for (const method of Object.keys(offsets.wolfssl)){
                 //@ts-ignore
-                this.addresses[`${method}`] = offsets.wolfssl[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.wolfssl[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.wolfssl[`${method}`].address));
+                this.addresses[this.moduleName][`${method}`] = offsets.wolfssl[`${method}`].absolute || libraryBaseAddress == null ? ptr(offsets.wolfssl[`${method}`].address) : libraryBaseAddress.add(ptr(offsets.wolfssl[`${method}`].address));
             }
 
 
@@ -52,8 +54,8 @@ export class WolfSSL {
 
         
 
-        WolfSSL.wolfSSL_get_fd = new NativeFunction(this.addresses["wolfSSL_get_fd"], "int", ["pointer"])
-        WolfSSL.wolfSSL_get_session = new NativeFunction(this.addresses["wolfSSL_get_session"], "pointer", ["pointer"])
+        WolfSSL.wolfSSL_get_fd = new NativeFunction(this.addresses[this.moduleName]["wolfSSL_get_fd"], "int", ["pointer"])
+        WolfSSL.wolfSSL_get_session = new NativeFunction(this.addresses[this.moduleName]["wolfSSL_get_session"], "pointer", ["pointer"])
        
 
     }
@@ -95,12 +97,13 @@ export class WolfSSL {
 
 
     install_plaintext_read_hook(){
+        var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
-        Interceptor.attach(this.addresses["wolfSSL_read"],
+        Interceptor.attach(this.addresses[this.moduleName]["wolfSSL_read"],
         {
             onEnter: function (args: any) {
                 
-                var message = getPortsAndAddresses(WolfSSL.wolfSSL_get_fd(args[0]) as number, true, lib_addesses, enable_default_fd)
+                var message = getPortsAndAddresses(WolfSSL.wolfSSL_get_fd(args[0]) as number, true, lib_addesses[current_module_name], enable_default_fd)
                 
                 message["function"] = "wolfSSL_read"
                 message["ssl_session_id"] = WolfSSL.getSslSessionId(args[0])
@@ -121,11 +124,12 @@ export class WolfSSL {
 
 
     install_plaintext_write_hook(){
+        var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
-        Interceptor.attach(this.addresses["wolfSSL_write"],
+        Interceptor.attach(this.addresses[this.moduleName]["wolfSSL_write"],
         {
             onEnter: function (args: any) {
-                var message = getPortsAndAddresses(WolfSSL.wolfSSL_get_fd(args[0]) as number, false, lib_addesses, enable_default_fd)
+                var message = getPortsAndAddresses(WolfSSL.wolfSSL_get_fd(args[0]) as number, false, lib_addesses[current_module_name], enable_default_fd)
                 message["ssl_session_id"] = WolfSSL.getSslSessionId(args[0])
                 message["function"] = "wolfSSL_write"
                 message["contentType"] = "datalog"

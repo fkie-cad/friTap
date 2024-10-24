@@ -1,6 +1,6 @@
-import { module_library_mapping } from "../shared/shared_structures.js";
+import { module_library_mapping, ModuleHookingType } from "../shared/shared_structures.js";
 import { log, devlog } from "../util/log.js";
-import { getModuleNames, ssl_library_loader } from "../shared/shared_functions.js";
+import { getModuleNames, ssl_library_loader, invokeHookingFunction } from "../shared/shared_functions.js";
 import { sspi_execute } from "./sspi.js";
 import { boring_execute } from "./openssl_boringssl_windows.js";
 import { gnutls_execute } from "./gnutls_windows.js";
@@ -8,6 +8,7 @@ import { mbedTLS_execute } from "./mbedTLS_windows.js";
 import { nss_execute } from "./nss_windows.js";
 import { wolfssl_execute } from "./wolfssl_windows.js";
 import { matrixSSL_execute } from "./matrixssl_windows.js";
+import { cronet_execute } from "./cronet_windows.js";
 
 
 var plattform_name = "windows";
@@ -15,7 +16,7 @@ var moduleNames: Array<string> = getModuleNames()
 
 export const socket_library = "WS2_32.dll";
 
-function hook_Windows_Dynamic_Loader(module_library_mapping: { [key: string]: Array<[any, (moduleName: string)=>void]> }): void {
+function hook_Windows_Dynamic_Loader(module_library_mapping: { [key: string]: Array<[any, ModuleHookingType]> }, is_base_hook: boolean): void {
     try {
 
         const resolver: ApiResolver = new ApiResolver('module')
@@ -37,7 +38,7 @@ function hook_Windows_Dynamic_Loader(module_library_mapping: { [key: string]: Ar
 
                     if (regex.test(moduleName)) {
                         log(`${moduleName} was loaded & will be hooked on Windows!`)
-                        func(moduleName)
+                        func(moduleName, is_base_hook)
                     }
 
                 }
@@ -50,12 +51,21 @@ function hook_Windows_Dynamic_Loader(module_library_mapping: { [key: string]: Ar
     }
 }
 
-function hook_Windows_SSL_Libs(module_library_mapping: { [key: string]: Array<[any, (moduleName: string)=>void]> }) {
-    ssl_library_loader(plattform_name, module_library_mapping,moduleNames,"Windows")
+function hook_Windows_SSL_Libs(module_library_mapping: { [key: string]: Array<[any, ModuleHookingType]> }, is_base_hook: boolean) {
+    ssl_library_loader(plattform_name, module_library_mapping,moduleNames,"Windows", is_base_hook)
 }
 
 export function load_windows_hooking_agent() {
-    module_library_mapping[plattform_name] = [[/^(libssl|LIBSSL)-[0-9]+(_[0-9]+)?\.dll$/, boring_execute], [/^.*(wolfssl|WOLFSSL).*\.dll$/, wolfssl_execute], [/^.*(libgnutls|LIBGNUTLS)-[0-9]+\.dll$/, gnutls_execute], [/^(nspr|NSPR)[0-9]*\.dll/, nss_execute], [/(sspicli|SSPICLI|SspiCli)\.dll$/, sspi_execute], [/mbedTLS\.dll/, mbedTLS_execute], ["/matrixSSL\.dll", matrixSSL_execute]]
-    hook_Windows_SSL_Libs(module_library_mapping);
-    hook_Windows_Dynamic_Loader(module_library_mapping);
+    module_library_mapping[plattform_name] = [
+        [/^(libssl|LIBSSL)-[0-9]+(_[0-9]+)?\.dll$/, invokeHookingFunction(boring_execute)], 
+        [/^.*(wolfssl|WOLFSSL).*\.dll$/, invokeHookingFunction(wolfssl_execute)], 
+        [/^.*(libgnutls|LIBGNUTLS)-[0-9]+\.dll$/, invokeHookingFunction(gnutls_execute)], 
+        [/^(nspr|NSPR)[0-9]*\.dll/, invokeHookingFunction(nss_execute)], 
+        [/(sspicli|SSPICLI|SspiCli)\.dll$/, invokeHookingFunction(sspi_execute)], 
+        [/mbedTLS\.dll/, invokeHookingFunction(mbedTLS_execute)],
+        [/^.*(cronet|CRONET).*\.dll/, invokeHookingFunction(cronet_execute)], 
+        ["/matrixSSL\.dll", invokeHookingFunction(matrixSSL_execute)]]
+
+    hook_Windows_SSL_Libs(module_library_mapping, true);
+    hook_Windows_Dynamic_Loader(module_library_mapping, false);
 }

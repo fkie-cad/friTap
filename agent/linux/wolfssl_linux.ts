@@ -5,7 +5,7 @@ import { toHexString } from "../shared/shared_functions.js";
 
 export class WolfSSL_Linux extends WolfSSL {
 
-    constructor(public moduleName:String, public socket_library:String){
+    constructor(public moduleName:string, public socket_library:String, is_base_hook: boolean){
         super(moduleName,socket_library);
     }
 
@@ -17,12 +17,12 @@ export class WolfSSL_Linux extends WolfSSL {
     }
 
     install_tls_keys_callback_hook(){
-        WolfSSL.wolfSSL_get_client_random = new NativeFunction(this.addresses["wolfSSL_get_client_random"],"int", ["pointer", "pointer", "int"] )
-        WolfSSL.wolfSSL_get_server_random = new NativeFunction(this.addresses["wolfSSL_get_server_random"],"int", ["pointer", "pointer", "int"] )
+        WolfSSL.wolfSSL_get_client_random = new NativeFunction(this.addresses[this.module_name]["wolfSSL_get_client_random"],"int", ["pointer", "pointer", "int"] )
+        WolfSSL.wolfSSL_get_server_random = new NativeFunction(this.addresses[this.module_name]["wolfSSL_get_server_random"],"int", ["pointer", "pointer", "int"] )
         //https://www.wolfssl.com/doxygen/group__Setup.html#gaf18a029cfeb3150bc245ce66b0a44758
-        WolfSSL.wolfSSL_SESSION_get_master_key = new NativeFunction(this.addresses["wolfSSL_SESSION_get_master_key"], "int", ["pointer", "pointer", "int"])
+        WolfSSL.wolfSSL_SESSION_get_master_key = new NativeFunction(this.addresses[this.module_name]["wolfSSL_SESSION_get_master_key"], "int", ["pointer", "pointer", "int"])
         
-        Interceptor.attach(this.addresses["wolfSSL_connect"],{
+        Interceptor.attach(this.addresses[this.module_name]["wolfSSL_connect"],{
             onEnter: function(args: any){
                 this.ssl = args[0]
             },
@@ -66,9 +66,15 @@ export class WolfSSL_Linux extends WolfSSL {
 }
 
 
-export function wolfssl_execute(moduleName:String){
-    var wolf_ssl = new WolfSSL_Linux(moduleName,socket_library);
+export function wolfssl_execute(moduleName:string, is_base_hook: boolean){
+    var wolf_ssl = new WolfSSL_Linux(moduleName,socket_library, is_base_hook);
     wolf_ssl.execute_hooks();
 
-
+    if (is_base_hook) {
+        const init_addresses = wolf_ssl.addresses[moduleName];
+        // ensure that we only add it to global when we are not 
+        if (Object.keys(init_addresses).length > 0) {
+            (global as any).init_addresses[moduleName] = init_addresses;
+        }
+    }
 }
