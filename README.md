@@ -132,7 +132,7 @@ fritap -do -v com.example.app
 | MbedTLS                   | R/W-Hook only | R/W-Hook only |  TBI     |   Full   | TBI          |
 | Bouncycastle/Spongycastle |     TBA       |    TBA        |  TBA     |   Full   | TBA          |
 | Conscrypt                 |     TBA       |    TBA        |  TBA     |   Full   | TBA          |
-| S2n-tls                   |     Full      |    LibNO      |  TBA     |   LibNO  | LibNO        |
+| S2n-tls                   |     Full      |    LibNO      |  TBA     |   Full   | LibNO        |
 ```
 **R/W-Hook only** = Logging data sent and received by process<br>
 **KeyEo** = Only the keying material can be extracted<br>
