@@ -83,7 +83,7 @@ export function load_android_hooking_agent() {
         [/.*libgnutls\.so/, invokeHookingFunction(gnutls_execute)],
         [/.*libwolfssl\.so/, invokeHookingFunction(wolfssl_execute)],
         [/.*libnspr[0-9]?\.so/,invokeHookingFunction(nss_execute)], 
-        [/libmbedtls\.so.*/, invokeHookingFunction(mbedTLS_execute)]
+        [/libmbedtls\.so.*/, invokeHookingFunction(mbedTLS_execute)],
         [/.*libs2n.so/, invokeHookingFunction(s2ntls_execute)]];
 
     install_java_hooks();

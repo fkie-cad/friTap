@@ -5,7 +5,7 @@ import { log, devlog } from "../util/log.js"
 
 export class S2nTLS {
 
-    library_method_mapping: { [key: string]: Array<String> } = {};
+    library_method_mapping: { [key: string]: Array<string> } = {};
     addresses: { [libraryName: string]: { [functionName: string]: NativePointer } };
     module_name: string;
 
@@ -125,7 +125,7 @@ export class S2nTLS {
         var current_module_name = this.module_name;
         var lib_addresses = this.addresses;
 
-        Interceptor.attach(lib_addresses["s2n_recv"], {
+        Interceptor.attach(lib_addresses[this.moduleName]["s2n_recv"], {
 
             onEnter: function(args: any){
 

@@ -30,7 +30,7 @@ export class S2nTLS_Linux extends S2nTLS{
     }
 }
 
-export function s2ntls_execute(moduleName: String, is_base_hook: boolean){
+export function s2ntls_execute(moduleName: string, is_base_hook: boolean){
     var s2n_tls = new S2nTLS_Linux(moduleName, socket_library, is_base_hook);
     s2n_tls.execute_hooks();
 
