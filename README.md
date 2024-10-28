@@ -132,6 +132,7 @@ fritap -do -v com.example.app
 | MbedTLS                   | R/W-Hook only | R/W-Hook only |  TBI     |   Full   | TBI          |
 | Bouncycastle/Spongycastle |     TBA       |    TBA        |  TBA     |   Full   | TBA          |
 | Conscrypt                 |     TBA       |    TBA        |  TBA     |   Full   | TBA          |
+| S2n-tls                   |     Full      |    LibNO      |  TBA     |   Full   | LibNO        |
 ```
 **R/W-Hook only** = Logging data sent and received by process<br>
 **KeyEo** = Only the keying material can be extracted<br>
@@ -164,7 +165,6 @@ fritap -do -v com.example.app
   - Botan (BSD license, Jack Lloyd)
   - LibreSSL (OpenBSD)
   - Cryptlib (Peter Gutmann)
-  - S2n (Amazon)
   - JSSE (Java Secure Socket Extension, Oracle)
   - [MatrixSSL](https://github.com/matrixssl/matrixssl) 
   - ...

@@ -7,6 +7,7 @@ import { nss_execute } from "./nss_linux.js";
 import { mbedTLS_execute } from "./mbedTLS_linux.js";
 import { boring_execute } from "./openssl_boringssl_linux.js";
 import { matrixSSL_execute } from "./matrixssl_linux.js";
+import { s2ntls_execute } from "./s2ntls_linux.js";
 import { cronet_execute } from "./cronet_linux.js";
 
 var plattform_name = "linux";
@@ -66,7 +67,8 @@ export function load_linux_hooking_agent() {
         [/.*libwolfssl\.so/, invokeHookingFunction(wolfssl_execute)], 
         [/.*libnspr[0-9]?\.so/, invokeHookingFunction(nss_execute)], 
         [/libmbedtls\.so.*/, invokeHookingFunction(mbedTLS_execute)], 
-        [/libssl_s.a/, invokeHookingFunction(matrixSSL_execute)]]
+        [/libssl_s.a/, invokeHookingFunction(matrixSSL_execute)],
+        [/.*libs2n.so/, invokeHookingFunction(s2ntls_execute)]]
 
     hook_Linux_SSL_Libs(module_library_mapping, true);
     hook_Linux_Dynamic_Loader(module_library_mapping, false);

@@ -9,6 +9,7 @@ import { boring_execute } from "./openssl_boringssl_android.js";
 import { java_execute} from "./android_java_tls_libs.js";
 import { cronet_execute } from "./cronet_android.js";
 import { flutter_execute } from "./flutter_android.js";
+import { s2ntls_execute } from "./s2ntls_android.js";
 
 
 var plattform_name = "linux";
@@ -82,7 +83,8 @@ export function load_android_hooking_agent() {
         [/.*libgnutls\.so/, invokeHookingFunction(gnutls_execute)],
         [/.*libwolfssl\.so/, invokeHookingFunction(wolfssl_execute)],
         [/.*libnspr[0-9]?\.so/,invokeHookingFunction(nss_execute)], 
-        [/libmbedtls\.so.*/, invokeHookingFunction(mbedTLS_execute)]];
+        [/libmbedtls\.so.*/, invokeHookingFunction(mbedTLS_execute)],
+        [/.*libs2n.so/, invokeHookingFunction(s2ntls_execute)]];
 
     install_java_hooks();
     hook_native_Android_SSL_Libs(module_library_mapping, true);
