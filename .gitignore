@@ -1,5 +1,11 @@
-#frida-server
+#frida stuff
 frida-server*
+__handlers__
+friTap.egg-info
+dist/
+
+# vscode stuff
+.vscode
 
 # debug output from testing stuff
 *.log
@@ -55,3 +61,4 @@ out/
 # Keystore files
 *.jks
 *.keystore
+node_modules
