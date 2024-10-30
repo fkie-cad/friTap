@@ -4,6 +4,12 @@ __handlers__
 friTap.egg-info
 dist/
 
+# apple meta data
+.DS_Store
+
+# pycache
+*__pycache__*
+
 # vscode stuff
 .vscode
 
