@@ -20,8 +20,11 @@ dist/
 #keys and certs for testing
 *.pem
 
-# venv
+# venv and building
 vnev/
+build/
+venv/
+
 
 ExampleLinux/.devcontainer/*
 ExampleLinux/sslserver
