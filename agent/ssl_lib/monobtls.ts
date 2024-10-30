@@ -4,7 +4,7 @@ import { devlog } from "../util/log.js";
 
 
 
-export class Flutter {
+export class Mono_BTLS {
     
 
     // global variables
@@ -104,7 +104,7 @@ export class Flutter {
             devlog("[Error] Argument 'key' is NULL");
         }
 
-        //devlog("invoking ssl_log_secret() from BoringSSL statically linked into Flutter");
+        //devlog("invoking ssl_log_secret() from BoringSSL statically linked into Mono BTLS");
         var message: { [key: string]: string | number | null } = {}
         message["contentType"] = "keylog"
         message["keylog"] = labelStr+" "+client_random+" "+secret_key;

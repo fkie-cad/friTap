@@ -1,6 +1,6 @@
 {
     "name": "friTap",
-    "version": "1.2.2.89",
+    "version": "1.2.3.0",
     "description": "Frida agent for logging SSL traffic as plaintext and extracting SSL keys",
     "private": true,
     "main": "agent/ssl_log.ts",

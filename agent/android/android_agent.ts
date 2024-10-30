@@ -10,7 +10,7 @@ import { java_execute} from "./android_java_tls_libs.js";
 import { cronet_execute } from "./cronet_android.js";
 import { flutter_execute } from "./flutter_android.js";
 import { s2ntls_execute } from "./s2ntls_android.js";
-
+import { mono_btls_execute } from "./mono_btls_android.js";
 
 var plattform_name = "linux";
 var moduleNames: Array<string> = getModuleNames();
@@ -84,7 +84,8 @@ export function load_android_hooking_agent() {
         [/.*libwolfssl\.so/, invokeHookingFunction(wolfssl_execute)],
         [/.*libnspr[0-9]?\.so/,invokeHookingFunction(nss_execute)], 
         [/libmbedtls\.so.*/, invokeHookingFunction(mbedTLS_execute)],
-        [/.*libs2n.so/, invokeHookingFunction(s2ntls_execute)]];
+        [/.*libs2n.so/, invokeHookingFunction(s2ntls_execute)],
+        [/.*mono-btls.*\.so/, invokeHookingFunction(mono_btls_execute)]];
 
     install_java_hooks();
     hook_native_Android_SSL_Libs(module_library_mapping, true);
