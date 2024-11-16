@@ -53,6 +53,7 @@ class SSL_Logger():
         self.payload_modification = payload_modification
         self.enable_default_fd = enable_default_fd
         self.experimental = experimental
+        self.script = None
 
         self.tmpdir = None
         self.filename = ""
@@ -96,7 +97,7 @@ class SSL_Logger():
             print(f'Failed to create FIFO: {e}')
         
 
-    def on_message(self, message, data):
+    def on_fritap_message(self,job, message, data):
         """Callback for errors and messages sent from Frida-injected JavaScript.
         Logs captured packet data received from JavaScript to the console and/or a
         pcap file. See https://www.frida.re/docs/messages/ for more detail on
@@ -106,21 +107,28 @@ class SSL_Logger():
             dependent on message type.
         data: The string of captured decrypted data.
         """
+
+
+        """
+        This offers the possibility to work with the JobManger() from the AndroidFridaManager project.
+        """
+        if self.script == None:
+            self.script = job.script
             
         if self.startup and message['payload'] == 'experimental':
-            script.post({'type':'experimental', 'payload': self.experimental})
+            self.script.post({'type':'experimental', 'payload': self.experimental})
 
         if self.startup and message['payload'] == 'defaultFD':
-            script.post({'type':'defaultFD', 'payload': self.enable_default_fd})
+            self.script.post({'type':'defaultFD', 'payload': self.enable_default_fd})
 
         if self.startup and message['payload'] == 'pattern_hooking':
-            script.post({'type':'pattern_hooking', 'payload': self.pattern_data})
+            self.script.post({'type':'pattern_hooking', 'payload': self.pattern_data})
 
         if self.startup and message['payload'] == 'offset_hooking':
-            script.post({'type':'offset_hooking', 'payload': self.offsets_data})
+            self.script.post({'type':'offset_hooking', 'payload': self.offsets_data})
         
         if self.startup and message['payload'] == 'anti':
-            script.post({'type':'antiroot', 'payload': self.anti_root})
+            self.script.post({'type':'antiroot', 'payload': self.anti_root})
             self.startup = False
             
         
@@ -212,7 +220,6 @@ class SSL_Logger():
         
 
     def instrument(self, process):
-        global script
         runtime="qjs"
         debug_port = 1337
         if self.debug:
@@ -223,7 +230,7 @@ class SSL_Logger():
             print("[!] Open Chrome with chrome://inspect for debugging\n")
             runtime="v8"
         
-        script_string = get_fritap_frida_script(self.frida_agent_script)
+        script_string = self.get_fritap_frida_script()
         
 
         if self.offsets_data is not None:
@@ -234,12 +241,12 @@ class SSL_Logger():
             print(f"[*] Using pattern provided by pattern.json for hooking")
                     
 
-        script = process.create_script(script_string, runtime=runtime)
+        self.script = process.create_script(script_string, runtime=runtime)
 
         if self.debug and frida.__version__ >= "16":
-            script.enable_debugger(debug_port)
-        script.on("message", self.on_message)
-        script.load()
+            self.script.enable_debugger(debug_port)
+        self.script.on("message", self.internal_callback_wrapper())
+        self.script.load()
         
         
 
@@ -256,11 +263,11 @@ class SSL_Logger():
                         if(event.event_type == "modified" and ("readmod" in event.src_path)):
                             with open("./readmod.bin", "rb") as f:
                                 buffer = f.read()
-                                script.post({'type':'readmod', 'payload': buffer.hex()})
+                                self.script.post({'type':'readmod', 'payload': buffer.hex()})
                         elif(event.event_type == "modified" and ("writemod" in event.src_path)):
                             with open("./writemod.bin", "rb") as f:
                                 buffer = f.read()
-                                script.post({'type':'writemod', 'payload': buffer.hex()})
+                                self.script.post({'type':'writemod', 'payload': buffer.hex()})
                     except RuntimeError as e:
                         print(e)
                 
@@ -272,6 +279,8 @@ class SSL_Logger():
             observer = Observer()
             observer.schedule(event_handler, os.getcwd())
             observer.start()
+
+        return self.script
      
     
     def load_patterns(self):
@@ -307,9 +316,9 @@ class SSL_Logger():
 
         if self.offsets is not None:
             if os.path.exists(self.offsets):
-                file = open(self.offsets, "r")
-                self.offsets_data = file.read()
-                file.close()
+                offset_file = open(self.offsets, "r")
+                self.offsets_data = offset_file.read()
+                offset_file.close()
             else:
                 try:
                     json.load(self.offsets)
@@ -380,6 +389,18 @@ class SSL_Logger():
             self.device.resume(pid)
 
         return self.process
+
+
+    def finish_fritap(self):
+        if self.script:
+            self.script.unload()
+
+
+    def internal_callback_wrapper(self):
+        def wrapped_handler(message, data):
+            self.on_fritap_message(None, message, data)
+        
+        return wrapped_handler
     
 
     def pcap_cleanup(self, is_full_capture, is_mobile, pcap_name):
@@ -422,6 +443,15 @@ class SSL_Logger():
         print("\n\nThx for using friTap\nHave a great day\n")
         os._exit(0)
 
+    def get_fritap_frida_script(self):
+        with open(os.path.join(here, self.frida_agent_script), encoding='utf-8', newline='\n') as f:
+            script_string = f.read()
+            return script_string
+            
+    
+    def get_fritap_frida_script_path(self):
+        return os.path.join(os.path.dirname(__file__), self.frida_agent_script)
+
   
 def get_addr_string(socket_addr,ss_family):
     if ss_family == "AF_INET":
@@ -429,12 +459,6 @@ def get_addr_string(socket_addr,ss_family):
     else: # this should only be AF_INET6
         raw_addr = bytes.fromhex(socket_addr)
         return socket.inet_ntop(socket.AF_INET6, struct.pack(">16s", raw_addr))
-    
-
-def get_fritap_frida_script(frida_agent_script):
-    with open(os.path.join(here, frida_agent_script), encoding='utf-8', newline='\n') as f:
-            script_string = f.read()
-            return script_string
             
 
 def write_socket_trace(self, socket_trace_name):

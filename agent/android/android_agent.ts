@@ -78,6 +78,8 @@ export function load_android_hooking_agent() {
     module_library_mapping[plattform_name] = [
         [/.*libssl_sb.so/, invokeHookingFunction(boring_execute)],
         [/.*libssl\.so/, invokeHookingFunction(boring_execute)],
+        [/libconscrypt_gmscore_jni.so/, invokeHookingFunction(boring_execute)], // inspired from https://github.com/PiRogueToolSuite/pirogue-cli/blob/debian-12/pirogue_cli/frida-scripts/log_ssl_keys.js#L55
+        [/ibconscrypt_jni.so/, invokeHookingFunction(boring_execute)],
         [/.*cronet.*\.so/, invokeHookingFunction(cronet_execute)],
         [/.*flutter.*\.so/, invokeHookingFunction(flutter_execute)],
         [/.*libgnutls\.so/, invokeHookingFunction(gnutls_execute)],

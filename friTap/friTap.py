@@ -122,7 +122,8 @@ Examples:
         ssl_log = SSL_Logger(parsed.exec, parsed.pcap, parsed.verbose,
                 parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.mobile, parsed.live, parsed.environment, parsed.debug, parsed.full_capture, parsed.socket_tracing, parsed.host, parsed.offsets, parsed.debugoutput, parsed.experimental, parsed.anti_root, parsed.payload_modification, parsed.enable_default_fd, parsed.patterns)
         
-        process = ssl_log.start_fritap_session()      
+        process = ssl_log.start_fritap_session()  
+        
         sys.stdin.read()
     except frida.TransportError as fe:
         print(f"[-] Problems while attaching to frida-server: {fe}")

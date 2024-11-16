@@ -3,7 +3,7 @@
 </p>
 
 # friTap
-![version](https://img.shields.io/badge/version-1.2.3.0-blue) [![PyPI version](https://d25lcipzij17d.cloudfront.net/badge.svg?id=py&r=r&ts=1683906897&type=6e&v=1.2.3.0&x2=0)](https://badge.fury.io/py/friTap)
+![version](https://img.shields.io/badge/version-1.2.3.5-blue) [![PyPI version](https://d25lcipzij17d.cloudfront.net/badge.svg?id=py&r=r&ts=1683906897&type=6e&v=1.2.3.5&x2=0)](https://badge.fury.io/py/friTap)
 
 The goal of this project is to help researchers to analyze traffic encapsulated in SSL or TLS. For details have a view into the [OSDFCon webinar slides](assets/friTapOSDFConwebinar.pdf) or in [this blog post](https://lolcads.github.io/posts/2022/08/fritap/).
 
@@ -152,6 +152,7 @@ fritap -do -v com.example.app
 - scapy (`python3 -m pip install scapy`)
 - watchdog (`python3 -m pip install watchdog`)
 - importlib.resources  (`python3 -m pip install importlib-resources`)
+- AndroidFridaManager (`python3 -m pip install AndroidFridaManager`)
 - for hooking on Android ensure that the `adb`-command is in your PATH
 
 ## Planned features
@@ -160,7 +161,7 @@ fritap -do -v com.example.app
   - integration with https://github.com/mitmproxy/mitmproxy
   - integration with http://portswigger.net/burp/
 - [ ] add wine support
-- [ ] add Flutter support
+- [x] <strike>add Flutter support</strike>
 - [ ] add further libraries (have a look at this [Wikipedia entry](https://en.wikipedia.org/wiki/Comparison_of_TLS_implementations)):
   - Botan (BSD license, Jack Lloyd)
   - LibreSSL (OpenBSD)
@@ -168,10 +169,9 @@ fritap -do -v com.example.app
   - JSSE (Java Secure Socket Extension, Oracle)
   - [MatrixSSL](https://github.com/matrixssl/matrixssl) 
   - ...
-- [ ] Working with static linked libraries
-- [ ] Add feature to prototype TLS-Read/Write/SSLKEY functions
+- [x] <strike>Working with static linked libraries</strike>
+- [x] <strike>Add feature to prototype TLS-Read/Write/SSLKEY functions</strike>
 - [ ] improve iOS/MacOS support (currently under development)
-- [x] <strike>provide friTap as PyPI package</strike>
 
 ## Contribute
 
