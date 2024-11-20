@@ -207,7 +207,7 @@ This category hooks the SSL_Write function, which is responsible for writing enc
 
 ## Using friTap with a custom Frida scripts
 
-This guide explains how to use friTap with a custom Frida script to enhance its functionality. Using the `-c` parameter, you can specify a custom script to be executed during the friTap session.
+This guide explains how to use friTap with a custom Frida script to enhance its functionality. Using the `-c` parameter, you can specify a custom script to be executed during the friTap session.  This custom script will be invoked just before friTap applies its own hooks.
 
 ---
 

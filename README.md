@@ -53,7 +53,7 @@ from friTap import SSL_Logger
 ```
 For more details on integrating friTap into your Python project, check out the [INTEGRATION.md](./INTEGRATION.md) guide.
 
-friTap allows you to enhance its functionality by providing a custom Frida script during your session. To do so, use the `-c` parameter ([more](./USAGE.md#Using-friTap-with-a-custom-Frida-scripts)).
+friTap allows you to enhance its functionality by providing a custom Frida script during your session. This custom script will be invoked just before friTap applies its own hooks. To do so, use the `-c` parameter ([more](./USAGE.md#Using-friTap-with-a-custom-Frida-scripts)).
 More examples on using friTap can be found in the [USAGE.md](./USAGE.md). A detailed introduction using friTap on Android is under [EXAMPLE.md](./EXAMPLE.md) as well.
 
 ## Hooking Libraries Without Symbols
