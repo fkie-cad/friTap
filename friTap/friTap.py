@@ -25,15 +25,6 @@ def write_debug_frida_file(debug_script_version):
 
 
 
-'''
-def running_hooks(script="custom_hooks.js"):
-    run_custom_hooks(script)
-    start_fritap_hooks()
-'''
-
-
-
-
 class ArgParser(argparse.ArgumentParser):
     def error(self, message):
         print("friTap v" + __version__)
@@ -57,6 +48,7 @@ Examples:
   %(prog)s -m -p ssl.pcap com.example.app
   %(prog)s -m --pcap log.pcap --verbose com.example.app
   %(prog)s -m -k keys.log -v -s com.example.app
+  %(prog)s -m -k keys.log -v -c <path to custom hook script> -s com.example.app
   %(prog)s -m --patterns pattern.json -k keys.log -s com.google.android.youtube
   %(prog)s --pcap log.pcap "$(which curl) https://www.google.com"
   %(prog)s -H --pcap log.pcap 192.168.0.1:1234 com.example.app
@@ -70,6 +62,8 @@ Examples:
                       const=True, default=False, help="Attach to a process on android or iOS")
     args.add_argument("-H", "--host", metavar="<ip:port>", required=False,
                       help="Attach to a process on remote frida device")
+    args.add_argument("-c", "--custom_script", metavar="<path>", required=False,
+                      help="Path to the custom Frida script that will be executed prior to applying the friTap hooks.")
     args.add_argument("-d", "--debug", required=False, action="store_const", const=True,
                       help="Set friTap into debug mode this include debug output as well as a listening Chrome Inspector server for remote debugging.")
     args.add_argument("-do", "--debugoutput", required=False, action="store_const", const=True,
@@ -120,7 +114,7 @@ Examples:
         print("Start logging")
         print("Press Ctrl+C to stop logging")
         ssl_log = SSL_Logger(parsed.exec, parsed.pcap, parsed.verbose,
-                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.mobile, parsed.live, parsed.environment, parsed.debug, parsed.full_capture, parsed.socket_tracing, parsed.host, parsed.offsets, parsed.debugoutput, parsed.experimental, parsed.anti_root, parsed.payload_modification, parsed.enable_default_fd, parsed.patterns)
+                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.mobile, parsed.live, parsed.environment, parsed.debug, parsed.full_capture, parsed.socket_tracing, parsed.host, parsed.offsets, parsed.debugoutput, parsed.experimental, parsed.anti_root, parsed.payload_modification, parsed.enable_default_fd, parsed.patterns, parsed.custom_script)
         
         process = ssl_log.start_fritap_session()  
         

@@ -202,3 +202,63 @@ This category hooks the SSL_Write function, which is responsible for writing enc
 ```
     Primary Pattern: Hook the SSL_Write function.
     Fallback Pattern: If the primary pattern fails, the fallback pattern is tried.
+
+
+
+## Using friTap with a custom Frida scripts
+
+This guide explains how to use friTap with a custom Frida script to enhance its functionality. Using the `-c` parameter, you can specify a custom script to be executed during the friTap session.
+
+---
+
+### Example Command
+
+To invoke friTap with a custom script, use the following command:
+
+```bash
+fritap -m -k cronet18.keys -do -c "/path/to/custom.js" -v YouTube
+```
+
+### **Explanation of Parameters**
+- `-m`: Indicates that the app is running on a mobile device.
+- `-k`: Specifies the output file for the SSL key log.
+- `-do`: Enables debug output for detailed logging.
+- `-c`: Specifies the path to the custom Frida script to be executed.
+- `-v`: Enables verbose logging.
+- `YouTube`: The name of the app package to be hooked.
+
+---
+
+### Custom Script Example
+
+The following is an example of a custom Frida script (`custom.js`) that iterates over all loaded modules, checks for exports containing `ssl` or `tls`, and sends relevant information to friTap.
+
+```javascript
+/*
+ * Example code for using custom hooks in friTap. 
+ * To ensure friTap prints content, include a "custom" field in your message payload. 
+ * The value of this "custom" field will be displayed by friTap.
+ */
+
+// Iterate over all loaded modules
+Process.enumerateModules().forEach(module => {
+    // Enumerate exports for each module
+    module.enumerateExports().forEach(exp => {
+        // Check if the export name contains "ssl" or "tls"
+        if (exp.name.toLowerCase().includes("ssl") || exp.name.toLowerCase().includes("tls")) {
+            // Send the result to Python
+            send({
+                custom: `Found export: ${exp.name} in module: ${module.name} at address: ${exp.address}`
+            });
+        }
+    });
+});
+```
+friTap will print any messages sent with a `custom` field during execution.
+You can download the above example code as `custom.js` file using the link below:
+
+**[Download custom.js](./custom.js)**
+
+Place this file in the same directory as your friTap installation or provide the absolute path to the `-c` parameter.
+
+

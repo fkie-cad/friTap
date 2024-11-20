@@ -1,4 +1,4 @@
-import { readAddresses, getPortsAndAddresses, getBaseAddress, isSymbolAvailable } from "../shared/shared_functions.js";
+import { readAddresses, getPortsAndAddresses, getBaseAddress, isSymbolAvailable, checkNumberOfExports } from "../shared/shared_functions.js";
 import { getOffsets, offsets, enable_default_fd } from "../ssl_log.js";
 import { devlog, log } from "../util/log.js";
 
@@ -94,7 +94,9 @@ export class OpenSSL_BoringSSL {
         if(typeof passed_library_method_mapping !== 'undefined'){
             this.library_method_mapping = passed_library_method_mapping;
         }else{
-            this.library_method_mapping[`*${moduleName}*`] = ["SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_keylog_callback"]
+            if(checkNumberOfExports(moduleName) > 2 ){
+                this.library_method_mapping[`*${moduleName}*`] = ["SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_keylog_callback"]
+            }
             this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
         }
 

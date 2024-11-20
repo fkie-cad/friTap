@@ -31,7 +31,7 @@ SSL_WRITE = ["SSL_write", "wolfSSL_write", "writeApplicationData", "NSS_write","
 
 class SSL_Logger():
 
-    def __init__(self, app, pcap_name=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, mobile=False, live=False, environment_file=None, debug_mode=False,full_capture=False, socket_trace=False, host=False, offsets=None, debug_output=False, experimental=False, anti_root=False, payload_modification=False,enable_default_fd=False, patterns=None):
+    def __init__(self, app, pcap_name=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, mobile=False, live=False, environment_file=None, debug_mode=False,full_capture=False, socket_trace=False, host=False, offsets=None, debug_output=False, experimental=False, anti_root=False, payload_modification=False,enable_default_fd=False, patterns=None, custom_hook_script=None):
         self.debug = debug_mode
         self.anti_root = anti_root
         self.pcap_name = pcap_name
@@ -53,6 +53,7 @@ class SSL_Logger():
         self.payload_modification = payload_modification
         self.enable_default_fd = enable_default_fd
         self.experimental = experimental
+        self.custom_hook_script = custom_hook_script
         self.script = None
 
         self.tmpdir = None
@@ -64,20 +65,53 @@ class SSL_Logger():
         self.keylog_file = None
 
         self.patterns = patterns
-        self.pattern_data = None
-
-        if frida.__version__ < "16":
-            self.frida_agent_script = "_ssl_log_legacy.js"
-        else:
-            self.frida_agent_script = "_ssl_log.js"
-        
-        if self.debug_output:
-            print("[***] loading frida script: " + self.frida_agent_script)
+        self.pattern_data = None        
 
         self.keydump_Set = {*()}
         self.traced_Socket_Set = {*()}
         self.traced_scapy_socket_Set = {*()}
+
+        self.init_fritap()
     
+    
+    def init_fritap(self):
+        if frida.__version__ < "16":
+            self.frida_agent_script = "_ssl_log_legacy.js"
+        else:
+            self.frida_agent_script = "_ssl_log.js"
+
+        if self.pcap_name:
+            self.pcap_obj =  PCAP(self.pcap_name,SSL_READ,SSL_WRITE,self.full_capture, self.mobile,self.debug)
+
+        if self.offsets is not None:
+            if os.path.exists(self.offsets):
+                offset_file = open(self.offsets, "r")
+                self.offsets_data = offset_file.read()
+                offset_file.close()
+            else:
+                try:
+                    json.load(self.offsets)
+                    self.offsets_data = self.offsets
+                except ValueError as e:
+                    print(f"Log error, defaulting to auto-detection: {e}")
+
+        if self.patterns is not None:
+            self.load_patterns()
+
+        if self.keylog:
+            self.keylog_file = open(self.keylog, "w")
+
+        if self.live:
+            if self.pcap_name:
+                print("[*] YOU ARE TRYING TO WRITE A PCAP AND HAVING A LIVE VIEW\nTHIS IS NOT SUPPORTED!\nWHEN YOU DO A LIVE VIEW YOU CAN SAFE YOUR CAPUTRE WITH WIRESHARK.")
+            fifo_file = self.temp_fifo()
+            print(f'[*] friTap live view on Wireshark')
+            print(f'[*] Created named pipe for Wireshark live view to {fifo_file}')
+            print(
+                f'[*] Now open this named pipe with Wireshark in another terminal: sudo wireshark -k -i {fifo_file}')
+            print(f'[*] friTap will continue after the named pipe is ready....\n')
+            self.pcap_obj =  PCAP(fifo_file,SSL_READ,SSL_WRITE,self.full_capture, self.mobile,self.debug)
+
     
     def on_detach(self, reason):
         if reason != "application-requested":
@@ -206,6 +240,25 @@ class SSL_Logger():
                 self.traced_scapy_socket_Set.add(scapy_filter)
     
 
+    
+    def on_custom_hook_message(self, message, data):
+        """
+        This handler is used to print the messages from the provided custom hooks
+        """
+
+        if message["type"] == "error":
+            pprint.pprint(message)
+            os.kill(os.getpid(), signal.SIGTERM)
+            return
+        
+        custom_hook_payload = message["payload"]
+        if not "custom" in custom_hook_payload:
+            return
+
+        print("[+] custom hook: "+custom_hook_payload["custom"])
+
+    
+    
     def on_child_added(self, child):
         print(f"[*] Attached to child process with pid {child.pid}")
         self.instrument(self.device.attach(child.pid))
@@ -230,7 +283,14 @@ class SSL_Logger():
             print("[!] Open Chrome with chrome://inspect for debugging\n")
             runtime="v8"
         
+        if self.custom_hook_script is not None:
+            custom_script_string = self.get_custom_frida_script()
+            if self.debug_output:
+                print("[***] loading custom frida script: " + self.custom_hook_script)
+        
         script_string = self.get_fritap_frida_script()
+        if self.debug_output:
+            print("[***] loading friTap frida script: " + self.frida_agent_script)
         
 
         if self.offsets_data is not None:
@@ -239,7 +299,13 @@ class SSL_Logger():
 
         if self.pattern_data is not None:
             print(f"[*] Using pattern provided by pattern.json for hooking")
-                    
+
+        
+        if self.custom_hook_script is not None:
+            self.custom_script = process.create_script(custom_script_string, runtime=runtime)
+            self.custom_script.on("message", self.on_custom_hook_message)
+            self.custom_script.load()
+
 
         self.script = process.create_script(script_string, runtime=runtime)
 
@@ -314,6 +380,7 @@ class SSL_Logger():
         else:
             self.device = frida.get_local_device()
 
+        """
         if self.offsets is not None:
             if os.path.exists(self.offsets):
                 offset_file = open(self.offsets, "r")
@@ -328,6 +395,7 @@ class SSL_Logger():
 
         if self.patterns is not None:
             self.load_patterns()
+        """
 
 
         self.device.on("child_added", self.on_child_added)
@@ -337,8 +405,8 @@ class SSL_Logger():
         if self.spawn:
             print("spawning "+ self.target_app)
             
-            if self.pcap_name:
-                self.pcap_obj =  PCAP(self.pcap_name,SSL_READ,SSL_WRITE,self.full_capture, self.mobile,self.debug)
+            #if self.pcap_name:
+            #    self.pcap_obj =  PCAP(self.pcap_name,SSL_READ,SSL_WRITE,self.full_capture, self.mobile,self.debug)
                 
             if self.mobile or self.host:
                 pid = self.device.spawn(self.target_app)
@@ -352,10 +420,11 @@ class SSL_Logger():
                 time.sleep(1) # without it Java.perform silently fails
             self.process = self.device.attach(pid)
         else:
-            if self.pcap_name:
-                self.pcap_obj =  PCAP(self.pcap_name,SSL_READ,SSL_WRITE,self.full_capture, self.mobile,self.debug)
+            #if self.pcap_name:
+            #    self.pcap_obj =  PCAP(self.pcap_name,SSL_READ,SSL_WRITE,self.full_capture, self.mobile,self.debug)
             self.process = self.device.attach(int(self.target_app) if self.target_app.isnumeric() else self.target_app)
 
+        """
         if self.live:
             if self.pcap_name:
                 print("[*] YOU ARE TRYING TO WRITE A PCAP AND HAVING A LIVE VIEW\nTHIS IS NOT SUPPORTED!\nWHEN YOU DO A LIVE VIEW YOU CAN SAFE YOUR CAPUTRE WITH WIRESHARK.")
@@ -370,6 +439,7 @@ class SSL_Logger():
 
         if self.keylog:
             self.keylog_file = open(self.keylog, "w")
+        """
 
 
         self.instrument(self.process)
@@ -401,6 +471,10 @@ class SSL_Logger():
             self.on_fritap_message(None, message, data)
         
         return wrapped_handler
+
+
+    def set_keylog_file(self, keylog_name):
+        self.keylog_file = open(keylog_name, "w")
     
 
     def pcap_cleanup(self, is_full_capture, is_mobile, pcap_name):
@@ -448,6 +522,12 @@ class SSL_Logger():
             script_string = f.read()
             return script_string
             
+    
+    def get_custom_frida_script(self):
+        with open(os.path.join(here, self.custom_hook_script), encoding='utf-8', newline='\n') as f:
+            script_string = f.read()
+            return script_string
+    
     
     def get_fritap_frida_script_path(self):
         return os.path.join(os.path.dirname(__file__), self.frida_agent_script)

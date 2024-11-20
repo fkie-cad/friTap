@@ -71,6 +71,26 @@ export function getModuleNames(){
     return moduleNames;
 }
 
+export function checkNumberOfExports(moduleName: string): number {
+    try {
+        // Get the module by name
+        const module = Process.getModuleByName(moduleName);
+
+        // Enumerate exports of the module
+        const exports = module.enumerateExports();
+
+        // Get the number of exports
+        const numberOfExports = exports.length;
+
+        // Log the result
+        devlog(`The module "${moduleName}" has ${numberOfExports} exports.`);
+        return numberOfExports;
+    } catch (error) {
+        devlog(`Error checking exports for module "${moduleName}": ${error}`);
+        return -1;
+    }
+}
+
 export function readAddresses(moduleName: string, library_method_mapping: { [key: string]: Array<string> }): { [library_name: string]: { [functionName: string]: NativePointer } } {
     const resolver = new ApiResolver("module");
     const addresses: { [library_name: string]: { [functionName: string]: NativePointer } } = {};

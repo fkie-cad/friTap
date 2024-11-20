@@ -3,7 +3,7 @@
 </p>
 
 # friTap
-![version](https://img.shields.io/badge/version-1.2.3.6-blue) [![PyPI version](https://d25lcipzij17d.cloudfront.net/badge.svg?id=py&r=r&ts=1683906897&type=6e&v=1.2.3.6&x2=0)](https://badge.fury.io/py/friTap)
+![version](https://img.shields.io/badge/version-1.2.4.0-blue) [![PyPI version](https://d25lcipzij17d.cloudfront.net/badge.svg?id=py&r=r&ts=1683906897&type=6e&v=1.2.4.0&x2=0)](https://badge.fury.io/py/friTap)
 
 The goal of this project is to help researchers to analyze traffic encapsulated in SSL or TLS. For details have a view into the [OSDFCon webinar slides](assets/friTapOSDFConwebinar.pdf) or in [this blog post](https://lolcads.github.io/posts/2022/08/fritap/).
 
@@ -47,8 +47,13 @@ $ which friTap
 $ sudo -E /home/daniel/.local/bin/friTap
 ```
 
+friTap can also be used as a Python library within your project:
+```python
+from friTap import SSL_Logger
+```
+For more details on integrating friTap into your Python project, check out the [INTEGRATION.md](./INTEGRATION.md) guide.
 
-
+friTap allows you to enhance its functionality by providing a custom Frida script during your session. To do so, use the `-c` parameter ([more](./USAGE.md#Using-friTap-with-a-custom-Frida-scripts)).
 More examples on using friTap can be found in the [USAGE.md](./USAGE.md). A detailed introduction using friTap on Android is under [EXAMPLE.md](./EXAMPLE.md) as well.
 
 ## Hooking Libraries Without Symbols
