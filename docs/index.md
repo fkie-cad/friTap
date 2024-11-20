@@ -25,8 +25,8 @@ The main features of friTap are:
 
 - TLS key extraction in real time
 - Decryption of TLS payload as PCAP in real time
-- Integration with Python. More 
-- Support for custom Frida scripts
+- Integration with Python. [Learn more](https://github.com/fkie-cad/friTap/blob/main/INTEGRATION.md)
+- Support for custom Frida scripts. [Details](https://github.com/fkie-cad/friTap/blob/main/USAGE.md#Using-friTap-with-a-custom-Frida-scripts)
 - Support of most common SSL libraries (OpenSSL, BoringSSL, NSS, GnuTLS, etc.)
 
 
@@ -67,7 +67,7 @@ The `-m` parameter indicates that we are analyzing a mobile application in the a
 ```bash
 $ fritap –m –k TLS_keys.log <target_app>
 
-[*] BoringSSL.so found & will be hooked on iOS!
+[*] BoringSSL.dylib found & will be hooked on iOS!
 [*] iOS dynamic loader hooked.
 [*] Logging keylog file to TLS_keys.log
 ```
