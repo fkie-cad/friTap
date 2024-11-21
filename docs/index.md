@@ -1,6 +1,6 @@
 ---
 layout: default
-title: friTap - DECRYPTING TLS TRAFFIC ON THE FLY
+title: friTap - Decrypting TLS Traffic On The Fly
 ---
 
 ![friTap Logo](https://raw.githubusercontent.com/fkie-cad/friTap/main/assets/logo.png)
@@ -51,7 +51,7 @@ friTap identifies the TLS library used and creates the appropriate hooks so that
 
 friTap identifies the TLS library used and creates the appropriate hooks (4) so that all plaintext is saved into a PCAP. Likewise, the plaintext can be output directly on the command line. Besides the possibility of saving the plaintext of TLS payload into a PCAP, friTap also enables the extraction of the TLS encryption keys. 
 
-## WORKING WITH friTap
+## Working with friTap
 
  friTap provides two operation modes. One is to get the plaintext from the TLS payload as PCAP and the other is to get the used TLS keys. In order to get the decrypted TLS payload we need the `-p` parameter:
  ```bash
