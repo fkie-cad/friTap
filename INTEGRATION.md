@@ -101,7 +101,7 @@ script = None
 def myAwesomeHandler(message, data):
     global script
 
-    # Pass options to friTap hooks (mandotory)
+    # Pass options to friTap hooks (mandatory)
     if message['payload'] == 'experimental':
         script.post({'type':'experimental', 'payload': False})
         return
