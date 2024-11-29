@@ -139,7 +139,7 @@ class SSL_Logger():
         Args:
         message: A dictionary containing the message "type" and other fields
             dependent on message type.
-        data: The string of captured decrypted data.
+        data: The string of captured decrypted data or the caputured decryption keys
         """
 
 
@@ -272,7 +272,7 @@ class SSL_Logger():
         self.device.resume(spawn.pid)
         
 
-    def instrument(self, process):
+    def instrument(self, process, own_message_handler):
         runtime="qjs"
         debug_port = 1337
         if self.debug:
@@ -311,7 +311,12 @@ class SSL_Logger():
 
         if self.debug and frida.__version__ >= "16":
             self.script.enable_debugger(debug_port)
-        self.script.on("message", self.internal_callback_wrapper())
+
+        if own_message_handler != None:
+            self.script.on("message", self._provide_custom_hooking_handler(own_message_handler))
+            return self.script
+        else:
+            self.script.on("message", self._internal_callback_wrapper())
         self.script.load()
         
         
@@ -370,8 +375,13 @@ class SSL_Logger():
             print(f"[-] Pattern file {self.patterns} does not exist.")
     
     
+    def start_fritap_session_instrumentation(self, own_message_handler, process):
+        self.process = process
+        script = self.instrument(self.process, own_message_handler)
+        return script
+
     
-    def start_fritap_session(self):
+    def start_fritap_session(self, own_message_handler=None):
 
         if self.mobile:
             self.device = frida.get_usb_device()
@@ -380,24 +390,6 @@ class SSL_Logger():
         else:
             self.device = frida.get_local_device()
 
-        """
-        if self.offsets is not None:
-            if os.path.exists(self.offsets):
-                offset_file = open(self.offsets, "r")
-                self.offsets_data = offset_file.read()
-                offset_file.close()
-            else:
-                try:
-                    json.load(self.offsets)
-                    self.offsets_data = self.offsets
-                except ValueError as e:
-                    print(f"Log error, defaulting to auto-detection: {e}")
-
-        if self.patterns is not None:
-            self.load_patterns()
-        """
-
-
         self.device.on("child_added", self.on_child_added)
         if self.enable_spawn_gating:
             self.device.enable_spawn_gating()
@@ -405,9 +397,6 @@ class SSL_Logger():
         if self.spawn:
             print("spawning "+ self.target_app)
             
-            #if self.pcap_name:
-            #    self.pcap_obj =  PCAP(self.pcap_name,SSL_READ,SSL_WRITE,self.full_capture, self.mobile,self.debug)
-                
             if self.mobile or self.host:
                 pid = self.device.spawn(self.target_app)
             else:
@@ -420,29 +409,10 @@ class SSL_Logger():
                 time.sleep(1) # without it Java.perform silently fails
             self.process = self.device.attach(pid)
         else:
-            #if self.pcap_name:
-            #    self.pcap_obj =  PCAP(self.pcap_name,SSL_READ,SSL_WRITE,self.full_capture, self.mobile,self.debug)
             self.process = self.device.attach(int(self.target_app) if self.target_app.isnumeric() else self.target_app)
 
-        """
-        if self.live:
-            if self.pcap_name:
-                print("[*] YOU ARE TRYING TO WRITE A PCAP AND HAVING A LIVE VIEW\nTHIS IS NOT SUPPORTED!\nWHEN YOU DO A LIVE VIEW YOU CAN SAFE YOUR CAPUTRE WITH WIRESHARK.")
-            fifo_file = self.temp_fifo()
-            print(f'[*] friTap live view on Wireshark')
-            print(f'[*] Created named pipe for Wireshark live view to {fifo_file}')
-            print(
-                f'[*] Now open this named pipe with Wireshark in another terminal: sudo wireshark -k -i {fifo_file}')
-            print(f'[*] friTap will continue after the named pipe is ready....\n')
-            self.pcap_obj =  PCAP(fifo_file,SSL_READ,SSL_WRITE,self.full_capture, self.mobile,self.debug)
-            
 
-        if self.keylog:
-            self.keylog_file = open(self.keylog, "w")
-        """
-
-
-        self.instrument(self.process)
+        script = self.instrument(self.process, own_message_handler)
 
 
 
@@ -458,7 +428,7 @@ class SSL_Logger():
         if self.spawn:
             self.device.resume(pid)
 
-        return self.process
+        return self.process, script
 
 
     def finish_fritap(self):
@@ -466,7 +436,14 @@ class SSL_Logger():
             self.script.unload()
 
 
-    def internal_callback_wrapper(self):
+    def _provide_custom_hooking_handler(self, handler):
+        def wrapped_handler(message, data):
+            handler(message, data)
+
+        return wrapped_handler
+
+
+    def _internal_callback_wrapper(self):
         def wrapped_handler(message, data):
             self.on_fritap_message(None, message, data)
         
