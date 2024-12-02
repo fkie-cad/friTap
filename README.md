@@ -3,20 +3,26 @@
 </p>
 
 # friTap
-![version](https://img.shields.io/badge/version-1.2.4.0-blue) [![PyPI version](https://d25lcipzij17d.cloudfront.net/badge.svg?id=py&r=r&ts=1683906897&type=6e&v=1.2.4.0&x2=0)](https://badge.fury.io/py/friTap)
+![version](https://img.shields.io/badge/version-1.2.4.3-blue) [![PyPI version](https://d25lcipzij17d.cloudfront.net/badge.svg?id=py&r=r&ts=1683906897&type=6e&v=1.2.4.3&x2=0)](https://badge.fury.io/py/friTap)
 
 The goal of this project is to help researchers to analyze traffic encapsulated in SSL or TLS. For details have a view into the [OSDFCon webinar slides](assets/friTapOSDFConwebinar.pdf) or in [this blog post](https://lolcads.github.io/posts/2022/08/fritap/).
 
 
 This project was inspired by [SSL_Logger](https://github.com/google/ssl_logger ) and currently supports all major operating systems (Linux, Windows, Android). More platforms and libraries will be added in future releases.
 
+## Key Features
+
+The main features of friTap are:
+
+- TLS key extraction in real time (`-k key.log`)
+- Decryption of TLS payload as PCAP in real time (`-p plaintext.pcap`)
+- Integration with Python. [Learn more](https://github.com/fkie-cad/friTap/blob/main/INTEGRATION.md)
+- Support for custom Frida scripts. [Details](https://github.com/fkie-cad/friTap/blob/main/USAGE.md#Using-friTap-with-a-custom-Frida-scripts)
+- Support of most common SSL libraries (OpenSSL, BoringSSL, NSS, GnuTLS, etc.)
+
 ## Installation
 
-
 Installation is simply a matter of `pip3 install fritap`. This will give you the `friTap` command. You can update an existing `friTap` installation with `pip3 install --upgrade friTap`.
-
-Alternatively just clone the repository and run the `friTap.py` file.
-
 
 ## Usage
 
@@ -29,7 +35,7 @@ $ sudo fritap --pcap mycapture.pcap thunderbird
 For mobile applications we just have to add the `-m` parameter to indicate that we are now attaching (or spawning) an Android or iOS app:
 
 ```bash
-$ fritap -m --pcap mycapture.pcap com.example.app
+$ fritap -m -k keys.log com.example.app
 ```
 
 Further ensure that the frida-server is running on the Android/iOS device. 

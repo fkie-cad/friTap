@@ -46,7 +46,7 @@ setup(
     version=get_version(),  # Dynamically get the version from about.py
 
     # The description that will be shown on PyPI.
-    description="Decrypts and logs a process's SSL/TLS traffic on all major platforms. Further it allows the TLS key extraction.",
+    description="Simplifying SSL/TLS traffic analysis for researchers by making SSL/TLS decryption effortless. Decrypts and logs a process's SSL/TLS traffic on all major platforms. Further it allows the SSL/TLS key extraction.",
 
     # The content that will be shown on your project page.
     # In this case, we're displaying whatever is there in our README.md file
