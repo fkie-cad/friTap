@@ -4,6 +4,10 @@ __handlers__
 friTap.egg-info
 dist/
 
+# debian package generation stuff
+deb_dist/
+*.tar.gz
+
 # apple meta data
 .DS_Store
 
@@ -24,6 +28,7 @@ dist/
 vnev/
 build/
 venv/
+env/
 
 
 ExampleLinux/.devcontainer/*
