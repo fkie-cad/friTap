@@ -3,9 +3,21 @@ import { get_process_architecture } from "../util/process_infos.js";
 import { readAddresses, getPortsAndAddresses } from "../shared/shared_functions.js";
 import { enable_default_fd } from "../ssl_log.js";
 
-export function execute(moduleName:string) {
+function has_valid_socket_type(fd : number): boolean{
+    var socktype = Socket.type(fd);
+    if (socktype === 'tcp' || socktype === 'tcp6' || socktype === 'udp' || socktype === 'udp6'){
+        if(socktype === 'udp6' && ObjC.available){
+            return false // on iOS this leads always to empty addresses
+        }
+        return true;
+    }
+      
+    return true;
+}
 
-    log("Doing a full packet capture\nUse -k in order to get TLS keys.");
+export function socket_trace_execute() {
+
+    //log("Doing a full packet capture\nUse -k in order to get TLS keys.");
     
     var socket_library:string =""
     switch(Process.platform){
@@ -22,31 +34,30 @@ export function execute(moduleName:string) {
             log(`Platform "${Process.platform} currently not supported!`)
     }
     
-var library_method_mapping: { [key: string]: Array<String> } = {}
+var library_method_mapping: { [key: string]: Array<string> } = {};
 const socketFDs = new Map()
 
 if(ObjC.available){
     // currently those libraries gets only detected on iOS if we add an *-sign
     library_method_mapping[`*${socket_library}*`] = ["getpeername*", "getsockname*","socket*", "ntohs*", "ntohl*", "recv*", "recvfrom*", "send*", "sendto*", "read*", "write*"]
 }else{
-    library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl","socket", "recv", "recvfrom", "send", "sendto", "read", "write"]
+    library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl","socket", "recv", "recvfrom", "send", "sendto", "read", "write", "connect"]
 }
 
-var addresses: { [key: string]: NativePointer } = readAddresses(library_method_mapping)
+var addresses: { [libraryName: string]: { [functionName: string]: NativePointer } };
+addresses = readAddresses(socket_library,library_method_mapping);
 
-function has_valid_socket_type(fd : number): boolean{
-    var socktype = Socket.type(fd);
-    if (socktype === 'tcp' || socktype === 'tcp6' || socktype === 'udp' || socktype === 'udp6'){
-        if(socktype === 'udp6' && ObjC.available){
-            return false // on iOS this leads always to empty addresses
-        }
-        return true;
-    }
-      
-    return true;
+
+if (!addresses[socket_library] || !addresses[socket_library]["socket"] || !addresses[socket_library]["connect"]) {
+    throw new Error(
+        `Missing required functions in ${socket_library}. Ensure "socket" and "connect" are exported by the library.`
+    );
 }
 
-Interceptor.attach(addresses["socket"],
+
+
+
+Interceptor.attach(addresses[socket_library]["socket"],
 {
     onEnter: function (args: any) {
 
@@ -57,7 +68,11 @@ Interceptor.attach(addresses["socket"],
             return;
         }
         if(has_valid_socket_type(this.fd)){
-            var message = getPortsAndAddresses(this.fd as number, false, addresses, enable_default_fd)
+            var message = getPortsAndAddresses(this.fd as number, false, addresses[socket_library], enable_default_fd)
+            if (message === null) {
+
+                return;
+            }
             message["function"] = "Full_read"
             message["contentType"] = "netlog"
             socketFDs.set(this.fd, message["dst_addr"])
@@ -68,7 +83,7 @@ Interceptor.attach(addresses["socket"],
 
 
 
-Interceptor.attach(addresses["connect"],
+Interceptor.attach(addresses[socket_library]["connect"],
 {
     onEnter: function (args: any) {
         this.fd = args[0].toInt32();
@@ -80,7 +95,11 @@ Interceptor.attach(addresses["connect"],
             return;
         }
         if(has_valid_socket_type(this.fd)){
-            var message = getPortsAndAddresses(this.fd as number, false, addresses, enable_default_fd)
+            var message = getPortsAndAddresses(this.fd as number, false, addresses[socket_library], enable_default_fd)
+            if (message === null) {
+
+                return;
+            }
             message["function"] = "Full_read"
             message["contentType"] = "netlog"
             socketFDs.set(this.fd, message["dst_addr"])
@@ -90,7 +109,7 @@ Interceptor.attach(addresses["connect"],
 });
 
 
-Interceptor.attach(addresses["read"],
+Interceptor.attach(addresses[socket_library]["read"],
 {
     onEnter: function (args: any) {
         this.fd = args[0].toInt32();
@@ -100,7 +119,11 @@ Interceptor.attach(addresses["read"],
             return;
         }
         if(has_valid_socket_type(this.fd)){
-            var message = getPortsAndAddresses(this.fd as number, true, addresses, enable_default_fd)
+            var message = getPortsAndAddresses(this.fd as number, true, addresses[socket_library], enable_default_fd)
+            if (message === null) {
+
+                return;
+            }
             message["function"] = "Full_read"
             message["contentType"] = "netlog"
             socketFDs.set(this.fd, message["src_addr"])
@@ -111,7 +134,7 @@ Interceptor.attach(addresses["read"],
 })
 
 
-Interceptor.attach(addresses["recv"],
+Interceptor.attach(addresses[socket_library]["recv"],
 {
     onEnter: function (args: any) {
         this.fd= args[0].toInt32();
@@ -122,7 +145,11 @@ Interceptor.attach(addresses["recv"],
             return;
         }
         if(has_valid_socket_type(this.fd)){
-            var message = getPortsAndAddresses(this.fd as number, true, addresses, enable_default_fd)
+            var message = getPortsAndAddresses(this.fd as number, true, addresses[socket_library], enable_default_fd)
+            if (message === null) {
+
+                return;
+            }
             message["function"] = "Full_read"
             message["contentType"] = "netlog"
             socketFDs.set(this.fd, message["src_addr"])
@@ -135,7 +162,7 @@ Interceptor.attach(addresses["recv"],
     }
 })
 
-Interceptor.attach(addresses["recvfrom"],
+Interceptor.attach(addresses[socket_library]["recvfrom"],
 {
     onEnter: function (args: any) {
         this.fd = args[0].toInt32();
@@ -146,7 +173,11 @@ Interceptor.attach(addresses["recvfrom"],
             return;
         }
         if(has_valid_socket_type(this.fd)){
-            var message = getPortsAndAddresses(this.fd as number, true, addresses, enable_default_fd)
+            var message = getPortsAndAddresses(this.fd as number, true, addresses[socket_library], enable_default_fd)
+            if (message === null) {
+
+                return;
+            }
             message["function"] = "Full_read"
             message["contentType"] = "netlog"
             socketFDs.set(this.fd, message["src_addr"])
@@ -156,7 +187,7 @@ Interceptor.attach(addresses["recvfrom"],
 })
 
 
-Interceptor.attach(addresses["send"],
+Interceptor.attach(addresses[socket_library]["send"],
 {
     onEnter: function (args: any) {
         this.fd = args[0].toInt32();
@@ -168,7 +199,11 @@ Interceptor.attach(addresses["send"],
             return;
         }
         if(has_valid_socket_type(this.fd)){
-            var message = getPortsAndAddresses(this.fd as number, false, addresses, enable_default_fd)
+            var message = getPortsAndAddresses(this.fd as number, false, addresses[socket_library], enable_default_fd)
+            if (message === null) {
+
+                return;
+            }
             message["function"] = "Full_write"
             message["contentType"] = "netlog"
             socketFDs.set(this.fd, message["dst_addr"])
@@ -178,7 +213,7 @@ Interceptor.attach(addresses["send"],
 })
 
 
-Interceptor.attach(addresses["sendto"],
+Interceptor.attach(addresses[socket_library]["sendto"],
 {
     onEnter: function (args: any) {
         this.fd = args[0].toInt32();
@@ -188,7 +223,11 @@ Interceptor.attach(addresses["sendto"],
             return;
         }
         if(has_valid_socket_type(this.fd)){
-            var message = getPortsAndAddresses(this.fd as number, false, addresses, enable_default_fd)
+            var message = getPortsAndAddresses(this.fd as number, false, addresses[socket_library], enable_default_fd)
+            if (message === null) {
+
+                return;
+            }
             message["function"] = "Full_write"
             message["contentType"] = "netlog"
             socketFDs.set(this.fd, message["dst_addr"])
@@ -197,7 +236,7 @@ Interceptor.attach(addresses["sendto"],
     }
 })
 
-Interceptor.attach(addresses["write"],
+Interceptor.attach(addresses[socket_library]["write"],
 {
     onEnter: function (args: any) {
         this.fd = args[0].toInt32();
@@ -207,7 +246,11 @@ Interceptor.attach(addresses["write"],
             return;
         }
         if(has_valid_socket_type(this.fd)){
-            var message = getPortsAndAddresses(this.fd as number, false, addresses, enable_default_fd)
+            var message = getPortsAndAddresses(this.fd as number, false, addresses[socket_library], enable_default_fd)
+            if (message === null) {
+
+                return;
+            }
             message["function"] = "Full_write"
             message["contentType"] = "netlog"
             socketFDs.set(this.fd, message["dst_addr"])
@@ -225,7 +268,11 @@ if(ObjC.available){
             return;
         }
         if(has_valid_socket_type(fd)){
-            var message = getPortsAndAddresses(fd as number, false, addresses, enable_default_fd)
+            var message = getPortsAndAddresses(fd as number, false, addresses[socket_library], enable_default_fd)
+            if (message === null) {
+                //devlog("Skipping this socket due to unsupported address family."); To noisy
+                return;
+            }
             message["function"] = "Full_write"
             message["contentType"] = "netlog"
             socketFDs.set(this.fd, message["dst_addr"])
@@ -250,7 +297,11 @@ Interceptor.attach(Module.getExportByName("libsystem_kernel.dylib","read"),
             return;
         }
         if(has_valid_socket_type(this.fd)){
-            var message = getPortsAndAddresses(this.fd as number, true, addresses, enable_default_fd)
+            var message = getPortsAndAddresses(this.fd as number, true, addresses[socket_library], enable_default_fd)
+            if (message === null) {
+
+                return;
+            }
             message["function"] = "Full_read"
             message["contentType"] = "netlog"
             socketFDs.set(this.fd, message["src_addr"])

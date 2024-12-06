@@ -35,7 +35,7 @@ class Android:
     
     def run_adb_command_as_root(self,command):
         if self.adb_check_root() == False:
-            print("[-] none rooted device. Please root it before using FridaAndroidManager and ensure that you are able to run commands with the su-binary....")
+            print("[-] none rooted device. Please root it before trying a full-capture with friTap and ensure that you are able to run commands with the su-binary....")
             exit(2)
 
         if self.is_magisk_mode:
@@ -85,15 +85,13 @@ class Android:
         return tcpdump_version
 
 
-    def is_tcpdump_available():
+    def is_tcpdump_available(self):
         try:
             # Check if tcpdump is available on the device
-            result = subprocess.run(['adb', 'shell', 'tcpdump', '--version'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            result = self.run_adb_command_as_root("tcpdump --version")
             if result.returncode == 0:
-                #print("tcpdump is available on the device.")
                 return True
             else:
-                #print("tcpdump is not available on the device.")
                 return False
         except Exception as e:
             print(f"Error checking tcpdump availability: {e}")
@@ -106,7 +104,6 @@ class Android:
 
         # Construct the path to the assets directory
         tcpdump_path = os.path.join(current_dir, 'assets', 'tcpdump_binaries', self.tcpdump_version)
-        #tcpdump_path = files('friTap.assets.tcpdump_binaries').joinpath(self.tcpdump_version)
 
         if file_exists(tcpdump_path):
             print(f"[*] installing tcpdump to Android device: {tcpdump_path}")
@@ -134,16 +131,47 @@ class Android:
         self.close_friTap_if_none_android()
         pcap_path = self.dst_path + self.pcap_name
         return_Value = self._adb_pull_file(pcap_path,".")
-        print("[*] pulling capture from device")
+        print(f"[*] pulling capture from device: {return_Value}")
         if self.print_debug_infos:
+            print("---------------------------------")
             print(return_Value)
         if return_Value.returncode !=0:
             print(f"[-] error pulling pcap ({pcap_path}) from android device")
+    
+    def get_pid_via_adb(self, process_name):
+        try:
+            pid_result =self.run_adb_command_as_root(f"pidof -s {process_name}")
+            pid = pid_result.stdout.strip()
+
+            if not pid:
+                if self.print_debug_infos:
+                    print("[-] No PID found. Process may not be running.")
+                return "-1"
+            return pid
+        except subprocess.CalledProcessError as e:
+            if self.print_debug_infos:
+                print(f"Error: {e.stderr.strip()}")
+            return "-1"
             
     def send_ctrlC_over_adb(self):
         self.close_friTap_if_none_android()
-        self.run_adb_command_as_root(f"kill -INT $(pidof -s {self.tcpdump_version})")
+        if self.is_tcpdump_available():
+            pid = self.get_pid_via_adb("tcpdump")
+        else:
+            pid = self.get_pid_via_adb(self.tcpdump_version)
         
+        if int(pid) > 0:
+            self.run_adb_command_as_root(f"kill -INT {pid}")
+
+    def send_kill_tcpdump_over_adb(self):
+        self.close_friTap_if_none_android()
+        if self.is_tcpdump_available():
+            pid = self.get_pid_via_adb("tcpdump")
+        else:
+            pid = self.get_pid_via_adb(self.tcpdump_version)
+        
+        if int(pid) > 0:
+            self.run_adb_command_as_root(f"kill -9 {pid}")
         
     def close_friTap_if_none_android(self):
         if self.is_Android == False:
@@ -154,9 +182,8 @@ class Android:
         self.close_friTap_if_none_android()
         self.pcap_name = pcap_name
 
-        if self.is_tcpdump_available:
-            tcpdump_cmd = f'tcpdump -i any -s 0 -w {self.dst_path}{pcap_name} not \\(tcp port 5555 or tcp port 27042\\)'
-            #testen
+        if self.is_tcpdump_available():
+            tcpdump_cmd = f'tcpdump -U -i any -s 0 -w {self.dst_path}{pcap_name} \\"not \\(tcp port 5555 or tcp port 27042\\)\\"'
         else:
             tcpdump_cmd = f'{self.dst_path}./{self.tcpdump_version} -i any -s 0 -w {self.dst_path}{pcap_name} \\"not \\(tcp port 5555 or tcp port 27042\\)\\"'
 
@@ -166,10 +193,9 @@ class Android:
         else:
             cmd = f'adb shell su 0 "{tcpdump_cmd}"'
 
-        print("[*] Running tcpdump in background:", cmd)
+        if self.print_debug_infos:
+            print("[*] Running tcpdump in background:", cmd)
         process = subprocess.Popen(shlex.split(cmd), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-
 
         return process
 

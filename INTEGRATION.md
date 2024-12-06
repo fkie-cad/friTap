@@ -32,17 +32,15 @@ try:
         keylog="keylogtest.log", # Path to save SSL key log
         debug_output=True        # Enable debug output
     )
-    
-    # Start friTap session
-    process = ssl_log.start_fritap_session()  
-    
-    # Wait for user input to stop
-    sys.stdin.read()
 
-except KeyboardInterrupt:
-    # Detach process on interruption
-    process.detach()
-    print("Logging stopped.")
+    ssl_log.install_signal_handler() 
+
+    # Start friTap session
+    process, script = ssl_log.start_fritap_session()  
+    
+    # Wait for user input or interrupt which will invoke the internal signal handler
+    while ssl_log.running:
+        pass
 ```
 
 ---
@@ -154,7 +152,7 @@ try:
     )
     
     # Hook friTap into the target process without immediately loading the script
-    script = ssl_log.start_fritap_session_instrumentation(myAwesomeHandler, process)
+    process, script = ssl_log.start_fritap_session_instrumentation(myAwesomeHandler, process)
 
     # Manually load the friTap script into the target process
     script.load()

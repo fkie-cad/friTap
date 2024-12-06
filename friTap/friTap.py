@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 
 import argparse
-import os
 import sys
 import frida
 from AndroidFridaManager import FridaBasedException
@@ -52,7 +51,7 @@ Examples:
   %(prog)s -m --patterns pattern.json -k keys.log -s com.google.android.youtube
   %(prog)s --pcap log.pcap "$(which curl) https://www.google.com"
   %(prog)s -H --pcap log.pcap 192.168.0.1:1234 com.example.app
-  %(prog)s -m -p log.pcap --enable_spawn_gating -v -do --full_capture -k keys.log com.example.app
+  %(prog)s -m -p log.pcap --enable_spawn_gating -v -do -sot --full_capture -k keys.log com.example.app
   %(prog)s -m -p log.pcap --enable_spawn_gating -v -do --anti_root --full_capture -k keys.log com.example.app
   %(prog)s -m -p log.pcap --enable_default_fd com.example.app
 """)
@@ -76,7 +75,7 @@ Examples:
                       help="Log the keys used for tls traffic")
     args.add_argument("-l", "--live", required=False, action="store_const", const=True,
                       help="Creates a named pipe /tmp/sharkfin which can be read by Wireshark during the capturing process")
-    args.add_argument("-p ", "--pcap", metavar="<path>", required=False,
+    args.add_argument("-p", "--pcap", metavar="<path>", required=False,
                       help="Name of PCAP file to write")
     args.add_argument("-s", "--spawn", required=False, action="store_const", const=True,
                       help="Spawn the executable/app instead of attaching to a running process")
@@ -112,13 +111,16 @@ Examples:
         input() 
     try:
         print("Start logging")
-        print("Press Ctrl+C to stop logging")
+        print("Press Ctrl+C to stop logging\n")
         ssl_log = SSL_Logger(parsed.exec, parsed.pcap, parsed.verbose,
                 parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.mobile, parsed.live, parsed.environment, parsed.debug, parsed.full_capture, parsed.socket_tracing, parsed.host, parsed.offsets, parsed.debugoutput, parsed.experimental, parsed.anti_root, parsed.payload_modification, parsed.enable_default_fd, parsed.patterns, parsed.custom_script)
+
+        ssl_log.install_signal_handler()        
+        ssl_log.start_fritap_session()  
         
-        process = ssl_log.start_fritap_session()  
-        
-        sys.stdin.read()
+        # Wait for user input or interrupt
+        while ssl_log.running:
+            pass
     except frida.TransportError as fe:
         print(f"[-] Problems while attaching to frida-server: {fe}")
         exit(2)
@@ -131,9 +133,6 @@ Examples:
     except frida.ProcessNotFoundError as pe:
         print(f"[-] ProcessNotFoundError: {pe}")
         exit(2)
-    except KeyboardInterrupt:
-        process.detach()
-        pass
     except Exception as ar:
         # Get current system exception
         ex_type, ex_value, ex_traceback = sys.exc_info()
@@ -157,9 +156,9 @@ Examples:
             print("\n[-] frida-server is not running in remote device. Please run frida-server and rerun")
             
         print(f"\n[-] Unknown error: {ex_value}")
-        
+
+        ssl_log.pcap_cleanup(parsed.full_capture,parsed.mobile,parsed.pcap)
         ssl_log.cleanup(parsed.live,parsed.socket_tracing,parsed.full_capture,parsed.debug,parsed.debugoutput)    
-        os._exit(2)
 
     finally:
         ssl_log.pcap_cleanup(parsed.full_capture,parsed.mobile,parsed.pcap)

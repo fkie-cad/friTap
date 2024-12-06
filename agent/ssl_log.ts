@@ -5,6 +5,7 @@ import { load_linux_hooking_agent } from "./linux/linux_agent.js";
 import { load_windows_hooking_agent } from "./windows/windows_agent.js";
 import { isWindows, isLinux, isAndroid, isiOS, isMacOS } from "./util/process_infos.js";
 import { anti_root_execute } from "./util/anti_root.js";
+import { socket_trace_execute } from "./misc/socket_tracer.js"
 import { devlog, log } from "./util/log.js";
 
 // global address which stores the addresses of the hooked modules which aren't loaded via the dynamic loader
@@ -93,6 +94,8 @@ export let offsets: IOffsets = "{OFFSETS}";
 //@ts-ignore
 export let experimental: boolean = false;
 //@ts-ignore
+export let enable_socket_tracing: boolean = false;
+//@ts-ignore
 export let anti_root: boolean = false;
 //@ts-ignore
 export let enable_default_fd: boolean = false;
@@ -122,6 +125,12 @@ enable_pattern_based_hooking_state.wait();
 /*
 This way we are providing boolean values from the commandline directly to our frida script
 */
+send("socket_tracing")
+const enable_socket_tracing_state = recv('socket_tracing', value => {
+    enable_socket_tracing = value.payload;
+});
+enable_socket_tracing_state.wait();
+
 
 send("defaultFD")
 const enable_default_fd_state = recv('defaultFD', value => {
@@ -178,14 +187,26 @@ function load_os_specific_agent() {
             log('Applying anti root checks');
             anti_root_execute();
         }
+        if(enable_socket_tracing){
+            socket_trace_execute();
+        }
         load_android_hooking_agent()
     }else if(isLinux()){
+        if(enable_socket_tracing){
+            socket_trace_execute();
+        }
         log('Running Script on Linux')
         load_linux_hooking_agent()
     }else if(isiOS()){
+        if(enable_socket_tracing){
+            socket_trace_execute();
+        }
         log('Running Script on iOS')
         load_ios_hooking_agent()
     }else if(isMacOS()){
+        if(enable_socket_tracing){
+            socket_trace_execute();
+        }
         log('Running Script on MacOS')
         load_macos_hooking_agent()
     }else{

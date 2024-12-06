@@ -5,9 +5,13 @@ from threading import Thread, Event
 import random
 import logging
 import time
+import psutil
 import struct
 # ensure that we only see errors from scapy 
 logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
+
+import warnings
+warnings.simplefilter("ignore", ResourceWarning)
 
 try:
 	from scapy.all import *
@@ -17,6 +21,19 @@ except ImportError:
 
 from .android import Android
  
+INVALID_IPV4 = "0.0.0.0"
+INVALID_IPV6 = "::"
+
+def terminate_lingering_processes(parent_pid):
+    parent = psutil.Process(parent_pid)
+    for child in parent.children(recursive=True):
+        print(f"Terminating child process: {child.pid} ({child.name()})")
+        child.terminate()
+        try:
+            child.wait(timeout=2)
+        except psutil.TimeoutExpired:
+            print(f"Forcing kill of child process: {child.pid}")
+            child.kill()
 
 class PCAP:
     
@@ -24,6 +41,7 @@ class PCAP:
         self.pcap_file_name = pcap_file_name
         self.pkt ={}
         self.print_debug_infos = print_debug_infos
+        
             
         self.is_Mobile = isMobile
         
@@ -35,10 +53,10 @@ class PCAP:
         
         if doFullCapture:
             if isMobile:
-                print("[*] capturing whole traffic of target app")
                 self.android_Instance = Android(self.print_debug_infos)
             self.full_capture_thread = self.get_instance_of_FullCaptureThread()
             self.full_capture_thread.start()
+            print("[*] capturing whole traffic of target app")
         else:
             print("[*] capturing only plaintext data")
             self.pcap_file = self.__create_plaintext_pcap()
@@ -59,7 +77,8 @@ class PCAP:
                 self.stop_capture = Event()
                 self.tmp_pcap_name = self._get_tmp_pcap_name()
                 
-                self.mobile_pid = -1    
+                self.mobile_subprocess = -1
+                self.android_capture_process = -1    
                 self.is_Mobile = pcap_class.is_Mobile
                 
             
@@ -100,13 +119,25 @@ class PCAP:
                 
             def run(self):
                 if self.is_Mobile:
-                    self.mobile_pid = self.full_mobile_capture()
+                    self.mobile_subprocess = self.full_mobile_capture()
                 else:
                     self.full_local_capture()
             
             
             def join(self, timeout=None):
                 self.stop_capture.set()
+
+                # Terminate the tcpdump process if running
+                #if self.android_capture_process and self.android_capture_process.poll() in {None, -2, -15}:
+                if self.android_capture_process and self.android_capture_process.poll() is None:
+                    pcap_class.android_Instance.send_ctrlC_over_adb()
+                    self.android_capture_process.terminate()
+                    try:
+                        self.android_capture_process.wait(timeout=2)  # Wait for graceful termination
+                    except subprocess.TimeoutExpired:
+                        print(f"[-] Android capture thread did not terminate. Forcing kill.")
+                        self.android_capture_process.kill()
+
                 super().join(timeout)
             
             
@@ -118,10 +149,10 @@ class PCAP:
                 if pcap_class.android_Instance.is_Android():
                     if pcap_class.android_Instance.is_tcpdump_available == False:
                         pcap_class.android_Instance.push_tcpdump_to_device()
-                    android_capture_process = pcap_class.android_Instance.run_tcpdump_capture("_"+self._get_pcap_base_name())
+                    self.android_capture_process = pcap_class.android_Instance.run_tcpdump_capture("_"+self._get_pcap_base_name())
                     
-                    print("[*] doing full capture on Android")
-                    return android_capture_process
+                    print(f"[*] doing full capture on Android")
+                    return self.android_capture_process
                 else:
                     print("[-] currently a full capture on iOS is not supported\nAbborting...")
                     exit(2)
@@ -274,34 +305,85 @@ class PCAP:
     
     # creating a filter for scapy or wiresharks display filter depending on the provided socket_trace_set which looks like 
     @staticmethod
-    def get_filter_from_traced_sockets(socket_trace_set):
-        filter = ""
-        first_element = True
-        for length_of_socket_Set in range(len(socket_trace_set)):
-            if len(socket_trace_set) == 1:
-                filter = socket_trace_set.pop() + " or "  + filter
-                break
-            if first_element:
-                first_element = False
-                filter = socket_trace_set.pop()
-            else:
-                filter = socket_trace_set.pop() + " or " + filter
-                
-            length_of_socket_Set = length_of_socket_Set - 1
+    def get_filter_from_traced_sockets(traced_Socket_Set, filter_type="bpf"):
+        """
+        Generate a filter string from traced sockets.
+        
+        :param traced_Socket_Set: Set of frozensets containing socket info.
+        :param filter_type: "bpf" for BPF filters or "display" for Wireshark display filters.
+        :return: Filter string.
+        """
+        filters = []
+        for socket_info in traced_Socket_Set:
+            socket_dict = dict(socket_info)  # Convert frozenset back to a dictionary
+            src_addr = socket_dict.get("src_addr", "0.0.0.0")
+            dst_addr = socket_dict.get("dst_addr", "0.0.0.0")
+
+            if src_addr == "::" or dst_addr == "::" or not src_addr or not dst_addr:
+                continue # Skip invalid entries
             
-        return filter
+            if filter_type == "bpf":
+                filter_part = PCAP.get_bpf_filter(src_addr, dst_addr)
+            elif filter_type == "display":
+                filter_part = PCAP.get_display_filter(src_addr, dst_addr)
+            else:
+                raise ValueError("Invalid filter_type. Use 'bpf' or 'display'.")
+            
+            if filter_part:
+                filters.append(filter_part)
+        
+        return " or ".join(filters)
+
+
 
         
     # this function is able to reduce a capture to the traffic from the traced target application by using the information from the socket trace and applying a bpf filter of those traced packets
-    def create_application_traffic_pcap(self,traced_Socket_Set):        
-        bpf_filter = PCAP.get_filter_from_traced_sockets(traced_Socket_Set)
-        print("[*] filtering the capture for the target application this might take a while...")
+    def create_application_traffic_pcap(self, traced_Socket_Set,pcap_obj,  is_verbose=False):
+        def is_valid_socket(socket_info):
+            return (
+                socket_info.get("src_addr") and socket_info.get("dst_addr")
+                and socket_info.get("src_addr") != INVALID_IPV4
+                and socket_info.get("dst_addr") != INVALID_IPV4
+                and socket_info.get("src_addr") != INVALID_IPV6
+                and socket_info.get("dst_addr") != INVALID_IPV6
+            )
+
+        if not traced_Socket_Set:
+            print("[-] No sockets traced. The resulting PCAP will contain all traffic from the device.")
+            return
+
+        # Convert each frozenset in the traced_Socket_Set back to a dictionary
+        socket_dicts = [dict(frozenset_entry) for frozenset_entry in traced_Socket_Set]
+
+        valid_sockets = [socket for socket in socket_dicts if is_valid_socket(socket)]
+        if not valid_sockets:
+            print("[-] No valid sockets found. The resulting PCAP will contain all traffic.")
+            return
+
+        bpf_filter = PCAP.get_filter_from_traced_sockets(valid_sockets, filter_type="bpf")
+        if not bpf_filter:
+            print("[-] Failed to generate a valid BPF filter.")
+            return
+
+        if is_verbose:
+            print(f"[*] Filtering with BPF filter:\n{bpf_filter}")
         try:
-            filtered_capture = sniff(offline="_"+self.pcap_file_name,filter=bpf_filter)
-            wrpcap(self.pcap_file_name,filtered_capture)
-        except Exception as ar:
-            print(ar)
-        print(f"[*] finished and written to {self.pcap_file_name}")
+            """
+            There is currently a bug which is happening when invoking sniff. Currently we just ignore this warning:
+            Exception ignored in: <function Popen.__del__ at 0x10ad64180>
+            Traceback (most recent call last):
+            File ".../subprocess.py", line 1127, in __del__
+                _warn("subprocess %s is still running" % self.pid,
+            ResourceWarning: subprocess 63901 is still running
+            reading from file <name>.pcap, link-type LINUX_SLL2 (Linux cooked v2)
+            """
+            filtered_capture = sniff(offline="_" + self.pcap_file_name, filter=bpf_filter) 
+            wrpcap(self.pcap_file_name, filtered_capture)
+        except Exception as e:
+            print(f"[-] Error during PCAP filtering: {e}")
+        else:
+            print(f"[*] Successfully filtered. Output written to {self.pcap_file_name}")
+
     
     
     def get_pcap_name(self):
@@ -310,12 +392,14 @@ class PCAP:
     
     @staticmethod
     def get_display_filter(src_addr,dst_addr):
-        return "ip.src == " +src_addr+  "and ip.dst =="+dst_addr
+        return f"ip.src == {src_addr} and ip.dst == {dst_addr}"
     
     
     @staticmethod
     def get_bpf_filter(src_addr,dst_addr):
-        return "(src host " +src_addr+  " and dst host "+dst_addr+")"
+        if src_addr == "::" or dst_addr == "::" or not src_addr or not dst_addr:
+            return ""  # Skip invalid entries
+        return f"(src host {src_addr} and dst host {dst_addr})"
     
         
 

@@ -9,7 +9,9 @@ import socket
 import pprint
 import signal
 import time
+import sys
 import json
+import threading
 from .pcap import PCAP
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, LoggingEventHandler
@@ -55,6 +57,7 @@ class SSL_Logger():
         self.experimental = experimental
         self.custom_hook_script = custom_hook_script
         self.script = None
+        self.running = True
 
         self.tmpdir = None
         self.filename = ""
@@ -114,11 +117,14 @@ class SSL_Logger():
 
     
     def on_detach(self, reason):
-        if reason != "application-requested":
-            print(f"\n[*] Target process stopped: {reason}\n")
-                    
+
+        if reason == "application-requested":
+            return
+        
+        print(f"\n[*] Target process stopped: {reason}\n")            
         self.pcap_cleanup(self.full_capture,self.mobile,self.pcap_name)
         self.cleanup(self.live,self.socket_trace,self.full_capture,self.debug)
+        
 
 
     def temp_fifo(self):
@@ -154,6 +160,9 @@ class SSL_Logger():
 
         if self.startup and message['payload'] == 'defaultFD':
             self.script.post({'type':'defaultFD', 'payload': self.enable_default_fd})
+
+        if self.startup and message['payload'] == 'socket_tracing':
+            self.script.post({'type':'socket_tracing', 'payload': self.socket_trace})
 
         if self.startup and message['payload'] == 'pattern_hooking':
             self.script.post({'type':'pattern_hooking', 'payload': self.pattern_data})
@@ -195,16 +204,38 @@ class SSL_Logger():
             else:
                 src_addr = get_addr_string(p["src_addr"], p["ss_family"])
                 dst_addr = get_addr_string(p["dst_addr"], p["ss_family"])
-                
-                if self.socket_trace == False and self.full_capture  == False:
+
+                if self.socket_trace == False and self.full_capture == False:
                     print("SSL Session: " + str(p["ssl_session_id"]))
+
                 if self.full_capture:
-                    scapy_filter = PCAP.get_bpf_filter(src_addr,dst_addr)
-                    self.traced_scapy_socket_Set.add(scapy_filter)
+                    # Add to traced_scapy_socket_Set as a frozenset dictionary
+                    scapy_filter_entry = {
+                        "src_addr": src_addr,
+                        "dst_addr": dst_addr,
+                        "ss_family": p["ss_family"]
+                    }
+                    self.traced_scapy_socket_Set.add(frozenset(scapy_filter_entry.items()))  # Use frozenset for uniqueness
+
                 if self.socket_trace:
-                    display_filter = PCAP.get_display_filter(src_addr,dst_addr)
-                    self.traced_Socket_Set.add(display_filter)
-                    print("[socket_trace] %s:%d --> %s:%d" % (src_addr, p["src_port"], dst_addr, p["dst_port"]))
+                    display_filter_entry = {
+                        "src_addr": src_addr,
+                        "dst_addr": dst_addr,
+                        "src_port": p["src_port"],
+                        "dst_port": p["dst_port"],
+                        "ss_family": p["ss_family"]
+                    }
+                    self.traced_Socket_Set.add(frozenset(display_filter_entry.items()))
+                    scapy_filter_entry = {
+                        "src_addr": src_addr,
+                        "dst_addr": dst_addr,
+                        "ss_family": p["ss_family"]
+                    }
+                    self.traced_scapy_socket_Set.add(frozenset(scapy_filter_entry.items()))
+
+                    # Use structured data for the debug print
+                    print(f"[socket_trace] {src_addr}:{p['src_port']} --> {dst_addr}:{p['dst_port']}")
+
                 else:
                     print("[%s] %s:%d --> %s:%d" % (p["function"], src_addr, p["src_port"], dst_addr, p["dst_port"]))
                     hexdump.hexdump(data)
@@ -217,8 +248,8 @@ class SSL_Logger():
                 self.pcap_obj.log_plaintext_payload(p["ss_family"], p["function"], p["src_addr"],
                          p["src_port"], p["dst_addr"], p["dst_port"], data)
             except (BrokenPipeError, IOError):
-                self.process.detach()
-                self.cleanup(self.live)
+                self.detach_with_timeout(self.process)
+                self.cleanup(self.live, self.socket_trace, self.full_capture, self.debug)
 
         if self.keylog and p["contentType"] == "keylog":
             if p["keylog"] not in self.keydump_Set:
@@ -232,12 +263,25 @@ class SSL_Logger():
             
             src_addr = get_addr_string(p["src_addr"], p["ss_family"])
             dst_addr = get_addr_string(p["dst_addr"], p["ss_family"])
+
             if self.socket_trace:
-                display_filter = PCAP.get_display_filter(src_addr,dst_addr)
-                self.traced_Socket_Set.add(display_filter)
-            else:
-                scapy_filter = PCAP.get_bpf_filter(src_addr,dst_addr)
-                self.traced_scapy_socket_Set.add(scapy_filter)
+                # Add a structured dictionary to traced_Socket_Set
+                display_filter_entry = {
+                    "src_addr": src_addr,
+                    "dst_addr": dst_addr,
+                    "src_port": p["src_port"],
+                    "dst_port": p["dst_port"],
+                    "ss_family": p["ss_family"]
+                }
+                self.traced_Socket_Set.add(frozenset(display_filter_entry.items()))  # Use frozenset for uniqueness
+                # Add a structured dictionary to traced_scapy_socket_Set
+                scapy_filter_entry = {
+                    "src_addr": src_addr,
+                    "dst_addr": dst_addr,
+                    "ss_family": p["ss_family"]
+                }
+                self.traced_scapy_socket_Set.add(frozenset(scapy_filter_entry.items()))  # Use frozenset for uniqueness
+
     
 
     
@@ -450,6 +494,47 @@ class SSL_Logger():
         return wrapped_handler
 
 
+    def detach_with_timeout(self, timeout=5):
+        """
+        Attempt to detach from the Frida process with a timeout.
+
+        Args:
+            process: The Frida process to detach from.
+            timeout: Time in seconds to wait before forcing detachment.
+        """
+        def detach():
+            try:
+                if self.debug_output or self.debug:
+                    print("[*] Attempting to detach from Frida process...")
+                try:
+                    self.script.unload()
+                except:
+                    pass
+
+                self.process.detach()
+                if self.debug_output or self.debug:
+                    print("[*] Successfully detached from Frida process.")
+            except Exception as e:
+                print(f"[-] Error while detaching: {e}")
+
+        # Create a thread to run the detach method
+        detach_thread = threading.Thread(target=detach)
+        detach_thread.start()
+
+        # Wait for the thread to complete
+        detach_thread.join(timeout=timeout)
+
+        if detach_thread.is_alive():
+            if self.debug_output:
+                print(f"[-] Detach process timed out after {timeout} seconds.")
+            # Force cleanup if necessary
+            # Note: Frida doesn't provide a "force detach," so handle gracefully
+        else:
+            if self.debug_output:
+                print("[*] Detached friTap from process successfully.")
+
+
+
     def set_keylog_file(self, keylog_name):
         self.keylog_file = open(keylog_name, "w")
     
@@ -460,10 +545,12 @@ class SSL_Logger():
                 self.pcap_obj.full_capture_thread.join(2.0)
                 if self.pcap_obj.full_capture_thread.is_alive() and is_mobile == False:
                     self.pcap_obj.full_capture_thread.socket.close()
-                if self.pcap_obj.full_capture_thread.mobile_pid != -1:
+                if self.pcap_obj.full_capture_thread.mobile_subprocess != -1:
                     capture_type = "mobile"
-                    self.pcap_obj.full_capture_thread.mobile_pid.terminate()
                     self.pcap_obj.android_Instance.send_ctrlC_over_adb()
+                    time.sleep(1)
+                    self.pcap_obj.full_capture_thread.mobile_subprocess.terminate()
+                    self.pcap_obj.full_capture_thread.mobile_subprocess.wait()
                     self.pcap_obj.android_Instance.pull_pcap_from_device()
                 print(f"[*] full {capture_type} capture safed to _{pcap_name}")
                 if self.keylog_file is None:
@@ -473,6 +560,10 @@ class SSL_Logger():
     
 
     def cleanup(self, live=False, socket_trace=False, full_capture=False, debug_output=False, debug=False):
+        if self.pcap_obj is not None:
+            if self.pcap_obj.full_capture_thread.is_alive():
+                self.pcap_obj.full_capture_thread.join()
+                time.sleep(2)
         if live:
             os.unlink(self.filename)  # Remove file
             os.rmdir(self.tmpdir)  # Remove directory
@@ -480,17 +571,25 @@ class SSL_Logger():
             print(f"[*] Write traced sockets into {socket_trace}")
             self.write_socket_trace(socket_trace)
         if socket_trace == True:
-            print("[*] Traced sockets")
-            print(PCAP.get_filter_from_traced_sockets(self.traced_Socket_Set))
+            display_filter = PCAP.get_filter_from_traced_sockets(self.traced_Socket_Set, filter_type="display")
+            print(f"[*] Generated Display Filter for Wireshark:\n{display_filter}")
         
         if full_capture and len(self.traced_scapy_socket_Set) > 0:
             if debug_output or debug:
-                print("[*] traced sockets: "+str(self.traced_scapy_socket_Set))
+                display_filter = PCAP.get_filter_from_traced_sockets(self.traced_Socket_Set, filter_type="display")
+                print(f"[*] Generated Display Filter for Wireshark:\n{display_filter}")
 
-            self.pcap_obj.create_application_traffic_pcap(self.traced_scapy_socket_Set)
+            try:
+                self.pcap_obj.create_application_traffic_pcap(self.traced_scapy_socket_Set,self.pcap_obj)
+            except Exception as e:
+                print(f"Error: {e}")
+
         elif full_capture and len(self.traced_scapy_socket_Set) < 1:
             print(f"[-] friTap was unable to indentify the used sockets.\n[-] The resulting PCAP will contain all trafic from the device.")
             
+        self.running = False
+        if self.process:
+            self.detach_with_timeout()  # Detach Frida process if applicable
         print("\n\nThx for using friTap\nHave a great day\n")
         os._exit(0)
 
@@ -509,6 +608,22 @@ class SSL_Logger():
     def get_fritap_frida_script_path(self):
         return os.path.join(os.path.dirname(__file__), self.frida_agent_script)
 
+
+    def install_signal_handler(self):
+        def signal_handler(signum, frame):
+            print("\n[*] Ctrl+C detected. Cleaning up...")
+            self.pcap_cleanup(self.full_capture, self.mobile, self.pcap_name)
+            self.cleanup(self.live, self.socket_trace, self.full_capture, self.debug_output, self.debug)  # Call the instance's cleanup method
+
+
+        signal.signal(signal.SIGINT, signal_handler)
+
+
+    def write_socket_trace(self, socket_trace_name):
+        with open(socket_trace_name, 'a') as trace_file:
+            trace_file.write(PCAP.get_filter_from_traced_sockets(self.traced_Socket_Set, filter_type="display") + '\n')
+
+
   
 def get_addr_string(socket_addr,ss_family):
     if ss_family == "AF_INET":
@@ -518,7 +633,5 @@ def get_addr_string(socket_addr,ss_family):
         return socket.inet_ntop(socket.AF_INET6, struct.pack(">16s", raw_addr))
             
 
-def write_socket_trace(self, socket_trace_name):
-    with open(socket_trace_name, 'a') as trace_file:
-        trace_file.write(PCAP.get_filter_from_traced_sockets(self.traced_Socket_Set) + '\n')
+
    

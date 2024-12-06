@@ -3,6 +3,8 @@ frida-server*
 __handlers__
 friTap.egg-info
 dist/
+*.pcap
+*.trace
 
 # debian package generation stuff
 deb_dist/

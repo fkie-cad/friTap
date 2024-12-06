@@ -1,5 +1,5 @@
 import { log, devlog, devlog_error } from "../util/log.js";
-import { AF_INET, AF_INET6, ModuleHookingType } from "./shared_structures.js";
+import { AF_INET, AF_INET6, AddressFamilyMapping, unwantedFDs, ModuleHookingType } from "./shared_structures.js";
 
 
 function wait_for_library_loaded(module_name: string){
@@ -233,6 +233,11 @@ export function getPortsAndAddresses(sockfd: number, isRead: boolean, methodAddr
         return message
     }
 
+    // Check if this fd is already marked as unwanted
+    if (unwantedFDs.has(sockfd)) {
+        return null; // Skip further processing
+    }
+
     var getpeername = new NativeFunction(methodAddresses["getpeername"], "int", ["int", "pointer", "pointer"])
     var getsockname = new NativeFunction(methodAddresses["getsockname"], "int", ["int", "pointer", "pointer"])
     var ntohs = new NativeFunction(methodAddresses["ntohs"], "uint16", ["uint16"])
@@ -241,7 +246,7 @@ export function getPortsAndAddresses(sockfd: number, isRead: boolean, methodAddr
     var addrlen = Memory.alloc(4)
     var addr = Memory.alloc(128)
     var src_dst = ["src", "dst"]
-    for (var i = 0; i < src_dst.length; i++) {
+    for (let i = 0; i < src_dst.length; i++) {
         addrlen.writeU32(128)
         if ((src_dst[i] == "src") !== isRead) {
             devlog("src")
@@ -251,6 +256,11 @@ export function getPortsAndAddresses(sockfd: number, isRead: boolean, methodAddr
             devlog("dst")
             getpeername(sockfd, addr, addrlen)
         }
+
+        var family = addr.readU16();
+        const familyName = AddressFamilyMapping[family] || `UNKNOWN`;
+
+
         if (addr.readU16() == AF_INET) {
             message[src_dst[i] + "_port"] = ntohs(addr.add(2).readU16()) as number
             message[src_dst[i] + "_addr"] = ntohl(addr.add(4).readU32()) as number
@@ -270,10 +280,19 @@ export function getPortsAndAddresses(sockfd: number, isRead: boolean, methodAddr
                 message["ss_family"] = "AF_INET6"
             }
         } else {
-            devlog("[-] getPortsAndAddresses resolving error: "+addr.readU16())
-            throw "Only supporting IPv4/6"
+            // only uncomment this if you really need to debug this
+            //devlog("[-] getPortsAndAddresses resolving error: Only supporting IPv4/6");
+            //devlog(`[-] Inspecting fd: ${sockfd}, Address family: ${family} (${familyName})`);
+            //throw "Only supporting IPv4/6"
+            
+            if (!unwantedFDs.has(sockfd)) {
+                //devlog(`Skipping unsupported address family: ${family}:${familyName} (fd: ${sockfd})`);
+            }
+            unwantedFDs.add(sockfd); // Mark this fd as unwanted
+            return null;
         }
     }
+
     return message
 }
 
