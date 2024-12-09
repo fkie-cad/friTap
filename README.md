@@ -3,7 +3,7 @@
 </p>
 
 # friTap
-![version](https://img.shields.io/badge/version-1.2.4.3-blue) [![PyPI version](https://d25lcipzij17d.cloudfront.net/badge.svg?id=py&r=r&ts=1683906897&type=6e&v=1.2.4.3&x2=0)](https://badge.fury.io/py/friTap)
+![version](https://img.shields.io/badge/version-1.2.6.0-blue) [![PyPI version](https://d25lcipzij17d.cloudfront.net/badge.svg?id=py&r=r&ts=1683906897&type=6e&v=1.2.6.0&x2=0)](https://badge.fury.io/py/friTap)
 
 The goal of this project is to help researchers to analyze traffic encapsulated in SSL or TLS. For details have a view into the [OSDFCon webinar slides](assets/friTapOSDFConwebinar.pdf) or in [this blog post](https://lolcads.github.io/posts/2022/08/fritap/).
 
@@ -22,7 +22,7 @@ The main features of friTap are:
 
 ## Installation
 
-Installation is simply a matter of `pip3 install fritap`. This will give you the `friTap` command. You can update an existing `friTap` installation with `pip3 install --upgrade friTap`.
+Installation is simply a matter of `pip3 install fritap`. This will give you the `fritap` command. You can update an existing `fritap` installation with `pip3 install --upgrade fritap`.
 
 ## Usage
 
@@ -41,7 +41,7 @@ $ fritap -m -k keys.log com.example.app
 Further ensure that the frida-server is running on the Android/iOS device. 
 
 
-Remember when working with the pip installation you have to invoke the `friTap` command with sudo a little bit different. Either as module:
+Remember when working with the pip installation you have to invoke the `fritap` command with sudo a little bit different. Either as module:
 ```bash
 $ sudo -E python3 -m friTap.friTap --pcap mycapture.pcap thunderbird
 ```
