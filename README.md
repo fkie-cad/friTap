@@ -5,7 +5,11 @@
 # friTap
 ![version](https://img.shields.io/badge/version-1.2.6.0-blue) [![PyPI version](https://d25lcipzij17d.cloudfront.net/badge.svg?id=py&r=r&ts=1683906897&type=6e&v=1.2.6.0&x2=0)](https://badge.fury.io/py/friTap)
 
-The goal of this project is to help researchers to analyze traffic encapsulated in SSL or TLS. For details have a view into the [OSDFCon webinar slides](assets/friTapOSDFConwebinar.pdf) or in [this blog post](https://lolcads.github.io/posts/2022/08/fritap/).
+friTap is a powerful tool designed to assist researchers in analyzing network traffic encapsulated in SSL/TLS. With its ability to automate key extraction, friTap is especially valuable when dealing with malware analysis or investigating privacy issues in applications. By simplifying the process of decrypting and inspecting encrypted traffic, friTap empowers researchers to uncover critical insights with ease.
+
+Key features include seamless support for automated SSL/TLS key extraction, making it an ideal choice for scenarios requiring rapid and accurate traffic analysis. Whether you’re dissecting malicious network behavior or assessing data privacy compliance, friTap streamlines your workflow.
+
+For more details, explore the [OSDFCon webinar slides](assets/friTapOSDFConwebinar.pdf) or check out our [blog post](https://lolcads.github.io/posts/2022/08/fritap/).
 
 
 This project was inspired by [SSL_Logger](https://github.com/google/ssl_logger ) and currently supports all major operating systems (Linux, Windows, Android). More platforms and libraries will be added in future releases.
