@@ -3,6 +3,7 @@
 
 import argparse
 import sys
+import os
 import frida
 from AndroidFridaManager import FridaBasedException
 import traceback
@@ -156,6 +157,9 @@ Examples:
             print("\n[-] frida-server is not running in remote device. Please run frida-server and rerun")
             
         print(f"\n[-] Unknown error: {ex_value}")
+        if "unable to access process with pid" in str(ex_value).lower():
+            print("\n\nThx for using friTap\nHave a great day\n")
+            os._exit(0)
 
         ssl_log.pcap_cleanup(parsed.full_capture,parsed.mobile,parsed.pcap)
         ssl_log.cleanup(parsed.live,parsed.socket_tracing,parsed.full_capture,parsed.debug,parsed.debugoutput)    

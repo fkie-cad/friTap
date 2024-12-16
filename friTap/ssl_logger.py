@@ -560,7 +560,7 @@ class SSL_Logger():
     
 
     def cleanup(self, live=False, socket_trace=False, full_capture=False, debug_output=False, debug=False):
-        if self.pcap_obj is not None:
+        if self.pcap_obj is not None and full_capture:
             if self.pcap_obj.full_capture_thread.is_alive():
                 self.pcap_obj.full_capture_thread.join()
                 time.sleep(2)
