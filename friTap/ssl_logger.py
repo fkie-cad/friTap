@@ -428,7 +428,25 @@ class SSL_Logger():
     def start_fritap_session(self, own_message_handler=None):
 
         if self.mobile:
-            self.device = frida.get_usb_device()
+            try:
+                if self.mobile is True:  # No device ID provided
+                    if self.debug_output or self.debug:
+                        print("[*] Attaching to the first available USB device...")
+                    self.device = frida.get_usb_device()
+                else:  # Device ID provided
+                    if self.debug_output or self.debug:
+                        print(f"[*] Attaching to the device with ID: {self.mobile}")
+                    self.device = frida.get_device(self.mobile)
+                print("[*] Successfully attached to the mobile device.")
+            except frida.ServerNotRunningError:
+                print("[-] Frida server is not running. Please ensure it is started on the device.")
+                sys.exit(1)
+            except frida.DeviceNotFoundError:
+                print(f"[-] Device with ID '{self.mobile}' not found. Please check the device ID or ensure it is connected.")
+                sys.exit(1)
+            except Exception as e:
+                print(f"[-] Unexpected error while attaching to the device: {e}")
+                sys.exit(1)
         elif self.host:
             self.device = frida.get_device_manager().add_remote_device(self.host)
         else:

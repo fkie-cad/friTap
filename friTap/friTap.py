@@ -58,8 +58,7 @@ Examples:
 """)
 
     args = parser.add_argument_group("Arguments")
-    args.add_argument("-m", "--mobile", required=False, action="store_const",
-                      const=True, default=False, help="Attach to a process on android or iOS")
+    args.add_argument("-m", "--mobile",  metavar="<device_id>", default=False, required=False, nargs='?', const=True, help="Attach to a process on Android or iOS. If you have multpile device you specify with the device id.")
     args.add_argument("-H", "--host", metavar="<ip:port>", required=False,
                       help="Attach to a process on remote frida device")
     args.add_argument("-c", "--custom_script", metavar="<path>", required=False,
@@ -134,6 +133,18 @@ Examples:
     except frida.ProcessNotFoundError as pe:
         print(f"[-] ProcessNotFoundError: {pe}")
         exit(2)
+    except frida.PermissionDeniedError as e:
+        print(f"[-] Frida Permission Denied: {e}")
+        exit(2)
+    except frida.ServerNotRunningError as e:
+        print(f"[-] Frida server is not running: {e}")
+        exit(2)
+    except frida.InvalidArgumentError as e:
+        print(f"[-] Invalid Argument passed to Frida: {e}")
+        exit(2)
+    except frida.InvalidOperationError as e:
+        print(f"[-] Invalid Operation Error in Frida: {e}")
+        exit(2)
     except Exception as ar:
         # Get current system exception
         ex_type, ex_value, ex_traceback = sys.exc_info()
@@ -158,6 +169,10 @@ Examples:
             
         print(f"\n[-] Unknown error: {ex_value}")
         if "unable to access process with pid" in str(ex_value).lower():
+            print("\n\nThx for using friTap\nHave a great day\n")
+            os._exit(0)
+        if "not yet supported on this os" in str(ex_value).lower():
+            print("[-] This feature is currently not supported by frida on this OS.")
             print("\n\nThx for using friTap\nHave a great day\n")
             os._exit(0)
 
