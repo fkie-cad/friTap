@@ -36,7 +36,8 @@ requirements = [
     'scapy',
     'watchdog',
     'click',
-    'importlib-resources'
+    'importlib-resources',
+    'psutil'
 ]
 
 
