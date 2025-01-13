@@ -164,7 +164,7 @@ class Android:
             pids_str = " ".join(pids)
             self.run_adb_command_as_root(f"kill -INT {pids_str}")
             if self.print_debug_infos:
-                print(f"[+] Killed processes with PID: {pids_str}")
+                print(f"[*] Killed processes with PID: {pids_str}")
         else:
             if self.print_debug_infos:
                 print("[-] No running tcpdump processes found")
@@ -180,7 +180,7 @@ class Android:
             pids_str = " ".join(pids)
             self.run_adb_command_as_root(f"kill -9 {pids_str}")
             if self.print_debug_infos:
-                print(f"[+] Killed processes with PID: {pids_str}")
+                print(f"[*] Killed processes with PID: {pids_str}")
         else:
             if self.print_debug_infos:
                 print("[-] No running tcpdump processes found")
