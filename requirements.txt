@@ -6,3 +6,4 @@ scapy
 watchdog
 click
 importlib-resources
+psutil

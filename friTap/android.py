@@ -141,37 +141,49 @@ class Android:
     def get_pid_via_adb(self, process_name):
         try:
             pid_result =self.run_adb_command_as_root(f"pidof -s {process_name}")
-            pid = pid_result.stdout.strip()
+            pids = pid_result.stdout.strip().split()
 
-            if not pid:
+            if not pids:
                 if self.print_debug_infos:
                     print("[-] No PID found. Process may not be running.")
-                return "-1"
-            return pid
+                return []
+            return pids
         except subprocess.CalledProcessError as e:
             if self.print_debug_infos:
                 print(f"Error: {e.stderr.strip()}")
-            return "-1"
+            return []
             
     def send_ctrlC_over_adb(self):
         self.close_friTap_if_none_android()
         if self.is_tcpdump_available():
-            pid = self.get_pid_via_adb("tcpdump")
+            pids = self.get_pid_via_adb("tcpdump")
         else:
-            pid = self.get_pid_via_adb(self.tcpdump_version)
-        
-        if int(pid) > 0:
-            self.run_adb_command_as_root(f"kill -INT {pid}")
+            pids = self.get_pid_via_adb(self.tcpdump_version)
+
+        if pids:
+            pids_str = " ".join(pids)
+            self.run_adb_command_as_root(f"kill -INT {pids_str}")
+            if self.print_debug_infos:
+                print(f"[+] Killed processes with PID: {pids_str}")
+        else:
+            if self.print_debug_infos:
+                print("[-] No running tcpdump processes found")
 
     def send_kill_tcpdump_over_adb(self):
         self.close_friTap_if_none_android()
         if self.is_tcpdump_available():
-            pid = self.get_pid_via_adb("tcpdump")
+            pids = self.get_pid_via_adb("tcpdump")
         else:
-            pid = self.get_pid_via_adb(self.tcpdump_version)
+            pids = self.get_pid_via_adb(self.tcpdump_version)
         
-        if int(pid) > 0:
-            self.run_adb_command_as_root(f"kill -9 {pid}")
+        if pids:
+            pids_str = " ".join(pids)
+            self.run_adb_command_as_root(f"kill -9 {pids_str}")
+            if self.print_debug_infos:
+                print(f"[+] Killed processes with PID: {pids_str}")
+        else:
+            if self.print_debug_infos:
+                print("[-] No running tcpdump processes found")
         
     def close_friTap_if_none_android(self):
         if self.is_Android == False:
