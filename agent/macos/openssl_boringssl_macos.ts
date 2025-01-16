@@ -7,30 +7,33 @@ import { devlog, log } from "../util/log.js";
 export class OpenSSL_BoringSSL_MacOS extends OpenSSL_BoringSSL {
 
     install_tls_keys_callback_hook(){
-        console.log(this.addresses) // currently only for debugging purposes will be removed in future releases
+        //console.log(this.addresses) // currently only for debugging purposes will be removed in future releases
         if (ObjC.available) { // inspired from https://codeshare.frida.re/@andydavies/ios-tls-keylogger/
             var CALLBACK_OFFSET = 0x2A8;
 
             var foundationNumber = Module.findExportByName('CoreFoundation', 'kCFCoreFoundationVersionNumber')?.readDouble();
+            devlog("[*] Calculating offset to keylog callback based on the FoundationVersionNumber: "+foundationNumber)
             if(foundationNumber == undefined){
-                devlog("Installing callback for iOS < 14");
                 CALLBACK_OFFSET = 0x2A8;
+                devlog("Installing callback for MacOS < 14 using callback offset: "+CALLBACK_OFFSET);
             } else if (foundationNumber >= 1751.108 && foundationNumber < 1854) {
-                devlog("Installing callback for iOS >= 14");
                 CALLBACK_OFFSET = 0x2B8; // >= iOS 14.x 
+                devlog("Installing callback for MacOS >= 14 using callback offset: "+CALLBACK_OFFSET);
             } else if (foundationNumber >= 1854 && foundationNumber < 1946.102) {
-                devlog("Installing callback for iOS >= 15");
                 CALLBACK_OFFSET = 0x2F8; // >= iOS 15.x 
+                devlog("Installing callback for MacOS >= 15 using callback offset: "+CALLBACK_OFFSET);
             } else if (foundationNumber >= 1946.102 && foundationNumber <= 1979.1) {
-                devlog("Installing callback for iOS >= 16");
                 CALLBACK_OFFSET = 0x300; // >= iOS 16.x 
+                devlog("Installing callback for MacOS >= 16 using callback offset: "+CALLBACK_OFFSET);
             } else if (foundationNumber > 1979.1) {
-                devlog("Installing callback for iOS >= 17");
-                CALLBACK_OFFSET = 0x308; // >= iOS 17.x 
+                CALLBACK_OFFSET = 0x2F8; // >= iOS 17.x
+                devlog("Installing callback for MacOS >= 17 using callback offset: "+CALLBACK_OFFSET); 
             }
             Interceptor.attach(this.addresses[this.module_name]["SSL_CTX_set_info_callback"], {
               onEnter: function (args : any) {
-                ptr(args[0]).add(CALLBACK_OFFSET).writePointer(this.keylog_callback);
+                var ssl_str_ptr = new NativePointer(args[0]);
+                var callback = new NativePointer(ssl_str_ptr).add(CALLBACK_OFFSET)
+                callback.writePointer(this.keylog_callback);
               }
             });
           
@@ -42,7 +45,7 @@ export class OpenSSL_BoringSSL_MacOS extends OpenSSL_BoringSSL {
 
         var library_method_mapping: { [key: string]: Array<string> } = {}
 
-        // the iOS implementation needs some further improvements - currently we are not able to get the sockfd from an SSL_read/write invocation
+        // the MacOS implementation needs some further improvements - currently we are not able to get the sockfd from an SSL_read/write invocation
         library_method_mapping[`*${moduleName}*`] = ["SSL_read", "SSL_write", "BIO_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_info_callback"]
         library_method_mapping[`*${socket_library}*`] = ["getpeername*", "getsockname*", "ntohs*", "ntohl*"] // currently those functions gets only identified if we at an asterisk at the end 
 

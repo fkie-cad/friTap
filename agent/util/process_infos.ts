@@ -17,13 +17,38 @@ export function isAndroid(): boolean{
     }
 }
 
+function is_macos_based_version_string(): boolean{
+    // Check if NSProcessInfo is available (indicating macOS or iOS)
+    if (ObjC.classes.NSProcessInfo !== undefined) {
+        try {
+            // Get the operating system version string
+            const NSProcessInfo = ObjC.classes.NSProcessInfo;
+            const version = NSProcessInfo.processInfo()
+                .operatingSystemVersionString()
+                .toString();
+
+            if (version.includes("iOS")) {
+                return false;
+            } else if (version.includes("macOS") || version.includes("OS X")) {
+                return true;
+            } 
+        } catch (error) {
+        }
+    }
+
+    return false;
+
+}
+
 
 export function isiOS(): boolean{
     if(get_process_architecture() === "arm64" && Process.platform == "darwin"){
         try{
-             // check if iOS or MacOS (currently we handle MacOS with ARM Processor as an iOS device)
-             // maybe Kernel.available could be used for that or a file which is unique
-            return true
+            if(is_macos_based_version_string()){
+                return false;
+            }else{
+                return true;
+            }
         }catch(error){
             return false
         }
@@ -33,11 +58,17 @@ export function isiOS(): boolean{
 }
 
 
+
+
 export function isMacOS(): boolean{
     if(get_process_architecture() === "x64" && Process.platform == "darwin"){
         return true
     }else{
-        return false
+        if(is_macos_based_version_string()){
+            return false;
+        }else{
+            return true;
+        }
     }
 }
 

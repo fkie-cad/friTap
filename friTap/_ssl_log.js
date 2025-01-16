@@ -57,8 +57,8 @@
 1514 /agent/macos/cronet_macos.js
 1984 /agent/macos/macos_agent.js.map
 2384 /agent/macos/macos_agent.js
-2382 /agent/macos/openssl_boringssl_macos.js.map
-3417 /agent/macos/openssl_boringssl_macos.js
+2516 /agent/macos/openssl_boringssl_macos.js.map
+3891 /agent/macos/openssl_boringssl_macos.js
 9219 /agent/misc/socket_tracer.js.map
 10733 /agent/misc/socket_tracer.js
 7608 /agent/shared/pattern_based_hooking.js.map
@@ -93,8 +93,8 @@
 18094 /agent/util/anti_root.js
 736 /agent/util/log.js.map
 451 /agent/util/log.js
-1576 /agent/util/process_infos.js.map
-1907 /agent/util/process_infos.js
+2166 /agent/util/process_infos.js.map
+2668 /agent/util/process_infos.js
 1478 /agent/windows/cronet_windows.js.map
 1530 /agent/windows/cronet_windows.js
 974 /agent/windows/gnutls_windows.js.map
@@ -1863,47 +1863,50 @@ export function load_macos_hooking_agent() {
     hook_macOS_Dynamic_Loader(module_library_mapping, false);
 }
 ✄
-{"version":3,"file":"openssl_boringssl_macos.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/macos/openssl_boringssl_macos.ts"],"names":[],"mappings":"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"}
+{"version":3,"file":"openssl_boringssl_macos.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/macos/openssl_boringssl_macos.ts"],"names":[],"mappings":"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"}
 ✄
 import { OpenSSL_BoringSSL } from "../ssl_lib/openssl_boringssl.js";
 import { socket_library } from "./macos_agent.js";
 import { devlog } from "../util/log.js";
 export class OpenSSL_BoringSSL_MacOS extends OpenSSL_BoringSSL {
     install_tls_keys_callback_hook() {
-        console.log(this.addresses); // currently only for debugging purposes will be removed in future releases
+        //console.log(this.addresses) // currently only for debugging purposes will be removed in future releases
         if (ObjC.available) { // inspired from https://codeshare.frida.re/@andydavies/ios-tls-keylogger/
             var CALLBACK_OFFSET = 0x2A8;
             var foundationNumber = Module.findExportByName('CoreFoundation', 'kCFCoreFoundationVersionNumber')?.readDouble();
+            devlog("[*] Calculating offset to keylog callback based on the FoundationVersionNumber: " + foundationNumber);
             if (foundationNumber == undefined) {
-                devlog("Installing callback for iOS < 14");
                 CALLBACK_OFFSET = 0x2A8;
+                devlog("Installing callback for MacOS < 14 using callback offset: " + CALLBACK_OFFSET);
             }
             else if (foundationNumber >= 1751.108 && foundationNumber < 1854) {
-                devlog("Installing callback for iOS >= 14");
                 CALLBACK_OFFSET = 0x2B8; // >= iOS 14.x 
+                devlog("Installing callback for MacOS >= 14 using callback offset: " + CALLBACK_OFFSET);
             }
             else if (foundationNumber >= 1854 && foundationNumber < 1946.102) {
-                devlog("Installing callback for iOS >= 15");
                 CALLBACK_OFFSET = 0x2F8; // >= iOS 15.x 
+                devlog("Installing callback for MacOS >= 15 using callback offset: " + CALLBACK_OFFSET);
             }
             else if (foundationNumber >= 1946.102 && foundationNumber <= 1979.1) {
-                devlog("Installing callback for iOS >= 16");
                 CALLBACK_OFFSET = 0x300; // >= iOS 16.x 
+                devlog("Installing callback for MacOS >= 16 using callback offset: " + CALLBACK_OFFSET);
             }
             else if (foundationNumber > 1979.1) {
-                devlog("Installing callback for iOS >= 17");
-                CALLBACK_OFFSET = 0x308; // >= iOS 17.x 
+                CALLBACK_OFFSET = 0x2F8; // >= iOS 17.x
+                devlog("Installing callback for MacOS >= 17 using callback offset: " + CALLBACK_OFFSET);
             }
             Interceptor.attach(this.addresses[this.module_name]["SSL_CTX_set_info_callback"], {
                 onEnter: function (args) {
-                    ptr(args[0]).add(CALLBACK_OFFSET).writePointer(this.keylog_callback);
+                    var ssl_str_ptr = new NativePointer(args[0]);
+                    var callback = new NativePointer(ssl_str_ptr).add(CALLBACK_OFFSET);
+                    callback.writePointer(this.keylog_callback);
                 }
             });
         }
     }
     constructor(moduleName, socket_library, is_base_hook) {
         var library_method_mapping = {};
-        // the iOS implementation needs some further improvements - currently we are not able to get the sockfd from an SSL_read/write invocation
+        // the MacOS implementation needs some further improvements - currently we are not able to get the sockfd from an SSL_read/write invocation
         library_method_mapping[`*${moduleName}*`] = ["SSL_read", "SSL_write", "BIO_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_info_callback"];
         library_method_mapping[`*${socket_library}*`] = ["getpeername*", "getsockname*", "ntohs*", "ntohl*"]; // currently those functions gets only identified if we at an asterisk at the end 
         super(moduleName, socket_library, is_base_hook, library_method_mapping);
@@ -5697,7 +5700,7 @@ export function devlog_error(str) {
     send(message);
 }
 ✄
-{"version":3,"file":"process_infos.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/util/process_infos.ts"],"names":[],"mappings":"AACA,MAAM,UAAU,wBAAwB;IAChC,OAAO,OAAO,CAAC,IAAI,CAAC;AAC5B,CAAC;AAGD,MAAM,UAAU,SAAS;IACrB,IAAG,IAAI,CAAC,SAAS,IAAI,OAAO,CAAC,QAAQ,IAAI,OAAO,EAAC;QAC7C,IAAG;YACC,IAAI,CAAC,cAAc,CAAA,CAAC,yDAAyD;YAC7E,OAAO,IAAI,CAAA;SACd;QAAA,OAAM,KAAK,EAAC;YACT,OAAO,KAAK,CAAA;SACf;KACJ;SAAI;QACD,OAAO,KAAK,CAAA;KACf;AACL,CAAC;AAGD,MAAM,UAAU,KAAK;IACjB,IAAG,wBAAwB,EAAE,KAAK,OAAO,IAAI,OAAO,CAAC,QAAQ,IAAI,QAAQ,EAAC;QACtE,IAAG;YACE,wFAAwF;YACxF,0EAA0E;YAC3E,OAAO,IAAI,CAAA;SACd;QAAA,OAAM,KAAK,EAAC;YACT,OAAO,KAAK,CAAA;SACf;KACJ;SAAI;QACD,OAAO,KAAK,CAAA;KACf;AACL,CAAC;AAGD,MAAM,UAAU,OAAO;IACnB,IAAG,wBAAwB,EAAE,KAAK,KAAK,IAAI,OAAO,CAAC,QAAQ,IAAI,QAAQ,EAAC;QACpE,OAAO,IAAI,CAAA;KACd;SAAI;QACD,OAAO,KAAK,CAAA;KACf;AACL,CAAC;AAGD,MAAM,UAAU,OAAO;IACnB,IAAI,OAAO,CAAC,QAAQ,IAAI,OAAO,EAAE;QAE7B,IAAI,IAAI,CAAC,SAAS,IAAI,KAAK,IAAI,OAAO,CAAC,QAAQ,IAAI,OAAO,EAAE;YACxD,OAAO,IAAI,CAAA;SACd;aAAM;YACH,IAAI;gBACA,IAAI,CAAC,cAAc,CAAA,CAAC,yDAAyD;gBAC7E,OAAO,KAAK,CAAA;aACf;YAAC,OAAO,KAAK,EAAE;gBACZ,OAAO,IAAI,CAAA;aACd;SAEJ;KACJ;SAAI;QACD,OAAO,KAAK,CAAA;KACf;AACL,CAAC;AAED,MAAM,UAAU,SAAS;IACrB,IAAI,OAAO,CAAC,QAAQ,IAAI,SAAS,EAAC;QAC9B,OAAO,IAAI,CAAA;KACd;SAAI;QACD,OAAO,KAAK,CAAA;KACf;AACL,CAAC;AAGD,MAAM,UAAU,iBAAiB;IAC7B,IAAI,OAAO,GAAG,IAAI,CAAA;IAClB,IAAI,CAAC,OAAO,CAAC;QACT,OAAO,GAAG,IAAI,CAAC,cAAc,CAAC,CAAC,0DAA0D;IACzF,CAAC,CAAC,CAAC;IAEH,IAAI,cAAc,GAAY,CAAC,OAAO,CAAC;IACvC,OAAO,cAAc,CAAC;AAG9B,CAAC"}
+{"version":3,"file":"process_infos.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/util/process_infos.ts"],"names":[],"mappings":"AACA,MAAM,UAAU,wBAAwB;IAChC,OAAO,OAAO,CAAC,IAAI,CAAC;AAC5B,CAAC;AAGD,MAAM,UAAU,SAAS;IACrB,IAAG,IAAI,CAAC,SAAS,IAAI,OAAO,CAAC,QAAQ,IAAI,OAAO,EAAC;QAC7C,IAAG;YACC,IAAI,CAAC,cAAc,CAAA,CAAC,yDAAyD;YAC7E,OAAO,IAAI,CAAA;SACd;QAAA,OAAM,KAAK,EAAC;YACT,OAAO,KAAK,CAAA;SACf;KACJ;SAAI;QACD,OAAO,KAAK,CAAA;KACf;AACL,CAAC;AAED,SAAS,6BAA6B;IAClC,gEAAgE;IAChE,IAAI,IAAI,CAAC,OAAO,CAAC,aAAa,KAAK,SAAS,EAAE;QAC1C,IAAI;YACA,0CAA0C;YAC1C,MAAM,aAAa,GAAG,IAAI,CAAC,OAAO,CAAC,aAAa,CAAC;YACjD,MAAM,OAAO,GAAG,aAAa,CAAC,WAAW,EAAE;iBACtC,4BAA4B,EAAE;iBAC9B,QAAQ,EAAE,CAAC;YAEhB,IAAI,OAAO,CAAC,QAAQ,CAAC,KAAK,CAAC,EAAE;gBACzB,OAAO,KAAK,CAAC;aAChB;iBAAM,IAAI,OAAO,CAAC,QAAQ,CAAC,OAAO,CAAC,IAAI,OAAO,CAAC,QAAQ,CAAC,MAAM,CAAC,EAAE;gBAC9D,OAAO,IAAI,CAAC;aACf;SACJ;QAAC,OAAO,KAAK,EAAE;SACf;KACJ;IAED,OAAO,KAAK,CAAC;AAEjB,CAAC;AAGD,MAAM,UAAU,KAAK;IACjB,IAAG,wBAAwB,EAAE,KAAK,OAAO,IAAI,OAAO,CAAC,QAAQ,IAAI,QAAQ,EAAC;QACtE,IAAG;YACC,IAAG,6BAA6B,EAAE,EAAC;gBAC/B,OAAO,KAAK,CAAC;aAChB;iBAAI;gBACD,OAAO,IAAI,CAAC;aACf;SACJ;QAAA,OAAM,KAAK,EAAC;YACT,OAAO,KAAK,CAAA;SACf;KACJ;SAAI;QACD,OAAO,KAAK,CAAA;KACf;AACL,CAAC;AAKD,MAAM,UAAU,OAAO;IACnB,IAAG,wBAAwB,EAAE,KAAK,KAAK,IAAI,OAAO,CAAC,QAAQ,IAAI,QAAQ,EAAC;QACpE,OAAO,IAAI,CAAA;KACd;SAAI;QACD,IAAG,6BAA6B,EAAE,EAAC;YAC/B,OAAO,KAAK,CAAC;SAChB;aAAI;YACD,OAAO,IAAI,CAAC;SACf;KACJ;AACL,CAAC;AAGD,MAAM,UAAU,OAAO;IACnB,IAAI,OAAO,CAAC,QAAQ,IAAI,OAAO,EAAE;QAE7B,IAAI,IAAI,CAAC,SAAS,IAAI,KAAK,IAAI,OAAO,CAAC,QAAQ,IAAI,OAAO,EAAE;YACxD,OAAO,IAAI,CAAA;SACd;aAAM;YACH,IAAI;gBACA,IAAI,CAAC,cAAc,CAAA,CAAC,yDAAyD;gBAC7E,OAAO,KAAK,CAAA;aACf;YAAC,OAAO,KAAK,EAAE;gBACZ,OAAO,IAAI,CAAA;aACd;SAEJ;KACJ;SAAI;QACD,OAAO,KAAK,CAAA;KACf;AACL,CAAC;AAED,MAAM,UAAU,SAAS;IACrB,IAAI,OAAO,CAAC,QAAQ,IAAI,SAAS,EAAC;QAC9B,OAAO,IAAI,CAAA;KACd;SAAI;QACD,OAAO,KAAK,CAAA;KACf;AACL,CAAC;AAGD,MAAM,UAAU,iBAAiB;IAC7B,IAAI,OAAO,GAAG,IAAI,CAAA;IAClB,IAAI,CAAC,OAAO,CAAC;QACT,OAAO,GAAG,IAAI,CAAC,cAAc,CAAC,CAAC,0DAA0D;IACzF,CAAC,CAAC,CAAC;IAEH,IAAI,cAAc,GAAY,CAAC,OAAO,CAAC;IACvC,OAAO,cAAc,CAAC;AAG9B,CAAC"}
 ✄
 export function get_process_architecture() {
     return Process.arch;
@@ -5716,12 +5719,36 @@ export function isAndroid() {
         return false;
     }
 }
+function is_macos_based_version_string() {
+    // Check if NSProcessInfo is available (indicating macOS or iOS)
+    if (ObjC.classes.NSProcessInfo !== undefined) {
+        try {
+            // Get the operating system version string
+            const NSProcessInfo = ObjC.classes.NSProcessInfo;
+            const version = NSProcessInfo.processInfo()
+                .operatingSystemVersionString()
+                .toString();
+            if (version.includes("iOS")) {
+                return false;
+            }
+            else if (version.includes("macOS") || version.includes("OS X")) {
+                return true;
+            }
+        }
+        catch (error) {
+        }
+    }
+    return false;
+}
 export function isiOS() {
     if (get_process_architecture() === "arm64" && Process.platform == "darwin") {
         try {
-            // check if iOS or MacOS (currently we handle MacOS with ARM Processor as an iOS device)
-            // maybe Kernel.available could be used for that or a file which is unique
-            return true;
+            if (is_macos_based_version_string()) {
+                return false;
+            }
+            else {
+                return true;
+            }
         }
         catch (error) {
             return false;
@@ -5736,7 +5763,12 @@ export function isMacOS() {
         return true;
     }
     else {
-        return false;
+        if (is_macos_based_version_string()) {
+            return false;
+        }
+        else {
+            return true;
+        }
     }
 }
 export function isLinux() {
