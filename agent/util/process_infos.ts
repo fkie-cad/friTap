@@ -64,11 +64,12 @@ export function isMacOS(): boolean{
     if(get_process_architecture() === "x64" && Process.platform == "darwin"){
         return true
     }else{
-        if(is_macos_based_version_string()){
-            return false;
-        }else{
-            return true;
+        if(Process.platform == "darwin"){
+            if(is_macos_based_version_string()){
+                return true;
+            }
         }
+            return false;
     }
 }
 
