@@ -159,15 +159,21 @@ Examples:
             stack_trace.append("File : %s , Line : %d, Func.Name : %s, Message : %s" % (trace[0], trace[1], trace[2], trace[3]))
         
         if parsed.debug or parsed.debugoutput:
-            print("Exception type : %s " % ex_type.__name__)
-            print("Exception message : %s" %ex_value)
-            print("Stack trace : %s" %stack_trace)
+            if "NotSupportedError" in ex_type.__name__:
+                print("[-] Frida based error:")
+            print("[-] Exception type : %s " % ex_type.__name__)
+            print("[-] Exception message : %s" %ex_value)
+            print("[-] Stack trace : %s" %stack_trace)
 
 
         if "unable to connect to remote frida-server: closed" in str(ar):
             print("\n[-] frida-server is not running in remote device. Please run frida-server and rerun")
             
-        print(f"\n[-] Unknown error: {ex_value}")
+        if "NotSupportedError" in ex_type.__name__:
+            print(f"\n[-] Frida error: {ex_value}")
+        else:
+            print(f"\n[-] Unknown error: {ex_value}")
+            
         if "unable to access process with pid" in str(ex_value).lower():
             print("\n\nThx for using friTap\nHave a great day\n")
             os._exit(0)
