@@ -43,7 +43,7 @@ function hook_iOS_Dynamic_Loader(module_library_mapping: { [key: string]: Array<
 
         })
 
-        console.log(`[*] iOS dynamic loader hooked.`)
+        log(`[*] iOS dynamic loader hooked.`)
     } catch (error) {
         devlog("Loader error: " + error)
         log("No dynamic loader present for hooking on iOS.")

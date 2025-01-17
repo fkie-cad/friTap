@@ -1,3 +1,4 @@
+import { devlog } from "./log.js";
 
 export function get_process_architecture() : string{
         return Process.arch;
@@ -23,16 +24,25 @@ function is_macos_based_version_string(): boolean{
         try {
             // Get the operating system version string
             const NSProcessInfo = ObjC.classes.NSProcessInfo;
+
+            
             const version = NSProcessInfo.processInfo()
                 .operatingSystemVersionString()
-                .toString();
+                .toString().toLowerCase();
 
-            if (version.includes("iOS")) {
+            
+            // https://developer.apple.com/documentation/appkit/nsapplication
+            // should only available on MacOS
+            const isMacOSCheck = ObjC.classes.NSApplication !== undefined;
+            
+            if (version.includes("ios")) {
                 return false;
-            } else if (version.includes("macOS") || version.includes("OS X")) {
+            } else if (version.includes("macos") || version.includes("os x") || isMacOSCheck) {
                 return true;
-            } 
+            }
         } catch (error) {
+            devlog("[!] error:"+error);
+            return false;
         }
     }
 

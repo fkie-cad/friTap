@@ -182,7 +182,11 @@ class PCAP:
             
             
             def stop_capture_thread(self, packet):
-                return self.stop_capture.isSet()
+                if hasattr(self.stop_capture, "is_set"):
+                    status = self.stop_capture.is_set()
+                else:
+                    status = self.stop_capture.isSet()
+                return status
                 
                 
             def full_mobile_capture(self):

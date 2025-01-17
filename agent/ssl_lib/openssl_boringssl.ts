@@ -74,7 +74,7 @@ export class OpenSSL_BoringSSL {
     static modReceiver: ModifyReceiver;
    
 
-    static keylog_callback = new NativeCallback(function (ctxPtr, linePtr: NativePointer) {
+    static keylog_callback = new NativeCallback(function (ctxPtr: NativePointer, linePtr: NativePointer) {
         devlog("invoking keylog_callback from OpenSSL_BoringSSL");
         var message: { [key: string]: string | number | null } = {}
         message["contentType"] = "keylog"
@@ -147,150 +147,158 @@ export class OpenSSL_BoringSSL {
 
         }
 
-        this.SSL_SESSION_get_id = new NativeFunction(this.addresses[this.moduleName]["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
-        this.SSL_get_fd = ObjC.available ? new NativeFunction(this.addresses[this.moduleName]["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(this.addresses[this.moduleName]["SSL_get_fd"], "int", ["pointer"]);
-        this.SSL_get_session = new NativeFunction(this.addresses[this.moduleName]["SSL_get_session"], "pointer", ["pointer"]);
+        if(!ObjC.available){
+            this.SSL_SESSION_get_id = new NativeFunction(this.addresses[this.moduleName]["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
+            this.SSL_get_fd = ObjC.available ? new NativeFunction(this.addresses[this.moduleName]["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(this.addresses[this.moduleName]["SSL_get_fd"], "int", ["pointer"]);
+            this.SSL_get_session = new NativeFunction(this.addresses[this.moduleName]["SSL_get_session"], "pointer", ["pointer"]);
+        }
         
     }
 
 
     install_plaintext_read_hook(){
-        function ab2str(buf: ArrayBuffer) {
-            //@ts-ignore
-            return String.fromCharCode.apply(null, new Uint16Array(buf));
-        }
-        function str2ab(str: string ) {
-            var buf = new ArrayBuffer(str.length + 1); // 2 bytes for each char
-            var bufView = new Uint8Array(buf);
-            for (var i=0, strLen=str.length; i < strLen; i++) {
-            bufView[i] = str.charCodeAt(i);
+        if(!ObjC.available){
+            function ab2str(buf: ArrayBuffer) {
+                //@ts-ignore
+                return String.fromCharCode.apply(null, new Uint16Array(buf));
             }
-            bufView[str.length] = 0;
-            return buf;
-        }
-
-        var lib_addesses = this.addresses;
-        var instance = this;
-        var current_module_name = this.module_name;
-
-        Interceptor.attach(this.addresses[this.moduleName]["SSL_read"],
-        {
-            
-            onEnter: function (args: any) 
+            function str2ab(str: string ) {
+                var buf = new ArrayBuffer(str.length + 1); // 2 bytes for each char
+                var bufView = new Uint8Array(buf);
+                for (var i=0, strLen=str.length; i < strLen; i++) {
+                bufView[i] = str.charCodeAt(i);
+                }
+                bufView[str.length] = 0;
+                return buf;
+            }
+    
+            var lib_addesses = this.addresses;
+            var instance = this;
+            var current_module_name = this.module_name;
+    
+            Interceptor.attach(this.addresses[this.moduleName]["SSL_read"],
             {
-                this.bufLen = args[2].toInt32()
-                this.fd = instance.SSL_get_fd(args[0])
-                if(this.fd < 0 && enable_default_fd == false) {
-                    return
+                
+                onEnter: function (args: any) 
+                {
+                    this.bufLen = args[2].toInt32()
+                    this.fd = instance.SSL_get_fd(args[0])
+                    if(this.fd < 0 && enable_default_fd == false) {
+                        return
+                    }
+    
+    
+    
+                
+                    var message = getPortsAndAddresses(this.fd as number, true, lib_addesses[current_module_name], enable_default_fd)
+                    message["ssl_session_id"] = instance.getSslSessionId(args[0])
+                    message["function"] = "SSL_read"
+                    this.message = message
+                    
+                    this.buf = args[1]
+                
+                },
+                onLeave: function (retval: any) {
+                    retval |= 0 // Cast retval to 32-bit integer.
+                    if (retval <= 0 || this.fd < 0) {
+                        return
+                    }
+    
+                    
+                    if(OpenSSL_BoringSSL.modReceiver.readmod !== null){
+                        //NULL out buffer
+                        //@ts-ignore
+                        Memory.writeByteArray(this.buf, new Uint8Array(this.bufLen));
+    
+                        //@ts-ignore
+                        Memory.writeByteArray(this.buf, OpenSSL_BoringSSL.modReceiver.readmod);
+                        retval = OpenSSL_BoringSSL.modReceiver.readmod.byteLength;                
+                    }
+    
+                    this.message["contentType"] = "datalog"
+                    
+                    
+                    
+                    send(this.message, this.buf.readByteArray(retval))
+                    
                 }
-
-
-
-            
-                var message = getPortsAndAddresses(this.fd as number, true, lib_addesses[current_module_name], enable_default_fd)
-                message["ssl_session_id"] = instance.getSslSessionId(args[0])
-                message["function"] = "SSL_read"
-                this.message = message
-                
-                this.buf = args[1]
-            
-            },
-            onLeave: function (retval: any) {
-                retval |= 0 // Cast retval to 32-bit integer.
-                if (retval <= 0 || this.fd < 0) {
-                    return
-                }
-
-                
-                if(OpenSSL_BoringSSL.modReceiver.readmod !== null){
-                    //NULL out buffer
-                    //@ts-ignore
-                    Memory.writeByteArray(this.buf, new Uint8Array(this.bufLen));
-
-                    //@ts-ignore
-                    Memory.writeByteArray(this.buf, OpenSSL_BoringSSL.modReceiver.readmod);
-                    retval = OpenSSL_BoringSSL.modReceiver.readmod.byteLength;                
-                }
-
-                this.message["contentType"] = "datalog"
-                
-                
-                
-                send(this.message, this.buf.readByteArray(retval))
-                
-            }
-        })
+            })
+        }
+        
 
     }
 
     
 
     install_plaintext_write_hook(){
-        function str2ab(str: string ) {
-            var buf = new ArrayBuffer(str.length + 1); // 2 bytes for each char
-            var bufView = new Uint8Array(buf);
-            for (var i=0, strLen=str.length; i < strLen; i++) {
-            bufView[i] = str.charCodeAt(i);
+        if(!ObjC.available){
+            function str2ab(str: string ) {
+                var buf = new ArrayBuffer(str.length + 1); // 2 bytes for each char
+                var bufView = new Uint8Array(buf);
+                for (var i=0, strLen=str.length; i < strLen; i++) {
+                bufView[i] = str.charCodeAt(i);
+                }
+                bufView[str.length] = 0;
+                return buf;
             }
-            bufView[str.length] = 0;
-            return buf;
-        }
-
-        var current_module_name = this.module_name;
-        var lib_addesses = this.addresses;
-        var instance = this;
-        Interceptor.attach(this.addresses[this.moduleName]["SSL_write"],
-        {
-            onEnter: function (args: any) {
-                if (!ObjC.available){
-                    try {
-                       
-                        this.fd = instance.SSL_get_fd(args[0]);
+    
+            var current_module_name = this.module_name;
+            var lib_addesses = this.addresses;
+            var instance = this;
+            Interceptor.attach(this.addresses[this.moduleName]["SSL_write"],
+            {
+                onEnter: function (args: any) {
+                    if (!ObjC.available){
+                        try {
+                           
+                            this.fd = instance.SSL_get_fd(args[0]);
+                            
                         
-                    
-                }catch (error) {
-                    if (!this.is_base_hook) {
-                        const fallback_addresses = (global as any).init_addresses;
-
-                        //console.log("Current ModuleName: "+current_module_name);
-                        let keys = Object.keys(fallback_addresses);
-                        let firstKey = keys[0];
-                        instance.SSL_SESSION_get_id = new NativeFunction(fallback_addresses[firstKey]["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
-                        instance.SSL_get_fd = ObjC.available ? new NativeFunction(fallback_addresses[firstKey]["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(fallback_addresses["SSL_get_fd"], "int", ["pointer"]);
-                        instance.SSL_get_session = new NativeFunction(fallback_addresses[firstKey]["SSL_get_session"], "pointer", ["pointer"]);
-                    }else{
-                        if (error instanceof Error) {
-                            console.log("Error: " + error.message);
-                            console.log("Stack: " + error.stack);
-                        } else {
-                            console.log("Unexpected error:", error);
+                    }catch (error) {
+                        if (!this.is_base_hook) {
+                            const fallback_addresses = (global as any).init_addresses;
+    
+                            //console.log("Current ModuleName: "+current_module_name);
+                            let keys = Object.keys(fallback_addresses);
+                            let firstKey = keys[0];
+                            instance.SSL_SESSION_get_id = new NativeFunction(fallback_addresses[firstKey]["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
+                            instance.SSL_get_fd = ObjC.available ? new NativeFunction(fallback_addresses[firstKey]["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(fallback_addresses["SSL_get_fd"], "int", ["pointer"]);
+                            instance.SSL_get_session = new NativeFunction(fallback_addresses[firstKey]["SSL_get_session"], "pointer", ["pointer"]);
+                        }else{
+                            if (error instanceof Error) {
+                                console.log("Error: " + error.message);
+                                console.log("Stack: " + error.stack);
+                            } else {
+                                console.log("Unexpected error:", error);
+                            }
                         }
+                            
+                        }
+                    if(this.fd < 0 && enable_default_fd == false) {
+                        return
                     }
-                        
+                    var message = getPortsAndAddresses(this.fd as number, false, lib_addesses[current_module_name], enable_default_fd)
+                    message["ssl_session_id"] = instance.getSslSessionId(args[0])
+                    message["function"] = "SSL_write"
+                    message["contentType"] = "datalog"
+                    
+    
+                    if(OpenSSL_BoringSSL.modReceiver.writemod !== null){
+                        const newPointer = Memory.alloc(OpenSSL_BoringSSL.modReceiver.writemod.byteLength)
+                        //@ts-ignore
+                        Memory.writeByteArray(newPointer, OpenSSL_BoringSSL.modReceiver.writemod);                    
+                        args[1] = newPointer;
+                        args[2] = new NativePointer(OpenSSL_BoringSSL.modReceiver.writemod.byteLength); 
                     }
-                if(this.fd < 0 && enable_default_fd == false) {
-                    return
+    
+                    send(message, args[1].readByteArray(args[2].toInt32()))
+                    } // this is a temporary workaround for the fd problem on iOS
+                },
+                onLeave: function (retval: any) {
                 }
-                var message = getPortsAndAddresses(this.fd as number, false, lib_addesses[current_module_name], enable_default_fd)
-                message["ssl_session_id"] = instance.getSslSessionId(args[0])
-                message["function"] = "SSL_write"
-                message["contentType"] = "datalog"
-                
-
-                if(OpenSSL_BoringSSL.modReceiver.writemod !== null){
-                    const newPointer = Memory.alloc(OpenSSL_BoringSSL.modReceiver.writemod.byteLength)
-                    //@ts-ignore
-                    Memory.writeByteArray(newPointer, OpenSSL_BoringSSL.modReceiver.writemod);                    
-                    args[1] = newPointer;
-                    args[2] = new NativePointer(OpenSSL_BoringSSL.modReceiver.writemod.byteLength); 
-                }
-
-                send(message, args[1].readByteArray(args[2].toInt32()))
-                } // this is a temporary workaround for the fd problem on iOS
-            },
-            onLeave: function (retval: any) {
-            }
-        })
+            })
+        }
+        
     }
 
     install_tls_keys_callback_hook(){

@@ -173,7 +173,7 @@ Examples:
             print(f"\n[-] Frida error: {ex_value}")
         else:
             print(f"\n[-] Unknown error: {ex_value}")
-            
+
         if "unable to access process with pid" in str(ex_value).lower():
             print("\n\nThx for using friTap\nHave a great day\n")
             os._exit(0)

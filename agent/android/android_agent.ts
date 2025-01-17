@@ -61,7 +61,7 @@ function hook_Android_Dynamic_Loader(module_library_mapping: { [key: string]: Ar
         
     })
 
-    console.log(`[*] Android dynamic loader hooked.`)
+    log(`[*] Android dynamic loader hooked.`)
 } catch (error) {
     devlog("Dynamic loader error: "+ error)
     log("No dynamic loader present for hooking on Android.")

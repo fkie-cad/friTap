@@ -44,7 +44,7 @@ function hook_Windows_Dynamic_Loader(module_library_mapping: { [key: string]: Ar
                 }
             }
         })
-        console.log("[*] Windows dynamic loader hooked.")
+        log("[*] Windows dynamic loader hooked.")
     } catch (error) {
         devlog("Loader error: " + error)
         log("No dynamic loader present for hooking.")

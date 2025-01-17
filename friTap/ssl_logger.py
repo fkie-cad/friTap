@@ -474,7 +474,8 @@ class SSL_Logger():
             self.process = self.device.attach(int(self.target_app) if self.target_app.isnumeric() else self.target_app)
 
 
-        script = self.instrument(self.process, own_message_handler)
+        #script = self.instrument(self.process, own_message_handler)
+        script = None
 
 
 
@@ -485,7 +486,7 @@ class SSL_Logger():
         if self.keylog:
             print(f'[*] Logging keylog file to {self.keylog}')
             
-        self.process.on('detached', self.on_detach)
+        #self.process.on('detached', self.on_detach)
 
         if self.spawn:
             self.device.resume(pid)
@@ -603,7 +604,7 @@ class SSL_Logger():
                 print(f"Error: {e}")
 
         elif full_capture and len(self.traced_scapy_socket_Set) < 1:
-            print(f"[-] friTap was unable to indentify the used sockets.\n[-] The resulting PCAP will contain all trafic from the device.")
+            print(f"[-] friTap was unable to indentify the used sockets.\n[-] The resulting PCAP _{self.pcap_obj.pcap_file_name} will contain all trafic from the device.")
             
         self.running = False
         if self.process:

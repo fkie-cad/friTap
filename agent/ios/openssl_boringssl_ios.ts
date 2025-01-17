@@ -11,6 +11,7 @@ export class OpenSSL_BoringSSL_iOS extends OpenSSL_BoringSSL {
             var CALLBACK_OFFSET = 0x2A8;
 
             var foundationNumber = Module.findExportByName('CoreFoundation', 'kCFCoreFoundationVersionNumber')?.readDouble();
+            devlog("[*] Calculating offset to keylog callback based on the FoundationVersionNumber on iOS: "+foundationNumber)
             if(foundationNumber == undefined){
                 devlog("Installing callback for iOS < 14");
                 CALLBACK_OFFSET = 0x2A8;
@@ -43,8 +44,9 @@ export class OpenSSL_BoringSSL_iOS extends OpenSSL_BoringSSL {
         var library_method_mapping: { [key: string]: Array<string> } = {}
 
         // the iOS implementation needs some further improvements - currently we are not able to get the sockfd from an SSL_read/write invocation
-        library_method_mapping[`*${moduleName}*`] = ["SSL_read", "SSL_write", "BIO_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_info_callback"]
-        library_method_mapping[`*${socket_library}*`] = ["getpeername*", "getsockname*", "ntohs*", "ntohl*"] // currently those functions gets only identified if we at an asterisk at the end 
+        //library_method_mapping[`*${moduleName}*`] = ["SSL_read", "SSL_write", "BIO_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_info_callback"]
+        library_method_mapping[`*${moduleName}*`] = ["SSL_CTX_set_info_callback"]
+        //library_method_mapping[`*${socket_library}*`] = ["getpeername*", "getsockname*", "ntohs*", "ntohl*"] // currently those functions gets only identified if we at an asterisk at the end 
 
         super(moduleName,socket_library,is_base_hook,library_method_mapping);
     }

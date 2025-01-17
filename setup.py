@@ -97,9 +97,9 @@ setup(
 
     entry_points={
             'console_scripts': [
-            'friTap=friTap.friTap:main',
             'fritap=friTap.friTap:main',
         ],
     },
+
 )
 

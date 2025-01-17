@@ -1,6 +1,7 @@
 
 import {GnuTLS } from "../ssl_lib/gnutls.js";
 import { socket_library } from "./android_agent.js";
+import { devlog } from "../util/log.js";
 
 export class GnuTLS_Linux extends GnuTLS {
 
@@ -22,7 +23,7 @@ export class GnuTLS_Linux extends GnuTLS {
             this.session = args[0]
         },
         onLeave: function (retval: any) {
-            console.log(this.session)
+            devlog("[!] Logging session information: "+this.session);
             GnuTLS.gnutls_session_set_keylog_function(this.session.readPointer(), GnuTLS.keylog_callback)
 
         }

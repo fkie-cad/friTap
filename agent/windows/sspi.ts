@@ -207,7 +207,6 @@ export class SSPI_Windows {
                    devlog("Got client random from " + calling_func+ "'s pParameterList: " + buf2hex(buf_buf));
                     return buf2hex(buf_buf);
                 }
-                //console.log("buf_type " + buf_type);
             }
             
             return null;

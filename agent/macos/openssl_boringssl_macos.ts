@@ -12,7 +12,7 @@ export class OpenSSL_BoringSSL_MacOS extends OpenSSL_BoringSSL {
             var CALLBACK_OFFSET = 0x2A8;
 
             var foundationNumber = Module.findExportByName('CoreFoundation', 'kCFCoreFoundationVersionNumber')?.readDouble();
-            devlog("[*] Calculating offset to keylog callback based on the FoundationVersionNumber: "+foundationNumber)
+            devlog("[*] Calculating offset to keylog callback based on the FoundationVersionNumber on MacOS: "+foundationNumber)
             if(foundationNumber == undefined){
                 CALLBACK_OFFSET = 0x2A8;
                 devlog("Installing callback for MacOS < 14 using callback offset: "+CALLBACK_OFFSET);
@@ -31,9 +31,7 @@ export class OpenSSL_BoringSSL_MacOS extends OpenSSL_BoringSSL {
             }
             Interceptor.attach(this.addresses[this.module_name]["SSL_CTX_set_info_callback"], {
               onEnter: function (args : any) {
-                var ssl_str_ptr = new NativePointer(args[0]);
-                var callback = new NativePointer(ssl_str_ptr).add(CALLBACK_OFFSET)
-                callback.writePointer(this.keylog_callback);
+                ptr(args[0]).add(CALLBACK_OFFSET).writePointer(OpenSSL_BoringSSL.keylog_callback);
               }
             });
           
@@ -46,8 +44,9 @@ export class OpenSSL_BoringSSL_MacOS extends OpenSSL_BoringSSL {
         var library_method_mapping: { [key: string]: Array<string> } = {}
 
         // the MacOS implementation needs some further improvements - currently we are not able to get the sockfd from an SSL_read/write invocation
-        library_method_mapping[`*${moduleName}*`] = ["SSL_read", "SSL_write", "BIO_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_info_callback"]
-        library_method_mapping[`*${socket_library}*`] = ["getpeername*", "getsockname*", "ntohs*", "ntohl*"] // currently those functions gets only identified if we at an asterisk at the end 
+        //library_method_mapping[`*${moduleName}*`] = ["SSL_read", "SSL_write", "BIO_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_info_callback"]
+        library_method_mapping[`*${moduleName}*`] = ["SSL_CTX_set_info_callback"]
+        //library_method_mapping[`*${socket_library}*`] = ["getpeername*", "getsockname*", "ntohs*", "ntohl*"] // currently those functions gets only identified if we at an asterisk at the end 
 
         super(moduleName, socket_library, is_base_hook, library_method_mapping);
     }

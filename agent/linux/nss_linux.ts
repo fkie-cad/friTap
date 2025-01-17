@@ -63,8 +63,8 @@ export class NSS_Linux extends NSS {
                         devlog("Callback Error")
                         var getErrorText = new NativeFunction(Module.getExportByName('libnspr4.so', 'PR_GetErrorText'), "int", ["pointer"])
                         var outbuffer = Memory.alloc(200); // max out size
-                        console.log("typeof outbuffer: " + typeof outbuffer);
-                        console.log("outbuffer: " + outbuffer); // should be a pointer
+                        devlog("typeof outbuffer: " + typeof outbuffer);
+                        devlog("outbuffer: " + outbuffer); // should be a pointer
                         getErrorText(outbuffer.readPointer())
                         devlog("Error msg: " + outbuffer)
                     } else {

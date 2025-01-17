@@ -46,7 +46,7 @@ function hook_Linux_Dynamic_Loader(module_library_mapping: { [key: string]: Arra
 
         })
 
-        console.log(`[*] Linux dynamic loader hooked.`)
+        log(`[*] Linux dynamic loader hooked.`)
     } catch (error) {
         devlog("Loader error: " + error)
         log("No dynamic loader present for hooking.")
