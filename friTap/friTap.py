@@ -141,6 +141,13 @@ Examples:
         exit(2)
     except frida.InvalidArgumentError as e:
         print(f"[-] Invalid Argument passed to Frida: {e}")
+        if "device not found" in e:
+            print("[-] Frida is unable to identify the target device.")
+            print("[-] If you have multiple devices connected, please specify the device ID using the `-m` option:")
+            print("\t1. Identify the target device ID (e.g., using `adb devices` or `frida-ls-devices`).")
+            print("\t2. Run FriTap with the device ID:")
+            print("\t   fritap -m <device-id> <target>")
+
         exit(2)
     except frida.InvalidOperationError as e:
         print(f"[-] Invalid Operation Error in Frida: {e}")
@@ -186,8 +193,9 @@ Examples:
         ssl_log.cleanup(parsed.live,parsed.socket_tracing,parsed.full_capture,parsed.debug,parsed.debugoutput)    
 
     finally:
-        ssl_log.pcap_cleanup(parsed.full_capture,parsed.mobile,parsed.pcap)
-        ssl_log.cleanup(parsed.live,parsed.socket_tracing,parsed.full_capture,parsed.debug)
+        if isinstance(ssl_log, SSL_Logger):
+            ssl_log.pcap_cleanup(parsed.full_capture,parsed.mobile,parsed.pcap)
+            ssl_log.cleanup(parsed.live,parsed.socket_tracing,parsed.full_capture,parsed.debug)
         
 
 if __name__ == "__main__":
