@@ -1,7 +1,6 @@
 import { socket_library } from "./linux_agent.js";
 import { Rustls } from "../ssl_lib/rustls.js";
 import { log, devlog } from "../util/log.js"
-import { ClientRequest } from "http";
 
 export class Rustls_Linux extends Rustls {
 
