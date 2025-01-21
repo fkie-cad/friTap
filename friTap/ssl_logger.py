@@ -604,7 +604,10 @@ class SSL_Logger():
                 print(f"Error: {e}")
 
         elif full_capture and len(self.traced_scapy_socket_Set) < 1:
-            print(f"[-] friTap was unable to indentify the used sockets.\n[-] The resulting PCAP _{self.pcap_obj.pcap_file_name} will contain all trafic from the device.")
+            if socket_trace == True:
+                print(f"[-] friTap was unable to indentify the used sockets. \n[*] The resulting PCAP _{self.pcap_obj.pcap_file_name} will contain all trafic from the device.")
+            else:
+                print(f"[*] friTap not trace the sockets in use (--socket_tracing option not enabled)\n[*] The resulting PCAP _{self.pcap_obj.pcap_file_name} will contain all trafic from the device.")
             
         self.running = False
         if self.process:

@@ -41,6 +41,10 @@ class PCAP:
     
     def __init__(self,pcap_file_name,SSL_READ,SSL_WRITE, doFullCapture, isMobile, print_debug_infos=False):
         self.pcap_file_name = pcap_file_name
+        if isMobile is True:  # No device ID provided
+            self.device_id = None
+        else:
+            self.device_id = isMobile
         self.pkt ={}
         self.print_debug_infos = print_debug_infos
         
@@ -55,7 +59,7 @@ class PCAP:
         
         if doFullCapture:
             if isMobile:
-                self.android_Instance = Android(self.print_debug_infos)
+                self.android_Instance = Android(self.print_debug_infos,device_id=self.device_id)
             self.full_capture_thread = self.get_instance_of_FullCaptureThread()
             self.full_capture_thread.start()
             if self.full_capture_thread.is_alive():

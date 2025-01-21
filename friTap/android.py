@@ -14,9 +14,10 @@ if sys.version_info >= (3,10):
 
 class Android:
     
-    def __init__(self,debug_infos=False, arch=""):
+    def __init__(self,debug_infos=False, arch="", device_id=None):
         self.dst_path = "/data/local/tmp/"
-        self.device = None
+        self.device_id = device_id
+        self.device = self.get_frida_device()
         self.pcap_name = ""
         self.print_debug_infos = debug_infos
         self.is_magisk_mode = False
@@ -26,35 +27,66 @@ class Android:
             self.adb_check_root() # set is_magisk_mode
 
         
+    def get_frida_device(self):
+        try:
+            if self.device_id:
+                return frida.get_device_manager().get_device(self.device_id, timeout=5)
+            return frida.get_usb_device()
+        except frida.InvalidArgumentError:
+            print(f"[-] Device not found. Please verify the device ID: {self.device_id}")
+            print("\n\nThx for using friTap\nHave a great day\n")
+            os._exit(0)
+    
+    
     def adb_check_root(self):
-        if bool(subprocess.run(['adb', 'shell','su -v'], capture_output=True, text=True).stdout):
+        adb_command = ['adb']
+        if self.device_id:
+            adb_command.extend(['-s', self.device_id])
+        
+        if bool(subprocess.run(adb_command+['shell','su -v'], capture_output=True, text=True).stdout):
             self.is_magisk_mode = True
             return True
 
-        return bool(subprocess.run(['adb', 'shell','su 0 id -u'], capture_output=True, text=True).stdout)
+        return bool(subprocess.run(adb_command+['shell','su 0 id -u'], capture_output=True, text=True).stdout)
     
     def run_adb_command_as_root(self,command):
+        adb_command = ['adb']
+        if self.device_id:
+            adb_command.extend(['-s', self.device_id])
+        
         if self.adb_check_root() == False:
             print("[-] none rooted device. Please root it before trying a full-capture with friTap and ensure that you are able to run commands with the su-binary....")
             exit(2)
 
         if self.is_magisk_mode:
-            output = subprocess.run(['adb', 'shell','su -c '+command], capture_output=True, text=True)
+            output = subprocess.run(adb_command+['shell','su -c '+command], capture_output=True, text=True)
         else:
-            output = subprocess.run(['adb', 'shell','su 0 '+command], capture_output=True, text=True)
+            output = subprocess.run(adb_command+['shell','su 0 '+command], capture_output=True, text=True)
             
         return output
 
     def _adb_push_file(self,file,dst):
-        output = subprocess.run(['adb', 'push',file,dst], capture_output=True, text=True)
+        adb_command = ['adb']
+        if self.device_id:
+            adb_command.extend(['-s', self.device_id])
+        
+        output = subprocess.run(adb_command+['push',file,dst], capture_output=True, text=True)
         return output
     
     def _adb_pull_file(self,src_file,dst):
-        output = subprocess.run(['adb', 'pull',src_file,dst], capture_output=True, text=True)
+        adb_command = ['adb']
+        if self.device_id:
+            adb_command.extend(['-s', self.device_id])
+        
+        output = subprocess.run(adb_command+['pull',src_file,dst], capture_output=True, text=True)
         return output
     
     def _get_android_device_arch(self):
-        frida_usb_json_data = frida.get_usb_device().query_system_parameters()
+        try:
+            frida_usb_json_data = self.device.query_system_parameters()
+        except Exception:
+            # Defaulting to ARM64
+            return "arm64"
         return frida_usb_json_data['arch']
     
     
@@ -131,7 +163,7 @@ class Android:
         self.close_friTap_if_none_android()
         pcap_path = self.dst_path + self.pcap_name
         return_Value = self._adb_pull_file(pcap_path,".")
-        print(f"[*] pulling capture from device: {return_Value}")
+        print(f"[*] pulling capture from device: {return_Value.stdout.strip()}")
         if self.print_debug_infos:
             print("---------------------------------")
             print(return_Value)
@@ -187,7 +219,7 @@ class Android:
         
     def close_friTap_if_none_android(self):
         if self.is_Android == False:
-            print("[-] none android device\nclosing friTap...")
+            print("[-] none Android device\nclosing friTap...")
             exit(2)
     
     def run_tcpdump_capture(self,pcap_name):
@@ -199,11 +231,14 @@ class Android:
         else:
             tcpdump_cmd = f'{self.dst_path}./{self.tcpdump_version} -i any -s 0 -w {self.dst_path}{pcap_name} \\"not \\(tcp port 5555 or tcp port 27042\\)\\"'
 
-        
+        adb_command = 'adb'
+        if self.device_id:
+            adb_command = adb_command + f' -s "{self.device_id}"'
+
         if self.is_magisk_mode:
-            cmd = f'adb shell su -c "{tcpdump_cmd}"'
+            cmd = adb_command + f' shell su -c "{tcpdump_cmd}"'
         else:
-            cmd = f'adb shell su 0 "{tcpdump_cmd}"'
+            cmd = adb_command + f' shell su 0 "{tcpdump_cmd}"'
 
         if self.print_debug_infos:
             print("[*] Running tcpdump in background:", cmd)
