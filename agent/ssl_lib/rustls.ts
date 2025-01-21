@@ -19,7 +19,7 @@ export class Rustls {
         message["contentType"] = "keylog";
         var labelStr: string;
 
-        // If no label is provided the keyLog should begin with "CLIENT_RANDOM"
+        // If no label is provided the keyLog should begin with "CLIENT_RANDOM "
         if (label[1].toNumber() == 0) {
             labelStr = "CLIENT_RANDOM ";
         } else {
