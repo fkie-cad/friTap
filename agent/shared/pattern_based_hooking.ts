@@ -16,9 +16,11 @@ type ActionPatterns = {
 
 export function get_CPU_specific_pattern(default_pattern : { [arch: string]: { primary: string; fallback: string } }): { primary: string; fallback: string } {
     let arch = Process.arch.toString(); // Get architecture, e.g., "x64", "arm64"
+    
     if(arch == "ia32"){
         arch = "x86"
     }
+    devlog("Trying Pattern: "+JSON.stringify(default_pattern[arch]));
     
     if (default_pattern[arch]) {
         return default_pattern[arch];  // Return the pattern for the architecture

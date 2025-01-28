@@ -184,7 +184,10 @@ class SSL_Logger():
         if not "contentType" in p:
             return
         if p["contentType"] == "console":
-            print("[*] " + p["console"])
+            if p["console"].startswith("[*]"):
+                print(p["console"])
+            else:
+                print("[*] " + p["console"])
         if self.debug or self.debug_output:
             if p["contentType"] == "console_dev" and p["console_dev"]:
                 if len(p["console_dev"]) > 3:
@@ -474,8 +477,7 @@ class SSL_Logger():
             self.process = self.device.attach(int(self.target_app) if self.target_app.isnumeric() else self.target_app)
 
 
-        #script = self.instrument(self.process, own_message_handler)
-        script = None
+        script = self.instrument(self.process, own_message_handler)
 
 
 
