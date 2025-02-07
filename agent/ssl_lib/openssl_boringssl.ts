@@ -147,7 +147,7 @@ export class OpenSSL_BoringSSL {
 
         }
 
-        if(!ObjC.available){
+        if(!ObjC.available && checkNumberOfExports(moduleName) > 2){
             this.SSL_SESSION_get_id = new NativeFunction(this.addresses[this.moduleName]["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
             this.SSL_get_fd = ObjC.available ? new NativeFunction(this.addresses[this.moduleName]["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(this.addresses[this.moduleName]["SSL_get_fd"], "int", ["pointer"]);
             this.SSL_get_session = new NativeFunction(this.addresses[this.moduleName]["SSL_get_session"], "pointer", ["pointer"]);

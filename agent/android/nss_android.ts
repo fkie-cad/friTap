@@ -1,6 +1,7 @@
 
 import {NSS } from "../ssl_lib/nss.js";
 import { socket_library } from "./android_agent.js";
+import { devlog } from "../util/log.js";
 
 export class NSS_Android extends NSS {
 
@@ -18,7 +19,11 @@ export class NSS_Android extends NSS {
     execute_hooks(){
         this.install_plaintext_read_hook();
         this.install_plaintext_write_hook();
-        //this.install_tls_keys_callback_hook() // might fail 
+        try{
+            this.install_tls_keys_callback_hook() // might fail 
+        }catch(e){
+            devlog("Installing NSS key hooking - still early development stage");
+        }
     }
 
 }

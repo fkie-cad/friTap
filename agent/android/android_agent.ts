@@ -8,6 +8,7 @@ import { mbedTLS_execute } from "./mbedTLS_android.js";
 import { boring_execute } from "./openssl_boringssl_android.js";
 import { java_execute} from "./android_java_tls_libs.js";
 import { cronet_execute } from "./cronet_android.js";
+import { conscrypt_native_execute } from "./conscrypt.js"; 
 import { flutter_execute } from "./flutter_android.js";
 import { s2ntls_execute } from "./s2ntls_android.js";
 import { mono_btls_execute } from "./mono_btls_android.js";
@@ -78,14 +79,14 @@ export function load_android_hooking_agent() {
     module_library_mapping[plattform_name] = [
         [/.*libssl_sb.so/, invokeHookingFunction(boring_execute)],
         [/.*libssl\.so/, invokeHookingFunction(boring_execute)],
-        [/libconscrypt_gmscore_jni.so/, invokeHookingFunction(boring_execute)], // inspired from https://github.com/PiRogueToolSuite/pirogue-cli/blob/debian-12/pirogue_cli/frida-scripts/log_ssl_keys.js#L55
-        [/ibconscrypt_jni.so/, invokeHookingFunction(boring_execute)],
+        [/libconscrypt_gmscore_jni.so/, invokeHookingFunction(conscrypt_native_execute)], // inspired from https://github.com/PiRogueToolSuite/pirogue-cli/blob/debian-12/pirogue_cli/frida-scripts/log_ssl_keys.js#L55
+        [/ibconscrypt_jni.so/, invokeHookingFunction(conscrypt_native_execute)],
         [/.*cronet.*\.so/, invokeHookingFunction(cronet_execute)],
         [/.*monochrome.*\.so/, invokeHookingFunction(cronet_execute)],
         [/.*flutter.*\.so/, invokeHookingFunction(flutter_execute)],
         [/.*libgnutls\.so/, invokeHookingFunction(gnutls_execute)],
         [/.*libwolfssl\.so/, invokeHookingFunction(wolfssl_execute)],
-        [/.*libnspr[0-9]?\.so/,invokeHookingFunction(nss_execute)], 
+        [/.*libnss*\.so/,invokeHookingFunction(nss_execute)], 
         [/libmbedtls\.so.*/, invokeHookingFunction(mbedTLS_execute)],
         [/.*libs2n.so/, invokeHookingFunction(s2ntls_execute)],
         [/.*mono-btls.*\.so/, invokeHookingFunction(mono_btls_execute)]];

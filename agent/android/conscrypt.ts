@@ -1,5 +1,63 @@
 import { devlog, devlog_error, log } from "../util/log.js";
 import { getAndroidVersion } from "../util/process_infos.js";
+import {OpenSSL_BoringSSL } from "../ssl_lib/openssl_boringssl.js";
+import { socket_library } from "./android_agent.js";
+
+export class Consycrypt_BoringSSL_Android extends OpenSSL_BoringSSL {
+
+    constructor(public moduleName:string, public socket_library:String, is_base_hook: boolean){
+        var library_method_mapping : { [key: string]: Array<string> }= {};
+        library_method_mapping[`*${moduleName}*`] = ["SSL_CTX_new", "SSL_CTX_set_keylog_callback"]
+
+        super(moduleName,socket_library,is_base_hook, library_method_mapping);
+    }
+
+
+
+    install_conscrypt_tls_keys_callback_hook (){
+        this.SSL_CTX_set_keylog_callback = new NativeFunction(this.addresses[this.module_name]["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"]);
+        var instance = this;
+
+        Interceptor.attach(this.addresses[this.module_name]["SSL_CTX_new"], {
+            onLeave: function(retval) {
+                const ssl = new NativePointer(retval);
+                if (!ssl.isNull()) {
+                    instance.SSL_CTX_set_keylog_callback(ssl, OpenSSL_BoringSSL.keylog_callback)
+                }
+            }
+        });
+
+    }
+
+
+    execute_conscrypt_hooks(){
+        this.install_conscrypt_tls_keys_callback_hook();
+    }
+
+}
+
+export function conscrypt_native_execute(moduleName:string, is_base_hook: boolean){
+    var boring_ssl = new Consycrypt_BoringSSL_Android(moduleName,socket_library,is_base_hook);
+    try {
+        boring_ssl.execute_conscrypt_hooks();
+    }catch(error_msg){
+        devlog(`conscrypt_execute error: ${error_msg}`);
+    }
+
+    if (is_base_hook) {
+        try {
+        const init_addresses = boring_ssl.addresses[moduleName];
+        // ensure that we only add it to global when we are not 
+        if (Object.keys(init_addresses).length > 0) {
+            (global as any).init_addresses[moduleName] = init_addresses;
+        }}catch(error_msg){
+            devlog(`conscrypt_execute base-hook error: ${error_msg}`)
+        }
+    }
+
+}
+
+
 
 function findProviderInstallerImplFromClassloaders(currentClassLoader: Java.Wrapper, backupImplementation: any) : Java.Wrapper | null {
 
