@@ -68,7 +68,7 @@ export class NSS_Linux extends NSS {
                         getErrorText(outbuffer.readPointer())
                         devlog("Error msg: " + outbuffer)
                     } else {
-                        devlog("[*] keylog callback successfull installed")
+                        devlog("[*] NSS keylog callback successfull installed")
                     }
 
                 }

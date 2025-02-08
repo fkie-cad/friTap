@@ -1,0 +1,2079 @@
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d38747480
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6db1d0f5a0
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d387477d0
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d38748bf0
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d387c8720
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d38945900
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d57415e30
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d351ba020
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d38bd8b10
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d3c5a9970
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d31e35300
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6db1d0d5d0
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d3c5a9970
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d3c5a9970
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d3c5a9970
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d3c5a9970
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d3c5a9970
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d351ba020
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d52e3ccb0
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d52e3c780
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6db1d10420
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d3c5a9970
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d38bd8b10
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d3522b370
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d3c5a9970
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6c2209f820
+0x6d351ba020
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d3c15b110
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d3c5a9970
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d31e35730
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6c2209fcd0
+0x6d38bd8b10
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6c2209fcd0
+0x6d3522b370
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d3c5a9970
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6db490d9c0
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6c4e9f5160
+0x6d3c5a9970
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d3522b370
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6c4e9f5160
+0x6d31e35730
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6db1d10420
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6c6888e580
+0x6d3c5a9970
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6c6888e580
+0x6d3522b370
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6c1971b5e0
+0x6d351ba020
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6c1971b5e0
+0x6d38bd8b10
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d521e5eb0
+0x6d3c5a9970
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d521e5eb0
+0x6d3522b370
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d521e5490
+0x6d3522b370
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d521e5490
+0x6d52e3ccb0
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6c5e3a3220
+0x6d3522b370
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6c5e3a3220
+0x6d38bd8b10
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6c6888e580
+0x6d31e37a00
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6c6888e580
+0x6d31e37a00
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d351ba020
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d351ba020
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d38bd8b10
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6db1d10420
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d38bd8b10
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d38bd8b10
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6c4e76f040
+0x6db1d10420
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d52170df0
+0x6d38bd8b10
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6c4e76f040
+0x6d351ba020
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d52170df0
+0x6d351ba020
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d351ba020
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d3522b370
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d52170b80
+0x6d3522b370
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d52170b80
+0x6d3522b370
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d351ba020
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d3530aa70
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d3530aa70
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d3530aa70
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d3522b370
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d389f7a40
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6db1d0d600
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6db1d10420
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d389f7a40
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6db1d0d600
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6db1d10420
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6db1d10420
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6db1d10420
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6db1d0d600
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6db1d199a0
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d52e3c780
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6db1d10420
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d38bd8b10
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6c4e76f4c0
+0x6d38bd8b10
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6c4e76f4c0
+0x6d389f7a10
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6c4e76fb50
+0x6db1d10420
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6c4e76fb50
+0x6d3522b370
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d351ba020
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6db1d10420
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6c4e76f040
+0x6d3c5a9970
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6c4e76f040
+0x6d31e35320
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d3c5a9970
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d31e35730
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d351ba7e0
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d38bd8b10
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d3522b370
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d375dddb0
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d389f7a40
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6db1d19740
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d4e6f3f00
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d387c8770
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d3c5a9970
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d351ba020
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d31e34970
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[***] [**] secret callback (0x7081cd4080) installed to address: 0x6d521b6238
+[***] [*] keylog callback successfull installed
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d38bd8b10
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d3530aa70
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d351ba020
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d3c5a9970
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d3522b370
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6db1d10420
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d3522b370
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[***] [**] secret callback (0x7081cd4080) installed to address: 0x6c2d418238
+[***] [*] keylog callback successfull installed
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6db1d10420
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d3530aa70
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d3530aa70
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[***] [**] secret callback (0x7081cd4080) installed to address: 0x6c2d4fa238
+[***] [*] keylog callback successfull installed
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d351ba7e0
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d52170a90
+0x6d66e04110
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d52170a90
+0x6d3c5a9970
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[***] [*] trying to log some keying materials ...
+[***] [*] exporting TLS 1.3 keying material
+[***] CLIENT_TRAFFIC_SECRET_0 947611f9e377d431b6b5c7417f8422ca65441ee3bae1dc2edb768ef94b710dff 
+CLIENT_TRAFFIC_SECRET_0 947611f9e377d431b6b5c7417f8422ca65441ee3bae1dc2edb768ef94b710dff 
+[***] SERVER_TRAFFIC_SECRET_0 947611f9e377d431b6b5c7417f8422ca65441ee3bae1dc2edb768ef94b710dff 
+SERVER_TRAFFIC_SECRET_0 947611f9e377d431b6b5c7417f8422ca65441ee3bae1dc2edb768ef94b710dff 
+[***] EXPORTER_SECRET 947611f9e377d431b6b5c7417f8422ca65441ee3bae1dc2edb768ef94b710dff 
+EXPORTER_SECRET 947611f9e377d431b6b5c7417f8422ca65441ee3bae1dc2edb768ef94b710dff 
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d3c5a9970
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d38bd8b10
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[***] [**] secret callback (0x7081cd4080) installed to address: 0x6c3f9db238
+[***] [*] keylog callback successfull installed
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6c6888edc0
+0x6d38bd8b10
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d38946130
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d3c5a9970
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6c6888edc0
+0x6d31e35300
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6db1d10420
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d31e364f0
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d38bd8b10
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d38997840
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d38bd8b10
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b48820
+0x6d38bd8b10
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[*] The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys
+0x6d23b488e0
+0x6d3c19acd0
+0x6d428cf908
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] PIPE descriptor error: Only supporting IPv4/6
+[***] [-] error while getting SSL layer
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/frida/core.py", line 562, in _on_message
+    callback(message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 513, in wrapped_handler
+    self.on_fritap_message(None, message, data)
+  File "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/friTap/ssl_logger.py", line 208, in on_fritap_message
+    src_addr = get_addr_string(p["src_addr"], p["ss_family"])
+                               ~^^^^^^^^^^^^
+KeyError: 'src_addr'
+[***] [*] NSS keylog callback successfull installed via applications callback function
+[***] [*] trying to log some keying materials ...
+[***] [*] exporting TLS 1.3 keying material
+[***] CLIENT_TRAFFIC_SECRET_0 5e3b9ee6125610db1c09794c941b2d65d9bb26ed73fafb3a0145e4f29a47d1a8 
+CLIENT_TRAFFIC_SECRET_0 5e3b9ee6125610db1c09794c941b2d65d9bb26ed73fafb3a0145e4f29a47d1a8 
+[***] SERVER_TRAFFIC_SECRET_0 5e3b9ee6125610db1c09794c941b2d65d9bb26ed73fafb3a0145e4f29a47d1a8 
+SERVER_TRAFFIC_SECRET_0 5e3b9ee6125610db1c09794c941b2d65d9bb26ed73fafb3a0145e4f29a47d1a8 
+[***] EXPORTER_SECRET 5e3b9ee6125610db1c09794c941b2d65d9bb26ed73fafb3a0145e4f29a47d1a8 
+EXPORTER_SECRET 5e3b9ee6125610db1c09794c941b2d65d9bb26ed73fafb3a0145e4f29a47d1a8 
+[***] [*] NSS keylog callback successfull installed via applications callback function
+[***] [*] trying to log some keying materials ...
+[*] Successfully detached from Frida process.
+[*] Detached friTap from process successfully.

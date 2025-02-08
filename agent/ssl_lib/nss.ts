@@ -14,6 +14,28 @@ import { offsets,enable_default_fd } from "../ssl_log.js";
  * 
  */
 
+
+/*
+https://firefox-source-docs.mozilla.org/nspr/reference/prnetaddr.html
+
+#define PR_AF_INET 2
+#define PR_AF_LOCAL 1
+#define PR_INADDR_ANY (unsigned long)0x00000000
+#define PR_INADDR_LOOPBACK 0x7f000001
+#define PR_INADDR_BROADCAST (unsigned long)0xffffffff
+
+#else 
+
+#define PR_AF_INET AF_INET
+#define PR_AF_LOCAL AF_UNIX
+#define PR_INADDR_ANY INADDR_ANY
+#define PR_INADDR_LOOPBACK INADDR_LOOPBACK
+#define PR_INADDR_BROADCAST INADDR_BROADCAST
+
+#define PR_AF_UNSPEC 0
+
+*/
+
 /******  NSS data structures and its parsing *********/
 
 // https://github.com/nss-dev/nss/blob/master/lib/ssl/sslimpl.h#L771
@@ -182,11 +204,12 @@ export class NSS {
 
 
     constructor(public moduleName: string, public socket_library: String, public passed_library_method_mapping?: { [key: string]: Array<string> }) {
+
         if (typeof passed_library_method_mapping !== 'undefined') {
             this.library_method_mapping = passed_library_method_mapping;
         } else {
             this.library_method_mapping[`*${moduleName}*`] = ["PR_Write", "PR_Read", "PR_FileDesc2NativeHandle", "PR_GetPeerName", "PR_GetSockName", "PR_GetNameForIdentity", "PR_GetDescType"]
-            this.library_method_mapping[`*libnss*`] = ["PK11_ExtractKeyValue", "PK11_GetKeyData"]
+            this.library_method_mapping[`*libnss.*`] = ["PK11_ExtractKeyValue", "PK11_GetKeyData"]
             this.library_method_mapping["*libssl*.so"] = ["SSL_ImportFD", "SSL_GetSessionID", "SSL_HandshakeCallback"]
             this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
         }
@@ -220,7 +243,10 @@ export class NSS {
 
         }
 
-        NSS.SSL_SESSION_get_id = new NativeFunction(this.addresses[this.moduleName]["SSL_GetSessionID"], "pointer", ["pointer"])
+        if(!Java.available){
+            NSS.SSL_SESSION_get_id = new NativeFunction(this.addresses[this.moduleName]["SSL_GetSessionID"], "pointer", ["pointer"]);
+        }
+
         NSS.getsockname = new NativeFunction(this.addresses[this.moduleName]["PR_GetSockName"], "int", ["pointer", "pointer"]);
         NSS.getpeername = new NativeFunction(this.addresses[this.moduleName]["PR_GetPeerName"], "int", ["pointer", "pointer"]);
 
@@ -698,9 +724,9 @@ typedef union PRNetAddr PRNetAddr;
                     message["ss_family"] = "AF_INET6"
                 }
             } else {
-                devlog("[-] PIPE descriptor error")
+                devlog("[-] PIPE descriptor error: Only supporting IPv4/6: "+addr.readU16());
                 //FIXME: Sometimes addr.readU16() will be 0 when a PIPE Read oder Write gets interpcepted, thus this error will be thrown.
-                throw "Only supporting IPv4/6"
+                throw "Only supporting IPv4/6";
             }
 
         }
@@ -885,7 +911,7 @@ typedef union PRNetAddr PRNetAddr;
             }
         }*/
         var layer = NSS.NSS_FindIdentityForName(pRFileDesc, 'SSL');
-        if (!layer) {
+        if (!layer || Java.available) { // on Android is no SSL_SESSION_get_id available
             return dummySSL_SessionID;
         }
 
@@ -900,8 +926,15 @@ typedef union PRNetAddr PRNetAddr;
                 if (fdType == 2) {
                     var c = Memory.dup(pRFileDesc, 32)
                     //log(hexdump(c))
-                    var getLayersIdentity = new NativeFunction(Module.getExportByName('libnspr4.so', 'PR_GetLayersIdentity'), "uint32", ["pointer"])
-                    var getNameOfIdentityLayer = new NativeFunction(Module.getExportByName('libnspr4.so', 'PR_GetNameForIdentity'), "pointer", ["uint32"])
+                    var getLayersIdentity = null;
+                    var getNameOfIdentityLayer;
+                    try {
+                        getLayersIdentity = new NativeFunction(Module.getExportByName('libnspr4.so', 'PR_GetLayersIdentity'), "uint32", ["pointer"])
+                        getNameOfIdentityLayer = new NativeFunction(Module.getExportByName('libnspr4.so', 'PR_GetNameForIdentity'), "pointer", ["uint32"])
+                    }catch(e){
+                        getLayersIdentity = new NativeFunction(Module.getExportByName('libnss3.so', 'PR_GetLayersIdentity'), "uint32", ["pointer"])
+                        getNameOfIdentityLayer = new NativeFunction(Module.getExportByName('libnss3.so', 'PR_GetNameForIdentity'), "pointer", ["uint32"])
+                    }
                     var layerID = getLayersIdentity(pRFileDesc);
                     devlog("LayerID: " + layerID);
                     var nameIDentity = getNameOfIdentityLayer(layerID)
@@ -1133,7 +1166,7 @@ typedef union PRNetAddr PRNetAddr;
 
         var rv = NSS.PK11_ExtractKeyValue(secret_key_Ptr);
         if (rv != SECStatus.SECSuccess) {
-            //log("[**] ERROR access the secret key");
+            devlog("ERROR access the secret key: "+rv);
             return "";
         }
         var keyData = NSS.PK11_GetKeyData(secret_key_Ptr);  // return value is a SECItem
@@ -1171,6 +1204,8 @@ typedef union PRNetAddr PRNetAddr;
     //see nss/lib/ssl/sslinfo.c for details */
 
     static get_Keylog_Dump(type: string, client_random: string, key: string) {
+        console.log("[!] CLIENT_RANDOM: "+client_random);
+        console.log("[!] KEY: "+key);
         return type + " " + client_random + " " + key;
     }
 
@@ -1184,7 +1219,7 @@ typedef union PRNetAddr PRNetAddr;
     static getTLS_Keys(pRFileDesc: NativePointer, dumping_handshake_secrets: number) {
         var message: { [key: string]: string | number } = {}
         message["contentType"] = "keylog";
-        devlog("[*] trying to log some keying materials ...");
+        devlog("trying to log some keying materials ...");
 
 
         var sslSocketFD = NSS.get_SSL_FD(pRFileDesc);
@@ -1212,7 +1247,7 @@ typedef union PRNetAddr PRNetAddr;
         }
 
         if (dumping_handshake_secrets == 1) {
-            devlog("[*] exporting TLS 1.3 handshake keying material");
+            devlog("exporting TLS 1.3 handshake keying material");
             /*
              * Those keys are computed in the beginning of a handshake
              */
@@ -1234,7 +1269,7 @@ typedef union PRNetAddr PRNetAddr;
 
             return;
         } else if (dumping_handshake_secrets == 2) {
-            devlog("[*] exporting TLS 1.3 RTT0 handshake keying material");
+            devlog("exporting TLS 1.3 RTT0 handshake keying material");
 
             var client_early_traffic_secret = NSS.get_Secret_As_HexString(ssl3.hs.clientEarlyTrafficSecret); //CLIENT_EARLY_TRAFFIC_SECRET
             devlog(NSS.get_Keylog_Dump("CLIENT_EARLY_TRAFFIC_SECRET", client_random, client_early_traffic_secret));
@@ -1250,7 +1285,7 @@ typedef union PRNetAddr PRNetAddr;
 
 
         if (NSS.is_TLS_1_3(ssl_version_internal_Code)) {
-            devlog("[*] exporting TLS 1.3 keying material");
+            devlog("exporting TLS 1.3 keying material");
 
             var client_traffic_secret = NSS.get_Secret_As_HexString(ssl3.hs.clientTrafficSecret); //CLIENT_TRAFFIC_SECRET_0
             devlog(NSS.get_Keylog_Dump("CLIENT_TRAFFIC_SECRET_0", client_random, client_traffic_secret));
@@ -1270,7 +1305,7 @@ typedef union PRNetAddr PRNetAddr;
 
 
         } else {
-            devlog("[*] exporting TLS 1.2 keying material");
+            devlog("exporting TLS 1.2 keying material");
 
             var master_secret = NSS.getMasterSecret(ssl3);
             devlog(NSS.get_Keylog_Dump("CLIENT_RANDOM", client_random, master_secret));
@@ -1313,7 +1348,7 @@ typedef union PRNetAddr PRNetAddr;
                     if (retval.toInt32() <= 0 || NSS.getDescType(this.fd) == PRDescType.PR_DESC_FILE) {
                         return
                     }
-                    log("The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys")
+                    //devlog("The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys")
 
                     var addr = Memory.alloc(8);
                     var res = NSS.getpeername(this.fd, addr);
@@ -1322,7 +1357,7 @@ typedef union PRNetAddr PRNetAddr;
 
                     if (addr.readU16() == 2 || addr.readU16() == 10 || addr.readU16() == 100) {
                         var message = NSS.getPortsAndAddressesFromNSS(this.fd as NativePointer, true, lib_addesses[current_module_name], enable_default_fd)
-                        devlog("Session ID: " + NSS.getSslSessionIdFromFD(this.fd))
+                        //devlog("Session ID: " + NSS.getSslSessionIdFromFD(this.fd))
                         message["ssl_session_id"] = NSS.getSslSessionIdFromFD(this.fd)
                         message["function"] = "NSS_read"
                         this.message = message
@@ -1331,7 +1366,8 @@ typedef union PRNetAddr PRNetAddr;
                         var data = this.buf.readByteArray((new Uint32Array([retval]))[0])
                         send(message, data)
                     } else {
-                        var message = NSS.getPortsAndAddressesFromNSS( null, true, lib_addesses[current_module_name], enable_default_fd)
+                        /*
+                        var message = NSS.getPortsAndAddressesFromNSS( this.fd as NativePointer, true, lib_addesses[current_module_name], enable_default_fd)
                         message["ssl_session_id"] = NSS.getSslSessionIdFromFD(this.fd)
                         message["function"] = "NSS_read"
                         this.message = message
@@ -1339,7 +1375,7 @@ typedef union PRNetAddr PRNetAddr;
                         this.message["contentType"] = "datalog"
                         var temp = this.buf.readByteArray((new Uint32Array([retval]))[0])
                         devlog(JSON.stringify(temp))
-                        send(message, temp)
+                        send(message, temp)*/
                     }
                 }
             })
@@ -1376,8 +1412,9 @@ typedef union PRNetAddr PRNetAddr;
                         message["contentType"] = "datalog"
                         send(message, this.buf.readByteArray((parseInt(this.len))))
                     }else {
+                        /*
                         log("The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys")
-                        var message = NSS.getPortsAndAddressesFromNSS(null, true, lib_addesses[current_module_name], enable_default_fd)
+                        var message = NSS.getPortsAndAddressesFromNSS(this.fd as NativePointer, true, lib_addesses[current_module_name], enable_default_fd)
                         message["ssl_session_id"] = NSS.getSslSessionIdFromFD(this.fd)
                         message["function"] = "NSS_write"
                         this.message = message
@@ -1385,7 +1422,7 @@ typedef union PRNetAddr PRNetAddr;
                         this.message["contentType"] = "datalog"
                         var temp = this.buf.readByteArray((new Uint32Array([retval]))[0])
                         devlog(JSON.stringify(temp))
-                        send(message, temp)
+                        send(message, temp)*/
                     }
 
                 }
@@ -1500,7 +1537,7 @@ function tls13_RecordKeyLog(pRFileDesc, secret_label, secret){
         }
 
 
-        devlog("[**] secret callback (" + NSS.secret_callback + ") installed to address: " + sslSocketStr.secretCallback);
+        devlog("secret callback (" + NSS.secret_callback + ") installed to address: " + sslSocketStr.secretCallback);
 
 
     }

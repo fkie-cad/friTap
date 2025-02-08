@@ -86,7 +86,7 @@ export function load_android_hooking_agent() {
         [/.*flutter.*\.so/, invokeHookingFunction(flutter_execute)],
         [/.*libgnutls\.so/, invokeHookingFunction(gnutls_execute)],
         [/.*libwolfssl\.so/, invokeHookingFunction(wolfssl_execute)],
-        [/.*libnss*\.so/,invokeHookingFunction(nss_execute)], 
+        [/.*libnss[3-4]\.so/,invokeHookingFunction(nss_execute)],
         [/libmbedtls\.so.*/, invokeHookingFunction(mbedTLS_execute)],
         [/.*libs2n.so/, invokeHookingFunction(s2ntls_execute)],
         [/.*mono-btls.*\.so/, invokeHookingFunction(mono_btls_execute)]];
