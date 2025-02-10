@@ -1,4 +1,4 @@
-import { readAddresses, getBaseAddress } from "../shared/shared_functions.js";
+import { readAddresses, getBaseAddress, dumpMemory } from "../shared/shared_functions.js";
 import { pointerSize, AF_INET, AF_INET6 } from "../shared/shared_structures.js";
 import { log, devlog } from "../util/log.js";
 import { offsets,enable_default_fd } from "../ssl_log.js";
@@ -156,6 +156,8 @@ export interface sslSocketStr {
     }
 }
 
+
+
 const {
     readU32,
     readU64,
@@ -201,6 +203,8 @@ export class NSS {
     static get_SSL_Callback: any;
     static PK11_ExtractKeyValue: any;
     static PK11_GetKeyData: any;
+    static SS3_VERSIONS_OFFSET: number; // an offset in the SS3.HS strucht which changes on different NSS versions
+    static SS3_VERSIONS_CR_OFFSET: number;
 
 
     constructor(public moduleName: string, public socket_library: String, public passed_library_method_mapping?: { [key: string]: Array<string> }) {
@@ -255,6 +259,35 @@ export class NSS {
 
     }
 
+    static get_NSS_version(): number{
+        var getNSSversion = null;
+        var version_string = "0";
+        if(!Java.available){
+            getNSSversion = new NativeFunction(Module.findExportByName(null,"NSSSSL_GetVersion"), "pointer", []);
+        }else{
+            // we are on Android
+            getNSSversion = new NativeFunction(Module.findExportByName("libnss3.so","NSSSSL_GetVersion"), "pointer", []);
+        }
+        if(!getNSSversion.isNull()){
+            var ptr_version_string = getNSSversion();
+            if(!ptr_version_string.isNull()){
+                version_string = ptr_version_string.readCString();
+            }
+        }
+
+        // Extract only the numeric part (e.g., "3.108 BETA" → "3.108")
+        var match = version_string.match(/^(\d+)\.(\d+)/);
+        if (!match) {
+            return 0; // Return 0 if the version string is not valid
+        }
+
+        // Convert to a numeric version: major * 1000 + minor (e.g., 3.108 → 3108)
+        var major = parseInt(match[1], 10);
+        var minor = parseInt(match[2], 10);
+
+        return major * 1000 + minor;
+    }
+
     /* PARSING functions */
 
     static parse_struct_SECItem(secitem: NativePointer) {
@@ -286,6 +319,24 @@ export class NSS {
 
     // https://github.com/nss-dev/nss/blob/master/lib/ssl/sslimpl.h#L771
     static parse_struct_ssl3Str(ssl3_struct: NativePointer): sslSocketStr {
+        NSS.SS3_VERSIONS_OFFSET = 0; // defaulting offset to 0
+        NSS.SS3_VERSIONS_CR_OFFSET = 0;
+        var nss_version = NSS.get_NSS_version();
+        //console.log("nss_version:"+nss_version);
+        if(nss_version >= 3107){
+            devlog("setting offsets for NSS version "+nss_version);
+            NSS.SS3_VERSIONS_OFFSET = 96; // offset currentSecret
+            NSS.SS3_VERSIONS_CR_OFFSET = 8; // offset for CLIENT_RANDOM
+        }
+
+        // version 3.108 beta
+        // https://github.com/nss-dev/nss/blob/c277877bd8c01e107b097bbd57df094b34e37aab/lib/ssl/sslimpl.h#L615
+        //console.log("[!] inspecing SSL3HandshakeStateStr at: "+ssl3_struct.add(pointerSize * 10 + 24));
+        //dumpMemory(ssl3_struct.add(pointerSize * 10 + 24+NSS.SS3_VERSIONS_CR_OFFSET),820);
+        //                                           80+ 24 + 8 = 112
+        //                         pointerSize * 33 + 440 + 0
+        //                                         264+ 440 = 704
+        // 432 first ptr
         /*
         struct ssl3StateStr {
     
@@ -335,101 +386,101 @@ export class NSS {
             "peerCertChain": ssl3_struct.add(pointerSize * 8 + 24).readPointer(),
             "ca_list": ssl3_struct.add(pointerSize * 9 + 24).readPointer(),
             "hs": { // https://github.com/nss-dev/nss/blob/c277877bd8c01e107b097bbd57df094b34e37aab/lib/ssl/sslimpl.h#L615
-                "server_random": ssl3_struct.add(pointerSize * 10 + 24),  //SSL3Random --> typedef PRUint8 SSL3Random[SSL3_RANDOM_LENGTH];
-                "client_random": ssl3_struct.add(pointerSize * 10 + 56),
-                "client_inner_random": ssl3_struct.add(pointerSize * 10 + 88),
-                "ws": ssl3_struct.add(pointerSize * 10 + 120).readU32(),
-                "hashType": ssl3_struct.add(pointerSize * 10 + 124).readU32(),
+                "server_random": ssl3_struct.add(pointerSize * 10 + 24+ NSS.SS3_VERSIONS_CR_OFFSET),  //SSL3Random --> typedef PRUint8 SSL3Random[SSL3_RANDOM_LENGTH];
+                "client_random": ssl3_struct.add(pointerSize * 10 + 56+ NSS.SS3_VERSIONS_CR_OFFSET),
+                "client_inner_random": ssl3_struct.add(pointerSize * 10 + 88+ NSS.SS3_VERSIONS_CR_OFFSET),
+                "ws": ssl3_struct.add(pointerSize * 10 + 120+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                "hashType": ssl3_struct.add(pointerSize * 10 + 124+ NSS.SS3_VERSIONS_OFFSET).readU32(),
                 "messages": { // sslBuffer
-                    "data": ssl3_struct.add(pointerSize * 10 + 128).readPointer(),
-                    "len": ssl3_struct.add(pointerSize * 11 + 128).readU32(),
-                    "space": ssl3_struct.add(pointerSize * 11 + 132).readU32(),
-                    "fixed": ssl3_struct.add(pointerSize * 11 + 136).readU32(),
+                    "data": ssl3_struct.add(pointerSize * 10 + 128+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
+                    "len": ssl3_struct.add(pointerSize * 11 + 128+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                    "space": ssl3_struct.add(pointerSize * 11 + 132+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                    "fixed": ssl3_struct.add(pointerSize * 11 + 136+ NSS.SS3_VERSIONS_OFFSET).readU32(),
 
                 },
                 "echInnerMessages": { // sslBuffer
-                    "data": ssl3_struct.add(pointerSize * 11 + 140).readPointer(),
-                    "len": ssl3_struct.add(pointerSize * 12 + 140).readU32(),
-                    "space": ssl3_struct.add(pointerSize * 12 + 144).readU32(),
-                    "fixed": ssl3_struct.add(pointerSize * 12 + 148).readU32(),
+                    "data": ssl3_struct.add(pointerSize * 11 + 140+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
+                    "len": ssl3_struct.add(pointerSize * 12 + 140+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                    "space": ssl3_struct.add(pointerSize * 12 + 144+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                    "fixed": ssl3_struct.add(pointerSize * 12 + 148+ NSS.SS3_VERSIONS_OFFSET).readU32(),
 
                 },
-                "md5": ssl3_struct.add(pointerSize * 12 + 152).readPointer(),
-                "sha": ssl3_struct.add(pointerSize * 13 + 152).readPointer(),
-                "shaEchInner": ssl3_struct.add(pointerSize * 14 + 152).readPointer(),
-                "shaPostHandshake": ssl3_struct.add(pointerSize * 15 + 152).readPointer(),
-                "signatureScheme": ssl3_struct.add(pointerSize * 16 + 152).readU32(),
-                "kea_def": ssl3_struct.add(pointerSize * 16 + 156).readPointer(),
-                "cipher_suite": ssl3_struct.add(pointerSize * 17 + 156).readU32(),
-                "suite_def": ssl3_struct.add(pointerSize * 17 + 160).readPointer(),
+                "md5": ssl3_struct.add(pointerSize * 12 + 152+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
+                "sha": ssl3_struct.add(pointerSize * 13 + 152+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
+                "shaEchInner": ssl3_struct.add(pointerSize * 14 + 152+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
+                "shaPostHandshake": ssl3_struct.add(pointerSize * 15 + 152+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
+                "signatureScheme": ssl3_struct.add(pointerSize * 16 + 152+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                "kea_def": ssl3_struct.add(pointerSize * 16 + 156+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
+                "cipher_suite": ssl3_struct.add(pointerSize * 17 + 156+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                "suite_def": ssl3_struct.add(pointerSize * 17 + 160+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
                 "msg_body": { // sslBuffer
-                    "data": ssl3_struct.add(pointerSize * 18 + 160).readPointer(),
-                    "len": ssl3_struct.add(pointerSize * 19 + 160).readU32(),
-                    "space": ssl3_struct.add(pointerSize * 19 + 164).readU32(),
-                    "fixed": ssl3_struct.add(pointerSize * 19 + 168).readU32(),
+                    "data": ssl3_struct.add(pointerSize * 18 + 160+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
+                    "len": ssl3_struct.add(pointerSize * 19 + 160+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                    "space": ssl3_struct.add(pointerSize * 19 + 164+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                    "fixed": ssl3_struct.add(pointerSize * 19 + 168+ NSS.SS3_VERSIONS_OFFSET).readU32(),
 
                 },
-                "header_bytes": ssl3_struct.add(pointerSize * 19 + 172).readU32(),
-                "msg_type": ssl3_struct.add(pointerSize * 19 + 176).readU32(),
-                "msg_len": ssl3_struct.add(pointerSize * 19 + 180).readU32(),
-                "isResuming": ssl3_struct.add(pointerSize * 19 + 184).readU32(),
-                "sendingSCSV": ssl3_struct.add(pointerSize * 19 + 188).readU32(),
-                "receivedNewSessionTicket": ssl3_struct.add(pointerSize * 19 + 192).readU32(),
-                "newSessionTicket": ssl3_struct.add(pointerSize * 19 + 196),          // for now we calculate only its offset (44 bytes); detailes at https://github.com/nss-dev/nss/blob/master/lib/ssl/ssl3prot.h#L162
-                "finishedBytes": ssl3_struct.add(pointerSize * 19 + 240).readU32(),
-                "finishedMsgs": ssl3_struct.add(pointerSize * 19 + 244),
-                "authCertificatePending": ssl3_struct.add(pointerSize * 18 + 316).readU32(),
-                "restartTarget": ssl3_struct.add(pointerSize * 19 + 320).readU32(),
-                "canFalseStart": ssl3_struct.add(pointerSize * 19 + 324).readU32(),
-                "preliminaryInfo": ssl3_struct.add(pointerSize * 19 + 328).readU32(),
+                "header_bytes": ssl3_struct.add(pointerSize * 19 + 172+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                "msg_type": ssl3_struct.add(pointerSize * 19 + 176+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                "msg_len": ssl3_struct.add(pointerSize * 19 + 180+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                "isResuming": ssl3_struct.add(pointerSize * 19 + 184+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                "sendingSCSV": ssl3_struct.add(pointerSize * 19 + 188+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                "receivedNewSessionTicket": ssl3_struct.add(pointerSize * 19 + 192+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                "newSessionTicket": ssl3_struct.add(pointerSize * 19 + 196+ NSS.SS3_VERSIONS_OFFSET),          // for now we calculate only its offset (44 bytes); detailes at https://github.com/nss-dev/nss/blob/master/lib/ssl/ssl3prot.h#L162
+                "finishedBytes": ssl3_struct.add(pointerSize * 19 + 240+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                "finishedMsgs": ssl3_struct.add(pointerSize * 19 + 244+ NSS.SS3_VERSIONS_OFFSET),
+                "authCertificatePending": ssl3_struct.add(pointerSize * 18 + 316+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                "restartTarget": ssl3_struct.add(pointerSize * 19 + 320+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                "canFalseStart": ssl3_struct.add(pointerSize * 19 + 324+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                "preliminaryInfo": ssl3_struct.add(pointerSize * 19 + 328+ NSS.SS3_VERSIONS_OFFSET).readU32(),
                 "remoteExtensions": {
-                    "next": ssl3_struct.add(pointerSize * 19 + 332).readPointer(),
-                    "prev": ssl3_struct.add(pointerSize * 20 + 332).readPointer(),
+                    "next": ssl3_struct.add(pointerSize * 19 + 332+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
+                    "prev": ssl3_struct.add(pointerSize * 20 + 332+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
                 },
                 "echOuterExtensions": {
-                    "next": ssl3_struct.add(pointerSize * 21 + 332).readPointer(),
-                    "prev": ssl3_struct.add(pointerSize * 22 + 332).readPointer(),
+                    "next": ssl3_struct.add(pointerSize * 21 + 332+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
+                    "prev": ssl3_struct.add(pointerSize * 22 + 332+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
                 },
-                "sendMessageSeq": ssl3_struct.add(pointerSize * 23 + 332).readU32(),  //u16 but through alignment  U32
+                "sendMessageSeq": ssl3_struct.add(pointerSize * 23 + 332+ NSS.SS3_VERSIONS_OFFSET).readU32(),  //u16 but through alignment  U32
                 "lastMessageFlight": {
-                    "next": ssl3_struct.add(pointerSize * 23 + 336).readPointer(),
-                    "prev": ssl3_struct.add(pointerSize * 24 + 336).readPointer(),
+                    "next": ssl3_struct.add(pointerSize * 23 + 336+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
+                    "prev": ssl3_struct.add(pointerSize * 24 + 336+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
                 },
-                "maxMessageSent": ssl3_struct.add(pointerSize * 25 + 336).readU16(),  //u16
-                "recvMessageSeq": ssl3_struct.add(pointerSize * 25 + 338).readU16(),
+                "maxMessageSent": ssl3_struct.add(pointerSize * 25 + 336+ NSS.SS3_VERSIONS_OFFSET).readU16(),  //u16
+                "recvMessageSeq": ssl3_struct.add(pointerSize * 25 + 338+ NSS.SS3_VERSIONS_OFFSET).readU16(),
                 "recvdFragments": { // sslBuffer
-                    "data": ssl3_struct.add(pointerSize * 25 + 340).readPointer(),
-                    "len": ssl3_struct.add(pointerSize * 26 + 340).readU32(),
-                    "space": ssl3_struct.add(pointerSize * 26 + 344).readU32(),
-                    "fixed": ssl3_struct.add(pointerSize * 26 + 348).readU32(),
+                    "data": ssl3_struct.add(pointerSize * 25 + 340+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
+                    "len": ssl3_struct.add(pointerSize * 26 + 340+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                    "space": ssl3_struct.add(pointerSize * 26 + 344+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                    "fixed": ssl3_struct.add(pointerSize * 26 + 348+ NSS.SS3_VERSIONS_OFFSET).readU32(),
 
                 },
-                "recvdHighWater": ssl3_struct.add(pointerSize * 26 + 352).readU32(),
+                "recvdHighWater": ssl3_struct.add(pointerSize * 26 + 352+ NSS.SS3_VERSIONS_OFFSET).readU32(),
                 "cookie": {
-                    "type": ssl3_struct.add(pointerSize * 26 + 356).readU64(),
-                    "data": ssl3_struct.add(pointerSize * 27 + 356).readPointer(),
-                    "len": ssl3_struct.add(pointerSize * 28 + 356).readU32(),
+                    "type": ssl3_struct.add(pointerSize * 26 + 356+ NSS.SS3_VERSIONS_OFFSET).readU64(),
+                    "data": ssl3_struct.add(pointerSize * 27 + 356+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
+                    "len": ssl3_struct.add(pointerSize * 28 + 356+ NSS.SS3_VERSIONS_OFFSET).readU32(),
                 },
-                "times_array": ssl3_struct.add(pointerSize * 28 + 360).readU32(),
-                "rtTimer": ssl3_struct.add(pointerSize * 28 + 432).readPointer(),
-                "ackTimer": ssl3_struct.add(pointerSize * 29 + 432).readPointer(),
-                "hdTimer": ssl3_struct.add(pointerSize * 30 + 432).readPointer(),
-                "rtRetries": ssl3_struct.add(pointerSize * 31 + 432).readU32(),
+                "times_array": ssl3_struct.add(pointerSize * 28 + 360+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                "rtTimer": ssl3_struct.add(pointerSize * 28 + 432+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
+                "ackTimer": ssl3_struct.add(pointerSize * 29 + 432+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
+                "hdTimer": ssl3_struct.add(pointerSize * 30 + 432+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
+                "rtRetries": ssl3_struct.add(pointerSize * 31 + 432+ NSS.SS3_VERSIONS_OFFSET).readU32(),
                 "srvVirtName": {
-                    "type": ssl3_struct.add(pointerSize * 31 + 436).readU64(),
-                    "data": ssl3_struct.add(pointerSize * 32 + 436).readPointer(),
-                    "len": ssl3_struct.add(pointerSize * 33 + 436).readU32(),
+                    "type": ssl3_struct.add(pointerSize * 31 + 436+ NSS.SS3_VERSIONS_OFFSET).readU64(),
+                    "data": ssl3_struct.add(pointerSize * 32 + 436+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
+                    "len": ssl3_struct.add(pointerSize * 33 + 436+ NSS.SS3_VERSIONS_OFFSET).readU32(),
                 },
-                "currentSecret": ssl3_struct.add(pointerSize * 33 + 440).readPointer(),
-                "resumptionMasterSecret": ssl3_struct.add(pointerSize * 34 + 440).readPointer(),
-                "dheSecret": ssl3_struct.add(pointerSize * 35 + 440).readPointer(),
-                "clientEarlyTrafficSecret": ssl3_struct.add(pointerSize * 36 + 440).readPointer(),
-                "clientHsTrafficSecret": ssl3_struct.add(pointerSize * 37 + 440).readPointer(),
-                "serverHsTrafficSecret": ssl3_struct.add(pointerSize * 38 + 440).readPointer(),
-                "clientTrafficSecret": ssl3_struct.add(pointerSize * 39 + 440).readPointer(),
-                "serverTrafficSecret": ssl3_struct.add(pointerSize * 40 + 440).readPointer(),
-                "earlyExporterSecret": ssl3_struct.add(pointerSize * 41 + 440).readPointer(),
-                "exporterSecret": ssl3_struct.add(pointerSize * 42 + 440).readPointer()
+                "currentSecret": ssl3_struct.add(pointerSize * 33 + 440+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
+                "resumptionMasterSecret": ssl3_struct.add(pointerSize * 34 + 440+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
+                "dheSecret": ssl3_struct.add(pointerSize * 35 + 440+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
+                "clientEarlyTrafficSecret": ssl3_struct.add(pointerSize * 36 + 440+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
+                "clientHsTrafficSecret": ssl3_struct.add(pointerSize * 37 + 440+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
+                "serverHsTrafficSecret": ssl3_struct.add(pointerSize * 38 + 440+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
+                "clientTrafficSecret": ssl3_struct.add(pointerSize * 39 + 440+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
+                "serverTrafficSecret": ssl3_struct.add(pointerSize * 40 + 440+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
+                "earlyExporterSecret": ssl3_struct.add(pointerSize * 41 + 440+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
+                "exporterSecret": ssl3_struct.add(pointerSize * 42 + 440+ NSS.SS3_VERSIONS_OFFSET).readPointer()
 
             } // end of hs struct
 
@@ -1162,18 +1213,55 @@ typedef union PRNetAddr PRNetAddr;
 
 
     static get_Secret_As_HexString(secret_key_Ptr: NativePointer): string {
+        var secret_as_hexString = "";
+
 
 
         var rv = NSS.PK11_ExtractKeyValue(secret_key_Ptr);
         if (rv != SECStatus.SECSuccess) {
-            devlog("ERROR access the secret key: "+rv);
+            devlog("ERROR access the secret key: "+secret_key_Ptr+ " return value: "+rv);
+            /*
+            // debug output
+            try{
+                
+                console.log("\n[!] dumping secret key: ")
+                dumpMemory(secret_key_Ptr, 0x80);
+
+                if(!secret_key_Ptr.isNull()){
+                    var keyData1 = NSS.PK11_GetKeyData(secret_key_Ptr);
+                    console.log("[!] dumping key data at: "+keyData1);
+                    dumpMemory(keyData1, 0x80);
+                    var keyData_SECITem1 = NSS.parse_struct_SECItem(keyData1 as NativePointer);
+
+                    console.log("Looking at the value of keyData_SECITem1 (len: "+keyData_SECITem1.len+"): ")
+                    dumpMemory(keyData_SECITem1.data, 0x80);
+                    console.log("--------------------------------------------------\n");
+                }
+
+                
+
+
+            }catch(e){
+
+            }*/
+
             return "";
         }
         var keyData = NSS.PK11_GetKeyData(secret_key_Ptr);  // return value is a SECItem
 
         var keyData_SECITem = NSS.parse_struct_SECItem(keyData as NativePointer);
 
-        var secret_as_hexString = NSS.getHexString(keyData_SECITem.data, keyData_SECITem.len);
+        try{
+            if(keyData_SECITem.len > 64){
+                devlog("[!] error in identifiying the real key_len: "+keyData_SECITem.len);
+                secret_as_hexString = NSS.getHexString(keyData_SECITem.data, 32);
+            }else{
+                secret_as_hexString = NSS.getHexString(keyData_SECITem.data, keyData_SECITem.len);
+            }
+        }catch(e){
+            devlog("[-] Error in extracting key from: "+keyData_SECITem.data+ " with length: "+keyData_SECITem.len+ " derived from secret_key_Ptr: "+secret_key_Ptr);
+            dumpMemory(keyData_SECITem.data,0x80);
+        }
 
         return secret_as_hexString;
     }
@@ -1204,8 +1292,11 @@ typedef union PRNetAddr PRNetAddr;
     //see nss/lib/ssl/sslinfo.c for details */
 
     static get_Keylog_Dump(type: string, client_random: string, key: string) {
+        // Debug output
+        /*
         console.log("[!] CLIENT_RANDOM: "+client_random);
         console.log("[!] KEY: "+key);
+        */
         return type + " " + client_random + " " + key;
     }
 
@@ -1232,6 +1323,12 @@ typedef union PRNetAddr PRNetAddr;
         var sslSocketStr = NSS.parse_struct_sslSocketStr(sslSocketFD);
         var ssl3_struct = sslSocketStr.ssl3;
         var ssl3 = NSS.parse_struct_ssl3Str(ssl3_struct);
+
+
+        //console.log("[!] inspecting ssl3: ");
+        //dumpMemory(ssl3.hs.currentSecret,0x200);
+
+
 
 
         // the client_random is used to identify the diffrent SSL streams with their corresponding secrets
@@ -1286,6 +1383,33 @@ typedef union PRNetAddr PRNetAddr;
 
         if (NSS.is_TLS_1_3(ssl_version_internal_Code)) {
             devlog("exporting TLS 1.3 keying material");
+
+           
+            /*
+            Testing offsets via brute force...
+
+            var i = 432;
+            try{
+                for (; i <= 850; i += 8) {
+                    try{
+                        var dst_ptr = ssl3_struct.add(i).readPointer();
+                        if(!dst_ptr.isNull()){
+                            console.log(i);
+                            var server_handshake_traffic_secret = NSS.get_Secret_As_HexString(dst_ptr);
+                            console.log("[!] server_handshake_traffic_secret (offset: "+i+"): "+server_handshake_traffic_secret);
+                        }
+                    }catch(innere){}
+                    
+                }
+
+            }catch(e){
+
+            }*/
+            
+
+            
+
+
 
             var client_traffic_secret = NSS.get_Secret_As_HexString(ssl3.hs.clientTrafficSecret); //CLIENT_TRAFFIC_SECRET_0
             devlog(NSS.get_Keylog_Dump("CLIENT_TRAFFIC_SECRET_0", client_random, client_traffic_secret));

@@ -396,3 +396,20 @@ export function get_hex_string_from_byte_array(keyData: ArrayBuffer | Uint8Array
         .map(byte => byte.toString(16).padStart(2, '0').toUpperCase()) // Convert each byte to a 2-digit hex string
         .join(''); // Join all the hex values with a space
 }
+
+
+export function dumpMemory(ptrValue,size) {
+    //var size = 0x100;
+    try {
+        console.log("[!] dumping memory at address: "+ptrValue);
+        //@ts-ignore
+        var data = Memory.readByteArray(ptrValue, size);
+        console.log(hexdump(data));
+        return data;
+        // console.log(hexdump(data, { offset: 0, length: size, header: true, ansi: true }));
+    } catch (error) {
+        console.log("Error dumping memory at: " + ptrValue + " - " + error);
+        console.log("\n")
+        return null;
+    }
+}
