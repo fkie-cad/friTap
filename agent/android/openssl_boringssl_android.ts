@@ -38,17 +38,21 @@ export class OpenSSL_BoringSSL_Android extends OpenSSL_BoringSSL {
     }
 
     install_conscrypt_tls_keys_callback_hook (){
-        this.SSL_CTX_set_keylog_callback = new NativeFunction(this.addresses[this.module_name]["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"]);
-        var instance = this;
+        try{    
+            this.SSL_CTX_set_keylog_callback = new NativeFunction(this.addresses[this.module_name]["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"]);
+            var instance = this;
 
-        Interceptor.attach(this.addresses[this.module_name]["SSL_CTX_new"], {
-            onLeave: function(retval) {
-                const ssl = new NativePointer(retval);
-                if (!ssl.isNull()) {
-                    instance.SSL_CTX_set_keylog_callback(ssl, OpenSSL_BoringSSL.keylog_callback)
+            Interceptor.attach(this.addresses[this.module_name]["SSL_CTX_new"], {
+                onLeave: function(retval) {
+                    const ssl = new NativePointer(retval);
+                    if (!ssl.isNull()) {
+                        instance.SSL_CTX_set_keylog_callback(ssl, OpenSSL_BoringSSL.keylog_callback)
+                    }
                 }
-            }
-        });
+            });
+        }catch(e){
+            // right now this will sillently fail
+        }
 
     }
 
@@ -56,6 +60,7 @@ export class OpenSSL_BoringSSL_Android extends OpenSSL_BoringSSL {
         this.install_plaintext_read_hook();
         this.install_plaintext_write_hook();
         this.install_tls_keys_callback_hook();
+        this.install_conscrypt_tls_keys_callback_hook();
         this.install_extended_hooks();
     }
 

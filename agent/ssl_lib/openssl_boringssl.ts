@@ -100,6 +100,10 @@ export class OpenSSL_BoringSSL {
             this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
         }
 
+        if (isSymbolAvailable(moduleName, "SSL_CTX_new")) {
+            this.library_method_mapping[`*${moduleName}*`].push("SSL_CTX_new");
+        }
+
     
         // Check and add SSL_read_ex if available
         if (isSymbolAvailable(moduleName, "SSL_read_ex")) {
