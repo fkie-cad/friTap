@@ -31,6 +31,7 @@ export function get_CPU_specific_pattern(default_pattern : { [arch: string]: { p
 
 export class PatternBasedHooking {
     found_ssl_log_secret: boolean;
+    no_hooking_success: boolean;
     module: Module;
     private patterns: any = {};
     private rescannedRanges: Set<string> = new Set(); // Set to keep track of memory ranges that have been rescanned
@@ -38,6 +39,7 @@ export class PatternBasedHooking {
     constructor(module: Module) {
         this.found_ssl_log_secret = false;
         this.module = module;
+        this.no_hooking_success = true;
     }
 
     private createRegexFromModule(moduleName: string): RegExp {
@@ -69,6 +71,7 @@ export class PatternBasedHooking {
         Memory.scan(moduleBase, moduleSize, pattern, {
             onMatch: (address) => {
                 this.found_ssl_log_secret = true;
+                this.no_hooking_success = false;
                 log(`Pattern found at (${pattern_name}) address: ${address}`);
                 log(`Pattern based hooks installed.`);
 
@@ -93,6 +96,7 @@ export class PatternBasedHooking {
                             this.hookByPatternOnlyReadableParts(patterns, "fallback_pattern", onMatchCallback, (pattern_success_alt) => {
                                 if (!pattern_success_alt) {
                                     devlog("None of the patterns worked. You may need to adjust the patterns.");
+                                    this.no_hooking_success = true;
                                 }
                             });
                         }
@@ -179,6 +183,7 @@ export class PatternBasedHooking {
                 this.hookByPattern(patterns, "fallback_pattern", onMatchCallback, (pattern_success_alt) => {
                     if (!pattern_success_alt) {
                         devlog("None of the patterns worked. You may need to adjust the patterns.");
+                        this.no_hooking_success = true;
                     }
                 });
             }
@@ -199,7 +204,7 @@ export class PatternBasedHooking {
     private invoke_pattern_based_hooking(action: keyof ActionPatterns, module_name: string, platform: string, arch: string, hookCallback: (args: any[]) => void){
         var action_specific_patterns = this.get_action_specific_pattern(module_name, platform, arch,action);
 
-        devlog(`Using ${action} patterns for ${platform} and ${arch}`);
+        devlog(`Using ${action} patterns for ${platform} on ${arch}`);
         this.hookModuleByPattern(action_specific_patterns, hookCallback);
     }
 

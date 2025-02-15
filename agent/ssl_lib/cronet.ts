@@ -71,7 +71,8 @@ export class Cronet {
 
 
     dumpKeys(labelPtr: NativePointer, sslStructPtr: NativePointer, keyPtr: NativePointer): void {
-        const KEY_LENGTH = 32; // Assuming key length is 32 bytes
+        const MAX_KEY_LENGTH = 64;
+        const RANDOM_KEY_LENGTH = 32;
 
         let labelStr = '';
         let client_random = '';
@@ -93,6 +94,33 @@ export class Cronet {
         }
 
         if (!keyPtr.isNull()) {
+            let KEY_LENGTH = 0;
+            let calculatedKeyLength = 0;
+
+            // Iterate through the memory to determine key length
+            while (calculatedKeyLength < MAX_KEY_LENGTH) {
+                //@ts-ignore
+                const byte = Memory.readU8(keyPtr.add(calculatedKeyLength)); // Read one byte at a time
+
+
+                if (byte === 0) { // Stop if null terminator is found (optional, adjust as needed)
+                    if(calculatedKeyLength < 20){
+                        calculatedKeyLength++;
+                        continue;
+                    }
+                    break;
+                }
+                calculatedKeyLength++;
+            }
+
+            if (calculatedKeyLength > 24 && calculatedKeyLength <= 40) {
+                KEY_LENGTH = 32; // Closest match is 32 bytes
+            } else if (calculatedKeyLength >= 46 && calculatedKeyLength <=49) {
+                KEY_LENGTH = 48; // Closest match is 48 bytes
+            }else{
+                KEY_LENGTH = 32; // fall back size
+            }
+
             //@ts-ignore
             const keyData = Memory.readByteArray(keyPtr, KEY_LENGTH); // Read the key data (KEY_LENGTH bytes)
             

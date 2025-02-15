@@ -1,16 +1,16 @@
 📦
 3346 /agent/ssl_log.js.map
 4339 /agent/ssl_log.js
-3225 /agent/android/android_agent.js.map
-3937 /agent/android/android_agent.js
+4183 /agent/android/android_agent.js.map
+5754 /agent/android/android_agent.js
 937 /agent/android/android_java_tls_libs.js.map
 1150 /agent/android/android_java_tls_libs.js
 4361 /agent/android/bouncycastle.js.map
 5111 /agent/android/bouncycastle.js
 5309 /agent/android/conscrypt.js.map
 8444 /agent/android/conscrypt.js
-2275 /agent/android/cronet_android.js.map
-3449 /agent/android/cronet_android.js
+3221 /agent/android/cronet_android.js.map
+4873 /agent/android/cronet_android.js
 2274 /agent/android/flutter_android.js.map
 3238 /agent/android/flutter_android.js
 1392 /agent/android/gnutls_android.js.map
@@ -23,6 +23,8 @@
 5167 /agent/android/nss_android.js
 2333 /agent/android/openssl_boringssl_android.js.map
 3146 /agent/android/openssl_boringssl_android.js
+2635 /agent/android/pattern_android.js.map
+3315 /agent/android/pattern_android.js
 1429 /agent/android/s2ntls_android.js.map
 1513 /agent/android/s2ntls_android.js
 3090 /agent/android/wolfssl_android.js.map
@@ -61,14 +63,14 @@
 3869 /agent/macos/openssl_boringssl_macos.js
 9219 /agent/misc/socket_tracer.js.map
 10733 /agent/misc/socket_tracer.js
-7691 /agent/shared/pattern_based_hooking.js.map
-10736 /agent/shared/pattern_based_hooking.js
+7846 /agent/shared/pattern_based_hooking.js.map
+10948 /agent/shared/pattern_based_hooking.js
 11458 /agent/shared/shared_functions.js.map
 14709 /agent/shared/shared_functions.js
 650 /agent/shared/shared_structures.js.map
 501 /agent/shared/shared_structures.js
-2864 /agent/ssl_lib/cronet.js.map
-3948 /agent/ssl_lib/cronet.js
+3516 /agent/ssl_lib/cronet.js.map
+5026 /agent/ssl_lib/cronet.js
 2867 /agent/ssl_lib/flutter.js.map
 3950 /agent/ssl_lib/flutter.js
 6803 /agent/ssl_lib/gnutls.js.map
@@ -243,7 +245,7 @@ function load_os_specific_agent() {
 }
 load_os_specific_agent();
 ✄
-{"version":3,"file":"android_agent.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/android/android_agent.ts"],"names":[],"mappings":"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"}
+{"version":3,"file":"android_agent.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/android/android_agent.ts"],"names":[],"mappings":"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"}
 ✄
 import { module_library_mapping } from "../shared/shared_structures.js";
 import { getModuleNames, ssl_library_loader, invokeHookingFunction } from "../shared/shared_functions.js";
@@ -259,6 +261,8 @@ import { conscrypt_native_execute } from "./conscrypt.js";
 import { flutter_execute } from "./flutter_android.js";
 import { s2ntls_execute } from "./s2ntls_android.js";
 import { mono_btls_execute } from "./mono_btls_android.js";
+import { patterns, isPatternReplaced } from "../ssl_log.js";
+import { pattern_execute } from "./pattern_android.js";
 var plattform_name = "linux";
 var moduleNames = getModuleNames();
 global.addresses = {};
@@ -308,25 +312,72 @@ function hook_Android_Dynamic_Loader(module_library_mapping, is_base_hook) {
 function hook_native_Android_SSL_Libs(module_library_mapping, is_base_hook) {
     ssl_library_loader(plattform_name, module_library_mapping, moduleNames, "Android", is_base_hook);
 }
+function loadPatternsFromJSON(jsonContent) {
+    try {
+        let data = JSON.parse(jsonContent);
+        return data;
+    }
+    catch (error) {
+        devlog("[-] Error loading or parsing JSON pattern:  " + error);
+        return null;
+    }
+}
+// currently the support this only on Android systems
+function install_pattern_based_hooks() {
+    try {
+        let data = loadPatternsFromJSON(patterns);
+        if (data !== null && data.modules) {
+            for (const moduleName in data.modules) {
+                if (Object.prototype.hasOwnProperty.call(data.modules, moduleName)) {
+                    console.log("[*] Module name:", moduleName);
+                    module_library_mapping[plattform_name] = [
+                        [moduleName, invokeHookingFunction(pattern_execute)]
+                    ];
+                    hook_native_Android_SSL_Libs(module_library_mapping, true);
+                }
+            }
+        }
+    }
+    catch (e) {
+    }
+    //console.log("data: \n"+data);
+    /*
+    for (const moduleName in data.modules) {
+        /*if (Object.prototype.hasOwnProperty.call(data.modules, moduleName)) {
+          console.log("[*] Module name:", moduleName);
+        }
+      }*/
+    /*
+    const hooker = new PatternBasedHooking(cronetModule);
+    hooker.hook_DumpKeys(this.module_name,"libcronet.so",patterns,(args: any[]) => {
+              devlog("Installed ssl_log_secret() hooks using byte patterns.");
+              this.dumpKeys(args[1], args[0], args[2]);  // Unpack args into dumpKeys
+          });
+    */
+}
 export function load_android_hooking_agent() {
     module_library_mapping[plattform_name] = [
         [/.*libssl_sb.so/, invokeHookingFunction(boring_execute)],
         [/.*libssl\.so/, invokeHookingFunction(boring_execute)],
         [/libconscrypt_gmscore_jni.so/, invokeHookingFunction(conscrypt_native_execute)],
         [/ibconscrypt_jni.so/, invokeHookingFunction(conscrypt_native_execute)],
-        [/.*cronet.*\.so/, invokeHookingFunction(cronet_execute)],
-        [/.*monochrome.*\.so/, invokeHookingFunction(cronet_execute)],
         [/.*flutter.*\.so/, invokeHookingFunction(flutter_execute)],
         [/.*libgnutls\.so/, invokeHookingFunction(gnutls_execute)],
         [/.*libwolfssl\.so/, invokeHookingFunction(wolfssl_execute)],
         [/.*libnss[3-4]\.so/, invokeHookingFunction(nss_execute)],
         [/libmbedtls\.so.*/, invokeHookingFunction(mbedTLS_execute)],
         [/.*libs2n.so/, invokeHookingFunction(s2ntls_execute)],
-        [/.*mono-btls.*\.so/, invokeHookingFunction(mono_btls_execute)]
-    ];
+        [/.*mono-btls.*\.so/, invokeHookingFunction(mono_btls_execute)],
+        [/.*cronet.*\.so/, invokeHookingFunction(cronet_execute)],
+        [/.*monochrome.*\.so/, invokeHookingFunction(cronet_execute)]
+    ]; //,
+    //[/.*libwarp_mobile.*\.so/, invokeHookingFunction(cronet_execute)]];
     install_java_hooks();
     hook_native_Android_SSL_Libs(module_library_mapping, true);
     hook_Android_Dynamic_Loader(module_library_mapping, false);
+    if (isPatternReplaced()) {
+        install_pattern_based_hooks();
+    }
 }
 ✄
 {"version":3,"file":"android_java_tls_libs.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/android/android_java_tls_libs.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,GAAG,EAAE,MAAM,gBAAgB,CAAC;AACrC,OAAO,EAAE,OAAO,IAAI,cAAc,EAAE,MAAM,mBAAmB,CAAC;AAC9D,OAAO,EAAE,QAAQ,EAAE,MAAM,6BAA6B,CAAC;AAGvD,MAAM,OAAO,gBAAiB,SAAQ,QAAQ;IAG1C,0BAA0B;QACtB,IAAI,IAAI,CAAC,SAAS,EAAE;YAChB,UAAU,CAAC;gBAEP,IAAI,CAAC,OAAO,CAAC;oBAET,4BAA4B;oBAC5B,IAAI;wBACA,oFAAoF;wBACpF,IAAI,QAAQ,GAAG,IAAI,CAAC,GAAG,CAAC,oDAAoD,CAAC,CAAA;wBAC7E,GAAG,CAAC,qCAAqC,CAAC,CAAA;wBAC1C,cAAc,EAAE,CAAA;qBACnB;oBAAC,OAAO,KAAK,EAAE;wBACZ,2BAA2B;qBAC9B;gBACL,CAAC,CAAC,CAAC;YACP,CAAC,EAAE,CAAC,CAAC,CAAC;SACT;IACL,CAAC;IAGD,aAAa;QACT,IAAI,CAAC,0BAA0B,EAAE,CAAC;QAClC,IAAI,CAAC,kBAAkB,EAAE,CAAC;IAC9B,CAAC;CAEJ;AAGD,MAAM,UAAU,YAAY;IACxB,IAAI,QAAQ,GAAG,IAAI,gBAAgB,EAAE,CAAC;IACtC,QAAQ,CAAC,aAAa,EAAE,CAAC;AAC7B,CAAC"}
@@ -628,7 +679,7 @@ export function execute() {
     });
 }
 ✄
-{"version":3,"file":"cronet_android.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/android/cronet_android.ts"],"names":[],"mappings":"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"}
+{"version":3,"file":"cronet_android.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/android/cronet_android.ts"],"names":[],"mappings":"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"}
 ✄
 import { Cronet } from "../ssl_lib/cronet.js";
 import { socket_library } from "./android_agent.js";
@@ -666,24 +717,54 @@ export class Cronet_Android extends Cronet {
         if (isPatternReplaced()) {
             devlog("Hooking libcronet functions by patterns from JSON file");
             hooker.hook_DumpKeys(this.module_name, "libcronet.so", patterns, (args) => {
+                devlog("Installed ssl_log_secret() hooks using byte patterns.");
                 this.dumpKeys(args[1], args[0], args[2]); // Unpack args into dumpKeys
             });
         }
         else {
             // This are the default patterns for hooking ssl_log_secret in BoringSSL inside Cronet
             hooker.hookModuleByPattern(get_CPU_specific_pattern(this.default_pattern), (args) => {
+                devlog("Installed ssl_log_secret() hooks using byte patterns.");
                 this.dumpKeys(args[1], args[0], args[2]); // Hook args passed to dumpKeys
             });
         }
+        return hooker;
+    }
+    // instead of relying on pattern we check if the target module has a symbol of ssl_log_secret()
+    execute_symbol_based_hooking(hooker) {
+        // Capture the dumpKeys function with the correct 'this'
+        let dumpKeysFunc = this.dumpKeys.bind(this);
+        if (hooker.no_hooking_success) {
+            let symbols = Process.getModuleByName(this.module_name).enumerateSymbols().filter(exports => exports.name.toLowerCase().includes("ssl_log"));
+            if (symbols.length > 0) {
+                devlog("Installed ssl_log_secret() hooks using sybmols.");
+                try {
+                    Interceptor.attach(symbols[0].address, {
+                        onEnter: function (args) {
+                            dumpKeysFunc(args[1], args[0], args[2]);
+                        }
+                    });
+                }
+                catch (e) {
+                    // right now we ingore error's here
+                }
+            }
+        }
     }
     execute_hooks() {
-        this.install_key_extraction_hook();
+        // hooking ssl_log_secret() from BoringSSL
+        let hooker_instance = this.install_key_extraction_hook();
+        return hooker_instance;
     }
 }
 export function cronet_execute(moduleName, is_base_hook) {
-    var cronet = new Cronet_Android(moduleName, socket_library, is_base_hook);
+    let cronet = new Cronet_Android(moduleName, socket_library, is_base_hook);
     try {
-        cronet.execute_hooks();
+        let hooker = cronet.execute_hooks();
+        // wait 1 sec before we continue
+        setTimeout(function () {
+            cronet.execute_symbol_based_hooking(hooker);
+        }, 1000);
     }
     catch (error_msg) {
         devlog(`cronet_execute error: ${error_msg}`);
@@ -1108,6 +1189,88 @@ export function boring_execute(moduleName, is_base_hook) {
         }
         catch (error_msg) {
             devlog(`boring_execute base-hook error: ${error_msg}`);
+        }
+    }
+}
+✄
+{"version":3,"file":"pattern_android.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/android/pattern_android.ts"],"names":[],"mappings":"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"}
+✄
+import { Cronet } from "../ssl_lib/cronet.js";
+import { socket_library } from "./android_agent.js";
+import { PatternBasedHooking } from "../shared/pattern_based_hooking.js";
+import { patterns, isPatternReplaced } from "../ssl_log.js";
+import { devlog } from "../util/log.js";
+export class Pattern_Android extends Cronet {
+    constructor(moduleName, socket_library, is_base_hook) {
+        super(moduleName, socket_library, is_base_hook);
+        this.moduleName = moduleName;
+        this.socket_library = socket_library;
+    }
+    install_key_extraction_hook() {
+        if (isPatternReplaced) {
+            const patternModuleName = Process.findModuleByName(this.module_name);
+            const hooker = new PatternBasedHooking(patternModuleName);
+            hooker.hook_DumpKeys(this.module_name, this.module_name, patterns, (args) => {
+                devlog(`Installed ssl_log_secret() hooks using byte patterns for module ${this.module_name}`);
+                this.dumpKeys(args[1], args[0], args[2]); // Unpack args into dumpKeys
+            });
+            return hooker;
+        }
+        else {
+            return null;
+        }
+    }
+    // instead of relying on pattern we check if the target module has a symbol of ssl_log_secret()
+    execute_symbol_based_hooking(hooker) {
+        // Capture the dumpKeys function with the correct 'this'
+        let dumpKeysFunc = this.dumpKeys.bind(this);
+        if (hooker.no_hooking_success) {
+            let symbols = Process.getModuleByName(this.module_name).enumerateSymbols().filter(exports => exports.name.toLowerCase().includes("ssl_log"));
+            if (symbols.length > 0) {
+                devlog("Installed ssl_log_secret() hooks using sybmols.");
+                try {
+                    Interceptor.attach(symbols[0].address, {
+                        onEnter: function (args) {
+                            dumpKeysFunc(args[1], args[0], args[2]);
+                        }
+                    });
+                }
+                catch (e) {
+                    // right now we ingore error's here
+                }
+            }
+        }
+    }
+    execute_boring_ssl_log_secret_hooks() {
+        // hooking ssl_log_secret() from BoringSSL
+        let hooker_instance = this.install_key_extraction_hook();
+        return hooker_instance;
+    }
+}
+export function pattern_execute(moduleName, is_base_hook) {
+    let pattern_BoringSSL = new Pattern_Android(moduleName, socket_library, is_base_hook);
+    try {
+        let hooker = pattern_BoringSSL.execute_boring_ssl_log_secret_hooks();
+        if (hooker != null) {
+            // wait 1 sec before we continue
+            setTimeout(function () {
+                pattern_BoringSSL.execute_symbol_based_hooking(hooker);
+            }, 1000);
+        }
+    }
+    catch (error_msg) {
+        devlog(`pattern_execute error: ${error_msg}`);
+    }
+    if (is_base_hook) {
+        try {
+            const init_addresses = pattern_BoringSSL.addresses[moduleName];
+            // ensure that we only add it to global when we are not 
+            if (Object.keys(init_addresses).length > 0) {
+                global.init_addresses[moduleName] = init_addresses;
+            }
+        }
+        catch (error_msg) {
+            devlog(`pattern_execute base-hook error: ${error_msg}`);
         }
     }
 }
@@ -2366,7 +2529,7 @@ fuction get_socket_syscall(){
     // ARM64    [198,"socket",0xc6,["int","int","int"]],
 }*/ 
 ✄
-{"version":3,"file":"pattern_based_hooking.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/shared/pattern_based_hooking.ts"],"names":[],"mappings":"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"}
+{"version":3,"file":"pattern_based_hooking.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/shared/pattern_based_hooking.ts"],"names":[],"mappings":"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"}
 ✄
 import { devlog, devlog_error, log } from "../util/log.js";
 import { isAndroid, isiOS, isMacOS } from "../util/process_infos.js";
@@ -2389,6 +2552,7 @@ export class PatternBasedHooking {
         this.rescannedRanges = new Set(); // Set to keep track of memory ranges that have been rescanned
         this.found_ssl_log_secret = false;
         this.module = module;
+        this.no_hooking_success = true;
     }
     createRegexFromModule(moduleName) {
         // Match the base name and ensure it ends with .so
@@ -2412,6 +2576,7 @@ export class PatternBasedHooking {
         Memory.scan(moduleBase, moduleSize, pattern, {
             onMatch: (address) => {
                 this.found_ssl_log_secret = true;
+                this.no_hooking_success = false;
                 log(`Pattern found at (${pattern_name}) address: ${address}`);
                 log(`Pattern based hooks installed.`);
                 // Attach the hook using the provided onMatchCallback
@@ -2435,6 +2600,7 @@ export class PatternBasedHooking {
                             this.hookByPatternOnlyReadableParts(patterns, "fallback_pattern", onMatchCallback, (pattern_success_alt) => {
                                 if (!pattern_success_alt) {
                                     devlog("None of the patterns worked. You may need to adjust the patterns.");
+                                    this.no_hooking_success = true;
                                 }
                             });
                         }
@@ -2503,6 +2669,7 @@ export class PatternBasedHooking {
                 this.hookByPattern(patterns, "fallback_pattern", onMatchCallback, (pattern_success_alt) => {
                     if (!pattern_success_alt) {
                         devlog("None of the patterns worked. You may need to adjust the patterns.");
+                        this.no_hooking_success = true;
                     }
                 });
             }
@@ -2519,7 +2686,7 @@ export class PatternBasedHooking {
     }
     invoke_pattern_based_hooking(action, module_name, platform, arch, hookCallback) {
         var action_specific_patterns = this.get_action_specific_pattern(module_name, platform, arch, action);
-        devlog(`Using ${action} patterns for ${platform} and ${arch}`);
+        devlog(`Using ${action} patterns for ${platform} on ${arch}`);
         this.hookModuleByPattern(action_specific_patterns, hookCallback);
     }
     // Function to retrieve patterns based on the current CPU architecture and action
@@ -2961,7 +3128,7 @@ export const AddressFamilyMapping = {
     // Add other address families as needed
 };
 ✄
-{"version":3,"file":"cronet.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/ssl_lib/cronet.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,8BAA8B,EAAE,aAAa,EAAE,MAAM,+BAA+B,CAAC;AAC9F,OAAO,EAAE,MAAM,EAAE,MAAM,gBAAgB,CAAC;AAKxC,MAAM,OAAO,MAAM;IAUf,YAAmB,UAAiB,EAAS,cAAqB,EAAC,YAAqB,EAAS,6BAAgE;QAA9I,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;QAA+B,kCAA6B,GAA7B,6BAA6B,CAAmC;QAPjK,mBAAmB;QACnB,2BAAsB,GAAqC,EAAE,CAAC;QAO1D,IAAI,CAAC,WAAW,GAAG,UAAU,CAAC;QAC9B,IAAI,CAAC,YAAY,GAAG,YAAY,CAAC;QAEjC,IAAG,OAAO,6BAA6B,KAAK,WAAW,EAAC;YACpD,IAAI,CAAC,sBAAsB,GAAG,6BAA6B,CAAC;SAC/D;aAAI;YACD,IAAI,CAAC,sBAAsB,CAAC,IAAI,cAAc,GAAG,CAAC,GAAG,CAAC,aAAa,EAAE,aAAa,EAAE,OAAO,EAAE,OAAO,CAAC,CAAA;SACxG;QAED,IAAI,CAAC,SAAS,GAAG,aAAa,CAAC,UAAU,EAAC,IAAI,CAAC,sBAAsB,CAAC,CAAC;IAC3E,CAAC;IAED,iBAAiB,CAAC,MAAqB,EAAE,gBAAwB;QAC7D,IAAI,CAAC,MAAM,CAAC,MAAM,EAAE,EAAE;YAClB,MAAM,iBAAiB,GAAkB,MAAM,CAAC,GAAG,CAAC,IAAI,CAAC,CAAC,CAAC,sBAAsB;YACjF,YAAY;YACZ,MAAM,aAAa,GAAG,MAAM,CAAC,aAAa,CAAC,iBAAiB,EAAE,gBAAgB,CAAC,CAAC;YAEhF,yCAAyC;YACzC,MAAM,eAAe,GAAG,8BAA8B,CAAC,IAAI,UAAU,CAAC,aAA4B,CAAC,CAAC,CAAC;YAErG,OAAO,eAAe,CAAC;SAC1B;aAAM;YACH,MAAM,CAAC,4BAA4B,CAAC,CAAC;YACrC,OAAO,EAAE,CAAC;SACb;IACL,CAAC;IAED,iCAAiC,CAAC,UAAyB;QACvD,MAAM,gBAAgB,GAAG,EAAE,CAAC;QAC5B,IAAI,SAAiB,CAAC;QAEtB,QAAQ,OAAO,CAAC,IAAI,EAAE;YAClB,KAAK,KAAK;gBACN,SAAS,GAAG,IAAI,CAAC;gBACjB,MAAM;YACV,KAAK,OAAO;gBACR,SAAS,GAAG,IAAI,CAAC;gBACjB,MAAM;YACV,KAAK,MAAM;gBACP,SAAS,GAAG,IAAI,CAAC;gBACjB,MAAM;YACV,KAAK,KAAK;gBACN,SAAS,GAAG,IAAI,CAAC;gBACjB,MAAM;YACV;gBACI,MAAM,CAAC,kCAAkC,CAAC,CAAC;gBAC3C,OAAO,EAAE,CAAC;SACjB;QAED,MAAM,MAAM,GAAG,UAAU,CAAC,GAAG,CAAC,SAAS,CAAC,CAAC,WAAW,EAAE,CAAC;QACvD,OAAO,IAAI,CAAC,iBAAiB,CAAC,MAAM,EAAE,gBAAgB,CAAC,CAAC;IAC5D,CAAC;IAGD,QAAQ,CAAC,QAAuB,EAAE,YAA2B,EAAE,MAAqB;QAChF,MAAM,UAAU,GAAG,EAAE,CAAC,CAAC,kCAAkC;QAEzD,IAAI,QAAQ,GAAG,EAAE,CAAC;QAClB,IAAI,aAAa,GAAG,EAAE,CAAC;QACvB,IAAI,UAAU,GAAG,EAAE,CAAC;QAEpB,8DAA8D;QAC9D,IAAI,CAAC,QAAQ,CAAC,MAAM,EAAE,EAAE;YACpB,QAAQ,GAAG,QAAQ,CAAC,WAAW,EAAE,IAAI,EAAE,CAAC,CAAE,2BAA2B;YACrE,+BAA+B;SAClC;aAAM;YACH,MAAM,CAAC,qCAAqC,CAAC,CAAC;SACjD;QAED,+CAA+C;QAC/C,IAAI,CAAC,YAAY,CAAC,MAAM,EAAE,EAAE;YACxB,aAAa,GAAG,IAAI,CAAC,iCAAiC,CAAC,YAAY,CAAC,CAAA;SACvE;aAAK;YACF,MAAM,CAAC,yCAAyC,CAAC,CAAC;SACrD;QAED,IAAI,CAAC,MAAM,CAAC,MAAM,EAAE,EAAE;YAClB,YAAY;YACZ,MAAM,OAAO,GAAG,MAAM,CAAC,aAAa,CAAC,MAAM,EAAE,UAAU,CAAC,CAAC,CAAC,uCAAuC;YAEjG,oDAAoD;YACpD,MAAM,MAAM,GAAG,8BAA8B,CAAC,OAAO,CAAC,CAAC;YAEvD,UAAU,GAAG,MAAM,CAAC;SACvB;aAAM;YACH,MAAM,CAAC,gCAAgC,CAAC,CAAC;SAC5C;QAED,mFAAmF;QACnF,IAAI,OAAO,GAA8C,EAAE,CAAA;QAC3D,OAAO,CAAC,aAAa,CAAC,GAAG,QAAQ,CAAA;QACjC,OAAO,CAAC,QAAQ,CAAC,GAAG,QAAQ,GAAC,GAAG,GAAC,aAAa,GAAC,GAAG,GAAC,UAAU,CAAC;QAC9D,IAAI,CAAC,OAAO,CAAC,CAAA;IACjB,CAAC;IAED,2BAA2B;QACvB,MAAM;IACV,CAAC;IAED,4BAA4B;QACxB,MAAM;IACV,CAAC;IAED,2BAA2B;QACvB,+CAA+C;IACnD,CAAC;CACJ"}
+{"version":3,"file":"cronet.js","sourceRoot":"/Users/danielbaier/research/projects/github/issues/2024 fritap issues/friTap/","sources":["agent/ssl_lib/cronet.ts"],"names":[],"mappings":"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"}
 ✄
 import { get_hex_string_from_byte_array, readAddresses } from "../shared/shared_functions.js";
 import { devlog } from "../util/log.js";
@@ -3020,7 +3187,8 @@ export class Cronet {
         return this.get_client_random(s3_ptr, SSL3_RANDOM_SIZE);
     }
     dumpKeys(labelPtr, sslStructPtr, keyPtr) {
-        const KEY_LENGTH = 32; // Assuming key length is 32 bytes
+        const MAX_KEY_LENGTH = 64;
+        const RANDOM_KEY_LENGTH = 32;
         let labelStr = '';
         let client_random = '';
         let secret_key = '';
@@ -3040,6 +3208,30 @@ export class Cronet {
             devlog("[Error] Argument 'sslStructPtr' is NULL");
         }
         if (!keyPtr.isNull()) {
+            let KEY_LENGTH = 0;
+            let calculatedKeyLength = 0;
+            // Iterate through the memory to determine key length
+            while (calculatedKeyLength < MAX_KEY_LENGTH) {
+                //@ts-ignore
+                const byte = Memory.readU8(keyPtr.add(calculatedKeyLength)); // Read one byte at a time
+                if (byte === 0) { // Stop if null terminator is found (optional, adjust as needed)
+                    if (calculatedKeyLength < 20) {
+                        calculatedKeyLength++;
+                        continue;
+                    }
+                    break;
+                }
+                calculatedKeyLength++;
+            }
+            if (calculatedKeyLength > 24 && calculatedKeyLength <= 40) {
+                KEY_LENGTH = 32; // Closest match is 32 bytes
+            }
+            else if (calculatedKeyLength >= 46 && calculatedKeyLength <= 49) {
+                KEY_LENGTH = 48; // Closest match is 48 bytes
+            }
+            else {
+                KEY_LENGTH = 32; // fall back size
+            }
             //@ts-ignore
             const keyData = Memory.readByteArray(keyPtr, KEY_LENGTH); // Read the key data (KEY_LENGTH bytes)
             // Convert the byte array to a string of  hex values

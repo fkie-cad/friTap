@@ -1,6 +1,6 @@
 {
   "modules": {
-    "libcronet.so": {
+    "libwarp_mobile.so": {
       "android": {
         "x64": {
           "Dump-Keys": {

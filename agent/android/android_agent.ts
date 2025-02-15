@@ -12,6 +12,8 @@ import { conscrypt_native_execute } from "./conscrypt.js";
 import { flutter_execute } from "./flutter_android.js";
 import { s2ntls_execute } from "./s2ntls_android.js";
 import { mono_btls_execute } from "./mono_btls_android.js";
+import { patterns, isPatternReplaced } from "../ssl_log.js"
+import { pattern_execute } from "./pattern_android.js"
 
 var plattform_name = "linux";
 var moduleNames: Array<string> = getModuleNames();
@@ -74,6 +76,53 @@ function hook_native_Android_SSL_Libs(module_library_mapping: { [key: string]: A
 
 }
 
+function loadPatternsFromJSON(jsonContent: string): any {
+    try {
+        let data = JSON.parse(jsonContent);
+        return data;
+    } catch (error) {
+        devlog("[-] Error loading or parsing JSON pattern:  "+ error);
+        return null;
+    }
+}
+
+// currently the support this only on Android systems
+function install_pattern_based_hooks(){
+    try{
+        let data = loadPatternsFromJSON(patterns);
+        if (data !== null && data.modules) {
+            for (const moduleName in data.modules) {
+                if (Object.prototype.hasOwnProperty.call(data.modules, moduleName)) {
+                    console.log("[*] Module name:", moduleName);
+                    module_library_mapping[plattform_name] = [
+                        [moduleName, invokeHookingFunction(pattern_execute)]];
+                    
+                    hook_native_Android_SSL_Libs(module_library_mapping, true);
+                }
+            }
+        }
+
+    }catch(e){
+
+    }
+    
+    //console.log("data: \n"+data);
+    /*
+    for (const moduleName in data.modules) {
+        /*if (Object.prototype.hasOwnProperty.call(data.modules, moduleName)) {
+          console.log("[*] Module name:", moduleName);
+        }
+      }*/
+
+      /*
+      const hooker = new PatternBasedHooking(cronetModule);
+      hooker.hook_DumpKeys(this.module_name,"libcronet.so",patterns,(args: any[]) => {
+                devlog("Installed ssl_log_secret() hooks using byte patterns.");
+                this.dumpKeys(args[1], args[0], args[2]);  // Unpack args into dumpKeys
+            });
+      */
+}
+
 
 export function load_android_hooking_agent() {
     module_library_mapping[plattform_name] = [
@@ -81,17 +130,21 @@ export function load_android_hooking_agent() {
         [/.*libssl\.so/, invokeHookingFunction(boring_execute)],
         [/libconscrypt_gmscore_jni.so/, invokeHookingFunction(conscrypt_native_execute)], // inspired from https://github.com/PiRogueToolSuite/pirogue-cli/blob/debian-12/pirogue_cli/frida-scripts/log_ssl_keys.js#L55
         [/ibconscrypt_jni.so/, invokeHookingFunction(conscrypt_native_execute)],
-        [/.*cronet.*\.so/, invokeHookingFunction(cronet_execute)],
-        [/.*monochrome.*\.so/, invokeHookingFunction(cronet_execute)],
         [/.*flutter.*\.so/, invokeHookingFunction(flutter_execute)],
         [/.*libgnutls\.so/, invokeHookingFunction(gnutls_execute)],
         [/.*libwolfssl\.so/, invokeHookingFunction(wolfssl_execute)],
         [/.*libnss[3-4]\.so/,invokeHookingFunction(nss_execute)],
         [/libmbedtls\.so.*/, invokeHookingFunction(mbedTLS_execute)],
         [/.*libs2n.so/, invokeHookingFunction(s2ntls_execute)],
-        [/.*mono-btls.*\.so/, invokeHookingFunction(mono_btls_execute)]];
+        [/.*mono-btls.*\.so/, invokeHookingFunction(mono_btls_execute)],
+        [/.*cronet.*\.so/, invokeHookingFunction(cronet_execute)],
+        [/.*monochrome.*\.so/, invokeHookingFunction(cronet_execute)]];//,
+        //[/.*libwarp_mobile.*\.so/, invokeHookingFunction(cronet_execute)]];
 
     install_java_hooks();
     hook_native_Android_SSL_Libs(module_library_mapping, true);
     hook_Android_Dynamic_Loader(module_library_mapping, false);
+    if (isPatternReplaced()){
+        install_pattern_based_hooks();
+    }
 }
