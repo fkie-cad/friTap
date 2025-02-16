@@ -138,8 +138,8 @@ export function load_android_hooking_agent() {
         [/.*libs2n.so/, invokeHookingFunction(s2ntls_execute)],
         [/.*mono-btls.*\.so/, invokeHookingFunction(mono_btls_execute)],
         [/.*cronet.*\.so/, invokeHookingFunction(cronet_execute)],
-        [/.*monochrome.*\.so/, invokeHookingFunction(cronet_execute)]];//,
-        //[/.*libwarp_mobile.*\.so/, invokeHookingFunction(cronet_execute)]];
+        [/.*monochrome.*\.so/, invokeHookingFunction(cronet_execute)],
+        [/.*libwarp_mobile.*\.so/, invokeHookingFunction(cronet_execute)]]; // here the client_random is not working
 
     install_java_hooks();
     hook_native_Android_SSL_Libs(module_library_mapping, true);

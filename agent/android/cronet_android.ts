@@ -67,6 +67,10 @@ export class Cronet_Android extends Cronet {
         // Capture the dumpKeys function with the correct 'this'
         let dumpKeysFunc = this.dumpKeys.bind(this);
 
+        if(this.module_name.includes("libwarp_mobile")){
+            console.log("[!] The extracted CLIENT_RANDOM from libwarp_mobile.so is currently not working correctly.");
+        }
+
         if(hooker.no_hooking_success){
             let symbols = Process.getModuleByName(this.module_name).enumerateSymbols().filter(exports => exports.name.toLowerCase().includes("ssl_log"));
             if(symbols.length > 0){
