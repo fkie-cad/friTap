@@ -20,7 +20,8 @@ export class Pattern_Android extends Cronet {
             hooker.hook_DumpKeys(this.module_name,this.module_name,patterns,(args: any[]) => {
                 devlog(`Installed ssl_log_secret() hooks using byte patterns for module ${this.module_name}`);
                 this.dumpKeys(args[1], args[0], args[2]);  // Unpack args into dumpKeys
-            });
+            }, 
+            null);
 
             return hooker;
         }else{

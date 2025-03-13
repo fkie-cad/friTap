@@ -55,6 +55,7 @@ export class PatternBasedHooking {
         patterns: { primary: string; fallback: string },
         pattern_name: string,
         onMatchCallback: (args: any[]) => void,
+        onLeaveCallback: (retval: any) => void,
         onCompleteCallback: (found: boolean) => void
     ): void {
         const moduleBase = this.module.base;
@@ -82,6 +83,9 @@ export class PatternBasedHooking {
                     },
                     onLeave: function (retval) {
                         // Optionally handle return value or additional behavior
+                        if (onLeaveCallback !== null) {
+                            onLeaveCallback(retval);
+                        }
                     }
                 });
             },
@@ -89,11 +93,11 @@ export class PatternBasedHooking {
                 if(!this.found_ssl_log_secret){
                     devlog_error('There was an error scanning memory: '+reason);
                     devlog_error('Trying to rescan memory with permissions in mind');
-                    this.hookByPatternOnlyReadableParts(patterns, pattern_name, onMatchCallback,(pattern_success) => {
+                    this.hookByPatternOnlyReadableParts(patterns, pattern_name, onMatchCallback, onLeaveCallback,(pattern_success) => {
                         // If the primary pattern doesn't work, try the fallback pattern
                         if (!pattern_success) {
                             devlog("Primary pattern failed, trying fallback pattern...");
-                            this.hookByPatternOnlyReadableParts(patterns, "fallback_pattern", onMatchCallback, (pattern_success_alt) => {
+                            this.hookByPatternOnlyReadableParts(patterns, "fallback_pattern", onMatchCallback, onLeaveCallback, (pattern_success_alt) => {
                                 if (!pattern_success_alt) {
                                     devlog("None of the patterns worked. You may need to adjust the patterns.");
                                     this.no_hooking_success = true;
@@ -115,6 +119,7 @@ export class PatternBasedHooking {
         patterns: { primary: string; fallback: string },
         pattern_name: string,
         onMatchCallback: (args: any[]) => void,
+        onLeaveCallback: (retval: any) => void,
         onCompleteCallback: (found: boolean) => void
     ): void {
         devlog(`trying to scan only readable parts of ${this.module.name} ...`);
@@ -147,6 +152,9 @@ export class PatternBasedHooking {
                         },
                         onLeave: function (retval) {
                             // Optionally handle return value or additional behavior
+                            if (onLeaveCallback !== null) {
+                                onLeaveCallback(retval);
+                            }
                         }
                     });
                 },
@@ -168,7 +176,8 @@ export class PatternBasedHooking {
     // Method to hook the module with patterns provided as arguments
     hookModuleByPattern(
         patterns: { primary: string; fallback: string },
-        onMatchCallback: (args: any[]) => void
+        onMatchCallback: (args: any[]) => void,
+        onLeaveCallback: (retval: any) => void
     ): void {
         const moduleBase = this.module.base;
         const moduleSize = this.module.size;
@@ -176,11 +185,11 @@ export class PatternBasedHooking {
         devlog(`Module Size: ${moduleSize}`);
 
         // Start by hooking using the primary pattern
-        this.hookByPattern(patterns, "primary_pattern", onMatchCallback, (pattern_success) => {
+        this.hookByPattern(patterns, "primary_pattern", onMatchCallback, onLeaveCallback, (pattern_success) => {
             // If the primary pattern doesn't work, try the fallback pattern
             if (!pattern_success) {
                 devlog("Primary pattern failed, trying fallback pattern...");
-                this.hookByPattern(patterns, "fallback_pattern", onMatchCallback, (pattern_success_alt) => {
+                this.hookByPattern(patterns, "fallback_pattern", onMatchCallback, onLeaveCallback, (pattern_success_alt) => {
                     if (!pattern_success_alt) {
                         devlog("None of the patterns worked. You may need to adjust the patterns.");
                         this.no_hooking_success = true;
@@ -201,11 +210,11 @@ export class PatternBasedHooking {
         }
     }
 
-    private invoke_pattern_based_hooking(action: keyof ActionPatterns, module_name: string, platform: string, arch: string, hookCallback: (args: any[]) => void){
+    private invoke_pattern_based_hooking(action: keyof ActionPatterns, module_name: string, platform: string, arch: string, hookCallback: (args: any[]) => void, hookLeaveCallback: (retval: any) => void){
         var action_specific_patterns = this.get_action_specific_pattern(module_name, platform, arch,action);
 
         devlog(`Using ${action} patterns for ${platform} on ${arch}`);
-        this.hookModuleByPattern(action_specific_patterns, hookCallback);
+        this.hookModuleByPattern(action_specific_patterns, hookCallback, hookLeaveCallback);
     }
 
      // Function to retrieve patterns based on the current CPU architecture and action
@@ -219,22 +228,22 @@ export class PatternBasedHooking {
     }
 
 
-    public hook_DumpKeys(module_name: string, json_module_name: string, jsonContent: string, hookCallback: (args: any[]) => void): void {
-        this.hook_with_pattern_from_json("Dump-Keys",module_name, json_module_name, jsonContent, hookCallback);
+    public hook_DumpKeys(module_name: string, json_module_name: string, jsonContent: string, hookCallback: (args: any[]) => void, hookLeaveCallback: (retval: any) => void): void {
+        this.hook_with_pattern_from_json("Dump-Keys",module_name, json_module_name, jsonContent, hookCallback, hookLeaveCallback);
     }
 
-    public hook_tls_keylog_callback(module_name: string, json_module_name: string, jsonContent: string, hookCallback: (args: any[]) => void): void {
-        this.hook_with_pattern_from_json("KeyLogCallback-Function",module_name, json_module_name, jsonContent, hookCallback);
-        this.hook_with_pattern_from_json("Install-Key-Log-Callback",module_name, json_module_name, jsonContent, hookCallback);
+    public hook_tls_keylog_callback(module_name: string, json_module_name: string, jsonContent: string, hookCallback: (args: any[]) => void, hookLeaveCallback: (retval: any) => void): void {
+        this.hook_with_pattern_from_json("KeyLogCallback-Function",module_name, json_module_name, jsonContent, hookCallback, hookLeaveCallback);
+        this.hook_with_pattern_from_json("Install-Key-Log-Callback",module_name, json_module_name, jsonContent, hookCallback, hookLeaveCallback);
     }
 
-    public hook_ssl_read_and_write(module_name: string, json_module_name: string, jsonContent: string, hookCallback: (args: any[]) => void): void {
-        this.hook_with_pattern_from_json("SSL_Read",module_name, json_module_name, jsonContent, hookCallback);
-        this.hook_with_pattern_from_json("SSL_Write",module_name, json_module_name, jsonContent, hookCallback);
+    public hook_ssl_read_and_write(module_name: string, json_module_name: string, jsonContent: string, hookCallback: (args: any[]) => void, hookLeaveCallback: (retval: any) => void): void {
+        this.hook_with_pattern_from_json("SSL_Read",module_name, json_module_name, jsonContent, hookCallback, hookLeaveCallback);
+        this.hook_with_pattern_from_json("SSL_Write",module_name, json_module_name, jsonContent, hookCallback, hookLeaveCallback);
     }
 
     // Method to hook functions using patterns from JSON
-    private hook_with_pattern_from_json(action_type:keyof ActionPatterns, module_name: string, json_module_name: string, jsonContent: string, hookCallback: (args: any[]) => void): void {
+    private hook_with_pattern_from_json(action_type:keyof ActionPatterns, module_name: string, json_module_name: string, jsonContent: string, hookCallback: (args: any[]) => void, hookLeaveCallback: (retval: any) => void): void {
         // Load patterns from the JSON file
         this.loadPatternsFromJSON(jsonContent);
 
@@ -256,16 +265,16 @@ export class PatternBasedHooking {
         if (this.patterns.modules[module_name] && 
             this.patterns.modules[module_name][platform] && 
             this.patterns.modules[module_name][platform][arch]) {
-                this.invoke_pattern_based_hooking(action_type, module_name, platform, arch, hookCallback);
+                this.invoke_pattern_based_hooking(action_type, module_name, platform, arch, hookCallback, hookLeaveCallback);
         }else if (this.patterns.modules[json_module_name] && 
             this.patterns.modules[json_module_name][platform] && 
             this.patterns.modules[json_module_name][platform][arch]) {
-                this.invoke_pattern_based_hooking(action_type, json_module_name, platform, arch, hookCallback);
+                this.invoke_pattern_based_hooking(action_type, json_module_name, platform, arch, hookCallback, hookLeaveCallback);
         }else {
             for (const jsonModuleName in this.patterns.modules) {
                 if (regex.test(module_name)) {
                     if (this.patterns.modules[jsonModuleName][platform] && this.patterns.modules[jsonModuleName][platform][arch]) {
-                        this.invoke_pattern_based_hooking(action_type, jsonModuleName, platform, arch, hookCallback);   
+                        this.invoke_pattern_based_hooking(action_type, jsonModuleName, platform, arch, hookCallback, hookLeaveCallback);   
                     }
                 }else{
                     devlog("[-] No patterns available for the current platform or architecture.");

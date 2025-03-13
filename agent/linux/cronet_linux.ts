@@ -19,7 +19,8 @@ export class Cronet_Linux extends Cronet {
             devlog("Hooking libcronet functions by pattern");
             hooker.hook_DumpKeys(this.module_name,"libcronet.so",patterns,(args: any[]) => {
                 this.dumpKeys(args[1], args[0], args[2]);  // Unpack args into dumpKeys
-            });
+            }, 
+            null);
         }
 
         

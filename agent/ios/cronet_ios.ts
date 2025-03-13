@@ -27,14 +27,16 @@ export class Cronet_iOS extends Cronet {
             devlog("Hooking Cronet functions by pattern\nThis is still untested and might fail");
             hooker.hook_DumpKeys(this.module_name,"Cronet",patterns,(args: any[]) => {
                 this.dumpKeys(args[1], args[0], args[2]);  // Unpack args into dumpKeys
-            });
+            }, 
+            null);
         }else{
             // This are the default patterns for hooking ssl_log_secret in BoringSSL inside Cronet
             hooker.hookModuleByPattern(
                 get_CPU_specific_pattern(this.default_pattern),
                 (args) => {
                     this.dumpKeys(args[1], args[0], args[2]);  // Hook args passed to dumpKeys
-                }
+                },
+                null
             );
         }
 

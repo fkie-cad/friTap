@@ -46,7 +46,8 @@ export class Cronet_Android extends Cronet {
             hooker.hook_DumpKeys(this.module_name,"libcronet.so",patterns,(args: any[]) => {
                 devlog("Installed ssl_log_secret() hooks using byte patterns.");
                 this.dumpKeys(args[1], args[0], args[2]);  // Unpack args into dumpKeys
-            });
+            }, 
+            null);
         }else{
             // This are the default patterns for hooking ssl_log_secret in BoringSSL inside Cronet
             hooker.hookModuleByPattern(
@@ -54,7 +55,8 @@ export class Cronet_Android extends Cronet {
                 (args) => {
                     devlog("Installed ssl_log_secret() hooks using byte patterns.");
                     this.dumpKeys(args[1], args[0], args[2]);  // Hook args passed to dumpKeys
-                }
+                },
+                null
             );
         }
 
