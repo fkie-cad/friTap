@@ -68,7 +68,6 @@ export class PatternBasedHooking {
         }else{
             pattern = patterns.fallback;
         }
-
         Memory.scan(moduleBase, moduleSize, pattern, {
             onMatch: (address) => {
                 this.found_ssl_log_secret = true;
