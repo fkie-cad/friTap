@@ -1,0 +1,202 @@
+import { get_hex_string_from_byte_array, readAddresses, checkNumberOfExports } from "../shared/shared_functions.js";
+import { devlog } from "../util/log.js";
+
+
+
+
+export class RusTLS {
+    
+
+    // global variables
+    library_method_mapping: { [key: string]: Array<string> } = {};
+    addresses: { [libraryName: string]: { [functionName: string]: NativePointer } };
+    module_name: string;
+    is_base_hook: boolean;
+
+
+    constructor(public moduleName:string, public socket_library:String,is_base_hook: boolean ,public passed_library_method_mapping?: { [key: string]: Array<string> } ){
+        this.module_name = moduleName;
+        this.is_base_hook = is_base_hook;
+
+        if(typeof passed_library_method_mapping !== 'undefined'){
+            this.library_method_mapping = passed_library_method_mapping;
+        }else{
+            if(checkNumberOfExports(moduleName) > 2 ){
+                try {
+                    this.library_method_mapping[`*${moduleName}*`] = ["*derive_logged_secret*", "*for_secret*"]
+                }catch(e){
+                    // right now do nothing
+                }
+            }
+            this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
+        }
+
+        this.addresses = readAddresses(moduleName,this.library_method_mapping);
+    }
+
+
+    /*
+    In Rustls the labels are mapped as enums
+    cf. https://github.com/rustls/rustls/blob/5860d10317528e4f162db6e26c74f81575c51403/rustls/src/tls13/key_schedule.rs#L31
+    */
+    private static enumMapping: { [key: number]: string } = {
+        0: "RESUMPTION_PSK_BINDER_KEY",         // ResumptionPskBinderKey
+        1: "CLIENT_EARLY_TRAFFIC_SECRET",        // ClientEarlyTrafficSecret
+        2: "CLIENT_HANDSHAKE_TRAFFIC_SECRET",    // ClientHandshakeTrafficSecret
+        3: "SERVER_HANDSHAKE_TRAFFIC_SECRET",    // ServerHandshakeTrafficSecret
+        4: "CLIENT_TRAFFIC_SECRET_0",            // ClientApplicationTrafficSecret
+        5: "SERVER_TRAFFIC_SECRET_0",            // ServerApplicationTrafficSecret
+        6: "EXPORTER_SECRET",                    // ExporterMasterSecret
+        7: "RESUMPTION_MASTER_SECRET",           // ResumptionMasterSecret
+        8: "DERIVED"                           // Derived
+    };
+    
+    public static getEnumString(enumValue: number): string | null {
+        return this.enumMapping[enumValue] || null;
+    }
+
+    // Checks if the pointer's C-string starts with "key expansion" - only used for TLS 1.2 traffic
+    public static isArgKeyExp(ptr: NativePointer): boolean {
+        let labelStr = "";
+        try {
+        if (!ptr.isNull()) {
+            const label: string = ptr.readCString() as string;
+            labelStr = label;
+            if (labelStr === null) {
+            return false;
+            } else {
+            return labelStr.startsWith("key expansion");
+            }
+        }
+        } catch (error) {
+            devlog("[!] Error reading pointer in isArgKeyExp (RusTLS):"+ (error as Error).message);
+            return false;
+        }
+            return false;
+    }
+
+
+
+    /*
+     Hooking derive_logged_secret to get secrets from TLS 1.3 traffic
+    */
+    public static dumpKeysFromDeriveSecrets(
+        client_random_ptr: NativePointer,
+        key: NativePointer,
+        key_len: number,
+        label_enum: number
+      ): boolean {
+        let KEY_LENGTH = 32; // Default to 32 bytes.
+        if (key_len > 16) {
+          KEY_LENGTH = key_len;
+        }
+        let labelStr = "";
+        let client_random = "";
+        let secret_key = "";
+        const RANDOM_KEY_LENGTH = 32;
+    
+        // Retrieve the descriptive label from the enum mapping.
+        labelStr = this.getEnumString(label_enum) || "";
+    
+        if (!client_random_ptr.isNull()) {
+            //@ts-ignore
+            const randomData = Memory.readByteArray(client_random_ptr, RANDOM_KEY_LENGTH);
+            if (randomData) {
+                client_random = Array
+                .from(new Uint8Array(randomData))
+                .map(byte => byte.toString(16).padStart(2, '0').toUpperCase())
+                .join('');
+            }
+        } else {
+          devlog("[Error] Argument 'client_random_ptr' is NULL");
+        }
+    
+        if (!key.isNull()) {
+            //@ts-ignore
+            const keyData = Memory.readByteArray(key, KEY_LENGTH);
+            if (keyData) {
+                secret_key = Array
+                .from(new Uint8Array(keyData))
+                .map(byte => byte.toString(16).padStart(2, '0').toUpperCase())
+                .join('');
+            }
+        } else {
+            devlog("[Error] Argument 'key' is NULL");
+        }
+    
+        //devlog(`${labelStr} ${client_random} ${secret_key}`);
+        //devlog("invoking derive_logged_secret (_ZN6rustls5tls1312key_schedule11KeySchedule20derive_logged_secret17he2c0a8a2fdd12a9eE) from RusTLS");
+        var message: { [key: string]: string | number | null } = {}
+        message["contentType"] = "keylog"
+        message["keylog"] = labelStr+" "+client_random+" "+secret_key;
+        send(message)
+        return true;
+    }
+
+    /*
+     Hooking derive_logged_secret to get secrets from TLS 1.3 traffic
+    */
+    public static dumpKeysFromPRF(
+        client_random_ptr: NativePointer,
+        key: NativePointer
+      ): boolean {
+        const KEY_LENGTH = 32; // Adjust as needed.
+        const MASTER_SECRET_LEN = 48;
+        const labelStr = "CLIENT_RANDOM";
+        let client_random = "";
+        let secret_key = "";
+    
+        if (!key.isNull()) {
+            //@ts-ignore
+            const keyData = Memory.readByteArray(key, MASTER_SECRET_LEN);
+            if (keyData) {
+                secret_key = Array
+                .from(new Uint8Array(keyData))
+                .map(byte => byte.toString(16).padStart(2, '0').toUpperCase())
+                .join('');
+            }
+        } else {
+          devlog("[!] Argument 'key' is NULL");
+        }
+    
+        if (!client_random_ptr.isNull()) {
+            //@ts-ignore
+            const keyData = Memory.readByteArray(client_random_ptr.add(0x20), KEY_LENGTH);
+            if (keyData) {
+                client_random = Array
+                .from(new Uint8Array(keyData))
+                .map(byte => byte.toString(16).padStart(2, '0').toUpperCase())
+                .join('');
+            }
+        } else {
+          devlog("[!] Argument 'client_random_ptr' is NULL");
+        }
+    
+
+        //devlog(`${labelStr} ${client_random} ${secret_key}`);
+        //devlog("invoking derive_logged_secret (_ZN6rustls5tls1312key_schedule11KeySchedule20derive_logged_secret17he2c0a8a2fdd12a9eE) from RusTLS");
+        var message: { [key: string]: string | number | null } = {}
+        message["contentType"] = "keylog"
+        message["keylog"] = labelStr+" "+client_random+" "+secret_key;
+        send(message)
+        return true;
+    }
+
+
+    hook_tls_12_key_generation_function(){
+
+    }
+
+
+    install_plaintext_read_hook(){
+        // TBD
+    }
+
+    install_plaintext_write_hook(){
+        // TBD
+    }
+
+    install_key_extraction_hook(){
+        // needs to be setup for the specific plattform
+    }
+}
