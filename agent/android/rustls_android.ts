@@ -1,11 +1,161 @@
 import { socket_library } from "./android_agent.js";
 import { RusTLS } from "../ssl_lib/rustls.js";
 import { log, devlog } from "../util/log.js"
+import { hasMoreThanFiveExports } from "../shared/shared_functions.js";
+import { PatternBasedHooking, get_CPU_specific_pattern } from "../shared/pattern_based_hooking.js";
+import { patterns, isPatternReplaced} from "../ssl_log.js"
 
 export class Rustls_Android extends RusTLS {
+    private default_pattern: { [arch: string]: { primary: string, fallback:string } };
+    private default_pattern_ex: { [arch: string]: { primary: string, fallback:string } };
 
     constructor(public moduleName: string, public socket_library: String, is_base_hook: boolean) {
         super(moduleName, socket_library, is_base_hook);
+
+        /*
+        used for the librustls_android_13.so and its variants
+        */
+
+        this.default_pattern = {
+            "x64": {
+                primary:  "41 57 41 56 41 55 41 54 53 48 83 EC ?? 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84", // Primary pattern
+                fallback: "55 41 57 41 56 41 54 53 48 83 EC 30 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84" // Fallback pattern
+            },
+            "x86": {
+                primary: "55 53 57 56 83 EC 4C E8 00 00 00 00 5B 81 C3 A9 CB 13 00 8B 44 24 60 8B 40 34", // Primary pattern
+                fallback: "55 53 57 56 83 EC 4C E8 00 00 00 00 5B 81 C3 A9 CB 13 00 8B 44 24 60" // Fallback pattern
+            },
+            "arm64": {
+                primary: "FF 83 04 D1 FD 7B 0C A9 FC 6F 0D A9 FA 67 0E A9 F8 5F 0F A9 F6 57 10 A9 F4 4F 11 A9 F6 03 03 2A E8 0B 00 90 08 21 15 91 C9 1E 40 92 1F 20 03 D5 EA 5B 8A 10 1C 79 69 F8 48 14 40 F9 FB 93 40 F9 5D 79 69 F8 F3 03 00 AA E0 03 01 AA F4 03 07 AA F5 03 06 AA F8 03 05 AA F9 03 04 AA FA 03 02 AA F7 03 01 AA 00 01 3F D6", // Primary pattern
+                fallback: "FF 83 04 D1 FD 7B 0C A9 FC 6F 0D A9 FA 67 0E A9 F8 5F 0F A9 F6 57 10 A9 F4 4F 11 A9 F6 03 03 2A E8 0B 00 90 08 21 15 91 C9 1E 40 92 1F 20 03 D5 EA 5B 8A 10 1C 79 69 F8 48 14 40 F9 FB 93 40 F9 5D 79 69 F8 F3 03 00 AA E0 03 01 AA F4 03 07 AA F5 03 06 AA F8 03 05 AA F9"  // Fallback pattern
+            },  
+
+            "arm": {
+                primary: "2D E9 F0 43 89 B0 04 46 40 6B D0 F8 2C 01 00 28 49 D0", // Primary pattern
+                fallback: "2D E9 F0 41 86 B0 04 46 40 6B D0 F8 30 01 00 28 53 D0"  // Fallback pattern
+            }
+        };
+
+         /*
+        used for the librustls_android_13_ex.so and its variants
+        */
+
+        this.default_pattern_ex = {
+            "x64": {
+                primary:  "41 57 41 56 41 55 41 54 53 48 83 EC ?? 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84", // Primary pattern
+                fallback: "55 41 57 41 56 41 54 53 48 83 EC 30 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84" // Fallback pattern
+            },
+            "x86": {
+                primary: "55 53 57 56 83 EC 4C E8 00 00 00 00 5B 81 C3 A9 CB 13 00 8B 44 24 60 8B 40 34", // Primary pattern
+                fallback: "55 53 57 56 83 EC 4C E8 00 00 00 00 5B 81 C3 A9 CB 13 00 8B 44 24 60" // Fallback pattern
+            },
+            "arm64": {
+                primary: "FF 83 04 D1 FD 7B 0C A9 FC 6F 0D A9 FA 67 0E A9 F8 5F 0F A9 F6 57 10 A9 F4 4F 11 A9 F6 03 03 2A A8 0C 00 90 08 41 0E 91 C9 1E 40 92 1F 20 03 D5 EA F7 8D 10 1C 79 69 F8 48 14 40 F9 FB 93 40 F9 5D 79 69 F8 F3 03 00 AA E0 03 01 AA F4 03 07 AA F5 03 06 AA F8 03 05 AA F9 03 04 AA FA 03 02 AA F7 03 01 AA 00 01 3F D6", // Primary pattern
+                fallback: "FF 83 04 D1 FD 7B 0C A9 FC 6F 0D A9 FA 67 0E A9 F8 5F 0F A9 F6 57 10 A9 F4 4F 11 A9 F6 03 03 2A A8 0C 00 90 08 41 0E 91 C9 1E 40 92 1F 20 03 D5 EA F7 8D 10 1C 79 69 F8 48 14 40 F9 FB 93 40 F9 5D 79 69 F8 F3 03 00 AA E0 03 01 AA F4 03 07"  // Fallback pattern
+            },  
+
+            "arm": {
+                primary: "2D E9 F0 43 89 B0 04 46 40 6B D0 F8 2C 01 00 28 49 D0", // Primary pattern
+                fallback: "2D E9 F0 41 86 B0 04 46 40 6B D0 F8 30 01 00 28 53 D0"  // Fallback pattern
+            }
+        };
+    
+    }
+
+
+    execute_pattern_hooks(){
+        this.install_key_extraction_hook();
+
+    }
+
+    install_key_extraction_hook(){
+        this.install_key_extraction_hook_tls13();
+    }
+
+
+    install_key_extraction_hook_tls13(){
+        const rusTLSModule = Process.findModuleByName(this.module_name);
+        const hooker = new PatternBasedHooking(rusTLSModule);
+
+        const isEx = this.module_name.includes("_ex");
+        const isX64 = Process.arch === "x64";
+
+        // this code is currently only addressing the TLS 13
+        if(this.module_name.includes("12")){
+            return;
+        }
+
+
+
+        const doDumpKeysLogic = (args: any[], retval: NativePointer | undefined) => {
+            // Decide offsets for client_random_ptr, key, key_len, label_enum
+            let client_random_ptr: NativePointer;
+            let key: NativePointer;
+            let key_len: number;
+            let label_enum: number;
+    
+            // Architecture differences needs probably further adjusments for ARM and x86
+            // x64:
+            if (Process.arch === "x64") {
+                client_random_ptr = args[7];
+                key               = args[0];
+                key_len           = args[4].toInt32();
+                label_enum        = args[2].toInt32();
+            } else {
+                // aarch64
+                client_random_ptr = args[9];
+                key               = args[0];
+                key_len           = args[5].toInt32();
+                label_enum        = args[3].toInt32();
+            }
+    
+            this.dumpKeysFromDeriveSecrets(client_random_ptr, key, key_len, label_enum);
+        };
+
+        // Wrapper 1: for the "normal" pattern. Only proceed if retval is null.
+        const normalPatternCallback = (args: any[], retval?: NativePointer) => {
+            if (!retval) return;          // In case hooking is onEnter, ignore
+            if (retval.isNull()) {
+                //devlog("[normal pattern] hooking triggered, retval is null. Doing work.");
+                doDumpKeysLogic(args, retval);
+            } else {
+                //
+            }
+        };
+
+        // Wrapper 2: for the "ex" pattern. Only proceed if retval is not null.
+        const exPatternCallback = (args: any[], retval?: NativePointer) => {
+            if (!retval) return;          // In case hooking is onEnter, ignore
+            if (!retval.isNull()) {
+                //devlog("[ex pattern] hooking triggered, retval != null. Doing work.");
+                doDumpKeysLogic(args, retval);
+            } else {
+                //
+            }
+        };
+
+        // Decide whether to hook from JSON patterns or from built-in patterns ( “_ex” vs. normal) 
+        if (isPatternReplaced()) {
+            devlog(`[Hooking with JSON patterns onReturn] isEx = ${isEx}`);
+            hooker.hook_DumpKeys(
+                this.module_name,
+                // Pick the JSON module name based on whether it’s “ex”
+                isEx ? "librustls_ex.so" : "librustls.so",
+                patterns, 
+                isEx ? exPatternCallback : normalPatternCallback,
+                true, // onReturn so we get retval
+                isX64 ? 7 : 9
+            );
+        } else {
+            devlog(`[Hooking with built-in fallback patterns onReturn] isEx = ${isEx}`);
+            hooker.hookModuleByPatternOnReturn(
+                // Pick the default pattern based on whether it’s “ex”
+                get_CPU_specific_pattern(isEx ? this.default_pattern_ex : this.default_pattern),
+                isEx ? exPatternCallback : normalPatternCallback,
+                isX64 ? 7 : 9
+            );
+        }
+        
     }
 
     execute_hooks() {
@@ -108,11 +258,18 @@ export class Rustls_Android extends RusTLS {
 }
 
 export function rustls_execute(moduleName: string, is_base_hook: boolean) {
-    var rus_tls = new Rustls_Android(moduleName, socket_library, is_base_hook);
-    rus_tls.execute_hooks();
+    var rusTLS = new Rustls_Android(moduleName, socket_library, is_base_hook);
+    if(hasMoreThanFiveExports(moduleName)){
+        devlog("Trying to hook RusTLS using symbols...");
+        rusTLS.execute_hooks();
+    }else{
+        devlog("Trying to hook RusTLS using patterns...");
+        rusTLS.execute_pattern_hooks();
+    }
+    
 
     if (is_base_hook) {
-        const init_addresses = rus_tls.addresses[moduleName];
+        const init_addresses = rusTLS.addresses[moduleName];
         if (Object.keys(init_addresses).length > 0) {
             (global as any).init_addresses[moduleName] = init_addresses;
         }

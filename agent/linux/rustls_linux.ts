@@ -1,11 +1,99 @@
 import { socket_library } from "./linux_agent.js";
 import { RusTLS } from "../ssl_lib/rustls.js";
 import { log, devlog } from "../util/log.js"
+import { hasMoreThanFiveExports } from "../shared/shared_functions.js";
+import { PatternBasedHooking, get_CPU_specific_pattern } from "../shared/pattern_based_hooking.js";
+import { patterns, isPatternReplaced} from "../ssl_log.js"
 
 export class Rustls_Linux extends RusTLS {
+    private default_pattern: { [arch: string]: { primary: string, fallback:string } };
+    private default_pattern_ex: { [arch: string]: { primary: string, fallback:string } };
 
     constructor(public moduleName: string, public socket_library: String, is_base_hook: boolean) {
         super(moduleName, socket_library, is_base_hook);
+    }
+
+    execute_pattern_hooks(){
+        this.install_key_extraction_hook();
+
+    }
+
+    install_key_extraction_hook(){
+        const rusTLSModule = Process.findModuleByName(this.module_name);
+        const hooker = new PatternBasedHooking(rusTLSModule);
+
+        const isEx = this.module_name.includes("_ex");
+        const isX64 = Process.arch === "x64";
+
+        const doDumpKeysLogic = (args: any[], retval: NativePointer | undefined) => {
+            // Decide offsets for client_random_ptr, key, key_len, label_enum
+            let client_random_ptr: NativePointer;
+            let key: NativePointer;
+            let key_len: number;
+            let label_enum: number;
+    
+            // Architecture differences needs probably further adjusments for ARM and x86
+            // x64:
+            if (Process.arch === "x64") {
+                client_random_ptr = args[7];
+                key               = args[0];
+                key_len           = args[4].toInt32();
+                label_enum        = args[2].toInt32();
+            } else {
+                // aarch64
+                client_random_ptr = args[9];
+                key               = args[0];
+                key_len           = args[5].toInt32();
+                label_enum        = args[3].toInt32();
+            }
+    
+            this.dumpKeysFromDeriveSecrets(client_random_ptr, key, key_len, label_enum);
+        };
+
+        // Wrapper 1: for the "normal" pattern. Only proceed if retval is null.
+        const normalPatternCallback = (args: any[], retval?: NativePointer) => {
+            if (!retval) return;          // In case hooking is onEnter, ignore
+            if (retval.isNull()) {
+                //devlog("[normal pattern] hooking triggered, retval is null. Doing work.");
+                doDumpKeysLogic(args, retval);
+            } else {
+                //
+            }
+        };
+
+        // Wrapper 2: for the "ex" pattern. Only proceed if retval is not null.
+        const exPatternCallback = (args: any[], retval?: NativePointer) => {
+            if (!retval) return;          // In case hooking is onEnter, ignore
+            if (!retval.isNull()) {
+                //devlog("[ex pattern] hooking triggered, retval != null. Doing work.");
+                doDumpKeysLogic(args, retval);
+            } else {
+                //
+            }
+        };
+
+        // Decide whether to hook from JSON patterns or from built-in patterns ( “_ex” vs. normal) 
+        if (isPatternReplaced()) {
+            devlog(`[Hooking with JSON patterns onReturn] isEx = ${isEx}`);
+            hooker.hook_DumpKeys(
+                this.module_name,
+                // Pick the JSON module name based on whether it’s “ex”
+                isEx ? "librustls_ex.so" : "librustls.so",
+                patterns, 
+                isEx ? exPatternCallback : normalPatternCallback,
+                true, // onReturn so we get retval
+                isX64 ? 9 : 7
+            );
+        } else {
+            devlog(`[Hooking with built-in fallback patterns onReturn] isEx = ${isEx}`);
+            hooker.hookModuleByPatternOnReturn(
+                // Pick the default pattern based on whether it’s “ex”
+                get_CPU_specific_pattern(isEx ? this.default_pattern_ex : this.default_pattern),
+                isEx ? exPatternCallback : normalPatternCallback,
+                isX64 ? 9 : 7
+            );
+        }
+        
     }
 
     execute_hooks() {
@@ -108,11 +196,15 @@ export class Rustls_Linux extends RusTLS {
 }
 
 export function rustls_execute(moduleName: string, is_base_hook: boolean) {
-    var rus_tls = new Rustls_Linux(moduleName, socket_library, is_base_hook);
-    rus_tls.execute_hooks();
+    var rusTLS = new Rustls_Linux(moduleName, socket_library, is_base_hook);
+    if(hasMoreThanFiveExports(moduleName)){
+            rusTLS.execute_hooks();
+        }else{
+            rusTLS.execute_pattern_hooks();
+        }
 
     if (is_base_hook) {
-        const init_addresses = rus_tls.addresses[moduleName];
+        const init_addresses = rusTLS.addresses[moduleName];
         if (Object.keys(init_addresses).length > 0) {
             (global as any).init_addresses[moduleName] = init_addresses;
         }

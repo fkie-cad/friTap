@@ -50,6 +50,208 @@ export class PatternBasedHooking {
         return new RegExp(regexPattern);
     }
 
+    private hookByPatternOnReturn(
+        patterns: { primary: string; fallback: string },
+        pattern_name: string,
+        userCallback: (args: any[], retval?: NativePointer) => void,
+        maxArgs: number,
+        onCompleteCallback: (found: boolean) => void
+    ): void {
+        const moduleBase = this.module.base;
+        const moduleSize = this.module.size;
+        this.found_ssl_log_secret = false;
+
+        let pattern: string;
+        if (pattern_name === "primary_pattern") {
+            pattern = patterns.primary;
+        } else {
+            pattern = patterns.fallback;
+        }
+
+        Memory.scan(moduleBase, moduleSize, pattern, {
+            onMatch: (address) => {
+                this.found_ssl_log_secret = true;
+                this.no_hooking_success = false;
+                var module_by_address = Process.findModuleByAddress(address);
+
+                log(`Pattern found at (${pattern_name}) address: ${address} in module ${module_by_address.name}`);
+                log(`Pattern-based hooks installed (onReturn).`);
+
+                Interceptor.attach(address, {
+                    onEnter: function (args) {
+                        // store the arguments so we can use them onLeave
+                        //(this as any).storedArgs = Array.from(args);
+                        const stored: NativePointer[] = [];
+                        // We do a small loop up to maxArgs
+                        for (let i = 0; i <= maxArgs; i++) {
+                            try {
+                                stored.push(args[i]);
+                            } catch (_e) {
+                                console.log("error :"+i+ " with error :"+_e);
+                                // Possibly out-of-range => break
+                                break;
+                            }
+                        }
+                        (this as any).storedArgs = stored;
+                    },
+                    onLeave: function (retval) {
+                        const storedArgs = (this as any).storedArgs || [];
+                        userCallback(storedArgs, retval);
+                    },
+                });
+            },
+            onError: (reason) => {
+                if (!this.found_ssl_log_secret) {
+                    devlog_error("There was an error scanning memory: " + reason);
+                    devlog_error("Trying to rescan memory with permissions in mind");
+                    this.hookByPatternOnlyReadablePartsOnReturn(
+                        patterns,
+                        pattern_name,
+                        userCallback,
+                        (patternSuccess) => {
+                            if (!patternSuccess) {
+                                devlog("Primary pattern failed, trying fallback pattern (onReturn)...");
+                                this.hookByPatternOnlyReadablePartsOnReturn(
+                                    patterns,
+                                    "fallback_pattern",
+                                    userCallback,
+                                    (patternSuccessAlt) => {
+                                        if (!patternSuccessAlt) {
+                                            devlog(
+                                                "None of the patterns worked. Adjust or fallback."
+                                            );
+                                            this.no_hooking_success = true;
+                                        }
+                                    },
+                                    maxArgs
+                                );
+                            }
+                        },
+                        maxArgs
+                    );
+                }
+            },
+            onComplete: () => {
+                onCompleteCallback(this.found_ssl_log_secret);
+            },
+        });
+    }
+
+        /**
+     *  For hooking modules with either the primary or fallback pattern (onReturn)
+     */
+        public hookModuleByPatternOnReturn(
+            patterns: { primary: string; fallback: string },
+            userCallback: (args: any[], retval?: NativePointer) => void,
+            maxArgs: number
+        ): void {
+            const moduleBase = this.module.base;
+            const moduleSize = this.module.size;
+            devlog(`Module Base Address: ${moduleBase}`);
+            devlog(`Module Size: ${moduleSize}`);
+    
+            this.hookByPatternOnReturn(patterns, "primary_pattern", userCallback, maxArgs, (pattern_success) => {
+                if (!pattern_success) {
+                    devlog("Primary pattern failed, trying fallback pattern (onReturn)...");
+                    this.hookByPatternOnReturn(
+                        patterns,
+                        "fallback_pattern",
+                        userCallback,
+                        maxArgs, 
+                        (pattern_success_alt) => {
+                            if (!pattern_success_alt) {
+                                devlog("None of the onReturn patterns worked. Adjust patterns as needed.");
+                                this.no_hooking_success = true;
+                            }
+                        }
+                    );
+                }
+            });
+        }
+
+    private invoke_pattern_based_hooking_onReturn(
+        action: keyof ActionPatterns,
+        module_name: string,
+        platform: string,
+        arch: string,
+        userCallback: (args: any[], retval?: NativePointer) => void,
+        maxArgs: number
+    ) {
+        const action_specific_patterns = this.get_action_specific_pattern(module_name, platform, arch, action);
+        devlog(`Using ${action} patterns for ${platform} on ${arch} (onReturn)`);
+        this.hookModuleByPatternOnReturn(action_specific_patterns, userCallback, maxArgs);
+    }
+
+    public hook_with_pattern_from_json_onReturn(
+        action_type: keyof ActionPatterns,
+        module_name: string,
+        json_module_name: string,
+        jsonContent: string,
+        userCallback: (args: any[], retval?: NativePointer) => void,
+        maxArgs: number
+    ): void {
+        this.loadPatternsFromJSON(jsonContent);
+
+        let platform = Process.platform.toString(); // e.g., "linux", "android"
+        if (isAndroid()) platform = "android";
+        else if (isiOS()) platform = "ios";
+        else if (isMacOS()) platform = "macos";
+
+        let arch = Process.arch.toString(); // e.g., "x64", "arm64"
+        if (arch === "ia32") arch = "x86";
+
+        const regex = this.createRegexFromModule(module_name);
+
+        if (
+            this.patterns.modules[module_name] &&
+            this.patterns.modules[module_name][platform] &&
+            this.patterns.modules[module_name][platform][arch]
+        ) {
+            this.invoke_pattern_based_hooking_onReturn(
+                action_type,
+                module_name,
+                platform,
+                arch,
+                userCallback,
+                maxArgs
+            );
+        } else if (
+            this.patterns.modules[json_module_name] &&
+            this.patterns.modules[json_module_name][platform] &&
+            this.patterns.modules[json_module_name][platform][arch]
+        ) {
+            this.invoke_pattern_based_hooking_onReturn(
+                action_type,
+                json_module_name,
+                platform,
+                arch,
+                userCallback,
+                maxArgs
+            );
+        } else {
+            for (const jsonModuleName in this.patterns.modules) {
+                if (regex.test(module_name)) {
+                    if (
+                        this.patterns.modules[jsonModuleName][platform] &&
+                        this.patterns.modules[jsonModuleName][platform][arch]
+                    ) {
+                        this.invoke_pattern_based_hooking_onReturn(
+                            action_type,
+                            jsonModuleName,
+                            platform,
+                            arch,
+                            userCallback,
+                            maxArgs
+                        );
+                    }
+                } else {
+                    devlog("[-] No patterns available for the current platform or architecture.");
+                }
+            }
+        }
+    }
+
+
     // Method to hook by pattern, with a custom function to handle onEnter and onLeave
     hookByPattern(
         patterns: { primary: string; fallback: string },
@@ -165,6 +367,96 @@ export class PatternBasedHooking {
 
     }
 
+    private hookByPatternOnlyReadablePartsOnReturn(
+        patterns: { primary: string; fallback: string },
+        pattern_name: string,
+        userCallback: (args: any[], retval?: NativePointer) => void,
+        onCompleteCallback: (found: boolean) => void,
+        maxArgs: number = 8
+    ): void {
+        devlog(`Trying to scan only readable parts of ${this.module.name} ...`);
+
+        let pattern: string;
+        if (pattern_name === "primary_pattern") {
+            pattern = patterns.primary;
+        } else {
+            pattern = patterns.fallback;
+        }
+        var ranges = Process.enumerateRanges('r--');
+        let found = false;
+
+        //ranges.forEach((range: MemoryRange) => {
+        for (let i = 0; i < ranges.length; i++) {
+            
+
+            if (found) {
+                // If a match was found, stop iterating the ranges altogether.
+                break;
+            }
+
+            const range = ranges[i];
+            const rangeKey = `${range.base}-${range.size}`;
+
+            /*devlog(
+                `Scanning readable memory range in module: ${this.module.name}, Range: ${range.base} - ${range.base.add(
+                    range.size
+                )}, Size: ${range.size}`
+            );*/
+
+            Memory.scan(range.base, range.size, pattern, {
+                onMatch: (address: NativePointer) => {
+                    this.found_ssl_log_secret = true;
+                    var module_by_address = Process.findModuleByAddress(address);
+                    log(`Pattern found at (${pattern_name}) address: ${address} in module ${module_by_address.name}`);
+                    log(`Pattern-based hooks installed (onReturn).`);
+
+                    Interceptor.attach(address, {
+                        onEnter: function (args) {
+                            // store the arguments so we can use them onLeave
+                            //(this as any).storedArgs = Array.from(args);
+                            const stored: NativePointer[] = [];
+                            // We do a small loop up to maxArgs
+                            for (let i = 0; i <= maxArgs; i++) {
+                                try {
+                                    stored.push(args[i]);
+                                } catch (_e) {
+                                    console.log("i = "+i+"  error: "+_e);
+                                    // Possibly out-of-range => break
+                                    break;
+                                }
+                            }
+                            (this as any).storedArgs = stored;
+                        },
+                        onLeave: function (retval) {
+                            const storedArgs = (this as any).storedArgs || [];
+                            userCallback(storedArgs, retval);
+                        },
+                    });
+                    found = true;    // So we know to break out of the outer loop
+                    return "stop";   // Stop scanning the current range immediately
+                },
+                onError: (reason: string) => {
+                    // only for debugging purpose
+                    /*
+                    devlog_error(
+                        `Error scanning memory for range: ${range.base} - ${range.base.add(
+                            range.size
+                        )}, Reason: ${reason}`
+                    );
+                    */
+                },
+                onComplete: () => {
+                    if (this.rescannedRanges.has(rangeKey)) {
+                        return;
+                    } else {
+                        //onCompleteCallback(this.found_ssl_log_secret);
+                    }
+                },
+            });
+        }
+    //);
+    }
+
     // Method to hook the module with patterns provided as arguments
     hookModuleByPattern(
         patterns: { primary: string; fallback: string },
@@ -219,8 +511,28 @@ export class PatternBasedHooking {
     }
 
 
-    public hook_DumpKeys(module_name: string, json_module_name: string, jsonContent: string, hookCallback: (args: any[]) => void): void {
-        this.hook_with_pattern_from_json("Dump-Keys",module_name, json_module_name, jsonContent, hookCallback);
+    public hook_DumpKeys(module_name: string, json_module_name: string, jsonContent: string, hookCallback: (args: any[], retval?: NativePointer) => void, onReturn: boolean = false, maxArgs: number = 8): void {
+        //this.hook_with_pattern_from_json("Dump-Keys",module_name, json_module_name, jsonContent, hookCallback);
+        if (!onReturn) {
+            // Hook onEnter: callback gets (args, undefined)
+            this.hook_with_pattern_from_json(
+                "Dump-Keys",
+                module_name,
+                json_module_name,
+                jsonContent,
+                hookCallback
+            );
+        } else {
+            // Hook onReturn: callback gets (args, retval)
+            this.hook_with_pattern_from_json_onReturn(
+                "Dump-Keys",
+                module_name,
+                json_module_name,
+                jsonContent,
+                hookCallback,
+                maxArgs
+            );
+        }
     }
 
     public hook_tls_keylog_callback(module_name: string, json_module_name: string, jsonContent: string, hookCallback: (args: any[]) => void): void {

@@ -74,6 +74,7 @@ export class RusTLS {
 
         this.addresses = readAddresses(moduleName,this.library_method_mapping);
         this.module_name = moduleName;
+        
 
         //@ts-ignore
         if (offsets != "{OFFSETS}" && offsets.rustls != null) {
@@ -121,7 +122,7 @@ export class RusTLS {
     In Rustls the labels are mapped as enums
     cf. https://github.com/rustls/rustls/blob/5860d10317528e4f162db6e26c74f81575c51403/rustls/src/tls13/key_schedule.rs#L31
     */
-    private static enumMapping: { [key: number]: string } = {
+    private enumMapping: { [key: number]: string } = {
         0: "RESUMPTION_PSK_BINDER_KEY",         // ResumptionPskBinderKey
         1: "CLIENT_EARLY_TRAFFIC_SECRET",        // ClientEarlyTrafficSecret
         2: "CLIENT_HANDSHAKE_TRAFFIC_SECRET",    // ClientHandshakeTrafficSecret
@@ -133,12 +134,12 @@ export class RusTLS {
         8: "DERIVED"                           // Derived
     };
     
-    public static getEnumString(enumValue: number): string | null {
+    getEnumString(enumValue: number): string | null {
         return this.enumMapping[enumValue] || null;
     }
 
     // Checks if the pointer's C-string starts with "key expansion" - only used for TLS 1.2 traffic
-    public static isArgKeyExp(ptr: NativePointer): boolean {
+    isArgKeyExp(ptr: NativePointer): boolean {
         let labelStr = "";
         try {
         if (!ptr.isNull()) {
@@ -162,7 +163,7 @@ export class RusTLS {
     /*
      Hooking derive_logged_secret to get secrets from TLS 1.3 traffic
     */
-    public static dumpKeysFromDeriveSecrets(
+    dumpKeysFromDeriveSecrets(
         client_random_ptr: NativePointer,
         key: NativePointer,
         key_len: number,
@@ -180,7 +181,7 @@ export class RusTLS {
         // Retrieve the descriptive label from the enum mapping.
         labelStr = this.getEnumString(label_enum) || "";
     
-        if (!client_random_ptr.isNull()) {
+        if (client_random_ptr != null) {
             //@ts-ignore
             const randomData = Memory.readByteArray(client_random_ptr, RANDOM_KEY_LENGTH);
             if (randomData) {
@@ -190,7 +191,8 @@ export class RusTLS {
                 .join('');
             }
         } else {
-          devlog("[Error] Argument 'client_random_ptr' is NULL");
+          //devlog("[Error] Argument 'client_random_ptr' is NULL");
+          client_random = "<identify using PCAP> ";
         }
     
         if (!key.isNull()) {
@@ -218,7 +220,7 @@ export class RusTLS {
     /*
      Hooking derive_logged_secret to get secrets from TLS 1.3 traffic
     */
-    public static dumpKeysFromPRF(
+    dumpKeysFromPRF(
         client_random_ptr: NativePointer,
         key: NativePointer
       ): boolean {

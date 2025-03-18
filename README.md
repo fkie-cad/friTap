@@ -3,7 +3,7 @@
 </p>
 
 # friTap
-![version](https://img.shields.io/badge/version-1.3.0.1-blue) [![PyPI version](https://d25lcipzij17d.cloudfront.net/badge.svg?id=py&r=r&ts=1683906897&type=6e&v=1.3.0.1&x2=0)](https://badge.fury.io/py/friTap)
+![version](https://img.shields.io/badge/version-1.3.1.0-blue) [![PyPI version](https://d25lcipzij17d.cloudfront.net/badge.svg?id=py&r=r&ts=1683906897&type=6e&v=1.3.1.0&x2=0)](https://badge.fury.io/py/friTap)
 
 friTap is a powerful tool designed to assist researchers in analyzing network traffic encapsulated in SSL/TLS. With its ability to automate key extraction, friTap is especially valuable when dealing with malware analysis or investigating privacy issues in applications. By simplifying the process of decrypting and inspecting encrypted traffic, friTap empowers researchers to uncover critical insights with ease.
 
@@ -148,6 +148,7 @@ fritap -do -v com.example.app
 | Bouncycastle/Spongycastle |     TBA       |    TBA        |  TBA     |   Full   | TBA          |
 | Conscrypt                 |     TBA       |    TBA        |  TBA     |   Full   | TBA          |
 | S2n-tls                   |     Full      |    LibNO      |  TBA     |   Full   | LibNO        |
+| RusTLS                    |     KeyEo     |    TBI        |  TBI     |   KeyEo  | TBI          |
 ```
 **R/W-Hook only** = Logging data sent and received by process<br>
 **KeyEo** = Only the keying material can be extracted<br>

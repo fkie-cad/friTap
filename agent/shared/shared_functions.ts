@@ -36,10 +36,13 @@ export function ssl_library_loader(plattform_name: string, module_library_mappin
                     func(module, is_base_hook); 
                     
                 }catch (error) {
-                    devlog_error(`error: skipping module ${module}`)
-                    // when we enable the logging of devlogs we can print the error message as well for further improving this part
-                    devlog_error("Loader error: "+error)
-                    //  {'description': 'Could not find *libssl*.so!SSL_ImportFD', 'type': 'error'}
+
+                    if(checkNumberOfExports(module) > 3){
+                        devlog_error(`error: skipping module ${module}`)
+                        // when we enable the logging of devlogs we can print the error message as well for further improving this part
+                        devlog_error("Loader error: "+error)
+                        //  {'description': 'Could not find *libssl*.so!SSL_ImportFD', 'type': 'error'}
+                    }
                 }
                 
             } 
@@ -88,6 +91,28 @@ export function checkNumberOfExports(moduleName: string): number {
     } catch (error) {
         devlog(`Error checking exports for module "${moduleName}": ${error}`);
         return -1;
+    }
+}
+
+export function hasMoreThanFiveExports(moduleName: string): boolean {
+    // Get the target module
+    const targetModule = Process.getModuleByName(moduleName);
+    
+    // Return false if module doesn't exist
+    if (!targetModule) {
+        devlog(`Module ${moduleName} not found`);
+        return false;
+    }
+
+    try {
+        // Enumerate exports from the module
+        const exports = targetModule.enumerateExports();
+        
+        // Return true if there are more than 5 exports
+        return exports.length > 5;
+    } catch (error) {
+        devlog(`Error enumerating exports for ${moduleName}:`+ error);
+        return false;
     }
 }
 
