@@ -14,6 +14,8 @@ import { s2ntls_execute } from "./s2ntls_android.js";
 import { mono_btls_execute } from "./mono_btls_android.js";
 import { patterns, isPatternReplaced } from "../ssl_log.js"
 import { pattern_execute } from "./pattern_android.js"
+import { rustls_execute } from "./rustls_android.js";
+
 
 var plattform_name = "linux";
 var moduleNames: Array<string> = getModuleNames();
@@ -140,7 +142,9 @@ export function load_android_hooking_agent() {
         [/.*cronet.*\.so/, invokeHookingFunction(cronet_execute)],
         [/.*monochrome.*\.so/, invokeHookingFunction(cronet_execute)],
         [/.*libwarp_mobile.*\.so/, invokeHookingFunction(cronet_execute)], // here the client_random is not working
-        [/.*lib*quiche*.*\.so/, invokeHookingFunction(cronet_execute)]]; 
+        [/.*lib*quiche*.*\.so/, invokeHookingFunction(cronet_execute)], 
+        [/.*librustls.*\.so/, invokeHookingFunction(rustls_execute)]];
+
 
     install_java_hooks();
     hook_native_Android_SSL_Libs(module_library_mapping, true);

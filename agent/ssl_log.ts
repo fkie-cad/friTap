@@ -79,6 +79,13 @@ interface IOffsets {
     s2n?:{
         s2n_send: IAddress;
         s2n_recv: IAddress;
+    },
+    rustls?:{
+        rustls_connection_write_tls: IAddress;
+        rustls_connection_read_tls: IAddress;
+        rustls_client_config_builder_new: IAddress;
+        rustls_client_config_builder_new_custom: IAddress;
+        rustls_client_config_builder_set_key_log: IAddress;
     }
 
     sockets?:{
