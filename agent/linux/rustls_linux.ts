@@ -19,8 +19,17 @@ export class Rustls_Linux extends RusTLS {
     }
 
     install_key_extraction_hook(){
+        this.install_key_extraction_hook_tls13();
+    }
+
+    install_key_extraction_hook_tls13(){
         const rusTLSModule = Process.findModuleByName(this.module_name);
         const hooker = new PatternBasedHooking(rusTLSModule);
+
+        // this code is currently only addressing the TLS 13
+        if(this.module_name.includes("12")){
+            return;
+        }
 
         const isEx = this.module_name.includes("_ex");
         const isX64 = Process.arch === "x64";
