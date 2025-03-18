@@ -91,7 +91,7 @@ export class Rustls_Linux extends RusTLS {
                 patterns, 
                 isEx ? exPatternCallback : normalPatternCallback,
                 true, // onReturn so we get retval
-                isX64 ? 9 : 7
+                isX64 ? 7 : 9
             );
         } else {
             devlog(`[Hooking with built-in fallback patterns onReturn] isEx = ${isEx}`);
@@ -99,7 +99,7 @@ export class Rustls_Linux extends RusTLS {
                 // Pick the default pattern based on whether it’s “ex”
                 get_CPU_specific_pattern(isEx ? this.default_pattern_ex : this.default_pattern),
                 isEx ? exPatternCallback : normalPatternCallback,
-                isX64 ? 9 : 7
+                isX64 ? 7 : 9
             );
         }
         

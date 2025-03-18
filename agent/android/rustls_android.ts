@@ -6,8 +6,9 @@ import { PatternBasedHooking, get_CPU_specific_pattern } from "../shared/pattern
 import { patterns, isPatternReplaced} from "../ssl_log.js"
 
 export class Rustls_Android extends RusTLS {
-    private default_pattern: { [arch: string]: { primary: string, fallback:string } };
-    private default_pattern_ex: { [arch: string]: { primary: string, fallback:string } };
+    private default_pattern_tls13: { [arch: string]: { primary: string, fallback:string } };
+    private default_pattern_ex_tls13: { [arch: string]: { primary: string, fallback:string } };
+    private default_pattern_tls12: { [arch: string]: { primary: string, fallback:string } };
 
     constructor(public moduleName: string, public socket_library: String, is_base_hook: boolean) {
         super(moduleName, socket_library, is_base_hook);
@@ -16,7 +17,7 @@ export class Rustls_Android extends RusTLS {
         used for the librustls_android_13.so and its variants
         */
 
-        this.default_pattern = {
+        this.default_pattern_tls13 = {
             "x64": {
                 primary:  "41 57 41 56 41 55 41 54 53 48 83 EC ?? 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84", // Primary pattern
                 fallback: "55 41 57 41 56 41 54 53 48 83 EC 30 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84" // Fallback pattern
@@ -40,7 +41,7 @@ export class Rustls_Android extends RusTLS {
         used for the librustls_android_13_ex.so and its variants
         */
 
-        this.default_pattern_ex = {
+        this.default_pattern_ex_tls13 = {
             "x64": {
                 primary:  "41 57 41 56 41 55 41 54 53 48 83 EC ?? 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84", // Primary pattern
                 fallback: "55 41 57 41 56 41 54 53 48 83 EC 30 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84" // Fallback pattern
@@ -59,6 +60,14 @@ export class Rustls_Android extends RusTLS {
                 fallback: "2D E9 F0 41 86 B0 04 46 40 6B D0 F8 30 01 00 28 53 D0"  // Fallback pattern
             }
         };
+
+        // FF 83 04 D1 FD 7B 0C A9 FC 6F 0D A9 FA 67 0E A9 F8 5F 0F A9 F6 57 10 A9 F4 4F 11 A9 F6 03 03 2A E8 0B 00 90 08 E1 14 91 C9 1E 40 92 1F 20 03 D5 0A 60 8A 10 1C 79 69 F8 48 14 40 F9 FB 93 40 F9 5D 79 69 F8 F3 03 00 AA E0 03 01 AA F4 03 07 AA F5 03 06 AA F8 03 05 AA F9 03 04 AA FA 03 02 AA F7 03 01 AA 00 01 3F D6
+        this.default_pattern_tls12 = {
+            "arm64": {
+                primary:  "FF 03 07 D1 FD 7B 19 A9 F6 57 1A A9 F4 4F 1B A9 A1 08 40 AD 03 E4 00 6F F3 03 08 AA 88 00 40 B9 EB 03 03 AA E9 03 02 AA F4 03 01 AA F5 03 00 AA E1 0B 01 AD A0 04 41 AD F6 43 02 91 E3 8F 03 AD E6 0F 00 F9 E0 03 84 3C E1 8F 02 AD", // Primary pattern
+                fallback: "55 41 57 41 56 41 54 53 48 83 EC 30 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84" // Fallback pattern
+            }
+        }
     
     }
 
@@ -70,6 +79,90 @@ export class Rustls_Android extends RusTLS {
 
     install_key_extraction_hook(){
         this.install_key_extraction_hook_tls13();
+        this.install_key_extraction_hook_tls12();
+    }
+
+    install_key_extraction_hook_tls12(){
+        const rusTLSModule = Process.findModuleByName(this.module_name);
+        const hooker = new PatternBasedHooking(rusTLSModule);
+
+        const isEx = this.module_name.includes("_ex");
+        const isX64 = Process.arch === "x64";
+
+        // this code is only addressing the TLS 1.2
+        if(this.module_name.includes("13")){
+            return;
+        }
+
+
+
+        const doDumpKeysLogic = (args: any[], retval: NativePointer | undefined) => {
+            let client_random_ptr: NativePointer;
+            let key: NativePointer;
+            let label_ptr: NativePointer;
+            let dump_keys: boolean = false;
+    
+            // Architecture differences needs probably further adjusments for ARM and x86
+            // x64:
+            if (Process.arch === "x64") {
+
+                client_random_ptr = args[7];
+                key               = args[3];
+                label_ptr           = args[5];
+            } else {
+                // aarch64 needs to be checked if the values really differ
+                client_random_ptr = args[7];
+                key               = args[3];
+                label_ptr           = args[5];
+            }
+
+            if(this.isArgKeyExp(label_ptr)){
+                client_random_ptr = args[7];
+                key = args[3];
+                dump_keys = true;
+            }
+            
+
+            if(dump_keys){
+                // currently this version or this pattern is not working correctly..
+                this.dumpKeysFromPRF(client_random_ptr, key);
+            }
+    
+        };
+
+        // Wrapper 1: for the "normal" pattern. Only proceed if retval is null.
+        const normalPatternCallback = (args: any[], retval?: NativePointer) => {
+            if (!retval) return;          // In case hooking is onEnter, ignore
+            if (!retval.isNull()) {
+                //devlog("[normal pattern] hooking triggered, retval is null. Doing work.");
+                doDumpKeysLogic(args, retval);
+            } 
+        };
+
+       
+
+        // Decide whether to hook from JSON patterns or from built-in patterns ( “_ex” vs. normal) 
+        if (isPatternReplaced()) {
+            devlog(`[Hooking with JSON patterns onReturn] isEx = ${isEx}`);
+            hooker.hook_DumpKeys(
+                this.module_name,
+                // Pick the JSON module name based on whether it’s “ex”
+                isEx ? "librustls_ex.so" : "librustls.so",
+                patterns, 
+                normalPatternCallback,
+                true, // onReturn so we get retval
+                isX64 ? 7 : 8
+            );
+        } else {
+            devlog(`[Hooking with built-in fallback patterns onReturn] isEx = ${isEx}`);
+            hooker.hookModuleByPatternOnReturn(
+                // Pick the default pattern based on whether it’s “ex”
+                get_CPU_specific_pattern(isEx ? this.default_pattern_tls12 : this.default_pattern_tls12),
+                normalPatternCallback,
+                isX64 ? 7 : 8
+            );
+        }
+        
     }
 
 
@@ -80,7 +173,7 @@ export class Rustls_Android extends RusTLS {
         const isEx = this.module_name.includes("_ex");
         const isX64 = Process.arch === "x64";
 
-        // this code is currently only addressing the TLS 13
+        // this code is currently only addressing the TLS 1.3
         if(this.module_name.includes("12")){
             return;
         }
@@ -150,7 +243,7 @@ export class Rustls_Android extends RusTLS {
             devlog(`[Hooking with built-in fallback patterns onReturn] isEx = ${isEx}`);
             hooker.hookModuleByPatternOnReturn(
                 // Pick the default pattern based on whether it’s “ex”
-                get_CPU_specific_pattern(isEx ? this.default_pattern_ex : this.default_pattern),
+                get_CPU_specific_pattern(isEx ? this.default_pattern_ex_tls13 : this.default_pattern_tls13),
                 isEx ? exPatternCallback : normalPatternCallback,
                 isX64 ? 7 : 9
             );
