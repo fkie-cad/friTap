@@ -4,6 +4,7 @@ __handlers__
 friTap.egg-info
 dist/
 *.pcap
+*.txt
 *.trace
 
 # debian package generation stuff
