@@ -19,7 +19,8 @@ export class Rustls_Android extends RusTLS {
 
         this.default_pattern_tls13 = {
             "x64": {
-                primary:  "41 57 41 56 41 55 41 54 53 48 83 EC ?? 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84", // Primary pattern
+                //primary:  "41 57 41 56 41 55 41 54 53 48 83 EC ?? 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84", // Primary pattern
+                primary: "55 41 57 41 56 41 55 41 54 53 48 81 EC C8 00 00 00 4D 89 CD 4C 89 44 24 10 48 89 4C",
                 fallback: "55 41 57 41 56 41 54 53 48 83 EC 30 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84" // Fallback pattern
             },
             "x86": {
@@ -29,7 +30,7 @@ export class Rustls_Android extends RusTLS {
             "arm64": {
                 primary: "FF 83 04 D1 FD 7B 0C A9 FC 6F 0D A9 FA 67 0E A9 F8 5F 0F A9 F6 57 10 A9 F4 4F 11 A9 F6 03 03 2A E8 0B 00 90 08 21 15 91 C9 1E 40 92 1F 20 03 D5 EA 5B 8A 10 1C 79 69 F8 48 14 40 F9 FB 93 40 F9 5D 79 69 F8 F3 03 00 AA E0 03 01 AA F4 03 07 AA F5 03 06 AA F8 03 05 AA F9 03 04 AA FA 03 02 AA F7 03 01 AA 00 01 3F D6", // Primary pattern
                 fallback: "FF 83 04 D1 FD 7B 0C A9 FC 6F 0D A9 FA 67 0E A9 F8 5F 0F A9 F6 57 10 A9 F4 4F 11 A9 F6 03 03 2A E8 0B 00 90 08 21 15 91 C9 1E 40 92 1F 20 03 D5 EA 5B 8A 10 1C 79 69 F8 48 14 40 F9 FB 93 40 F9 5D 79 69 F8 F3 03 00 AA E0 03 01 AA F4 03 07 AA F5 03 06 AA F8 03 05 AA F9"  // Fallback pattern
-            },  
+            },
 
             "arm": {
                 primary: "2D E9 F0 43 89 B0 04 46 40 6B D0 F8 2C 01 00 28 49 D0", // Primary pattern
@@ -43,7 +44,8 @@ export class Rustls_Android extends RusTLS {
 
         this.default_pattern_ex_tls13 = {
             "x64": {
-                primary:  "41 57 41 56 41 55 41 54 53 48 83 EC ?? 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84", // Primary pattern
+                //primary:  "41 57 41 56 41 55 41 54 53 48 83 EC ?? 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84", // Primary pattern
+                primary: "55 41 57 41 56 41 55 41 54 53 48 81 EC C8 00 00 00 4D 89 CD 4C 89 44 24 10 48 89 4C",
                 fallback: "55 41 57 41 56 41 54 53 48 83 EC 30 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84" // Fallback pattern
             },
             "x86": {
@@ -189,36 +191,39 @@ export class Rustls_Android extends RusTLS {
     
             // Architecture differences needs probably further adjusments for ARM and x86
             // x64:
-            if (Process.arch === "x64") {
+            /*if (Process.arch === "x64") {
                 client_random_ptr = args[7];
                 key               = args[0];
                 key_len           = args[4].toInt32();
-                label_enum        = args[2].toInt32();
-            } else {
+                label_enum        = args[2].toInt32(); */
+            //} else {
                 // aarch64
                 client_random_ptr = args[9];
                 key               = args[0];
                 key_len           = args[5].toInt32();
                 label_enum        = args[3].toInt32();
-            }
+            //}
     
             this.dumpKeysFromDeriveSecrets(client_random_ptr, key, key_len, label_enum);
         };
 
         // Wrapper 1: for the "normal" pattern. Only proceed if retval is null.
         const normalPatternCallback = (args: any[], retval?: NativePointer) => {
-            if (!retval) return;          // In case hooking is onEnter, ignore
+            //if (!retval) return;          // In case hooking is onEnter, ignore
             if (retval.isNull()) {
                 //devlog("[normal pattern] hooking triggered, retval is null. Doing work.");
                 doDumpKeysLogic(args, retval);
             } else {
                 //
+                if (Process.arch === "x64") {
+                    doDumpKeysLogic(args, retval);
+                }
             }
         };
 
         // Wrapper 2: for the "ex" pattern. Only proceed if retval is not null.
         const exPatternCallback = (args: any[], retval?: NativePointer) => {
-            if (!retval) return;          // In case hooking is onEnter, ignore
+            //if (!retval) return;          // In case hooking is onEnter, ignore
             if (!retval.isNull()) {
                 //devlog("[ex pattern] hooking triggered, retval != null. Doing work.");
                 doDumpKeysLogic(args, retval);
@@ -237,7 +242,7 @@ export class Rustls_Android extends RusTLS {
                 patterns, 
                 isEx ? exPatternCallback : normalPatternCallback,
                 true, // onReturn so we get retval
-                isX64 ? 7 : 9
+                isX64 ? 9 : 9
             );
         } else {
             devlog(`[Hooking with built-in fallback patterns onReturn] isEx = ${isEx}`);
@@ -245,7 +250,7 @@ export class Rustls_Android extends RusTLS {
                 // Pick the default pattern based on whether it’s “ex”
                 get_CPU_specific_pattern(isEx ? this.default_pattern_ex_tls13 : this.default_pattern_tls13),
                 isEx ? exPatternCallback : normalPatternCallback,
-                isX64 ? 7 : 9
+                isX64 ? 9 : 9
             );
         }
         

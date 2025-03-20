@@ -408,6 +408,8 @@ export class PatternBasedHooking {
                     this.found_ssl_log_secret = true;
                     var module_by_address = Process.findModuleByAddress(address);
                     log(`Pattern found at (${pattern_name}) address: ${address} in module ${module_by_address.name}`);
+                    let local_offset = address.sub(module_by_address.base);
+                    log(`Ghidra offset (Base 0x0): ${local_offset}` );
                     log(`Pattern-based hooks installed (onReturn).`);
 
                     Interceptor.attach(address, {
@@ -437,7 +439,7 @@ export class PatternBasedHooking {
                 },
                 onError: (reason: string) => {
                     // only for debugging purpose
-                    /*
+                    /* 
                     devlog_error(
                         `Error scanning memory for range: ${range.base} - ${range.base.add(
                             range.size
