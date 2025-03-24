@@ -7,6 +7,9 @@ dist/
 *.txt
 *.trace
 
+# npm stuff
+package-lock.json # not really needed when working with frida-compile
+
 # debian package generation stuff
 deb_dist/
 *.tar.gz
