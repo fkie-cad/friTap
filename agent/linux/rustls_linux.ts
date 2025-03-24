@@ -11,6 +11,20 @@ export class Rustls_Linux extends RusTLS {
 
     constructor(public moduleName: string, public socket_library: String, is_base_hook: boolean) {
         super(moduleName, socket_library, is_base_hook);
+
+        this.default_pattern = {
+            "x64": {
+                primary:  "48 81 EC 18 01 00 00 4C 89 4C 24 40 48 89 7C 24 48 88 D0 48 89 7C 24 50 48 8B 94 24 28 01 00 00 48 89 54 24 58 48 8B 94 24 20 01 00 00 48 89",
+                fallback: "48 81 EC 18 01 00 00 4C 89 4C 24 40 48 89 7C 24 48 88 D0 48 89 7C 24 50 48 8B 94 24 28 01 00 00 48 89 54 24 58 48 8B 94 24 20 01"
+            }
+        };
+
+        this.default_pattern_ex = {
+            "x64": {
+                primary:  "48 81 EC 18 01 00 00 4C 89 4C 24 40 48 89 7C 24 48 88 D0 48 89 7C 24 50 48 8B 94 24 28 01 00 00 48 89 54 24 58 48 8B 94 24 20 01 00 00 48 89",
+                fallback: "48 81 EC 18 01 00 00 4C 89 4C 24 40 48 89 7C 24 48 88 D0 48 89 7C 24 50 48 8B 94 24 28 01 00 00 48 89 54 24 58 48 8B 94 24 20 01"
+            }
+        };
     }
 
     execute_pattern_hooks(){

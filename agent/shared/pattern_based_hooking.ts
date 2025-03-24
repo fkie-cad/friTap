@@ -407,9 +407,15 @@ export class PatternBasedHooking {
                 onMatch: (address: NativePointer) => {
                     this.found_ssl_log_secret = true;
                     var module_by_address = Process.findModuleByAddress(address);
-                    log(`Pattern found at (${pattern_name}) address: ${address} in module ${module_by_address.name}`);
-                    let local_offset = address.sub(module_by_address.base);
-                    log(`Ghidra offset (Base 0x0): ${local_offset}` );
+                    // In some case findModuleByAddress might return null
+                    //devlog(`Pattern: ${pattern}`);
+                    if (module_by_address) {
+                        log(`Pattern found at (${pattern_name}) address: ${address} in module ${module_by_address.name}`);
+                        let local_offset = address.sub(module_by_address.base);
+                        log(`Ghidra offset (Base 0x0): ${local_offset}` );
+                    }
+                    log(`Pattern found at (${pattern_name}) address: ${address} in module <name_not_found>`);
+                    log(`Could not get Ghidra offset`);
                     log(`Pattern-based hooks installed (onReturn).`);
 
                     Interceptor.attach(address, {

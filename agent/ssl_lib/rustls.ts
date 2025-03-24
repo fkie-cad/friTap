@@ -142,15 +142,15 @@ export class RusTLS {
     isArgKeyExp(ptr: NativePointer): boolean {
         let labelStr = "";
         try {
-        if (!ptr.isNull()) {
-            const label: string = ptr.readCString() as string;
-            labelStr = label;
-            if (labelStr === null) {
-            return false;
-            } else {
-            return labelStr.startsWith("key expansion");
+            if (!ptr.isNull()) {
+                const label: string = ptr.readCString() as string;
+                labelStr = label;
+                if (labelStr === null) {
+                    return false;
+                } else {
+                    return labelStr.startsWith("key expansion");
+                }
             }
-        }
         } catch (error) {
             devlog("[!] Error reading pointer in isArgKeyExp (RusTLS):"+ (error as Error).message);
             return false;
