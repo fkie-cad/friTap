@@ -188,33 +188,23 @@ export class Rustls_Android extends RusTLS {
             let key: NativePointer;
             let key_len: number;
             let label_enum: number;
-    
-            // Architecture differences needs probably further adjusments for ARM and x86
-            // x64:
-            /*if (Process.arch === "x64") {
-                client_random_ptr = args[7];
-                key               = args[0];
-                key_len           = args[4].toInt32();
-                label_enum        = args[2].toInt32(); */
-            //} else {
-                // aarch64
-                client_random_ptr = args[9];
-                key               = args[0];
-                key_len           = args[5].toInt32();
-                label_enum        = args[3].toInt32();
-            //}
+
+            client_random_ptr = args[9];
+            key               = args[0];
+            key_len           = args[5].toInt32();
+            label_enum        = args[3].toInt32();
+
     
             this.dumpKeysFromDeriveSecrets(client_random_ptr, key, key_len, label_enum);
         };
 
         // Wrapper 1: for the "normal" pattern. Only proceed if retval is null.
         const normalPatternCallback = (args: any[], retval?: NativePointer) => {
-            //if (!retval) return;          // In case hooking is onEnter, ignore
+            if (!retval) return;          // to ensure we don't get a runtime exception when retval is undefined
             if (retval.isNull()) {
-                //devlog("[normal pattern] hooking triggered, retval is null. Doing work.");
                 doDumpKeysLogic(args, retval);
             } else {
-                //
+                // 
                 if (Process.arch === "x64") {
                     doDumpKeysLogic(args, retval);
                 }
@@ -223,9 +213,8 @@ export class Rustls_Android extends RusTLS {
 
         // Wrapper 2: for the "ex" pattern. Only proceed if retval is not null.
         const exPatternCallback = (args: any[], retval?: NativePointer) => {
-            //if (!retval) return;          // In case hooking is onEnter, ignore
+            if (!retval) return;          // to ensure we don't get a runtime exception when retval is undefined
             if (!retval.isNull()) {
-                //devlog("[ex pattern] hooking triggered, retval != null. Doing work.");
                 doDumpKeysLogic(args, retval);
             } else {
                 //

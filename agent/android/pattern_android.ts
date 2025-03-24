@@ -65,29 +65,62 @@ export class Pattern_Android extends Cronet {
 
 
 export function pattern_execute(moduleName:string, is_base_hook: boolean){
-    let pattern_BoringSSL = new Pattern_Android(moduleName,socket_library,is_base_hook);
-    try {
-        let hooker = pattern_BoringSSL.execute_boring_ssl_log_secret_hooks();
-        if(hooker != null){
-            // wait 1 sec before we continue
-            setTimeout(function() {
-                pattern_BoringSSL.execute_symbol_based_hooking(hooker);
-            }, 1000); 
-        }
-    }catch(error_msg){
-        devlog(`pattern_execute error: ${error_msg}`)
+
+    switch (true) {
+        /*case moduleName.includes("boringssl"):
+            let pattern_BoringSSL = new Pattern_Android(moduleName,socket_library,is_base_hook);
+            try {
+                let hooker = pattern_BoringSSL.execute_boring_ssl_log_secret_hooks();
+                if(hooker != null){
+                    // wait 1 sec before we continue
+                    setTimeout(function() {
+                        pattern_BoringSSL.execute_symbol_based_hooking(hooker);
+                    }, 1000); 
+                }
+            }catch(error_msg){
+                devlog(`pattern_execute error: ${error_msg}`)
+            }
+
+            if (is_base_hook) {
+                try {
+                    const init_addresses = pattern_BoringSSL.addresses[moduleName];
+                    // ensure that we only add it to global when we are not 
+                    if (Object.keys(init_addresses).length > 0) {
+                        (global as any).init_addresses[moduleName] = init_addresses;
+                    }
+                }catch(error_msg){
+                    devlog(`pattern_execute base-hook error: ${error_msg}`)
+                }
+            }
+*/
+        default:
+            devlog("Cannot execute pattern-hooks. Unsupported Module!");
+            let pattern_BoringSSL = new Pattern_Android(moduleName,socket_library,is_base_hook);
+            try {
+                let hooker = pattern_BoringSSL.execute_boring_ssl_log_secret_hooks();
+                if(hooker != null){
+                    // wait 1 sec before we continue
+                    setTimeout(function() {
+                        pattern_BoringSSL.execute_symbol_based_hooking(hooker);
+                    }, 1000); 
+                }
+            }catch(error_msg){
+                devlog(`pattern_execute error: ${error_msg}`)
+            }
+
+            if (is_base_hook) {
+                try {
+                    const init_addresses = pattern_BoringSSL.addresses[moduleName];
+                    // ensure that we only add it to global when we are not 
+                    if (Object.keys(init_addresses).length > 0) {
+                        (global as any).init_addresses[moduleName] = init_addresses;
+                    }
+                }catch(error_msg){
+                    devlog(`pattern_execute base-hook error: ${error_msg}`)
+                }
+            }
     }
 
-    if (is_base_hook) {
-        try {
-            const init_addresses = pattern_BoringSSL.addresses[moduleName];
-            // ensure that we only add it to global when we are not 
-            if (Object.keys(init_addresses).length > 0) {
-                (global as any).init_addresses[moduleName] = init_addresses;
-            }
-        }catch(error_msg){
-            devlog(`pattern_execute base-hook error: ${error_msg}`)
-        }
-    }
+    
 
 }
