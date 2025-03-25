@@ -4,7 +4,6 @@ import { log, devlog } from "../util/log.js"
 import { hasMoreThanFiveExports } from "../shared/shared_functions.js";
 import { PatternBasedHooking, get_CPU_specific_pattern } from "../shared/pattern_based_hooking.js";
 import { patterns, isPatternReplaced} from "../ssl_log.js"
-import { rawListeners } from "process";
 
 export class Rustls_Android extends RusTLS {
     private default_pattern_tls13: { [arch: string]: { primary: string, fallback:string } };
