@@ -88,7 +88,7 @@ function loadPatternsFromJSON(jsonContent: string): any {
     }
 }
 
-// currently the support this only on Android systems
+// Support for this feature is currently limited to Android systems.
 function install_pattern_based_hooks(){
     try{
         let data = loadPatternsFromJSON(patterns);
