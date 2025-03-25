@@ -245,7 +245,7 @@ export class RusTLS {
     
         if (!client_random_ptr.isNull()) {
             //@ts-ignore
-            const keyData = Memory.readByteArray(client_random_ptr.add(0x20), KEY_LENGTH);
+            const keyData = Memory.readByteArray(client_random_ptr, KEY_LENGTH);
             if (keyData) {
                 client_random = Array
                 .from(new Uint8Array(keyData))

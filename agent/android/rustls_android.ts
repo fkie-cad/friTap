@@ -4,6 +4,7 @@ import { log, devlog } from "../util/log.js"
 import { hasMoreThanFiveExports } from "../shared/shared_functions.js";
 import { PatternBasedHooking, get_CPU_specific_pattern } from "../shared/pattern_based_hooking.js";
 import { patterns, isPatternReplaced} from "../ssl_log.js"
+import { rawListeners } from "process";
 
 export class Rustls_Android extends RusTLS {
     private default_pattern_tls13: { [arch: string]: { primary: string, fallback:string } };
@@ -65,9 +66,17 @@ export class Rustls_Android extends RusTLS {
 
         // FF 83 04 D1 FD 7B 0C A9 FC 6F 0D A9 FA 67 0E A9 F8 5F 0F A9 F6 57 10 A9 F4 4F 11 A9 F6 03 03 2A E8 0B 00 90 08 E1 14 91 C9 1E 40 92 1F 20 03 D5 0A 60 8A 10 1C 79 69 F8 48 14 40 F9 FB 93 40 F9 5D 79 69 F8 F3 03 00 AA E0 03 01 AA F4 03 07 AA F5 03 06 AA F8 03 05 AA F9 03 04 AA FA 03 02 AA F7 03 01 AA 00 01 3F D6
         this.default_pattern_tls12 = {
+            "x64": {
+                primary:  "55 41 57 41 56 41 55 41 54 53 48 81 ec 48 01 00 00 4c 89 c0 49 89 cb 49 89 d6 49 89 f7 48 89 fb 48 8b 8c 24 88 01 00 00 48 8b 94 24 80 01 00",
+                fallback: "55 41 57 41 56 41 55 41 54 53 48 81 ec 48 01 00 00 4c 89 c0 49 89 cb 49 89 d6 49 89 f7 48 89 fb 48 8b 8c 24 88 01 00 00 48 8b"
+            }, 
             "arm64": {
                 primary:  "FF 03 07 D1 FD 7B 19 A9 F6 57 1A A9 F4 4F 1B A9 A1 08 40 AD 03 E4 00 6F F3 03 08 AA 88 00 40 B9 EB 03 03 AA E9 03 02 AA F4 03 01 AA F5 03 00 AA E1 0B 01 AD A0 04 41 AD F6 43 02 91 E3 8F 03 AD E6 0F 00 F9 E0 03 84 3C E1 8F 02 AD", // Primary pattern
                 fallback: "55 41 57 41 56 41 54 53 48 83 EC 30 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84" // Fallback pattern
+            },
+            "arm": {
+                primary:  "2D E9 F0 4F D1 B0 0A AD 8A 46 05 F1 44 07 81 46 30 21 1C 46 38 46 93 46 FB F0 A8 F9 5C 9E 28 1D 40 22 31 46 FB F0 2D FA 5B 99 DD F8 74 81 CD",
+                fallback: "2D E9 F0 4F D1 B0 0A AD 8A 46 05 F1 44 07 81 46 30 21 1C 46 38 46 93 46 FB F0 A8 F9 5C 9E 28 1D 40 22 31 46 FB F0 2D FA 5B 99"
             }
         }
     
@@ -86,51 +95,27 @@ export class Rustls_Android extends RusTLS {
         const isEx = this.module_name.includes("_ex");
         const isX64 = Process.arch === "x64";
 
-        // TLS 1.2 callback somehow overwrite the TLS 1.3 ones (only if patterns are from json)
-        // TLS 1.2 Callback is not working for 1.2 and interferes with the correct working 1.3 hook (if patterns from json)
-        if (this.moduleName.includes("13")) {
-            this.install_key_extraction_hook_tls13(hooker, isEx, isX64);
-        } else {
-            if (!isPatternReplaced()) {
-                this.install_key_extraction_hook_tls12(hooker, isEx, isX64);
-            }
-        }    
+        this.install_key_extraction_hook_tls13(hooker, isEx, isX64);
+        if (!isPatternReplaced()) {
+            // Currently no support for tls12 json pattern
+            this.install_key_extraction_hook_tls12(hooker, isEx, isX64);
+        }
     }
 
     install_key_extraction_hook_tls12(hooker: PatternBasedHooking, isEx: boolean, isX64: boolean){
 
         const doDumpKeysLogic = (args: any[], retval: NativePointer | undefined) => {
             let client_random_ptr: NativePointer;
-            let key: NativePointer;
-            let label_ptr: NativePointer;
-            let dump_keys: boolean = false;
-    
-            // Architecture differences needs probably further adjusments for ARM and x86
-            // x64:
-            if (Process.arch === "x64") {
-
-                client_random_ptr = args[7];
-                key               = args[3];
-                label_ptr           = args[5];
-            } else {
-                // aarch64 needs to be checked if the values really differ
-                client_random_ptr = args[7];
-                key               = args[3];
-                label_ptr           = args[5];
-            }
-
-            if(this.isArgKeyExp(label_ptr)){
-                client_random_ptr = args[7];
-                key = args[3];
-                dump_keys = true;
-            }
+            let master_secret_ptr: NativePointer;
             
-
-            if(dump_keys){
-                // currently this version or this pattern is not working correctly..
-                this.dumpKeysFromPRF(client_random_ptr, key);
-            }
-    
+            // works for x64
+            // TODO: test for ARM
+            client_random_ptr = args[6];
+            // retval structure: 
+            // | header (8 bytes) | client_random(32 bytes) | server_random(32 bytes) | master_secret(48 bytes) |
+            master_secret_ptr = retval.add(72);
+            
+            this.dumpKeysFromPRF(client_random_ptr, master_secret_ptr);    
         };
 
         // Wrapper 1: for the "normal" pattern. Only proceed if retval is null.
