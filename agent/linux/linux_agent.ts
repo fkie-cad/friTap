@@ -70,7 +70,7 @@ export function load_linux_hooking_agent() {
         [/libmbedtls\.so.*/, invokeHookingFunction(mbedTLS_execute)], 
         [/libssl_s.a/, invokeHookingFunction(matrixSSL_execute)],
         [/.*libs2n.so/, invokeHookingFunction(s2ntls_execute)],
-        [/.*librustls.*\.so/, invokeHookingFunction(rustls_execute)]]
+        [/.*rustls.*/, invokeHookingFunction(rustls_execute)]]
 
     hook_Linux_SSL_Libs(module_library_mapping, true);
     hook_Linux_Dynamic_Loader(module_library_mapping, false);

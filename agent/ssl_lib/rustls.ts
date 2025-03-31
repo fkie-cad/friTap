@@ -161,7 +161,8 @@ export class RusTLS {
 
 
     /*
-     Hooking derive_logged_secret to get secrets from TLS 1.3 traffic
+     Hooking hkdf_expand_label to get secrets from TLS 1.3 traffic. 
+     This is used for the Android Hooks.
     */
     dumpKeysFromDeriveSecrets(
         client_random_ptr: NativePointer,
@@ -218,7 +219,7 @@ export class RusTLS {
     }
 
     /*
-     Hooking derive_logged_secret to get secrets from TLS 1.3 traffic
+     Hooking derive_logged_secret to get secrets from TLS 1.2 traffic
     */
     dumpKeysFromPRF(
         client_random_ptr: NativePointer,
@@ -266,6 +267,57 @@ export class RusTLS {
         return true;
     }
 
+    /**
+     * On Linux the BoringSecretHunter Indentifies a different function (derive_logged_secrets).
+     */
+    dumpKeysFromDeriveLogged(
+        client_random_ptr: NativePointer,
+        key: NativePointer,
+        label_enum: number
+    ) {
+        // key_len need to be parsed from key: | key (length: key_size) | padding (length: 64 bytes - key_size) | key_size
+        let KEY_LENGTH = (key.add(64)).readU32();
+        let labelStr = "";
+        let client_random = "";
+        let secret_key = "";
+        const RANDOM_KEY_LENGTH = 32;
+    
+        // Retrieve the descriptive label from the enum mapping.
+        labelStr = this.getEnumString(label_enum) || "";
+    
+        if (client_random_ptr != null) {
+            //@ts-ignore
+            const randomData = Memory.readByteArray(client_random_ptr, RANDOM_KEY_LENGTH);
+            if (randomData) {
+                client_random = Array
+                .from(new Uint8Array(randomData))
+                .map(byte => byte.toString(16).padStart(2, '0').toUpperCase())
+                .join('');
+            }
+        } else {
+          //devlog("[Error] Argument 'client_random_ptr' is NULL");
+          client_random = "<identify using PCAP> ";
+        }
+    
+        if (!key.isNull()) {
+            //@ts-ignore
+            const keyData = Memory.readByteArray(key, KEY_LENGTH);
+            if (keyData) {
+                secret_key = Array
+                .from(new Uint8Array(keyData))
+                .map(byte => byte.toString(16).padStart(2, '0').toUpperCase())
+                .join('');
+            }
+        } else {
+            devlog("[Error] Argument 'key' is NULL");
+        }
+    
+        var message: { [key: string]: string | number | null } = {}
+        message["contentType"] = "keylog"
+        message["keylog"] = labelStr+" "+client_random+" "+secret_key;
+        send(message)
+        return true;
+    }
 
     hook_tls_12_key_generation_function(){
 
