@@ -86,6 +86,12 @@ interface IOffsets {
         rustls_client_config_builder_new: IAddress;
         rustls_client_config_builder_new_custom: IAddress;
         rustls_client_config_builder_set_key_log: IAddress;
+    },
+    libressl?:{
+        SSL_get_client_random: IAddress;
+        SSL_new: IAddress,
+        SSL_SESSION_get_master_key: IAddress,
+        SSL_get_session: IAddress
     }
 
     sockets?:{
