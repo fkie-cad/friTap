@@ -159,7 +159,10 @@ export class RusTLS {
     }
 
 
-
+    /**
+     * Hooking hkdf_expand_label() to get secrets from TLS 1.3 traffic.
+     * This is used for the Android Hooks only
+     */
     /*
      Hooking hkdf_expand_label to get secrets from TLS 1.3 traffic. 
      This is used for the Android Hooks.
@@ -209,8 +212,6 @@ export class RusTLS {
             devlog("[Error] Argument 'key' is NULL");
         }
     
-        //devlog(`${labelStr} ${client_random} ${secret_key}`);
-        //devlog("invoking derive_logged_secret (_ZN6rustls5tls1312key_schedule11KeySchedule20derive_logged_secret17he2c0a8a2fdd12a9eE) from RusTLS");
         var message: { [key: string]: string | number | null } = {}
         message["contentType"] = "keylog"
         message["keylog"] = labelStr+" "+client_random+" "+secret_key;
@@ -218,19 +219,22 @@ export class RusTLS {
         return true;
     }
 
-    /*
-     Hooking derive_logged_secret to get secrets from TLS 1.2 traffic
-    */
+    /**
+     *  Hooking from_key_exchange() to get secrets from TLS 1.2 traffic
+     *  https://github.com/rustls/rustls/blob/293f05e9d1011132a749b8b6e0435f701421fd01/rustls/src/tls12/mod.rs#L102
+     *  This hook is used for both, Linux and Android.
+     */
+
     dumpKeysFromPRF(
         client_random_ptr: NativePointer,
         key: NativePointer
       ): boolean {
-        const KEY_LENGTH = 32; // Adjust as needed.
+        const KEY_LENGTH = 32;
         const MASTER_SECRET_LEN = 48;
         const labelStr = "CLIENT_RANDOM";
         let client_random = "";
         let secret_key = "";
-    
+        
         if (!key.isNull()) {
             //@ts-ignore
             const keyData = Memory.readByteArray(key, MASTER_SECRET_LEN);
@@ -258,8 +262,6 @@ export class RusTLS {
         }
     
 
-        //devlog(`${labelStr} ${client_random} ${secret_key}`);
-        //devlog("invoking derive_logged_secret (_ZN6rustls5tls1312key_schedule11KeySchedule20derive_logged_secret17he2c0a8a2fdd12a9eE) from RusTLS");
         var message: { [key: string]: string | number | null } = {}
         message["contentType"] = "keylog"
         message["keylog"] = labelStr+" "+client_random+" "+secret_key;
@@ -268,20 +270,27 @@ export class RusTLS {
     }
 
     /**
-     * On Linux the BoringSecretHunter Indentifies a different function (derive_logged_secrets).
+     * On Linux the BoringSecretHunter Identifies a different function (derive_logged_secrets()).
+     * https://github.com/rustls/rustls/blob/bdb303696dea02ecc6b5de3907880e181899d717/rustls/src/tls13/key_schedule.rs#L676
+     * The following handles extracts the secrets for TLS 1.3.
      */
     dumpKeysFromDeriveLogged(
         client_random_ptr: NativePointer,
         key: NativePointer,
         label_enum: number
     ) {
-        // key_len need to be parsed from key: | key (length: key_size) | padding (length: 64 bytes - key_size) | key_size
+        /* 
+        key_len needs to be parsed from key
+        key has the following structure: | key (length: key_size) | padding (length: 64 bytes - key_size) | key_size 
+        */
         let KEY_LENGTH = (key.add(64)).readU32();
         let labelStr = "";
         let client_random = "";
         let secret_key = "";
         const RANDOM_KEY_LENGTH = 32;
-    
+        
+        devlog("Called dumpKeysFromDeriveLogged()");
+
         // Retrieve the descriptive label from the enum mapping.
         labelStr = this.getEnumString(label_enum) || "";
     
@@ -295,7 +304,6 @@ export class RusTLS {
                 .join('');
             }
         } else {
-          //devlog("[Error] Argument 'client_random_ptr' is NULL");
           client_random = "<identify using PCAP> ";
         }
     
