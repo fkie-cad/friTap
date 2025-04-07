@@ -93,10 +93,9 @@ export class Rustls_Android extends RusTLS {
         const hooker = new PatternBasedHooking(rusTLSModule);
 
         const isEx = this.module_name.includes("_ex");
-        const arch = Process.arch;
-        const isX64 = arch === "x64";
+        const isX64 = Process.arch === "x64";
 
-        this.install_key_extraction_hook_tls13(hooker, isEx, isX64, arch);
+        this.install_key_extraction_hook_tls13(hooker, isEx, isX64);
         if (!isPatternReplaced()) {
             // Currently no support for tls12 json pattern
             this.install_key_extraction_hook_tls12(hooker, isEx, isX64);
@@ -147,7 +146,6 @@ export class Rustls_Android extends RusTLS {
         };
 
 
-
         // Decide whether to hook from JSON patterns or from built-in patterns ( “_ex” vs. normal)
         if (isPatternReplaced()) {
             devlog(`[Hooking with JSON patterns onReturn] isEx = ${isEx}`);
@@ -173,7 +171,7 @@ export class Rustls_Android extends RusTLS {
     }
 
 
-    install_key_extraction_hook_tls13(hooker: PatternBasedHooking, isEx: boolean, isX64: boolean, arch: string){
+    install_key_extraction_hook_tls13(hooker: PatternBasedHooking, isEx: boolean, isX64: boolean){
 
         const doDumpKeysLogic = (args: any[], retval: NativePointer | undefined) => {
             // Decide offsets for client_random_ptr, key, key_len, label_enum
@@ -214,9 +212,6 @@ export class Rustls_Android extends RusTLS {
                 doDumpKeysLogic(args, retval);
             } else {
                 //
-                if (Process.arch === "x64") {
-                    doDumpKeysLogic(args, retval);
-                }
             }
         };
 
