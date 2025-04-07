@@ -92,39 +92,6 @@ export class S2nTLS {
         var current_module_name = this.module_name;
         var lib_addresses = this.addresses;
 
-        Interceptor.attach(lib_addresses[this.moduleName]["s2n_send"], {
-
-            onEnter: function(args: any){
-                
-                var writefdPtr = Memory.alloc(Process.pointerSize) as NativePointer;
-                S2nTLS.s2n_get_write_fd(args[0], writefdPtr);
-                var writefd = writefdPtr.readInt();
-                var message = getPortsAndAddresses(writefd, false, lib_addresses[current_module_name], enable_default_fd);
-
-                message["function"] = "s2n_send";
-                message["ssl_session_id"] = "0"
-                this.message = message;
-                this.buf = args[1];
-            },
-            onLeave: function(retval: any){
-                
-                retval = parseInt(retval);
-                if(retval < 0){ 
-                    return;
-                }
-
-                this.message["contentType"] = "datalog";
-                send(this.message, this.buf.readByteArray(retval));
-            }
-        })
-    }
-
-    //Hooks the s2n_recv function
-    //Get the buffer on enter and read the retval bytes from it on leave
-    install_plaintext_write_hook(){
-        var current_module_name = this.module_name;
-        var lib_addresses = this.addresses;
-
         Interceptor.attach(lib_addresses[this.moduleName]["s2n_recv"], {
 
             onEnter: function(args: any){
@@ -132,7 +99,7 @@ export class S2nTLS {
                 var readfdPtr = Memory.alloc(Process.pointerSize) as NativePointer;
                 S2nTLS.s2n_get_read_fd(args[0], readfdPtr);
                 var readfd = readfdPtr.readInt();
-                var message = getPortsAndAddresses(readfd, true, lib_addresses[current_module_name], enable_default_fd);
+                var message = getPortsAndAddresses(readfd, false, lib_addresses[current_module_name], enable_default_fd);
 
                 message["function"] = "s2n_recv";
                 message["ssl_session_id"] = "0"
@@ -157,6 +124,39 @@ export class S2nTLS {
                 } catch (error) {
                     console.error("Error in onLeave (retval: "+retval+ "):", error);
                 }
+            }
+        })
+    }
+
+    //Hooks the s2n_recv function
+    //Get the buffer on enter and read the retval bytes from it on leave
+    install_plaintext_write_hook(){
+        var current_module_name = this.module_name;
+        var lib_addresses = this.addresses;
+
+        Interceptor.attach(lib_addresses[this.moduleName]["s2n_send"], {
+
+            onEnter: function(args: any){
+                
+                var writefdPtr = Memory.alloc(Process.pointerSize) as NativePointer;
+                S2nTLS.s2n_get_write_fd(args[0], writefdPtr);
+                var writefd = writefdPtr.readInt();
+                var message = getPortsAndAddresses(writefd, true, lib_addresses[current_module_name], enable_default_fd);
+
+                message["function"] = "s2n_send";
+                message["ssl_session_id"] = "0"
+                this.message = message;
+                this.buf = args[1];
+            },
+            onLeave: function(retval: any){
+                
+                retval = parseInt(retval);
+                if(retval < 0){ 
+                    return;
+                }
+
+                this.message["contentType"] = "datalog";
+                send(this.message, this.buf.readByteArray(retval));
             }
         })
     }

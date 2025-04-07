@@ -7,7 +7,7 @@ import { patterns, isPatternReplaced} from "../ssl_log.js"
 
 export class Rustls_Linux extends RusTLS {
     private default_pattern: { [arch: string]: { primary: string, fallback:string } };
-    private default_pattern_ex: { [arch: string]: { primary: string, fallback:string } };
+    private default_pattern_12: { [arch: string]: { primary: string, fallback:string } };
 
     constructor(public moduleName: string, public socket_library: String, is_base_hook: boolean) {
         super(moduleName, socket_library, is_base_hook);
@@ -19,12 +19,12 @@ export class Rustls_Linux extends RusTLS {
             }
         };
 
-        this.default_pattern_ex = {
+        this.default_pattern_12 = {
             "x64": {
-                primary:  "48 81 EC 18 01 00 00 4C 89 4C 24 40 48 89 7C 24 48 88 D0 48 89 7C 24 50 48 8B 94 24 28 01 00 00 48 89 54 24 58 48 8B 94 24 20 01 00 00 48 89",
-                fallback: "48 81 EC 18 01 00 00 4C 89 4C 24 40 48 89 7C 24 48 88 D0 48 89 7C 24 50 48 8B 94 24 28 01 00 00 48 89 54 24 58 48 8B 94 24 20 01"
+                primary:  "41 57 41 56 53 48 81 ec c0 04 00 00 4c 89 8c 24 a0 00 00 00 4c 89 44 24 70 48 89 4c 24 78 48 89 bc 24 80 00 00 00 48 89 bc 24 88 00 00 00 48 8b",
+                fallback: "41 57 41 56 53 48 81 ec c0 04 00 00 4c 89 8c 24 a0 00 00 00 4c 89 44 24 70 48 89 4c 24 78 48 89 bc 24 80 00 00 00 48 89 bc 24 88"
             }
-        };
+        }
     }
 
     execute_pattern_hooks(){
@@ -32,88 +32,107 @@ export class Rustls_Linux extends RusTLS {
 
     }
 
-    install_key_extraction_hook(){
-        this.install_key_extraction_hook_tls13();
-    }
 
-    install_key_extraction_hook_tls13(){
+    install_key_extraction_hook(){
         const rusTLSModule = Process.findModuleByName(this.module_name);
         const hooker = new PatternBasedHooking(rusTLSModule);
 
-        // this code is currently only addressing the TLS 13
-        if(this.module_name.includes("12")){
-            return;
-        }
+        this.install_key_extraction_hook_tls(hooker);
+        this.install_key_extraction_hook_tls_12(hooker);
+    }
 
-        const isEx = this.module_name.includes("_ex");
-        const isX64 = Process.arch === "x64";
+    install_key_extraction_hook_tls_12(hooker: PatternBasedHooking) {
+        const doDumpKeysLogic = (args: any[], retval: NativePointer | undefined) => {
+            let client_random_ptr: NativePointer;
+            let master_secret_ptr: NativePointer;
+
+            client_random_ptr = args[6];
+            // retval structure: 
+            // | header (8 bytes) | client_random(32 bytes) | server_random(32 bytes) | master_secret(48 bytes) |
+            master_secret_ptr = retval.add(72);
+            
+            this.dumpKeysFromPRF(client_random_ptr, master_secret_ptr);    
+        };
+
+        // Wrapper 1: for the "normal" pattern. Only proceed if retval is null.
+        const normalPatternCallback = (args: any[], retval?: NativePointer) => {
+            if (!retval){ 
+                devlog("retval is null");
+                return;          // In case hooking is onEnter, ignore
+            }
+            if (!retval.isNull()) {
+                //devlog("[normal pattern] [TLS 1.2] hooking triggered, retval is null. Doing work.");
+                doDumpKeysLogic(args, retval);
+            } 
+        };
+
+       
+
+        // Decide whether to hook from JSON patterns or from built-in patterns ( “_ex” vs. normal) 
+        if (isPatternReplaced()) {
+            hooker.hook_DumpKeys(
+                this.module_name,
+                // Pick the JSON module name based on whether it’s “ex”
+                "rustls",
+                patterns, 
+                normalPatternCallback,
+                true, // onReturn so we get retval
+                7
+            );
+        } else {
+            hooker.hookModuleByPatternOnReturn(
+                // Pick the default pattern based on whether it’s “ex”
+                get_CPU_specific_pattern(this.default_pattern_12),
+                normalPatternCallback,
+                7 
+            );
+        }
+    }
+
+    install_key_extraction_hook_tls(hooker: PatternBasedHooking){
 
         const doDumpKeysLogic = (args: any[], retval: NativePointer | undefined) => {
             // Decide offsets for client_random_ptr, key, key_len, label_enum
             let client_random_ptr: NativePointer;
             let key: NativePointer;
-            let key_len: number;
             let label_enum: number;
-    
-            // Architecture differences needs probably further adjusments for ARM and x86
-            // x64:
-            if (Process.arch === "x64") {
-                client_random_ptr = args[7];
-                key               = args[0];
-                key_len           = args[4].toInt32();
-                label_enum        = args[2].toInt32();
-            } else {
-                // aarch64
-                client_random_ptr = args[9];
-                key               = args[0];
-                key_len           = args[5].toInt32();
-                label_enum        = args[3].toInt32();
-            }
-    
-            this.dumpKeysFromDeriveSecrets(client_random_ptr, key, key_len, label_enum);
+
+            client_random_ptr = args[7];
+            key               = args[0];
+            label_enum        = args[2].toInt32();
+
+            this.dumpKeysFromDeriveLogged(client_random_ptr, key, label_enum);
         };
 
         // Wrapper 1: for the "normal" pattern. Only proceed if retval is null.
         const normalPatternCallback = (args: any[], retval?: NativePointer) => {
-            if (!retval) return;          // In case hooking is onEnter, ignore
+            //devlog("[TLS 1.3] normalPatternCallback");
+            if (!retval) return;          // to ensure we don't get a runtime exception when retval is undefined
             if (retval.isNull()) {
-                //devlog("[normal pattern] hooking triggered, retval is null. Doing work.");
                 doDumpKeysLogic(args, retval);
             } else {
-                //
+                // 
+                if (Process.arch === "x64") {
+                    doDumpKeysLogic(args, retval);
+                }
             }
         };
 
-        // Wrapper 2: for the "ex" pattern. Only proceed if retval is not null.
-        const exPatternCallback = (args: any[], retval?: NativePointer) => {
-            if (!retval) return;          // In case hooking is onEnter, ignore
-            if (!retval.isNull()) {
-                //devlog("[ex pattern] hooking triggered, retval != null. Doing work.");
-                doDumpKeysLogic(args, retval);
-            } else {
-                //
-            }
-        };
-
-        // Decide whether to hook from JSON patterns or from built-in patterns ( “_ex” vs. normal) 
+        // Decide whether to hook from JSON patterns or from built-in patterns
         if (isPatternReplaced()) {
-            devlog(`[Hooking with JSON patterns onReturn] isEx = ${isEx}`);
             hooker.hook_DumpKeys(
                 this.module_name,
-                // Pick the JSON module name based on whether it’s “ex”
-                isEx ? "librustls_ex.so" : "librustls.so",
+                "rustls",
                 patterns, 
-                isEx ? exPatternCallback : normalPatternCallback,
+                normalPatternCallback,
                 true, // onReturn so we get retval
-                isX64 ? 7 : 9
+                9
             );
         } else {
-            devlog(`[Hooking with built-in fallback patterns onReturn] isEx = ${isEx}`);
             hooker.hookModuleByPatternOnReturn(
-                // Pick the default pattern based on whether it’s “ex”
-                get_CPU_specific_pattern(isEx ? this.default_pattern_ex : this.default_pattern),
-                isEx ? exPatternCallback : normalPatternCallback,
-                isX64 ? 7 : 9
+                get_CPU_specific_pattern(this.default_pattern),
+                normalPatternCallback,
+                9
             );
         }
         
@@ -221,10 +240,13 @@ export class Rustls_Linux extends RusTLS {
 export function rustls_execute(moduleName: string, is_base_hook: boolean) {
     var rusTLS = new Rustls_Linux(moduleName, socket_library, is_base_hook);
     if(hasMoreThanFiveExports(moduleName)){
-            rusTLS.execute_hooks();
-        }else{
-            rusTLS.execute_pattern_hooks();
-        }
+        devlog("Trying to hook RusTLS using symbols...");
+        rusTLS.execute_hooks();
+    }else{
+        devlog("Trying to hook RusTLS using patterns...");
+        rusTLS.execute_pattern_hooks();
+    }
+    
 
     if (is_base_hook) {
         const init_addresses = rusTLS.addresses[moduleName];
