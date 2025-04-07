@@ -103,27 +103,25 @@ export class Rustls_Android extends RusTLS {
         }
     }
 
-    // TODO: This needs some adjustments, in order to work for ARM64
-    // This has been tested for x86_64
+    // This has been tested for x86_64 and ARM
     install_key_extraction_hook_tls12(hooker: PatternBasedHooking, isEx: boolean, isX64: boolean){
 
         const doDumpKeysLogic = (args: any[], retval: NativePointer | undefined) => {
             let client_random_ptr: NativePointer;
             let master_secret_ptr: NativePointer;
 
-
-            // TODO: Check if this works for ARM and x86
             if (Process.arch === "arm64") {
                 /*
                 ARM LAYOUT:
                     args[3] = 0x20 (random_size?)
-                    args[5] = client_random
+                    args[5] = | client_random (32 byte) | server_random (32 byte) | padding (8 byte) | 
+                              | client_random (32 byte) | server_random (32 byte) | master_secret (48 byte) |
                     args[7] = some address (cannot read or attach)
                     args[8] = NULL
+                    retval = status code of some kind
                 */
-                // None of the arguments nor the retval is the master secret
                 client_random_ptr = args[5];
-                master_secret_ptr = args[8];
+                master_secret_ptr = args[5].add(136);
             } else {
                 // works for x64
                 client_random_ptr = args[6];
@@ -132,65 +130,6 @@ export class Rustls_Android extends RusTLS {
                 // | header (8 bytes) | client_random(32 bytes) | server_random(32 bytes) | master_secret(48 bytes) |
                 master_secret_ptr = retval.add(72);
             }
-
-            /* ---DEBUG---
-            //@ts-ignore
-            const args0 = Memory.readByteArray(args[0], 48);
-            let args_0 = Array.from(new Uint8Array(args0)).map(byte => byte.toString(16).padStart(2, '0').toUpperCase())
-            .join('');
-            devlog("Args[0]: " + args_0);
-
-            //@ts-ignore
-            const args1 = Memory.readByteArray(args[1], 48);
-            let args_1 = Array.from(new Uint8Array(args1)).map(byte => byte.toString(16).padStart(2, '0').toUpperCase())
-            .join('');
-            devlog("Args[1]: " + args_1);
-
-            //@ts-ignore
-            const args2 = Memory.readByteArray(args[2], 48);
-            let args_2 = Array.from(new Uint8Array(args2)).map(byte => byte.toString(16).padStart(2, '0').toUpperCase())
-            .join('');
-            devlog("Args[2]: " + args_2);
-
-            //@ts-ignore
-            // const args3 = Memory.readByteArray(args[3], 48);
-            // let args_3 = Array.from(new Uint8Array(args3)).map(byte => byte.toString(16).padStart(2, '0').toUpperCase())
-            // .join('');
-            // devlog("Args[3]: " + args_3);
-
-            //@ts-ignore
-            const args4 = Memory.readByteArray(args[4], 48);
-            let args_4 = Array.from(new Uint8Array(args4)).map(byte => byte.toString(16).padStart(2, '0').toUpperCase())
-            .join('');
-            devlog("Args[4]: " + args_4);
-
-            //@ts-ignore
-            const args5 = Memory.readByteArray(args[5], 32);
-            let args_5 = Array.from(new Uint8Array(args5)).map(byte => byte.toString(16).padStart(2, '0').toUpperCase())
-            .join('');
-            devlog("Args[5]: " + args_5);
-
-            //@ts-ignore
-            const args6 = Memory.readByteArray(args[6], 48);
-            let args_6 = Array.from(new Uint8Array(args6)).map(byte => byte.toString(16).padStart(2, '0').toUpperCase())
-            .join('');
-            devlog("Args[6]: " + args_6);
-
-            devlog("Args[7]: " + args[7]);
-            
-            //@ts-ignore
-            // const args7 = Memory.readByteArray(args[7], 48);
-            // let args_7 = Array.from(new Uint8Array(args7)).map(byte => byte.toString(16).padStart(2, '0').toUpperCase())
-            // .join('');
-            //devlog("Args[7]: " + args_7);
-
-            //@ts-ignore
-            const args8 = Memory.readByteArray(args[8], 48);
-            let args_8 = Array.from(new Uint8Array(args8)).map(byte => byte.toString(16).padStart(2, '0').toUpperCase())
-            .join('');
-            devlog("Args[8]: " + args_8);
-            
-            */
 
             this.dumpKeysFromPRF(client_random_ptr, master_secret_ptr);
         };
@@ -254,7 +193,7 @@ export class Rustls_Android extends RusTLS {
 
         // Wrapper 1: for the "normal" pattern. Only proceed if retval is null.
         const normalPatternCallback = (args: any[], retval?: NativePointer) => {
-            devlog("[TLS 1.3] normalPatternCallback");
+            //devlog("[TLS 1.3] normalPatternCallback");
             if (!retval) return;          // to ensure we don't get a runtime exception when retval is undefined
             if (retval.isNull()) {
                 doDumpKeysLogic(args, retval);
@@ -269,7 +208,7 @@ export class Rustls_Android extends RusTLS {
 
         // Wrapper 2: for the "ex" pattern. Only proceed if retval is not null.
         const exPatternCallback = (args: any[], retval?: NativePointer) => {
-            devlog("[TLS 1.3] exPatternCallback");
+            //devlog("[TLS 1.3] exPatternCallback");
             if (!retval) return;          // to ensure we don't get a runtime exception when retval is undefined
             if (!retval.isNull()) {
                 doDumpKeysLogic(args, retval);
