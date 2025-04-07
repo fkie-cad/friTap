@@ -272,7 +272,7 @@ export class RusTLS {
     /**
      * On Linux the BoringSecretHunter Identifies a different function (derive_logged_secrets()).
      * https://github.com/rustls/rustls/blob/bdb303696dea02ecc6b5de3907880e181899d717/rustls/src/tls13/key_schedule.rs#L676
-     * The following handles extracts the secrets for TLS 1.3.
+     * The following extracts the secrets for TLS 1.3.
      */
     dumpKeysFromDeriveLogged(
         client_random_ptr: NativePointer,
