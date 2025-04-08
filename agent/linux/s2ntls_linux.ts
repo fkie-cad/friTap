@@ -13,19 +13,37 @@ export class S2nTLS_Linux extends S2nTLS{
         this.install_tls_keys_callback_hook();
     }
 
-    //if set_config is called, the keylog callback is set
+    //if s2n_config_new is called, the keylog callback is set
     install_tls_keys_callback_hook(){
-        
         S2nTLS.s2n_set_key_log_cb = new NativeFunction(this.addresses[this.module_name]["s2n_config_set_key_log_cb"], "int", ["pointer", "pointer", "pointer"]);
         
-        Interceptor.attach(this.addresses[this.module_name]["s2n_connection_set_config"], 
+        Interceptor.attach(this.addresses[this.module_name]["s2n_config_new"], 
             {
-            onEnter: function(args: any){
+            onLeave: function(retval: any){
             
                 let emptyPointer = ptr("0");
-                S2nTLS.s2n_set_key_log_cb(args[1], S2nTLS.keylog_callback, emptyPointer);                    
+                S2nTLS.s2n_set_key_log_cb(retval, S2nTLS.keylog_callback, emptyPointer);                    
             }
         })
+
+        // In case a callback is set by the appliction, we attach to this callback instead
+        Interceptor.attach(this.addresses[this.module_name]["s2n_config_set_key_log_cb"], 
+            {
+                onEnter: function(args: any) {
+                    let user_callback = args[1];
+
+                    Interceptor.attach(user_callback, {
+                        onEnter: function(args: any) {
+                            let logline = args[2];
+                            let len = args[3];
+                            var message: { [key: string]: string | number | null } = {};
+                            message["contentType"] = "keylog";
+                            message["keylog"] = logline.readCString(len.toInt32());
+                            send(message);
+                        }
+                    })
+                }
+            })
         
     }
 }

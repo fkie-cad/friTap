@@ -14,27 +14,37 @@ export class OpenSSL_BoringSSL_Android extends OpenSSL_BoringSSL {
         this.SSL_CTX_set_keylog_callback = new NativeFunction(this.addresses[this.module_name]["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"]);
         var instance = this;
 
-        
-        Interceptor.attach(this.addresses[this.module_name]["SSL_new"],
-        {
-            onEnter: function (args: any) {
-                instance.SSL_CTX_set_keylog_callback(args[0], OpenSSL_BoringSSL.keylog_callback)
-            }
-    
-        });
+        if (this.addresses[this.module_name]["SSL_CTX_new"] === null) {
+            Interceptor.attach(this.addresses[this.module_name]["SSL_new"], {
+                onEnter: function (args: any) {
+                    instance.SSL_CTX_set_keylog_callback(args[0], OpenSSL_BoringSSL.keylog_callback);
+                }
+            });
+        } else {
+            Interceptor.attach(this.addresses[this.module_name]["SSL_CTX_new"], {
+                onLeave: function (retval: any) {
+                    instance.SSL_CTX_set_keylog_callback(retval, OpenSSL_BoringSSL.keylog_callback);
+                }
+            });
+        }
 
-        /*
-        // right now this won't work because we need the context 
-        // in SSL_do_handshake args[0] is actually a SSL object
-
-        Interceptor.attach(this.addresses[this.module_name]["SSL_do_handshake"],
-        {
+        // In case a callback is set by the application, we attach to this callback instead
+        // Only succeeds if SSL_CTX_new is available
+        let setter_address = ObjC.available ? "SSL_CTX_set_info_callback" : "SSL_CTX_set_keylog_callback";
+        Interceptor.attach(this.addresses[this.module_name][setter_address], {
             onEnter: function (args: any) {
-             instance.SSL_CTX_set_keylog_callback(args[0], OpenSSL_BoringSSL.keylog_callback)
+                let callback_func = args[1];
+
+                Interceptor.attach(callback_func, {
+                    onEnter: function (args: any) {
+                        var message: { [key: string]: string | number | null } = {};
+                        message["contentType"] = "keylog";
+                        message["keylog"] = args[1].readCString();
+                        send(message);
+                    }
+                });
             }
-    
         });
-        */
     }
 
     install_conscrypt_tls_keys_callback_hook (){
