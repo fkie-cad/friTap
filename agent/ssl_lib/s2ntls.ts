@@ -18,7 +18,7 @@ export class S2nTLS {
         devlog("invoking keylog_callback from s2ntls");
         var message: { [key: string]: string | number | null } = {};
         message["contentType"] = "keylog";
-        message["keylog"] = logline.readCString();
+        message["keylog"] = logline.readCString(len.toInt32());
         send(message);
         return 1;
     }, "int", ["pointer", "pointer", "pointer", "pointer"]);
@@ -28,7 +28,7 @@ export class S2nTLS {
         if(typeof passed_library_method_mapping !== 'undefined'){
             this.library_method_mapping = passed_library_method_mapping;
         }else{
-            this.library_method_mapping[`*${moduleName}*`] = ["s2n_send", "s2n_recv", "s2n_connection_get_read_fd", "s2n_connection_get_write_fd", "s2n_connection_new", "s2n_config_set_key_log_cb", "s2n_connection_set_config"];
+            this.library_method_mapping[`*${moduleName}*`] = ["s2n_send", "s2n_recv", "s2n_connection_get_read_fd", "s2n_connection_get_write_fd", "s2n_connection_new", "s2n_config_set_key_log_cb", "s2n_connection_set_config", "s2n_config_new"];
             this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]; 
         }
 
