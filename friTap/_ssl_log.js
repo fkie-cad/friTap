@@ -21,8 +21,8 @@
 3295 /agent/android/mono_btls_android.js
 3690 /agent/android/nss_android.js.map
 5167 /agent/android/nss_android.js
-2286 /agent/android/openssl_boringssl_android.js.map
-3146 /agent/android/openssl_boringssl_android.js
+3134 /agent/android/openssl_boringssl_android.js.map
+3912 /agent/android/openssl_boringssl_android.js
 3520 /agent/android/pattern_android.js.map
 5027 /agent/android/pattern_android.js
 8886 /agent/android/rustls_android.js.map
@@ -51,8 +51,8 @@
 1214 /agent/linux/mbedTLS_linux.js
 3560 /agent/linux/nss_linux.js.map
 4660 /agent/linux/nss_linux.js
-1782 /agent/linux/openssl_boringssl_linux.js.map
-1919 /agent/linux/openssl_boringssl_linux.js
+2444 /agent/linux/openssl_boringssl_linux.js.map
+2906 /agent/linux/openssl_boringssl_linux.js
 6570 /agent/linux/rustls_linux.js.map
 10217 /agent/linux/rustls_linux.js
 1934 /agent/linux/s2ntls_linux.js.map
@@ -1123,7 +1123,7 @@ export function nss_execute(moduleName, is_base_hook) {
     }
 }
 ✄
-{"version":3,"file":"openssl_boringssl_android.js","sourceRoot":"/home/julian/Documents/friTap/","sources":["agent/android/openssl_boringssl_android.ts"],"names":[],"mappings":"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"}
+{"version":3,"file":"openssl_boringssl_android.js","sourceRoot":"/home/julian/Documents/friTap/","sources":["agent/android/openssl_boringssl_android.ts"],"names":[],"mappings":"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"}
 ✄
 import { OpenSSL_BoringSSL } from "../ssl_lib/openssl_boringssl.js";
 import { devlog } from "../util/log.js";
@@ -1137,23 +1137,36 @@ export class OpenSSL_BoringSSL_Android extends OpenSSL_BoringSSL {
     install_tls_keys_callback_hook() {
         this.SSL_CTX_set_keylog_callback = new NativeFunction(this.addresses[this.module_name]["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"]);
         var instance = this;
-        Interceptor.attach(this.addresses[this.module_name]["SSL_new"], {
+        if (this.addresses[this.module_name]["SSL_CTX_new"] === null) {
+            Interceptor.attach(this.addresses[this.module_name]["SSL_new"], {
+                onEnter: function (args) {
+                    instance.SSL_CTX_set_keylog_callback(args[0], OpenSSL_BoringSSL.keylog_callback);
+                }
+            });
+        }
+        else {
+            Interceptor.attach(this.addresses[this.module_name]["SSL_CTX_new"], {
+                onLeave: function (retval) {
+                    instance.SSL_CTX_set_keylog_callback(retval, OpenSSL_BoringSSL.keylog_callback);
+                }
+            });
+        }
+        // In case a callback is set by the application, we attach to this callback instead
+        // Only succeeds if SSL_CTX_new is available
+        let setter_address = ObjC.available ? "SSL_CTX_set_info_callback" : "SSL_CTX_set_keylog_callback";
+        Interceptor.attach(this.addresses[this.module_name][setter_address], {
             onEnter: function (args) {
-                instance.SSL_CTX_set_keylog_callback(args[0], OpenSSL_BoringSSL.keylog_callback);
+                let callback_func = args[1];
+                Interceptor.attach(callback_func, {
+                    onEnter: function (args) {
+                        var message = {};
+                        message["contentType"] = "keylog";
+                        message["keylog"] = args[1].readCString();
+                        send(message);
+                    }
+                });
             }
         });
-        /*
-        // right now this won't work because we need the context
-        // in SSL_do_handshake args[0] is actually a SSL object
-
-        Interceptor.attach(this.addresses[this.module_name]["SSL_do_handshake"],
-        {
-            onEnter: function (args: any) {
-             instance.SSL_CTX_set_keylog_callback(args[0], OpenSSL_BoringSSL.keylog_callback)
-            }
-    
-        });
-        */
     }
     install_conscrypt_tls_keys_callback_hook() {
         try {
@@ -2295,7 +2308,7 @@ export function nss_execute(moduleName, is_base_hook) {
     }
 }
 ✄
-{"version":3,"file":"openssl_boringssl_linux.js","sourceRoot":"/home/julian/Documents/friTap/","sources":["agent/linux/openssl_boringssl_linux.ts"],"names":[],"mappings":"AACA,OAAO,EAAC,iBAAiB,EAAE,MAAM,iCAAiC,CAAC;AACnE,OAAO,EAAE,cAAc,EAAE,MAAM,kBAAkB,CAAC;AAGlD,MAAM,OAAO,uBAAwB,SAAQ,iBAAiB;IAE1D,YAAmB,UAAiB,EAAS,cAAqB,EAAE,YAAqB;QACrF,KAAK,CAAC,UAAU,EAAC,cAAc,EAAC,YAAY,CAAC,CAAC;QAD/B,eAAU,GAAV,UAAU,CAAO;QAAS,mBAAc,GAAd,cAAc,CAAO;IAElE,CAAC;IAED,8BAA8B;QAE1B,IAAI,CAAC,2BAA2B,GAAG,IAAI,CAAC,SAAS,CAAC,CAAC,CAAC,IAAI,cAAc,CAAC,IAAI,CAAC,SAAS,CAAC,IAAI,CAAC,WAAW,CAAC,CAAC,2BAA2B,CAAC,EAAE,MAAM,EAAE,CAAC,SAAS,EAAE,SAAS,CAAC,CAAC,CAAC,CAAC,CAAC,IAAI,cAAc,CAAC,IAAI,CAAC,SAAS,CAAC,IAAI,CAAC,WAAW,CAAC,CAAC,6BAA6B,CAAC,EAAE,MAAM,EAAE,CAAC,SAAS,EAAE,SAAS,CAAC,CAAC,CAAC;QAC5R,IAAI,QAAQ,GAAG,IAAI,CAAC;QAEpB,WAAW,CAAC,MAAM,CAAC,IAAI,CAAC,SAAS,CAAC,IAAI,CAAC,WAAW,CAAC,CAAC,SAAS,CAAC,EAC9D;YACI,OAAO,EAAE,UAAU,IAAS;gBACxB,QAAQ,CAAC,2BAA2B,CAAC,IAAI,CAAC,CAAC,CAAC,EAAE,iBAAiB,CAAC,eAAe,CAAC,CAAA;YACpF,CAAC;SAEJ,CAAC,CAAC;QAGH,WAAW,CAAC,MAAM,CAAC,IAAI,CAAC,SAAS,CAAC,IAAI,CAAC,WAAW,CAAC,CAAC,kBAAkB,CAAC,EACvE;YACI,OAAO,EAAE,UAAU,IAAS;gBACxB,QAAQ,CAAC,2BAA2B,CAAC,IAAI,CAAC,CAAC,CAAC,EAAE,iBAAiB,CAAC,eAAe,CAAC,CAAA;YACpF,CAAC;SAEJ,CAAC,CAAC;IACP,CAAC;IAID,aAAa;QACT,IAAI,CAAC,2BAA2B,EAAE,CAAC;QACnC,IAAI,CAAC,4BAA4B,EAAE,CAAC;QACpC,IAAI,CAAC,8BAA8B,EAAE,CAAC;QACtC,IAAI,CAAC,sBAAsB,EAAE,CAAC;IAClC,CAAC;CAEJ;AAOD,MAAM,UAAU,cAAc,CAAC,UAAiB,EAAE,YAAqB;IACnE,IAAI,UAAU,GAAG,IAAI,uBAAuB,CAAC,UAAU,EAAC,cAAc,EAAE,YAAY,CAAC,CAAC;IACtF,UAAU,CAAC,aAAa,EAAE,CAAC;IAE3B,IAAI,YAAY,EAAE;QACd,MAAM,cAAc,GAAG,UAAU,CAAC,SAAS,CAAC,UAAU,CAAC,CAAC;QACxD,wDAAwD;QACxD,IAAI,MAAM,CAAC,IAAI,CAAC,cAAc,CAAC,CAAC,MAAM,GAAG,CAAC,EAAE;YACvC,MAAc,CAAC,cAAc,CAAC,UAAU,CAAC,GAAG,cAAc,CAAC;SAC/D;KACJ;AAEL,CAAC"}
+{"version":3,"file":"openssl_boringssl_linux.js","sourceRoot":"/home/julian/Documents/friTap/","sources":["agent/linux/openssl_boringssl_linux.ts"],"names":[],"mappings":"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"}
 ✄
 import { OpenSSL_BoringSSL } from "../ssl_lib/openssl_boringssl.js";
 import { socket_library } from "./linux_agent.js";
@@ -2308,14 +2321,35 @@ export class OpenSSL_BoringSSL_Linux extends OpenSSL_BoringSSL {
     install_tls_keys_callback_hook() {
         this.SSL_CTX_set_keylog_callback = ObjC.available ? new NativeFunction(this.addresses[this.module_name]["SSL_CTX_set_info_callback"], "void", ["pointer", "pointer"]) : new NativeFunction(this.addresses[this.module_name]["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"]);
         var instance = this;
-        Interceptor.attach(this.addresses[this.module_name]["SSL_new"], {
+        if (this.addresses[this.module_name]["SSL_CTX_new"] === null) {
+            Interceptor.attach(this.addresses[this.module_name]["SSL_new"], {
+                onEnter: function (args) {
+                    instance.SSL_CTX_set_keylog_callback(args[0], OpenSSL_BoringSSL.keylog_callback);
+                }
+            });
+        }
+        else {
+            Interceptor.attach(this.addresses[this.module_name]["SSL_CTX_new"], {
+                onLeave: function (retval) {
+                    instance.SSL_CTX_set_keylog_callback(retval, OpenSSL_BoringSSL.keylog_callback);
+                }
+            });
+        }
+        // In case a callback is set by the appliction, we attach to this callback instead 
+        // Only succeeds if SSL_CTX_new is available
+        let setter_address = ObjC.available ? "SSL_CTX_set_info_callback" : "SSL_CTX_set_keylog_callback";
+        Interceptor.attach(this.addresses[this.module_name][setter_address], {
             onEnter: function (args) {
-                instance.SSL_CTX_set_keylog_callback(args[0], OpenSSL_BoringSSL.keylog_callback);
-            }
-        });
-        Interceptor.attach(this.addresses[this.module_name]["SSL_do_handshake"], {
-            onEnter: function (args) {
-                instance.SSL_CTX_set_keylog_callback(args[0], OpenSSL_BoringSSL.keylog_callback);
+                let callback_func = args[1];
+                //devlog("args[1]: " + callback_func);
+                Interceptor.attach(callback_func, {
+                    onEnter: function (args) {
+                        var message = {};
+                        message["contentType"] = "keylog";
+                        message["keylog"] = args[1].readCString();
+                        send(message);
+                    }
+                });
             }
         });
     }
