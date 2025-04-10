@@ -1,6 +1,8 @@
 import { readAddresses, getPortsAndAddresses, toHexString, getBaseAddress } from "../shared/shared_functions.js";
 import { log } from "../util/log.js";
 import { offsets, enable_default_fd } from "../ssl_log.js";
+import { isSymbolAvailable } from "../shared/shared_functions.js";
+import { devlog } from "../util/log.js";
 
 export class WolfSSL {
 
@@ -19,8 +21,13 @@ export class WolfSSL {
         if(typeof passed_library_method_mapping !== 'undefined'){
             this.library_method_mapping = passed_library_method_mapping;
         }else{
-            this.library_method_mapping[`*${moduleName}*`] = ["wolfSSL_read", "wolfSSL_write", "wolfSSL_get_fd", "wolfSSL_get_session", "wolfSSL_connect", "wolfSSL_KeepArrays", "wolfSSL_SESSION_get_master_key", "wolfSSL_get_client_random", "wolfSSL_get_server_random"]
+            this.library_method_mapping[`*${moduleName}*`] = ["wolfSSL_read", "wolfSSL_write", "wolfSSL_get_fd", "wolfSSL_get_session", "wolfSSL_connect", "wolfSSL_KeepArrays", "wolfSSL_get_client_random", "wolfSSL_get_server_random"]
             this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
+
+            // wolfSSL_SESSION_get_master_key is not available in some of the newer versions
+            if (isSymbolAvailable(moduleName, "wolfSSL_SESSION_get_master_key")) {
+                this.library_method_mapping[`*${moduleName}*`].push("wolfSSL_SESSION_get_master_key");
+            }
         }
         
         this.addresses = readAddresses(moduleName,this.library_method_mapping);
@@ -58,6 +65,58 @@ export class WolfSSL {
         WolfSSL.wolfSSL_get_session = new NativeFunction(this.addresses[this.moduleName]["wolfSSL_get_session"], "pointer", ["pointer"])
        
 
+    }
+
+
+    // https://github.com/wolfSSL/wolfssl/blob/6d299ea943d14ddeac37bed20ae84807e82b1c19/wolfssl/internal.h#L5809
+    // Default config: haproxy = false, nginx = false
+    static get_arrays_offset(haproxy: boolean, nginx: boolean, module_name: string) {
+        // Depending on the available symbols we can determine the used build config in order to calculate the offset of the arrays struct
+        let extra: boolean = isSymbolAvailable(module_name, "wolfSSL_OPENSSL_init_ssl") // default config: true
+        let all: boolean = isSymbolAvailable(module_name, "wolfSSL_CTX_set_cert_verify_callback") // default config: false
+
+        let offset = Process.pointerSize; // ctx: NativePointer, 
+        if (haproxy) offset += Process.pointerSize; // inital_ctx: NatviePointer
+        offset += Process.pointerSize * 2 // suites: NativePointer, clSuites: NativePointer
+        // suitesStack: NativePointer, clSuitesStack
+        if (haproxy || extra || all || nginx) offset += Process.pointerSize * 2;
+        return offset;
+    }
+
+    // parse the structure containing the used secrets
+    // https://github.com/wolfSSL/wolfssl/blob/6d299ea943d14ddeac37bed20ae84807e82b1c19/wolfssl/internal.h#L5175
+    static parse_arrays(arrays: NativePointer, client_random: string, server_random: string) {
+        let have_session_ticket: boolean;
+        let offset = Process.pointerSize * 2;
+        offset += 3 * 4; // 3 unsigned ints
+
+        // read the memory and check if its the client_random
+        try {
+            let possible_cr_str = arrays.add(offset).readByteArray(32);
+            let possible_cr_hex = Array.from(new Uint8Array(possible_cr_str)).map(b => b.toString(16).padStart(2, '0')).join('');
+            devlog("Comparing client_randoms: " + possible_cr_hex + " and " + client_random);
+            if (possible_cr_hex === client_random) {
+                have_session_ticket = false;
+            } else {
+                have_session_ticket = true;
+            }
+        } catch(e) {
+            have_session_ticket = true;
+        }
+
+        if (have_session_ticket) {
+            // Add the offsets
+        }
+
+        // read the memory and check if its the server_random
+        try {
+            let possible_sr_str = arrays.add(offset).readByteArray(32);
+            let possible_sr_hex = Array.from(new Uint8Array(possible_sr_str)).map(b => b.toString(16).padStart(2, '0')).join('');
+            devlog("Comparing server_randoms: " + possible_sr_hex + " and " +server_random);
+            if (possible_sr_hex === server_random) {
+                
+            }
+        }
     }
 
     install_tls_keys_callback_hook(){
@@ -140,6 +199,11 @@ export class WolfSSL {
         })
     }
 
+
+
+    static parse_WOLFSSL_struct(ssl: NativePointer) {
+
+    }
     
 
 }
