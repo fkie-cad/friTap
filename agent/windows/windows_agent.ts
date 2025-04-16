@@ -38,7 +38,13 @@ function hook_Windows_Dynamic_Loader(module_library_mapping: { [key: string]: Ar
 
                     if (regex.test(moduleName)) {
                         log(`${moduleName} was loaded & will be hooked on Windows!`)
-                        func(moduleName, is_base_hook)
+                        try {
+                            func(moduleName, is_base_hook)
+                        } catch (error_msg) {
+                            devlog(`Windows dynamic loader error: ${error_msg}`)
+                        }
+                        log("\n[*] Remember to hook the default SSL provider for the Windows API you have to hook lsass.exe\n");
+                        
                     }
 
                 }

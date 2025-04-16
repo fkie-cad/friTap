@@ -1,6 +1,7 @@
 import { module_library_mapping, ModuleHookingType } from "../shared/shared_structures.js";
 import { getModuleNames, ssl_library_loader, invokeHookingFunction } from "../shared/shared_functions.js";
 import { log, devlog } from "../util/log.js";
+import { findModulesWithSSLKeyLogCallback, createModuleLibraryMappingExtend } from "../shared/library_identification.js";
 import { gnutls_execute } from "./gnutls_android.js";
 import { wolfssl_execute } from "./wolfssl_android.js";
 import { nss_execute } from "./nss_android.js";
@@ -157,4 +158,21 @@ export function load_android_hooking_agent() {
     if (isPatternReplaced()){
         install_pattern_based_hooks();
     }
+
+    /*
+     * Our simple approach to find the modules which might use BoringSSL internally
+     */
+    try{
+        let matchedModules = findModulesWithSSLKeyLogCallback();
+        if (matchedModules.length > 0) {
+            const moduleLibraryMappingExtend: { [key: string]: Array<[RegExp, ModuleHookingType]> } = {};
+
+            moduleLibraryMappingExtend[plattform_name] = createModuleLibraryMappingExtend(matchedModules, boring_execute);
+            hook_native_Android_SSL_Libs(moduleLibraryMappingExtend, false);
+            hook_Android_Dynamic_Loader(moduleLibraryMappingExtend, false);
+            log("[*] Hooked additional modules with SSL_CTX_set_keylog_callback.");
+        }
+    }catch (error_msg){
+        devlog("[-] Error in hooking additional modules: " + error_msg);
+    } 
 }

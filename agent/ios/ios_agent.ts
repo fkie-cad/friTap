@@ -33,7 +33,12 @@ function hook_iOS_Dynamic_Loader(module_library_mapping: { [key: string]: Array<
                         let func = map[1]
                         if (regex.test(this.moduleName)) {
                             log(`${this.moduleName} was loaded & will be hooked on iOS!`)
-                            func(this.moduleName, is_base_hook)
+                            try{
+                                func(this.moduleName, is_base_hook)
+                            }catch(error_msg){
+                                devlog(`iOS dynamic loader error: ${error_msg}`)
+                            }
+                            
                         }
 
                     }
