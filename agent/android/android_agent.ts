@@ -56,7 +56,12 @@ function hook_Android_Dynamic_Loader(module_library_mapping: { [key: string]: Ar
                     let func = map[1]
                     if (regex.test(this.moduleName)){
                         log(`${this.moduleName} was loaded & will be hooked on Android!`)
-                        func(this.moduleName, is_base_hook)
+                        try{
+                            func(this.moduleName, is_base_hook)
+                        }catch (error_msg){
+                            devlog(`[-] Error in hooking ${this.moduleName}: ${error_msg}`);
+                        }
+                        
                     } 
                     
                 }
@@ -95,7 +100,7 @@ function install_pattern_based_hooks(){
         if (data !== null && data.modules) {
             for (const moduleName in data.modules) {
                 if (Object.prototype.hasOwnProperty.call(data.modules, moduleName)) {
-                    console.log("[*] Module name:", moduleName);
+                    log("[*] Module name:"+ moduleName);
                     module_library_mapping[plattform_name] = [
                         [moduleName, invokeHookingFunction(pattern_execute)]];
                     

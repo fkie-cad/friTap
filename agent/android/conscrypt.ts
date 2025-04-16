@@ -2,6 +2,7 @@ import { devlog, devlog_error, log } from "../util/log.js";
 import { getAndroidVersion } from "../util/process_infos.js";
 import {OpenSSL_BoringSSL } from "../ssl_lib/openssl_boringssl.js";
 import { socket_library } from "./android_agent.js";
+import { isSymbolAvailable } from "../shared/shared_functions.js";
 
 export class Consycrypt_BoringSSL_Android extends OpenSSL_BoringSSL {
 
@@ -18,14 +19,17 @@ export class Consycrypt_BoringSSL_Android extends OpenSSL_BoringSSL {
         this.SSL_CTX_set_keylog_callback = new NativeFunction(this.addresses[this.module_name]["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"]);
         var instance = this;
 
-        Interceptor.attach(this.addresses[this.module_name]["SSL_CTX_new"], {
-            onLeave: function(retval) {
-                const ssl = new NativePointer(retval);
-                if (!ssl.isNull()) {
-                    instance.SSL_CTX_set_keylog_callback(ssl, OpenSSL_BoringSSL.keylog_callback)
+        if (isSymbolAvailable(this.module_name, "SSL_CTX_new")){
+
+            Interceptor.attach(this.addresses[this.module_name]["SSL_CTX_new"], {
+                onLeave: function(retval) {
+                    const ssl = new NativePointer(retval);
+                    if (!ssl.isNull()) {
+                        instance.SSL_CTX_set_keylog_callback(ssl, OpenSSL_BoringSSL.keylog_callback)
+                    }
                 }
-            }
-        });
+            });
+        }
 
     }
 
