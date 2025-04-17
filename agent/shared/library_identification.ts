@@ -14,6 +14,13 @@ export function findModulesWithSSLKeyLogCallback(): string[] {
             continue;
         }
 
+        /*
+        in future releases we want the below checks to be done only on these packages
+        let targetAppPackageName = getPackageName();
+        if (targetAppPackageName && mod.path.includes(targetAppPackageName)) {
+        }
+        */
+
         const targetModule = Process.getModuleByName(mod.name);
 
         const exports = targetModule.enumerateExports();
