@@ -123,3 +123,37 @@ export function getAndroidVersion(): number{
     
         
 }
+
+/**
+ * Returns the current Android package name that the script is running inside.
+ *
+ * Works on all modern Android versions (API 21 +).  Uses ActivityThread first;
+ * falls back to any available Context if necessary.
+ */
+export function getPackageName(): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      Java.perform(() => {
+        try {
+          // Preferred: ActivityThread.currentPackageName() (SDK ≈ 23 +)
+          const ActivityThread = Java.use('android.app.ActivityThread');
+          const currentPkg = ActivityThread.currentPackageName();
+          if (currentPkg && currentPkg.length > 0) {
+            return resolve(currentPkg);
+          }
+  
+          // Fallback: grab a Context and call getPackageName()
+          const Context = Java.use('android.content.Context');
+          const ActivityThread$ = Java.use('android.app.ActivityThread');
+          const app = ActivityThread$.currentApplication();
+          if (app && Context.isInstance(app)) {
+            // @ts-ignore
+            return resolve(app.getPackageName());
+          }
+  
+          return reject(new Error('Unable to obtain package name'));
+        } catch (err) {
+          return reject(err);
+        }
+      });
+    });
+  }
