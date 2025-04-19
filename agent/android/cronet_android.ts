@@ -64,6 +64,10 @@ export class Cronet_Android extends Cronet {
 
     // instead of relying on pattern we check if the target module has a symbol of ssl_log_secret()
     execute_symbol_based_hooking(hooker){
+        if(hooker === undefined || hooker === null){
+            devlog("[-] Error: Hooker is undefined.");
+            return;
+        }
         // Capture the dumpKeys function with the correct 'this'
         let dumpKeysFunc = this.dumpKeys.bind(this);
 
@@ -108,7 +112,12 @@ export function cronet_execute(moduleName:string, is_base_hook: boolean){
         let hooker = cronet.execute_hooks();
         // wait 1 sec before we continue
         setTimeout(function() {
-            cronet.execute_symbol_based_hooking(hooker);
+            try{
+                cronet.execute_symbol_based_hooking(hooker);
+            }catch(e){
+                devlog("[-] Error in cronet.execute_symbol_based_hooking: "+ e);
+            } 
+            
         }, 1000); 
     }catch(error_msg){
         devlog(`cronet_execute error: ${error_msg}`)
