@@ -14,7 +14,7 @@ import json
 import threading
 from .pcap import PCAP
 from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler, LoggingEventHandler
+from watchdog.events import FileSystemEventHandler
 
 try:
     import hexdump  # pylint: disable=g-import-not-at-top
@@ -152,7 +152,7 @@ class SSL_Logger():
         """
         This offers the possibility to work with the JobManger() from the AndroidFridaManager project.
         """
-        if self.script == None:
+        if self.script is None:
             self.script = job.script
             
         if self.startup and message['payload'] == 'experimental':
@@ -572,6 +572,9 @@ class SSL_Logger():
                     time.sleep(1)
                     self.pcap_obj.full_capture_thread.mobile_subprocess.terminate()
                     self.pcap_obj.full_capture_thread.mobile_subprocess.wait()
+                    if not self.pcap_obj.android_Instance.is_tcpdump_available():
+                        print("[-] tcpdump is not available on the device.")
+                        return
                     self.pcap_obj.android_Instance.pull_pcap_from_device()
                 print(f"[*] full {capture_type} capture safed to _{pcap_name}")
                 if self.keylog_file is None:
@@ -655,7 +658,6 @@ def get_addr_string(socket_addr,ss_family):
     else: # this should only be AF_INET6
         raw_addr = bytes.fromhex(socket_addr)
         return socket.inet_ntop(socket.AF_INET6, struct.pack(">16s", raw_addr))
-            
 
 
-   
+

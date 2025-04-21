@@ -294,7 +294,26 @@ export class PatternBasedHooking {
                 });
             },
             onError: (reason) => {
-                devlog_error(`Error scanning memory: ${reason}`);
+                if (!this.found_ssl_log_secret) {
+                    devlog_error('There was an error scanning memory: ' + reason);
+                    devlog_error('Trying to rescan memory with permissions in mind');
+                    this.hookByPatternOnlyReadableParts(patterns, pattern_name, onMatchCallback, (primary_success) => {
+                        if (!primary_success) {
+                            devlog("Primary pattern failed, trying fallback pattern...");
+                            this.hookByPatternOnlyReadableParts(patterns, "fallback_pattern", onMatchCallback, (fallback_success) => {
+                                if (!fallback_success) {
+                                    devlog("Fallback pattern failed, trying second fallback pattern...");
+                                    this.hookByPatternOnlyReadableParts(patterns, "second_fallback_pattern", onMatchCallback, (second_fallback_success) => {
+                                        if (!second_fallback_success) {
+                                            devlog("None of the patterns worked. You may need to adjust the patterns.");
+                                            this.no_hooking_success = true;
+                                        }
+                                    });
+                                }
+                            });
+                        }
+                    });
+                }
             },
             onComplete: () => {
                 onCompleteCallback(this.found_ssl_log_secret);
@@ -304,7 +323,7 @@ export class PatternBasedHooking {
 
     // Method to hook by pattern, with a custom function to handle onEnter and onLeave
     hookByPatternOnlyReadableParts(
-        patterns: { primary: string; fallback: string },
+        patterns: { primary: string; fallback: string; second_fallback?: string },
         pattern_name: string,
         onMatchCallback: (args: any[]) => void,
         onCompleteCallback: (found: boolean) => void
@@ -314,6 +333,10 @@ export class PatternBasedHooking {
         var pattern: string = "";
         if (pattern_name === "primary_pattern") {
             pattern = patterns.primary;
+        } else if (pattern_name === "fallback_pattern") {
+            pattern = patterns.fallback;
+        } else if (pattern_name === "second_fallback_pattern" && patterns.second_fallback) {
+            pattern = patterns.second_fallback;
         }else{
             pattern = patterns.fallback;
         }

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import ntpath
+import subprocess
 from threading import Thread, Event
 import random
 import logging
@@ -12,7 +13,6 @@ import warnings
 warnings.simplefilter("ignore", ResourceWarning)
 
 try:
-    from scapy.error import Scapy_Exception
     from scapy.all import wrpcap, conf, ETH_P_ALL, sniff, Scapy_Exception
 except ImportError:
 	print('[-]: scapy is not installed, please install it by running: pip3 install scapy')
@@ -181,7 +181,7 @@ class PCAP:
                         try:
                             self.android_capture_process.wait(timeout=2)  # Wait for graceful termination
                         except subprocess.TimeoutExpired:
-                            print(f"[-] Android capture thread did not terminate. Forcing kill.")
+                            print("[-] Android capture thread did not terminate. Forcing kill.")
                             self.android_capture_process.kill()
 
                 super().join(timeout)
@@ -201,7 +201,7 @@ class PCAP:
                         pcap_class.android_Instance.push_tcpdump_to_device()
                     self.android_capture_process = pcap_class.android_Instance.run_tcpdump_capture("_"+self._get_pcap_base_name())
                     
-                    print(f"[*] doing full capture on Android")
+                    print("[*] doing full capture on Android")
                     return self.android_capture_process
                 else:
                     print("[-] currently a full capture on iOS is not supported\nAbborting...")
