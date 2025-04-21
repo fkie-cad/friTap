@@ -1,0 +1,25 @@
+name: CI            # shows as “CI” in the Actions tab
+
+on:
+  push:
+    branches: [main]
+  pull_request:      # runs on every PR
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e .[dev]            # adjust extras as needed
+#      - run: pytest -q                        # or your test command

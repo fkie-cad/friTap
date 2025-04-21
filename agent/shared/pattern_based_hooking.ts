@@ -4,6 +4,7 @@ import { isAndroid, isiOS,isMacOS } from "../util/process_infos.js"
 type Pattern = {
     primary: string;
     fallback: string;
+    second_fallback?: string; // Optionales zweites Fallback
 };
 
 type ActionPatterns = {
@@ -14,16 +15,18 @@ type ActionPatterns = {
     "KeyLogCallback-Function": Pattern;
 };
 
-export function get_CPU_specific_pattern(default_pattern : { [arch: string]: { primary: string; fallback: string } }): { primary: string; fallback: string } {
+export function get_CPU_specific_pattern(
+    default_pattern: { [arch: string]: { primary: string; fallback: string; second_fallback?: string } }
+): { primary: string; fallback: string; second_fallback?: string } {
     let arch = Process.arch.toString(); // Get architecture, e.g., "x64", "arm64"
-    
-    if(arch == "ia32"){
-        arch = "x86"
+
+    if (arch === "ia32") {
+        arch = "x86";
     }
-    devlog("Trying Pattern: "+JSON.stringify(default_pattern[arch]));
-    
+    devlog("Trying Pattern: " + JSON.stringify(default_pattern[arch]));
+
     if (default_pattern[arch]) {
-        return default_pattern[arch];  // Return the pattern for the architecture
+        return default_pattern[arch]; // Return the pattern for the architecture
     } else {
         throw new Error(`No patterns found for CPU architecture: ${arch}`);
     }
@@ -254,7 +257,7 @@ export class PatternBasedHooking {
 
     // Method to hook by pattern, with a custom function to handle onEnter and onLeave
     hookByPattern(
-        patterns: { primary: string; fallback: string },
+        patterns: { primary: string; fallback: string; second_fallback?: string },
         pattern_name: string,
         onMatchCallback: (args: any[]) => void,
         onCompleteCallback: (found: boolean) => void
@@ -263,11 +266,17 @@ export class PatternBasedHooking {
         const moduleSize = this.module.size;
         this.found_ssl_log_secret = false;
 
-        var pattern: string = "";
+        let pattern: string;
         if (pattern_name === "primary_pattern") {
             pattern = patterns.primary;
-        }else{
+        } else if (pattern_name === "fallback_pattern") {
             pattern = patterns.fallback;
+        } else if (pattern_name === "second_fallback_pattern" && patterns.second_fallback) {
+            pattern = patterns.second_fallback;
+        } else {
+            devlog_error(`Pattern ${pattern_name} not found or not provided.`);
+            onCompleteCallback(false);
+            return;
         }
 
         Memory.scan(moduleBase, moduleSize, pattern, {
@@ -275,40 +284,21 @@ export class PatternBasedHooking {
                 this.found_ssl_log_secret = true;
                 this.no_hooking_success = false;
                 log(`Pattern found at (${pattern_name}) address: ${address}`);
-                log(`Pattern based hooks installed.`);
+                log(`Pattern-based hooks installed.`);
 
                 // Attach the hook using the provided onMatchCallback
                 Interceptor.attach(address, {
                     onEnter: function (args) {
                         onMatchCallback(args);
                     },
-                    onLeave: function (retval) {
-                        // Optionally handle return value or additional behavior
-                    }
                 });
             },
             onError: (reason) => {
-                if(!this.found_ssl_log_secret){
-                    devlog_error('There was an error scanning memory: '+reason);
-                    devlog_error('Trying to rescan memory with permissions in mind');
-                    this.hookByPatternOnlyReadableParts(patterns, pattern_name, onMatchCallback,(pattern_success) => {
-                        // If the primary pattern doesn't work, try the fallback pattern
-                        if (!pattern_success) {
-                            devlog("Primary pattern failed, trying fallback pattern...");
-                            this.hookByPatternOnlyReadableParts(patterns, "fallback_pattern", onMatchCallback, (pattern_success_alt) => {
-                                if (!pattern_success_alt) {
-                                    devlog("None of the patterns worked. You may need to adjust the patterns.");
-                                    this.no_hooking_success = true;
-                                }
-                            });
-                        }
-
-                    });
-                }
+                devlog_error(`Error scanning memory: ${reason}`);
             },
             onComplete: () => {
                 onCompleteCallback(this.found_ssl_log_secret);
-            }
+            },
         });
     }
 
@@ -467,22 +457,23 @@ export class PatternBasedHooking {
 
     // Method to hook the module with patterns provided as arguments
     hookModuleByPattern(
-        patterns: { primary: string; fallback: string },
+        patterns: { primary: string; fallback: string; second_fallback?: string },
         onMatchCallback: (args: any[]) => void
     ): void {
-        const moduleBase = this.module.base;
-        const moduleSize = this.module.size;
-        devlog(`Module Base Address: ${moduleBase}`);
-        devlog(`Module Size: ${moduleSize}`);
-
-        // Start by hooking using the primary pattern
-        this.hookByPattern(patterns, "primary_pattern", onMatchCallback, (pattern_success) => {
-            // If the primary pattern doesn't work, try the fallback pattern
-            if (!pattern_success) {
+        this.hookByPattern(patterns, "primary_pattern", onMatchCallback, (primary_success) => {
+            if (!primary_success) {
                 devlog("Primary pattern failed, trying fallback pattern...");
-                this.hookByPattern(patterns, "fallback_pattern", onMatchCallback, (pattern_success_alt) => {
-                    if (!pattern_success_alt) {
-                        devlog("None of the patterns worked. You may need to adjust the patterns.");
+                this.hookByPattern(patterns, "fallback_pattern", onMatchCallback, (fallback_success) => {
+                    if (!fallback_success && patterns.second_fallback) {
+                        devlog("Fallback pattern failed, trying second fallback pattern...");
+                        this.hookByPattern(patterns, "second_fallback_pattern", onMatchCallback, (second_fallback_success) => {
+                            if (!second_fallback_success) {
+                                devlog("None of the patterns worked. Adjust patterns as needed.");
+                                this.no_hooking_success = true;
+                            }
+                        });
+                    } else if (!fallback_success) {
+                        devlog("None of the patterns worked. Adjust patterns as needed.");
                         this.no_hooking_success = true;
                     }
                 });

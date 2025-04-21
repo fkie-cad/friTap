@@ -3,7 +3,9 @@
 </p>
 
 # friTap
-![version](https://img.shields.io/badge/version-1.3.2.5-blue) [![PyPI version](https://d25lcipzij17d.cloudfront.net/badge.svg?id=py&r=r&ts=1683906897&type=6e&v=1.3.2.5&x2=0)](https://badge.fury.io/py/friTap)
+![version](https://img.shields.io/badge/version-1.3.2.6-blue) [![PyPI version](https://d25lcipzij17d.cloudfront.net/badge.svg?id=py&r=r&ts=1683906897&type=6e&v=1.3.2.6&x2=0)](https://badge.fury.io/py/friTap) [![CI](https://github.com/fkie-cad/friTap/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/fkie-cad/friTap/actions/workflows/ci.yml)
+[![Ruff](https://github.com/fkie-cad/friTap/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/fkie-cad/friTap/actions/workflows/lint.yml)
+[![Publish status](https://github.com/fkie-cad/friTap/actions/workflows/publish.yml/badge.svg?branch=main)](https://github.com/fkie-cad/friTap/actions/workflows/publish.yml)
 
 friTap is a powerful tool designed to assist researchers in analyzing network traffic encapsulated in SSL/TLS. With its ability to automate key extraction, friTap is especially valuable when dealing with malware analysis or investigating privacy issues in applications. By simplifying the process of decrypting and inspecting encrypted traffic, friTap empowers researchers to uncover critical insights with ease.
 
