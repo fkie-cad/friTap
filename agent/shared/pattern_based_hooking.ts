@@ -295,17 +295,17 @@ export class PatternBasedHooking {
             },
             onError: (reason) => {
                 if (!this.found_ssl_log_secret) {
-                    devlog_error('There was an error scanning memory: ' + reason);
-                    devlog_error('Trying to rescan memory with permissions in mind');
+                    devlog_error('[!] There was an error scanning memory: ' + reason);
+                    devlog_error('[!] Trying to rescan memory with permissions in mind');
                     this.hookByPatternOnlyReadableParts(patterns, pattern_name, onMatchCallback, (primary_success) => {
                         if (!primary_success) {
-                            devlog("Primary pattern failed, trying fallback pattern...");
+                            devlog("[!] Primary pattern failed, trying fallback pattern...");
                             this.hookByPatternOnlyReadableParts(patterns, "fallback_pattern", onMatchCallback, (fallback_success) => {
                                 if (!fallback_success) {
-                                    devlog("Fallback pattern failed, trying second fallback pattern...");
+                                    devlog("[!] Fallback pattern failed, trying second fallback pattern...");
                                     this.hookByPatternOnlyReadableParts(patterns, "second_fallback_pattern", onMatchCallback, (second_fallback_success) => {
                                         if (!second_fallback_success) {
-                                            devlog("None of the patterns worked. You may need to adjust the patterns.");
+                                            devlog("[!] None of the patterns worked. You may need to adjust the patterns.");
                                             this.no_hooking_success = true;
                                         }
                                     });

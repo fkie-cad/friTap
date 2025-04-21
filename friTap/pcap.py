@@ -10,7 +10,6 @@ import psutil
 import struct
 import traceback
 import warnings
-warnings.simplefilter("ignore", ResourceWarning)
 
 try:
     from scapy.all import wrpcap, conf, ETH_P_ALL, sniff, Scapy_Exception
@@ -197,7 +196,7 @@ class PCAP:
                 
             def full_mobile_capture(self):
                 if pcap_class.android_Instance.is_Android():
-                    if pcap_class.android_Instance.is_tcpdump_available == False:
+                    if not pcap_class.android_Instance.is_tcpdump_available: 
                         pcap_class.android_Instance.push_tcpdump_to_device()
                     self.android_capture_process = pcap_class.android_Instance.run_tcpdump_capture("_"+self._get_pcap_base_name())
                     

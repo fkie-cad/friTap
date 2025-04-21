@@ -181,7 +181,7 @@ class SSL_Logger():
             return
         
         p = message["payload"]
-        if not "contentType" in p:
+        if "contentType" not in p:
             return
         if p["contentType"] == "console":
             if p["console"].startswith("[*]"):
@@ -208,7 +208,7 @@ class SSL_Logger():
                 src_addr = get_addr_string(p["src_addr"], p["ss_family"])
                 dst_addr = get_addr_string(p["dst_addr"], p["ss_family"])
 
-                if self.socket_trace == False and self.full_capture == False:
+                if not self.socket_trace and not self.full_capture:
                     print("SSL Session: " + str(p["ssl_session_id"]))
 
                 if self.full_capture:
@@ -243,10 +243,10 @@ class SSL_Logger():
                     print("[%s] %s:%d --> %s:%d" % (p["function"], src_addr, p["src_port"], dst_addr, p["dst_port"]))
                     hexdump.hexdump(data)
                 print()
-        if self.pcap_name and p["contentType"] == "datalog" and self.full_capture == False:
+        if self.pcap_name and p["contentType"] == "datalog" and not self.full_capture:
             self.pcap_obj.log_plaintext_payload(p["ss_family"], p["function"], p["src_addr"],
                      p["src_port"], p["dst_addr"], p["dst_port"], data)
-        if self.live and p["contentType"] == "datalog" and self.full_capture == False:
+        if self.live and p["contentType"] == "datalog" and not self.full_capture:
             try:
                 self.pcap_obj.log_plaintext_payload(p["ss_family"], p["function"], p["src_addr"],
                          p["src_port"], p["dst_addr"], p["dst_port"], data)
@@ -483,7 +483,7 @@ class SSL_Logger():
 
         if self.pcap_name and self.full_capture:
             print(f'[*] Logging pcap to {self.pcap_name}')
-        if self.pcap_name and self.full_capture == False:
+        if self.pcap_name and not self.full_capture:
             print(f'[*] Logging TLS plaintext as pcap to {self.pcap_name}')
         if self.keylog:
             print(f'[*] Logging keylog file to {self.keylog}')
@@ -564,7 +564,7 @@ class SSL_Logger():
         if is_full_capture and self.pcap_obj is not None:
                 capture_type = "local"
                 self.pcap_obj.full_capture_thread.join(2.0)
-                if self.pcap_obj.full_capture_thread.is_alive() and is_mobile == False:
+                if self.pcap_obj.full_capture_thread.is_alive() and not is_mobile:
                     self.pcap_obj.full_capture_thread.socket.close()
                 if self.pcap_obj.full_capture_thread.mobile_subprocess != -1:
                     capture_type = "mobile"

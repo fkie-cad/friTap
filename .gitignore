@@ -35,7 +35,7 @@ vnev/
 build/
 venv/
 env/
-
+universal_key_dump_android.js
 
 ExampleLinux/.devcontainer/*
 ExampleLinux/sslserver
