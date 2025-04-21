@@ -26,6 +26,12 @@ def get_version():
         exec(f.read(), about)
     return about["__version__"]
 
+def get_author():
+    author = {}
+    with open(init_py_path) as f:
+        exec(f.read(), author)
+    return author["__author__"]
+
 
 # Define dependencies directly in setup.py
 requirements = [
@@ -59,7 +65,7 @@ setup(
 
     url="https://github.com/fkie-cad/friTap",
 
-    author_name=__author__,
+    author_name=get_author(),
     author_email="daniel.baier@fkie.fraunhofer.de",
     license='GPL v3',
 

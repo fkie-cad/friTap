@@ -108,11 +108,11 @@ class SSL_Logger():
             if self.pcap_name:
                 print("[*] YOU ARE TRYING TO WRITE A PCAP AND HAVING A LIVE VIEW\nTHIS IS NOT SUPPORTED!\nWHEN YOU DO A LIVE VIEW YOU CAN SAFE YOUR CAPUTRE WITH WIRESHARK.")
             fifo_file = self.temp_fifo()
-            print(f'[*] friTap live view on Wireshark')
+            print('[*] friTap live view on Wireshark')
             print(f'[*] Created named pipe for Wireshark live view to {fifo_file}')
             print(
                 f'[*] Now open this named pipe with Wireshark in another terminal: sudo wireshark -k -i {fifo_file}')
-            print(f'[*] friTap will continue after the named pipe is ready....\n')
+            print('[*] friTap will continue after the named pipe is ready....\n')
             self.pcap_obj =  PCAP(fifo_file,SSL_READ,SSL_WRITE,self.full_capture, self.mobile,self.debug)
 
     
@@ -299,7 +299,7 @@ class SSL_Logger():
             return
         
         custom_hook_payload = message["payload"]
-        if not "custom" in custom_hook_payload:
+        if "custom" not in custom_hook_payload:
             return
 
         print("[+] custom hook: "+custom_hook_payload["custom"])
@@ -345,7 +345,7 @@ class SSL_Logger():
 
 
         if self.pattern_data is not None:
-            print(f"[*] Using pattern provided by pattern.json for hooking")
+            print("[*] Using pattern provided by pattern.json for hooking")
 
         
         if self.custom_hook_script is not None:
@@ -359,7 +359,7 @@ class SSL_Logger():
         if self.debug and frida.__version__ >= "16":
             self.script.enable_debugger(debug_port)
 
-        if own_message_handler != None:
+        if own_message_handler is not None:
             self.script.on("message", self._provide_custom_hooking_handler(own_message_handler))
             return self.script
         else:
@@ -529,7 +529,7 @@ class SSL_Logger():
                     print("[*] Attempting to detach from Frida process...")
                 try:
                     self.script.unload()
-                except:
+                except Exception:
                     pass
 
                 self.process.detach()
@@ -578,7 +578,7 @@ class SSL_Logger():
                     self.pcap_obj.android_Instance.pull_pcap_from_device()
                 print(f"[*] full {capture_type} capture safed to _{pcap_name}")
                 if self.keylog_file is None:
-                    print(f"[*] remember that the full capture won't contain any decrypted TLS traffic.")
+                    print("[*] remember that the full capture won't contain any decrypted TLS traffic.")
                 else:
                     print(f"[*] remember that the full capture won't contain any decrypted TLS traffic. In order to decrypt it use the logged keys from {self.keylog_file.name}")
     
@@ -594,7 +594,7 @@ class SSL_Logger():
         if type(socket_trace) is str:
             print(f"[*] Write traced sockets into {socket_trace}")
             self.write_socket_trace(socket_trace)
-        if socket_trace == True:
+        if socket_trace:
             display_filter = PCAP.get_filter_from_traced_sockets(self.traced_Socket_Set, filter_type="display")
             print(f"[*] Generated Display Filter for Wireshark:\n{display_filter}")
         
@@ -609,7 +609,7 @@ class SSL_Logger():
                 print(f"Error: {e}")
 
         elif full_capture and len(self.traced_scapy_socket_Set) < 1:
-            if socket_trace == True:
+            if socket_trace:
                 print(f"[-] friTap was unable to indentify the used sockets. \n[*] The resulting PCAP _{self.pcap_obj.pcap_file_name} will contain all trafic from the device.")
             else:
                 print(f"[*] friTap not trace the sockets in use (--socket_tracing option not enabled)\n[*] The resulting PCAP _{self.pcap_obj.pcap_file_name} will contain all trafic from the device.")
