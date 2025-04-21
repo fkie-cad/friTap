@@ -50,7 +50,7 @@ class Android:
         if self.device_id:
             adb_command.extend(['-s', self.device_id])
         
-        if self.adb_check_root() == False:
+        if not self.adb_check_root():
             print("[-] none rooted device. Please root it before trying a full-capture with friTap and ensure that you are able to run commands with the su-binary....")
             exit(2)
 
@@ -87,7 +87,7 @@ class Android:
     
     
     def _adb_make_binary_executable(self, path):
-        output = self.run_adb_command_as_root("chmod +x "+path+self.tcpdump_version)
+        self.run_adb_command_as_root("chmod +x "+path+self.tcpdump_version)
     
     
     def _get_appropriate_android_tcpdump_version(self,passed_arch):

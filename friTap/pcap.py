@@ -8,15 +8,12 @@ import time
 import psutil
 import struct
 import traceback
-# ensure that we only see errors from scapy 
-logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
-
 import warnings
 warnings.simplefilter("ignore", ResourceWarning)
 
 try:
     from scapy.error import Scapy_Exception
-    from scapy.all import *
+    from scapy.all import wrpcap, conf, ETH_P_ALL, sniff, Scapy_Exception
 except ImportError:
 	print('[-]: scapy is not installed, please install it by running: pip3 install scapy')
 	exit(2)
@@ -25,6 +22,11 @@ from .android import Android
  
 INVALID_IPV4 = "0.0.0.0"
 INVALID_IPV6 = "::"
+
+# Configure logging to suppress scapy warnings
+logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
+warnings.simplefilter("ignore", ResourceWarning)
+
 
 def terminate_lingering_processes(parent_pid):
     parent = psutil.Process(parent_pid)
@@ -448,6 +450,6 @@ class PCAP:
         if src_addr == "::" or dst_addr == "::" or not src_addr or not dst_addr:
             return ""  # Skip invalid entries
         return f"(src host {src_addr} and dst host {dst_addr})"
-    
-        
+
+
 

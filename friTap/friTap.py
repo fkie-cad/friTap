@@ -10,7 +10,6 @@ import traceback
 from .about import __version__
 from .about import __author__
 from .ssl_logger import SSL_Logger
-import logging
 
 
 
