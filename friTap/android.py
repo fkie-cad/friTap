@@ -5,11 +5,7 @@ from os.path import exists as file_exists
 import os
 import frida
 import subprocess
-import sys
 import shlex
-
-if sys.version_info >= (3,10):
-    from importlib.resources import files
 
 
 class Android:
@@ -218,7 +214,7 @@ class Android:
                 print("[-] No running tcpdump processes found")
         
     def close_friTap_if_none_android(self):
-        if self.is_Android == False:
+        if not self.is_Android():
             print("[-] none Android device\nclosing friTap...")
             exit(2)
     

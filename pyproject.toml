@@ -1,3 +1,7 @@
 [build-system]
 requires = ["setuptools>=42", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+# Add to Ruff’s built‑in ignore list.
+extend-exclude = ["create_standalone_release"]
