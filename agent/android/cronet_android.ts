@@ -40,6 +40,10 @@ export class Cronet_Android extends Cronet {
 
     install_key_extraction_hook(){
         const cronetModule = Process.findModuleByName(this.module_name);
+        if(cronetModule === null){
+            devlog("[-] Cronet Error: Unable to find module: " + this.module_name);
+            return;
+        }
         const hooker = new PatternBasedHooking(cronetModule);
 
         if (isPatternReplaced()){

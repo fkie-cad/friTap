@@ -42,6 +42,11 @@ export class PatternBasedHooking {
     constructor(module: Module) {
         this.found_ssl_log_secret = false;
         this.module = module;
+        if (this.module === null) {
+            devlog_error("[-] PatternBasedHooking Error: Unable to find module: " + this.module.name);
+            devlog_error("[-] PatternBasedHooking Error: Abborting...");
+            return;
+        }
         this.no_hooking_success = true;
     }
 
@@ -262,6 +267,7 @@ export class PatternBasedHooking {
         onMatchCallback: (args: any[]) => void,
         onCompleteCallback: (found: boolean) => void
     ): void {
+        devlog(`Trying to scan ${this.module.name} ...`);
         const moduleBase = this.module.base;
         const moduleSize = this.module.size;
         this.found_ssl_log_secret = false;
