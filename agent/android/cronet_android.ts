@@ -25,7 +25,7 @@ export class Cronet_Android extends Cronet {
                 primary: "3F 23 03 D5 FF ?3 01 D1 FD 7B 0? A9 F6 57 0? A9 F4 4F 0? A9 FD ?3 0? 91 08 34 40 F9 08 1? 41 F9 ?8 0? 00 B4", // Primary pattern
                 //fallback: "3F 23 03 D5 FF 03 02 D1 FD 7B 04 A9 F7 2B 00 F9 F6 57 06 A9 F4 4F 07 A9 FD 03 01 91 08 34 40 F9 08 ?? 41 F9 ?8 0? 00 B4",  // old Fallback pattern
                 fallback: "3F 23 03 D5 FF ?3 02 D1 FD 7B 0? A9 F? ?? 0? ?9 F6 57 0? A9 F4 4F 0? A9 FD ?3 01 91 08 34 40 F9 08 ?? 41 F9 ?8 ?? 00 B4", // Fallback pattern
-                second_fallback: "3F 23 03 D5 FF C3 05 D1 FD 7B 14 A9 FC 57 15 A9 F4 4F 16 A9 FD 03 05 91 54 D0 3B D5 88 16 40 F9 40 00 80 52 F3 03 02 AA A8 83 1F F8 37 BB 00 94",
+                second_fallback: "3F 23 03 D5 FF C3 05 D1 FD 7B 14 A9 FC 57 15 A9 F4 4F 16 A9 FD 03 05 91 54 D0 3B D5 88 16 40 F9 40 00 80 52 F3",
             },  
 
             "arm": {
@@ -35,14 +35,24 @@ export class Cronet_Android extends Cronet {
         };
     }
 
+    getSoName(modulePath: string): string {
+        // Match the last segment ending in “.so”
+        const m = modulePath.match(/([^\/\\]+\.so)$/);
+        return m ? m[1] : modulePath;
+      }
+
     
 
 
     install_key_extraction_hook(){
-        const cronetModule = Process.findModuleByName(this.module_name);
+        let cronetModule = Process.findModuleByName(this.module_name);
         if(cronetModule === null){
-            devlog("[-] Cronet Error: Unable to find module: " + this.module_name);
-            return;
+            const soName   = this.getSoName(this.module_name);
+            cronetModule = Process.findModuleByName(soName);
+            if(cronetModule === null){
+                devlog("[-] Cronet Error: Unable to find module: " + this.module_name);
+                return;
+            }
         }
         const hooker = new PatternBasedHooking(cronetModule);
 
