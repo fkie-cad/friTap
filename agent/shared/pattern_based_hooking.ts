@@ -267,7 +267,8 @@ export class PatternBasedHooking {
         onMatchCallback: (args: any[]) => void,
         onCompleteCallback: (found: boolean) => void
     ): void {
-        devlog(`Trying to scan ${this.module.name} ...`);
+        const moduleName = this.module?.name;
+        devlog(`Trying to scan ${moduleName} ...`);
         const moduleBase = this.module.base;
         const moduleSize = this.module.size;
         this.found_ssl_log_secret = false;
@@ -289,7 +290,13 @@ export class PatternBasedHooking {
             onMatch: (address) => {
                 this.found_ssl_log_secret = true;
                 this.no_hooking_success = false;
-                log(`Pattern found at (${pattern_name}) address: ${address}`);
+                
+                if (!moduleName) {
+                    log(`Pattern found at (${pattern_name}) address: ${address} for module ${moduleName}`);
+                }else{
+                    log(`Pattern found at (${pattern_name}) address: ${address}`);
+                }
+                
                 log(`Pattern-based hooks installed.`);
 
                 // Attach the hook using the provided onMatchCallback
@@ -302,16 +309,16 @@ export class PatternBasedHooking {
             onError: (reason) => {
                 if (!this.found_ssl_log_secret) {
                     devlog_error('[!] There was an error scanning memory: ' + reason);
-                    devlog_error('[!] Trying to rescan memory with permissions in mind');
+                    devlog_error(`[!] Trying to rescan memory with permissions in mind on ${moduleName}`);
                     this.hookByPatternOnlyReadableParts(patterns, pattern_name, onMatchCallback, (primary_success) => {
                         if (!primary_success) {
-                            devlog("[!] Primary pattern failed, trying fallback pattern...");
+                            devlog(`[!] Primary pattern failed, trying fallback pattern on ${moduleName}`);
                             this.hookByPatternOnlyReadableParts(patterns, "fallback_pattern", onMatchCallback, (fallback_success) => {
                                 if (!fallback_success) {
-                                    devlog("[!] Fallback pattern failed, trying second fallback pattern...");
+                                    devlog(`[!] Fallback pattern failed, trying second fallback pattern on ${moduleName}`);
                                     this.hookByPatternOnlyReadableParts(patterns, "second_fallback_pattern", onMatchCallback, (second_fallback_success) => {
                                         if (!second_fallback_success) {
-                                            devlog("[!] None of the patterns worked. You may need to adjust the patterns.");
+                                            devlog(`[!] None of the patterns worked. You may need to adjust the patterns for ${moduleName}`);
                                             this.no_hooking_success = true;
                                         }
                                     });
@@ -334,7 +341,8 @@ export class PatternBasedHooking {
         onMatchCallback: (args: any[]) => void,
         onCompleteCallback: (found: boolean) => void
     ): void {
-        devlog(`trying to scan only readable parts of ${this.module.name} ...`);
+        const moduleName = this.module?.name;
+        devlog(`trying to scan only readable parts of ${moduleName} ...`);
 
         var pattern: string = "";
         if (pattern_name === "primary_pattern") {
@@ -352,13 +360,14 @@ export class PatternBasedHooking {
         this.module.enumerateRanges('r--').forEach((range: MemoryRange) => {
             const rangeKey = `${range.base}-${range.size}`; // Unique key for each memory range
             
-            devlog(`Scanning readable memory range in module: ${this.module.name}, Range: ${range.base} - ${range.base.add(range.size)}, Size: ${range.size}`);
+            // only uncomment this if we need to track a bug
+            //devlog(`Scanning readable memory range in module: ${this.module.name}, Range: ${range.base} - ${range.base.add(range.size)}, Size: ${range.size}`);
     
 
             Memory.scan(range.base, range.size, pattern, {
                 onMatch: (address: NativePointer, size: number) => {
                     this.found_ssl_log_secret = true;
-                    log(`Pattern found at (${pattern_name}) address: ${address.toString()}`);
+                    log(`Pattern found at (${pattern_name}) address: ${address.toString()} on ${moduleName}`);
                     log(`Pattern based hooks installed.`);
 
                     // Attach the hook using the provided onMatchCallback
@@ -372,7 +381,7 @@ export class PatternBasedHooking {
                     });
                 },
                 onError: (reason: string) => {
-                    devlog_error(`Error scanning memory for range: ${range.base} - ${range.base.add(range.size)}, Reason: ${reason}`);
+                    //devlog_error(`Error scanning memory for range: ${range.base} - ${range.base.add(range.size)}, Reason: ${reason}`);
                 },
                 onComplete: () => {
                     if (this.rescannedRanges.has(rangeKey)) {
