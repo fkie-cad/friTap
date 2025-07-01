@@ -305,7 +305,7 @@ class SSL_Logger():
                 self.keydump_Set.add(payload["keylog"])
         
         if self.socket_trace or self.full_capture:
-            if "src_addr" not in p:
+            if "src_addr" not in payload:
                 return
             
             src_addr = get_addr_string(payload["src_addr"], payload["ss_family"])
