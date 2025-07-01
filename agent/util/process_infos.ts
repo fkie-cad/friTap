@@ -1,4 +1,6 @@
 import { devlog } from "./log.js";
+import { Java } from "../shared/javalib.js";
+import { ObjC } from "../shared/objclib.js";
 
 export function get_process_architecture() : string{
         return Process.arch;
@@ -6,7 +8,7 @@ export function get_process_architecture() : string{
 
 
 export function isAndroid(): boolean{
-    if(Java.available && Process.platform == "linux"){
+    if(typeof Java !== "undefined" && Java.available && Process.platform == "linux"){
         try{
             Java.androidVersion // this will raise an error when we are not under Android
             return true
@@ -20,7 +22,7 @@ export function isAndroid(): boolean{
 
 function is_macos_based_version_string(): boolean{
     // Check if NSProcessInfo is available (indicating macOS or iOS)
-    if (ObjC.classes.NSProcessInfo !== undefined) {
+    if (typeof ObjC !== "undefined" && ObjC.classes.NSProcessInfo !== undefined) {
         try {
             // Get the operating system version string
             const NSProcessInfo = ObjC.classes.NSProcessInfo;

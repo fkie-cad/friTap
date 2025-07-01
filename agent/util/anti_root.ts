@@ -1,5 +1,6 @@
 import { log, devlog } from "./log.js";
 import { readAddresses, getBaseAddress } from "../shared/shared_functions.js";
+import { Java } from "../shared/javalib.js";
 
 /*
  * mostly taken from here: https://codeshare.frida.re/@dzonerzy/fridantiroot/

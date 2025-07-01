@@ -1,7 +1,7 @@
 
 import {OpenSSL_BoringSSL } from "../ssl_lib/openssl_boringssl.js";
 import { socket_library } from "./linux_agent.js";
-import { devlog } from "../util/log.js";
+import { ObjC } from "../shared/objclib.js";
 
 export class OpenSSL_BoringSSL_Linux extends OpenSSL_BoringSSL {
 
@@ -77,7 +77,7 @@ export function boring_execute(moduleName:string, is_base_hook: boolean){
         const init_addresses = boring_ssl.addresses[moduleName];
         // ensure that we only add it to global when we are not 
         if (Object.keys(init_addresses).length > 0) {
-            (global as any).init_addresses[moduleName] = init_addresses;
+            (globalThis as any).init_addresses[moduleName] = init_addresses;
         }
     }
 

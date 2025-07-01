@@ -2,7 +2,7 @@ import { readAddresses, getBaseAddress, dumpMemory } from "../shared/shared_func
 import { pointerSize, AF_INET, AF_INET6 } from "../shared/shared_structures.js";
 import { log, devlog } from "../util/log.js";
 import { offsets,enable_default_fd } from "../ssl_log.js";
-
+import { Java } from "../shared/javalib.js";
 
 /**
  *  Current Todo:
@@ -263,10 +263,10 @@ export class NSS {
         var getNSSversion = null;
         var version_string = "0";
         if(!Java.available){
-            getNSSversion = new NativeFunction(Module.findExportByName(null,"NSSSSL_GetVersion"), "pointer", []);
+            getNSSversion = new NativeFunction(Module.getGlobalExportByName("NSSSSL_GetVersion"), "pointer", []);
         }else{
             // we are on Android
-            getNSSversion = new NativeFunction(Module.findExportByName("libnss3.so","NSSSSL_GetVersion"), "pointer", []);
+            getNSSversion = new NativeFunction(Process.getModuleByName("libnss3.so").getExportByName("NSSSSL_GetVersion"), "pointer", []);
         }
         if(!getNSSversion.isNull()){
             var ptr_version_string = getNSSversion();
@@ -867,7 +867,7 @@ typedef union PRNetAddr PRNetAddr;
     static getSSL_Layer(pRFileDesc: NativePointer) {
 
         var ssl_layer_id = 3 // SSL has the Layer ID 3 normally.
-        var getIdentitiesLayer = new NativeFunction(Module.getExportByName('libnspr4.so', 'PR_GetIdentitiesLayer'), "pointer", ["pointer", "int"])
+        var getIdentitiesLayer = new NativeFunction(Process.getModuleByName('libnspr4.so').getExportByName('PR_GetIdentitiesLayer'), "pointer", ["pointer", "int"])
 
         var ssl_layer = getIdentitiesLayer(pRFileDesc, ssl_layer_id);
         if (ptr(ssl_layer.toString()).isNull()) {
@@ -980,11 +980,11 @@ typedef union PRNetAddr PRNetAddr;
                     var getLayersIdentity = null;
                     var getNameOfIdentityLayer;
                     try {
-                        getLayersIdentity = new NativeFunction(Module.getExportByName('libnspr4.so', 'PR_GetLayersIdentity'), "uint32", ["pointer"])
-                        getNameOfIdentityLayer = new NativeFunction(Module.getExportByName('libnspr4.so', 'PR_GetNameForIdentity'), "pointer", ["uint32"])
+                        getLayersIdentity = new NativeFunction(Process.getModuleByName('libnspr4.so').getExportByName('PR_GetLayersIdentity'), "uint32", ["pointer"])
+                        getNameOfIdentityLayer = new NativeFunction(Process.getModuleByName('libnspr4.so').getExportByName('PR_GetNameForIdentity'), "pointer", ["uint32"])
                     }catch(e){
-                        getLayersIdentity = new NativeFunction(Module.getExportByName('libnss3.so', 'PR_GetLayersIdentity'), "uint32", ["pointer"])
-                        getNameOfIdentityLayer = new NativeFunction(Module.getExportByName('libnss3.so', 'PR_GetNameForIdentity'), "pointer", ["uint32"])
+                        getLayersIdentity = new NativeFunction(Process.getModuleByName('libnss3.so').getExportByName('PR_GetLayersIdentity'), "uint32", ["pointer"])
+                        getNameOfIdentityLayer = new NativeFunction(Process.getModuleByName('libnss3.so').getExportByName('PR_GetNameForIdentity'), "pointer", ["uint32"])
                     }
                     var layerID = getLayersIdentity(pRFileDesc);
                     devlog("LayerID: " + layerID);

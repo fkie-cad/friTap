@@ -1,6 +1,7 @@
 import { log } from "../util/log.js";
 import { execute as bouncy_execute } from "./bouncycastle.js";
 import { SSL_Java } from "../ssl_lib/java_ssl_libs.js";
+import { Java } from "../shared/javalib.js";
 
 
 export class SSL_Java_Android extends SSL_Java {

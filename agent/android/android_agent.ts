@@ -20,7 +20,7 @@ import { rustls_execute } from "./rustls_android.js";
 
 var plattform_name = "linux";
 var moduleNames: Array<string> = getModuleNames();
-(global as any).addresses = {};
+(globalThis as any).addresses = {};
 
 export const socket_library = "libc"
 
@@ -46,7 +46,7 @@ function hook_Android_Dynamic_Loader(module_library_mapping: { [key: string]: Ar
     }
 
 
-    Interceptor.attach(Module.getExportByName(libdl, dlopen), {
+    Interceptor.attach(Process.getModuleByName(libdl).getExportByName(dlopen), {
         onEnter: function (args) {
             this.moduleName = args[0].readCString()
         },

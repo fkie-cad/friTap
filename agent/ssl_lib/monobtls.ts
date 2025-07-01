@@ -30,8 +30,8 @@ export class Mono_BTLS {
     get_client_random(s3_ptr: NativePointer, SSL3_RANDOM_SIZE: number): string {
         if (!s3_ptr.isNull()) {
             const client_random_ptr: NativePointer = s3_ptr.add(0x30); // Offset in s3 struct
-            //@ts-ignore
-            const client_random = Memory.readByteArray(client_random_ptr, SSL3_RANDOM_SIZE);
+
+            const client_random = client_random_ptr.readByteArray(SSL3_RANDOM_SIZE);
             
             // Convert the byte array to a hex string
             const hexClientRandom = get_hex_string_from_byte_array(new Uint8Array(client_random as ArrayBuffer));
@@ -93,8 +93,7 @@ export class Mono_BTLS {
         }
 
         if (!keyPtr.isNull()) {
-            //@ts-ignore
-            const keyData = Memory.readByteArray(keyPtr, KEY_LENGTH); // Read the key data (KEY_LENGTH bytes)
+            const keyData = keyPtr.readByteArray(KEY_LENGTH); // Read the key data (KEY_LENGTH bytes)
             
             // Convert the byte array to a string of  hex values
             const hexKey = get_hex_string_from_byte_array(keyData);

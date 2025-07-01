@@ -22,7 +22,7 @@ function hook_macOS_Dynamic_Loader(module_library_mapping: { [key: string]: Arra
 
         var dlopen = "dlopen"
 
-        Interceptor.attach(Module.getExportByName("libSystem.B.dylib", dlopen), {
+        Interceptor.attach(Process.getModuleByName("libSystem.B.dylib").getExportByName(dlopen), {
             onEnter: function (args) {
                 this.moduleName = args[0].readCString()
             },

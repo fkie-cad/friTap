@@ -4,3 +4,17 @@
 - for each new library we want to build a ground truth so that we can ensure that the library is working at least when it is compiled by default
 - to get a better understanding of the internals of friTap have look at [this blog post](https://lolcads.github.io/posts/2022/08/fritap/#program-flow) explaining the program flow
 - while debugging your new library we suggest using the debugging feature of friTap.  [Moure about this in our wiki](https://github.com/fkie-cad/friTap/wiki/Debugging-friTap) 
+
+**Note:**  
+
+Starting with **Frida version 17 and above**, language-specific bridges must be installed manually.  
+For **friTap**, the following bridges are required:
+
+- [`frida-java-bridge`](https://github.com/frida/frida-java-bridge) – for interacting with Java-based apps on Android
+- [`frida-objc-bridge`](https://github.com/frida/frida-objc-bridge) – for interacting with Objective-C code on iOS/macOS
+
+You can install both bridges using the official `frida-pm` package manager:
+
+```bash
+ frida-pm install frida-objc-bridge frida-java-bridge
+```

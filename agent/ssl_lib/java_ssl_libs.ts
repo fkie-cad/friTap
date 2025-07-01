@@ -1,7 +1,7 @@
 import { log, devlog } from "../util/log.js";
 import { execute as conscrypt_execute } from "../android/conscrypt.js";
 import { isAndroid } from "../util/process_infos.js";
-
+import { Java } from "../shared/javalib.js";
 
 export class SSL_Java {
 

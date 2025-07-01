@@ -2,6 +2,7 @@
 import {OpenSSL_BoringSSL } from "../ssl_lib/openssl_boringssl.js";
 import { devlog } from "../util/log.js";
 import { socket_library } from "./android_agent.js";
+import { ObjC } from "../shared/objclib.js";
 
 export class OpenSSL_BoringSSL_Android extends OpenSSL_BoringSSL {
 
@@ -94,7 +95,7 @@ export function boring_execute(moduleName:string, is_base_hook: boolean){
         const init_addresses = boring_ssl.addresses[moduleName];
         // ensure that we only add it to global when we are not 
         if (Object.keys(init_addresses).length > 0) {
-            (global as any).init_addresses[moduleName] = init_addresses;
+            (globalThis as any).init_addresses[moduleName] = init_addresses;
         }}catch(error_msg){
             devlog(`boring_execute base-hook error: ${error_msg}`)
         }

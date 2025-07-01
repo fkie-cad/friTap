@@ -9,8 +9,8 @@ import { socket_trace_execute } from "./misc/socket_tracer.js"
 import { devlog, log } from "./util/log.js";
 
 // global address which stores the addresses of the hooked modules which aren't loaded via the dynamic loader
-(global as any).init_addresses = {};
-(global as any).global_counter = 0;
+(globalThis as any).init_addresses = {};
+(globalThis as any).global_counter = 0;
 
 interface IAddress{
     address: string,

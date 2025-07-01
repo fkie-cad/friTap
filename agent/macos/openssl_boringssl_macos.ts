@@ -2,7 +2,7 @@
 import {OpenSSL_BoringSSL } from "../ssl_lib/openssl_boringssl.js";
 import { socket_library } from "./macos_agent.js";
 import { devlog, log } from "../util/log.js";
-
+import { ObjC } from "../shared/objclib.js";
 
 export class OpenSSL_BoringSSL_MacOS extends OpenSSL_BoringSSL {
 
@@ -11,7 +11,7 @@ export class OpenSSL_BoringSSL_MacOS extends OpenSSL_BoringSSL {
         if (ObjC.available) { // inspired from https://codeshare.frida.re/@andydavies/ios-tls-keylogger/
             var CALLBACK_OFFSET = 0x2A8;
 
-            var foundationNumber = Module.findExportByName('CoreFoundation', 'kCFCoreFoundationVersionNumber')?.readDouble();
+            var foundationNumber = Process.getModuleByName('CoreFoundation').getExportByName('kCFCoreFoundationVersionNumber')?.readDouble();
             devlog("[*] Calculating offset to keylog callback based on the FoundationVersionNumber on MacOS: "+foundationNumber)
             if(foundationNumber == undefined){
                 CALLBACK_OFFSET = 0x2A8;
@@ -75,7 +75,7 @@ export function boring_execute(moduleName:string, is_base_hook: boolean){
         const init_addresses = boring_ssl.addresses[moduleName];
         // ensure that we only add it to global when we are not 
         if (Object.keys(init_addresses).length > 0) {
-            (global as any).init_addresses[moduleName] = init_addresses;
+            (globalThis as any).init_addresses[moduleName] = init_addresses;
         }
     }
 }

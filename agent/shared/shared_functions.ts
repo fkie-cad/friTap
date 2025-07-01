@@ -1,10 +1,10 @@
 import { log, devlog, devlog_error } from "../util/log.js";
 import { AF_INET, AF_INET6, AddressFamilyMapping, unwantedFDs, ModuleHookingType } from "./shared_structures.js";
-
+import { Java, JavaWrapper } from "./javalib.js";
 
 function wait_for_library_loaded(module_name: string){
     let timeout_library = 5;
-    let module_adress = Module.findBaseAddress(module_name);
+    let module_adress = Process.getModuleByName(module_name).base;
     if(module_adress === NULL || module_adress === null){
         log("[*] Waiting "+timeout_library+" milliseconds for the loading of "+module_name);
         setTimeout(wait_for_library_loaded,timeout_library)
@@ -22,23 +22,23 @@ export function ssl_library_loader(plattform_name: string, module_library_mappin
     for(let map of module_library_mapping[plattform_name]){
         let regex = new RegExp(map[0])
         let func = map[1]
-        for(let module of moduleNames){
-            if (regex.test(module)){
+        for(let module_name of moduleNames){
+            if (regex.test(module_name)){
                 try{
-                    log(`${module} found & will be hooked on ${plattform_os}!`)
+                    log(`${module_name} found & will be hooked on ${plattform_os}!`)
                     try {
-                        Module.ensureInitialized(module);
+                        Process.getModuleByName(module_name).ensureInitialized();
                     }catch(error){
-                        wait_for_library_loaded(module);
+                        wait_for_library_loaded(module_name);
                     }
                     
                     // on some Android Apps we encounterd the problem of multiple SSL libraries but only one is used for the SSL encryption/decryption
-                    func(module, is_base_hook); 
+                    func(module_name, is_base_hook); 
                     
                 }catch (error) {
 
-                    if(checkNumberOfExports(module) > 3){
-                        devlog_error(`error: skipping module ${module}`)
+                    if(checkNumberOfExports(module_name) > 3){
+                        devlog_error(`error: skipping module ${module_name}`)
                         // when we enable the logging of devlogs we can print the error message as well for further improving this part
                         devlog_error("Loader error: "+error)
                         //  {'description': 'Could not find *libssl*.so!SSL_ImportFD', 'type': 'error'}
@@ -379,7 +379,7 @@ export function byteArrayToNumber(byteArray: any) {
  * @param fieldName The name of the attribute
  * @returns The value of the attribute of the requested field
  */
-export function getAttribute(Instance: Java.Wrapper, fieldName: string) {
+export function getAttribute(Instance: JavaWrapper, fieldName: string) {
     var clazz = Java.use("java.lang.Class")
     var field = Java.cast(Instance.getClass(), clazz).getDeclaredField(fieldName)
     field.setAccessible(true)
@@ -427,8 +427,8 @@ export function dumpMemory(ptrValue,size) {
     //var size = 0x100;
     try {
         console.log("[!] dumping memory at address: "+ptrValue);
-        //@ts-ignore
-        var data = Memory.readByteArray(ptrValue, size);
+
+        var data = ptrValue.readByteArray(size);
         console.log(hexdump(data));
         return data;
         // console.log(hexdump(data, { offset: 0, length: size, header: true, ansi: true }));

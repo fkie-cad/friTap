@@ -3,6 +3,8 @@ import { getAndroidVersion } from "../util/process_infos.js";
 import {OpenSSL_BoringSSL } from "../ssl_lib/openssl_boringssl.js";
 import { socket_library } from "./android_agent.js";
 import { isSymbolAvailable } from "../shared/shared_functions.js";
+import { Java, JavaMethod, JavaWrapper } from "../shared/javalib.js";
+
 
 export class Consycrypt_BoringSSL_Android extends OpenSSL_BoringSSL {
 
@@ -53,7 +55,7 @@ export function conscrypt_native_execute(moduleName:string, is_base_hook: boolea
         const init_addresses = boring_ssl.addresses[moduleName];
         // ensure that we only add it to global when we are not 
         if (Object.keys(init_addresses).length > 0) {
-            (global as any).init_addresses[moduleName] = init_addresses;
+            (globalThis as any).init_addresses[moduleName] = init_addresses;
         }}catch(error_msg){
             devlog(`conscrypt_execute base-hook error: ${error_msg}`)
         }
@@ -63,9 +65,9 @@ export function conscrypt_native_execute(moduleName:string, is_base_hook: boolea
 
 
 
-function findProviderInstallerImplFromClassloaders(currentClassLoader: Java.Wrapper, backupImplementation: any) : Java.Wrapper | null {
+function findProviderInstallerImplFromClassloaders(currentClassLoader: JavaWrapper, backupImplementation: JavaMethod) : JavaWrapper | null {
 
-    var providerInstallerImpl = null;
+    let providerInstallerImpl: JavaWrapper | null = null;
     var classLoaders = Java.enumerateClassLoadersSync()
     for (var cl of classLoaders) {
         try {
@@ -93,7 +95,7 @@ function findProviderInstallerImplFromClassloaders(currentClassLoader: Java.Wrap
     return providerInstallerImpl
 }
 
-function findProviderInstallerFromClassloaders(currentClassLoader: Java.Wrapper, backupImplementation: any) : Java.Wrapper | null  {
+function findProviderInstallerFromClassloaders(currentClassLoader: JavaWrapper, backupImplementation: any) : JavaWrapper | null  {
 
     var providerInstaller = null
     var classLoaders = Java.enumerateClassLoadersSync()
@@ -131,7 +133,7 @@ export function execute() {
     //We have to hook multiple entrypoints: ProviderInstallerImpl and ProviderInstaller
     Java.perform(function () {
         //Part one: Hook ProviderInstallerImpl
-        var javaClassLoader = Java.use("java.lang.ClassLoader")
+        var javaClassLoader: JavaWrapper = Java.use("java.lang.ClassLoader")
         var backupImplementation = javaClassLoader.loadClass.overload("java.lang.String").implementation
         //The classloader for ProviderInstallerImpl might not be present on startup, so we hook the loadClass method.  
         javaClassLoader.loadClass.overload("java.lang.String").implementation = function (className: string) {

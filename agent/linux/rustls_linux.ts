@@ -251,7 +251,7 @@ export function rustls_execute(moduleName: string, is_base_hook: boolean) {
     if (is_base_hook) {
         const init_addresses = rusTLS.addresses[moduleName];
         if (Object.keys(init_addresses).length > 0) {
-            (global as any).init_addresses[moduleName] = init_addresses;
+            (globalThis as any).init_addresses[moduleName] = init_addresses;
         }
     }
 }

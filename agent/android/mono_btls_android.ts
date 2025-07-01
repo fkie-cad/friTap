@@ -76,7 +76,7 @@ export function mono_btls_execute(moduleName:string, is_base_hook: boolean){
             const init_addresses = mono_btls.addresses[moduleName];
             // ensure that we only add it to global when we are not 
             if (Object.keys(init_addresses).length > 0) {
-                (global as any).init_addresses[moduleName] = init_addresses;
+                (globalThis as any).init_addresses[moduleName] = init_addresses;
             }
         }catch(error_msg){
             devlog_error(`mono_btls_execute base-hook error: ${error_msg}`)

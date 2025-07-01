@@ -35,15 +35,16 @@ def get_author():
 
 # Define dependencies directly in setup.py
 requirements = [
-    'frida>=15.0.0',
-    'frida-tools>=10.0.0',
+    'frida>=16.0.0',
+    'frida-tools>=11.0.0',
     'AndroidFridaManager',
     'hexdump',
     'scapy',
     'watchdog',
     'click',
     'importlib-resources',
-    'psutil'
+    'psutil',
+    'rich>=13.0.0',
 ]
 
 

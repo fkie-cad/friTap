@@ -1,7 +1,7 @@
 import { readAddresses, getPortsAndAddresses, getBaseAddress, isSymbolAvailable, checkNumberOfExports } from "../shared/shared_functions.js";
 import { getOffsets, offsets, enable_default_fd } from "../ssl_log.js";
 import { devlog, log } from "../util/log.js";
-
+import { ObjC } from "../shared/objclib.js";
 
 class ModifyReceiver{
     public readModification: ArrayBuffer | null = null;
@@ -211,11 +211,9 @@ export class OpenSSL_BoringSSL {
                     
                     if(OpenSSL_BoringSSL.modReceiver.readmod !== null){
                         //NULL out buffer
-                        //@ts-ignore
-                        Memory.writeByteArray(this.buf, new Uint8Array(this.bufLen));
+                        this.buf.writeByteArray(new Uint8Array(this.bufLen));
     
-                        //@ts-ignore
-                        Memory.writeByteArray(this.buf, OpenSSL_BoringSSL.modReceiver.readmod);
+                        this.buf.writeByteArray(OpenSSL_BoringSSL.modReceiver.readmod);
                         retval = OpenSSL_BoringSSL.modReceiver.readmod.byteLength;                
                     }
     
@@ -260,7 +258,7 @@ export class OpenSSL_BoringSSL {
                         
                     }catch (error) {
                         if (!this.is_base_hook) {
-                            const fallback_addresses = (global as any).init_addresses;
+                            const fallback_addresses = (globalThis as any).init_addresses;
     
                             //console.log("Current ModuleName: "+current_module_name);
                             let keys = Object.keys(fallback_addresses);
@@ -289,8 +287,7 @@ export class OpenSSL_BoringSSL {
     
                     if(OpenSSL_BoringSSL.modReceiver.writemod !== null){
                         const newPointer = Memory.alloc(OpenSSL_BoringSSL.modReceiver.writemod.byteLength)
-                        //@ts-ignore
-                        Memory.writeByteArray(newPointer, OpenSSL_BoringSSL.modReceiver.writemod);                    
+                        newPointer.writeByteArray(OpenSSL_BoringSSL.modReceiver.writemod);                    
                         args[1] = newPointer;
                         args[2] = new NativePointer(OpenSSL_BoringSSL.modReceiver.writemod.byteLength); 
                     }
@@ -361,7 +358,7 @@ export class OpenSSL_BoringSSL {
                         
                     }catch (error) {
                         if (!this.is_base_hook) {
-                            const fallback_addresses = (global as any).init_addresses;
+                            const fallback_addresses = (globalThis as any).init_addresses;
 
                             let keys = Object.keys(fallback_addresses);
                             let firstKey = keys[0];

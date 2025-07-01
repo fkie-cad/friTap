@@ -22,6 +22,13 @@ except ImportError:
     print("Unable to import hexdump module!")
     pass
 
+try:
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.text import Text
+except ImportError:
+    Console = None
+
 
 # here - where we are.
 here = os.path.abspath(os.path.dirname(__file__))
@@ -78,7 +85,7 @@ class SSL_Logger():
     
     
     def init_fritap(self):
-        if frida.__version__ < "16":
+        if frida.__version__ < "17":
             self.frida_agent_script = "_ssl_log_legacy.js"
         else:
             self.frida_agent_script = "_ssl_log.js"
@@ -126,6 +133,36 @@ class SSL_Logger():
         self.cleanup(self.live,self.socket_trace,self.full_capture,self.debug)
         
 
+    def handle_frida_script_error(self, message: dict):
+        print("\n\n")
+        error_msg = message.get("description", "Unknown error")
+        stack = message.get("stack", "No stacktrace provided")
+        file = message.get("fileName", "")
+        line = message.get("lineNumber", "")
+        column = message.get("columnNumber", "")
+
+        if self.debug_output:
+            if Console:
+                console = Console()
+                header = Text("✖ Frida Script Error", style="bold red")
+                body = Text.from_markup(
+                    f"[bold]Description:[/bold] {error_msg}\n"
+                    f"[bold]File:[/bold] {file}:{line}:{column}\n\n"
+                    f"[bold]Stacktrace:[/bold]\n{stack}"
+                )
+                panel = Panel(body, title=header, expand=False, border_style="red")
+                console.print(panel)
+            else:
+                print("✖ Frida Script Error:")
+                print("Description:", error_msg)
+                print(f"File: {file}:{line}:{column}")
+                print("Stacktrace:\n" + stack)
+        else:
+            print(f"[!] Error from Frida script: {error_msg}")
+        
+        print("\n\n[!] Exiting due to script error.")
+
+        os.kill(os.getpid(), signal.SIGTERM)
 
     def temp_fifo(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -137,7 +174,7 @@ class SSL_Logger():
             print(f'Failed to create FIFO: {e}')
         
 
-    def on_fritap_message(self,job, message, data):
+    def on_fritap_message(self, job, message, data):
         """Callback for errors and messages sent from Frida-injected JavaScript.
         Logs captured packet data received from JavaScript to the console and/or a
         pcap file. See https://www.frida.re/docs/messages/ for more detail on
@@ -154,69 +191,76 @@ class SSL_Logger():
         """
         if self.script is None:
             self.script = job.script
+
+        #print("----- Debug message -----")
+        #print(message)
+        #print("-------------------------")
+        msg_type = message.get('type')
+        #print(f"[*] Received message of type: {msg_type}")
+
+        if msg_type == 'send':
+            payload = message.get('payload')
+
+            if self.startup and payload == 'experimental':
+                self.script.post({'type':'experimental', 'payload': self.experimental})
+
+            if self.startup and payload == 'defaultFD':
+                self.script.post({'type':'defaultFD', 'payload': self.enable_default_fd})
+
+            if self.startup and payload == 'socket_tracing':
+                self.script.post({'type':'socket_tracing', 'payload': self.socket_trace})
+
+            if self.startup and payload == 'pattern_hooking':
+                self.script.post({'type':'pattern_hooking', 'payload': self.pattern_data})
+
+            if self.startup and payload == 'offset_hooking':
+                self.script.post({'type':'offset_hooking', 'payload': self.offsets_data})
             
-        if self.startup and message['payload'] == 'experimental':
-            self.script.post({'type':'experimental', 'payload': self.experimental})
-
-        if self.startup and message['payload'] == 'defaultFD':
-            self.script.post({'type':'defaultFD', 'payload': self.enable_default_fd})
-
-        if self.startup and message['payload'] == 'socket_tracing':
-            self.script.post({'type':'socket_tracing', 'payload': self.socket_trace})
-
-        if self.startup and message['payload'] == 'pattern_hooking':
-            self.script.post({'type':'pattern_hooking', 'payload': self.pattern_data})
-
-        if self.startup and message['payload'] == 'offset_hooking':
-            self.script.post({'type':'offset_hooking', 'payload': self.offsets_data})
-        
-        if self.startup and message['payload'] == 'anti':
-            self.script.post({'type':'antiroot', 'payload': self.anti_root})
-            self.startup = False
+            if self.startup and payload == 'anti':
+                self.script.post({'type':'antiroot', 'payload': self.anti_root})
+                self.startup = False
             
         
         if message["type"] == "error":
-            pprint.pprint(message)
-            os.kill(os.getpid(), signal.SIGTERM)
+            self.handle_frida_script_error(message)
             return
         
-        p = message["payload"]
-        if "contentType" not in p:
+        if "contentType" not in payload:
             return
-        if p["contentType"] == "console":
-            if p["console"].startswith("[*]"):
-                print(p["console"])
+        if payload["contentType"] == "console":
+            if payload["console"].startswith("[*]"):
+                print(payload["console"])
             else:
-                print("[*] " + p["console"])
+                print("[*] " + payload["console"])
         if self.debug or self.debug_output:
-            if p["contentType"] == "console_dev" and p["console_dev"]:
-                if len(p["console_dev"]) > 3:
-                    print("[***] " + p["console_dev"])
-            elif p["contentType"] == "console_error" and p["console_error"]:
-                if len(p["console_error"]) > 3:
-                    print("[---] " + p["console_error"])
+            if payload["contentType"] == "console_dev" and payload["console_dev"]:
+                if len(payload["console_dev"]) > 3:
+                    print("[***] " + payload["console_dev"])
+            elif payload["contentType"] == "console_error" and payload["console_error"]:
+                if len(payload["console_error"]) > 3:
+                    print("[---] " + payload["console_error"])
         if self.verbose:
-            if(p["contentType"] == "keylog") and self.keylog:
-                if p["keylog"] not in self.keydump_Set:
-                    print(p["keylog"])
-                    self.keydump_Set.add(p["keylog"])
-                    self.keylog_file.write(p["keylog"] + "\n")
+            if(payload["contentType"] == "keylog") and self.keylog:
+                if payload["keylog"] not in self.keydump_Set:
+                    print(payload["keylog"])
+                    self.keydump_Set.add(payload["keylog"])
+                    self.keylog_file.write(payload["keylog"] + "\n")
                     self.keylog_file.flush()    
             elif not data or len(data) == 0:
                 return
             else:
-                src_addr = get_addr_string(p["src_addr"], p["ss_family"])
-                dst_addr = get_addr_string(p["dst_addr"], p["ss_family"])
+                src_addr = get_addr_string(payload["src_addr"], payload["ss_family"])
+                dst_addr = get_addr_string(payload["dst_addr"], payload["ss_family"])
 
                 if not self.socket_trace and not self.full_capture:
-                    print("SSL Session: " + str(p["ssl_session_id"]))
+                    print("SSL Session: " + str(payload["ssl_session_id"]))
 
                 if self.full_capture:
                     # Add to traced_scapy_socket_Set as a frozenset dictionary
                     scapy_filter_entry = {
                         "src_addr": src_addr,
                         "dst_addr": dst_addr,
-                        "ss_family": p["ss_family"]
+                        "ss_family": payload["ss_family"]
                     }
                     self.traced_scapy_socket_Set.add(frozenset(scapy_filter_entry.items()))  # Use frozenset for uniqueness
 
@@ -224,64 +268,64 @@ class SSL_Logger():
                     display_filter_entry = {
                         "src_addr": src_addr,
                         "dst_addr": dst_addr,
-                        "src_port": p["src_port"],
-                        "dst_port": p["dst_port"],
-                        "ss_family": p["ss_family"]
+                        "src_port": payload["src_port"],
+                        "dst_port": payload["dst_port"],
+                        "ss_family": payload["ss_family"]
                     }
                     self.traced_Socket_Set.add(frozenset(display_filter_entry.items()))
                     scapy_filter_entry = {
                         "src_addr": src_addr,
                         "dst_addr": dst_addr,
-                        "ss_family": p["ss_family"]
+                        "ss_family": payload["ss_family"]
                     }
                     self.traced_scapy_socket_Set.add(frozenset(scapy_filter_entry.items()))
 
                     # Use structured data for the debug print
-                    print(f"[socket_trace] {src_addr}:{p['src_port']} --> {dst_addr}:{p['dst_port']}")
+                    print(f"[socket_trace] {src_addr}:{payload['src_port']} --> {dst_addr}:{payload['dst_port']}")
 
                 else:
-                    print("[%s] %s:%d --> %s:%d" % (p["function"], src_addr, p["src_port"], dst_addr, p["dst_port"]))
+                    print("[%s] %s:%d --> %s:%d" % (payload["function"], src_addr, payload["src_port"], dst_addr, payload["dst_port"]))
                     hexdump.hexdump(data)
                 print()
-        if self.pcap_name and p["contentType"] == "datalog" and not self.full_capture:
-            self.pcap_obj.log_plaintext_payload(p["ss_family"], p["function"], p["src_addr"],
-                     p["src_port"], p["dst_addr"], p["dst_port"], data)
-        if self.live and p["contentType"] == "datalog" and not self.full_capture:
+        if self.pcap_name and payload["contentType"] == "datalog" and not self.full_capture:
+            self.pcap_obj.log_plaintext_payload(payload["ss_family"], payload["function"], payload["src_addr"],
+                     payload["src_port"], payload["dst_addr"], payload["dst_port"], data)
+        if self.live and payload["contentType"] == "datalog" and not self.full_capture:
             try:
-                self.pcap_obj.log_plaintext_payload(p["ss_family"], p["function"], p["src_addr"],
-                         p["src_port"], p["dst_addr"], p["dst_port"], data)
+                self.pcap_obj.log_plaintext_payload(payload["ss_family"], payload["function"], payload["src_addr"],
+                         payload["src_port"], payload["dst_addr"], payload["dst_port"], data)
             except (BrokenPipeError, IOError):
                 self.detach_with_timeout(self.process)
                 self.cleanup(self.live, self.socket_trace, self.full_capture, self.debug)
 
-        if self.keylog and p["contentType"] == "keylog":
-            if p["keylog"] not in self.keydump_Set:
-                self.keylog_file.write(p["keylog"] + "\n")
+        if self.keylog and payload["contentType"] == "keylog":
+            if payload["keylog"] not in self.keydump_Set:
+                self.keylog_file.write(payload["keylog"] + "\n")
                 self.keylog_file.flush()
-                self.keydump_Set.add(p["keylog"])
+                self.keydump_Set.add(payload["keylog"])
         
         if self.socket_trace or self.full_capture:
             if "src_addr" not in p:
                 return
             
-            src_addr = get_addr_string(p["src_addr"], p["ss_family"])
-            dst_addr = get_addr_string(p["dst_addr"], p["ss_family"])
+            src_addr = get_addr_string(payload["src_addr"], payload["ss_family"])
+            dst_addr = get_addr_string(payload["dst_addr"], payload["ss_family"])
 
             if self.socket_trace:
                 # Add a structured dictionary to traced_Socket_Set
                 display_filter_entry = {
                     "src_addr": src_addr,
                     "dst_addr": dst_addr,
-                    "src_port": p["src_port"],
-                    "dst_port": p["dst_port"],
-                    "ss_family": p["ss_family"]
+                    "src_port": payload["src_port"],
+                    "dst_port": payload["dst_port"],
+                    "ss_family": payload["ss_family"]
                 }
                 self.traced_Socket_Set.add(frozenset(display_filter_entry.items()))  # Use frozenset for uniqueness
                 # Add a structured dictionary to traced_scapy_socket_Set
                 scapy_filter_entry = {
                     "src_addr": src_addr,
                     "dst_addr": dst_addr,
-                    "ss_family": p["ss_family"]
+                    "ss_family": payload["ss_family"]
                 }
                 self.traced_scapy_socket_Set.add(frozenset(scapy_filter_entry.items()))  # Use frozenset for uniqueness
 

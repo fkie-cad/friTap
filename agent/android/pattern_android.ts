@@ -87,7 +87,7 @@ export function pattern_execute(moduleName:string, is_base_hook: boolean){
                     const init_addresses = pattern_BoringSSL.addresses[moduleName];
                     // ensure that we only add it to global when we are not 
                     if (Object.keys(init_addresses).length > 0) {
-                        (global as any).init_addresses[moduleName] = init_addresses;
+                        (globalThis as any).init_addresses[moduleName] = init_addresses;
                     }
                 }catch(error_msg){
                     devlog(`pattern_execute base-hook error: ${error_msg}`)
@@ -117,7 +117,7 @@ export function pattern_execute(moduleName:string, is_base_hook: boolean){
                     const init_addresses = pattern_Default.addresses[moduleName];
                     // ensure that we only add it to global when we are not 
                     if (Object.keys(init_addresses).length > 0) {
-                        (global as any).init_addresses[moduleName] = init_addresses;
+                        (globalThis as any).init_addresses[moduleName] = init_addresses;
                     }
                 }catch(error_msg){
                     devlog(`pattern_execute base-hook error: ${error_msg}`)

@@ -26,7 +26,7 @@ function hook_Linux_Dynamic_Loader(module_library_mapping: { [key: string]: Arra
 
         var dlopen = "dlopen"
 
-        Interceptor.attach(Module.getExportByName(libdl, dlopen), {
+        Interceptor.attach(Process.getModuleByName(libdl).getExportByName(dlopen), {
             onEnter: function (args) {
                 this.moduleName = args[0].readCString()
             },

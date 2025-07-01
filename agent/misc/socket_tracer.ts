@@ -2,6 +2,7 @@ import { log, devlog } from "../util/log.js";
 import { get_process_architecture } from "../util/process_infos.js";
 import { readAddresses, getPortsAndAddresses } from "../shared/shared_functions.js";
 import { enable_default_fd } from "../ssl_log.js";
+import { ObjC } from "../shared/objclib.js";
 
 function has_valid_socket_type(fd : number): boolean{
     var socktype = Socket.type(fd);
@@ -260,7 +261,7 @@ Interceptor.attach(addresses[socket_library]["write"],
 })
 
 if(ObjC.available){
-    Interceptor.attach(Module.getExportByName("libsystem_kernel.dylib","write"),
+    Interceptor.attach(Process.getModuleByName('libsystem_kernel.dylib').getExportByName('write'),
 {
     onEnter: function (args: any) {
         var fd = args[0].toInt32();
@@ -286,7 +287,7 @@ if(ObjC.available){
     }
 })
 
-Interceptor.attach(Module.getExportByName("libsystem_kernel.dylib","read"),
+Interceptor.attach(Process.getModuleByName('libsystem_kernel.dylib').getExportByName('read'),
 {
     onEnter: function (args: any) {
         this.fd = args[0].toInt32();

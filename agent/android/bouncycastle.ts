@@ -1,4 +1,5 @@
 import { log } from "../util/log.js";
+import { Java } from "../shared/javalib.js";
 import { byteArrayToString, byteArrayToNumber, getAttribute, reflectionByteArrayToString } from "../shared/shared_functions.js";
 export function execute() {
     setTimeout(function () {

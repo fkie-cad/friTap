@@ -22,6 +22,20 @@ $ frida-compile agent/ssl_log.ts -o _ssl_log.js
 
 In order to debug your contribution you can use the debug feature of friTap. Have a look into [our wiki for more information](https://github.com/fkie-cad/friTap/wiki/Debugging-friTap).
 
+**Note:**  
+
+Starting with **Frida version 17 and above**, language-specific bridges must be installed manually.  
+For **friTap**, the following bridges are required:
+
+- [`frida-java-bridge`](https://github.com/frida/frida-java-bridge) – for interacting with Java-based apps on Android
+- [`frida-objc-bridge`](https://github.com/frida/frida-objc-bridge) – for interacting with Objective-C code on iOS/macOS
+
+You can install both bridges using the official `frida-pm` package manager:
+
+```bash
+ frida-pm install frida-objc-bridge frida-java-bridge
+```
+
 
 ## Verifying a socket read or write function
 

@@ -61,7 +61,7 @@ export class NSS_Linux extends NSS {
                     // typedef enum { PR_FAILURE = -1, PR_SUCCESS = 0 } PRStatus;
                     if (retValue < 0) {
                         devlog("Callback Error")
-                        var getErrorText = new NativeFunction(Module.getExportByName('libnspr4.so', 'PR_GetErrorText'), "int", ["pointer"])
+                        var getErrorText = new NativeFunction(Process.getModuleByName('libnspr4.so').getExportByName('PR_GetErrorText'), "int", ["pointer"])
                         var outbuffer = Memory.alloc(200); // max out size
                         devlog("typeof outbuffer: " + typeof outbuffer);
                         devlog("outbuffer: " + outbuffer); // should be a pointer
@@ -123,7 +123,7 @@ export function nss_execute(moduleName:string, is_base_hook: boolean){
         const init_addresses = nss_ssl.addresses[moduleName];
         // ensure that we only add it to global when we are not 
         if (Object.keys(init_addresses).length > 0) {
-            (global as any).init_addresses[moduleName] = init_addresses;
+            (globalThis as any).init_addresses[moduleName] = init_addresses;
         }
     }
 }

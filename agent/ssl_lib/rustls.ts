@@ -1,6 +1,6 @@
-import { get_hex_string_from_byte_array, readAddresses, checkNumberOfExports, getBaseAddress } from "../shared/shared_functions.js";
+import { readAddresses, checkNumberOfExports, getBaseAddress } from "../shared/shared_functions.js";
 import { devlog, log } from "../util/log.js";
-import { getOffsets, offsets, enable_default_fd } from "../ssl_log.js";
+import { offsets } from "../ssl_log.js";
 
 
 
@@ -186,8 +186,7 @@ export class RusTLS {
         labelStr = this.getEnumString(label_enum) || "";
     
         if (client_random_ptr != null) {
-            //@ts-ignore
-            const randomData = Memory.readByteArray(client_random_ptr, RANDOM_KEY_LENGTH);
+            const randomData = client_random_ptr.readByteArray(RANDOM_KEY_LENGTH);
             if (randomData) {
                 client_random = Array
                 .from(new Uint8Array(randomData))
@@ -200,8 +199,8 @@ export class RusTLS {
         }
     
         if (!key.isNull()) {
-            //@ts-ignore
-            const keyData = Memory.readByteArray(key, KEY_LENGTH);
+            
+            const keyData = key.readByteArray(KEY_LENGTH);
             if (keyData) {
                 secret_key = Array
                 .from(new Uint8Array(keyData))
@@ -236,8 +235,7 @@ export class RusTLS {
         let secret_key = "";
         
         if (!key.isNull()) {
-            //@ts-ignore
-            const keyData = Memory.readByteArray(key, MASTER_SECRET_LEN);
+            const keyData = key.readByteArray(MASTER_SECRET_LEN);
             if (keyData) {
                 secret_key = Array
                 .from(new Uint8Array(keyData))
@@ -249,8 +247,7 @@ export class RusTLS {
         }
     
         if (!client_random_ptr.isNull()) {
-            //@ts-ignore
-            const keyData = Memory.readByteArray(client_random_ptr, KEY_LENGTH);
+            const keyData = client_random_ptr.readByteArray(KEY_LENGTH);
             if (keyData) {
                 client_random = Array
                 .from(new Uint8Array(keyData))
@@ -295,8 +292,7 @@ export class RusTLS {
         labelStr = this.getEnumString(label_enum) || "";
     
         if (client_random_ptr != null) {
-            //@ts-ignore
-            const randomData = Memory.readByteArray(client_random_ptr, RANDOM_KEY_LENGTH);
+            const randomData = client_random_ptr.readByteArray(RANDOM_KEY_LENGTH);
             if (randomData) {
                 client_random = Array
                 .from(new Uint8Array(randomData))
@@ -308,8 +304,7 @@ export class RusTLS {
         }
     
         if (!key.isNull()) {
-            //@ts-ignore
-            const keyData = Memory.readByteArray(key, KEY_LENGTH);
+            const keyData = key.readByteArray(KEY_LENGTH);
             if (keyData) {
                 secret_key = Array
                 .from(new Uint8Array(keyData))

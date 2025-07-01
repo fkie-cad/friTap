@@ -308,8 +308,8 @@ export class PatternBasedHooking {
             },
             onError: (reason) => {
                 if (!this.found_ssl_log_secret) {
-                    devlog_error('[!] There was an error scanning memory: ' + reason);
-                    devlog_error(`[!] Trying to rescan memory with permissions in mind on ${moduleName}`);
+                    devlog_error('There was an error scanning memory: ' + reason);
+                    devlog_error(`Trying to rescan memory with permissions in mind on ${moduleName}`);
                     this.hookByPatternOnlyReadableParts(patterns, pattern_name, onMatchCallback, (primary_success) => {
                         if (!primary_success) {
                             devlog(`[!] Primary pattern failed, trying fallback pattern on ${moduleName}`);

@@ -22,7 +22,7 @@ function hook_iOS_Dynamic_Loader(module_library_mapping: { [key: string]: Array<
 
         var dlopen = "dlopen"
 
-        Interceptor.attach(Module.getExportByName(libdl, dlopen), {
+        Interceptor.attach(Process.getModuleByName(libdl).getExportByName(dlopen), {
             onEnter: function (args) {
                 this.moduleName = args[0].readCString()
             },
