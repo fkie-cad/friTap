@@ -2,7 +2,6 @@
 import {OpenSSL_BoringSSL } from "../ssl_lib/openssl_boringssl.js";
 import { devlog } from "../util/log.js";
 import { socket_library } from "./android_agent.js";
-import { ObjC } from "../shared/objclib.js";
 
 export class OpenSSL_BoringSSL_Android extends OpenSSL_BoringSSL {
 
@@ -31,8 +30,7 @@ export class OpenSSL_BoringSSL_Android extends OpenSSL_BoringSSL {
 
         // In case a callback is set by the application, we attach to this callback instead
         // Only succeeds if SSL_CTX_new is available
-        let setter_address = ObjC.available ? "SSL_CTX_set_info_callback" : "SSL_CTX_set_keylog_callback";
-        Interceptor.attach(this.addresses[this.module_name][setter_address], {
+        Interceptor.attach(this.addresses[this.module_name]["SSL_CTX_set_keylog_callback"], {
             onEnter: function (args: any) {
                 let callback_func = args[1];
 
