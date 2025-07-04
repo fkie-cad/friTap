@@ -1,0 +1,132 @@
+site_name: friTap Documentation
+site_description: Comprehensive SSL/TLS traffic analysis and key extraction tool
+site_author: Fraunhofer FKIE CAD
+site_url: https://fkie-cad.github.io/friTap
+
+repo_name: fkie-cad/friTap
+repo_url: https://github.com/fkie-cad/friTap
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  logo: assets/logo.png
+  favicon: assets/logo.png
+  palette:
+    # Palette toggle for light mode
+    - scheme: default
+      primary: blue grey
+      accent: blue
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    # Palette toggle for dark mode
+    - scheme: slate
+      primary: blue grey
+      accent: blue
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [friTap]
+  - git-revision-date-localized:
+      enable_creation_date: true
+  - minify:
+      minify_html: true
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - footnotes
+  - abbr
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Installation: getting-started/installation.md
+    - Quick Start: getting-started/quick-start.md
+    - Basic Concepts: getting-started/concepts.md
+  - Usage Examples:
+    - Overview: examples/index.md
+    - Desktop Applications: examples/desktop.md
+    - Android Applications: examples/android.md
+    - iOS Applications: examples/ios.md
+    - Web Browsers: examples/browsers.md
+    - Malware Analysis: examples/malware.md
+    - Live Analysis: examples/live-analysis.md
+  - Platform Guides:
+    - Android: platforms/android.md
+    - iOS: platforms/ios.md
+    - Linux: platforms/linux.md
+    - Windows: platforms/windows.md
+    - macOS: platforms/macos.md
+  - Advanced Features:
+    - Pattern-based Hooking: advanced/patterns.md
+    - Offset-based Hooking: advanced/offsets.md
+    - Spawn Gating: advanced/spawn-gating.md
+    - Custom Frida Scripts: advanced/custom-scripts.md
+    - Anti-Detection: advanced/anti-detection.md
+  - SSL/TLS Libraries:
+    - Overview: libraries/index.md
+    - OpenSSL/BoringSSL: libraries/openssl.md
+    - NSS: libraries/nss.md
+    - GnuTLS: libraries/gnutls.md
+    - WolfSSL: libraries/wolfssl.md
+    - Other Libraries: libraries/others.md
+  - API Reference:
+    - Python API: api/python.md
+    - CLI Reference: api/cli.md
+    - Configuration: api/configuration.md
+  - Troubleshooting:
+    - Common Issues: troubleshooting/common-issues.md
+    - Debugging: troubleshooting/debugging.md
+    - Performance: troubleshooting/performance.md
+    - FAQ: troubleshooting/faq.md
+  - Development:
+    - Contributing: development/contributing.md
+    - Architecture: development/architecture.md
+    - Building: development/building.md
+    - Testing: development/testing.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/fkie-cad/friTap
+    - icon: fontawesome/solid/paper-plane
+      link: mailto:daniel.baier@fkie.fraunhofer.de
+
+copyright: Copyright &copy; 2021-2025 Fraunhofer FKIE CAD

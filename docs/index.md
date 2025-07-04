@@ -1,83 +1,149 @@
----
-layout: default
-title: friTap - Decrypting TLS Traffic On The Fly
----
+# friTap Documentation
 
-![friTap Logo](https://raw.githubusercontent.com/fkie-cad/friTap/main/assets/logo.png)
+<div align="center">
+    <img src="assets/logo.png" alt="friTap Logo" width="300"/>
+    <h2>SSL/TLS Traffic Analysis Made Simple</h2>
+    <p><strong>Real-time key extraction and traffic decryption for security research</strong></p>
+</div>
+
+## Quick Start
 
 ```bash
+# Install friTap
 pip install fritap
+
+# Basic usage - Desktop application
+sudo fritap --pcap capture.pcap firefox
+
+# Mobile application analysis
+fritap -m -k keys.log com.example.app
 ```
 
-# Welcome to friTap
+## What is friTap?
 
-friTap is a powerful tool designed to assist researchers in analyzing network traffic encapsulated in SSL/TLS. With its ability to automate key extraction, friTap is especially valuable when dealing with malware analysis or investigating privacy issues in applications. By simplifying the process of decrypting and inspecting encrypted traffic, friTap empowers researchers to uncover critical insights with ease.
+friTap is a powerful cybersecurity research tool that simplifies SSL/TLS traffic analysis by automating key extraction and traffic decryption. Built on the Frida dynamic instrumentation framework, friTap enables security researchers to analyze encrypted network communications in real-time across multiple platforms.
 
-Key features include seamless support for automated SSL/TLS key extraction, making it an ideal choice for scenarios requiring rapid and accurate traffic analysis. Whether you're dissecting malicious network behavior or assessing data privacy compliance, friTap streamlines your workflow.
+### Key Capabilities
 
-For more details, explore the [OSDFCon webinar slides](https://github.com/fkie-cad/friTap/blob/main/assets/friTapOSDFConwebinar.pdf) or check out [our blog post](https://lolcads.github.io/posts/2022/08/fritap/).
+- **🔑 Real-time Key Extraction**: Automatically extract TLS keys as they're generated
+- **📊 Live Traffic Decryption**: Decrypt and save TLS payload as PCAP files
+- **🌐 Multi-Platform Support**: Works on Linux, Windows, macOS, Android, and iOS
+- **🔧 Extensive Library Support**: Supports OpenSSL, BoringSSL, NSS, GnuTLS, WolfSSL, and more
+- **🚀 Pattern-Based Hooking**: Hook stripped libraries without symbols
+- **🔍 Advanced Analysis**: Bypass anti-analysis techniques and SSL pinning
 
-Inspired by [SSL_Logger](https://github.com/google/ssl_logger), friTap supports all major platforms, including Linux, Windows, and Android, with plans to expand to additional platforms and libraries in future releases.
+### Use Cases
 
-## Key Features
+- **Malware Analysis**: Decrypt C&C communications and data exfiltration
+- **Privacy Research**: Analyze application data transmission practices
+- **Security Testing**: Validate SSL/TLS implementations and configurations
+- **Digital Forensics**: Recover encrypted network communications
+- **Application Analysis**: Understand how applications handle secure communications
 
-The main features of friTap are:
+## How It Works
 
-- TLS key extraction in real time
-- Decryption of TLS payload as PCAP in real time
-- Integration with Python. [Learn more](https://github.com/fkie-cad/friTap/blob/main/INTEGRATION.md)
-- Support for custom Frida scripts. [Details](https://github.com/fkie-cad/friTap/blob/main/USAGE.md#Using-friTap-with-a-custom-Frida-scripts)
-- Support of most common SSL libraries (OpenSSL, BoringSSL, NSS, GnuTLS, etc.)
+friTap uses dynamic instrumentation to intercept SSL/TLS operations at the library level:
 
-
-## Motivation
-
-More and more malware leverages TLS encryption to hide its communications and to exfiltrate data to its command server, effectively bypassing traditional detection platforms. Therefore, obtaining decrypted network traffic becomes crucial for digital forensics investigations. Current techniques such as SSL pinning may render established analysis approaches like MitM proxies useless. In many cases, the time-consuming process of reverse engineering the application of interest remains the only option to obtain the keys for decrypting the network traffic.
-
-
-## Concept
-
-friTap is a framework to solve these issues by intercepting the generation of encryption keys used by TLS for the purpose of decrypting the traffic an application sends.
+1. **Library Detection**: Automatically identifies the SSL/TLS library used by the target application
+2. **Hook Injection**: Dynamically hooks key functions (read, write, key generation)
+3. **Data Extraction**: Captures plaintext data and encryption keys in real-time
+4. **Output Generation**: Saves results as PCAP files or key logs for analysis
 
 ![friTap Workflow](https://raw.githubusercontent.com/fkie-cad/friTap/main/assets/fritap_workflow.png)
 
-Whenever an application decides to create a TLS connection (1) it usually utilizes its appropriate TLS library. This TLS library then creates the TLS socket (TLS handshake (2)). When the TLS handshake is finished the TLS stream is established (3). 
+## Supported Platforms & Libraries
 
-At this point the application uses the TLS write functions from the used TLS library to write its plaintext to the TLS stream where it gets encapsulated. In addition, the application utilizes the TLS read function from the used TLS library to process the decrypted TLS payload.
+| Platform | OpenSSL | BoringSSL | NSS | GnuTLS | WolfSSL | mbedTLS |
+|----------|---------|-----------|-----|--------|---------|----------|
+| Linux    | ✅ Full | ✅ Full  | ✅ Full | 🔄 R/W | 🔄 R/W | 🔄 R/W |
+| Windows  | 🔄 R/W  | 🔄 R/W   | 🔄 R/W | 🔄 R/W | 🔄 R/W | 🔄 R/W |
+| macOS    | 🚧 TBI  | 🔑 Keys  | 🚧 TBI | 🚧 TBI | 🚧 TBI | 🚧 TBI |
+| Android  | ✅ Full | ✅ Full  | 🚧 TBA | ✅ Full | ✅ Full | ✅ Full |
+| iOS      | 🚧 TBI  | 🔑 Keys  | 🚧 TBI | 🚧 TBI | 🚧 TBI | 🚧 TBI |
 
-friTap identifies the TLS library used and creates the appropriate hooks so that all plaintext is saved into a PCAP. Likewise, the plaintext can be output directly on the command line. Besides the possibility of saving the plaintext of TLS payload into a PCAP, friTap also enables the extraction of the TLS encryption keys. 
+**Legend**: ✅ Full support (keys + traffic), 🔄 R/W hooks only, 🔑 Keys only, 🚧 TBI (To Be Implemented), 🚧 TBA (To Be Analyzed)
 
-![friTap inner working](https://raw.githubusercontent.com/fkie-cad/friTap/main/assets/fritap_inner_working.png)
+## Getting Started
 
-friTap identifies the TLS library used and creates the appropriate hooks (4) so that all plaintext is saved into a PCAP. Likewise, the plaintext can be output directly on the command line. Besides the possibility of saving the plaintext of TLS payload into a PCAP, friTap also enables the extraction of the TLS encryption keys. 
+### Prerequisites
 
-## Working with friTap
+- Python 3.7+
+- Frida 16.0+
+- Administrative privileges (for desktop applications)
+- ADB access (for Android analysis)
 
- friTap provides two operation modes. One is to get the plaintext from the TLS payload as PCAP and the other is to get the used TLS keys. In order to get the decrypted TLS payload we need the `-p` parameter:
- ```bash
-$ fritap –m –p decrypted_TLS.pcap <target_app>
+### Installation
 
-[*] NSS.so found & will be hooked on Android!
-[*] Android dynamic loader hooked.
-[*] Logging pcap to decrypted_TLS.pcap
- ```
-
-
-The `-m` parameter indicates that we are analyzing a mobile application in the above example. Here, the implementations of the SSL libraries often differ from those of conventional desktop systems. For extracting the TLS keys from a target application we need the `-k` parameter:
 ```bash
-$ fritap –m –k TLS_keys.log <target_app>
+# Install from PyPI
+pip install fritap
 
-[*] BoringSSL.dylib found & will be hooked on iOS!
-[*] iOS dynamic loader hooked.
-[*] Logging keylog file to TLS_keys.log
+# Verify installation
+fritap --help
 ```
 
-As a result friTap writes all TLS keys to the TLS_keys.log file using the NSS Key Log Format.
+### Basic Examples
 
+=== "Desktop Application"
+    ```bash
+    # Capture Firefox traffic
+    sudo fritap --pcap firefox_traffic.pcap firefox
+    
+    # Extract keys from Thunderbird
+    sudo fritap -k thunderbird_keys.log thunderbird
+    ```
 
-## Resources
-- [GitHub Repository](https://github.com/fkie-cad/friTap)
-- [Usage Guide](https://github.com/fkie-cad/friTap/blob/main/USAGE.md)
-- [Integration Guide](https://github.com/fkie-cad/friTap/blob/main/INTEGRATION.md)
+=== "Android Application"
+    ```bash
+    # Analyze mobile app with key extraction
+    fritap -m -k keys.log com.example.app
+    
+    # Full packet capture with decryption
+    fritap -m --pcap decrypted.pcap com.example.app
+    ```
+
+=== "Pattern-Based Hooking"
+    ```bash
+    # Hook libraries without symbols
+    fritap --patterns patterns.json -k keys.log target_app
+    
+    # Debug pattern matching
+    fritap -do -v --patterns patterns.json target_app
+    ```
+
+## Documentation Sections
+
+### 📖 [Getting Started](getting-started/installation.md)
+Installation, setup, and basic concepts to get you up and running quickly.
+
+### 💡 [Usage Examples](examples/index.md)
+Comprehensive examples for different platforms and use cases with real-world scenarios.
+
+### 🔧 [Platform Guides](platforms/android.md)
+Detailed guides for Android, iOS, Linux, Windows, and macOS analysis.
+
+### 🚀 [Advanced Features](advanced/patterns.md)
+Pattern-based hooking, spawn gating, anti-detection techniques, and custom scripts.
+
+### 📚 [API Reference](api/python.md)
+Complete API documentation for Python integration and CLI usage.
+
+### 🐛 [Troubleshooting](troubleshooting/common-issues.md)
+Solutions for common issues, debugging techniques, and performance optimization.
+
+## Community & Support
+
+- 🐙 **GitHub**: [fkie-cad/friTap](https://github.com/fkie-cad/friTap)
+- 📧 **Email**: daniel.baier@fkie.fraunhofer.de
+- 📄 **Research**: [OSDFCon Webinar](https://github.com/fkie-cad/friTap/blob/main/assets/friTapOSDFConwebinar.pdf)
+- 📝 **Blog**: [Technical Deep Dive](https://lolcads.github.io/posts/2022/08/fritap/)
+
+## License
+
+friTap is released under the [GPL v3 License](https://github.com/fkie-cad/friTap/blob/main/LICENSE).
+
+---
+
+*Inspired by [SSL_Logger](https://github.com/google/ssl_logger) and developed by [Fraunhofer FKIE CAD](https://www.fkie.fraunhofer.de/en/departments/cad.html)*
 
 
