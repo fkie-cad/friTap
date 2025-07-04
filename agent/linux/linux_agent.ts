@@ -35,7 +35,23 @@ function hook_Linux_Dynamic_Loader(module_library_mapping: { [key: string]: Arra
                     for (let map of module_library_mapping[plattform_name]) {
                         let regex = map[0]
                         let func = map[1]
+                        let optionalPath = map[2]; // Optional path for module matching
+                        
                         if (regex.test(this.moduleName)) {
+
+                             // If path condition exists, try to retrieve module and check path
+                            if (optionalPath) {
+                                try {
+                                    const mod = Process.getModuleByName(this.moduleName);
+                                    if (!mod.path.toLowerCase().includes(optionalPath.toLowerCase())) {
+                                        continue;
+                                    }
+                                } catch (_) {
+                                    continue; // Module not yet loaded or not found
+                                }
+                            }
+
+
                             log(`${this.moduleName} was loaded & will be hooked on Linux!`)
                             try {
                                 func(this.moduleName, is_base_hook)

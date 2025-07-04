@@ -35,8 +35,22 @@ function hook_Windows_Dynamic_Loader(module_library_mapping: { [key: string]: Ar
                 for (let map of module_library_mapping[plattform_name]) {
                     let regex = new RegExp(map[0])
                     let func = map[1]
+                    let optionalPath = map[2]; // Optional path for module matching
 
                     if (regex.test(moduleName)) {
+
+                         // If path condition exists, try to retrieve module and check path
+                        if (optionalPath) {
+                            try {
+                                const mod = Process.getModuleByName(this.moduleName);
+                                if (!mod.path.toLowerCase().includes(optionalPath.toLowerCase())) {
+                                    continue;
+                                }
+                            } catch (_) {
+                                continue; // Module not yet loaded or not found
+                            }
+                        }
+
                         log(`${moduleName} was loaded & will be hooked on Windows!`)
                         try {
                             func(moduleName, is_base_hook)

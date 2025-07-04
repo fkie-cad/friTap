@@ -18,13 +18,25 @@ function wait_for_library_loaded(module_name: string){
  * on libc.
  */
 
-export function ssl_library_loader(plattform_name: string, module_library_mapping: { [key: string]: Array<[any, ModuleHookingType]> }, moduleNames: Array<string> , plattform_os: string, is_base_hook: boolean): void{
+export function ssl_library_loader(plattform_name: string, module_library_mapping: { [key: string]: Array<[any, ModuleHookingType, string?]> }, moduleNames: Array<string> , plattform_os: string, is_base_hook: boolean): void{
     for(let map of module_library_mapping[plattform_name]){
         let regex = new RegExp(map[0])
         let func = map[1]
+        let optionalPathFilter = map[2]; // Optional path for module matching
+
         for(let module_name of moduleNames){
             if (regex.test(module_name)){
                 try{
+
+                    // If an optional path filter exists, skip if not matched
+                    if (optionalPathFilter){
+                        const module = Process.getModuleByName(module_name);
+                        if(!module.path.toLowerCase().includes(optionalPathFilter.toLowerCase())){
+                            continue;
+                        }
+                    }
+
+
                     log(`${module_name} found & will be hooked on ${plattform_os}!`)
                     try {
                         Process.getModuleByName(module_name).ensureInitialized();
