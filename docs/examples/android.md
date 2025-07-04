@@ -52,33 +52,42 @@ fritap -m -k instagram_keys.log com.instagram.android
 
 **Complete Traffic Analysis:**
 ```bash
-# Capture both keys and decrypted traffic
-fritap -m -k instagram_keys.log --pcap instagram_traffic.pcap com.instagram.android
+# Capture keys, traffic, and metadata
+fritap -m -k instagram_keys.log --pcap instagram_traffic.pcap --json instagram_metadata.json com.instagram.android
 
 # Now use Instagram app normally
 # Press Ctrl+C to stop capture
+
+# Analyze session metadata
+cat instagram_metadata.json | jq '.statistics, .session_info'
 ```
 
 ### E-commerce Application
 
 **Amazon Shopping App:**
 ```bash
-# Comprehensive analysis
-fritap -m -k amazon_keys.log --pcap amazon_traffic.pcap com.amazon.mshop.android.shopping
+# Comprehensive analysis with metadata
+fritap -m -k amazon_keys.log --pcap amazon_traffic.pcap --json amazon_analysis.json com.amazon.mshop.android.shopping
 
 # Browse products, add to cart, etc.
 # Monitor API calls in real-time
+
+# Extract API endpoints from metadata
+cat amazon_analysis.json | jq '.connections[] | select(.dst_port == 443) | .dst_addr' | sort | uniq
 ```
 
 ### Banking Application
 
 **Banking App Analysis (be careful with production data):**
 ```bash
-# Use on test accounts only
-fritap -m -k bank_keys.log --pcap bank_traffic.pcap com.example.bankapp
+# Use on test accounts only - comprehensive logging
+fritap -m -k bank_keys.log --pcap bank_traffic.pcap --json bank_analysis.json com.example.bankapp
 
 # Monitor authentication flows
 tcpdump -r bank_traffic.pcap 'port 443' -A | grep -i auth
+
+# Analyze authentication patterns from JSON
+cat bank_analysis.json | jq '.connections[] | select(.data_length > 100) | {timestamp, dst_addr, data_length}'
 ```
 
 ## Advanced Android Analysis
@@ -88,11 +97,14 @@ tcpdump -r bank_traffic.pcap 'port 443' -A | grep -i auth
 Start the app fresh under friTap control:
 
 ```bash
-# Spawn app from the beginning
-fritap -m -f -k keys.log --pcap traffic.pcap com.example.app
+# Spawn app from the beginning with full logging
+fritap -m -s -k keys.log --pcap traffic.pcap --json spawn_analysis.json com.example.app
 
 # This captures initialization traffic
 # Including certificate pinning bypass attempts
+
+# Analyze startup sequence
+cat spawn_analysis.json | jq '.connections[] | select(.timestamp | . < (now - 10)) | {timestamp, dst_addr}'
 ```
 
 ### Pattern-Based Hooking
@@ -100,11 +112,14 @@ fritap -m -f -k keys.log --pcap traffic.pcap com.example.app
 For apps with obfuscated or stripped SSL libraries:
 
 ```bash
-# Create pattern file for specific app
-fritap -m --patterns android_patterns.json -k keys.log com.example.app
+# Create pattern file for specific app with metadata
+fritap -m --patterns android_patterns.json -k keys.log --json pattern_analysis.json com.example.app
 
 # Debug pattern matching
 fritap -m -do -v --patterns android_patterns.json com.example.app
+
+# Check detected libraries
+cat pattern_analysis.json | jq '.statistics.libraries_detected'
 ```
 
 ### Anti-Root Detection Bypass
@@ -284,39 +299,48 @@ fritap -m --enable_spawn_gating -k bg_keys.log com.example.app
 
 **REST API Analysis:**
 ```bash
-# Capture API communications
-fritap -m -k api_keys.log --pcap api_traffic.pcap com.example.api_app
+# Capture API communications with metadata
+fritap -m -k api_keys.log --pcap api_traffic.pcap --json api_analysis.json com.example.api_app
 
 # Extract API endpoints
 tcpdump -r api_traffic.pcap -A | grep -E "(GET|POST|PUT|DELETE)" | head -20
 
 # Analyze authentication tokens
 tcpdump -r api_traffic.pcap -A | grep -i authorization
+
+# Get API statistics from JSON
+cat api_analysis.json | jq '.statistics.total_connections, .connections | length'
 ```
 
 ### Data Privacy Analysis
 
 **Personal Data Transmission:**
 ```bash
-# Monitor data transmission
-fritap -m -k privacy_keys.log --pcap privacy_traffic.pcap com.example.app
+# Monitor data transmission with privacy analysis
+fritap -m -k privacy_keys.log --pcap privacy_traffic.pcap --json privacy_analysis.json com.example.app
 
 # Search for personal data patterns
 tcpdump -r privacy_traffic.pcap -A | grep -E "(email|phone|address)"
+
+# Analyze data transfer volumes
+cat privacy_analysis.json | jq '.connections[] | select(.data_length > 1000) | {dst_addr, data_length}'
 ```
 
 ### Malware Analysis
 
 **Suspicious App Analysis:**
 ```bash
-# Analyze potentially malicious app
-fritap -m -k malware_keys.log --pcap malware_traffic.pcap com.suspicious.app
+# Analyze potentially malicious app with full logging
+fritap -m -k malware_keys.log --pcap malware_traffic.pcap --json malware_analysis.json com.suspicious.app
 
 # Look for C&C communications
 tcpdump -r malware_traffic.pcap 'not port 443 and not port 80'
 
 # Check for data exfiltration
 tcpdump -r malware_traffic.pcap -A | grep -E "(password|token|key)"
+
+# Extract suspicious connection patterns
+cat malware_analysis.json | jq '.connections[] | select(.dst_port != 443 and .dst_port != 80)'
 ```
 
 ## Troubleshooting Android Analysis
@@ -411,9 +435,10 @@ adb shell getprop ro.product.model >> device_info.txt
 adb shell pm list packages | grep "$PACKAGE_NAME" > app_info.txt
 adb shell dumpsys package "$PACKAGE_NAME" | grep version >> app_info.txt
 
-# Start friTap analysis
+# Start friTap analysis with comprehensive logging
 fritap -m -k "${PACKAGE_NAME}_keys.log" \
        --pcap "${PACKAGE_NAME}_traffic.pcap" \
+       --json "${PACKAGE_NAME}_metadata.json" \
        -v "$PACKAGE_NAME" 2>&1 | tee "${PACKAGE_NAME}_analysis.log"
 
 echo "Analysis complete. Results in $OUTPUT_DIR"
@@ -432,6 +457,7 @@ while true; do
     TIMESTAMP=$(date +%Y%m%d_%H%M%S)
     timeout "$DURATION" fritap -m -k "keys_${TIMESTAMP}.log" \
                                --pcap "traffic_${TIMESTAMP}.pcap" \
+                               --json "metadata_${TIMESTAMP}.json" \
                                "$PACKAGE_NAME"
     sleep 10
 done
@@ -495,8 +521,11 @@ fritap -m -f -k keys.log com.example.app
 ### 3. Comprehensive Logging
 
 ```bash
-# Enable all logging options
+# Enable all logging options with comprehensive output
 fritap -m -do -v -k keys.log --pcap traffic.pcap --json metadata.json com.example.app 2>&1 | tee full_analysis.log
+
+# Analyze comprehensive metadata
+cat metadata.json | jq '.session_info, .statistics, .errors[] | select(.type == "frida_script_error")'
 ```
 
 ### 4. Security Considerations

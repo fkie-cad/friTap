@@ -12,6 +12,8 @@ import time
 import sys
 import json
 import threading
+import logging
+from datetime import datetime, timezone
 from .pcap import PCAP
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -19,8 +21,8 @@ from watchdog.events import FileSystemEventHandler
 try:
     import hexdump  # pylint: disable=g-import-not-at-top
 except ImportError:
-    print("Unable to import hexdump module!")
-    pass
+    # Will be handled by logger later
+    hexdump = None
 
 try:
     from rich.console import Console
@@ -40,7 +42,16 @@ SSL_WRITE = ["SSL_write", "wolfSSL_write", "writeApplicationData", "NSS_write","
 
 class SSL_Logger():
 
-    def __init__(self, app, pcap_name=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, mobile=False, live=False, environment_file=None, debug_mode=False,full_capture=False, socket_trace=False, host=False, offsets=None, debug_output=False, experimental=False, anti_root=False, payload_modification=False,enable_default_fd=False, patterns=None, custom_hook_script=None):
+    def __init__(self, app, pcap_name=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, mobile=False, live=False, environment_file=None, debug_mode=False,full_capture=False, socket_trace=False, host=False, offsets=None, debug_output=False, experimental=False, anti_root=False, payload_modification=False,enable_default_fd=False, patterns=None, custom_hook_script=None, json_output=None):
+        # Set up logging
+        self.logger = logging.getLogger('friTap')
+        if not self.logger.handlers:
+            self._setup_logging(debug_mode, debug_output)
+        
+        # Check for hexdump availability
+        if hexdump is None:
+            self.logger.warning("Unable to import hexdump module! Hexdump functionality will be disabled.")
+        
         self.debug = debug_mode
         self.anti_root = anti_root
         self.pcap_name = pcap_name
@@ -65,6 +76,7 @@ class SSL_Logger():
         self.custom_hook_script = custom_hook_script
         self.script = None
         self.running = True
+        self.json_output = json_output
 
         self.tmpdir = None
         self.filename = ""
@@ -73,6 +85,7 @@ class SSL_Logger():
         self.process = None
         self.device = None
         self.keylog_file = None
+        self.json_file = None
 
         self.patterns = patterns
         self.pattern_data = None        
@@ -80,8 +93,52 @@ class SSL_Logger():
         self.keydump_Set = {*()}
         self.traced_Socket_Set = {*()}
         self.traced_scapy_socket_Set = {*()}
+        
+        # JSON session data
+        self.session_data = {
+            "friTap_version": "1.3.4.2",  # Should be imported from about.py
+            "session_info": {
+                "start_time": datetime.now(timezone.utc).isoformat(),
+                "target_app": app,
+                "mobile": mobile,
+                "spawn": spawn,
+                "verbose": verbose,
+                "live": live,
+                "debug": debug_mode
+            },
+            "ssl_sessions": [],
+            "connections": [],
+            "key_extractions": [],
+            "errors": [],
+            "statistics": {
+                "total_sessions": 0,
+                "total_connections": 0,
+                "total_bytes_captured": 0,
+                "libraries_detected": []
+            }
+        }}
 
         self.init_fritap()
+        
+    def _setup_logging(self, debug_mode, debug_output):
+        """Set up logging configuration for friTap"""
+        if debug_mode or debug_output:
+            level = logging.DEBUG
+        else:
+            level = logging.INFO
+            
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        
+        # Console handler
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(formatter)
+        console_handler.setLevel(level)
+        
+        self.logger.setLevel(level)
+        self.logger.addHandler(console_handler)
+        self.logger.propagate = False  # Prevent duplicate messages
     
     
     def init_fritap(self):
@@ -103,23 +160,26 @@ class SSL_Logger():
                     json.load(self.offsets)
                     self.offsets_data = self.offsets
                 except ValueError as e:
-                    print(f"Log error, defaulting to auto-detection: {e}")
+                    self.logger.error(f"Log error, defaulting to auto-detection: {e}")
 
         if self.patterns is not None:
             self.load_patterns()
 
         if self.keylog:
             self.keylog_file = open(self.keylog, "w")
+        
+        if self.json_output:
+            self.json_file = open(self.json_output, "w")
+            self.logger.info(f"JSON output will be saved to {self.json_output}")
 
         if self.live:
             if self.pcap_name:
-                print("[*] YOU ARE TRYING TO WRITE A PCAP AND HAVING A LIVE VIEW\nTHIS IS NOT SUPPORTED!\nWHEN YOU DO A LIVE VIEW YOU CAN SAFE YOUR CAPUTRE WITH WIRESHARK.")
+                self.logger.warning("YOU ARE TRYING TO WRITE A PCAP AND HAVING A LIVE VIEW\nTHIS IS NOT SUPPORTED!\nWHEN YOU DO A LIVE VIEW YOU CAN SAVE YOUR CAPTURE WITH WIRESHARK.")
             fifo_file = self.temp_fifo()
-            print('[*] friTap live view on Wireshark')
-            print(f'[*] Created named pipe for Wireshark live view to {fifo_file}')
-            print(
-                f'[*] Now open this named pipe with Wireshark in another terminal: sudo wireshark -k -i {fifo_file}')
-            print('[*] friTap will continue after the named pipe is ready....\n')
+            self.logger.info('friTap live view on Wireshark')
+            self.logger.info(f'Created named pipe for Wireshark live view to {fifo_file}')
+            self.logger.info(f'Now open this named pipe with Wireshark in another terminal: sudo wireshark -k -i {fifo_file}')
+            self.logger.info('friTap will continue after the named pipe is ready....')
             self.pcap_obj =  PCAP(fifo_file,SSL_READ,SSL_WRITE,self.full_capture, self.mobile,self.debug)
 
     
@@ -128,7 +188,8 @@ class SSL_Logger():
         if reason == "application-requested":
             return
         
-        print(f"\n[*] Target process stopped: {reason}\n")            
+        self.logger.info(f"Target process stopped: {reason}")
+        self._log_session_end(reason)
         self.pcap_cleanup(self.full_capture,self.mobile,self.pcap_name)
         self.cleanup(self.live,self.socket_trace,self.full_capture,self.debug)
         
@@ -141,6 +202,19 @@ class SSL_Logger():
         line = message.get("lineNumber", "")
         column = message.get("columnNumber", "")
 
+        # Log error to JSON if enabled
+        if self.json_output:
+            error_entry = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "type": "frida_script_error",
+                "description": error_msg,
+                "file": file,
+                "line": line,
+                "column": column,
+                "stack": stack
+            }
+            self.session_data["errors"].append(error_entry)
+            
         if self.debug_output:
             if Console:
                 console = Console()
@@ -153,14 +227,14 @@ class SSL_Logger():
                 panel = Panel(body, title=header, expand=False, border_style="red")
                 console.print(panel)
             else:
-                print("✖ Frida Script Error:")
-                print("Description:", error_msg)
-                print(f"File: {file}:{line}:{column}")
-                print("Stacktrace:\n" + stack)
+                self.logger.error("✖ Frida Script Error:")
+                self.logger.error(f"Description: {error_msg}")
+                self.logger.error(f"File: {file}:{line}:{column}")
+                self.logger.error(f"Stacktrace:\n{stack}")
         else:
-            print(f"[!] Error from Frida script: {error_msg}")
+            self.logger.error(f"Error from Frida script: {error_msg}")
         
-        print("\n\n[!] Exiting due to script error.")
+        self.logger.critical("Exiting due to script error.")
 
         os.kill(os.getpid(), signal.SIGTERM)
 
@@ -171,7 +245,7 @@ class SSL_Logger():
         try:
             return self.filename
         except OSError as e:
-            print(f'Failed to create FIFO: {e}')
+            self.logger.error(f'Failed to create FIFO: {e}')
         
 
     def on_fritap_message(self, job, message, data):
@@ -229,23 +303,31 @@ class SSL_Logger():
             return
         if payload["contentType"] == "console":
             if payload["console"].startswith("[*]"):
-                print(payload["console"])
+                self.logger.info(payload["console"].replace("[*] ", ""))
             else:
-                print("[*] " + payload["console"])
+                self.logger.info(payload["console"])
         if self.debug or self.debug_output:
             if payload["contentType"] == "console_dev" and payload["console_dev"]:
                 if len(payload["console_dev"]) > 3:
-                    print("[***] " + payload["console_dev"])
+                    self.logger.debug(payload["console_dev"])
             elif payload["contentType"] == "console_error" and payload["console_error"]:
                 if len(payload["console_error"]) > 3:
-                    print("[---] " + payload["console_error"])
+                    self.logger.error(payload["console_error"])
         if self.verbose:
             if(payload["contentType"] == "keylog") and self.keylog:
                 if payload["keylog"] not in self.keydump_Set:
-                    print(payload["keylog"])
+                    self.logger.info(payload["keylog"])
                     self.keydump_Set.add(payload["keylog"])
                     self.keylog_file.write(payload["keylog"] + "\n")
-                    self.keylog_file.flush()    
+                    self.keylog_file.flush()
+                    # Log to JSON if enabled
+                    if self.json_output:
+                        key_entry = {
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "type": "key_extraction",
+                            "key_data": payload["keylog"]
+                        }
+                        self.session_data["key_extractions"].append(key_entry)
             elif not data or len(data) == 0:
                 return
             else:
@@ -253,7 +335,7 @@ class SSL_Logger():
                 dst_addr = get_addr_string(payload["dst_addr"], payload["ss_family"])
 
                 if not self.socket_trace and not self.full_capture:
-                    print("SSL Session: " + str(payload["ssl_session_id"]))
+                    self.logger.info("SSL Session: " + str(payload["ssl_session_id"]))
 
                 if self.full_capture:
                     # Add to traced_scapy_socket_Set as a frozenset dictionary
@@ -281,12 +363,31 @@ class SSL_Logger():
                     self.traced_scapy_socket_Set.add(frozenset(scapy_filter_entry.items()))
 
                     # Use structured data for the debug print
-                    print(f"[socket_trace] {src_addr}:{payload['src_port']} --> {dst_addr}:{payload['dst_port']}")
+                    self.logger.debug(f"[socket_trace] {src_addr}:{payload['src_port']} --> {dst_addr}:{payload['dst_port']}")
 
                 else:
-                    print("[%s] %s:%d --> %s:%d" % (payload["function"], src_addr, payload["src_port"], dst_addr, payload["dst_port"]))
-                    hexdump.hexdump(data)
-                print()
+                    self.logger.info("[%s] %s:%d --> %s:%d" % (payload["function"], src_addr, payload["src_port"], dst_addr, payload["dst_port"]))
+                    if hexdump:
+                        hexdump.hexdump(data)
+                    else:
+                        self.logger.info(f"Data: {data.hex() if data else 'No data'}")
+                
+                # Log connection to JSON if enabled
+                if self.json_output:
+                    connection_entry = {
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "function": payload["function"],
+                        "ssl_session_id": payload.get("ssl_session_id"),
+                        "src_addr": src_addr,
+                        "src_port": payload["src_port"],
+                        "dst_addr": dst_addr,
+                        "dst_port": payload["dst_port"],
+                        "ss_family": payload["ss_family"],
+                        "data_length": len(data) if data else 0
+                    }
+                    self.session_data["connections"].append(connection_entry)
+                    self.session_data["statistics"]["total_connections"] += 1
+                    self.session_data["statistics"]["total_bytes_captured"] += len(data) if data else 0
         if self.pcap_name and payload["contentType"] == "datalog" and not self.full_capture:
             self.pcap_obj.log_plaintext_payload(payload["ss_family"], payload["function"], payload["src_addr"],
                      payload["src_port"], payload["dst_addr"], payload["dst_port"], data)
@@ -346,19 +447,18 @@ class SSL_Logger():
         if "custom" not in custom_hook_payload:
             return
 
-        print("[+] custom hook: "+custom_hook_payload["custom"])
+        self.logger.info(f"custom hook: {custom_hook_payload['custom']}")
 
     
     
     def on_child_added(self, child):
-        print(f"[*] Attached to child process with pid {child.pid}")
+        self.logger.info(f"Attached to child process with pid {child.pid}")
         self.instrument(self.device.attach(child.pid))
         self.device.resume(child.pid)
 
 
     def on_spawn_added(self, spawn):
-        print(
-            f"[*] Process spawned with pid {spawn.pid}. Name: {spawn.identifier}")
+        self.logger.info(f"Process spawned with pid {spawn.pid}. Name: {spawn.identifier}")
         self.instrument(self.device.attach(spawn.pid))
         self.device.resume(spawn.pid)
         
@@ -369,27 +469,26 @@ class SSL_Logger():
         if self.debug:
             if frida.__version__ < "16":
                 process.enable_debugger(debug_port)
-            print("\n[!] running in debug mode")
-            print(f"[!] Chrome Inspector server listening on port {debug_port}")
-            print("[!] Open Chrome with chrome://inspect for debugging\n")
+            self.logger.info("running in debug mode")
+            self.logger.info(f"Chrome Inspector server listening on port {debug_port}")
+            self.logger.info("Open Chrome with chrome://inspect for debugging")
             runtime="v8"
         
         if self.custom_hook_script is not None:
             custom_script_string = self.get_custom_frida_script()
             if self.debug_output:
-                print("[***] loading custom frida script: " + self.custom_hook_script)
+                self.logger.debug(f"loading custom frida script: {self.custom_hook_script}")
         
         script_string = self.get_fritap_frida_script()
         if self.debug_output:
-            print("[***] loading friTap frida script: " + self.frida_agent_script)
+            self.logger.debug(f"loading friTap frida script: {self.frida_agent_script}")
         
 
         if self.offsets_data is not None:
-            print(f"[*] applying hooks at offset {self.offsets_data}")
-
+            self.logger.info(f"applying hooks at offset {self.offsets_data}")
 
         if self.pattern_data is not None:
-            print("[*] Using pattern provided by pattern.json for hooking")
+            self.logger.info("Using pattern provided by pattern.json for hooking")
 
         
         if self.custom_hook_script is not None:
@@ -431,11 +530,11 @@ class SSL_Logger():
                                 buffer = f.read()
                                 self.script.post({'type':'writemod', 'payload': buffer.hex()})
                     except RuntimeError as e:
-                        print(e)
+                        self.logger.error(f"Watcher error: {e}")
                 
                 
 
-            print("Init watcher")
+            self.logger.debug("Init watcher")
             event_handler = ModWatcher(process)
             
             observer = Observer()
@@ -457,13 +556,13 @@ class SSL_Logger():
                 self.pattern_data = json.dumps(json_data, ensure_ascii=False).encode('utf-8').decode('utf-8')  # Ensure pattern_data is a JSON string in utf-8
 
             except (UnicodeDecodeError, json.JSONDecodeError) as e:
-                print(f"[-] UnicodeDecodeError: {e}")
+                self.logger.error(f"UnicodeDecodeError: {e}")
             except (ValueError, json.JSONDecodeError) as e:
-                print(f"[-] Error loading JSON file, defaulting to auto-detection: {e}")
+                self.logger.error(f"Error loading JSON file, defaulting to auto-detection: {e}")
             except OSError as e:
-                print(f"[-] Error reading the file: {e}")
+                self.logger.error(f"Error reading the file: {e}")
         else:
-            print(f"[-] Pattern file {self.patterns} does not exist.")
+            self.logger.error(f"Pattern file {self.patterns} does not exist.")
     
     
     def start_fritap_session_instrumentation(self, own_message_handler, process):
@@ -478,21 +577,21 @@ class SSL_Logger():
             try:
                 if self.mobile is True:  # No device ID provided
                     if self.debug_output or self.debug:
-                        print("[*] Attaching to the first available USB device...")
+                        self.logger.debug("Attaching to the first available USB device...")
                     self.device = frida.get_usb_device()
                 else:  # Device ID provided
                     if self.debug_output or self.debug:
-                        print(f"[*] Attaching to the device with ID: {self.mobile}")
+                        self.logger.debug(f"Attaching to the device with ID: {self.mobile}")
                     self.device = frida.get_device(self.mobile)
-                print("[*] Successfully attached to the mobile device.")
+                self.logger.info("Successfully attached to the mobile device.")
             except frida.ServerNotRunningError:
-                print("[-] Frida server is not running. Please ensure it is started on the device.")
+                self.logger.error("Frida server is not running. Please ensure it is started on the device.")
                 sys.exit(1)
             except frida.DeviceNotFoundError:
-                print(f"[-] Device with ID '{self.mobile}' not found. Please check the device ID or ensure it is connected.")
+                self.logger.error(f"Device with ID '{self.mobile}' not found. Please check the device ID or ensure it is connected.")
                 sys.exit(1)
             except Exception as e:
-                print(f"[-] Unexpected error while attaching to the device: {e}")
+                self.logger.error(f"Unexpected error while attaching to the device: {e}")
                 sys.exit(1)
         elif self.host:
             self.device = frida.get_device_manager().add_remote_device(self.host)
@@ -504,7 +603,7 @@ class SSL_Logger():
             self.device.enable_spawn_gating()
             self.device.on("spawn_added", self.on_spawn_added)
         if self.spawn:
-            print("spawning "+ self.target_app)
+            self.logger.info(f"spawning {self.target_app}")
             
             if self.mobile or self.host:
                 pid = self.device.spawn(self.target_app)
@@ -526,11 +625,11 @@ class SSL_Logger():
 
 
         if self.pcap_name and self.full_capture:
-            print(f'[*] Logging pcap to {self.pcap_name}')
+            self.logger.info(f'Logging pcap to {self.pcap_name}')
         if self.pcap_name and not self.full_capture:
-            print(f'[*] Logging TLS plaintext as pcap to {self.pcap_name}')
+            self.logger.info(f'Logging TLS plaintext as pcap to {self.pcap_name}')
         if self.keylog:
-            print(f'[*] Logging keylog file to {self.keylog}')
+            self.logger.info(f'Logging keylog file to {self.keylog}')
             
         #self.process.on('detached', self.on_detach)
 
@@ -570,7 +669,7 @@ class SSL_Logger():
         def detach():
             try:
                 if self.debug_output or self.debug:
-                    print("[*] Attempting to detach from Frida process...")
+                    self.logger.debug("Attempting to detach from Frida process...")
                 try:
                     self.script.unload()
                 except Exception:
@@ -578,9 +677,9 @@ class SSL_Logger():
 
                 self.process.detach()
                 if self.debug_output or self.debug:
-                    print("[*] Successfully detached from Frida process.")
+                    self.logger.debug("Successfully detached from Frida process.")
             except Exception as e:
-                print(f"[-] Error while detaching: {e}")
+                self.logger.error(f"Error while detaching: {e}")
 
         # Create a thread to run the detach method
         detach_thread = threading.Thread(target=detach)
@@ -591,12 +690,12 @@ class SSL_Logger():
 
         if detach_thread.is_alive():
             if self.debug_output:
-                print(f"[-] Detach process timed out after {timeout} seconds.")
+                self.logger.warning(f"Detach process timed out after {timeout} seconds.")
             # Force cleanup if necessary
             # Note: Frida doesn't provide a "force detach," so handle gracefully
         else:
             if self.debug_output:
-                print("[*] Detached friTap from process successfully.")
+                self.logger.debug("Detached friTap from process successfully.")
 
 
 
@@ -617,14 +716,14 @@ class SSL_Logger():
                     self.pcap_obj.full_capture_thread.mobile_subprocess.terminate()
                     self.pcap_obj.full_capture_thread.mobile_subprocess.wait()
                     if not self.pcap_obj.android_Instance.is_tcpdump_available():
-                        print("[-] tcpdump is not available on the device.")
+                        self.logger.error("tcpdump is not available on the device.")
                         return
                     self.pcap_obj.android_Instance.pull_pcap_from_device()
-                print(f"[*] full {capture_type} capture safed to _{pcap_name}")
+                self.logger.info(f"full {capture_type} capture saved to _{pcap_name}")
                 if self.keylog_file is None:
-                    print("[*] remember that the full capture won't contain any decrypted TLS traffic.")
+                    self.logger.info("remember that the full capture won't contain any decrypted TLS traffic.")
                 else:
-                    print(f"[*] remember that the full capture won't contain any decrypted TLS traffic. In order to decrypt it use the logged keys from {self.keylog_file.name}")
+                    self.logger.info(f"remember that the full capture won't contain any decrypted TLS traffic. In order to decrypt it use the logged keys from {self.keylog_file.name}")
     
 
     def cleanup(self, live=False, socket_trace=False, full_capture=False, debug_output=False, debug=False):
@@ -636,32 +735,36 @@ class SSL_Logger():
             os.unlink(self.filename)  # Remove file
             os.rmdir(self.tmpdir)  # Remove directory
         if type(socket_trace) is str:
-            print(f"[*] Write traced sockets into {socket_trace}")
+            self.logger.info(f"Write traced sockets into {socket_trace}")
             self.write_socket_trace(socket_trace)
         if socket_trace:
             display_filter = PCAP.get_filter_from_traced_sockets(self.traced_Socket_Set, filter_type="display")
-            print(f"[*] Generated Display Filter for Wireshark:\n{display_filter}")
+            self.logger.info(f"Generated Display Filter for Wireshark:\n{display_filter}")
         
         if full_capture and len(self.traced_scapy_socket_Set) > 0:
             if debug_output or debug:
                 display_filter = PCAP.get_filter_from_traced_sockets(self.traced_Socket_Set, filter_type="display")
-                print(f"[*] Generated Display Filter for Wireshark:\n{display_filter}")
+                self.logger.debug(f"Generated Display Filter for Wireshark:\n{display_filter}")
 
             try:
                 self.pcap_obj.create_application_traffic_pcap(self.traced_scapy_socket_Set,self.pcap_obj)
             except Exception as e:
-                print(f"Error: {e}")
+                self.logger.error(f"Error: {e}")
 
         elif full_capture and len(self.traced_scapy_socket_Set) < 1:
             if socket_trace:
-                print(f"[-] friTap was unable to indentify the used sockets. \n[*] The resulting PCAP _{self.pcap_obj.pcap_file_name} will contain all trafic from the device.")
+                self.logger.warning(f"friTap was unable to identify the used sockets. The resulting PCAP _{self.pcap_obj.pcap_file_name} will contain all traffic from the device.")
             else:
-                print(f"[*] friTap not trace the sockets in use (--socket_tracing option not enabled)\n[*] The resulting PCAP _{self.pcap_obj.pcap_file_name} will contain all trafic from the device.")
+                self.logger.info(f"friTap not trace the sockets in use (--socket_tracing option not enabled). The resulting PCAP _{self.pcap_obj.pcap_file_name} will contain all traffic from the device.")
+            
+        # Finalize JSON output if enabled
+        if self.json_output:
+            self._finalize_json_output()
             
         self.running = False
         if self.process:
             self.detach_with_timeout()  # Detach Frida process if applicable
-        print("\n\nThx for using friTap\nHave a great day\n")
+        self.logger.info("Thanks for using friTap. Have a great day!")
         os._exit(0)
 
     def get_fritap_frida_script(self):
@@ -682,12 +785,57 @@ class SSL_Logger():
 
     def install_signal_handler(self):
         def signal_handler(signum, frame):
-            print("\n[*] Ctrl+C detected. Cleaning up...")
+            self.logger.info("Ctrl+C detected. Cleaning up...")
             self.pcap_cleanup(self.full_capture, self.mobile, self.pcap_name)
             self.cleanup(self.live, self.socket_trace, self.full_capture, self.debug_output, self.debug)  # Call the instance's cleanup method
 
 
         signal.signal(signal.SIGINT, signal_handler)
+        
+    def _log_session_end(self, reason):
+        """Log session end information to JSON if enabled"""
+        if self.json_output:
+            self.session_data["session_info"]["end_time"] = datetime.now(timezone.utc).isoformat()
+            self.session_data["session_info"]["end_reason"] = reason
+            self.session_data["statistics"]["total_sessions"] = len(self.session_data["ssl_sessions"])
+            
+    def _finalize_json_output(self):
+        """Write final JSON output to file"""
+        if self.json_file:
+            try:
+                # Update statistics
+                self.session_data["session_info"]["end_time"] = datetime.now(timezone.utc).isoformat()
+                
+                # Write JSON data
+                json.dump(self.session_data, self.json_file, indent=2, ensure_ascii=False)
+                self.json_file.close()
+                self.logger.info(f"JSON output saved to {self.json_output}")
+            except Exception as e:
+                self.logger.error(f"Error writing JSON output: {e}")
+                
+    def add_ssl_session(self, session_info):
+        """Add SSL session information to JSON output"""
+        if self.json_output:
+            session_entry = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "session_id": session_info.get("session_id"),
+                "cipher_suite": session_info.get("cipher_suite"),
+                "protocol_version": session_info.get("protocol_version"),
+                "server_name": session_info.get("server_name"),
+                "certificate_info": session_info.get("certificate_info")
+            }
+            self.session_data["ssl_sessions"].append(session_entry)
+            
+    def add_library_detection(self, library_name, library_path):
+        """Add detected SSL library information to JSON output"""
+        if self.json_output:
+            library_info = {
+                "name": library_name,
+                "path": library_path,
+                "detected_at": datetime.now(timezone.utc).isoformat()
+            }
+            if library_info not in self.session_data["statistics"]["libraries_detected"]:
+                self.session_data["statistics"]["libraries_detected"].append(library_info)
 
 
     def write_socket_trace(self, socket_trace_name):

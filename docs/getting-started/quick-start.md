@@ -93,11 +93,14 @@ fritap -k output.log target
 # Save PCAP to file
 fritap --pcap output.pcap target
 
+# Save session metadata as JSON
+fritap --json metadata.json target
+
 # Display output in terminal
 fritap target
 
-# JSON output format
-fritap --json target
+# Combine all output formats
+fritap -k keys.log --pcap traffic.pcap --json metadata.json target
 ```
 
 ### Advanced Options
@@ -121,12 +124,15 @@ fritap --timeout 30 target
 ### Example 1: Analyze Web Browser Traffic
 
 ```bash
-# Start Firefox and capture its TLS traffic
-sudo fritap --pcap firefox_traffic.pcap firefox
+# Start Firefox and capture comprehensive data
+sudo fritap -k firefox_keys.log --pcap firefox_traffic.pcap --json firefox_metadata.json firefox
 
 # Open Firefox, browse to websites
 # Press Ctrl+C to stop capture
-# Open firefox_traffic.pcap in Wireshark
+
+# Analyze results
+wireshark firefox_traffic.pcap  # View decrypted traffic
+cat firefox_metadata.json | jq '.statistics'  # View session statistics
 ```
 
 ### Example 2: Mobile App Analysis
@@ -138,21 +144,26 @@ adb devices
 # Start frida-server on device
 adb shell su -c "/data/local/tmp/frida-server &"
 
-# Analyze Instagram app
-fritap -m -k instagram_keys.log com.instagram.android
+# Analyze Instagram app with comprehensive logging
+fritap -m -k instagram_keys.log --json instagram_metadata.json com.instagram.android
 
 # Open Instagram app and use it
 # Keys will be saved to instagram_keys.log
+# Session data will be saved to instagram_metadata.json
+
+# Analyze the results
+cat instagram_metadata.json | jq '.connections[] | {dst_addr, data_length}'
 ```
 
 ### Example 3: Malware Analysis
 
 ```bash
-# Run malware sample in isolated environment
-sudo fritap -k malware_keys.log --pcap malware_traffic.pcap ./malware_sample
+# Run malware sample in isolated environment with full logging
+sudo fritap -k malware_keys.log --pcap malware_traffic.pcap --json malware_analysis.json ./malware_sample
 
 # Analyze captured data
-wireshark malware_traffic.pcap
+wireshark malware_traffic.pcap  # Visual analysis
+cat malware_analysis.json | jq '.connections, .errors'  # Programmatic analysis
 ```
 
 ## Working with Output Files
@@ -210,24 +221,33 @@ fritap --live target
 
 ```bash
 # Mobile app making API calls
-fritap -m -k api_keys.log com.example.app
+fritap -m -k api_keys.log --json api_metadata.json com.example.app
 
-# Desktop application
-sudo fritap -k api_keys.log --pcap api_traffic.pcap python api_client.py
+# Desktop application with comprehensive logging
+sudo fritap -k api_keys.log --pcap api_traffic.pcap --json api_analysis.json python api_client.py
+
+# Analyze API endpoints
+cat api_metadata.json | jq '.connections[] | .dst_addr' | sort | uniq
 ```
 
 ### Scenario 2: Certificate Pinning Bypass
 
 ```bash
 # Analyze app with certificate pinning
-fritap -m --enable_default_fd --pcap pinned_traffic.pcap com.example.app
+fritap -m --enable_default_fd --pcap pinned_traffic.pcap --json pinning_analysis.json com.example.app
+
+# Check for pinning bypass indicators
+cat pinning_analysis.json | jq '.errors[] | select(.type == "ssl_error")'
 ```
 
 ### Scenario 3: Multi-Process Analysis
 
 ```bash
-# Capture subprocess traffic
-fritap --enable_spawn_gating --pcap all_traffic.pcap parent_process
+# Capture subprocess traffic with detailed logging
+fritap --enable_spawn_gating --pcap all_traffic.pcap --json process_tree.json parent_process
+
+# Analyze process spawn patterns
+cat process_tree.json | jq '.connections[] | {timestamp, dst_addr}' | head -10
 ```
 
 ## Troubleshooting Quick Fixes
@@ -284,13 +304,13 @@ fritap -v -k keys.log target
 ### 3. Combine Multiple Outputs
 
 ```bash
-fritap -k keys.log --pcap traffic.pcap target
+fritap -k keys.log --pcap traffic.pcap --json metadata.json target
 ```
 
 ### 4. Save Debug Information
 
 ```bash
-fritap -do -v target 2>&1 | tee debug.log
+fritap -do -v --json debug_metadata.json target 2>&1 | tee debug.log
 ```
 
 ### 5. Test with Known Applications
@@ -324,14 +344,17 @@ fritap -k keys.log target
 # PCAP capture
 fritap --pcap traffic.pcap target
 
+# JSON metadata
+fritap --json metadata.json target
+
 # Mobile analysis
-fritap -m -k keys.log com.example.app
+fritap -m -k keys.log --json mobile_data.json com.example.app
 
 # Live analysis
 fritap -l target
 
-# Verbose debugging
-fritap -v -do target
+# Comprehensive analysis
+fritap -k keys.log --pcap traffic.pcap --json metadata.json target
 ```
 
 ### Common Options
@@ -340,8 +363,9 @@ fritap -v -do target
 |--------|-------------|
 | `-k, --keylog` | Save TLS keys to file |
 | `-p, --pcap` | Save decrypted traffic to PCAP |
+| `-j, --json` | Save session metadata as JSON |
 | `-m, --mobile` | Mobile application analysis |
-| `-f, --spawn` | Spawn and analyze application |
+| `-s, --spawn` | Spawn and analyze application |
 | `-v, --verbose` | Verbose output |
 | `-do, --debug-output` | Debug output |
 | `-l, --live` | Live analysis with Wireshark |

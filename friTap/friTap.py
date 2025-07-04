@@ -5,6 +5,7 @@ import argparse
 import sys
 import os
 import frida
+import logging
 from AndroidFridaManager import FridaBasedException
 import traceback
 from .about import __version__
@@ -20,7 +21,8 @@ def write_debug_frida_file(debug_script_version):
     f = open(debug_script_file, 'wt', encoding='utf-8')
     f.write(debug_script_version)
     f.close()
-    print(f"[!] written debug version of the frida script: {debug_script_file}")
+    logger = logging.getLogger('friTap')
+    logger.info(f"written debug version of the frida script: {debug_script_file}")
 
 
 
@@ -36,6 +38,12 @@ class ArgParser(argparse.ArgumentParser):
 
 
 def main():
+    # Set up basic logging for the main module
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    logger = logging.getLogger('friTap')
 
     parser = ArgParser(
         add_help=False,
@@ -97,6 +105,8 @@ Examples:
                       help="Capability to alter the decrypted payload. Be careful here, because this can crash the application.")                  
     args.add_argument("-exp","--experimental", required=False, action="store_const", const=True, default=False,
                       help="Activates all existing experimental feature (see documentation for more information)")
+    args.add_argument("-j", "--json", metavar="<path>", required=False,
+                      help="Save session metadata and analysis results in JSON format")
     parsed = parser.parse_args()
 
     
@@ -105,14 +115,15 @@ Examples:
         exit(2)
 
     if parsed.full_capture and parsed.keylog is None:
-        print("[*] Are you sure you want to proceed without recording the key material (-k <keys.log>)?\n[*] Without the key material, you have a complete network record, but no way to view the contents of the TLS traffic.")
-        print("[*] Do you want to proceed without recording keys? : <press any key to proceed or Strg+C to abort>")
+        logger.warning("Are you sure you want to proceed without recording the key material (-k <keys.log>)?")
+        logger.warning("Without the key material, you have a complete network record, but no way to view the contents of the TLS traffic.")
+        logger.info("Do you want to proceed without recording keys? : <press any key to proceed or Ctrl+C to abort>")
         input() 
     try:
-        print("Start logging")
-        print("Press Ctrl+C to stop logging\n")
+        logger.info("Start logging")
+        logger.info("Press Ctrl+C to stop logging")
         ssl_log = SSL_Logger(parsed.exec, parsed.pcap, parsed.verbose,
-                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.mobile, parsed.live, parsed.environment, parsed.debug, parsed.full_capture, parsed.socket_tracing, parsed.host, parsed.offsets, parsed.debugoutput, parsed.experimental, parsed.anti_root, parsed.payload_modification, parsed.enable_default_fd, parsed.patterns, parsed.custom_script)
+                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.mobile, parsed.live, parsed.environment, parsed.debug, parsed.full_capture, parsed.socket_tracing, parsed.host, parsed.offsets, parsed.debugoutput, parsed.experimental, parsed.anti_root, parsed.payload_modification, parsed.enable_default_fd, parsed.patterns, parsed.custom_script, parsed.json)
 
         ssl_log.install_signal_handler()        
         ssl_log.start_fritap_session()  
@@ -121,35 +132,35 @@ Examples:
         while ssl_log.running:
             pass
     except frida.TransportError as fe:
-        print(f"[-] Problems while attaching to frida-server: {fe}")
+        logger.error(f"Problems while attaching to frida-server: {fe}")
         exit(2)
     except FridaBasedException as e:
-        print(f"[-] Frida based error: {e}")
+        logger.error(f"Frida based error: {e}")
         exit(2)
     except frida.TimedOutError as te:
-        print(f"[-] TimeOutError: {te}")
+        logger.error(f"TimeOutError: {te}")
         exit(2)
     except frida.ProcessNotFoundError as pe:
-        print(f"[-] ProcessNotFoundError: {pe}")
+        logger.error(f"ProcessNotFoundError: {pe}")
         exit(2)
     except frida.PermissionDeniedError as e:
-        print(f"[-] Frida Permission Denied: {e}")
+        logger.error(f"Frida Permission Denied: {e}")
         exit(2)
     except frida.ServerNotRunningError as e:
-        print(f"[-] Frida server is not running: {e}")
+        logger.error(f"Frida server is not running: {e}")
         exit(2)
     except frida.InvalidArgumentError as e:
-        print(f"[-] Invalid Argument passed to Frida: {e}")
-        if "device not found" in e:
-            print("[-] Frida is unable to identify the target device.")
-            print("[-] If you have multiple devices connected, please specify the device ID using the `-m` option:")
-            print("\t1. Identify the target device ID (e.g., using `adb devices` or `frida-ls-devices`).")
-            print("\t2. Run FriTap with the device ID:")
-            print("\t   fritap -m <device-id> <target>")
+        logger.error(f"Invalid Argument passed to Frida: {e}")
+        if "device not found" in str(e):
+            logger.error("Frida is unable to identify the target device.")
+            logger.error("If you have multiple devices connected, please specify the device ID using the `-m` option:")
+            logger.error("\t1. Identify the target device ID (e.g., using `adb devices` or `frida-ls-devices`).")
+            logger.error("\t2. Run FriTap with the device ID:")
+            logger.error("\t   fritap -m <device-id> <target>")
 
         exit(2)
     except frida.InvalidOperationError as e:
-        print(f"[-] Invalid Operation Error in Frida: {e}")
+        logger.error(f"Invalid Operation Error in Frida: {e}")
         exit(2)
     except Exception as ar:
         # Get current system exception
@@ -166,33 +177,34 @@ Examples:
         
         if parsed.debug or parsed.debugoutput:
             if "NotSupportedError" in ex_type.__name__:
-                print("[-] Frida based error:")
-            print("[-] Exception type : %s " % ex_type.__name__)
-            print("[-] Exception message : %s" %ex_value)
-            print("[-] Stack trace : %s" %stack_trace)
+                logger.error("Frida based error:")
+            logger.error("Exception type : %s " % ex_type.__name__)
+            logger.error("Exception message : %s" %ex_value)
+            logger.error("Stack trace : %s" %stack_trace)
 
 
         if "unable to connect to remote frida-server: closed" in str(ar):
-            print("\n[-] frida-server is not running in remote device. Please run frida-server and rerun")
+            logger.error("frida-server is not running in remote device. Please run frida-server and rerun")
             
         if "NotSupportedError" in ex_type.__name__:
-            print(f"\n[-] Frida error: {ex_value}")
+            logger.error(f"Frida error: {ex_value}")
         else:
-            print(f"\n[-] Unknown error: {ex_value}")
+            logger.error(f"Unknown error: {ex_value}")
 
         if "unable to access process with pid" in str(ex_value).lower():
-            print("\n\nThx for using friTap\nHave a great day\n")
+            logger.info("Thanks for using friTap. Have a great day!")
             os._exit(0)
         if "not yet supported on this os" in str(ex_value).lower():
-            print("[-] This feature is currently not supported by frida on this OS.")
-            print("\n\nThx for using friTap\nHave a great day\n")
+            logger.error("This feature is currently not supported by frida on this OS.")
+            logger.info("Thanks for using friTap. Have a great day!")
             os._exit(0)
 
-        ssl_log.pcap_cleanup(parsed.full_capture,parsed.mobile,parsed.pcap)
-        ssl_log.cleanup(parsed.live,parsed.socket_tracing,parsed.full_capture,parsed.debug,parsed.debugoutput)    
+        if 'ssl_log' in locals():
+            ssl_log.pcap_cleanup(parsed.full_capture,parsed.mobile,parsed.pcap)
+            ssl_log.cleanup(parsed.live,parsed.socket_tracing,parsed.full_capture,parsed.debug,parsed.debugoutput)    
 
     finally:
-        if isinstance(ssl_log, SSL_Logger):
+        if 'ssl_log' in locals() and isinstance(ssl_log, SSL_Logger):
             ssl_log.pcap_cleanup(parsed.full_capture,parsed.mobile,parsed.pcap)
             ssl_log.cleanup(parsed.live,parsed.socket_tracing,parsed.full_capture,parsed.debug)
         
