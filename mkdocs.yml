@@ -89,11 +89,12 @@ nav:
     - Malware Analysis: examples/malware.md
     - Live Analysis: examples/live-analysis.md
   - Platform Guides:
+    - Overview: platforms/index.md
     - Android: platforms/android.md
     - iOS: platforms/ios.md
     - Linux: platforms/linux.md
-    - Windows: platforms/windows.md
     - macOS: platforms/macos.md
+    - Windows: platforms/windows.md
   - Advanced Features:
     - Pattern-based Hooking: advanced/patterns.md
     - Offset-based Hooking: advanced/offsets.md

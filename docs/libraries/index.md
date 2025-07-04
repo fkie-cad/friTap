@@ -12,8 +12,9 @@ friTap supports a wide range of SSL/TLS libraries across different platforms. Th
 | **GnuTLS** | 🔄 R/W | 🔄 R/W | 🚧 TBI | ✅ Full | 🚧 TBI | GNU project library |
 | **WolfSSL** | 🔄 R/W | 🔄 R/W | 🚧 TBI | ✅ Full | 🚧 TBI | Embedded/IoT focused |
 | **mbedTLS** | 🔄 R/W | 🔄 R/W | 🚧 TBI | ✅ Full | 🚧 TBI | Lightweight library |
+| **Schannel** | ❌ | ✅ Full | ❌ | ❌ | ❌ | Windows native SSL/TLS |
 | **Conscrypt** | 🚧 TBA | 🚧 TBA | 🚧 TBA | ✅ Full | 🚧 TBA | Android system SSL |
-| **S2N-TLS** | ✅ Full | ❌ LibNO | 🚧 TBA | ✅ Full | ❌ LibNO | AWS library |
+| **S2N-TLS** | ✅ Full | ❌ | 🚧 TBA | ✅ Full | ❌ | AWS library |
 | **RustTLS** | 🔑 Keys | 🚧 TBI | 🚧 TBI | 🔑 Keys | 🚧 TBI | Rust implementation |
 
 **Legend:**
@@ -22,7 +23,7 @@ friTap supports a wide range of SSL/TLS libraries across different platforms. Th
 - 🔑 **Keys**: Key extraction only
 - 🚧 **TBI**: To Be Implemented
 - 🚧 **TBA**: To Be Analyzed
-- ❌ **LibNO**: Library not supported on this platform
+- ❌ **N/A**: Not applicable to platform
 
 ## Library Detection
 
