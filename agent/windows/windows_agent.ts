@@ -16,7 +16,7 @@ var moduleNames: Array<string> = getModuleNames()
 
 export const socket_library = "WS2_32.dll";
 
-function hook_Windows_Dynamic_Loader(module_library_mapping: { [key: string]: Array<[any, ModuleHookingType]> }, is_base_hook: boolean): void {
+function hook_Windows_Dynamic_Loader(module_library_mapping: { [key: string]: Array<[any, ModuleHookingType, string?]> }, is_base_hook: boolean): void {
     try {
 
         const resolver: ApiResolver = new ApiResolver('module')
@@ -57,7 +57,7 @@ function hook_Windows_Dynamic_Loader(module_library_mapping: { [key: string]: Ar
     }
 }
 
-function hook_Windows_SSL_Libs(module_library_mapping: { [key: string]: Array<[any, ModuleHookingType]> }, is_base_hook: boolean) {
+function hook_Windows_SSL_Libs(module_library_mapping: { [key: string]: Array<[any, ModuleHookingType, string?]> }, is_base_hook: boolean) {
     ssl_library_loader(plattform_name, module_library_mapping,moduleNames,"Windows", is_base_hook)
 }
 

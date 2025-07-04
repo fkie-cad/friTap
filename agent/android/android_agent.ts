@@ -28,7 +28,7 @@ function install_java_hooks(){
     java_execute();
 }
 
-function hook_Android_Dynamic_Loader(module_library_mapping: { [key: string]: Array<[any, ModuleHookingType]> }, is_base_hook: boolean): void{
+function hook_Android_Dynamic_Loader(module_library_mapping: { [key: string]: Array<[any, ModuleHookingType, string?]> }, is_base_hook: boolean): void{
     try {
     const regex_libdl = /.*libdl.*\.so/
     const libdl = moduleNames.find(element => element.match(regex_libdl))
@@ -79,7 +79,7 @@ function hook_Android_Dynamic_Loader(module_library_mapping: { [key: string]: Ar
 }
 }
 
-function hook_native_Android_SSL_Libs(module_library_mapping: { [key: string]: Array<[any, ModuleHookingType]> }, is_base_hook: boolean){
+function hook_native_Android_SSL_Libs(module_library_mapping: { [key: string]: Array<[any, ModuleHookingType, string?]> }, is_base_hook: boolean){
     ssl_library_loader(plattform_name, module_library_mapping,moduleNames,"Android",is_base_hook)
 
 }
@@ -165,7 +165,7 @@ export function load_android_hooking_agent() {
     try{
         let matchedModules = findModulesWithSSLKeyLogCallback();
         if (matchedModules.length > 0) {
-            const moduleLibraryMappingExtend: { [key: string]: Array<[RegExp, ModuleHookingType]> } = {};
+            const moduleLibraryMappingExtend: { [key: string]: Array<[RegExp, ModuleHookingType, string?]> } = {};
 
             moduleLibraryMappingExtend[plattform_name] = createModuleLibraryMappingExtend(matchedModules, boring_execute);
             hook_native_Android_SSL_Libs(moduleLibraryMappingExtend, false);

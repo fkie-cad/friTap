@@ -2,7 +2,7 @@
 import { module_library_mapping, ModuleHookingType } from "../shared/shared_structures.js";
 import { log, devlog } from "../util/log.js";
 import { getModuleNames, ssl_library_loader, invokeHookingFunction } from "../shared/shared_functions.js";
-import { boring_execute } from "./openssl_boringssl_macos.js";
+import { boring_execute, ssl_python_execute } from "./openssl_boringssl_macos.js";
 import { cronet_execute } from "./cronet_macos.js"
 
 
@@ -12,7 +12,7 @@ var moduleNames: Array<string> = getModuleNames()
 export const socket_library = "libSystem.B.dylib"
 
 
-function hook_macOS_Dynamic_Loader(module_library_mapping: { [key: string]: Array<[any, ModuleHookingType]> }, is_base_hook: boolean): void {
+function hook_macOS_Dynamic_Loader(module_library_mapping: { [key: string]: Array<[any, ModuleHookingType, string?]> }, is_base_hook: boolean): void {
     try {
         const regex_libdl = /libSystem.B.dylib/
         const libdl = moduleNames.find(element => element.match(regex_libdl))
@@ -31,7 +31,22 @@ function hook_macOS_Dynamic_Loader(module_library_mapping: { [key: string]: Arra
                     for (let map of module_library_mapping[plattform_name]) {
                         let regex = map[0]
                         let func = map[1]
+                        let optionalPath = map[2] // Optional path for module matching
+
                         if (regex.test(this.moduleName)) {
+
+                            // If path condition exists, try to retrieve module and check path
+                            if (optionalPath) {
+                                try {
+                                    const mod = Process.getModuleByName(this.moduleName);
+                                    if (!mod.path.toLowerCase().includes(optionalPath.toLowerCase())) {
+                                        continue;
+                                    }
+                                } catch (_) {
+                                    continue; // Module not yet loaded or not found
+                                }
+                            }
+
                             log(`${this.moduleName} was loaded & will be hooked on MacOS!`)
                             try {   
                                 func(this.moduleName, is_base_hook);
@@ -56,7 +71,7 @@ function hook_macOS_Dynamic_Loader(module_library_mapping: { [key: string]: Arra
 }
 
 
-function hook_macOS_SSL_Libs(module_library_mapping: { [key: string]: Array<[any, ModuleHookingType]> }, is_base_hook: boolean) {
+function hook_macOS_SSL_Libs(module_library_mapping: { [key: string]: Array<[any, ModuleHookingType, string?]> }, is_base_hook: boolean) {
     ssl_library_loader(plattform_name, module_library_mapping,moduleNames,"MacOS", is_base_hook)
 }
 
@@ -65,7 +80,7 @@ function hook_macOS_SSL_Libs(module_library_mapping: { [key: string]: Array<[any
 export function load_macos_hooking_agent() {
     module_library_mapping[plattform_name] = [
         [/.*libboringssl\.dylib/, invokeHookingFunction(boring_execute)],
-        [/.*libssl*\.dylib/, invokeHookingFunction(boring_execute)],
+        [/.*libssl*\.dylib/, invokeHookingFunction(ssl_python_execute), "python"], // Python-specific OpenSSL
         [/.*cronet.*\.dylib/, invokeHookingFunction(cronet_execute)]]
         
     hook_macOS_SSL_Libs(module_library_mapping, true); // actually we are using the same implementation as we did on iOS, therefore this needs addtional testing

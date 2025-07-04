@@ -1,7 +1,7 @@
 /* In this file we store global variables and structures */
 
 export type ModuleHookingType = (moduleName: string, is_base_hook: boolean) => void;
-export var module_library_mapping:{ [key: string]: Array<[any, ModuleHookingType]> }  = {};
+export var module_library_mapping:{ [key: string]: Array<[any, ModuleHookingType, string?]> }  = {};
 
 export const unwantedFDs = new Set<number>(); // this helps us to track if we alredy encountered this fd
 

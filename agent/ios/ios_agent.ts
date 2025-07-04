@@ -12,7 +12,7 @@ var moduleNames: Array<string> = getModuleNames()
 export const socket_library = "libSystem.B.dylib"
 
 
-function hook_iOS_Dynamic_Loader(module_library_mapping: { [key: string]: Array<[any, ModuleHookingType]> }, is_base_hook: boolean): void {
+function hook_iOS_Dynamic_Loader(module_library_mapping: { [key: string]: Array<[any, ModuleHookingType, string?]> }, is_base_hook: boolean): void {
     try {
         const regex_libdl = /libSystem.B.dylib/
         const libdl = moduleNames.find(element => element.match(regex_libdl))
@@ -56,7 +56,7 @@ function hook_iOS_Dynamic_Loader(module_library_mapping: { [key: string]: Array<
 }
 
 
-function hook_iOS_SSL_Libs(module_library_mapping: { [key: string]: Array<[any, ModuleHookingType]> }, is_base_hook: boolean) {
+function hook_iOS_SSL_Libs(module_library_mapping: { [key: string]: Array<[any, ModuleHookingType, string?]> }, is_base_hook: boolean) {
     ssl_library_loader(plattform_name, module_library_mapping,moduleNames,"iOS",is_base_hook)
 }
 

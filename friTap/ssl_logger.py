@@ -116,7 +116,7 @@ class SSL_Logger():
                 "total_bytes_captured": 0,
                 "libraries_detected": []
             }
-        }}
+        }
 
         self.init_fritap()
         

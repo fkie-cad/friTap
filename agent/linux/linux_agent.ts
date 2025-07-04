@@ -16,7 +16,7 @@ var moduleNames: Array<string> = getModuleNames()
 
 export const socket_library = "libc"
 
-function hook_Linux_Dynamic_Loader(module_library_mapping: { [key: string]: Array<[any, ModuleHookingType]> }, is_base_hook: boolean): void {
+function hook_Linux_Dynamic_Loader(module_library_mapping: { [key: string]: Array<[any, ModuleHookingType, string?]> }, is_base_hook: boolean): void {
     try {
         const regex_libdl = /.*libdl.*\.so/
         const libdl = moduleNames.find(element => element.match(regex_libdl))
@@ -60,7 +60,7 @@ function hook_Linux_Dynamic_Loader(module_library_mapping: { [key: string]: Arra
     }
 }
 
-function hook_Linux_SSL_Libs(module_library_mapping: { [key: string]: Array<[any, ModuleHookingType]> }, is_base_hook: boolean) {
+function hook_Linux_SSL_Libs(module_library_mapping: { [key: string]: Array<[any, ModuleHookingType, string?]> }, is_base_hook: boolean) {
     ssl_library_loader(plattform_name, module_library_mapping,moduleNames,"Linux", is_base_hook)
 }
 
