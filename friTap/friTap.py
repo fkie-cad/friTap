@@ -61,16 +61,9 @@ class CustomFormatter(logging.Formatter):
 
 
 def main():
-    # Set up custom logging with original prefix format
+    # Initial setup - will be reconfigured after parsing arguments
     logger = logging.getLogger('friTap')
-    logger.setLevel(logging.INFO)
     
-    # Create console handler with custom formatter
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(CustomFormatter())
-    logger.addHandler(console_handler)
-    logger.propagate = False  # Prevent duplicate messages
-
     parser = ArgParser(
         add_help=False,
         description="Decrypts and logs an executables or mobile applications SSL/TLS traffic.",
@@ -134,6 +127,21 @@ Examples:
     args.add_argument("-j", "--json", metavar="<path>", required=False,
                       help="Save session metadata and analysis results in JSON format")
     parsed = parser.parse_args()
+
+    # Configure logging after parsing arguments to respect debug flags
+    if parsed.debug or parsed.debugoutput:
+        log_level = logging.DEBUG
+    else:
+        log_level = logging.INFO
+        
+    logger.setLevel(log_level)
+    
+    # Create console handler with custom formatter
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(CustomFormatter())
+    console_handler.setLevel(log_level)
+    logger.addHandler(console_handler)
+    logger.propagate = False  # Prevent duplicate messages
 
     
     if parsed.full_capture and parsed.pcap is None:
