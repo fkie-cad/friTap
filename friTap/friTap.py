@@ -126,6 +126,8 @@ Examples:
                       help="Activates all existing experimental feature (see documentation for more information)")
     args.add_argument("-j", "--json", metavar="<path>", required=False,
                       help="Save session metadata and analysis results in JSON format")
+    args.add_argument("-ll", "--list-libraries", required=False, action="store_const", const=True,
+                      help="List loaded libraries in order to help debugging the hooking process. This will not start the logging process, but only list the libraries and exit.")
     parsed = parser.parse_args()
 
     # Configure logging after parsing arguments to respect debug flags
@@ -150,6 +152,27 @@ Examples:
     special_logger.addHandler(special_handler)
     special_logger.propagate = False
     logger.propagate = False  # Prevent duplicate messages
+
+    if parsed.list-libraries:
+        logger.info("Listing loaded libraries:")
+        try:
+            # Create a Frida session to list libraries
+            device = frida.get_usb_device() if parsed.mobile else frida.get_remote_device(parsed.host)
+            process = device.attach(parsed.exec)
+            libraries = process.enumerate_modules()
+            for lib in libraries:
+                logger.info(f"Library: {lib.name} at {lib.base_address:#x}")
+            process.detach()
+        except frida.TransportError as fe:
+            logger.error(f"Problems while attaching to frida-server: {fe}")
+            exit(2)
+        except FridaBasedException as e:
+            logger.error(f"Frida based error: {e}")
+            exit(2)
+        except Exception as e:
+            logger.error(f"An error occurred: {e}")
+            exit(2)
+        exit(0)
 
     
     if parsed.full_capture and parsed.pcap is None:

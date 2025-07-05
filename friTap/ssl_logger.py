@@ -67,11 +67,12 @@ class SSL_Logger():
         
         # Create a special logger to print clean messages without prefixes (e.g. farewell line)
         self.special_logger = logging.getLogger('friTap.no_prefix')
-        self.special_logger.setLevel(logging.INFO)
-        self.special_handler = logging.StreamHandler()
-        self.special_handler.setFormatter(logging.Formatter("%(message)s"))
-        self.special_logger.addHandler(self.special_handler)
-        self.special_logger.propagate = False  # Prevent duplicate messages
+        if not self.special_logger.handlers:
+            self.special_logger.setLevel(logging.INFO)
+            self.special_handler = logging.StreamHandler()
+            self.special_handler.setFormatter(logging.Formatter("%(message)s"))
+            self.special_logger.addHandler(self.special_handler)
+            self.special_logger.propagate = False  # Prevent duplicate messages
         self.logger.propagate = False  # Prevent duplicate messages
         
         # Check for hexdump availability
