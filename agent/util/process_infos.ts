@@ -33,7 +33,7 @@ function is_macos_based_version_string(): boolean{
                 .operatingSystemVersionString()
                 .toString().toLowerCase();
 
-            devlog(`[OS Detection] Version string: ${version}`);
+            //devlog(`[OS Detection] Version string: ${version}`); // uncomment for debugging
             
             // Primary framework check - most reliable
             const isMacOSFramework = ObjC.classes.NSApplication !== undefined;
@@ -66,12 +66,12 @@ function is_macos_based_version_string(): boolean{
                 // Check for macOS-specific paths
                 const fileManager = ObjC.classes.NSFileManager.defaultManager();
                 if (fileManager.fileExistsAtPath_("/Applications/Safari.app")) {
-                    devlog("[OS Detection] macOS Safari app found");
+                    // devlog("[OS Detection] macOS Safari app found"); // uncomment for debugging
                     return true;
                 }
                 
                 if (fileManager.fileExistsAtPath_("/Applications/MobileSafari.app")) {
-                    devlog("[OS Detection] iOS MobileSafari app found");
+                    //devlog("[OS Detection] iOS MobileSafari app found"); // uncomment for debugging
                     return false;
                 }
             } catch (pathError) {
@@ -95,8 +95,6 @@ function is_macos_based_version_string(): boolean{
 
 
 /**
- * FIXED: iOS detection that properly handles Apple Silicon Macs
- * The old logic assumed arm64 + darwin = iOS, but Apple Silicon Macs are also arm64 + darwin
  */
 export function isiOS(): boolean{
     // Must be darwin platform first
@@ -155,7 +153,7 @@ export function isMacOS(): boolean{
                 return false;
             }
 
-            // Fallback to improved version string check
+            // Fallback to version string check
             return is_macos_based_version_string();
         } catch(error) {
             devlog(`[OS Detection] macOS detection error: ${error}`);

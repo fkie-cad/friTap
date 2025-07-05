@@ -186,8 +186,8 @@ export function isPatternReplaced(): boolean {
 
 function load_os_specific_agent() {
     // Log detailed platform information for debugging
-    const platformInfo = getDetailedPlatformInfo();
-    devlog(`[Platform Detection] Detailed info: ${JSON.stringify(platformInfo, null, 2)}`);
+     const platformInfo = getDetailedPlatformInfo();
+    // devlog(`[Platform Detection] Detailed info: ${JSON.stringify(platformInfo, null, 2)}`); // uncomment for debugging
     
     if(isWindows()){
         log('Running Script on Windows')
@@ -213,14 +213,14 @@ function load_os_specific_agent() {
             socket_trace_execute();
         }
         log('Running Script on iOS')
-        devlog(`[iOS Detection] Architecture: ${Process.arch}, Platform: ${Process.platform}`);
+        // devlog(`[iOS Detection] Architecture: ${Process.arch}, Platform: ${Process.platform}`); // uncomment for debugging
         load_ios_hooking_agent()
     }else if(isMacOS()){
         if(enable_socket_tracing){
             socket_trace_execute();
         }
         log('Running Script on MacOS')
-        devlog(`[macOS Detection] Architecture: ${Process.arch}, Platform: ${Process.platform}`);
+        // devlog(`[macOS Detection] Architecture: ${Process.arch}, Platform: ${Process.platform}`); // uncomment for debugging
         load_macos_hooking_agent()
     }else{
         log('Running Script on unknown platform')
