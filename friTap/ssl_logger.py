@@ -65,6 +65,15 @@ class SSL_Logger():
         if not self.logger.handlers:
             self._setup_logging(debug_mode, debug_output)
         
+        # Create a special logger to print clean messages without prefixes (e.g. farewell line)
+        self.special_logger = logging.getLogger('friTap.no_prefix')
+        self.special_logger.setLevel(logging.INFO)
+        self.special_handler = logging.StreamHandler()
+        self.special_handler.setFormatter(logging.Formatter("%(message)s"))
+        self.special_logger.addHandler(self.special_handler)
+        self.special_logger.propagate = False  # Prevent duplicate messages
+        self.logger.propagate = False  # Prevent duplicate messages
+        
         # Check for hexdump availability
         if hexdump is None:
             self.logger.warning("Unable to import hexdump module! Hexdump functionality will be disabled.")
@@ -780,7 +789,7 @@ class SSL_Logger():
         self.running = False
         if self.process:
             self.detach_with_timeout()  # Detach Frida process if applicable
-        self.logger.info("Thanks for using friTap. Have a great day!")
+        self.special_logger.info("\nThanks for using friTap. Have a great day!")
         os._exit(0)
 
     def get_fritap_frida_script(self):
