@@ -7,6 +7,20 @@ dist/
 *.txt
 *.trace
 
+# Testing artifacts
+tests/coverage_html/
+tests/coverage.xml
+.coverage
+.pytest_cache/
+test_*.log
+*.prof
+
+# Development environment
+venv/
+env/
+.vscode/settings.json
+.vscode/launch.json
+
 # npm stuff
 package-lock.json # not really needed when working with frida-compile
 

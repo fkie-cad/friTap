@@ -191,6 +191,52 @@ fritap -do -v com.example.app
 - [x] <strike>Add feature to prototype TLS-Read/Write/SSLKEY functions</strike>
 - [ ] improve iOS/MacOS support (currently under development)
 
+## Development
+
+### Quick Development Setup
+
+For developers who want to contribute to friTap, we provide an automated setup:
+
+```bash
+# Clone and setup development environment
+git clone https://github.com/fkie-cad/friTap.git
+cd friTap
+
+# Automated setup (recommended)
+python setup_dev.py
+
+# Manual setup
+pip install -r requirements-dev.txt
+pip install -e .
+npm install  # For TypeScript agent compilation
+```
+
+### Testing
+
+friTap includes a comprehensive testing framework:
+
+```bash
+# Run all fast tests
+python run_tests.py --fast
+
+# Run specific test categories
+python run_tests.py unit           # Unit tests
+python run_tests.py agent          # Agent compilation tests  
+python run_tests.py integration    # Mock integration tests
+
+# Generate coverage report
+python run_tests.py coverage
+```
+
+### Development Dependencies
+
+- **Python 3.7+** with development dependencies (`requirements-dev.txt`)
+- **Node.js 16+** for TypeScript agent compilation
+- **Testing framework**: pytest with comprehensive mocking
+- **Code quality**: black, flake8, mypy, pre-commit hooks
+
+See [DEVELOPMENT.md](./DEVELOPMENT.md) for detailed development setup and testing guide.
+
 ## Contribute
 
 Contributions are always welcome. Just fork it and open a pull request!

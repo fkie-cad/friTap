@@ -3,7 +3,7 @@ import { load_ios_hooking_agent } from "./ios/ios_agent.js";
 import { load_macos_hooking_agent } from "./macos/macos_agent.js";
 import { load_linux_hooking_agent } from "./linux/linux_agent.js";
 import { load_windows_hooking_agent } from "./windows/windows_agent.js";
-import { isWindows, isLinux, isAndroid, isiOS, isMacOS } from "./util/process_infos.js";
+import { isWindows, isLinux, isAndroid, isiOS, isMacOS, getDetailedPlatformInfo } from "./util/process_infos.js";
 import { anti_root_execute } from "./util/anti_root.js";
 import { socket_trace_execute } from "./misc/socket_tracer.js"
 import { devlog, log } from "./util/log.js";
@@ -185,6 +185,10 @@ export function isPatternReplaced(): boolean {
 
 
 function load_os_specific_agent() {
+    // Log detailed platform information for debugging
+    const platformInfo = getDetailedPlatformInfo();
+    devlog(`[Platform Detection] Detailed info: ${JSON.stringify(platformInfo, null, 2)}`);
+    
     if(isWindows()){
         log('Running Script on Windows')
         load_windows_hooking_agent()
@@ -209,16 +213,20 @@ function load_os_specific_agent() {
             socket_trace_execute();
         }
         log('Running Script on iOS')
+        devlog(`[iOS Detection] Architecture: ${Process.arch}, Platform: ${Process.platform}`);
         load_ios_hooking_agent()
     }else if(isMacOS()){
         if(enable_socket_tracing){
             socket_trace_execute();
         }
         log('Running Script on MacOS')
+        devlog(`[macOS Detection] Architecture: ${Process.arch}, Platform: ${Process.platform}`);
         load_macos_hooking_agent()
     }else{
-        log('Running Script on unknown plattform')
-        log("Error: not supported plattform!\nIf you want to have support for this plattform please make an issue at our github page.")
+        log('Running Script on unknown platform')
+        log(`Platform: ${Process.platform}, Architecture: ${Process.arch}`)
+        log("Error: not supported platform!\nIf you want to have support for this platform please make an issue at our github page.")
+        devlog(`[Unknown Platform] Full detection info: ${JSON.stringify(platformInfo, null, 2)}`);
     }
 
 }

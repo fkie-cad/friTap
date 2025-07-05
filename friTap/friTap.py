@@ -6,8 +6,14 @@ import sys
 import os
 import frida
 import logging
-from AndroidFridaManager import FridaBasedException
 import traceback
+
+try:
+    from AndroidFridaManager import FridaBasedException
+except ImportError:
+    # Create a dummy exception for testing environments
+    class FridaBasedException(Exception):
+        pass
 from .about import __version__
 from .about import __author__
 from .ssl_logger import SSL_Logger
