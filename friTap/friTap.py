@@ -141,6 +141,14 @@ Examples:
     console_handler.setFormatter(CustomFormatter())
     console_handler.setLevel(log_level)
     logger.addHandler(console_handler)
+
+    # Create a special logger to print clean messages without prefixes (e.g. farewell line)
+    special_logger = logging.getLogger('friTap.no_prefix')
+    special_logger.setLevel(log_level)
+    special_handler = logging.StreamHandler()
+    special_handler.setFormatter(logging.Formatter("%(message)s"))
+    special_logger.addHandler(special_handler)
+    special_logger.propagate = False
     logger.propagate = False  # Prevent duplicate messages
 
     
@@ -154,8 +162,8 @@ Examples:
         logger.info("Do you want to proceed without recording keys? : <press any key to proceed or Ctrl+C to abort>")
         input() 
     try:
-        logger.info("Start logging")
-        logger.info("Press Ctrl+C to stop logging")
+        special_logger.info("Start logging")
+        special_logger.info("Press Ctrl+C to stop logging")
         ssl_log = SSL_Logger(parsed.exec, parsed.pcap, parsed.verbose,
                 parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.mobile, parsed.live, parsed.environment, parsed.debug, parsed.full_capture, parsed.socket_tracing, parsed.host, parsed.offsets, parsed.debugoutput, parsed.experimental, parsed.anti_root, parsed.payload_modification, parsed.enable_default_fd, parsed.patterns, parsed.custom_script, parsed.json)
 
@@ -226,11 +234,11 @@ Examples:
             logger.error(f"Unknown error: {ex_value}")
 
         if "unable to access process with pid" in str(ex_value).lower():
-            logger.info("Thanks for using friTap. Have a great day!")
+            special_logger.info("\nThanks for using friTap. Have a great day!")
             os._exit(0)
         if "not yet supported on this os" in str(ex_value).lower():
             logger.error("This feature is currently not supported by frida on this OS.")
-            logger.info("Thanks for using friTap. Have a great day!")
+            special_logger.info("\nThanks for using friTap. Have a great day!")
             os._exit(0)
 
         if 'ssl_log' in locals():
