@@ -43,13 +43,33 @@ class ArgParser(argparse.ArgumentParser):
         self.exit(0)
 
 
+class CustomFormatter(logging.Formatter):
+    """Custom formatter that uses original friTap prefix format"""
+    
+    def format(self, record):
+        # Map log levels to original prefixes
+        prefix_map = {
+            logging.INFO: '[*]',
+            logging.DEBUG: '[!]',
+            logging.WARNING: '[-]',
+            logging.ERROR: '[-]',
+            logging.CRITICAL: '[-]'
+        }
+        
+        prefix = prefix_map.get(record.levelno, '[*]')
+        return f"{prefix} {record.getMessage()}"
+
+
 def main():
-    # Set up basic logging for the main module
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
+    # Set up custom logging with original prefix format
     logger = logging.getLogger('friTap')
+    logger.setLevel(logging.INFO)
+    
+    # Create console handler with custom formatter
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(CustomFormatter())
+    logger.addHandler(console_handler)
+    logger.propagate = False  # Prevent duplicate messages
 
     parser = ArgParser(
         add_help=False,

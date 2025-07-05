@@ -18,6 +18,23 @@ from .pcap import PCAP
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
+
+class CustomFormatter(logging.Formatter):
+    """Custom formatter that uses original friTap prefix format"""
+    
+    def format(self, record):
+        # Map log levels to original prefixes
+        prefix_map = {
+            logging.INFO: '[*]',
+            logging.DEBUG: '[!]',
+            logging.WARNING: '[-]',
+            logging.ERROR: '[-]',
+            logging.CRITICAL: '[-]'
+        }
+        
+        prefix = prefix_map.get(record.levelno, '[*]')
+        return f"{prefix} {record.getMessage()}"
+
 try:
     import hexdump  # pylint: disable=g-import-not-at-top
 except ImportError:
@@ -121,15 +138,14 @@ class SSL_Logger():
         self.init_fritap()
         
     def _setup_logging(self, debug_mode, debug_output):
-        """Set up logging configuration for friTap"""
+        """Set up logging configuration for friTap with original prefix format"""
         if debug_mode or debug_output:
             level = logging.DEBUG
         else:
             level = logging.INFO
             
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        )
+        # Use custom formatter with original prefix format
+        formatter = CustomFormatter()
         
         # Console handler
         console_handler = logging.StreamHandler()
