@@ -5,7 +5,7 @@ import { gnutls_execute } from "./gnutls_linux.js";
 import { wolfssl_execute } from "./wolfssl_linux.js";
 import { nss_execute } from "./nss_linux.js";
 import { mbedTLS_execute } from "./mbedTLS_linux.js";
-import { boring_execute } from "./openssl_boringssl_linux.js";
+import { boring_execute, ssl_python_execute } from "./openssl_boringssl_linux.js";
 import { matrixSSL_execute } from "./matrixssl_linux.js";
 import { s2ntls_execute } from "./s2ntls_linux.js";
 import { cronet_execute } from "./cronet_linux.js";
@@ -85,6 +85,7 @@ export function load_linux_hooking_agent() {
     module_library_mapping[plattform_name] = [
         [/.*libssl_sb.so/, invokeHookingFunction(boring_execute)], 
         [/.*libssl\.so/, invokeHookingFunction(boring_execute)],
+        [/.*libssl.*\.so/, invokeHookingFunction(ssl_python_execute), "python"], // Python-specific OpenSSL
         [/.*cronet.*\.so/, invokeHookingFunction(cronet_execute)], 
         [/.*libgnutls\.so/, invokeHookingFunction(gnutls_execute)], 
         [/.*libwolfssl\.so/, invokeHookingFunction(wolfssl_execute)], 

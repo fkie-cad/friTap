@@ -2,7 +2,7 @@ import { module_library_mapping, ModuleHookingType } from "../shared/shared_stru
 import { log, devlog } from "../util/log.js";
 import { getModuleNames, ssl_library_loader, invokeHookingFunction } from "../shared/shared_functions.js";
 import { sspi_execute } from "./sspi.js";
-import { boring_execute } from "./openssl_boringssl_windows.js";
+import { boring_execute, ssl_python_execute } from "./openssl_boringssl_windows.js";
 import { gnutls_execute } from "./gnutls_windows.js";
 import { mbedTLS_execute } from "./mbedTLS_windows.js";
 import { nss_execute } from "./nss_windows.js";
@@ -78,6 +78,7 @@ function hook_Windows_SSL_Libs(module_library_mapping: { [key: string]: Array<[a
 export function load_windows_hooking_agent() {
     module_library_mapping[plattform_name] = [
         [/^(libssl|LIBSSL)-[0-9]+(_[0-9]+)?\.dll$/, invokeHookingFunction(boring_execute)], 
+        [/^.*libssl.*\.dll$/, invokeHookingFunction(ssl_python_execute), "python"], // Python-specific OpenSSL
         [/^.*(wolfssl|WOLFSSL).*\.dll$/, invokeHookingFunction(wolfssl_execute)], 
         [/^.*(libgnutls|LIBGNUTLS)-[0-9]+\.dll$/, invokeHookingFunction(gnutls_execute)], 
         [/^(nspr|NSPR)[0-9]*\.dll/, invokeHookingFunction(nss_execute)], 
