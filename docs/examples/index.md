@@ -27,16 +27,18 @@ This section provides comprehensive, real-world examples of using friTap for var
 - E-commerce apps
 - Custom applications
 
-### 🍎 [iOS Applications](ios.md)
+### 🍎 iOS Applications
 - System applications
 - Third-party apps
 - Jailbreak considerations
+- *See Platform Guides for iOS-specific examples*
 
-### 🌍 [Web Browsers](browsers.md)
+### 🌍 Web Browsers
 - Chrome/Chromium analysis
 - Firefox analysis
 - Safari analysis
 - Edge analysis
+- *See Desktop Applications examples for browser analysis*
 
 ### 🦠 [Malware Analysis](malware.md)
 - C&C communication
@@ -44,11 +46,12 @@ This section provides comprehensive, real-world examples of using friTap for var
 - Cryptocurrency miners
 - APT analysis
 
-### 🔴 [Live Analysis](live-analysis.md)
+### 🔴 Live Analysis
 - Real-time monitoring
 - Wireshark integration
 - Continuous analysis
 - Incident response
+- *See CLI Reference for live analysis options*
 
 ## Common Workflow Patterns
 
@@ -372,7 +375,7 @@ history | grep fritap > fritap_commands.txt
 Choose the examples that match your use case:
 
 - **New to friTap?** Start with [Desktop Applications](desktop.md)
-- **Mobile Analysis?** Check [Android](android.md) or [iOS](ios.md) examples
+- **Mobile Analysis?** Check [Android](android.md) examples or Platform Guides
 - **Malware Research?** See [Malware Analysis](malware.md) examples
-- **Need Real-time Analysis?** Try [Live Analysis](live-analysis.md)
+- **Need Real-time Analysis?** Check [CLI Reference](../api/cli.md) for live analysis options
 - **Advanced Features?** Explore [Pattern-based Hooking](../advanced/patterns.md)

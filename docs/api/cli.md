@@ -122,10 +122,17 @@ fritap -do --patterns patterns.json -v target
 ```
 
 !!! note "Pattern Generation"
-    Use BoringSecretHunter to generate patterns for stripped libraries:
+    Use BoringSecretHunter Docker to generate patterns for stripped libraries:
     ```bash
-    python BoringSecretHunter.py --target libssl.so --output patterns.json
-    fritap --patterns patterns.json -k keys.log target
+    # Setup directories
+    mkdir -p binary results
+    cp libssl.so binary/
+    
+    # Generate patterns with Docker (recommended)
+    docker run --rm -v "$(pwd)/binary":/usr/local/src/binaries -v "$(pwd)/results":/host_output boringsecrethunter
+    
+    # Use generated patterns
+    fritap --patterns results/libssl.so_patterns.json -k keys.log target
     ```
 
 #### `--offsets PATH`
@@ -203,6 +210,54 @@ fritap -f -k keys.log -p traffic.pcap target
 fritap -m -f -k keys.log com.example.app
 ```
 
+### Library Analysis
+
+#### `-ll, --list-libraries`
+List loaded libraries to help debug hooking issues.
+
+```bash
+# List all loaded libraries and SSL-related exports
+fritap --list-libraries target_app
+
+# With spawning for new processes
+fritap -s --list-libraries target_app
+
+# Mobile applications  
+fritap -m --list-libraries com.example.app
+```
+
+**Example Output:**
+```
+=== [ Loaded Libraries ] ===
+- libc.so.6 @ 0x7ffff7c00000 (2097152 bytes)
+- libssl.so.3 @ 0x7ffff7800000 (1048576 bytes)
+
+=== [ Libraries with 'ssl' in their name ] ===
+- libssl.so.3
+
+=== [ Libraries with TLS/SSL-related exports ] ===
+- libssl.so.3 (142 TLS/SSL exports)
+  * SSL_read @ 0x7ffff7801234
+  * SSL_write @ 0x7ffff7801567
+  * SSL_get_session @ 0x7ffff7801890
+  * BIO_get_fd @ 0x7ffff7801abc
+  * SSL_new @ 0x7ffff7801def
+  ... and 137 more
+
+=== [ Known SSL/TLS Library Detection ] ===
+✓ OpenSSL detected:
+  - libssl.so.3 @ 0x7ffff7800000
+  - libcrypto.so.3 @ 0x7ffff7900000
+```
+
+!!! tip "Debugging Workflow"
+    Use `--list-libraries` to identify:
+    
+    1. **Available SSL libraries** in the target process
+    2. **Export symbols** for manual pattern creation
+    3. **Library versions** and implementations
+    4. **Base addresses** for offset calculation
+
 ### Debug and Verbosity
 
 #### `-v, --verbose`
@@ -279,7 +334,7 @@ fritap -sot socket_trace.log -k keys.log target
 ### Environment and Experimental
 
 #### `-env, --environment PATH`
-Provide environment variables for spawning.
+Provide environment variables for spawning. This is especially on desktop environments helpful.
 
 ```bash
 # JSON environment file
@@ -372,6 +427,7 @@ fritap -l -k keys.log target
 ```bash
 # Check device connection
 adb devices
+# or frida-ls-devices as an alternative
 
 # Start frida-server on device
 adb shell su -c "/data/local/tmp/frida-server &"
@@ -447,6 +503,8 @@ fritap -k keys.log -p traffic.pcap target
 ```bash
 # Always check device connection first
 adb devices
+# or frida-ls-devices as an alternative
+
 
 # Use anti-root when needed
 fritap -m -ar -k keys.log com.example.app
@@ -470,6 +528,8 @@ fritap -m -ar -ed --enable_spawn_gating -do -v -k keys.log com.example.app
 ```
 
 ### Pattern-Based Analysis
+
+If the integrated patterns of friTap not working try to provide your own patterns:
 
 ```bash
 fritap --patterns patterns.json -do -v -k keys.log target

@@ -134,9 +134,6 @@ fritap -m -k conscrypt_keys.log --pcap conscrypt_traffic.pcap --json conscrypt_m
 
 # Debug Conscrypt detection
 fritap -m -do -v com.example.app | grep -i conscrypt
-
-# Force Conscrypt detection
-fritap -m --force-library conscrypt -k keys.log com.example.app
 ```
 
 #### Applications Using Conscrypt
@@ -583,9 +580,7 @@ openssl s_client -connect example.com:443 -keylogfile test.log
 
 ## Next Steps
 
-- **[OpenSSL/BoringSSL Guide](openssl.md)**: Detailed OpenSSL family support
-- **[NSS Guide](nss.md)**: Mozilla's Network Security Services
-- **[GnuTLS Guide](gnutls.md)**: GNU TLS library support
-- **[WolfSSL Guide](wolfssl.md)**: Embedded SSL library
-- **[Pattern-Based Hooking](../advanced/patterns.md)**: Advanced pattern creation
-- **[Troubleshooting](../troubleshooting/common-issues.md)**: Common library issues
+- **[Library Overview](index.md)**: Complete library support matrix and general information
+- **[Pattern-Based Hooking](../advanced/patterns.md)**: Advanced pattern creation for unsupported libraries
+- **[Troubleshooting](../troubleshooting/common-issues.md)**: Common library issues and solutions
+- **[Platform Guides](../platforms/index.md)**: Platform-specific library considerations

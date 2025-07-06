@@ -279,7 +279,13 @@ fritap [options] target
 
 ```bash
 # Check device connection
-fritap --list-devices
+frida-ls-devices
+Id              Type    Name             OS
+--------------  ------  ---------------  ------------
+local           local   Local System     macOS 15.3.1
+09011FDD4007DJ  usb     Pixel 5          Android 14
+barebone        remote  GDB Remote Stub
+socket          remote  Local Socket
 
 # Restart frida-server
 adb shell su -c "killall frida-server"
@@ -369,5 +375,3 @@ fritap -k keys.log --pcap traffic.pcap --json metadata.json target
 | `-v, --verbose` | Verbose output |
 | `-do, --debug-output` | Debug output |
 | `-l, --live` | Live analysis with Wireshark |
-| `--list-devices` | List connected devices |
-| `--list-processes` | List running processes |

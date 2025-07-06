@@ -51,17 +51,6 @@ pip install -e .
 pip install -e .[dev]
 ```
 
-### Method 3: Docker Installation
-
-For isolated environments or specific use cases:
-
-```bash
-# Pull the Docker image
-docker pull fkiecad/fritap
-
-# Run friTap in Docker
-docker run -it --rm fkiecad/fritap fritap --help
-```
 
 ## Platform-Specific Setup
 
@@ -177,9 +166,6 @@ fritap --version
 
 # Check help
 fritap --help
-
-# Test basic functionality
-fritap --list-devices
 ```
 
 ### Expected Output

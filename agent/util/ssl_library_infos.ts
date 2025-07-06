@@ -18,19 +18,66 @@ class SSLLibraryInspector {
             output.push(`- ${mod.name}`);
         }
 
-        output.push("\n=== [ Libraries with at least one export containing '_ssl' ] ===");
+        output.push("\n=== [ Libraries with TLS/SSL-related exports ] ===");
         const sslExportLibs: string[] = [];
+        const sslPatterns = [
+            '_ssl', 'ssl_', 'SSL_', 'TLS_', 'tls_', 
+            'mbedtls_', 'wolfssl', 'wolfSSL', 'gnutls_',
+            'BIO_', 'X509_', 'EVP_', 'RAND_', 'RSA_',
+            'PKCS', 'ASN1_', 'PEM_', 'CRYPTO_'
+        ];
 
         for (const mod of modules) {
             try {
                 const exports = Process.getModuleByName(mod.name).enumerateExports();
-                const hasSslExport = exports.some(exp => exp.name.toLowerCase().includes("_ssl"));
-                if (hasSslExport) {
+                const relevantExports = exports.filter(exp => 
+                    sslPatterns.some(pattern => exp.name.includes(pattern))
+                );
+                
+                if (relevantExports.length > 0) {
                     sslExportLibs.push(mod.name);
-                    output.push(`- ${mod.name}`);
+                    output.push(`- ${mod.name} (${relevantExports.length} TLS/SSL exports)`);
+                    
+                    // Show some key exports for debugging
+                    const keyExports = relevantExports.slice(0, 5);
+                    for (const exp of keyExports) {
+                        output.push(`  * ${exp.name} @ ${exp.address}`);
+                    }
+                    if (relevantExports.length > 5) {
+                        output.push(`  ... and ${relevantExports.length - 5} more`);
+                    }
                 }
             } catch (err) {
                 output.push(`[!] Could not enumerate exports of ${mod.name}: ${err}`);
+            }
+        }
+
+        // Step 2: Check for common SSL/TLS libraries
+        output.push("\n=== [ Known SSL/TLS Library Detection ] ===");
+        output.push("=== [ VERIFY these results as they could contain FALSE POSITIVES ] ===");
+        const knownLibraries = [
+            { name: 'OpenSSL', patterns: ['libssl', 'libcrypto', 'openssl'] },
+            { name: 'WolfSSL', patterns: ['libwolfssl', 'wolfssl'] },
+            { name: 'mbedTLS', patterns: ['libmbedtls', 'mbedtls'] },
+            { name: 'GnuTLS', patterns: ['libgnutls', 'gnutls'] },
+            { name: 'NSS', patterns: ['libnss', 'nss'] },
+            { name: 'Schannel', patterns: ['schannel', 'secur32'] },
+            { name: 'BoringSSL', patterns: ['boringssl'] },
+            { name: 'LibreSSL', patterns: ['libressl'] }
+        ];
+
+        for (const lib of knownLibraries) {
+            const foundModules = modules.filter(mod => 
+                lib.patterns.some(pattern => 
+                    mod.name.toLowerCase().includes(pattern.toLowerCase())
+                )
+            );
+            
+            if (foundModules.length > 0) {
+                output.push(`✓ ${lib.name} detected:`);
+                for (const mod of foundModules) {
+                    output.push(`  - ${mod.name} @ ${mod.base}`);
+                }
             }
         }
 
@@ -41,6 +88,7 @@ class SSLLibraryInspector {
 const inspector = new SSLLibraryInspector();
 
 rpc.exports = {
+    //@ts-ignore
     inspectssl(): string {
         return inspector.inspect();
     }

@@ -22,6 +22,7 @@ The main features of friTap are:
 
 - TLS key extraction in real time (`-k key.log`)
 - Decryption of TLS payload as PCAP in real time (`-p plaintext.pcap`)
+- Library analysis and debugging (`--list-libraries`)
 - Integration with Python. [Learn more](https://github.com/fkie-cad/friTap/blob/main/INTEGRATION.md)
 - Support for custom Frida scripts. [Details](https://github.com/fkie-cad/friTap/blob/main/USAGE.md#Using-friTap-with-a-custom-Frida-scripts)
 - Support of most common SSL libraries (OpenSSL, BoringSSL, NSS, GnuTLS, etc.)
@@ -87,7 +88,21 @@ These categories include:
   -  SSL_Write
 
 Each category has a primary and fallback byte pattern, allowing flexibility when the primary pattern fails.
-For libraries like BoringSSL, where TLS functionality is often statically linked into other binaries, we developed a tool called [BoringSecretHunter](https://github.com/monkeywave/BoringSecretHunter). This tool automatically identifies the necessary byte patterns to hook BoringSSL by byte-pattern matching. Specifically, BoringSecretHunter focuses on identifying the byte patterns for functions in the Dump-Keys category, allowing you to extract encryption keys during TLS sessions with minimal effort. More about the different hooking categories can be found in [usage of byte-patterns in friTap](./USAGE.md#hooking-by-byte-patterns).
+For libraries like BoringSSL, where TLS functionality is often statically linked into other binaries, we developed a tool called [BoringSecretHunter](https://github.com/monkeywave/BoringSecretHunter). This tool automatically identifies the necessary byte patterns to hook BoringSSL by byte-pattern matching. BoringSecretHunter is available as a Docker container with pre-configured Ghidra environment:
+
+```bash
+# Create directories and copy target libraries
+mkdir -p binary results
+cp /path/to/libflutter.so binary/
+
+# Run BoringSecretHunter
+docker run --rm -v "$(pwd)/binary":/usr/local/src/binaries -v "$(pwd)/results":/host_output boringsecrethunter
+
+# Use generated patterns with friTap
+fritap --patterns results/libflutter.so_patterns.json -k keys.log target_app
+```
+
+More about the different hooking categories can be found in [usage of byte-patterns in friTap](./USAGE.md#hooking-by-byte-patterns).
 
 ### Hooking by Offsets
 

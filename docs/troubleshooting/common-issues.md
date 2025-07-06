@@ -157,6 +157,9 @@ fritap -v target_app | grep -i "library\|found\|hook"
 **Solutions**:
 
 **Use Pattern-Based Hooking**:
+
+By default, friTap uses Frida’s pattern‑based hooking to locate key functions like SSL_new, handling cases when symbols are stripped or missing. However, library updates may break these patterns—especially with stripped binaries. In those situations, you can provide your own byte-pattern definitions to restore functionality.
+
 ```bash
 # For stripped libraries
 fritap --patterns patterns.json -k keys.log target_app
@@ -164,14 +167,6 @@ fritap --patterns patterns.json -k keys.log target_app
 # Generate patterns with BoringSecretHunter
 python boring_secret_hunter.py --target libssl.so --output patterns.json
 fritap --patterns patterns.json -k keys.log target_app
-```
-
-**Try Different Libraries**:
-```bash
-# Force specific library detection
-fritap --force-library openssl -k keys.log target_app
-fritap --force-library boringssl -k keys.log target_app
-fritap --force-library nss -k keys.log target_app
 ```
 
 ### Library Detected but No Hooks
@@ -216,31 +211,6 @@ fritap --enable_spawn_gating --pcap traffic.pcap target_app
 fritap --pid $(pgrep -f "child_process") -k keys.log
 ```
 
-**Certificate Pinning**:
-```bash
-# Use spawn mode to bypass pinning
-fritap -f --enable_default_fd -k keys.log target_app
-
-# Mobile: bypass with spawn mode
-fritap -m -f --enable_default_fd -k keys.log com.example.app
-```
-
-### Incomplete Traffic Capture
-
-**Issue**: Some connections are missing from capture.
-
-**Solutions**:
-```bash
-# Increase buffer size
-fritap --buffer-size 1MB --pcap traffic.pcap target_app
-
-# Use longer timeout
-fritap --timeout 300 --pcap traffic.pcap target_app
-
-# Enable comprehensive hooking
-fritap --hook-all-ssl --pcap traffic.pcap target_app
-```
-
 ## Mobile-Specific Issues
 
 ### Android Analysis Problems
@@ -263,20 +233,17 @@ adb shell su -c "/data/local/tmp/frida-server &"
 
 **App Crashes on Hook**:
 ```bash
-# Use gentler analysis approach
-fritap -m --no-spawn -k keys.log com.example.app
-
 # Enable anti-root detection bypass
 fritap -m --enable-anti-root -k keys.log com.example.app
 
-# Use stealth mode
-fritap -m --stealth-mode -k keys.log com.example.app
+# Run with debug output and try to figure out why it is 
+fritap -m -v -do -k keys.log com.example.app
 ```
 
 **Package Not Found**:
 ```bash
 # List installed packages
-fritap -m --list-processes | grep com.example
+frida-ps -Uai
 
 # Check package name
 adb shell pm list packages | grep example
@@ -288,55 +255,41 @@ fritap -m -k keys.log com.example.app.debug
 ### iOS Analysis Problems
 
 **Jailbreak Detection**:
-```bash
-# Use anti-detection bypass
-fritap -m --enable-anti-detection -k keys.log com.example.app
 
-# Hide frida from detection
-fritap -m --stealth-mode -k keys.log com.example.app
+friTap doesn’t include built-in jailbreak-evasion mechanisms—but it allows you to inject your own custom hooks to bypass or disable jailbreak checks in target applications.
+
+Simply write your custom hooking logic (e.g., intercepting calls like isJailbroken() or checking file paths under /private/var/) and pass it to friTap using the -c flag:
+
+```bash
+fritap \
+  -c my_jailbreak_evasion.js \
+  --patterns patterns.json \
+  -k keys.log \
+  target_app
+
+```
+
+Your script might patch out jailbreak-check functions like so:
+```javascript
+// my_jailbreak_evasion.js
+Interceptor.attach(Module.getExportByName(null, "isJailbroken"), {
+  onEnter(args) {
+    console.log("[*] Bypassing isJailbroken() → always returning false");
+    this.replaceReturnValue = ptr("0");
+  },
+  onLeave(retval) {
+    if (this.replaceReturnValue !== undefined) {
+      retval.replace(this.replaceReturnValue);
+    }
+  }
+});
+
 ```
 
 **Code Signing Issues**:
 ```bash
-# Disable code signing verification
-fritap -m --disable-codesign -k keys.log com.example.app
-
 # Use ldid to re-sign if needed
 ldid -S frida-server
-```
-
-## Performance Issues
-
-### High Memory Usage
-
-**Issue**: friTap consuming excessive memory.
-
-**Solutions**:
-```bash
-# Reduce buffer size
-fritap --buffer-size 256KB -k keys.log target_app
-
-# Use minimal output
-fritap -q --no-verbose -k keys.log target_app
-
-# Disable unnecessary features
-fritap --no-spawn --no-anti-root -k keys.log target_app
-```
-
-### Slow Analysis
-
-**Issue**: friTap analysis is very slow.
-
-**Solutions**:
-```bash
-# Optimize hooking strategy
-fritap --minimal-hooks -k keys.log target_app
-
-# Use targeted analysis
-fritap --target-library libssl.so -k keys.log target_app
-
-# Disable debug output
-fritap -q -k keys.log target_app
 ```
 
 ## Application-Specific Issues
@@ -375,8 +328,19 @@ fritap --enable_spawn_gating -k keys.log electron_app
 # Use Flutter-specific patterns
 fritap --patterns flutter_patterns.json -k keys.log com.flutter.app
 
+# build your BoringSecretHunter docker container
+git clone https://github.com/monkeywave/BoringSecretHunter.git
+cd BoringSecretHunter
+docker build -t boringsecrethunter .
 # Generate patterns with BoringSecretHunter
-python boring_secret_hunter.py --target libflutter.so --output flutter.json
+docker run --rm -v "$(pwd)/binary":/usr/local/src/binaries -v "$(pwd)/results":/host_output boringsecrethunter
+
+
+Analyzing libflutter.so...
+...
+Byte pattern for frida (friTap): 3F 23 03 D5 FF C3 01 D1 FD ...
+
+# use pattern
 fritap --patterns flutter.json -k keys.log com.flutter.app
 ```
 
@@ -523,7 +487,7 @@ echo "Diagnostic report saved to diagnostic.txt"
 
 ## Next Steps
 
-- **Advanced Debugging**: Check [Debugging Guide](debugging.md)
-- **Performance Tuning**: See [Performance Guide](performance.md)
+- **Advanced Debugging**: Use `-do -v` flags for detailed debugging output
+- **Performance Tuning**: Use appropriate output formats and minimize unnecessary options
 - **Platform Issues**: Review platform-specific guides
 - **Feature Requests**: Visit [GitHub Discussions](https://github.com/fkie-cad/friTap/discussions)

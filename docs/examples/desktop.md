@@ -462,7 +462,7 @@ echo "Traffic size: $(du -h traffic.pcap | cut -f1)" >> analysis_report.txt
 
 ## Next Steps
 
-- **Mobile Analysis**: Check [Android](android.md) and [iOS](ios.md) examples
+- **Mobile Analysis**: Check [Android](android.md) examples and [iOS Platform Guide](../platforms/ios.md)
 - **Advanced Features**: Learn about [Pattern-based Hooking](../advanced/patterns.md)
 - **Troubleshooting**: See [Common Issues](../troubleshooting/common-issues.md)
 - **API Integration**: Explore [Python API](../api/python.md)

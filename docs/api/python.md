@@ -704,6 +704,6 @@ class LoggingAnalyzer:
 ## Next Steps
 
 - **Learn about [CLI usage](cli.md)** for command-line integration
-- **Check [Configuration options](configuration.md)** for advanced setup
+- **Check [CLI Reference](cli.md)** for all available options and their Python equivalents
 - **Review [Examples](../examples/index.md)** for practical usage patterns
 - **See [Troubleshooting](../troubleshooting/common-issues.md)** for common issues

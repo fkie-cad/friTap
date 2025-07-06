@@ -4,7 +4,7 @@ Pattern-based hooking is one of friTap's most powerful features, allowing you to
 
 ## Overview
 
-When SSL/TLS libraries are stripped of symbols or statically linked into applications, friTap cannot use traditional function name resolution. Pattern-based hooking solves this by matching byte patterns in memory to identify and hook the required functions.
+When SSL/TLS libraries are stripped of symbols or statically linked into applications, friTap cannot use traditional function name resolution. Pattern-based hooking solves this by matching byte patterns in memory to identify and hook the required functions. By default friTap has already some patterns included for well-known libaries but due to compilation and library updates it might be the case that these patterns needs to be updated.
 
 ### When to Use Pattern-Based Hooking
 
@@ -45,7 +45,7 @@ Pattern files use JSON format to define byte patterns for different hooking cate
 
 friTap supports five main hooking categories:
 
-1. **Dump-Keys**: Extract encryption keys
+1. **Dump-Keys**: Extract encryption keys *right now we support only this feature*
 2. **Install-Key-Log-Callback**: Install key logging callbacks
 3. **KeyLogCallback-Function**: Key callback function hooks
 4. **SSL_Read**: Hook SSL read operations
@@ -85,19 +85,32 @@ Replace variable bytes with `??`:
 
 **BoringSecretHunter Integration:**
 
-friTap integrates with [BoringSecretHunter](https://github.com/monkeywave/BoringSecretHunter) for automatic pattern generation:
+friTap integrates with [BoringSecretHunter](https://github.com/monkeywave/BoringSecretHunter) for automatic pattern generation. **Use the Docker approach for best results:**
 
 ```bash
-# Install BoringSecretHunter
-git clone https://github.com/monkeywave/BoringSecretHunter.git
-cd BoringSecretHunter
+# Create directories for BoringSecretHunter
+mkdir -p binary results
 
-# Generate patterns for BoringSSL
-python boring_secret_hunter.py --target libflutter.so --output flutter_patterns.json
+# Copy target libraries to analyze
+cp libflutter.so binary/
+cp libssl.so binary/
+
+# Run BoringSecretHunter with Docker (recommended)
+docker run --rm \
+  -v "$(pwd)/binary":/usr/local/src/binaries \
+  -v "$(pwd)/results":/host_output \
+  boringsecrethunter
+
+# Generated patterns will be in results/ directory
+ls results/
+# Output: libflutter.so_patterns.json, libssl.so_patterns.json
 
 # Use generated patterns with friTap
-fritap --patterns flutter_patterns.json -k keys.log com.example.flutter_app
+fritap --patterns results/libflutter.so_patterns.json -k keys.log com.example.flutter_app
 ```
+
+!!! tip "Why Docker?"
+    The Docker approach provides a pre-configured environment with Ghidra, eliminating setup complexity and ensuring consistent results across platforms.
 
 ## Using Pattern Files
 
@@ -446,14 +459,21 @@ fritap -c memory_dump.js --patterns patterns.json target_app
 
 ## Integration with Other Tools
 
-### BoringSecretHunter
+### BoringSecretHunter (Docker)
 
 ```bash
-# Generate patterns automatically
-python boring_secret_hunter.py --target libflutter.so --arch arm64 --output flutter_arm64.json
+# Prepare binaries for analysis
+mkdir -p binary results
+cp libflutter.so binary/
 
-# Use with friTap
-fritap --patterns flutter_arm64.json -k keys.log com.flutter.app
+# Generate patterns using Docker
+docker run --rm \
+  -v "$(pwd)/binary":/usr/local/src/binaries \
+  -v "$(pwd)/results":/host_output \
+  boringsecrethunter
+
+# Use generated patterns with friTap
+fritap --patterns results/libflutter.so_patterns.json -k keys.log com.flutter.app
 ```
 
 ### Ghidra Scripts
@@ -512,7 +532,7 @@ if __name__ == "__main__":
 
 ## Next Steps
 
-- **Combine with [Offset-based Hooking](offsets.md)** for comprehensive analysis
-- **Learn about [Custom Frida Scripts](custom-scripts.md)** for advanced hooking
-- **Explore [Anti-Detection](anti-detection.md)** techniques
+- **Combine with offset-based hooking** using `--offsets` parameter for comprehensive analysis
+- **Learn about custom Frida scripts** using `-c` parameter for advanced hooking
+- **Explore anti-detection techniques** in specialized security analysis scenarios
 - **Check platform-specific guides** for pattern examples

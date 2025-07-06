@@ -15,43 +15,26 @@ docs/
 │   ├── index.md
 │   ├── desktop.md
 │   ├── android.md
-│   ├── ios.md
-│   ├── browsers.md
-│   ├── malware.md
-│   └── live-analysis.md
+│   └── malware.md
 ├── platforms/              # Platform-specific guides
+│   ├── index.md
 │   ├── android.md
 │   ├── ios.md
 │   ├── linux.md
 │   ├── windows.md
 │   └── macos.md
 ├── advanced/               # Advanced features
-│   ├── patterns.md
-│   ├── offsets.md
-│   ├── spawn-gating.md
-│   ├── custom-scripts.md
-│   └── anti-detection.md
+│   └── patterns.md
 ├── libraries/              # SSL/TLS library specific guides
 │   ├── index.md
-│   ├── openssl.md
-│   ├── nss.md
-│   ├── gnutls.md
-│   ├── wolfssl.md
 │   └── others.md
 ├── api/                    # API reference
 │   ├── python.md
-│   ├── cli.md
-│   └── configuration.md
+│   └── cli.md
 ├── troubleshooting/        # Issue resolution
-│   ├── common-issues.md
-│   ├── debugging.md
-│   ├── performance.md
-│   └── faq.md
+│   └── common-issues.md
 └── development/            # Developer resources
-    ├── contributing.md
-    ├── architecture.md
-    ├── building.md
-    └── testing.md
+    └── contributing.md
 ```
 
 ## Building Documentation Locally

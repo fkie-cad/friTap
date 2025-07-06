@@ -127,7 +127,7 @@ Examples:
     args.add_argument("-j", "--json", metavar="<path>", required=False,
                       help="Save session metadata and analysis results in JSON format")
     args.add_argument("-ll", "--list-libraries", required=False, action="store_const", const=True,
-                      help="List loaded libraries in order to help debugging the hooking process. This will not start the logging process, but only list the libraries and exit.")
+                      help="List loaded libraries in order to help debugging the hooking process. This will not start the logging process, but only list the libraries and exit.", dest="list_libraries")
     parsed = parser.parse_args()
 
     # Configure logging after parsing arguments to respect debug flags
@@ -153,16 +153,21 @@ Examples:
     special_logger.propagate = False
     logger.propagate = False  # Prevent duplicate messages
 
-    if parsed.list-libraries:
-        logger.info("Listing loaded libraries:")
+    if parsed.list_libraries:
+        logger.info("Listing loaded libraries...")
         try:
-            # Create a Frida session to list libraries
-            device = frida.get_usb_device() if parsed.mobile else frida.get_remote_device(parsed.host)
-            process = device.attach(parsed.exec)
-            libraries = process.enumerate_modules()
-            for lib in libraries:
-                logger.info(f"Library: {lib.name} at {lib.base_address:#x}")
-            process.detach()
+            # Create a minimal SSL_Logger instance for library inspection
+            temp_ssl_log = SSL_Logger(parsed.exec, None, parsed.verbose,
+                    parsed.spawn, False, parsed.enable_spawn_gating, parsed.mobile, 
+                    False, parsed.environment, parsed.debug, False, False, 
+                    parsed.host, parsed.offsets, parsed.debugoutput, parsed.experimental, 
+                    parsed.anti_root, False, parsed.enable_default_fd, parsed.patterns, 
+                    parsed.custom_script, None)
+            
+            # Use the SSL_Logger's library inspection capability
+            result = temp_ssl_log.inspect_libraries()
+            special_logger.info(result)
+            
         except frida.TransportError as fe:
             logger.error(f"Problems while attaching to frida-server: {fe}")
             exit(2)

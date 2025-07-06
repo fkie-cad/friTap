@@ -538,7 +538,7 @@ cat metadata.json | jq '.session_info, .statistics, .errors[] | select(.type == 
 
 ## Next Steps
 
-- **iOS Analysis**: Check [iOS examples](ios.md)
+- **iOS Analysis**: Check [iOS Platform Guide](../platforms/ios.md)
 - **Advanced Features**: Learn about [Pattern-based Hooking](../advanced/patterns.md)
 - **Platform Details**: See [Android Platform Guide](../platforms/android.md)
 - **Troubleshooting**: Review [Common Issues](../troubleshooting/common-issues.md)

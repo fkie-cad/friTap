@@ -108,9 +108,6 @@ fritap -k keys.log --patterns openssl_win.json application.exe
 # BoringSSL (most modern apps)
 fritap -m -k keys.log com.example.app
 
-# Conscrypt (system provider)
-fritap -m -k keys.log --force-library conscrypt com.example.app
-
 # OkHttp (HTTP client library)
 fritap -m -k keys.log com.okhttp.app
 ```
@@ -296,15 +293,15 @@ fritap -k keys.log target_app
 - Keep patterns updated for new library versions
 - Share successful configurations with the community
 
-## Library-Specific Guides
+## Library-Specific Information
 
-For detailed information about specific libraries:
+For detailed information about specific libraries, refer to the support matrix above and use the appropriate commands:
 
-- **[OpenSSL/BoringSSL](openssl.md)**: Most comprehensive support
-- **[NSS](nss.md)**: Mozilla's implementation  
-- **[GnuTLS](gnutls.md)**: GNU TLS library
-- **[WolfSSL](wolfssl.md)**: Embedded SSL solution
-- **[Other Libraries](others.md)**: Additional SSL implementations
+- **OpenSSL/BoringSSL**: Most comprehensive support - use standard friTap commands
+- **NSS**: Mozilla's implementation - works well with Firefox and similar applications  
+- **GnuTLS**: GNU TLS library - supported with read/write hooks
+- **WolfSSL**: Embedded SSL solution - full support on Android, patterns needed elsewhere
+- **Other Libraries**: See [Other Libraries](others.md) for additional implementations
 
 ## Contributing Library Support
 

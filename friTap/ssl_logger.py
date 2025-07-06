@@ -797,6 +797,157 @@ class SSL_Logger():
         with open(os.path.join(here, self.frida_agent_script), encoding='utf-8', newline='\n') as f:
             script_string = f.read()
             return script_string
+    
+    def inspect_libraries(self):
+        """Inspect loaded libraries using the SSL Library Inspector"""
+        try:
+            # Set up device connection like in start_fritap_session but simpler
+            if self.mobile:
+                try:
+                    if self.mobile is True:  # No device ID provided
+                        if self.debug_output or self.debug:
+                            self.logger.debug("Attaching to the first available USB device...")
+                        device = frida.get_usb_device()
+                    else:  # Device ID provided
+                        if self.debug_output or self.debug:
+                            self.logger.debug(f"Attaching to the device with ID: {self.mobile}")
+                        device = frida.get_device(self.mobile)
+                    self.logger.info("Successfully attached to the mobile device.")
+                except frida.ServerNotRunningError:
+                    self.logger.error("Frida server is not running. Please ensure it is started on the device.")
+                    return "Error: Frida server not running"
+                except frida.DeviceNotFoundError:
+                    self.logger.error(f"Device with ID '{self.mobile}' not found. Please check the device ID or ensure it is connected.")
+                    return "Error: Device not found"
+                except Exception as e:
+                    self.logger.error(f"Unexpected error while attaching to the device: {e}")
+                    return f"Error: {e}"
+            elif self.host:
+                device = frida.get_device_manager().add_remote_device(self.host)
+            else:
+                device = frida.get_local_device()
+
+            # Attach to the process
+            if self.spawn:
+                self.logger.info(f"spawning {self.target_app}")
+                if self.mobile or self.host:
+                    pid = device.spawn(self.target_app)
+                else:
+                    used_env = {}
+                    if self.environment_file:
+                        with open(self.environment_file) as json_env_file:
+                            used_env = json.load(json_env_file)
+                    pid = device.spawn(self.target_app.split(" "), env=used_env)
+                    device.resume(pid)
+                    time.sleep(1)  # without it Java.perform silently fails
+                process = device.attach(pid)
+            else:
+                process = device.attach(int(self.target_app) if self.target_app.isnumeric() else self.target_app)
+
+            # Create a JavaScript implementation of the SSL Library Inspector
+            ssl_inspector_script = """
+            function inspectSSLLibraries() {
+                const output = [];
+                
+                // Step 1: All loaded libraries
+                output.push("=== [ Loaded Libraries ] ===");
+                const modules = Process.enumerateModules();
+                for (const mod of modules) {
+                    output.push(`- ${mod.name} @ ${mod.base} (${mod.size} bytes)`);
+                }
+                
+                output.push("\\n=== [ Libraries with 'ssl' in their name ] ===");
+                const sslNameLibs = modules.filter(mod => mod.name.toLowerCase().includes("ssl"));
+                for (const mod of sslNameLibs) {
+                    output.push(`- ${mod.name}`);
+                }
+                
+                output.push("\\n=== [ Libraries with TLS/SSL-related exports ] ===");
+                const sslExportLibs = [];
+                const sslPatterns = [
+                    '_ssl', 'ssl_', 'SSL_', 'TLS_', 'tls_', 
+                    'mbedtls_', 'wolfssl', 'wolfSSL', 'gnutls_',
+                    'BIO_', 'X509_', 'EVP_', 'RAND_', 'RSA_',
+                    'AES_', 'DES_', 'MD5_', 'SHA_', 'HMAC_',
+                    'PKCS', 'ASN1_', 'PEM_', 'CRYPTO_'
+                ];
+                
+                for (const mod of modules) {
+                    try {
+                        const exports = Process.getModuleByName(mod.name).enumerateExports();
+                        const relevantExports = exports.filter(exp => 
+                            sslPatterns.some(pattern => exp.name.includes(pattern))
+                        );
+                        
+                        if (relevantExports.length > 0) {
+                            sslExportLibs.push(mod.name);
+                            output.push(`- ${mod.name} (${relevantExports.length} TLS/SSL exports)`);
+                            
+                            // Show some key exports for debugging
+                            const keyExports = relevantExports.slice(0, 5);
+                            for (const exp of keyExports) {
+                                output.push(`  * ${exp.name} @ ${exp.address}`);
+                            }
+                            if (relevantExports.length > 5) {
+                                output.push(`  ... and ${relevantExports.length - 5} more`);
+                            }
+                        }
+                    } catch (err) {
+                        output.push(`[!] Could not enumerate exports of ${mod.name}: ${err}`);
+                    }
+                }
+                
+                // Step 2: Check for common SSL/TLS libraries
+                output.push("\\n=== [ Known SSL/TLS Library Detection ] ===");
+                const knownLibraries = [
+                    { name: 'OpenSSL', patterns: ['libssl', 'libcrypto', 'openssl'] },
+                    { name: 'WolfSSL', patterns: ['libwolfssl', 'wolfssl'] },
+                    { name: 'mbedTLS', patterns: ['libmbedtls', 'mbedtls'] },
+                    { name: 'GnuTLS', patterns: ['libgnutls', 'gnutls'] },
+                    { name: 'NSS', patterns: ['libnss', 'nss'] },
+                    { name: 'Schannel', patterns: ['schannel', 'secur32'] },
+                    { name: 'Secure Transport', patterns: ['Security', 'SecureTransport'] },
+                    { name: 'BoringSSL', patterns: ['boringssl'] },
+                    { name: 'LibreSSL', patterns: ['libressl'] }
+                ];
+                
+                for (const lib of knownLibraries) {
+                    const foundModules = modules.filter(mod => 
+                        lib.patterns.some(pattern => 
+                            mod.name.toLowerCase().includes(pattern.toLowerCase())
+                        )
+                    );
+                    
+                    if (foundModules.length > 0) {
+                        output.push(`✓ ${lib.name} detected:`);
+                        for (const mod of foundModules) {
+                            output.push(`  - ${mod.name} @ ${mod.base}`);
+                        }
+                    }
+                }
+                
+                return output.join("\\n");
+            }
+            
+            rpc.exports.inspectssl = inspectSSLLibraries;
+            """
+            
+            # Create and load the script
+            script = process.create_script(ssl_inspector_script)
+            script.load()
+            
+            # Call the SSL library inspector
+            result = script.exports_sync.inspectssl()
+            
+            # Clean up
+            script.unload()
+            process.detach()
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Error during library inspection: {e}")
+            return f"Error: Failed to inspect libraries - {e}"
             
     
     def get_custom_frida_script(self):
