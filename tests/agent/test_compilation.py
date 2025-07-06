@@ -9,9 +9,8 @@ import pytest
 import subprocess
 import os
 import json
-import tempfile
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 
 @pytest.mark.agent_compilation

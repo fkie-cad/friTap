@@ -5,10 +5,8 @@ Tests Android-specific functionality including ADB operations,
 device detection, and Android SSL library handling.
 """
 
-import pytest
 import subprocess
-from unittest.mock import Mock, patch, MagicMock
-from pathlib import Path
+from unittest.mock import patch, MagicMock
 
 from friTap.android import Android
 

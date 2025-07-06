@@ -6,13 +6,11 @@ Comprehensive test runner for friTap that handles different test categories
 and provides detailed reporting.
 """
 
-import os
 import sys
 import subprocess
 import argparse
 import platform
 from pathlib import Path
-from typing import List, Optional
 
 
 class FriTapTestRunner:
@@ -244,7 +242,7 @@ class FriTapTestRunner:
         
         # Check friTap installation
         try:
-            import friTap
+            __import__('friTap')
             print("✅ friTap package available")
         except ImportError:
             print("❌ friTap package not installed")
@@ -253,7 +251,7 @@ class FriTapTestRunner:
         
         # Check Frida availability
         try:
-            import frida
+            __import__('frida')
             print("✅ Frida available")
         except ImportError:
             print("⚠️  Frida not available - some tests will be skipped")

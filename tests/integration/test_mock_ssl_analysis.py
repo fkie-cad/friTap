@@ -6,15 +6,13 @@ components and simulated SSL library interactions.
 """
 
 import pytest
-import json
 import tempfile
 import os
-from unittest.mock import Mock, patch, MagicMock, call
+from unittest.mock import patch, MagicMock
 from pathlib import Path
 
 from friTap.ssl_logger import SSL_Logger
 from friTap.android import Android
-from friTap.pcap import PCAP
 
 
 @pytest.mark.mock_integration
@@ -81,7 +79,7 @@ class TestMockSSLAnalysisWorkflow:
         logger = SSL_Logger("com.example.app", mobile=True, verbose=True)
         
         # Simulate Android SSL analysis
-        android_helper = logger._get_android_helper()
+        logger._get_android_helper()
         logger._attach_to_target()
         logger._load_agent()
         
@@ -516,7 +514,7 @@ class TestMockErrorHandlingWorkflows:
         
         # Test error handling
         with pytest.raises(PermissionError):
-            logger = SSL_Logger("test_app", json_output="/root/no_permission.json")
+            SSL_Logger("test_app", json_output="/root/no_permission.json")
 
 
 @pytest.mark.mock_integration

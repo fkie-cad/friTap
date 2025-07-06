@@ -6,11 +6,9 @@ Automated setup script for friTap development environment.
 Handles dependency installation, environment configuration, and validation.
 """
 
-import os
 import sys
 import subprocess
 import platform
-import venv
 from pathlib import Path
 
 

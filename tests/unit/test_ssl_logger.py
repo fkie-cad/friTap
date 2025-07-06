@@ -6,11 +6,9 @@ JSON output, device detection, and logging configuration.
 """
 
 import pytest
-import json
 import tempfile
 import os
-from unittest.mock import Mock, patch, MagicMock, mock_open
-from pathlib import Path
+from unittest.mock import patch, MagicMock, mock_open
 
 # Import friTap modules
 from friTap.ssl_logger import SSL_Logger
@@ -390,7 +388,7 @@ class TestIntegrationPoints:
         mock_process.create_script.return_value = mock_script
         
         logger = SSL_Logger("test_app")
-        script = logger._load_agent_script()
+        logger._load_agent_script()
         
         # Verify script was created and loaded
         mock_process.create_script.assert_called()

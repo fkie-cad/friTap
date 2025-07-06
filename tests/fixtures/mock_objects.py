@@ -5,7 +5,7 @@ Provides standardized mock objects for Frida components,
 SSL libraries, and other friTap dependencies.
 """
 
-from unittest.mock import MagicMock, Mock
+from unittest.mock import MagicMock
 from typing import Dict, List, Any
 
 
@@ -356,7 +356,6 @@ class MockPCAPData:
 
 def create_mock_frida_environment():
     """Create a complete mock Frida environment."""
-    import friTap.ssl_logger
     
     # Mock the frida module
     mock_frida = MagicMock()

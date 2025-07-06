@@ -13,7 +13,6 @@ import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from typing import Dict, List, Any
 
 # Add friTap to path for testing
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -73,7 +72,7 @@ def has_nodejs():
 def has_frida():
     """Check if Frida is available."""
     try:
-        import frida
+        __import__('frida')
         return True
     except ImportError:
         return False
