@@ -7,7 +7,7 @@ Tests PCAP file creation, writing, and SSL data integration.
 import pytest
 import tempfile
 import os
-from unittest.mock import patch, MagicMock, mock_open
+from unittest.mock import patch
 
 from friTap.pcap import PCAP
 

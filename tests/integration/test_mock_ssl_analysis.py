@@ -9,7 +9,6 @@ import pytest
 import tempfile
 import os
 from unittest.mock import patch, MagicMock
-from pathlib import Path
 
 from friTap.ssl_logger import SSL_Logger
 from friTap.android import Android

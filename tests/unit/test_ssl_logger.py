@@ -6,8 +6,6 @@ JSON output, device detection, and logging configuration.
 """
 
 import pytest
-import tempfile
-import os
 from unittest.mock import patch, MagicMock, mock_open
 
 # Import friTap modules
