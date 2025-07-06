@@ -96,6 +96,7 @@ nav:
     - Pattern-based Hooking: advanced/patterns.md
   - SSL/TLS Libraries:
     - Overview: libraries/index.md
+    - BoringSSL: libraries/boringssl.md
     - Other Libraries: libraries/others.md
   - API Reference:
     - Python API: api/python.md
@@ -104,6 +105,14 @@ nav:
     - Common Issues: troubleshooting/common-issues.md
   - Development:
     - Contributing: development/contributing.md
+    - Development Setup: development/development-setup.md
+    - Coding Standards: development/coding-standards.md
+    - Testing Guide: development/testing.md
+    - Adding Features: development/adding-features.md
+    - Documentation: development/documentation.md
+    - Pull Requests: development/pull-requests.md
+    - Community: development/community.md
+    - Release Process: development/release-process.md
 
 extra:
   social:

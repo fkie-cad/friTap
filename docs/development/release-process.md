@@ -158,9 +158,9 @@ pip install --upgrade fritap
 
 ## 🔗 Links
 
-- [Full Changelog](link-to-changelog)
-- [Documentation](link-to-docs)
-- [Migration Guide](link-if-needed)
+- [Full Changelog](https://github.com/fkie-cad/friTap/blob/main/CHANGELOG.md)
+- [Documentation](https://fkie-cad.github.io/friTap)
+- [GitHub Releases](https://github.com/fkie-cad/friTap/releases)
 
 ## 🙏 Contributors
 

@@ -331,8 +331,8 @@ head firefox_keys.log
 ```
 
 **Related Options**:
-- [`-p, --pcap`](../api/cli.md#pcap): Combine with PCAP capture
-- [`-v, --verbose`](../api/cli.md#verbose): Show detailed key extraction progress
+- [`-p, --pcap`](../api/cli.md): Combine with PCAP capture
+- [`-v, --verbose`](../api/cli.md): Show detailed key extraction progress
 
 **Troubleshooting**:
 - If no keys are extracted, ensure the application uses supported SSL libraries
