@@ -12,22 +12,38 @@ export class OpenSSL_BoringSSL_Linux extends OpenSSL_BoringSSL {
 
     install_tls_keys_callback_hook (){
 
-        this.SSL_CTX_set_keylog_callback = ObjC.available ? new NativeFunction(this.addresses[this.module_name]["SSL_CTX_set_info_callback"], "void", ["pointer", "pointer"]) : new NativeFunction(this.addresses[this.module_name]["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"]);
+        this.SSL_CTX_set_keylog_callback = new NativeFunction(this.addresses[this.module_name]["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"]);
         var instance = this;
+        let callback_already_set = false;
         
-        if (this.addresses[this.module_name]["SSL_CTX_new"] === null) {
-            Interceptor.attach(this.addresses[this.module_name]["SSL_new"],
-                {
-                    onEnter: function (args: any) {
-                        instance.SSL_CTX_set_keylog_callback(args[0], OpenSSL_BoringSSL.keylog_callback)
+        
+        Interceptor.attach(this.addresses[this.module_name]["SSL_new"],
+            {
+                onEnter: function (args: any) {
+                    try{
+                        callback_already_set = true;
+                        instance.SSL_CTX_set_keylog_callback(args[0], OpenSSL_BoringSSL.keylog_callback);
+                    }catch (e) {
+                        callback_already_set = false;
+                        devlog_error(`Error in SSL_new hook: ${e}`);
                     }
-            
-                });
-        } else {
+                    
+                }
+        
+            });
+         if (this.addresses[this.module_name]["SSL_CTX_new"] !== null && callback_already_set === false) {
             Interceptor.attach(this.addresses[this.module_name]["SSL_CTX_new"],
                 {
                     onLeave: function (retval: any) {
-                        instance.SSL_CTX_set_keylog_callback(retval, OpenSSL_BoringSSL.keylog_callback)
+                        try {
+                            if (retval.isNull()) {
+                                devlog_error("SSL_CTX_new returned NULL");
+                                return;
+                            }
+                            instance.SSL_CTX_set_keylog_callback(retval, OpenSSL_BoringSSL.keylog_callback);
+                        }catch (e) {
+                            devlog_error(`Error in SSL_CTX_new hook: ${e}`);
+                        }
                     }
             
                 });
@@ -35,7 +51,7 @@ export class OpenSSL_BoringSSL_Linux extends OpenSSL_BoringSSL {
 
         // In case a callback is set by the appliction, we attach to this callback instead 
         // Only succeeds if SSL_CTX_new is available
-        let setter_address = ObjC.available ? "SSL_CTX_set_info_callback" : "SSL_CTX_set_keylog_callback";
+        let setter_address = "SSL_CTX_set_keylog_callback";
         Interceptor.attach(this.addresses[this.module_name][setter_address], {
             onEnter: function(args: any) {
                 let callback_func = args[1];

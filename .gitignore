@@ -6,6 +6,7 @@ dist/
 *.pcap
 *.txt
 *.trace
+site/
 
 # Testing artifacts
 tests/coverage_html/
