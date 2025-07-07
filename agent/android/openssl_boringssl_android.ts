@@ -1,6 +1,6 @@
 
 import {OpenSSL_BoringSSL } from "../ssl_lib/openssl_boringssl.js";
-import { devlog } from "../util/log.js";
+import { devlog, devlog_error } from "../util/log.js";
 import { socket_library } from "./android_agent.js";
 
 export class OpenSSL_BoringSSL_Android extends OpenSSL_BoringSSL {
@@ -13,19 +13,38 @@ export class OpenSSL_BoringSSL_Android extends OpenSSL_BoringSSL {
 
         this.SSL_CTX_set_keylog_callback = new NativeFunction(this.addresses[this.module_name]["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"]);
         var instance = this;
-
-        if (this.addresses[this.module_name]["SSL_CTX_new"] === null) {
-            Interceptor.attach(this.addresses[this.module_name]["SSL_new"], {
+        let callback_already_set = false;        
+                
+        Interceptor.attach(this.addresses[this.module_name]["SSL_new"],
+            {
                 onEnter: function (args: any) {
-                    instance.SSL_CTX_set_keylog_callback(args[0], OpenSSL_BoringSSL.keylog_callback);
+                    try{
+                        callback_already_set = true;
+                        instance.SSL_CTX_set_keylog_callback(args[0], OpenSSL_BoringSSL.keylog_callback);
+                    }catch (e) {
+                        callback_already_set = false;
+                        devlog_error(`Error in SSL_new hook: ${e}`);
+                    }
+                    
                 }
+        
             });
-        } else {
-            Interceptor.attach(this.addresses[this.module_name]["SSL_CTX_new"], {
-                onLeave: function (retval: any) {
-                    instance.SSL_CTX_set_keylog_callback(retval, OpenSSL_BoringSSL.keylog_callback);
-                }
-            });
+            if (this.addresses[this.module_name]["SSL_CTX_new"] !== null && callback_already_set === false) {
+            Interceptor.attach(this.addresses[this.module_name]["SSL_CTX_new"],
+                {
+                    onLeave: function (retval: any) {
+                        try {
+                            if (retval.isNull()) {
+                                devlog_error("SSL_CTX_new returned NULL");
+                                return;
+                            }
+                            instance.SSL_CTX_set_keylog_callback(retval, OpenSSL_BoringSSL.keylog_callback);
+                        }catch (e) {
+                            devlog_error(`Error in SSL_CTX_new hook: ${e}`);
+                        }
+                    }
+            
+                });
         }
 
         // In case a callback is set by the application, we attach to this callback instead

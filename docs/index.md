@@ -3,6 +3,7 @@
 <div align="center">
     <img src="assets/logo.png" alt="friTap Logo" width="300"/>
     <h2>SSL/TLS Traffic Analysis Made Simple</h2>
+    <!-- Updated for MkDocs deployment -->
     <p><strong>Real-time key extraction and traffic decryption for security research</strong></p>
 </div>
 
