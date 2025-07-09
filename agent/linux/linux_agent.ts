@@ -95,7 +95,7 @@ export function load_linux_hooking_agent() {
         [/libssl_s.a/, invokeHookingFunction(matrixSSL_execute)],
         [/.*libs2n.so/, invokeHookingFunction(s2ntls_execute)],
         [/.*rustls.*/, invokeHookingFunction(rustls_execute)],
-        [/.*\.go$/, invokeHookingFunction(gotls_execute)], // Go executables
+        [/.*\.go.so$/, invokeHookingFunction(gotls_execute)], // Go executables
         [/.*go[0-9.]+$/, invokeHookingFunction(gotls_execute)] // Go versioned binaries
     ]
 
