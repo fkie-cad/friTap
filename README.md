@@ -3,7 +3,7 @@
 </p>
 
 # friTap
-![version](https://img.shields.io/badge/version-1.3.5.3-blue) [![PyPI version](https://d25lcipzij17d.cloudfront.net/badge.svg?id=py&r=r&ts=1683906897&type=6e&v=1.3.5.3&x2=0)](https://badge.fury.io/py/friTap) [![CI](https://github.com/fkie-cad/friTap/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/fkie-cad/friTap/actions/workflows/ci.yml)
+![version](https://img.shields.io/badge/version-1.3.5.4-blue) [![PyPI version](https://d25lcipzij17d.cloudfront.net/badge.svg?id=py&r=r&ts=1683906897&type=6e&v=1.3.5.4&x2=0)](https://badge.fury.io/py/friTap) [![CI](https://github.com/fkie-cad/friTap/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/fkie-cad/friTap/actions/workflows/ci.yml)
 [![Ruff](https://github.com/fkie-cad/friTap/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/fkie-cad/friTap/actions/workflows/lint.yml)
 [![Publish status](https://github.com/fkie-cad/friTap/actions/workflows/publish.yml/badge.svg?branch=main)](https://github.com/fkie-cad/friTap/actions/workflows/publish.yml)
 
@@ -24,7 +24,7 @@ The main features of friTap are:
 - Decryption of TLS payload as PCAP in real time (`-p plaintext.pcap`)
 - Library analysis and debugging (`--list-libraries`)
 - Integration with Python. [Learn more](https://github.com/fkie-cad/friTap/blob/main/INTEGRATION.md)
-- Support for custom Frida scripts. [Details](https://github.com/fkie-cad/friTap/blob/main/USAGE.md#Using-friTap-with-a-custom-Frida-scripts)
+- Support for custom Frida scripts. [Details](https://github.com/fkie-cad/friTap/blob/main/USAGE.md#custom-script-example)
 - Support of most common SSL libraries (OpenSSL, BoringSSL, NSS, GnuTLS, etc.)
 
 ## Installation
@@ -66,7 +66,7 @@ from friTap import SSL_Logger
 ```
 For more details on integrating friTap into your Python project, check out the [INTEGRATION.md](./INTEGRATION.md) guide.
 
-friTap allows you to enhance its functionality by providing a custom Frida script during your session. This custom script will be invoked just before friTap applies its own hooks. To do so, use the `-c` parameter ([more](./USAGE.md#Using-friTap-with-a-custom-Frida-scripts)).
+friTap allows you to enhance its functionality by providing a custom Frida script during your session. This custom script will be invoked just before friTap applies its own hooks. To do so, use the `-c` parameter ([more](./USAGE.md#custom-script-example)).
 More examples on using friTap can be found in the [USAGE.md](./USAGE.md). A detailed introduction using friTap on Android is under [EXAMPLE.md](./EXAMPLE.md) as well.
 
 ## Hooking Libraries Without Symbols
@@ -261,6 +261,32 @@ ___
 ## Changelog
 
 See the wiki for [release notes](https://github.com/fkie-cad/friTap/releases).
+
+## How to Cite friTap
+
+If you use **friTap** in your research, please cite the following paper:
+
+> **Daniel Baier, Alexander Basse, Jan-Niclas Hilgert, Martin Lambertz**  
+> *TLS key material identification and extraction in memory: current state and future challenges*  
+> Forensic Science International: Digital Investigation, Volume 49, 2024, 301766.  
+> [https://doi.org/10.1016/j.fsidi.2024.301766](https://doi.org/10.1016/j.fsidi.2024.301766)
+
+### 📄 BibTeX
+
+```bibtex
+@article{baier2024tls,
+  title={TLS key material identification and extraction in memory: current state and future challenges},
+  author={Baier, Daniel and Basse, Alexander and Hilgert, Jan-Niclas and Lambertz, Martin},
+  journal={Forensic Science International: Digital Investigation},
+  volume={49},
+  pages={301766},
+  year={2024},
+  publisher={Elsevier},
+  doi={10.1016/j.fsidi.2024.301766}
+}
+```
+
+Alternatively, you can find a citation file in `CITATION.cff` or use the “Cite this repository” button on GitHub.
 
 ## Support
 

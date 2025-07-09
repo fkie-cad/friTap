@@ -85,7 +85,8 @@ export function load_windows_hooking_agent() {
         [/(sspicli|SSPICLI|SspiCli)\.dll$/, invokeHookingFunction(sspi_execute)], 
         [/mbedTLS\.dll/, invokeHookingFunction(mbedTLS_execute)],
         [/^.*(cronet|CRONET).*\.dll/, invokeHookingFunction(cronet_execute)], 
-        ["/matrixSSL\.dll", invokeHookingFunction(matrixSSL_execute)]]
+        ["/matrixSSL\.dll", invokeHookingFunction(matrixSSL_execute)]
+    ]
 
     hook_Windows_SSL_Libs(module_library_mapping, true);
     hook_Windows_Dynamic_Loader(module_library_mapping, false);

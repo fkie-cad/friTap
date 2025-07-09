@@ -10,6 +10,7 @@ import { matrixSSL_execute } from "./matrixssl_linux.js";
 import { s2ntls_execute } from "./s2ntls_linux.js";
 import { cronet_execute } from "./cronet_linux.js";
 import { rustls_execute } from "./rustls_linux.js";
+import { gotls_execute } from "./gotls_linux.js";
 
 var plattform_name = "linux";
 var moduleNames: Array<string> = getModuleNames()
@@ -93,7 +94,10 @@ export function load_linux_hooking_agent() {
         [/libmbedtls\.so.*/, invokeHookingFunction(mbedTLS_execute)], 
         [/libssl_s.a/, invokeHookingFunction(matrixSSL_execute)],
         [/.*libs2n.so/, invokeHookingFunction(s2ntls_execute)],
-        [/.*rustls.*/, invokeHookingFunction(rustls_execute)]]
+        [/.*rustls.*/, invokeHookingFunction(rustls_execute)],
+        [/.*\.go$/, invokeHookingFunction(gotls_execute)], // Go executables
+        [/.*go[0-9.]+$/, invokeHookingFunction(gotls_execute)] // Go versioned binaries
+    ]
 
     hook_Linux_SSL_Libs(module_library_mapping, true);
     hook_Linux_Dynamic_Loader(module_library_mapping, false);

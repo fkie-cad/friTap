@@ -86,6 +86,22 @@ interface IOffsets {
         rustls_client_config_builder_new: IAddress;
         rustls_client_config_builder_new_custom: IAddress;
         rustls_client_config_builder_set_key_log: IAddress;
+    },
+    gotls?:{
+        "crypto/tls.(*Conn).Read": IAddress;
+        "crypto/tls.(*Conn).Write": IAddress;
+        "crypto/tls.(*Conn).Handshake": IAddress;
+        "crypto/tls.(*Config).writeKeyLog": IAddress;
+        "crypto/tls.(*Conn).makeClientKeyExchange": IAddress;
+        "crypto/tls.(*Conn).exportKeyingMaterial": IAddress;
+        "crypto/tls.(*Conn).updateTrafficSecret": IAddress;
+        "crypto/tls.(*Conn).nextTrafficSecret": IAddress;
+        "crypto/tls.hkdfExpand": IAddress;
+        "crypto/tls.hkdfExtract": IAddress;
+        "crypto/tls.(*Conn).writeRecordLocked": IAddress;
+        "crypto/tls.(*Conn).readRecord": IAddress;
+        "crypto/tls.(*Conn).connectionStateLocked": IAddress;
+        "runtime.buildVersion": IAddress;
     }
 
     sockets?:{

@@ -6,6 +6,7 @@ dist/
 *.pcap
 *.txt
 *.trace
+tlslib_research/ # here do some research for certain TLS implementations before pushing it to Github
 site/
 
 # Testing artifacts

@@ -16,6 +16,7 @@ import { mono_btls_execute } from "./mono_btls_android.js";
 import { patterns, isPatternReplaced } from "../ssl_log.js"
 import { pattern_execute } from "./pattern_android.js"
 import { rustls_execute } from "./rustls_android.js";
+import { gotls_execute } from "./gotls_android.js";
 
 
 var plattform_name = "linux";
@@ -149,7 +150,9 @@ export function load_android_hooking_agent() {
         [/.*monochrome.*\.so/, invokeHookingFunction(cronet_execute)],
         [/.*libwarp_mobile.*\.so/, invokeHookingFunction(cronet_execute)], // here the client_random is not working
         [/.*lib*quiche*.*\.so/, invokeHookingFunction(cronet_execute)],
-        [/.*librustls.*\.so/, invokeHookingFunction(rustls_execute)]];
+        [/.*librustls.*\.so/, invokeHookingFunction(rustls_execute)],
+        [/libgojni.*\.so/, invokeHookingFunction(gotls_execute)] // Go library in some Unity based applications
+    ];
 
 
     install_java_hooks();

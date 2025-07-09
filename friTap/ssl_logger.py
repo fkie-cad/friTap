@@ -479,13 +479,13 @@ class SSL_Logger():
     
     def on_child_added(self, child):
         self.logger.info(f"Attached to child process with pid {child.pid}")
-        self.instrument(self.device.attach(child.pid))
+        self.instrument(self.device.attach(child.pid), self.own_message_handler)
         self.device.resume(child.pid)
 
 
     def on_spawn_added(self, spawn):
         self.logger.info(f"Process spawned with pid {spawn.pid}. Name: {spawn.identifier}")
-        self.instrument(self.device.attach(spawn.pid))
+        self.instrument(self.device.attach(spawn.pid), self.own_message_handler)
         self.device.resume(spawn.pid)
         
 

@@ -332,9 +332,7 @@ export class SSPI_Windows {
     execute_hooks(){
         this.install_plaintext_read_hook();
         this.install_plaintext_write_hook();
-        if(experimental){
-            this.install_tls_keys_hook();
-        }
+        this.install_tls_keys_hook();
     }
 
 }

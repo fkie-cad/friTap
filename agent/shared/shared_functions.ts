@@ -99,6 +99,7 @@ export function checkNumberOfExports(moduleName: string): number {
 
         // Log the result
         devlog(`The module "${moduleName}" has ${numberOfExports} exports.`);
+
         return numberOfExports;
     } catch (error) {
         devlog(`Error checking exports for module "${moduleName}": ${error}`);
