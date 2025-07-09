@@ -2,9 +2,8 @@
 import {GoTLS, symbol_writeKeyLog, GoTlsLogger } from "../ssl_lib/gotls.js";
 import { socket_library } from "./android_agent.js";
 import {PatternBasedHooking, get_CPU_specific_pattern } from "../shared/pattern_based_hooking.js";
-import { patterns, isPatternReplaced } from "../ssl_log.js"
+import { patterns, isPatternReplaced, experimental } from "../ssl_log.js"
 import { devlog, devlog_error } from "../util/log.js";
-
 
 export class GoTLS_Android extends GoTLS {
     private default_pattern: { [arch: string]: { primary: string; fallback: string, second_fallback?: string; } };
@@ -60,6 +59,11 @@ export class GoTLS_Android extends GoTLS {
             }
         }
         if (this.addresses[this.module_name][symbol_writeKeyLog] === undefined || this.addresses[this.module_name][symbol_writeKeyLog] === null )  {
+
+            if(experimental === false){
+                devlog("[!] Pattern-based hooking for GoTLS may cause instability or crashes. To proceed anyway, rerun friTap with the --experimental flag.");
+                return;
+            }
 
 
 

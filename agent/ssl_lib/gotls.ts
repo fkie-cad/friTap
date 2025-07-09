@@ -83,6 +83,8 @@ export class GoTLS {
                     this.library_method_mapping[`*${moduleName}*`].push(symbol_writeKeyLog);
                     this.addresses[moduleName][symbol_writeKeyLog] = writeKeyLog_Address;
                     devlog("[GoTLS] found writeKeyLog symbol: " + symbol_writeKeyLog + " at address: " + writeKeyLog_Address);      
+                }else{
+                    devlog("[GoTLS] unable to find writeKeyLog symbol even with alternative symbol resolutions: " + symbol_writeKeyLog + " in module: " + moduleName);
                 }
             }
 
