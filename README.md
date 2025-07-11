@@ -1,6 +1,6 @@
 <div align="center">
     <img src="assets/logo.png" alt="friTap Logo" width="300"/>
-    <strong>Real-time key extraction and traffic decryption for security research</strong>
+    <p></p><strong>Real-time key extraction and traffic decryption for security research</strong></div></p>
 </div>
 
 # friTap
