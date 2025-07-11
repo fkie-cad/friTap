@@ -5,7 +5,7 @@ authors:
     given-names: Daniel
   - family-names: Lengersdorff
     given-names: Julian
-  family-names: Ufer
+  - family-names: Ufer
     given-names: Max Jens
 title: friTap: Real-time key extraction and traffic decryption for security research
 version: 1.3.5.4
