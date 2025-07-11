@@ -7,10 +7,11 @@ authors:
     given-names: Julian
   - family-names: Ufer
     given-names: Max Jens
-title: friTap: Real-time key extraction and traffic decryption for security research
-version: 1.3.5.4
-date-released: 2020-06-26
-url: https://github.com/fkie-cad/friTap
+title: "friTap: Real-time key extraction and traffic decryption for security research"
+version: "1.3.5.4"
+date-released: "2020-06-26"
+url: "https://github.com/fkie-cad/friTap"
+
 preferred-citation:
   type: article
   authors:
@@ -22,10 +23,10 @@ preferred-citation:
       given-names: Jan-Niclas
     - family-names: Lambertz
       given-names: Martin
-  title: TLS key material identification and extraction in memory: current state and future challenges
-  journal: Forensic Science International: Digital Investigation
+  title: "TLS key material identification and extraction in memory: current state and future challenges"
+  journal: "Forensic Science International: Digital Investigation"
   volume: 49
-  pages: 301766
+  pages: "301766"
   year: 2024
   publisher: Elsevier
-  doi: 10.1016/j.fsidi.2024.301766
+  doi: "10.1016/j.fsidi.2024.301766"
