@@ -13,20 +13,15 @@ date-released: "2020-06-26"
 url: "https://github.com/fkie-cad/friTap"
 
 preferred-citation:
-  type: article
+  type: software
   authors:
     - family-names: Baier
       given-names: Daniel
-    - family-names: Basse
-      given-names: Alexander
-    - family-names: Hilgert
-      given-names: Jan-Niclas
-    - family-names: Lambertz
-      given-names: Martin
-  title: "TLS key material identification and extraction in memory: current state and future challenges"
-  journal: "Forensic Science International: Digital Investigation"
-  volume: 49
-  pages: "301766"
-  year: 2024
-  publisher: Elsevier
-  doi: "10.1016/j.fsidi.2024.301766"
+    - family-names: Lengersdorff
+      given-names: Julian
+    - family-names: Ufer
+      given-names: Max Jens
+  title: "friTap: Real-time key extraction and traffic decryption for security research"
+  version: "1.3.5.4"
+  url: "https://github.com/fkie-cad/friTap"
+  date-released: "2020-06-26"
