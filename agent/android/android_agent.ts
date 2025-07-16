@@ -17,7 +17,7 @@ import { patterns, isPatternReplaced } from "../ssl_log.js"
 import { pattern_execute } from "./pattern_android.js"
 import { rustls_execute } from "./rustls_android.js";
 import { gotls_execute } from "./gotls_android.js";
-
+import { metartc_execute } from "./metartc.js";
 
 var plattform_name = "linux";
 var moduleNames: Array<string> = getModuleNames();
@@ -95,7 +95,7 @@ function loadPatternsFromJSON(jsonContent: string): any {
     }
 }
 
-// Support for this feature is currently limited to Android systems.
+// Support for this feature is currently limited to Android systems and allows that any given module can be hooked provided by the JSON to hook the .
 function install_pattern_based_hooks(){
     try{
         let data = loadPatternsFromJSON(patterns);
@@ -151,6 +151,7 @@ export function load_android_hooking_agent() {
         [/.*libwarp_mobile.*\.so/, invokeHookingFunction(cronet_execute)], // here the client_random is not working
         [/.*lib*quiche*.*\.so/, invokeHookingFunction(cronet_execute)],
         [/.*librustls.*\.so/, invokeHookingFunction(rustls_execute)],
+        [/.*libstartup.*\.so/, invokeHookingFunction(metartc_execute)],
         [/libgojni.*\.so/, invokeHookingFunction(gotls_execute)] // Go library in some Unity based applications
     ];
 

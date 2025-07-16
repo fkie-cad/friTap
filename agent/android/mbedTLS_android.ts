@@ -9,14 +9,14 @@ export class mbed_TLS_Android extends mbed_TLS {
     }
 
     /*
-    SSL_CTX_set_keylog_callback not exported by default on windows. 
+    SSL_CTX_set_keylog_callback not exported by default on android. 
 
     We need to find a way to install the callback function for doing that
 
 	Alternatives?:SSL_export_keying_material, SSL_SESSION_get_master_key
     */
     install_tls_keys_callback_hook(){
-        // install hooking for windows
+        // install hooking for android
     }
 
     execute_hooks(){
