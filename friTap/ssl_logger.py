@@ -668,6 +668,16 @@ class SSL_Logger():
     def finish_fritap(self):
         if self.script:
             self.script.unload()
+            
+        # Cleanup LSASS hook if we were responsible for starting it
+        if hasattr(self, 'install_lsass_hook') and self.install_lsass_hook:
+            try:
+                # Import here to avoid circular imports
+                from .friTap import cleanup_lsass_hook
+                cleanup_lsass_hook()
+            except ImportError:
+                # Handle case where this is called from a different context
+                pass
 
 
     def _provide_custom_hooking_handler(self, handler):
@@ -963,6 +973,17 @@ class SSL_Logger():
     def install_signal_handler(self):
         def signal_handler(signum, frame):
             self.logger.info("Ctrl+C detected. Cleaning up...")
+            
+            # Cleanup LSASS hook if we were responsible for starting it
+            if hasattr(self, 'install_lsass_hook') and self.install_lsass_hook:
+                try:
+                    # Import here to avoid circular imports
+                    from .friTap import cleanup_lsass_hook
+                    cleanup_lsass_hook()
+                except ImportError:
+                    # Handle case where this is called from a different context
+                    pass
+            
             self.pcap_cleanup(self.full_capture, self.mobile, self.pcap_name)
             self.cleanup(self.live, self.socket_trace, self.full_capture, self.debug_output, self.debug)  # Call the instance's cleanup method
 

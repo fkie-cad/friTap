@@ -7,6 +7,8 @@ import os
 import frida
 import logging
 import traceback
+import threading
+import atexit
 
 try:
     from AndroidFridaManager import FridaBasedException
@@ -20,29 +22,164 @@ from .ssl_logger import SSL_Logger
 from .fritap_utility import get_pid_of_lsass, are_we_running_on_windows
 
 
-def hook_lsass(pcap_name=None, verbose=False, keylog=False, live=False,debug_mode=False, host=False, debug_output=False, enable_default_fd=False, patterns=None, custom_hook_script=None, json_output=None):
+class LsassHookManager:
+    """
+    Manager for LSASS hooking that runs in a background thread.
+    Provides proper cleanup when friTap detaches from the target process.
+    """
+    
+    def __init__(self):
+        self.lsass_logger = None
+        self.lsass_thread = None
+        self.lsass_process = None
+        self.lsass_script = None
+        self.lsass_device = None
+        self.running = False
+        self.logger = logging.getLogger('friTap.lsass')
+        
+    def start_lsass_hook(self, pcap_name=None, verbose=False, keylog=False, live=False, 
+                        debug_mode=False, host=False, debug_output=False, 
+                        enable_default_fd=False, patterns=None, custom_hook_script=None, 
+                        json_output=None):
+        """Start LSASS hooking in a background thread."""
+        
+        pid_of_lsass = get_pid_of_lsass()
+        if pid_of_lsass is None:
+            self.logger.warning("LSASS process not found. Skipping LSASS hook.")
+            return None
+            
+        self.logger.info(f"Starting LSASS hook with PID: {pid_of_lsass}")
+        
+        def lsass_hook_worker():
+            """Worker function that runs in the background thread."""
+            try:
+                # Create SSL_Logger instance for LSASS
+                self.lsass_logger = SSL_Logger(
+                    app=str(pid_of_lsass),
+                    pcap_name=pcap_name,
+                    verbose=verbose,
+                    spawn=False,  # Always attach, never spawn LSASS
+                    keylog=keylog,
+                    enable_spawn_gating=False,
+                    mobile=False,
+                    live=live,
+                    environment_file=None,
+                    debug_mode=debug_mode,
+                    full_capture=False,
+                    socket_trace=False,
+                    host=host,
+                    offsets=None,
+                    debug_output=debug_output,
+                    experimental=False,
+                    anti_root=False,
+                    payload_modification=False,
+                    enable_default_fd=enable_default_fd,
+                    patterns=patterns,
+                    custom_hook_script=custom_hook_script,
+                    json_output=json_output,
+                    install_lsass_hook=True
+                )
+                
+                # Start the LSASS session
+                self.lsass_process, self.lsass_script = self.lsass_logger.start_fritap_session()
+                self.lsass_device = self.lsass_logger.device
+                self.running = True
+                
+                self.logger.info("LSASS hook started successfully")
+                
+                # Keep the thread alive while the hook is running
+                while self.running and self.lsass_logger.running:
+                    import time
+                    time.sleep(1)
+                    
+            except Exception as e:
+                self.logger.error(f"LSASS hook failed: {e}")
+                import traceback
+                traceback.print_exc()
+            finally:
+                self.running = False
+                
+        # Start the worker thread
+        self.lsass_thread = threading.Thread(
+            target=lsass_hook_worker,
+            name="LsassHookWorker",
+            daemon=True  # Daemon thread will be terminated when main program exits
+        )
+        self.lsass_thread.start()
+        
+        # Give the thread time to start
+        import time
+        time.sleep(2)
+        
+        return pid_of_lsass
+        
+    def stop_lsass_hook(self):
+        """Stop the LSASS hook and cleanup resources."""
+        if not self.running:
+            return
+            
+        self.logger.info("Stopping LSASS hook...")
+        self.running = False
+        
+        try:
+            # Cleanup LSASS logger
+            if self.lsass_logger:
+                self.lsass_logger.running = False
+                self.lsass_logger.finish_fritap()
+                
+            # Detach from LSASS process
+            if self.lsass_process:
+                try:
+                    self.lsass_process.detach()
+                except Exception as e:
+                    self.logger.debug(f"LSASS process detach error (expected): {e}")
+                    
+        except Exception as e:
+            self.logger.error(f"Error during LSASS cleanup: {e}")
+            
+        # Wait for thread to finish (with timeout)
+        if self.lsass_thread and self.lsass_thread.is_alive():
+            self.lsass_thread.join(timeout=5.0)
+            if self.lsass_thread.is_alive():
+                self.logger.warning("LSASS thread did not terminate within timeout")
+                
+        self.logger.info("LSASS hook stopped")
+        
+    def is_running(self):
+        """Check if LSASS hook is currently running."""
+        return self.running and (self.lsass_thread and self.lsass_thread.is_alive())
+
+# Global LSASS hook manager instance
+_lsass_hook_manager = LsassHookManager()
+
+def hook_lsass(pcap_name=None, verbose=False, keylog=False, live=False, debug_mode=False, 
+               host=False, debug_output=False, enable_default_fd=False, patterns=None, 
+               custom_hook_script=None, json_output=None):
     """
     Hook the Local Security Authority Subsystem Service (LSASS) process.
-    This is typically used on Windows systems to monitor SSL/TLS traffic.
+    This runs in a background thread and doesn't block the main friTap session.
     """
-    pid_of_lsass = get_pid_of_lsass()
-    if pid_of_lsass is not None:
-        logger = logging.getLogger('friTap')
-        logger.info(f"Hooking LSASS with PID: {pid_of_lsass}")
-        try:
-            # Create a temporary SSL_Logger instance to hook LSASS
-            # This will not start the logging process, but only hook LSASS
-            lsass_ssl_log = SSL_Logger(pid_of_lsass, pcap_name, verbose, False, keylog, False, False, live, None, debug_mode, False, False, host, None, debug_output, False, False, False, enable_default_fd, patterns, custom_hook_script, json_output, True)
-            #lsass_ssl_log.install_signal_handler()
-            lsass_ssl_log.start_fritap_session() 
-        except Exception as e:
-            logger.error(f"Hooking LSASS with PID: {pid_of_lsass} failed: {e}")
-            traceback.print_exc()
+    return _lsass_hook_manager.start_lsass_hook(
+        pcap_name=pcap_name,
+        verbose=verbose,
+        keylog=keylog,
+        live=live,
+        debug_mode=debug_mode,
+        host=host,
+        debug_output=debug_output,
+        enable_default_fd=enable_default_fd,
+        patterns=patterns,
+        custom_hook_script=custom_hook_script,
+        json_output=json_output
+    )
 
-        return pid_of_lsass
-    else:
-        logger.warning("LSASS process not found. Skipping LSASS hook.")
-        return None
+def cleanup_lsass_hook():
+    """Cleanup the LSASS hook when friTap is shutting down."""
+    _lsass_hook_manager.stop_lsass_hook()
+
+def is_lsass_hook_running():
+    """Check if LSASS hook is currently running."""
+    return _lsass_hook_manager.is_running()
 
 # usually not needed - but sometimes the replacements of the script result into minor issues
 # than we have to look into the generated final frida script we supply
@@ -181,12 +318,15 @@ Examples:
 
     install_lsass_hook = True
 
-    if are_we_running_on_windows():
+    if are_we_running_on_windows() and not parsed.mobile:
         if parsed.no_lsass:
             logger.info("LSASS hooking is disabled. Proceeding without LSASS.")
         else:
             logger.info("Hooking LSASS process for SSL/TLS traffic decryption.")
             hook_lsass(parsed.pcap, parsed.verbose, parsed.keylog, parsed.live, parsed.debug, parsed.host, parsed.debugoutput, parsed.enable_default_fd, parsed.patterns, parsed.custom_script, parsed.json)
+            
+            # Register cleanup handler for LSASS hook
+            atexit.register(cleanup_lsass_hook)
 
         install_lsass_hook = False
     else:
@@ -240,6 +380,12 @@ Examples:
         # Wait for user input or interrupt
         while ssl_log.running:
             pass
+            
+    except KeyboardInterrupt:
+        logger.info("Keyboard interrupt received. Cleaning up...")
+        cleanup_lsass_hook()
+    except SystemExit:
+        cleanup_lsass_hook()
     except frida.TransportError as fe:
         logger.error(f"Problems while attaching to frida-server: {fe}")
         exit(2)
