@@ -290,7 +290,7 @@ Examples:
     args.add_argument("-ll", "--list-libraries", required=False, action="store_const", const=True,
                       help="List loaded libraries in order to help debugging the hooking process. This will not start the logging process, but only list the libraries and exit.", dest="list_libraries")
     args.add_argument("-nl", "--no-lsass", required=False, action="store_const", const=True,default=False,
-                      help="Only applied on windows systems. By default friTap is hooking the Local Security Authority Subsystem Service (LSASS) process as well as its the default TLS provider on Windows systems. With this parameter we are not hooking LSASS", dest="windows_detection_test")
+                      help="Only applied on windows systems. By default friTap is hooking the Local Security Authority Subsystem Service (LSASS) process as well as its the default TLS provider on Windows systems. With this parameter we are not hooking LSASS", dest="no_lsass")
     parsed = parser.parse_args()
 
     # Configure logging after parsing arguments to respect debug flags
