@@ -368,6 +368,24 @@ Enable payload modification capabilities.
 fritap --payload_modification -k keys.log target
 ```
 
+!!! tip "How to Modify Payloads"
+    When `--payload_modification` is active, friTap's agent listens for two specific Frida messages: `readmod` for modifying incoming data (from `SSL_read`) and `writemod` for modifying outgoing data (from `SSL_write`).
+    
+    You must use a separate script to send a message with a payload containing the new data as a byte array. For example, using Frida's Python bindings:
+    ```python
+    # script.py
+    import frida
+    
+    new_payload = [0x48, 0x45, 0x4C, 0x4C, 0x4F] # "HELLO"
+    
+    session = frida.attach("target_app")
+    script = session.create_script("...") # Your agent script
+    script.load()
+    
+    # To modify the next SSL_write call's data
+    script.post({'type': 'writemod', 'payload': new_payload})
+    ```
+
 ## Practical Examples
 
 ### Basic Usage

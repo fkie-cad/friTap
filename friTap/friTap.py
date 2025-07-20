@@ -17,8 +17,32 @@ except ImportError:
 from .about import __version__
 from .about import __author__
 from .ssl_logger import SSL_Logger
+from .fritap_utility import get_pid_of_lsass, are_we_running_on_windows
 
 
+def hook_lsass(pcap_name=None, verbose=False, keylog=False, live=False,debug_mode=False, host=False, debug_output=False, enable_default_fd=False, patterns=None, custom_hook_script=None, json_output=None):
+    """
+    Hook the Local Security Authority Subsystem Service (LSASS) process.
+    This is typically used on Windows systems to monitor SSL/TLS traffic.
+    """
+    pid_of_lsass = get_pid_of_lsass()
+    if pid_of_lsass is not None:
+        logger = logging.getLogger('friTap')
+        logger.info(f"Hooking LSASS with PID: {pid_of_lsass}")
+        try:
+            # Create a temporary SSL_Logger instance to hook LSASS
+            # This will not start the logging process, but only hook LSASS
+            lsass_ssl_log = SSL_Logger(pid_of_lsass, pcap_name, verbose, False, keylog, False, False, live, None, debug_mode, False, False, host, None, debug_output, False, False, False, enable_default_fd, patterns, custom_hook_script, json_output, True)
+            #lsass_ssl_log.install_signal_handler()
+            lsass_ssl_log.start_fritap_session() 
+        except Exception as e:
+            logger.error(f"Hooking LSASS with PID: {pid_of_lsass} failed: {e}")
+            traceback.print_exc()
+
+        return pid_of_lsass
+    else:
+        logger.warning("LSASS process not found. Skipping LSASS hook.")
+        return None
 
 # usually not needed - but sometimes the replacements of the script result into minor issues
 # than we have to look into the generated final frida script we supply
@@ -128,6 +152,8 @@ Examples:
                       help="Save session metadata and analysis results in JSON format")
     args.add_argument("-ll", "--list-libraries", required=False, action="store_const", const=True,
                       help="List loaded libraries in order to help debugging the hooking process. This will not start the logging process, but only list the libraries and exit.", dest="list_libraries")
+    args.add_argument("-nl", "--no-lsass", required=False, action="store_const", const=True,default=False,
+                      help="Only applied on windows systems. By default friTap is hooking the Local Security Authority Subsystem Service (LSASS) process as well as its the default TLS provider on Windows systems. With this parameter we are not hooking LSASS", dest="windows_detection_test")
     parsed = parser.parse_args()
 
     # Configure logging after parsing arguments to respect debug flags
@@ -153,6 +179,19 @@ Examples:
     special_logger.propagate = False
     logger.propagate = False  # Prevent duplicate messages
 
+    install_lsass_hook = True
+
+    if are_we_running_on_windows():
+        if parsed.no_lsass:
+            logger.info("LSASS hooking is disabled. Proceeding without LSASS.")
+        else:
+            logger.info("Hooking LSASS process for SSL/TLS traffic decryption.")
+            hook_lsass(parsed.pcap, parsed.verbose, parsed.keylog, parsed.live, parsed.debug, parsed.host, parsed.debugoutput, parsed.enable_default_fd, parsed.patterns, parsed.custom_script, parsed.json)
+
+        install_lsass_hook = False
+    else:
+        install_lsass_hook = False
+    
     if parsed.list_libraries:
         logger.info("Listing loaded libraries...")
         try:
@@ -193,7 +232,7 @@ Examples:
         special_logger.info("Start logging")
         special_logger.info("Press Ctrl+C to stop logging")
         ssl_log = SSL_Logger(parsed.exec, parsed.pcap, parsed.verbose,
-                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.mobile, parsed.live, parsed.environment, parsed.debug, parsed.full_capture, parsed.socket_tracing, parsed.host, parsed.offsets, parsed.debugoutput, parsed.experimental, parsed.anti_root, parsed.payload_modification, parsed.enable_default_fd, parsed.patterns, parsed.custom_script, parsed.json)
+                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.mobile, parsed.live, parsed.environment, parsed.debug, parsed.full_capture, parsed.socket_tracing, parsed.host, parsed.offsets, parsed.debugoutput, parsed.experimental, parsed.anti_root, parsed.payload_modification, parsed.enable_default_fd, parsed.patterns, parsed.custom_script, parsed.json, install_lsass_hook)
 
         ssl_log.install_signal_handler()        
         ssl_log.start_fritap_session()  

@@ -6,13 +6,13 @@ friTap supports a wide range of SSL/TLS libraries across different platforms. Th
 
 | Library | Linux | Windows | macOS | Android | iOS | Key Features |
 |---------|-------|---------|-------|---------|-----|--------------|
-| **OpenSSL** | ✅ Full | 🔄 R/W | 🚧 TBI | ✅ Full | 🚧 TBI | Most widely used |
+| **OpenSSL** | ✅ Full | 🔄 R/W | 🔑 Keys | ✅ Full | 🔑 Keys | Most widely used |
 | **BoringSSL** | ✅ Full | 🔄 R/W | 🔑 Keys | ✅ Full | 🔑 Keys | Google's OpenSSL fork |
-| **NSS** | ✅ Full | 🔄 R/W | 🚧 TBI | 🚧 TBA | 🚧 TBI | Mozilla's library |
+| **NSS** | ✅ Full | 🔄 R/W | 🚧 TBI | 🔄 R/W | 🚧 TBI | Mozilla's library |
 | **GnuTLS** | 🔄 R/W | 🔄 R/W | 🚧 TBI | ✅ Full | 🚧 TBI | GNU project library |
 | **WolfSSL** | 🔄 R/W | 🔄 R/W | 🚧 TBI | ✅ Full | 🚧 TBI | Embedded/IoT focused |
 | **mbedTLS** | 🔄 R/W | 🔄 R/W | 🚧 TBI | ✅ Full | 🚧 TBI | Lightweight library |
-| **Schannel** | ❌ | ✅ Full | ❌ | ❌ | ❌ | Windows native SSL/TLS |
+| **Schannel** | ❌ | 🔄 R/W | ❌ | ❌ | ❌ | Windows native SSL/TLS |
 | **Conscrypt** | 🚧 TBA | 🚧 TBA | 🚧 TBA | ✅ Full | 🚧 TBA | Android system SSL |
 | **S2N-TLS** | ✅ Full | ❌ | 🚧 TBA | ✅ Full | ❌ | AWS library |
 | **RustTLS** | 🔑 Keys | 🚧 TBI | 🚧 TBI | 🔑 Keys | 🚧 TBI | Rust implementation |

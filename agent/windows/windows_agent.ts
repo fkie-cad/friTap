@@ -9,6 +9,7 @@ import { nss_execute } from "./nss_windows.js";
 import { wolfssl_execute } from "./wolfssl_windows.js";
 import { matrixSSL_execute } from "./matrixssl_windows.js";
 import { cronet_execute } from "./cronet_windows.js";
+import { lsass_execute } from "./lsass.js";
 
 
 var plattform_name = "windows";
@@ -90,4 +91,16 @@ export function load_windows_hooking_agent() {
 
     hook_Windows_SSL_Libs(module_library_mapping, true);
     hook_Windows_Dynamic_Loader(module_library_mapping, false);
+}
+
+export function load_windows_lsass_agent() {
+    devlog("Loading Windows LSASS agent...");
+    module_library_mapping[plattform_name] = [
+        [/ncrypt*\.dll/, invokeHookingFunction(lsass_execute)], 
+        [/(sspicli|SSPICLI|SspiCli)\.dll$/, invokeHookingFunction(sspi_execute)]
+    ]
+
+    hook_Windows_SSL_Libs(module_library_mapping, true);
+    hook_Windows_Dynamic_Loader(module_library_mapping, false);
+
 }

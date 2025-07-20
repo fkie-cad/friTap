@@ -59,7 +59,7 @@ SSL_WRITE = ["SSL_write", "wolfSSL_write", "writeApplicationData", "NSS_write","
 
 class SSL_Logger():
 
-    def __init__(self, app, pcap_name=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, mobile=False, live=False, environment_file=None, debug_mode=False,full_capture=False, socket_trace=False, host=False, offsets=None, debug_output=False, experimental=False, anti_root=False, payload_modification=False,enable_default_fd=False, patterns=None, custom_hook_script=None, json_output=None):
+    def __init__(self, app, pcap_name=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, mobile=False, live=False, environment_file=None, debug_mode=False,full_capture=False, socket_trace=False, host=False, offsets=None, debug_output=False, experimental=False, anti_root=False, payload_modification=False,enable_default_fd=False, patterns=None, custom_hook_script=None, json_output=None, install_lsass_hook=True):
         # Set up logging
         self.logger = logging.getLogger('friTap')
         if not self.logger.handlers:
@@ -104,6 +104,7 @@ class SSL_Logger():
         self.script = None
         self.running = True
         self.json_output = json_output
+        self.install_lsass_hook = install_lsass_hook
 
         self.tmpdir = None
         self.filename = ""
@@ -123,7 +124,7 @@ class SSL_Logger():
         
         # JSON session data
         self.session_data = {
-            "friTap_version": "1.3.4.2",  # Should be imported from about.py
+            "friTap_version": "1.3.7.1",  # Should be imported from about.py
             "session_info": {
                 "start_time": datetime.now(timezone.utc).isoformat(),
                 "target_app": app,
@@ -292,11 +293,7 @@ class SSL_Logger():
         if self.script is None:
             self.script = job.script
 
-        #print("----- Debug message -----")
-        #print(message)
-        #print("-------------------------")
         msg_type = message.get('type')
-        #print(f"[*] Received message of type: {msg_type}")
 
         if msg_type == 'send':
             payload = message.get('payload')
@@ -315,6 +312,9 @@ class SSL_Logger():
 
             if self.startup and payload == 'offset_hooking':
                 self.script.post({'type':'offset_hooking', 'payload': self.offsets_data})
+
+            if self.startup and payload == 'install_lsass_hook':
+                self.script.post({'type':'install_lsass_hook', 'payload': self.install_lsass_hook})
             
             if self.startup and payload == 'anti':
                 self.script.post({'type':'antiroot', 'payload': self.anti_root})
@@ -663,7 +663,7 @@ class SSL_Logger():
             self.device.resume(pid)
 
         return self.process, script
-
+    
 
     def finish_fritap(self):
         if self.script:

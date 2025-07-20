@@ -2,7 +2,7 @@ import { load_android_hooking_agent } from "./android/android_agent.js";
 import { load_ios_hooking_agent } from "./ios/ios_agent.js";
 import { load_macos_hooking_agent } from "./macos/macos_agent.js";
 import { load_linux_hooking_agent } from "./linux/linux_agent.js";
-import { load_windows_hooking_agent } from "./windows/windows_agent.js";
+import { load_windows_hooking_agent, load_windows_lsass_agent } from "./windows/windows_agent.js";
 import { isWindows, isLinux, isAndroid, isiOS, isMacOS, getDetailedPlatformInfo } from "./util/process_infos.js";
 import { anti_root_execute } from "./util/anti_root.js";
 import { socket_trace_execute } from "./misc/socket_tracer.js"
@@ -123,6 +123,8 @@ export let anti_root: boolean = false;
 //@ts-ignore
 export let enable_default_fd: boolean = false;
 //@ts-ignore
+export let install_lsass_hook: boolean = true;
+//@ts-ignore
 export let patterns: string = "{PATTERNS}";
 
 /* 
@@ -207,6 +209,11 @@ function load_os_specific_agent() {
     
     if(isWindows()){
         log('Running Script on Windows')
+        if(install_lsass_hook){
+            load_windows_lsass_agent();
+        }else{
+            log('Skipping LSASS hooking as per configuration');
+        }
         load_windows_hooking_agent()
     }else if(isAndroid()){
         log('Running Script on Android')
@@ -248,7 +255,6 @@ function load_os_specific_agent() {
 }
 
 load_os_specific_agent()
-
 
 
 

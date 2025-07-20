@@ -83,9 +83,9 @@ Replace variable bytes with `??`:
 
 ### Automated Pattern Generation
 
-**BoringSecretHunter Integration:**
+**Using BoringSecretHunter to Generate Patterns:**
 
-friTap integrates with [BoringSecretHunter](https://github.com/monkeywave/BoringSecretHunter) for automatic pattern generation. **Use the Docker approach for best results:**
+For applications with stripped libraries, we recommend using the external tool [BoringSecretHunter](https://github.com/monkeywave/BoringSecretHunter) to automatically generate pattern files. This is a manual process, and the generated JSON file can then be supplied to friTap. **Use the Docker approach for best results:**
 
 ```bash
 # Create directories for BoringSecretHunter

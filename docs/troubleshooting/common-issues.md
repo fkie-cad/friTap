@@ -258,7 +258,9 @@ fritap -m -k keys.log com.example.app.debug
 
 friTap doesn’t include built-in jailbreak-evasion mechanisms—but it allows you to inject your own custom hooks to bypass or disable jailbreak checks in target applications.
 
-Simply write your custom hooking logic (e.g., intercepting calls like isJailbroken() or checking file paths under /private/var/) and pass it to friTap using the -c flag:
+Simply write your custom hooking logic (e.g., intercepting calls like isJailbroken() or checking file paths under /private/var/) and pass it to friTap using the
+-c
+flag:
 
 ```bash
 fritap \
@@ -268,6 +270,9 @@ fritap \
   target_app
 
 ```
+
+!!! note "Why No `--anti_jailbreak` Flag?"
+    Unlike the `--anti_root` flag for Android, friTap does not provide a generic jailbreak bypass. Jailbreak detection techniques on iOS are highly varied, often specific to the app and iOS version, making a universal bypass impractical. Instead, friTap provides the flexibility to use custom scripts (`-c`) tailored to the target application.
 
 Your script might patch out jailbreak-check functions like so:
 ```javascript
@@ -285,6 +290,7 @@ Interceptor.attach(Module.getExportByName(null, "isJailbroken"), {
 });
 
 ```
+
 
 **Code Signing Issues**:
 ```bash
@@ -463,7 +469,7 @@ ps aux | grep "$TARGET" >> diagnostic.txt
 
 echo -e "\n=== friTap Test ===" >> diagnostic.txt
 fritap --version >> diagnostic.txt
-fritap --list-devices >> diagnostic.txt 2>&1
+frida-ls-devices >> diagnostic.txt 2>&1
 
 echo -e "\n=== Network Status ===" >> diagnostic.txt
 netstat -an | head -20 >> diagnostic.txt

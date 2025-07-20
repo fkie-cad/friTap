@@ -91,7 +91,7 @@ fritap -f firefox
 **Key Extraction** (`-k` flag):
 - Captures TLS keys as they're generated
 - Smaller file size
-- Requires separate network capture
+- Requires separate network capture (e.g. with the `-full_capture` flag)
 - Compatible with Wireshark
 
 **Traffic Decryption** (`--pcap` flag):
@@ -139,11 +139,13 @@ Interceptor.attach(SSL_read, {
 
 ### Pattern-Based Hooking
 
-For stripped libraries without symbols:
+When working with libraries that have been stripped of symbols, you can use pattern-based hooking to identify and hook functions based on byte patterns:
 ```bash
 # Use pattern file
 fritap --patterns patterns.json target
 ```
+
+Currently, pattern-based hooking is only supported for dumping TLS key material in the NSS key log format (([more](https://github.com/fkie-cad/friTap/blob/main/USAGE.md#1-dump-keys)). We also include default pattern files for several commonly used libraries to get you started quickly.
 
 ### Offset-Based Hooking
 
@@ -173,47 +175,68 @@ fritap --offsets offsets.json target
 
 ## Platform Differences
 
+Since friTap depends on Frida, it requires root (or administrator) privileges on every platform.
+
 ### Linux
 - System-wide SSL libraries
 - Process attachment requires root
-- Full library support
+- Broad library support
+- *SELinux*: On distributions enforcing SELinux (e.g., Fedora, RHEL, Android kernels), Frida may be blocked by mandatory policies. Switch to permissive mode:
+    ```bash
+    setenforce 0
+    ```
 
 ### Windows
 - Multiple SSL implementations
 - Admin privileges required
 - Limited library support
+- Windows 11 lsass.exe crash: By default, hardware-enforced stack protection triggers a crash when Frida hooks lsass.exe. To mitigate:
+    1. Open Settings → Privacy & security → Windows Security → App & browser control → Exploit protection settings.
+    2. Under Program settings, add lsass.exe and override Hardware-enforced stack protection (set to *Off*)
+- General [LSA protections](https://learn.microsoft.com/en-us/windows-server/security/credentials-protection-and-management/configuring-additional-lsa-protection) & AV: Many antivirus solutions flag or harden LSASS. If you receive Access Denied ensure all LSA protections are disabled (e.g., registry keys for LSA hardening) and temporarily disable AV hooks
 
 ### macOS
-- System Integrity Protection (SIP)
+- System Integrity Protection (SIP) might be a problem
 - Code signing restrictions
 - Limited library support
+
+It is very likely that you have to deactivate the System Integrity Protection (SIP) on your Mac OS system.
+Disabling SIP (Intel & Apple Silicon):
+
+    1. Reboot into Recovery mode (Intel: hold `⌘ R`; Apple Silicon: hold Power until `Loading startup options`).
+
+    2. Launch *Utilities* → *Terminal*.
+
+    3. Run `csrutil disable` 
 
 ### Android
 - App-specific libraries
 - Java and native SSL implementations
 - Requires root access
+- On Samsung devices it might be required to disable KNOX:
+    ```bash
+    adb shell pm disable-user --user 0 com.samsung.android.knox.attestation
+    adb reboot
+    ```
 
 ### iOS
 - Objective-C SSL implementations
 - Jailbreak required
 - Limited library support
+- Frida-server on jailbroken iOS:
+
+    1. Ensure your device is jailbroken (palera1n, Checkra1n, etc.).
+
+    2. Add https://build.frida.re to Cydia/Zebra/Sileo sources.
+
+    3. Install the matching frida-server DEB and run it as root.
 
 ## Common Architectures
 
 ### Client-Server Applications
 
 ```
-[Client App] --TLS--> [Server]
-     |
-   friTap
-     |
-[Keys/Traffic]
-```
-
-### Mobile Applications
-
-```
-[Mobile App] --TLS--> [API Server]
+[Client/Mobile App] --TLS--> [Server]
      |
    friTap
      |
@@ -287,7 +310,13 @@ fritap -do -v target
 fritap --list-libraries target
 
 # Verify device connection
-fritap --list-devices
+frida-ls-devices 
+Id              Type    Name             OS
+--------------  ------  ---------------  ------------
+local           local   Local System     macOS 15.3.1
+31041FDH2006EY  usb     Pixel 7          Android 13
+barebone        remote  GDB Remote Stub
+socket          remote  Local Socket
 ```
 
 ## Advanced Concepts
@@ -334,6 +363,11 @@ fritap -k keys.log curl https://httpbin.org/get
 
 ```bash
 fritap -v target
+```
+
+To get even more insights use the debug output (`-do`) parameter as well:
+```bash
+fritap -v -do target
 ```
 
 ### 3. Understand Your Target
