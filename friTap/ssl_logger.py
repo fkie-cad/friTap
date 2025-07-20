@@ -712,8 +712,7 @@ class SSL_Logger():
                     pass
 
                 self.process.detach()
-                if self.debug_output or self.debug:
-                    self.logger.debug("Successfully detached from Frida process.")
+
             except Exception as e:
                 self.logger.error(f"Error while detaching: {e}")
 
