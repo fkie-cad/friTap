@@ -145,7 +145,7 @@ When working with libraries that have been stripped of symbols, you can use patt
 fritap --patterns patterns.json target
 ```
 
-Currently, pattern-based hooking is only supported for dumping TLS key material in the NSS key log format (([more](https://github.com/fkie-cad/friTap/blob/main/USAGE.md#1-dump-keys)). We also include default patterns for several commonly used libraries to get you started quickly.
+Currently, pattern-based hooking is only supported for dumping TLS key material in the NSS key log format ([more](https://github.com/fkie-cad/friTap/blob/main/USAGE.md#1-dump-keys)). We also include default patterns for several commonly used libraries to get you started quickly.
 
 ### Offset-Based Hooking
 
