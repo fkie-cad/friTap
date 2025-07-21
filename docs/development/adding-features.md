@@ -11,6 +11,35 @@ friTap's architecture is designed to be extensible:
 - **Plugin System**: Modular SSL library implementations
 - **Platform Abstraction**: OS-specific code organization
 
+
+## Architecture Overview
+
+friTap is built on a multi-component architecture that combines Python orchestration with frida's dynamic instrumentation:
+
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   Python CLI    │    │  Frida Engine   │    │ Target Process  │
+│   (friTap.py)   │────│   (Runtime)     │────│   (Hooked)      │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+         │                       │                       │
+         │                       │                       │
+    ┌─────────┐            ┌─────────────┐        ┌─────────────┐
+    │SSL Logic│            │TypeScript   │        │SSL Libraries│
+    │& PCAP   │            │Agent        │        │(OpenSSL,    │
+    │Gen      │            │(_ssl_log.js)│        │BoringSSL,   │
+    └─────────┘            └─────────────┘        │NSS, etc.)   │
+                                                  └─────────────┘
+```
+
+### Components
+
+1. **Python CLI** (`friTap.py`): Main orchestration layer
+2. **SSL Logger** (`ssl_logger.py`): Core logging and processing engine
+3. **PCAP Generator** (`pcap.py`): Network packet creation and manipulation
+4. **Frida Agent** (`agent/ssl_log.ts`): TypeScript-based instrumentation agent (this is build via `frida-compile` from the TypeScript code in the agent/ folder)
+5. **Platform Agents**: Platform-specific SSL library hooks
+
+
 ## Adding SSL/TLS Library Support
 
 Adding support for a new SSL/TLS library involves both TypeScript agent code and Python integration.

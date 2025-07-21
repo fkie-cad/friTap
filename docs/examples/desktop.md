@@ -19,6 +19,8 @@ sudo fritap -k firefox_keys.log firefox
 # [*] Press Ctrl+C to stop
 ```
 
+If you installed friTap as a normal user it might be the case that you have to invoke friTap like `sudo -E fritap ....`.
+
 **Complete Traffic Analysis:**
 ```bash
 # Capture both keys and decrypted traffic

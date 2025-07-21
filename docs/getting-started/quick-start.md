@@ -9,6 +9,10 @@ friTap operates in two main modes:
 1. **Key Extraction Mode**: Extract TLS keys for offline analysis
 2. **Live Decryption Mode**: Decrypt and capture traffic in real-time
 
+!!! tip "Key Extraction"
+    In general, friTap’s key extraction `-k <keylogfile>` mode is better supported than its live decryption mode.
+
+
 ## Desktop Applications
 
 ### Extract TLS Keys
@@ -75,13 +79,13 @@ fritap -m --pcap decrypted.pcap com.example.app
 fritap firefox
 
 # By process ID
-fritap --pid 1234
+fritap 1234
 
 # By package name (mobile)
 fritap -m com.example.app
 
 # List running processes
-fritap --list-processes
+frida-ps
 ```
 
 ### Output Options
@@ -170,7 +174,7 @@ cat malware_analysis.json | jq '.connections, .errors'  # Programmatic analysis
 
 ### TLS Key Files
 
-Key files use the NSS Key Log format:
+Key files use the [NSS Key Log format](www.ietf.org/archive/id/draft-thomson-tls-keylogfile-00.html):
 
 ```
 # Example content of keys.log

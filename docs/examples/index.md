@@ -265,7 +265,13 @@ fritap -do -v target
 sudo fritap -k keys.log target
 
 # Check device connection (mobile)
-fritap --list-devices
+frida-ls-devices 
+Id              Type    Name             OS
+--------------  ------  ---------------  ------------
+local           local   Local System     macOS 15.3.1
+31041FDH2006EY  usb     Pixel 7          Android 13
+barebone        remote  GDB Remote Stub
+socket          remote  Local Socket
 ```
 
 ## Performance Optimization Examples

@@ -121,10 +121,10 @@ sudo fritap -k keys.log firefox
 sudo fritap -k keys.log --pid 1234
 
 # By executable path
-sudo fritap -k keys.log /usr/bin/curl https://example.com
+sudo -E fritap -k keys.log /usr/bin/curl https://example.com
 
 # List running processes
-fritap --list-processes
+frida-ps
 ```
 
 ## SSL/TLS Libraries on Linux

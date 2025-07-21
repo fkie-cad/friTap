@@ -8,7 +8,7 @@ This guide covers Android-specific setup, considerations, and best practices for
 
 - **Rooted Android device** (required for friTap operation)
 - **Android 7.0+** (minimum supported version)
-- **ARM, ARM64, or x86 architecture** support
+- **ARM, ARM64, x86-64 or x86 architecture** support
 - **USB Debugging enabled**
 - **Developer Options enabled**
 
@@ -105,8 +105,8 @@ fritap -m --pcap instagram_traffic.pcap com.instagram.android
 # Spawn app from beginning
 fritap -m -s -k keys.log com.example.app
 
-# Verbose analysis
-fritap -m -v -k keys.log com.example.app
+# Verbose analysis with debug output
+fritap -m -v -k keys.log -do com.example.app
 ```
 
 ## Android-Specific Features
@@ -153,7 +153,7 @@ fritap -m --enable_default_fd --pcap traffic.pcap com.example.app
 | **Conscrypt** | Android system, some apps | ✅ Full |
 | **OpenSSL** | Older apps, native code | ✅ Full |
 | **NSS** | Firefox, Mozilla apps | ⚠️ Limited |
-| **OkHttp** | Many modern apps | ✅ Full (uses system SSL) |
+| **OkHttp** | Many modern apps | ✅ Full (uses system SSL --> BoringSSL) |
 
 ### Pattern-Based Hooking
 
@@ -162,10 +162,9 @@ For apps with stripped or statically linked SSL libraries:
 ```bash
 # Use patterns for Flutter apps
 fritap -m --patterns flutter_patterns.json -k keys.log com.flutter.app
-
-# Generate patterns with BoringSecretHunter
-python BoringSecretHunter.py --target libflutter.so --arch arm64 --output patterns.json
 ```
+
+We are trying to provide aleady working pattern to friTap but when these patterns don't work you might to provide friTap with you own pattern. More at [Pattern-based Hooking](../advanced/patterns.md) page. 
 
 ## Application Categories
 
@@ -195,25 +194,6 @@ fritap -m --anti_root -k bank_keys.log com.example.bankapp
 fritap -m -s --pcap bank_auth.pcap com.example.bankapp
 ```
 
-### Gaming Applications
-
-```bash
-# Unity-based games
-fritap -m --patterns unity_patterns.json -k game_keys.log com.unity.game
-
-# Native games
-fritap -m --enable_spawn_gating -k keys.log com.example.game
-```
-
-### E-commerce Applications
-
-```bash
-# Amazon Shopping
-fritap -m -k amazon_keys.log com.amazon.mshop.android.shopping
-
-# Monitor API calls
-fritap -m --pcap ecommerce_api.pcap com.example.shopping
-```
 
 ## Troubleshooting Android Issues
 
@@ -291,15 +271,6 @@ fritap -m --enable_spawn_gating -k webview_keys.log com.example.app
 # Look for chromium-based WebView traffic
 ```
 
-### Multi-User Analysis
-
-```bash
-# Switch to specific user (if multiple users)
-adb shell am switch-user 10  # Switch to user 10
-
-# Analyze app in specific user context
-fritap -m -k keys.log --user 10 com.example.app
-```
 
 ### Background Service Analysis
 
@@ -311,29 +282,10 @@ fritap -m --enable_spawn_gating -k service_keys.log com.example.app
 fritap -m -k keys.log com.example.app:service
 ```
 
-## Performance Considerations
-
-### Memory Usage
-
-```bash
-# Monitor memory usage during analysis
-adb shell top -p $(adb shell pgrep frida-server)
-
-# Optimize for low-memory devices
-fritap -m --timeout 60 -k keys.log com.example.app
-```
-
-### Battery Impact
-
-```bash
-# Minimize battery drain
-fritap -m --timeout 120 -k keys.log com.example.app
-
-# Use targeted analysis
-fritap -m -k keys.log com.example.app  # Don't spawn unnecessarily
-```
-
 ### Storage Management
+
+Whenever we do a full capture with friTap we don't remove the generated pcap files stored by default to `/data/local/tmp/`.
+Therefore it might be helpful to delete them from time to time.
 
 ```bash
 # Monitor storage usage

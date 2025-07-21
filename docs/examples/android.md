@@ -19,17 +19,23 @@ adb shell su -c "id"
 adb shell ps | grep frida-server
 ```
 
-### friTap Device Detection
+### Device and Process Detection
 
 ```bash
 # List available devices
-fritap --list-devices
+frida-ls-devices 
+Id              Type    Name             OS
+--------------  ------  ---------------  ------------
+local           local   Local System     macOS 15.3.1
+31041FDH2006EY  usb     Pixel 7          Android 13
+barebone        remote  GDB Remote Stub
+socket          remote  Local Socket
 
 # List running processes
-fritap -m --list-processes
+frida-ps
 
-# Check specific package
-fritap -m --list-processes | grep com.example.app
+# Check specific package on a mobile device
+frida-ps -Uai | grep com.example.app
 ```
 
 ## Basic Android Analysis
@@ -52,8 +58,8 @@ fritap -m -k instagram_keys.log com.instagram.android
 
 **Complete Traffic Analysis:**
 ```bash
-# Capture keys, traffic, and metadata
-fritap -m -k instagram_keys.log --pcap instagram_traffic.pcap --json instagram_metadata.json com.instagram.android
+# Capture keys, traffic (here full capture), and metadata
+fritap -m -k instagram_keys.log --pcap instagram_traffic.pcap --full_capture --json instagram_metadata.json com.instagram.android
 
 # Now use Instagram app normally
 # Press Ctrl+C to stop capture
@@ -130,7 +136,7 @@ Many apps detect root and refuse to run:
 # Enable anti-root detection bypass
 fritap -m --enable-anti-root -k keys.log com.example.app
 
-# Combined with other options
+# Combined with other options (here we are doing a full packet capture)
 fritap -m -f --enable-anti-root -k keys.log --pcap traffic.pcap com.example.app
 ```
 
@@ -168,31 +174,7 @@ fritap -m -k rn_keys.log --pcap rn_traffic.pcap com.example.reactnative
 tcpdump -r rn_traffic.pcap 'port 8081'
 ```
 
-### Xamarin Applications
-
-Xamarin apps use Mono.Android SSL:
-
-**Xamarin Analysis:**
-```bash
-# Mono.Android SSL libraries
-fritap -m -k xamarin_keys.log com.example.xamarin
-
-# Enable debug for Mono detection
-fritap -m -do -v com.example.xamarin
-```
-
-### Unity Games
-
-Unity games may use various SSL implementations:
-
-**Unity Game Analysis:**
-```bash
-# Unity games with networking
-fritap -m -k unity_keys.log --pcap unity_traffic.pcap com.example.unitygame
-
-# Look for Unity-specific traffic
-tcpdump -r unity_traffic.pcap -A | grep -i unity
-```
+Other frameworks such as Xamarin (Mono.Android SSL --> BoringSSL) or Unity games may use various SSL implementations.
 
 ## SSL Library Specific Examples
 
@@ -208,17 +190,6 @@ fritap -m -k boringssl_keys.log com.example.app
 fritap -m -do -v com.example.app | grep -i boring
 ```
 
-### Conscrypt Applications
-
-Some apps use Google's Conscrypt:
-
-```bash
-# Conscrypt analysis
-fritap -m -k conscrypt_keys.log com.example.app
-
-# Verify Conscrypt detection
-fritap -m -v com.example.app | grep -i conscrypt
-```
 
 ### OkHttp Applications
 
@@ -230,29 +201,6 @@ fritap -m -k okhttp_keys.log com.example.app
 
 # Monitor OkHttp connections
 tcpdump -r traffic.pcap -A | grep -i okhttp
-```
-
-## Certificate Pinning Analysis
-
-### Detecting Certificate Pinning
-
-```bash
-# App with certificate pinning
-fritap -m -k pinned_keys.log com.example.pinned_app
-
-# If no traffic is captured, pinning may be active
-# Check debug output for SSL errors
-fritap -m -do -v com.example.pinned_app
-```
-
-### Bypassing Certificate Pinning
-
-```bash
-# Use spawn mode to bypass pinning
-fritap -m -f -k keys.log --pcap traffic.pcap com.example.pinned_app
-
-# Enable default socket information
-fritap -m --enable_default_fd -k keys.log com.example.pinned_app
 ```
 
 ## Advanced Analysis Techniques
@@ -310,20 +258,6 @@ tcpdump -r api_traffic.pcap -A | grep -i authorization
 
 # Get API statistics from JSON
 cat api_analysis.json | jq '.statistics.total_connections, .connections | length'
-```
-
-### Data Privacy Analysis
-
-**Personal Data Transmission:**
-```bash
-# Monitor data transmission with privacy analysis
-fritap -m -k privacy_keys.log --pcap privacy_traffic.pcap --json privacy_analysis.json com.example.app
-
-# Search for personal data patterns
-tcpdump -r privacy_traffic.pcap -A | grep -E "(email|phone|address)"
-
-# Analyze data transfer volumes
-cat privacy_analysis.json | jq '.connections[] | select(.data_length > 1000) | {dst_addr, data_length}'
 ```
 
 ### Malware Analysis
