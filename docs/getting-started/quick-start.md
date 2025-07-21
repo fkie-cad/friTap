@@ -174,7 +174,7 @@ cat malware_analysis.json | jq '.connections, .errors'  # Programmatic analysis
 
 ### TLS Key Files
 
-Key files use the [NSS Key Log format](www.ietf.org/archive/id/draft-thomson-tls-keylogfile-00.html):
+Key files use the [NSS Key Log format](https://www.ietf.org/archive/id/draft-thomson-tls-keylogfile-00.html):
 
 ```
 # Example content of keys.log

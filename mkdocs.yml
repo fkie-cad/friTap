@@ -112,6 +112,7 @@ nav:
     - Documentation: development/documentation.md
     - Pull Requests: development/pull-requests.md
     - Community: development/community.md
+    - Contributing to Docs: CONTRIBUTING_TO_DOCS.md
     - Release Process: development/release-process.md
 
 extra:
