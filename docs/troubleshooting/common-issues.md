@@ -158,14 +158,14 @@ fritap -v target_app | grep -i "library\|found\|hook"
 
 **Use Pattern-Based Hooking**:
 
-By default, friTap uses Frida’s pattern‑based hooking to locate key functions like SSL_new, handling cases when symbols are stripped or missing. However, library updates may break these patterns—especially with stripped binaries. In those situations, you can provide your own byte-pattern definitions to restore functionality.
+By default, friTap uses Frida’s pattern‑based hooking to locate key functions like `ssl_log()`, handling cases when symbols are stripped or missing. However, library updates may break these patterns—especially with stripped binaries. In those situations, you can provide your own byte-pattern definitions to restore functionality.
 
 ```bash
 # For stripped libraries
 fritap --patterns patterns.json -k keys.log target_app
 
 # Generate patterns with BoringSecretHunter
-python boring_secret_hunter.py --target libssl.so --output patterns.json
+
 fritap --patterns patterns.json -k keys.log target_app
 ```
 
@@ -270,6 +270,14 @@ fritap \
   target_app
 
 ```
+
+A good starting point to develop your own jailbreak bypass you might have a look at the following links:
+- https://www.synacktiv.com/sites/default/files/2021-07/Jailbreak_detection-Pass_The_Salt_2021.pdf
+- https://codeshare.frida.re/@incogbyte/ios-jailbreak-bypass/
+- https://github.com/Incognito-Lab/Frida-iOS-Jailbreak-detection-bypass/blob/main/ios-jailbreak-detection-bypass.js
+- https://codeshare.frida.re/@sridharas04/darkprince-jailbreak-detection-bypass/
+- https://www.romainthomas.fr/post/21-07-pokemongo-anti-frida-jailbreak-bypass/
+
 
 !!! note "Why No `--anti_jailbreak` Flag?"
     Unlike the `--anti_root` flag for Android, friTap does not provide a generic jailbreak bypass. Jailbreak detection techniques on iOS are highly varied, often specific to the app and iOS version, making a universal bypass impractical. Instead, friTap provides the flexibility to use custom scripts (`-c`) tailored to the target application.

@@ -8,8 +8,7 @@ This section provides comprehensive, real-world examples of using friTap for var
 |----------|---------|----------|
 | **Web Browser** | `sudo fritap -k keys.log firefox` | Analyze web traffic |
 | **Mobile App** | `fritap -m -k keys.log com.example.app` | Android/iOS analysis |
-| **API Client** | `fritap --pcap api.pcap python client.py` | REST API analysis |
-| **Malware** | `fritap -k malware.log --pcap traffic.pcap ./sample` | Malware communication |
+| **Malware** | `fritap -f -k malware.log --pcap traffic.pcap ./sample` | Malware communication with full capture |
 | **Pattern Hook** | `fritap --patterns patterns.json -k keys.log target` | Stripped binaries |
 | **Live Analysis** | `fritap -l target` | Real-time monitoring |
 
@@ -98,20 +97,6 @@ grep -i "ssl\|tls" terminal_output.log
 
 ## Example Scenarios by Use Case
 
-### Security Research
-
-**Certificate Pinning Bypass**
-```bash
-# Analyze apps with pinning
-fritap -m --enable_default_fd -k keys.log com.pinned.app
-```
-
-**API Security Testing**
-```bash
-# Analyze API communications
-fritap --pcap api_traffic.pcap python test_api.py
-```
-
 ### Malware Analysis
 
 **C&C Communication**
@@ -130,7 +115,7 @@ fritap --full_capture -k keys.log --pcap exfil.pcap suspicious_app
 
 **Mobile App Testing**
 ```bash
-# Comprehensive mobile analysis
+# Comprehensive mobile analysis with full network capture and keys to decrypt it later (e.g. in Wireshark)
 fritap -m -f -k app_keys.log --pcap app_traffic.pcap com.example.app
 ```
 

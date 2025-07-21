@@ -54,8 +54,6 @@ friTap uses dynamic instrumentation to intercept SSL/TLS operations at the libra
 
 ## Supported Platforms & Libraries
 
-## Supported Libraries Matrix
-
 | Library | Linux | Windows | macOS | Android | iOS | Key Features |
 |---------|-------|---------|-------|---------|-----|--------------|
 | **OpenSSL** | ✅ Full | 🔄 R/W | 🚧 TBI | ✅ Full | 🚧 TBI | Most widely used |
@@ -82,7 +80,7 @@ friTap uses dynamic instrumentation to intercept SSL/TLS operations at the libra
 ### Prerequisites
 
 - Python 3.7+
-- Frida 16.0+
+- Frida 16.0+ (new changes will only work on frida >=17)
 - Administrative privileges (for desktop applications)
 - ADB access (for Android analysis)
 
@@ -118,7 +116,7 @@ fritap --help
 
 === "Pattern-Based Hooking"
     ```bash
-    # Hook libraries without symbols
+    # Hook libraries without symbols when the default patterns not working
     fritap --patterns patterns.json -k keys.log target_app
     
     # Debug pattern matching

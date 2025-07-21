@@ -71,7 +71,7 @@ fritap firefox
 **Spawning**: Start a new process under friTap control
 ```bash
 # Spawn new Firefox instance
-fritap -f firefox
+fritap -s firefox
 ```
 
 ### Mobile vs Desktop Analysis
@@ -91,7 +91,7 @@ fritap -f firefox
 **Key Extraction** (`-k` flag):
 - Captures TLS keys as they're generated
 - Smaller file size
-- Requires separate network capture (e.g. with the `-full_capture` flag)
+- Requires separate network capture (e.g. with the `-f / -full_capture` flag)
 - Compatible with Wireshark
 
 **Traffic Decryption** (`--pcap` flag):
@@ -99,6 +99,7 @@ fritap -f firefox
 - Larger file size
 - Self-contained analysis
 - Ready for immediate analysis
+
 
 ## SSL/TLS Library Detection
 
