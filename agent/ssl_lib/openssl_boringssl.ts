@@ -78,7 +78,7 @@ export class OpenSSL_BoringSSL {
         devlog("invoking keylog_callback from OpenSSL_BoringSSL");
         var message: { [key: string]: string | number | null } = {}
         message["contentType"] = "keylog"
-        message["keylog"] = linePtr.readCString()
+        message["keylog"] = linePtr.readCString().toUpperCase()
         send(message)
     }, "void", ["pointer", "pointer"])
 
