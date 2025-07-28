@@ -303,6 +303,91 @@ export class OpenSSL_BoringSSL {
     }
 
     install_tls_keys_callback_hook(){
+        log("Error: TLS key extraction not implemented yet.");
+    }
+
+    /*
+     * These hooks differ between OpenSSL and BoringSSL.
+     */ 
+
+    install_openssl_key_extraction_hook(){
+        log("Error: TLS key extraction not implemented yet.");
+    }
+
+
+    dump_keys_openssl(label, identifier, key, length) {
+        const KEY_LENGTH_FINAL = length.toInt32();
+        console.log("KEy length: "+KEY_LENGTH_FINAL);
+        //const MAX_KEY_LENGTH = 64;
+        const RANDOM_KEY_LENGTH = 32; 
+        var labelStr = "";
+        var client_random = "";
+        var secret_key = "";
+
+
+        if (!label.isNull()) {
+            labelStr = label.readCString(); // Read the C string
+        } else {
+            console.log("[Error] Argument 'label' is NULL");
+        }
+
+        if (!identifier.isNull()) {
+            //devlog("SSL_Struct_pointer (working): ",identifier);
+            client_random = identifier.add(0x160).readByteArray(RANDOM_KEY_LENGTH);
+        } else {
+            devlog("[OpenSSL Dump Keys Error] Argument 'identifier' is NULL");
+        }
+
+
+        // Read the binary key from key (second parameter) and print it in a clean hex format
+        //console.log("Key:");
+        if (!key.isNull()) {
+            let KEY_LENGTH = 0;
+            // old brute force method to determine the key length will be removed in the future
+            /*
+            let calculatedKeyLength = 0;
+
+            // Iterate through the memory to determine key length
+            while (calculatedKeyLength < MAX_KEY_LENGTH) {
+                const byte = key.add(calculatedKeyLength).readU8(); // Read one byte at a time
+
+
+                if (byte === 0) { // Stop if null terminator is found (optional, adjust as needed)
+                    if(calculatedKeyLength < 20){
+                        calculatedKeyLength++;
+                        continue;
+                    }
+                    break;
+                }
+                calculatedKeyLength++;
+            }
+
+
+            if (calculatedKeyLength > 24 && calculatedKeyLength <= 46) {
+                KEY_LENGTH = 32; // Closest match is 32 bytes
+            } else if (calculatedKeyLength => 47) {
+                KEY_LENGTH = 48; // Closest match is 48 bytes
+            }else{
+                KEY_LENGTH = 32; // fall back size
+            }*/
+
+            const keyData = key.readByteArray(KEY_LENGTH); // Read the key data (KEY_LENGTH bytes)
+            
+            // Convert the byte array to a string of space-separated hex values
+            const hexKey = Array
+                .from(new Uint8Array(keyData)) // Convert byte array to Uint8Array and then to Array
+                .map(byte => byte.toString(16).padStart(2, '0').toUpperCase()) // Convert each byte to a 2-digit hex string
+                .join(''); // Join all the hex values with a space
+
+            secret_key = hexKey;
+        } else {
+            console.log("[OpenSSL Dump Keys Error] Argument 'key' is NULL");
+        }
+
+        console.log(labelStr+" "+client_random+" "+secret_key);
+    }
+
+    install_boringssl_key_extraction_hook(){
         log("Error: TLS key extraction not implemented yet.")
     }
 

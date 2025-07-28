@@ -1,13 +1,35 @@
 
 import {OpenSSL_BoringSSL } from "../ssl_lib/openssl_boringssl.js";
 import { socket_library } from "./linux_agent.js";
-import { ObjC } from "../shared/objclib.js";
+import { patterns, isPatternReplaced } from "../ssl_log.js"
+import {PatternBasedHooking, get_CPU_specific_pattern } from "../shared/pattern_based_hooking.js";
 import { devlog, devlog_error } from "../util/log.js";
 
 export class OpenSSL_BoringSSL_Linux extends OpenSSL_BoringSSL {
+    private default_pattern: { [arch: string]: { primary: string; fallback: string, second_fallback?: string; } };
 
     constructor(public moduleName:string, public socket_library:String, is_base_hook: boolean){
         super(moduleName,socket_library,is_base_hook);
+
+        this.default_pattern = {
+            "x64": {
+                primary:  "41 57 41 56 41 55 41 54 53 48 83 EC ?? 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84", // Primary pattern
+                fallback: "55 41 57 41 56 41 54 53 48 83 EC 30 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84" // Fallback pattern
+            },
+            "x86": {
+                primary: "55 53 57 56 83 EC 4C E8 00 00 00 00 5B 81 C3 A9 CB 13 00 8B 44 24 60 8B 40 34", // Primary pattern
+                fallback: "55 53 57 56 83 EC 4C E8 00 00 00 00 5B 81 C3 A9 CB 13 00 8B 44 24 60" // Fallback pattern
+            },
+            "arm64": {
+                primary: "3F 23 03 D5 FD 7B BF A9 E4 03 01 AA FD 03 00 91 FD 7B C1 A8 BF 23 03 D5 E1 03 00 AA E5 03 03 AA E0 03 04 AA 03 04 80 D2 E4 03 02 AA 22 80 05 91", // Primary pattern
+                fallback: "3F 23 03 D5 FF ?3 02 D1 FD 7B 0? A9 F? ?? 0? ?9 F6 57 0? A9 F4 4F 0? A9 FD ?3 01 91 08 34 40 F9 08 ?? 41 F9 ?8 ?? 00 B4" // Fallback pattern
+            },  
+
+            "arm": {
+                primary: "2D E9 F0 43 89 B0 04 46 40 6B D0 F8 2C 01 00 28 49 D0", // Primary pattern
+                fallback: "2D E9 F0 41 86 B0 04 46 40 6B D0 F8 30 01 00 28 53 D0"  // Fallback pattern
+            }
+        };
     }
 
     install_tls_keys_callback_hook (){
@@ -70,11 +92,42 @@ export class OpenSSL_BoringSSL_Linux extends OpenSSL_BoringSSL {
         
     }
 
+    install_openssl_key_extraction_hook(): PatternBasedHooking {
+        let opensslModule = Process.findModuleByName(this.module_name);
+
+        const hooker = new PatternBasedHooking(opensslModule);
+
+        if (isPatternReplaced()){
+            devlog("Hooking libssl functions by patterns from JSON file");
+            hooker.hook_DumpKeys(this.module_name,"libssl.so3",patterns,(args: any[]) => {
+                devlog("Installed ssl_log_secret() hooks using byte patterns.");
+                // this.dump_keys_openssl(labelptr, clientptr, keyptr, keyLength);
+                this.dump_keys_openssl(args[1], args[0], args[2], args[3]);  // Unpack args into dumpKeys
+            });
+        }else{
+            // This are the default patterns for hooking ssl_log_secret in OpenSSL
+            hooker.hookModuleByPattern(
+                get_CPU_specific_pattern(this.default_pattern),
+                (args) => {
+                    devlog("Installed ssl_log_secret() hooks using byte patterns.");
+                    this.dump_keys_openssl(args[1], args[0], args[2], args[3]);  // Hook args passed to dumpKeys
+                }
+            );
+        }
+
+        return hooker
+        
+    }
+
 
 
     execute_hooks(){
         this.install_plaintext_read_hook();
         this.install_plaintext_write_hook();
+        let hooker_instance = this.install_openssl_key_extraction_hook();
+        if (hooker_instance !== undefined || hooker_instance !== null) {
+            devlog("[*] Hooking OpenSSL key extraction functions using patterns has been successful: "+hooker_instance.no_hooking_success);
+        }
         this.install_tls_keys_callback_hook();
         this.install_extended_hooks();
     }
