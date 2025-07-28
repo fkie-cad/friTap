@@ -126,7 +126,7 @@ export class OpenSSL_BoringSSL_Linux extends OpenSSL_BoringSSL {
         this.install_plaintext_write_hook();
         let hooker_instance = this.install_openssl_key_extraction_hook();
         if (hooker_instance !== undefined || hooker_instance !== null) {
-            devlog("[*] Hooking OpenSSL key extraction functions using patterns has been successful: "+hooker_instance.no_hooking_success);
+            devlog("Installed OpenSSL key extraction function hooks using patterns: "+hooker_instance.no_hooking_success);
         }
         this.install_tls_keys_callback_hook();
         this.install_extended_hooks();

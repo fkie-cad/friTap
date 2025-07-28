@@ -1,6 +1,6 @@
 import { readAddresses, getPortsAndAddresses, getBaseAddress, isSymbolAvailable, checkNumberOfExports } from "../shared/shared_functions.js";
 import { getOffsets, offsets, enable_default_fd } from "../ssl_log.js";
-import { devlog, log } from "../util/log.js";
+import { devlog, devlog_error, log } from "../util/log.js";
 import { ObjC } from "../shared/objclib.js";
 
 class ModifyReceiver{
@@ -317,7 +317,7 @@ export class OpenSSL_BoringSSL {
 
     dump_keys_openssl(label, identifier, key, length) {
         const KEY_LENGTH_FINAL = length.toInt32();
-        console.log("KEy length: "+KEY_LENGTH_FINAL);
+        //console.log("KEy length: "+KEY_LENGTH_FINAL);
         //const MAX_KEY_LENGTH = 64;
         const RANDOM_KEY_LENGTH = 32; 
         var labelStr = "";
@@ -328,23 +328,24 @@ export class OpenSSL_BoringSSL {
         if (!label.isNull()) {
             labelStr = label.readCString(); // Read the C string
         } else {
-            console.log("[Error] Argument 'label' is NULL");
+            devlog_error("[Error] Argument 'label' is NULL");
         }
 
         if (!identifier.isNull()) {
             //devlog("SSL_Struct_pointer (working): ",identifier);
             client_random = identifier.add(0x160).readByteArray(RANDOM_KEY_LENGTH);
         } else {
-            devlog("[OpenSSL Dump Keys Error] Argument 'identifier' is NULL");
+            devlog_error("[OpenSSL Dump Keys Error] Argument 'identifier' is NULL");
         }
 
 
         // Read the binary key from key (second parameter) and print it in a clean hex format
         //console.log("Key:");
         if (!key.isNull()) {
-            let KEY_LENGTH = 0;
+            
             // old brute force method to determine the key length will be removed in the future
             /*
+            let KEY_LENGTH = 0;
             let calculatedKeyLength = 0;
 
             // Iterate through the memory to determine key length
@@ -371,7 +372,7 @@ export class OpenSSL_BoringSSL {
                 KEY_LENGTH = 32; // fall back size
             }*/
 
-            const keyData = key.readByteArray(KEY_LENGTH); // Read the key data (KEY_LENGTH bytes)
+            const keyData = key.readByteArray(KEY_LENGTH_FINAL); // Read the key data (KEY_LENGTH bytes)
             
             // Convert the byte array to a string of space-separated hex values
             const hexKey = Array
@@ -381,10 +382,14 @@ export class OpenSSL_BoringSSL {
 
             secret_key = hexKey;
         } else {
-            console.log("[OpenSSL Dump Keys Error] Argument 'key' is NULL");
+            devlog_error("[OpenSSL Dump Keys Error] Argument 'key' is NULL");
         }
 
-        console.log(labelStr+" "+client_random+" "+secret_key);
+        //devlog(labelStr+" "+client_random+" "+secret_key);
+        var message: { [key: string]: string | number | null } = {}
+        message["contentType"] = "keylog"
+        message["keylog"] = labelStr+" "+client_random+" "+secret_key;
+        send(message);
     }
 
     install_boringssl_key_extraction_hook(){
