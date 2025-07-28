@@ -59,7 +59,7 @@ SSL_WRITE = ["SSL_write", "wolfSSL_write", "writeApplicationData", "NSS_write","
 
 class SSL_Logger():
 
-    def __init__(self, app, pcap_name=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, mobile=False, live=False, environment_file=None, debug_mode=False,full_capture=False, socket_trace=False, host=False, offsets=None, debug_output=False, experimental=False, anti_root=False, payload_modification=False,enable_default_fd=False, patterns=None, custom_hook_script=None, json_output=None, install_lsass_hook=True):
+    def __init__(self, app, pcap_name=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, mobile=False, live=False, environment_file=None, debug_mode=False,full_capture=False, socket_trace=False, host=False, offsets=None, debug_output=False, experimental=False, anti_root=False, payload_modification=False,enable_default_fd=False, patterns=None, custom_hook_script=None, json_output=None, install_lsass_hook=True, timeout=None):
         # Set up logging
         self.logger = logging.getLogger('friTap')
         if not self.logger.handlers:
@@ -105,6 +105,9 @@ class SSL_Logger():
         self.running = True
         self.json_output = json_output
         self.install_lsass_hook = install_lsass_hook
+
+        self.timeout = timeout
+        self.target_threads = None
 
         self.tmpdir = None
         self.filename = ""
@@ -639,11 +642,19 @@ class SSL_Logger():
                     with open(self.environment_file) as json_env_file:
                         used_env = json.load(json_env_file)
                 pid = self.device.spawn(self.target_app.split(" "),env=used_env)
-                self.device.resume(pid)
                 time.sleep(1) # without it Java.perform silently fails
             self.process = self.device.attach(pid)
         else:
             self.process = self.device.attach(int(self.target_app) if self.target_app.isnumeric() else self.target_app)
+            if self.timeout:
+                self.target_threads = self.process.enumerate_threads()
+                if self.target_threads:
+                    try:
+                        main_thread = next(t for t in self.target_threads if t.entrypoint is not None)
+                    except StopIteration:
+                        main_thread = self.target_threads[0]  # fallback to first thread
+                    self.logger.info(f"Suspending main thread {main_thread.id} for {self.timeout} seconds...")
+                    self.process.suspend(main_thread.id)
 
 
         script = self.instrument(self.process, own_message_handler)
@@ -658,9 +669,16 @@ class SSL_Logger():
             self.logger.info(f'Logging keylog file to {self.keylog}')
             
         #self.process.on('detached', self.on_detach)
+        if self.timeout:
+            self.logger.info(f"Waiting {self.timeout} seconds before resuming...")
+            time.sleep(self.timeout)
+            self.logger.info("Timeout reached. Resuming execution...")
 
         if self.spawn:
             self.device.resume(pid)
+        else:
+            if self.timeout and self.target_threads:
+                self.process.resume(main_thread.id)
 
         return self.process, script
     
