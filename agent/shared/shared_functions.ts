@@ -451,3 +451,21 @@ export function dumpMemory(ptrValue,size) {
         return null;
     }
 }
+
+export function calculateZeroBytePercentage(hexStr: string): number {
+    if (hexStr.length % 2 !== 0) {
+        devlog_error("Hex string length must be even.");
+        return -1; // Invalid hex string
+    }
+
+    const totalBytes = hexStr.length / 2;
+    let zeroCount = 0;
+
+    for (let i = 0; i < hexStr.length; i += 2) {
+        if (hexStr.substring(i, i + 2) === "00") {
+            zeroCount++;
+        }
+    }
+
+    return Math.round((zeroCount / totalBytes) * 100);
+}

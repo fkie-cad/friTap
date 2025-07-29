@@ -1,4 +1,4 @@
-import { readAddresses, getPortsAndAddresses, getBaseAddress, isSymbolAvailable, checkNumberOfExports } from "../shared/shared_functions.js";
+import { readAddresses, getPortsAndAddresses, getBaseAddress, isSymbolAvailable, checkNumberOfExports, calculateZeroBytePercentage } from "../shared/shared_functions.js";
 import { getOffsets, offsets, enable_default_fd } from "../ssl_log.js";
 import { devlog, devlog_error, log } from "../util/log.js";
 import { ObjC } from "../shared/objclib.js";
@@ -334,13 +334,23 @@ export class OpenSSL_BoringSSL {
         if (!identifier.isNull()) {
             //devlog("SSL_Struct_pointer (working): ",identifier);
             try{
-                const client_random = identifier.add(0x160).readByteArray(RANDOM_KEY_LENGTH);
-                const hex_client_random = Array
+                let client_random = identifier.add(0x160).readByteArray(RANDOM_KEY_LENGTH);
+                let hex_client_random = Array
                 .from(new Uint8Array(client_random)) // Convert byte array to Uint8Array and then to Array
                 .map(byte => byte.toString(16).padStart(2, '0').toUpperCase()) // Convert each byte to a 2-digit hex string
                 .join(''); // Join all the hex values with a space
 
                 client_random_str = hex_client_random
+                if(calculateZeroBytePercentage(client_random_str) > 50){
+                    devlog_error("[OpenSSL Dump Keys Error] Client random contains too many zero bytes, this is likely not the correct pointer to the client random value.");
+                    client_random = identifier.add(0x140).readByteArray(RANDOM_KEY_LENGTH);
+                    hex_client_random = Array
+                    .from(new Uint8Array(client_random)) // Convert byte array to Uint8Array and then to Array
+                    .map(byte => byte.toString(16).padStart(2, '0').toUpperCase()) // Convert each byte to a 2-digit hex string
+                    .join(''); // Join all the hex values with a space
+
+                    client_random_str = hex_client_random
+                }
             }catch (error) {
                 client_random_str = "Error_reading_client_random";
             }
