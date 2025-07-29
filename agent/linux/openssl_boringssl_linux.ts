@@ -13,7 +13,7 @@ export class OpenSSL_BoringSSL_Linux extends OpenSSL_BoringSSL {
 
         this.default_pattern = {
             "x64": {
-                primary:  "41 57 41 56 41 55 41 54 53 48 83 EC ?? 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84", // Primary pattern
+                primary:  "F3 0F 1E FA 48 89 F8 49 89 D0 48 89 F7 49 89 C9 48 8D 90 40 01 00 00 B9 20 00 00 00 48 89 C6 E9 8C 63 FF FF", // Primary pattern
                 fallback: "55 41 57 41 56 41 54 53 48 83 EC 30 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84" // Fallback pattern
             },
             "x86": {

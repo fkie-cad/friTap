@@ -333,13 +333,18 @@ export class OpenSSL_BoringSSL {
 
         if (!identifier.isNull()) {
             //devlog("SSL_Struct_pointer (working): ",identifier);
-            const client_random = identifier.add(0x160).readByteArray(RANDOM_KEY_LENGTH);
-            const hex_client_random = Array
-            .from(new Uint8Array(client_random)) // Convert byte array to Uint8Array and then to Array
-            .map(byte => byte.toString(16).padStart(2, '0').toUpperCase()) // Convert each byte to a 2-digit hex string
-            .join(''); // Join all the hex values with a space
+            try{
+                const client_random = identifier.add(0x160).readByteArray(RANDOM_KEY_LENGTH);
+                const hex_client_random = Array
+                .from(new Uint8Array(client_random)) // Convert byte array to Uint8Array and then to Array
+                .map(byte => byte.toString(16).padStart(2, '0').toUpperCase()) // Convert each byte to a 2-digit hex string
+                .join(''); // Join all the hex values with a space
 
-            client_random_str = hex_client_random;
+                client_random_str = hex_client_random
+            }catch (error) {
+                client_random_str = "Error_reading_client_random";
+            }
+            ;
         } else {
             devlog_error("[OpenSSL Dump Keys Error] Argument 'identifier' is NULL");
         }
@@ -391,7 +396,7 @@ export class OpenSSL_BoringSSL {
             devlog_error("[OpenSSL Dump Keys Error] Argument 'key' is NULL");
         }
 
-        devlog("OpenSSL log: "+labelStr+" "+client_random_str+" "+secret_key);
+        //devlog("OpenSSL log: "+labelStr+" "+client_random_str+" "+secret_key);
         var message: { [key: string]: string | number | null } = {}
         message["contentType"] = "keylog"
         message["keylog"] = labelStr+" "+client_random_str+" "+secret_key;
