@@ -1,92 +1,64 @@
-import os
+#!/usr/bin/env python3
+from pathlib import Path
+import importlib.util
 from setuptools import setup, find_packages
-from os.path import abspath, dirname, join
 
-# Fetches the content from README.md
-# This will be used for the "long_description" field.
-README_MD = open(join(dirname(abspath(__file__)), "README.md")).read()
+# Paths
+ROOT = Path(__file__).resolve().parent
+PKG = "friTap"
+ABOUT = ROOT / PKG / "about.py"
+README = ROOT / "README.md"
 
-# here - where we are.
-here = os.path.abspath(os.path.dirname(__file__))
+# Load metadata from about.py safely
+spec = importlib.util.spec_from_file_location(f"{PKG}.about", ABOUT)
+about = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(about)  # type: ignore[attr-defined]
 
-# Path to the about.py file
-init_py_path = join(here, "friTap", "about.py")
+# Long description
+long_description = README.read_text(encoding="utf-8") if README.exists() else ""
 
-# Read version and author from about.py
-with open(init_py_path) as f:
-    exec(f.read())
-
-# read the package requirements for install_requires
-#with open(os.path.join(here, 'requirements.txt'), 'r') as f:
-#    requirements = f.readlines()
-
-def get_version():
-    about = {}
-    with open(init_py_path) as f:
-        exec(f.read(), about)
-    return about["__version__"]
-
-def get_author():
-    author = {}
-    with open(init_py_path) as f:
-        exec(f.read(), author)
-    return author["__author__"]
-
-
-# Define dependencies directly in setup.py
-requirements = [
-    'frida>=16.0.0',
-    'frida-tools>=11.0.0',
-    'AndroidFridaManager',
-    'hexdump',
-    'scapy',
-    'watchdog',
-    'click',
-    'importlib-resources',
-    'psutil',
-    'rich>=13.0.0',
+# Runtime requirements
+install_requires = [
+    "frida>=16.0.0",
+    "frida-tools>=11.0.0",
+    "AndroidFridaManager",
+    "hexdump",
+    "scapy",
+    "watchdog",
+    "click",
+    'importlib-resources; python_version < "3.9"',
+    "psutil",
+    "rich>=13.0.0",
 ]
 
-
 setup(
-    # pip install friTap
     name="friTap",
-    version=get_version(),  # Dynamically get the version from about.py
-
-    # The description that will be shown on PyPI.
-    description="Simplifying SSL/TLS traffic analysis for researchers by making SSL/TLS decryption effortless. Decrypts and logs a process's SSL/TLS traffic on all major platforms. Further it allows the SSL/TLS key extraction.",
-
-    # The content that will be shown on your project page.
-    # In this case, we're displaying whatever is there in our README.md file
-    long_description=README_MD,
-
-    # Now, we'll tell PyPI what language our README file is in.
+    version=about.__version__,
+    description=(
+        "Simplifies SSL/TLS traffic analysis and key extraction using Frida "
+        "across major platforms."
+    ),
+    long_description=long_description,
     long_description_content_type="text/markdown",
 
-
     url="https://github.com/fkie-cad/friTap",
-
-    author_name=get_author(),
+    author=about.__author__,
     author_email="daniel.baier@fkie.fraunhofer.de",
-    license='GPL v3',
+    license="GPL-3.0-only",  # or "GPL-3.0-or-later" to match your LICENSE
 
-     # include other files
+    packages=find_packages(exclude=("create_legacy_agent", "create_standalone_release")),
+    python_requires=">=3.8",
+    install_requires=install_requires,
+
+    # Include non-Python assets inside the package
     package_data={
-        '': [os.path.join(here, 'friTap/_ssl_log.js'), os.path.join(here, 'friTap/_ssl_log_legacy.js'), # frida agent + frida legacy agent
-        os.path.join(here, 'fritap/assets/tcpdump_binaries/tcpdump_arm64_android'), # tcpdump binarys 
-        os.path.join(here, 'fritap/assets/tcpdump_binaries/tcpdump_arm32_android'),
-        os.path.join(here, 'fritap/assets/tcpdump_binaries/tcpdump_x86_64_android'),
-        os.path.join(here, 'fritap/assets/tcpdump_binaries/tcpdump_x86_android'), ],  
+        "friTap": [
+            "_ssl_log.js",
+            "_ssl_log_legacy.js",
+            "assets/tcpdump_binaries/*",
+        ]
     },
-
-    exclude_package_data={'': [os.path.join(here, 'create_standalone_release')]},
-
-
     include_package_data=True,
-    python_requires='>=3.6',
-    packages=find_packages(exclude=('create_legacy_agent','create_standalone_release')),
-    install_requires=requirements,
-
 
     classifiers=[
         "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
@@ -95,18 +67,18 @@ setup(
         "Programming Language :: Python :: 3 :: Only",
         "Programming Language :: JavaScript",
         "Topic :: Security",
-        "Topic :: Software Development :: Debuggers"
+        "Topic :: Software Development :: Debuggers",
     ],
-
-    # Keywords are tags that identify your project and help searching for it
-    # This field is OPTIONAL
     keywords=["mobile", "instrumentation", "frida", "hook", "SSL decryption"],
 
     entry_points={
-            'console_scripts': [
-            'fritap=friTap.friTap:main',
+        "console_scripts": [
+            "fritap=friTap.friTap:main",
         ],
     },
-
+    project_urls={
+        "Source": "https://github.com/fkie-cad/friTap",
+        "Issues": "https://github.com/fkie-cad/friTap/issues",
+        "Documentation": "https://fkie-cad.github.io/friTap/",
+    },
 )
-

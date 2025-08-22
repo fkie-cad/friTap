@@ -342,7 +342,7 @@ export class OpenSSL_BoringSSL {
 
                 client_random_str = hex_client_random
                 if(calculateZeroBytePercentage(client_random_str) > 50){
-                    devlog_error("[OpenSSL Dump Keys Error] Client random contains too many zero bytes, this is likely not the correct pointer to the client random value.");
+                    devlog_error("[OpenSSL Dump Keys Error] Wrong offset for client_random, trying to read at offset 0x140 instead of 0x160");
                     client_random = identifier.add(0x140).readByteArray(RANDOM_KEY_LENGTH);
                     hex_client_random = Array
                     .from(new Uint8Array(client_random)) // Convert byte array to Uint8Array and then to Array

@@ -6,8 +6,13 @@ dist/
 *.pcap
 *.txt
 *.trace
-tlslib_research/ # here do some research for certain TLS implementations before pushing it to Github
+tlslib_research/ # research for certain TLS implementations
+tlslib\_research/
 site/
+*.md
+*.sh
+*.yml
+*.js
 
 # Testing artifacts
 tests/coverage_html/
@@ -16,6 +21,7 @@ tests/coverage.xml
 .pytest_cache/
 test_*.log
 *.prof
+*.dat
 
 # Development environment
 venv/
@@ -42,6 +48,7 @@ deb_dist/
 # debug output from testing stuff
 *.log
 *.keys
+*.pcapng
 
 #keys and certs for testing
 *.pem
