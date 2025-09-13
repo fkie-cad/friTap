@@ -2,5 +2,5 @@
 # -*- coding: utf-8 -*-
 
 __author__ = "Daniel Baier, Julian Lengersdorff, Francois Egner, Max Ufer"
-__version__ = "1.3.8.9"
+__version__ = "1.3.9.2"
 debug = False # are we running in debug mode?

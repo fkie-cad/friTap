@@ -24,6 +24,12 @@ const STABLE_CRONET_PATTERNS = {
     }
 };
 
+const LIBSIGNAL_PATTERNS = {
+    "arm64": {
+        primary:  "FF 43 02 D1 FD 7B 05 A9 F8 5F 06 A9 F6 57 07 A9 F4 4F 08 A9 FD 43 01 91 58 D0 3B D5 08 17 40 F9 A8 83 1F F8 08 34 40 F9 08 11 41 F9 A8 0A 00", // Primary pattern
+        fallback: "3F 23 03 D5 FF 43 02 D1 FD 7B 05 A9 F8 5F 06 A9 F6 57 07 A9 F4 4F 08 A9 FD 43 01 91 08 34 40 F9 08 21 41 F9 C8 11 00 B4" // Fallback pattern
+    }
+};
 
 export class Cronet_Android extends Cronet {
     private default_pattern: { [arch: string]: { primary: string; fallback: string, second_fallback?: string; } };
@@ -155,6 +161,8 @@ export function cronet_execute(moduleName:string, is_base_hook: boolean){
     let cronet: Cronet_Android;
     if(moduleName.startsWith("stable_cronet")){
         cronet = new Cronet_Android(moduleName,socket_library,is_base_hook, STABLE_CRONET_PATTERNS);
+    }else if(moduleName.startsWith("libsignal_jni") || moduleName.startsWith("libringrtc_rffi")){
+        cronet = new Cronet_Android(moduleName,socket_library,is_base_hook, LIBSIGNAL_PATTERNS);
     }else{
         cronet = new Cronet_Android(moduleName,socket_library,is_base_hook);
     }
