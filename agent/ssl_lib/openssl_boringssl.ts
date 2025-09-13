@@ -119,6 +119,12 @@ export class OpenSSL_BoringSSL {
         }
 
 
+        if(moduleName.includes("libconscrypt_jni")){
+            this.is_openssl = false; // conscrypt is based on BoringSSL
+            devlog("Conscrypt detected, assuming BoringSSL");
+        }
+
+
 
         this.is_base_hook = is_base_hook;
         this.addresses = readAddresses(moduleName,this.library_method_mapping);
@@ -151,10 +157,20 @@ export class OpenSSL_BoringSSL {
 
         }
 
+        if(moduleName.includes("libconscrypt_jni")){
+            devlog("trying to load addtional functions for conscrypt");
+        }
+
+
+
         if(!ObjC.available && checkNumberOfExports(moduleName) > 2){
             this.SSL_SESSION_get_id = new NativeFunction(this.addresses[this.moduleName]["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
             this.SSL_get_fd = ObjC.available ? new NativeFunction(this.addresses[this.moduleName]["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(this.addresses[this.moduleName]["SSL_get_fd"], "int", ["pointer"]);
             this.SSL_get_session = new NativeFunction(this.addresses[this.moduleName]["SSL_get_session"], "pointer", ["pointer"]);
+        }
+
+        if(moduleName.includes("libconscrypt_jni")){
+            devlog("Conscrypt hooks initialized");
         }
         
     }

@@ -27,7 +27,8 @@ export class Consycrypt_BoringSSL_Android extends OpenSSL_BoringSSL {
                 onLeave: function(retval) {
                     const ssl = new NativePointer(retval);
                     if (!ssl.isNull()) {
-                        instance.SSL_CTX_set_keylog_callback(ssl, OpenSSL_BoringSSL.keylog_callback)
+                        devlog("BoringSSL/Conscrypt SSL_CTX_new - setting keylog callback");
+                        instance.SSL_CTX_set_keylog_callback(ssl, OpenSSL_BoringSSL.keylog_callback);
                     }
                 }
             });
@@ -43,11 +44,15 @@ export class Consycrypt_BoringSSL_Android extends OpenSSL_BoringSSL {
 }
 
 export function conscrypt_native_execute(moduleName:string, is_base_hook: boolean){
-    var boring_ssl = new Consycrypt_BoringSSL_Android(moduleName,socket_library,is_base_hook);
+    try{
+        var boring_ssl = new Consycrypt_BoringSSL_Android(moduleName,socket_library,is_base_hook);
     try {
         boring_ssl.execute_conscrypt_hooks();
     }catch(error_msg){
         devlog(`conscrypt_execute error: ${error_msg}`);
+    }
+    } catch (error_msg) {
+        devlog_error(`Error in conscrypt_native_execute: ${error_msg}`);
     }
 
     if (is_base_hook) {
@@ -197,7 +202,7 @@ export function execute() {
             }catch (error) {
                 devlog_error("Some error in hooking the Providerinstaller")
                 if(!error.toString().includes("java.lang.ClassNotFoundException")){
-                    devlog_error("[-] Error message: "+error);
+                    devlog_error("Error message (ClassNotFoundException): "+error);
                 }
                 // As it is not available, do nothing
             }

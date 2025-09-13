@@ -138,7 +138,7 @@ export function load_android_hooking_agent() {
         [/.*libssl_sb.so/, invokeHookingFunction(boring_execute)],
         [/.*libssl\.so/, invokeHookingFunction(boring_execute)],
         [/libconscrypt_gmscore_jni.so/, invokeHookingFunction(conscrypt_native_execute)], // inspired from https://github.com/PiRogueToolSuite/pirogue-cli/blob/debian-12/pirogue_cli/frida-scripts/log_ssl_keys.js#L55
-        [/ibconscrypt_jni.so/, invokeHookingFunction(conscrypt_native_execute)],
+        [/libconscrypt_jni.so/, invokeHookingFunction(conscrypt_native_execute)],
         [/.*flutter.*\.so/, invokeHookingFunction(flutter_execute)],
         [/.*libgnutls\.so/, invokeHookingFunction(gnutls_execute)],
         [/.*libwolfssl\.so/, invokeHookingFunction(wolfssl_execute)],
@@ -147,6 +147,8 @@ export function load_android_hooking_agent() {
         [/.*libs2n.so/, invokeHookingFunction(s2ntls_execute)],
         [/.*mono-btls.*\.so/, invokeHookingFunction(mono_btls_execute)],
         [/.*cronet.*\.so/, invokeHookingFunction(cronet_execute)],
+        [/.*libringrtc_rffi.*\.so/, invokeHookingFunction(cronet_execute)],
+        [/.*libsignal_jni.*\.so/, invokeHookingFunction(cronet_execute)],
         [/.*monochrome.*\.so/, invokeHookingFunction(cronet_execute)],
         [/.*libwarp_mobile.*\.so/, invokeHookingFunction(cronet_execute)], // here the client_random is not working
         [/.*lib*quiche*.*\.so/, invokeHookingFunction(cronet_execute)],
