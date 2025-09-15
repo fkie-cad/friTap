@@ -339,6 +339,9 @@ class SSL_Logger():
             if payload["contentType"] == "console_dev" and payload["console_dev"]:
                 if len(payload["console_dev"]) > 3:
                     self.logger.debug(payload["console_dev"])
+            elif payload["contentType"] == "console_debug" and payload["console_debug"]:
+                if len(payload["console_debug"]) > 3:
+                    self.logger.debug(payload["console_debug"])
             elif payload["contentType"] == "console_error" and payload["console_error"]:
                 if len(payload["console_error"]) > 3:
                     self.logger.error(payload["console_error"])

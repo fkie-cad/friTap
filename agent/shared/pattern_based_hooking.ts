@@ -1,4 +1,4 @@
-import { devlog, devlog_error, log } from "../util/log.js";
+import { devlog, devlog_error, devlog_debug, log } from "../util/log.js";
 import { isAndroid, isiOS,isMacOS } from "../util/process_infos.js"
 
 type Pattern = {
@@ -67,6 +67,7 @@ export class PatternBasedHooking {
     ): void {
         const moduleBase = this.module.base;
         const moduleSize = this.module.size;
+        const moduleName = this.module?.name;
         this.found_ssl_log_secret = false;
 
         let pattern: string;
@@ -125,9 +126,7 @@ export class PatternBasedHooking {
                                     userCallback,
                                     (patternSuccessAlt) => {
                                         if (!patternSuccessAlt) {
-                                            devlog(
-                                                "None of the patterns worked. Adjust or fallback."
-                                            );
+                                            devlog_debug(`None of the patterns worked. You may need to adjust the patterns for ${moduleName}`);
                                             this.no_hooking_success = true;
                                         }
                                     },
@@ -318,7 +317,7 @@ export class PatternBasedHooking {
                                     devlog(`[!] Fallback pattern failed, trying second fallback pattern on ${moduleName}`);
                                     this.hookByPatternOnlyReadableParts(patterns, "second_fallback_pattern", onMatchCallback, (second_fallback_success) => {
                                         if (!second_fallback_success) {
-                                            devlog(`[!] None of the patterns worked. You may need to adjust the patterns for ${moduleName}`);
+                                            devlog_debug(`None of the patterns worked. You may need to adjust the patterns for ${moduleName}`);
                                             this.no_hooking_success = true;
                                         }
                                     });
@@ -355,39 +354,73 @@ export class PatternBasedHooking {
             pattern = patterns.fallback;
         }
 
+        // Get all readable memory ranges
+        const ranges = this.module.enumerateRanges('r--');
+        let completedRanges = 0;
+        let callbackExecuted = false;
+        let patternFound = false;
+
+        // Early exit helper function
+        const executeCallbackOnce = (found: boolean) => {
+            if (!callbackExecuted) {
+                callbackExecuted = true;
+                onCompleteCallback(found);
+            }
+        };
+
+        // Handle case where no ranges are found
+        if (ranges.length === 0) {
+            executeCallbackOnce(false);
+            return;
+        }
 
         // Enumerate all readable memory ranges of the specified module and scan each one
-        this.module.enumerateRanges('r--').forEach((range: MemoryRange) => {
+        ranges.forEach((range: MemoryRange) => {
             const rangeKey = `${range.base}-${range.size}`; // Unique key for each memory range
-            
+
+            // Skip if already rescanned or if pattern was already found
+            if (this.rescannedRanges.has(rangeKey) || patternFound) {
+                completedRanges++;
+                if (completedRanges === ranges.length) {
+                    executeCallbackOnce(patternFound);
+                }
+                return;
+            }
+
             // only uncomment this if we need to track a bug
             //devlog(`Scanning readable memory range in module: ${this.module.name}, Range: ${range.base} - ${range.base.add(range.size)}, Size: ${range.size}`);
-    
+
 
             Memory.scan(range.base, range.size, pattern, {
                 onMatch: (address: NativePointer, size: number) => {
-                    this.found_ssl_log_secret = true;
-                    log(`Pattern found at (${pattern_name}) address: ${address.toString()} on ${moduleName}`);
-                    log(`Pattern based hooks installed.`);
+                    if (!patternFound) {  // Prevent multiple matches from triggering
+                        patternFound = true;
+                        this.found_ssl_log_secret = true;
+                        log(`Pattern found at (${pattern_name}) address: ${address.toString()} on ${moduleName}`);
+                        log(`Pattern based hooks installed.`);
 
-                    // Attach the hook using the provided onMatchCallback
-                    Interceptor.attach(address, {
-                        onEnter: function (args) {
-                            onMatchCallback(args);
-                        },
-                        onLeave: function (retval) {
-                            // Optionally handle return value or additional behavior
-                        }
-                    });
+                        // Attach the hook using the provided onMatchCallback
+                        Interceptor.attach(address, {
+                            onEnter: function (args) {
+                                onMatchCallback(args);
+                            },
+                            onLeave: function (retval) {
+                                // Optionally handle return value or additional behavior
+                            }
+                        });
+
+                        // Execute callback immediately on success
+                        executeCallbackOnce(true);
+                    }
                 },
                 onError: (reason: string) => {
                     //devlog_error(`Error scanning memory for range: ${range.base} - ${range.base.add(range.size)}, Reason: ${reason}`);
                 },
                 onComplete: () => {
-                    if (this.rescannedRanges.has(rangeKey)) {
-                        return;
-                    }else{
-                        onCompleteCallback(this.found_ssl_log_secret);
+                    completedRanges++;
+                    // Only execute callback when all ranges are completed and no pattern was found
+                    if (completedRanges === ranges.length && !patternFound) {
+                        executeCallbackOnce(false);
                     }
                 }
             });
@@ -410,20 +443,44 @@ export class PatternBasedHooking {
         } else {
             pattern = patterns.fallback;
         }
-        var ranges = Process.enumerateRanges('r--');
-        let found = false;
 
-        //ranges.forEach((range: MemoryRange) => {
+        const ranges = Process.enumerateRanges('r--');
+        let completedRanges = 0;
+        let callbackExecuted = false;
+        let patternFound = false;
+
+        // Early exit helper function
+        const executeCallbackOnce = (found: boolean) => {
+            if (!callbackExecuted) {
+                callbackExecuted = true;
+                onCompleteCallback(found);
+            }
+        };
+
+        // Handle case where no ranges are found
+        if (ranges.length === 0) {
+            executeCallbackOnce(false);
+            return;
+        }
+
+        // Scan each range
         for (let i = 0; i < ranges.length; i++) {
-            
-
-            if (found) {
-                // If a match was found, stop iterating the ranges altogether.
+            // Early exit if pattern already found
+            if (patternFound) {
                 break;
             }
 
             const range = ranges[i];
             const rangeKey = `${range.base}-${range.size}`;
+
+            // Skip if already rescanned
+            if (this.rescannedRanges.has(rangeKey)) {
+                completedRanges++;
+                if (completedRanges === ranges.length) {
+                    executeCallbackOnce(patternFound);
+                }
+                continue;
+            }
 
             /*devlog(
                 `Scanning readable memory range in module: ${this.module.name}, Range: ${range.base} - ${range.base.add(
@@ -433,47 +490,53 @@ export class PatternBasedHooking {
 
             Memory.scan(range.base, range.size, pattern, {
                 onMatch: (address: NativePointer) => {
-                    this.found_ssl_log_secret = true;
-                    var module_by_address = Process.findModuleByAddress(address);
-                    // In some case findModuleByAddress might return null
-                    //devlog(`Pattern: ${pattern}`);
-                    if (module_by_address) {
-                        log(`Pattern found at (${pattern_name}) address: ${address} in module ${module_by_address.name}`);
-                        let local_offset = address.sub(module_by_address.base);
-                        log(`Ghidra offset (Base 0x0): ${local_offset}` );
-                    }
-                    log(`Pattern found at (${pattern_name}) address: ${address} in module <name_not_found>`);
-                    log(`Could not get Ghidra offset`);
-                    log(`Pattern-based hooks installed (onReturn).`);
+                    if (!patternFound) {  // Prevent multiple matches from triggering
+                        patternFound = true;
+                        this.found_ssl_log_secret = true;
+                        var module_by_address = Process.findModuleByAddress(address);
+                        // In some case findModuleByAddress might return null
+                        //devlog(`Pattern: ${pattern}`);
+                        if (module_by_address) {
+                            log(`Pattern found at (${pattern_name}) address: ${address} in module ${module_by_address.name}`);
+                            let local_offset = address.sub(module_by_address.base);
+                            log(`Ghidra offset (Base 0x0): ${local_offset}` );
+                        } else {
+                            log(`Pattern found at (${pattern_name}) address: ${address} in module <name_not_found>`);
+                            log(`Could not get Ghidra offset`);
+                        }
+                        log(`Pattern-based hooks installed (onReturn).`);
 
-                    Interceptor.attach(address, {
-                        onEnter: function (args) {
-                            // store the arguments so we can use them onLeave
-                            //(this as any).storedArgs = Array.from(args);
-                            const stored: NativePointer[] = [];
-                            // We do a small loop up to maxArgs
-                            for (let i = 0; i <= maxArgs; i++) {
-                                try {
-                                    stored.push(args[i]);
-                                } catch (_e) {
-                                    console.log("i = "+i+"  error: "+_e);
-                                    // Possibly out-of-range => break
-                                    break;
+                        Interceptor.attach(address, {
+                            onEnter: function (args) {
+                                // store the arguments so we can use them onLeave
+                                //(this as any).storedArgs = Array.from(args);
+                                const stored: NativePointer[] = [];
+                                // We do a small loop up to maxArgs
+                                for (let i = 0; i <= maxArgs; i++) {
+                                    try {
+                                        stored.push(args[i]);
+                                    } catch (_e) {
+                                        console.log("i = "+i+"  error: "+_e);
+                                        // Possibly out-of-range => break
+                                        break;
+                                    }
                                 }
-                            }
-                            (this as any).storedArgs = stored;
-                        },
-                        onLeave: function (retval) {
-                            const storedArgs = (this as any).storedArgs || [];
-                            userCallback(storedArgs, retval);
-                        },
-                    });
-                    found = true;    // So we know to break out of the outer loop
+                                (this as any).storedArgs = stored;
+                            },
+                            onLeave: function (retval) {
+                                const storedArgs = (this as any).storedArgs || [];
+                                userCallback(storedArgs, retval);
+                            },
+                        });
+
+                        // Execute callback immediately on success
+                        executeCallbackOnce(true);
+                    }
                     return "stop";   // Stop scanning the current range immediately
                 },
                 onError: (reason: string) => {
                     // only for debugging purpose
-                    /* 
+                    /*
                     devlog_error(
                         `Error scanning memory for range: ${range.base} - ${range.base.add(
                             range.size
@@ -482,15 +545,14 @@ export class PatternBasedHooking {
                     */
                 },
                 onComplete: () => {
-                    if (this.rescannedRanges.has(rangeKey)) {
-                        return;
-                    } else {
-                        //onCompleteCallback(this.found_ssl_log_secret);
+                    completedRanges++;
+                    // Only execute callback when all ranges are completed and no pattern was found
+                    if (completedRanges === ranges.length && !patternFound) {
+                        executeCallbackOnce(false);
                     }
                 },
             });
         }
-    //);
     }
 
     // Method to hook the module with patterns provided as arguments
@@ -498,6 +560,7 @@ export class PatternBasedHooking {
         patterns: { primary: string; fallback: string; second_fallback?: string },
         onMatchCallback: (args: any[]) => void
     ): void {
+        const moduleName = this.module?.name;
         this.hookByPattern(patterns, "primary_pattern", onMatchCallback, (primary_success) => {
             if (!primary_success) {
                 devlog("Primary pattern failed, trying fallback pattern...");
@@ -506,12 +569,12 @@ export class PatternBasedHooking {
                         devlog("Fallback pattern failed, trying second fallback pattern...");
                         this.hookByPattern(patterns, "second_fallback_pattern", onMatchCallback, (second_fallback_success) => {
                             if (!second_fallback_success) {
-                                devlog("None of the patterns worked. Adjust patterns as needed.");
+                                devlog_debug(`None of the patterns worked. You may need to adjust the patterns for ${moduleName}`);
                                 this.no_hooking_success = true;
                             }
                         });
                     } else if (!fallback_success) {
-                        devlog("None of the patterns worked. Adjust patterns as needed.");
+                        devlog_debug(`None of the patterns worked. You may need to adjust the patterns for ${moduleName}`);
                         this.no_hooking_success = true;
                     }
                 });

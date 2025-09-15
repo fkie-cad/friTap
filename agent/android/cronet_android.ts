@@ -3,7 +3,7 @@ import {Cronet } from "../ssl_lib/cronet.js";
 import { socket_library } from "./android_agent.js";
 import {PatternBasedHooking, get_CPU_specific_pattern } from "../shared/pattern_based_hooking.js";
 import { patterns, isPatternReplaced } from "../ssl_log.js"
-import { devlog } from "../util/log.js";
+import { devlog, devlog_error } from "../util/log.js";
 
 const EXCLUDED_MODULE_SUFFIXES = ["_libpki.so", "_libcrypto.so", "libmainlinecronet.136.0.7091.2.so"]; // extensible list
 
@@ -80,7 +80,7 @@ export class Cronet_Android extends Cronet {
             const soName   = this.getSoName(this.module_name);
             cronetModule = Process.findModuleByName(soName);
             if(cronetModule === null){
-                devlog("[-] Cronet Error: Unable to find module: " + this.module_name);
+                devlog_error("Cronet Error: Unable to find module: " + this.module_name);
                 return;
             }
         }
@@ -110,7 +110,7 @@ export class Cronet_Android extends Cronet {
     // instead of relying on pattern we check if the target module has a symbol of ssl_log_secret()
     execute_symbol_based_hooking(hooker){
         if(hooker === undefined || hooker === null){
-            devlog("[-] Error: Hooker is undefined.");
+            devlog_error("Error: Hooker is undefined.");
             return;
         }
         // Capture the dumpKeys function with the correct 'this'
@@ -174,7 +174,7 @@ export function cronet_execute(moduleName:string, is_base_hook: boolean){
             try{
                 cronet.execute_symbol_based_hooking(hooker);
             }catch(e){
-                devlog("[-] Error in cronet.execute_symbol_based_hooking: "+ e);
+                devlog_error("Error in cronet.execute_symbol_based_hooking: "+ e);
             } 
             
         }, 1000); 
