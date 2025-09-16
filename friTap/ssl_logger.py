@@ -255,7 +255,7 @@ class SSL_Logger():
         if msg_type == "send":
             payload = message.get("payload", {}) or {}
             if not isinstance(payload, dict):
-                self.logger.warning("Received non-dict payload: %r", payload);
+                self.logger.warning("Received non-dict payload: %r", payload)
                 return
 
             # content_type = payload.get("contentType") # right now we don't use this
