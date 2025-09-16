@@ -11,7 +11,7 @@ export class Cronet_Windows extends Cronet {
         super(moduleName,socket_library,is_base_hook);
     }
 
-    install_key_extraction_hook(){
+    install_key_extraction_pattern_hook(){
         const cronetModule = Process.findModuleByName(this.module_name);
         const hooker = new PatternBasedHooking(cronetModule);
 
@@ -30,7 +30,7 @@ export class Cronet_Windows extends Cronet {
     }
 
     execute_hooks(){
-        this.install_key_extraction_hook();
+        this.install_key_extraction_pattern_hook();
     }
 
 }

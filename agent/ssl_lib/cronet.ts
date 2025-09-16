@@ -1,4 +1,4 @@
-import { get_hex_string_from_byte_array, readAddresses } from "../shared/shared_functions.js";
+import { get_hex_string_from_byte_array, readAddresses, checkNumberOfExports, isSymbolAvailable } from "../shared/shared_functions.js";
 import { devlog } from "../util/log.js";
 
 
@@ -12,6 +12,16 @@ export class Cronet {
     addresses: { [libraryName: string]: { [functionName: string]: NativePointer } };
     module_name: string;
     is_base_hook: boolean;
+    SSL_CTX_set_keylog_callback : any;
+    can_we_install_keylog_callback: boolean = false;
+
+    static keylog_callback = new NativeCallback(function (ctxPtr: NativePointer, linePtr: NativePointer) {
+        devlog("invoking keylog_callback from Cronet");
+        var message: { [key: string]: string | number | null } = {}
+        message["contentType"] = "keylog"
+        message["keylog"] = linePtr.readCString().toUpperCase()
+        send(message)
+    }, "void", ["pointer", "pointer"])
 
 
     constructor(public moduleName:string, public socket_library:String,is_base_hook: boolean ,public passed_library_method_mapping?: { [key: string]: Array<string> } ){
@@ -21,10 +31,25 @@ export class Cronet {
         if(typeof passed_library_method_mapping !== 'undefined'){
             this.library_method_mapping = passed_library_method_mapping;
         }else{
-            this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
+            if(checkNumberOfExports(moduleName) > 2 ){
+                if (isSymbolAvailable(moduleName, "SSL_CTX_new") && isSymbolAvailable(moduleName, "SSL_CTX_set_keylog_callback")) {               
+                            this.library_method_mapping[`*${moduleName}*`] = ["SSL_CTX_new", "SSL_new", "SSL_CTX_set_keylog_callback"];
+                            this.can_we_install_keylog_callback = true;
+                }
+            }
+            this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
         }
 
-        this.addresses = readAddresses(moduleName,this.library_method_mapping);
+        try{
+            this.addresses = readAddresses(moduleName,this.library_method_mapping);
+        }catch(e){
+            this.can_we_install_keylog_callback = false; 
+        }
+        
+    }
+
+    are_callbacks_symbols_available(): boolean{
+        return this.can_we_install_keylog_callback;
     }
 
     get_client_random(s3_ptr: NativePointer, SSL3_RANDOM_SIZE: number): string {
@@ -145,7 +170,7 @@ export class Cronet {
         // TBD
     }
 
-    install_key_extraction_hook(){
+    install_key_extraction_pattern_hook(){
         // needs to be setup for the specific plattform
     }
 }

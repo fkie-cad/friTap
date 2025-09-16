@@ -1,6 +1,6 @@
 import { readAddresses, getPortsAndAddresses, getBaseAddress, isSymbolAvailable, checkNumberOfExports, calculateZeroBytePercentage } from "../shared/shared_functions.js";
 import { getOffsets, offsets, enable_default_fd } from "../ssl_log.js";
-import { devlog, devlog_error, log } from "../util/log.js";
+import { devlog, devlog_error, log, devlog_info } from "../util/log.js";
 import { ObjC } from "../shared/objclib.js";
 
 class ModifyReceiver{
@@ -173,6 +173,7 @@ export class OpenSSL_BoringSSL {
             }catch(e){
                 this.do_read_write_hooks = false;
                 devlog_error("Error while loading additional hooks for OpenSSL/BoringSSL: "+ e);
+                devlog_info("Only key extraction will be available for "+ this.moduleName);
             }
         }else{
             this.do_read_write_hooks = false; // we cannot hook read and write on iOS/MacOS right now

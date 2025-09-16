@@ -201,7 +201,7 @@ export function execute() {
                 }
             }catch (error) {
                 devlog_error("Some error in hooking the Providerinstaller")
-                if(!error.toString().includes("java.lang.ClassNotFoundException")){
+                if(!error.toString().includes("java.lang.ClassNotFoundException") && !error.toString().includes("TypeError")){
                     devlog_error("Error message (ClassNotFoundException): "+error);
                 }
                 // As it is not available, do nothing

@@ -1,4 +1,4 @@
-import { devlog, devlog_error, devlog_debug, log } from "../util/log.js";
+import { devlog, devlog_error, devlog_debug, log, devlog_info } from "../util/log.js";
 import { isAndroid, isiOS,isMacOS } from "../util/process_infos.js"
 
 type Pattern = {
@@ -319,6 +319,8 @@ export class PatternBasedHooking {
                                         if (!second_fallback_success) {
                                             devlog_debug(`None of the patterns worked. You may need to adjust the patterns for ${moduleName}`);
                                             this.no_hooking_success = true;
+                                        }else{
+                                            this.no_hooking_success = false;
                                         }
                                     });
                                 }
@@ -396,7 +398,8 @@ export class PatternBasedHooking {
                     if (!patternFound) {  // Prevent multiple matches from triggering
                         patternFound = true;
                         this.found_ssl_log_secret = true;
-                        log(`Pattern found at (${pattern_name}) address: ${address.toString()} on ${moduleName}`);
+                        this.no_hooking_success = false;
+                        devlog_info(`Pattern found at (${pattern_name}) address: ${address.toString()} on ${moduleName}`);
                         log(`Pattern based hooks installed.`);
 
                         // Attach the hook using the provided onMatchCallback
@@ -493,6 +496,7 @@ export class PatternBasedHooking {
                     if (!patternFound) {  // Prevent multiple matches from triggering
                         patternFound = true;
                         this.found_ssl_log_secret = true;
+                        this.no_hooking_success = false;
                         var module_by_address = Process.findModuleByAddress(address);
                         // In some case findModuleByAddress might return null
                         //devlog(`Pattern: ${pattern}`);
@@ -504,6 +508,7 @@ export class PatternBasedHooking {
                             log(`Pattern found at (${pattern_name}) address: ${address} in module <name_not_found>`);
                             log(`Could not get Ghidra offset`);
                         }
+                        devlog_info("Pattern found for module "+ this.module.name);
                         log(`Pattern-based hooks installed (onReturn).`);
 
                         Interceptor.attach(address, {
@@ -589,7 +594,7 @@ export class PatternBasedHooking {
             this.patterns = JSON.parse(jsonContent);
             devlog("Patterns loaded successfully from JSON.");
         } catch (error) {
-            devlog("[-] Error loading or parsing JSON pattern:  "+ error);
+            devlog_error("Error loading or parsing JSON pattern:  "+ error);
         }
     }
 

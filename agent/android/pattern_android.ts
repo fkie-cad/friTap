@@ -13,7 +13,7 @@ export class Pattern_Android extends Cronet {
         super(moduleName,socket_library,is_base_hook);
     }
 
-    install_key_extraction_hook(){
+    install_key_extraction_pattern_hook(){
         if(isPatternReplaced){
             const patternModuleName = Process.findModuleByName(this.module_name);
             const hooker = new PatternBasedHooking(patternModuleName);
@@ -58,7 +58,7 @@ export class Pattern_Android extends Cronet {
 
     execute_boring_ssl_log_secret_hooks(){
         // hooking ssl_log_secret() from BoringSSL
-        let hooker_instance = this.install_key_extraction_hook();
+        let hooker_instance = this.install_key_extraction_pattern_hook();
         return hooker_instance;
     }
 
