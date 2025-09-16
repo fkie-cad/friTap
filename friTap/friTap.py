@@ -11,7 +11,8 @@ import threading
 import atexit
 
 try:
-    import colorama; colorama.init()
+    import colorama
+    colorama.init()
 except Exception:
     pass
 

@@ -255,15 +255,16 @@ class SSL_Logger():
         if msg_type == "send":
             payload = message.get("payload", {}) or {}
             if not isinstance(payload, dict):
-                self.logger.warning("Received non-dict payload: %r", payload); return
+                self.logger.warning("Received non-dict payload: %r", payload);
+                return
 
-            content_type = payload.get("contentType")
+            # content_type = payload.get("contentType") # right now we don't use this
             level = payload.get("level", "info")
             ts = payload.get("time") or payload.get("timestamp")
             text = payload.get("message") or payload.get("msg") or "<no message>"
             file = payload.get("file")
             line = payload.get("line")
-            col  = payload.get("col")
+            # col  = payload.get("col") # currently unused
             func = payload.get("func")
 
             if text == "<no message>" or len(text) <= 3:
