@@ -3,6 +3,8 @@
 from pathlib import Path
 import frida
 import platform
+import os
+import logging
 
 def find_pid_by_name(proc_name: str) -> int | None:
     """
@@ -54,3 +56,48 @@ def are_we_running_on_windows() -> bool:
         return True
     else:
         return False
+    
+def supports_color(stream) -> bool:
+        try:
+            return (
+                hasattr(stream, "isatty") and stream.isatty() and
+                os.getenv("NO_COLOR") is None and
+                os.getenv("TERM", "") not in ("", "dumb")
+            )
+        except Exception:
+            return False
+
+
+class CustomFormatter(logging.Formatter):
+    """friTap prefix + optional ANSI colors (only when record._colorize=True)."""
+
+    RESET = "\x1b[0m"
+    COLORS = {
+        logging.DEBUG:    "\x1b[95m",    # magenta
+        logging.INFO:     "\x1b[32m",    # green
+        logging.WARNING:  "\x1b[33m",    # yellow
+        logging.ERROR:    "\x1b[31m",    # red
+        logging.CRITICAL: "\x1b[31;1m",  # bright red
+    }
+
+    PREFIXES = {
+        logging.INFO:     "[*]",
+        logging.DEBUG:    "[!]",
+        logging.WARNING:  "[-]",
+        logging.ERROR:    "[-]",
+        logging.CRITICAL: "[-]",
+    }
+
+    def __init__(self, *, use_color: bool = True):
+        # we ignore parent fmt; we fully control the line format here
+        super().__init__()
+        self.use_color = use_color
+
+    def format(self, record: logging.LogRecord) -> str:
+        prefix = self.PREFIXES.get(record.levelno, "[*]")
+        text = f"{prefix} {record.getMessage()}"
+        if self.use_color and getattr(record, "_colorize", False):
+            color = self.COLORS.get(record.levelno)
+            if color:
+                return f"{color}{text}{self.RESET}"
+        return text

@@ -72,6 +72,7 @@ export class OpenSSL_BoringSSL {
     SSL_get_fd: any;
     SSL_get_session: any;
     static modReceiver: ModifyReceiver;
+    do_read_write_hooks: boolean = true; // we want to hook read and write by default
    
 
     static keylog_callback = new NativeCallback(function (ctxPtr: NativePointer, linePtr: NativePointer) {
@@ -164,9 +165,17 @@ export class OpenSSL_BoringSSL {
 
 
         if(!ObjC.available && checkNumberOfExports(moduleName) > 2){
-            this.SSL_SESSION_get_id = new NativeFunction(this.addresses[this.moduleName]["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
-            this.SSL_get_fd = ObjC.available ? new NativeFunction(this.addresses[this.moduleName]["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(this.addresses[this.moduleName]["SSL_get_fd"], "int", ["pointer"]);
-            this.SSL_get_session = new NativeFunction(this.addresses[this.moduleName]["SSL_get_session"], "pointer", ["pointer"]);
+            try{
+                this.SSL_SESSION_get_id = new NativeFunction(this.addresses[this.moduleName]["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
+                this.SSL_get_fd = ObjC.available ? new NativeFunction(this.addresses[this.moduleName]["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(this.addresses[this.moduleName]["SSL_get_fd"], "int", ["pointer"]);
+                this.SSL_get_session = new NativeFunction(this.addresses[this.moduleName]["SSL_get_session"], "pointer", ["pointer"]);
+                this.do_read_write_hooks = true;
+            }catch(e){
+                this.do_read_write_hooks = false;
+                devlog_error("Error while loading additional hooks for OpenSSL/BoringSSL: "+ e);
+            }
+        }else{
+            this.do_read_write_hooks = false; // we cannot hook read and write on iOS/MacOS right now
         }
 
         if(moduleName.includes("libconscrypt_jni")){
@@ -177,7 +186,7 @@ export class OpenSSL_BoringSSL {
 
 
     install_plaintext_read_hook(){
-        if(!ObjC.available){
+        if(this.do_read_write_hooks){
             function ab2str(buf: ArrayBuffer) {
                 //@ts-ignore
                 return String.fromCharCode.apply(null, new Uint16Array(buf));
@@ -249,7 +258,7 @@ export class OpenSSL_BoringSSL {
     
 
     install_plaintext_write_hook(){
-        if(!ObjC.available){
+        if(this.do_read_write_hooks){
             function str2ab(str: string ) {
                 var buf = new ArrayBuffer(str.length + 1); // 2 bytes for each char
                 var bufView = new Uint8Array(buf);

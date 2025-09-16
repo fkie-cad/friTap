@@ -26,81 +26,66 @@ export function devlog_error(str: string) {
 
 
 type Level = 'debug' | 'info' | 'warn' | 'error';
-
 const ENABLE_CALLSITE = true;   // flip off if perf matters
-const ISO = () => new Date().toISOString();
 
-function parseStack(depth: number) {
-  // depth=0: this function, 1: devlog_*, 2: your call site
-  const err = new Error();
-  if (!err.stack) return {};
-  const lines = err.stack.split('\n').slice(depth + 1); // skip frames
-  // V8/Node/Chromium style: "    at fn (file:line:col)"
-  const re1 = /^\s*at\s+(.*?)\s+\((.*?):(\d+):(\d+)\)\s*$/;
-  // Safari/Firefox/Frida style: "fn@file:line:col" or "at file:line:col"
-  const re2 = /^(?:\s*at\s+)?(.*?):(\d+):(\d+)\s*$/;
+// Types for the returned callsite
+type CallSite = { func?: string; file?: string; line?: number; col?: number };
 
-  for (const l of lines) {
-    let m = l.match(re1);
-    if (m) {
-      return { func: m[1], file: m[2], line: Number(m[3]), col: Number(m[4]) };
-    }
-    m = l.match(re2);
-    if (m) {
-      return { file: m[1], line: Number(m[2]), col: Number(m[3]) };
-    }
+export function parseStack(): CallSite {
+  const e = new Error();
+  const raw = e.stack ? String(e.stack).split("\n").slice(1) : [];
+
+  // skip our logger + frida internals
+  const SKIP = /(agent[\\/](util[\\/])?log\.)|([\\/])frida[\\/]runtime[\\/]/;
+
+  // Patterns (column part optional)
+  const P1 = /^\s*at\s+([^\s]+)\s+\((.+):(\d+)(?::(\d+))?\)\s*$/; // at fn (file:line[:col])
+  const P2 = /^\s*at\s+(.+):(\d+)(?::(\d+))?\s*$/;                 // at file:line[:col]
+  const P3 = /^([^\s@]+)@(.+):(\d+)(?::(\d+))?\s*$/;               // fn@file:line[:col]
+  const P4 = /^\s*(.+):(\d+)(?::(\d+))?\s*$/;                      // file:line[:col]
+
+  for (let i = 0; i < raw.length; i++) {
+    const lineStr = raw[i];
+
+    let m: RegExpMatchArray | null = null;
+    let func: string | undefined = undefined;
+    let file: string | undefined = undefined;
+    let l: string | undefined = undefined;
+    let c: string | undefined = undefined;
+
+    if ((m = lineStr.match(P1))) { func = m[1]; file = m[2]; l = m[3]; c = m[4]; }
+    else if ((m = lineStr.match(P2))) { file = m[1]; l = m[2]; c = m[3]; }
+    else if ((m = lineStr.match(P3))) { func = m[1]; file = m[2]; l = m[3]; c = m[4]; }
+    else if ((m = lineStr.match(P4))) { file = m[1]; l = m[2]; c = m[3]; }
+    else { continue; }
+
+    if (!file || SKIP.test(file)) continue;
+
+    const lineNum = parseInt(l!, 10);
+    const colNum = c ? parseInt(c, 10) : undefined;
+    return { func, file, line: lineNum, col: colNum };
   }
   return {};
 }
 
-// ANSI colors (Node/Frida terminals). In browsers they’ll be literal (fine).
-const C = {
-  reset: '\x1b[0m',
-  dim: '\x1b[2m',
-  red: '\x1b[31m',
-  yellow: '\x1b[33m',
-  blue: '\x1b[34m',
-  magenta: '\x1b[35m',
-};
-
-function levelTag(level: Level) {
-  switch (level) {
-    case 'debug': return `${C.blue}DEBUG${C.reset}`;
-    case 'info':  return ` INFO `;
-    case 'warn':  return `${C.yellow}WARN ${C.reset}`;
-    case 'error': return `${C.red}ERROR${C.reset}`;
-  }
-}
-
-function formatCallsite(cs: Partial<ReturnType<typeof parseStack>>) {
-  if (!cs.file || !cs.line) return '';
-  const short = cs.file.replace(/^.*[\\/]/, ''); // basename
-  const fn = cs.func ? ` ${C.magenta}${cs.func}${C.reset}` : '';
-  return `${C.dim}(${short}:${cs.line}:${cs.col ?? 0})${fn}${C.reset}`;
-}
-
 function emit(level: Level, msg: string, extra?: Record<string, unknown>) {
-  const cs = ENABLE_CALLSITE ? parseStack(2) : {};
-  const ts = ISO();
-  const line = `${C.dim}${ts}${C.reset} ${levelTag(level)} ${msg} ${formatCallsite(cs)}`.trim();
+  const cs = ENABLE_CALLSITE ? parseStack() : {};
+  const ts = new Date().toISOString();
+  if (typeof msg !== "string" || msg.length === 0) return;
 
-  // Pretty to console (optional)
-  // eslint-disable-next-line no-console
-  (level === 'error' ? console.error :
-   level === 'warn'  ? console.warn  :
-   level === 'info'  ? console.info  : console.log)(line);
+  const file = (cs.file ? String(cs.file).replace(/^.*[\\/]/, "") : undefined);
 
-  // Structured payload (your original "send" contract)
   const payload: Record<string, unknown> = {
     contentType: `console_${level}`,
     level,
     time: ts,
     message: msg,
-    ...('file' in cs && { file: cs.file, line: cs.line, col: cs.col, func: (cs as any).func }),
+    ...(file ? { file, line: cs.line, col: cs.col, func: cs.func } : {}),
     ...(extra ?? {}),
   };
   send(payload);
 }
+
 
 // Public API
 export const devlog_debug = (m: string, extra?: Record<string, unknown>) => emit('debug', m, extra);

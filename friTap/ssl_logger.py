@@ -15,25 +15,10 @@ import threading
 import logging
 from datetime import datetime, timezone
 from .pcap import PCAP
+from .fritap_utility import supports_color, CustomFormatter
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-
-class CustomFormatter(logging.Formatter):
-    """Custom formatter that uses original friTap prefix format"""
-    
-    def format(self, record):
-        # Map log levels to original prefixes
-        prefix_map = {
-            logging.INFO: '[*]',
-            logging.DEBUG: '[!]',
-            logging.WARNING: '[-]',
-            logging.ERROR: '[-]',
-            logging.CRITICAL: '[-]'
-        }
-        
-        prefix = prefix_map.get(record.levelno, '[*]')
-        return f"{prefix} {record.getMessage()}"
 
 try:
     import hexdump  # pylint: disable=g-import-not-at-top
@@ -149,21 +134,31 @@ class SSL_Logger():
             }
         }
 
+        self.LEVEL_MAP = {
+            "debug": logging.DEBUG,
+            "info": logging.INFO,
+            "warn": logging.WARNING,
+            "warning": logging.WARNING,
+            "error": logging.ERROR,
+            "critical": logging.CRITICAL,
+            # fallback
+            "trace": logging.DEBUG,
+        }
+
         self.init_fritap()
         
+    
+    
     def _setup_logging(self, debug_mode, debug_output):
         """Set up logging configuration for friTap with original prefix format"""
         if debug_mode or debug_output:
             level = logging.DEBUG
         else:
             level = logging.INFO
-            
-        # Use custom formatter with original prefix format
-        formatter = CustomFormatter()
         
         # Console handler
         console_handler = logging.StreamHandler()
-        console_handler.setFormatter(formatter)
+        console_handler.setFormatter(CustomFormatter(use_color=supports_color(console_handler.stream)))
         console_handler.setLevel(level)
         
         self.logger.setLevel(level)
@@ -222,7 +217,105 @@ class SSL_Logger():
         self._log_session_end(reason)
         self.pcap_cleanup(self.full_capture,self.mobile,self.pcap_name)
         self.cleanup(self.live,self.socket_trace,self.full_capture,self.debug)
-        
+
+    
+    def _to_datetime(self, ts):
+        # support numeric timestamp (seconds or millis) or iso string
+        if ts is None:
+            return None
+        try:
+            # if float/int — detect likely ms vs s
+            if isinstance(ts, (int, float)):
+                # if ts looks like milliseconds (>= 1e12 typical for ms), convert
+                if ts > 1e12:
+                    return datetime.fromtimestamp(ts / 1000.0)
+                # if ts looks like seconds (reasonable range)
+                if ts > 1e9:  # seconds since epoch
+                    return datetime.fromtimestamp(ts)
+            # fallback: try parse ISO string
+            return datetime.fromisoformat(str(ts))
+        except Exception:
+            return None
+
+    
+
+    def _short_file(self, path: str | None) -> str | None:
+        if not path:
+            return None
+        p = str(path)
+        # strip url-ish prefixes frida sometimes uses
+        for pref in ("frida://", "file://"):
+            if p.startswith(pref):
+                p = p[len(pref):]
+        return os.path.basename(p) or p
+    
+    
+    def print_fritap_message(self, message: dict, data: bytes):
+        msg_type = message.get("type")
+        if msg_type == "send":
+            payload = message.get("payload", {}) or {}
+            if not isinstance(payload, dict):
+                self.logger.warning("Received non-dict payload: %r", payload); return
+
+            content_type = payload.get("contentType")
+            level = payload.get("level", "info")
+            ts = payload.get("time") or payload.get("timestamp")
+            text = payload.get("message") or payload.get("msg") or "<no message>"
+            file = payload.get("file")
+            line = payload.get("line")
+            col  = payload.get("col")
+            func = payload.get("func")
+
+            if text == "<no message>" or len(text) <= 3:
+                return
+
+            dt = self._to_datetime(ts)
+            time_str = dt.isoformat(sep=" ") if dt else str(ts)
+
+            # --- build [File: <name:line>] bit
+            short = self._short_file(file)
+            file_tag = ""
+            if short and line is not None:
+                file_tag = f"[File: {short}:{line}]"
+            elif short:
+                file_tag = f"[File: {short}]"
+
+            # optional: include function name
+            if func:
+                file_tag = f"{file_tag[:-1]}, fn={func}]" if file_tag else f"[fn={func}]"
+
+            py_level = self.LEVEL_MAP.get(str(level).lower(), logging.INFO)
+
+            # final message: timestamp + optional file tag + message
+            # keep your "[!]" prefix from CustomFormatter; we just craft the message body
+            parts = [f"[{time_str}]"]
+            if file_tag:
+                parts.append(file_tag)
+            # if you still want to see the original contentType tag occasionally, tack it on:
+            # parts.append(f"[{content_type}]")
+            parts.append(text)
+            log_msg = " ".join(parts)
+
+            # self.logger.log(py_level, log_msg) # print without colors
+            self.logger.log(py_level, log_msg, extra={"_colorize": True}) # print with colors
+
+            if data:
+                try:
+                    fname = f"frida_blob_{int(datetime.utcnow().timestamp())}.bin"
+                    with open(fname, "wb") as f:
+                        f.write(data)
+                    self.logger.info("Saved attached data to %s", fname)
+                except Exception as e:
+                    self.logger.exception("Failed to save attached data: %s", e)
+
+        elif msg_type == "error":
+            description = message.get("description", "<no desc>")
+            stack = message.get("stack")
+            self.logger.error("Frida script error: %s\n%s", description, stack or "")
+        else:
+            self.logger.debug("Unhandled message type: %s payload=%r data=%r",
+                            msg_type, message.get("payload"), data)
+                
 
     def handle_frida_script_error(self, message: dict):
         print("\n\n")
@@ -339,12 +432,8 @@ class SSL_Logger():
             if payload["contentType"] == "console_dev" and payload["console_dev"]:
                 if len(payload["console_dev"]) > 3:
                     self.logger.debug(payload["console_dev"])
-            elif payload["contentType"] == "console_debug" and payload["console_debug"]:
-                if len(payload["console_debug"]) > 3:
-                    self.logger.debug(payload["console_debug"])
-            elif payload["contentType"] == "console_error" and payload["console_error"]:
-                if len(payload["console_error"]) > 3:
-                    self.logger.error(payload["console_error"])
+            else:
+                self.print_fritap_message(message, data)
         if self.verbose:
             if(payload["contentType"] == "keylog") and self.keylog:
                 if payload["keylog"] not in self.keydump_Set:

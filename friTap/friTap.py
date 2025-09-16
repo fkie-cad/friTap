@@ -11,6 +11,11 @@ import threading
 import atexit
 
 try:
+    import colorama; colorama.init()
+except Exception:
+    pass
+
+try:
     from AndroidFridaManager import FridaBasedException
 except ImportError:
     # Create a dummy exception for testing environments
@@ -19,7 +24,7 @@ except ImportError:
 from .about import __version__
 from .about import __author__
 from .ssl_logger import SSL_Logger
-from .fritap_utility import get_pid_of_lsass, are_we_running_on_windows
+from .fritap_utility import get_pid_of_lsass, are_we_running_on_windows, supports_color, CustomFormatter
 
 
 class LsassHookManager:
@@ -203,24 +208,6 @@ class ArgParser(argparse.ArgumentParser):
         print(self.format_help().replace("usage:", "Usage:"))
         self.exit(0)
 
-
-class CustomFormatter(logging.Formatter):
-    """Custom formatter that uses original friTap prefix format"""
-    
-    def format(self, record):
-        # Map log levels to original prefixes
-        prefix_map = {
-            logging.INFO: '[*]',
-            logging.DEBUG: '[!]',
-            logging.WARNING: '[-]',
-            logging.ERROR: '[-]',
-            logging.CRITICAL: '[-]'
-        }
-        
-        prefix = prefix_map.get(record.levelno, '[*]')
-        return f"{prefix} {record.getMessage()}"
-
-
 def main():
     # Initial setup - will be reconfigured after parsing arguments
     logger = logging.getLogger('friTap')
@@ -305,7 +292,7 @@ Examples:
     
     # Create console handler with custom formatter
     console_handler = logging.StreamHandler()
-    console_handler.setFormatter(CustomFormatter())
+    console_handler.setFormatter(CustomFormatter(use_color=supports_color(console_handler.stream)))
     console_handler.setLevel(log_level)
     logger.addHandler(console_handler)
 
