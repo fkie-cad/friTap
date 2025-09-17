@@ -7,6 +7,7 @@ import { devlog, devlog_debug, devlog_error, devlog_info, devlog_warn } from "..
 
 export type HookingResult = [success: boolean, handle: PatternBasedHooking | null];
 const EXCLUDED_MODULE_SUFFIXES = ["_libpki.so", "_libcrypto.so", "libmainlinecronet.136.0.7091.2.so", "libsignal_jni_testing.so"]; // extensible list
+const EXCLUDED_MODULE_PRAEFIXES = ["libmainlinecronet."]; // extensible list
 
 interface PatternSet {
   primary:  string;
@@ -61,6 +62,7 @@ export class Cronet_Android extends Cronet {
         };
 
         if(patterns){
+            //devlog_debug("Using provided patterns for Cronet_Android for mudule "+ moduleName);
             // If patterns are provided, use them instead of the default ones
             this.default_pattern = patterns;
         }
@@ -90,16 +92,16 @@ export class Cronet_Android extends Cronet {
         if (isPatternReplaced()){
             devlog("Hooking libcronet functions by patterns from JSON file");
             hooker.hook_DumpKeys(this.module_name,"libcronet.so",patterns,(args: any[]) => {
-                devlog("Installed ssl_log_secret() hooks using byte patterns.");
-                this.dumpKeys(args[1], args[0], args[2]);  // Unpack args into dumpKeys
+                devlog("Installed ssl_log_secret() hooks using byte patterns for module "+this.module_name+".");
+                this.dumpKeys(args[1], args[0], args[2], Number(args[3]));  // Unpack args into dumpKeys
             });
         }else{
             // This are the default patterns for hooking ssl_log_secret in BoringSSL inside Cronet
             hooker.hookModuleByPattern(
                 get_CPU_specific_pattern(this.default_pattern),
                 (args) => {
-                    devlog("Installed ssl_log_secret() hooks using byte patterns.");
-                    this.dumpKeys(args[1], args[0], args[2]);  // Hook args passed to dumpKeys
+                    devlog("Installed ssl_log_secret() hooks using byte patterns for module "+this.module_name+".");
+                    this.dumpKeys(args[1], args[0], args[2], Number(args[3]));  // Hook args passed to dumpKeys
                 }
             );
         }
@@ -121,7 +123,7 @@ export class Cronet_Android extends Cronet {
         if(hooker.no_hooking_success){
             let symbols = Process.getModuleByName(this.module_name).enumerateSymbols().filter(exports => exports.name.toLowerCase().includes("ssl_log"));
             if(symbols.length > 0){
-                devlog("Installed ssl_log_secret() hooks using sybmols.");
+                devlog("Installed ssl_log_secret() hooks using sybmols for "+ this.module_name);
                 try{
                     Interceptor.attach(symbols[0].address, {
                         onEnter: function(args) {
@@ -202,7 +204,7 @@ export class Cronet_Android extends Cronet {
             devlog_info("Installed SSL_CTX_set_keylog_callback hooks using symbols for "+ this.module_name);
             return [true, null];
         }else{
-            devlog_debug("SSL_CTX_set_keylog_callback not available in "+ this.module_name);
+            //devlog_debug("SSL_CTX_set_keylog_callback not available in "+ this.module_name);
             // hooking ssl_log_secret() from BoringSSL
             hooker_instance = this.install_key_extraction_pattern_hook();
             if(hooker_instance === undefined || hooker_instance === null){
@@ -221,7 +223,8 @@ export class Cronet_Android extends Cronet {
 
 export function cronet_execute(moduleName:string, is_base_hook: boolean){
     // Check if the moduleName ends with any of the excluded suffixes
-    if (EXCLUDED_MODULE_SUFFIXES.some(suffix => moduleName.endsWith(suffix))) {
+    if (EXCLUDED_MODULE_SUFFIXES.some(suffix => moduleName.endsWith(suffix)) ||
+        EXCLUDED_MODULE_PRAEFIXES.some(prefix => moduleName.startsWith(prefix))) {
         devlog_debug(`Skipping module ${moduleName} due to excluded suffix.`);
         return;
     }

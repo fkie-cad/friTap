@@ -94,11 +94,58 @@ export class Cronet {
         return this.get_client_random(s3_ptr, SSL3_RANDOM_SIZE);
     }
 
+    isReasonableLen(n: unknown): n is number {
+        return Number.isFinite(n as number) && (n as number) > 0 && (n as number) <= 64;
+    }
 
-    dumpKeys(labelPtr: NativePointer, sslStructPtr: NativePointer, keyPtr: NativePointer): void {
+    clampTlsLen(n: number): 32 | 48 {
+        // Valid TLS secret lengths are 32 (SHA-256) or 48 (SHA-384 / TLS 1.2 master secret)
+        return n >= 40 ? 48 : 32; 
+    }
+
+    keyLenheuristic(label: string, keyPtr: NativePointer): number {
+        // heuristic to determine the key length based on the cipher suite
+        // this is not 100% accurate but should work in most cases
+        // returns the key length in bytes
+        // common key lengths are 16, 24, 32, 48
+        // for TLS 1.3 its usually 32 or 48
         const MAX_KEY_LENGTH = 64;
-        const RANDOM_KEY_LENGTH = 32;
+        let KEY_LENGTH = 0;
+        let calculatedKeyLength = 0;
 
+        if (label === "CLIENT_RANDOM") {
+            return 48; // TLS 1.2 master secret
+        }
+
+        // Iterate through the memory to determine key length
+        while (calculatedKeyLength < MAX_KEY_LENGTH) {
+
+            const byte = keyPtr.add(calculatedKeyLength).readU8(); // Read one byte at a time
+
+            if (byte === 0) { // Stop if null terminator is found (optional, adjust as needed)
+                if(calculatedKeyLength < 20){
+                    calculatedKeyLength++;
+                    continue;
+                }
+                break;
+            }
+            calculatedKeyLength++;
+        }
+
+        if (calculatedKeyLength > 24 && calculatedKeyLength <= 42) {
+            KEY_LENGTH = 32; // Closest match is 32 bytes
+        } else if (calculatedKeyLength >= 46 && calculatedKeyLength <=49) {
+            KEY_LENGTH = 48; // Closest match is 48 bytes
+        }else{
+            KEY_LENGTH = 32; // fall back size
+        }
+
+    // TBD: implement a better heuristic based on the cipher suite
+    return KEY_LENGTH;
+    }
+
+
+    dumpKeys(labelPtr: NativePointer, sslStructPtr: NativePointer, keyPtr: NativePointer, keyLen?: number,): void {
         let labelStr = '';
         let client_random = '';
         let secret_key = '';
@@ -120,30 +167,12 @@ export class Cronet {
 
         if (!keyPtr.isNull()) {
             let KEY_LENGTH = 0;
-            let calculatedKeyLength = 0;
-
-            // Iterate through the memory to determine key length
-            while (calculatedKeyLength < MAX_KEY_LENGTH) {
-
-                const byte = keyPtr.add(calculatedKeyLength).readU8(); // Read one byte at a time
-
-                if (byte === 0) { // Stop if null terminator is found (optional, adjust as needed)
-                    if(calculatedKeyLength < 20){
-                        calculatedKeyLength++;
-                        continue;
-                    }
-                    break;
-                }
-                calculatedKeyLength++;
-            }
-
-            if (calculatedKeyLength > 24 && calculatedKeyLength <= 40) {
-                KEY_LENGTH = 32; // Closest match is 32 bytes
-            } else if (calculatedKeyLength >= 46 && calculatedKeyLength <=49) {
-                KEY_LENGTH = 48; // Closest match is 48 bytes
+            if (this.isReasonableLen(keyLen)) {
+                KEY_LENGTH = this.clampTlsLen(keyLen!);
             }else{
-                KEY_LENGTH = 32; // fall back size
+                KEY_LENGTH = this.keyLenheuristic(labelStr, keyPtr);
             }
+
 
             const keyData = keyPtr.readByteArray(KEY_LENGTH); // Read the key data (KEY_LENGTH bytes)
 

@@ -83,6 +83,7 @@ function emit(level: Level, msg: string, extra?: Record<string, unknown>) {
     ...(file ? { file, line: cs.line, col: cs.col, func: cs.func } : {}),
     ...(extra ?? {}),
   };
+  // console.log("DEBUG: ", JSON.stringify(payload)); // debug output to console
   send(payload);
 }
 

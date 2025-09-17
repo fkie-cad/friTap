@@ -43,8 +43,8 @@ export class PatternBasedHooking {
         this.found_ssl_log_secret = false;
         this.module = module;
         if (this.module === null) {
-            devlog_error("[-] PatternBasedHooking Error: Unable to find module: " + this.module.name);
-            devlog_error("[-] PatternBasedHooking Error: Abborting...");
+            devlog_error("PatternBasedHooking Error: Unable to find module: " + this.module.name);
+            devlog_error("PatternBasedHooking Error: Abborting...");
             return;
         }
         this.no_hooking_success = true;
@@ -83,7 +83,7 @@ export class PatternBasedHooking {
                 this.no_hooking_success = false;
                 var module_by_address = Process.findModuleByAddress(address);
 
-                log(`Pattern found at (${pattern_name}) address: ${address} in module ${module_by_address.name}`);
+                devlog_info(`Pattern found at (${pattern_name}) address: ${address} in module ${module_by_address.name}`);
                 log(`Pattern-based hooks installed (onReturn).`);
 
                 Interceptor.attach(address, {
@@ -185,7 +185,7 @@ export class PatternBasedHooking {
         maxArgs: number
     ) {
         const action_specific_patterns = this.get_action_specific_pattern(module_name, platform, arch, action);
-        devlog(`Using ${action} patterns for ${platform} on ${arch} (onReturn)`);
+        devlog_debug(`Using ${action} patterns for ${platform} on ${arch} (onReturn)`);
         this.hookModuleByPatternOnReturn(action_specific_patterns, userCallback, maxArgs);
     }
 
@@ -252,7 +252,7 @@ export class PatternBasedHooking {
                         );
                     }
                 } else {
-                    devlog("[-] No patterns available for the current platform or architecture.");
+                    devlog_debug("No patterns available for the current platform or architecture.");
                 }
             }
         }
@@ -290,10 +290,10 @@ export class PatternBasedHooking {
                 this.found_ssl_log_secret = true;
                 this.no_hooking_success = false;
                 
-                if (!moduleName) {
-                    log(`Pattern found at (${pattern_name}) address: ${address} for module ${moduleName}`);
+                if (moduleName) {
+                    devlog_info(`Pattern found at (${pattern_name}) address: ${address} for module ${moduleName}`);
                 }else{
-                    log(`Pattern found at (${pattern_name}) address: ${address}`);
+                    devlog_info(`Pattern found at (${pattern_name}) address: ${address}`);
                 }
                 
                 log(`Pattern-based hooks installed.`);
@@ -311,13 +311,13 @@ export class PatternBasedHooking {
                     devlog_error(`Trying to rescan memory with permissions in mind on ${moduleName}`);
                     this.hookByPatternOnlyReadableParts(patterns, pattern_name, onMatchCallback, (primary_success) => {
                         if (!primary_success) {
-                            devlog(`[!] Primary pattern failed, trying fallback pattern on ${moduleName}`);
+                            devlog(`Primary pattern failed, trying fallback pattern on ${moduleName}`);
                             this.hookByPatternOnlyReadableParts(patterns, "fallback_pattern", onMatchCallback, (fallback_success) => {
                                 if (!fallback_success) {
-                                    devlog(`[!] Fallback pattern failed, trying second fallback pattern on ${moduleName}`);
+                                    devlog(`Fallback pattern failed, trying second fallback pattern on ${moduleName}`);
                                     this.hookByPatternOnlyReadableParts(patterns, "second_fallback_pattern", onMatchCallback, (second_fallback_success) => {
                                         if (!second_fallback_success) {
-                                            devlog_debug(`None of the patterns worked. You may need to adjust the patterns for ${moduleName}`);
+                                            //devlog_debug(`None of the patterns worked. You may need to adjust the patterns for ${moduleName}`);
                                             this.no_hooking_success = true;
                                         }else{
                                             this.no_hooking_success = false;
@@ -341,8 +341,11 @@ export class PatternBasedHooking {
         pattern_name: string,
         onMatchCallback: (args: any[]) => void,
         onCompleteCallback: (found: boolean) => void
-    ): void {
-        const moduleName = this.module?.name;
+        ): void {
+        const mod = this.module;
+        const moduleName = mod?.name;
+        const protSets = ["r-x", "r--", "rw-", "rwx"] as const;
+
         devlog(`trying to scan only readable parts of ${moduleName} ...`);
 
         var pattern: string = "";
@@ -356,79 +359,113 @@ export class PatternBasedHooking {
             pattern = patterns.fallback;
         }
 
-        // Get all readable memory ranges
-        const ranges = this.module.enumerateRanges('r--');
-        let completedRanges = 0;
-        let callbackExecuted = false;
-        let patternFound = false;
-
-        // Early exit helper function
-        const executeCallbackOnce = (found: boolean) => {
-            if (!callbackExecuted) {
-                callbackExecuted = true;
-                onCompleteCallback(found);
-            }
-        };
-
-        // Handle case where no ranges are found
-        if (ranges.length === 0) {
-            executeCallbackOnce(false);
+          // Guard
+        if (!mod) {
+            devlog_error("hookByPatternOnlyReadableParts: module is null");
+            onCompleteCallback(false);
             return;
         }
 
-        // Enumerate all readable memory ranges of the specified module and scan each one
-        ranges.forEach((range: MemoryRange) => {
-            const rangeKey = `${range.base}-${range.size}`; // Unique key for each memory range
+        const start = mod.base;
+        const end = mod.base.add(mod.size);
 
-            // Skip if already rescanned or if pattern was already found
-            if (this.rescannedRanges.has(rangeKey) || patternFound) {
-                completedRanges++;
-                if (completedRanges === ranges.length) {
-                    executeCallbackOnce(patternFound);
-                }
-                return;
+        let patternFound = false;
+        let callbackDone = false;
+
+        const executeOnce = (ok: boolean) => {
+            if (!callbackDone) {
+            callbackDone = true;
+            onCompleteCallback(ok);
             }
+        };
 
-            // only uncomment this if we need to track a bug
-            //devlog(`Scanning readable memory range in module: ${this.module.name}, Range: ${range.base} - ${range.base.add(range.size)}, Size: ${range.size}`);
+        // Shared scanner over a list of ranges
+        const scanRanges = (ranges: MemoryRange[], tag: string, done: () => void) => {
+            if (patternFound || callbackDone) return done();
+            if (!ranges || ranges.length === 0) return done();
 
+            let completed = 0;
+
+            for (const range of ranges) {
+            if (patternFound || callbackDone) break;
+
+            const rangeKey = `${range.base}-${range.size}`;
+            if (this.rescannedRanges && this.rescannedRanges.has(rangeKey)) {
+                completed++;
+                if (completed === ranges.length && !patternFound) done();
+                continue;
+            }
+            // remember we touched this range
+            try { this.rescannedRanges?.add(rangeKey); } catch { /* noop */ }
 
             Memory.scan(range.base, range.size, pattern, {
-                onMatch: (address: NativePointer, size: number) => {
-                    if (!patternFound) {  // Prevent multiple matches from triggering
-                        patternFound = true;
-                        this.found_ssl_log_secret = true;
-                        this.no_hooking_success = false;
-                        devlog_info(`Pattern found at (${pattern_name}) address: ${address.toString()} on ${moduleName}`);
-                        log(`Pattern based hooks installed.`);
+                onMatch: (address: NativePointer, _size: number) => {
+                if (patternFound || callbackDone) return "stop";
+                patternFound = true;
+                this.found_ssl_log_secret = true;
+                this.no_hooking_success = false;
 
-                        // Attach the hook using the provided onMatchCallback
-                        Interceptor.attach(address, {
-                            onEnter: function (args) {
-                                onMatchCallback(args);
-                            },
-                            onLeave: function (retval) {
-                                // Optionally handle return value or additional behavior
-                            }
-                        });
+                devlog_info(`Pattern found at (${pattern_name}) address: ${address} on ${moduleName}`);
+                log("Pattern based hooks installed.");
 
-                        // Execute callback immediately on success
-                        executeCallbackOnce(true);
-                    }
+                try {
+                    Interceptor.attach(address, {
+                    onEnter: function (args) { onMatchCallback(args); },
+                    });
+                } catch (e) {
+                    devlog_error(`Interceptor.attach failed at ${address}: ${e}`);
+                }
+
+                executeOnce(true);
+                return "stop"; // stop scanning this range
                 },
-                onError: (reason: string) => {
-                    //devlog_error(`Error scanning memory for range: ${range.base} - ${range.base.add(range.size)}, Reason: ${reason}`);
+                onError: (_reason: string) => {
+                // You can log per-range errors here if needed
                 },
                 onComplete: () => {
-                    completedRanges++;
-                    // Only execute callback when all ranges are completed and no pattern was found
-                    if (completedRanges === ranges.length && !patternFound) {
-                        executeCallbackOnce(false);
-                    }
+                completed++;
+                if (completed === ranges.length && !patternFound && !callbackDone) {
+                    done();
+                }
                 }
             });
-        });
+            }
+        };
 
+        // Phase 1: module-local ranges by protection
+        const scanModuleLocal = (i: number, after: () => void) => {
+            if (patternFound || callbackDone) return after();
+            if (i >= protSets.length) return after();
+
+            let ranges: MemoryRange[] = [];
+            try { ranges = mod.enumerateRanges(protSets[i]); } catch { ranges = []; }
+
+            scanRanges(ranges, protSets[i], () => scanModuleLocal(i + 1, after));
+        };
+
+        // Phase 2: process-wide ranges filtered to the module window - only if phase 1 failed
+        const scanProcessWide = (i: number, after: () => void) => {
+            if (patternFound || callbackDone) return after();
+            if (i >= protSets.length) return after();
+
+            let ranges: MemoryRange[] = [];
+            try {
+            const all = Process.enumerateRanges(protSets[i]);
+            // keep overlapping [start, end)
+            ranges = all.filter(r => r.base.compare(end) < 0 && r.base.add(r.size).compare(start) > 0);
+            } catch { ranges = []; }
+
+            scanRanges(ranges, protSets[i], () => scanProcessWide(i + 1, after));
+        };
+
+        // Run phases
+        scanModuleLocal(0, () => {
+            if (patternFound || callbackDone) return;
+            devlog_debug(`Module-local scan failed for ${moduleName}, falling back to process-wide filtered ranges...`);
+            scanProcessWide(0, () => {
+            if (!patternFound) executeOnce(false);
+            });
+        });
     }
 
     private hookByPatternOnlyReadablePartsOnReturn(
@@ -685,7 +722,7 @@ export class PatternBasedHooking {
                         this.invoke_pattern_based_hooking(action_type, jsonModuleName, platform, arch, hookCallback);   
                     }
                 }else{
-                    devlog("[-] No patterns available for the current platform or architecture.");
+                    devlog_debug("No patterns available for the current platform or architecture.");
                 }
             }
             
