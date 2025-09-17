@@ -28,7 +28,8 @@ const STABLE_CRONET_PATTERNS = {
 
 const LIBSIGNAL_PATTERNS = {
     "arm64": {
-        primary:  "FF 43 02 D1 FD 7B 05 A9 F8 5F 06 A9 F6 57 07 A9 F4 4F 08 A9 FD 43 01 91 58 D0 3B D5 08 17 40 F9 A8 83 1F F8 08 34 40 F9 08 11 41 F9 A8 0A 00 B4", // Primary pattern
+        //primary:  "FF 43 02 D1 FD 7B 05 A9 F8 5F 06 A9 F6 57 07 A9 F4 4F 08 A9 FD 43 01 91 58 D0 3B D5 08 17 40 F9 A8 83 1F F8 08 34 40 F9 08 11 41 F9 A8 0A 00 B4", // old Primary pattern
+        primary:  "FF 43 02 D1 FD 7B 05 A9 F? ?? 0? ?9 F6 57 07 A9 F4 4F 08 A9 FD 43 01 91 5? D0 3B D5 ?8 1? 40 F9 A8 83 1F F8 08 34 40 F9 08 11 41 F9 ?8 0? 00 B4", // Primary pattern
         fallback: "3F 23 03 D5 FF 43 02 D1 FD 7B 05 A9 F8 5F 06 A9 F6 57 07 A9 F4 4F 08 A9 FD 43 01 91 08 34 40 F9 08 21 41 F9 C8 11 00 B4" // Fallback pattern
     }
 };
