@@ -13,15 +13,8 @@ export class Cronet {
     module_name: string;
     is_base_hook: boolean;
     SSL_CTX_set_keylog_callback : any;
+    keylog_callback: any;
     can_we_install_keylog_callback: boolean = false;
-
-    static keylog_callback = new NativeCallback(function (ctxPtr: NativePointer, linePtr: NativePointer) {
-        devlog("invoking keylog_callback from Cronet");
-        var message: { [key: string]: string | number | null } = {}
-        message["contentType"] = "keylog"
-        message["keylog"] = linePtr.readCString().toUpperCase()
-        send(message)
-    }, "void", ["pointer", "pointer"])
 
 
     constructor(public moduleName:string, public socket_library:String,is_base_hook: boolean ,public passed_library_method_mapping?: { [key: string]: Array<string> } ){
@@ -39,6 +32,14 @@ export class Cronet {
             }
             this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
         }
+
+        this.keylog_callback = new NativeCallback(function (ctxPtr: NativePointer, linePtr: NativePointer) {
+            devlog("invoking keylog_callback from Cronet ("+ moduleName +")");
+            var message: { [key: string]: string | number | null } = {}
+            message["contentType"] = "keylog"
+            message["keylog"] = linePtr.readCString().toUpperCase()
+            send(message)
+        }, "void", ["pointer", "pointer"])
 
         try{
             this.addresses = readAddresses(moduleName,this.library_method_mapping);

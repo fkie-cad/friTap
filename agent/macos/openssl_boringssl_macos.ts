@@ -7,6 +7,7 @@ import { ObjC } from "../shared/objclib.js";
 export class OpenSSL_BoringSSL_MacOS extends OpenSSL_BoringSSL {
 
     install_tls_keys_callback_hook(){
+        var instance = this;
         //console.log(this.addresses) // currently only for debugging purposes will be removed in future releases
         if (ObjC.available) { // inspired from https://codeshare.frida.re/@andydavies/ios-tls-keylogger/
             var CALLBACK_OFFSET = 0x2A8;
@@ -31,7 +32,7 @@ export class OpenSSL_BoringSSL_MacOS extends OpenSSL_BoringSSL {
             }
             Interceptor.attach(this.addresses[this.module_name]["SSL_CTX_set_info_callback"], {
               onEnter: function (args : any) {
-                ptr(args[0]).add(CALLBACK_OFFSET).writePointer(OpenSSL_BoringSSL.keylog_callback);
+                ptr(args[0]).add(CALLBACK_OFFSET).writePointer(instance.keylog_callback);
               }
             });
           
@@ -118,7 +119,7 @@ export class OpenSSL_From_Python_MacOS extends OpenSSL_BoringSSL {
 
                     try {
                         devlog("Installing callback for OpenSSL_From_Python for module: " + instance.module_name);
-                        instance.SSL_CTX_set_keylog_callback(ctx_ptr, OpenSSL_BoringSSL.keylog_callback);
+                        instance.SSL_CTX_set_keylog_callback(ctx_ptr, instance.keylog_callback);
                     } catch (e) {
                         devlog_error(`Failed to set keylog callback: ${e}`);
                     }

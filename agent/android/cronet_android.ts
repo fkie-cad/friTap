@@ -153,7 +153,7 @@ export class Cronet_Android extends Cronet {
                     onEnter: function (args: any) {
                         try{
                             callback_already_set = true;
-                            instance.SSL_CTX_set_keylog_callback(args[0], Cronet.keylog_callback);
+                            instance.SSL_CTX_set_keylog_callback(args[0], instance.keylog_callback);
                         }catch (e) {
                             callback_already_set = false;
                             devlog_error(`Error in SSL_new hook: ${e}`);
@@ -171,7 +171,7 @@ export class Cronet_Android extends Cronet {
                                     devlog_error("SSL_CTX_new returned NULL");
                                     return;
                                 }
-                                instance.SSL_CTX_set_keylog_callback(retval, Cronet.keylog_callback);
+                                instance.SSL_CTX_set_keylog_callback(retval, instance.keylog_callback);
                             }catch (e) {
                                 devlog_error(`Error in SSL_CTX_new hook: ${e}`);
                             }

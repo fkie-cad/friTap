@@ -44,7 +44,7 @@ export class OpenSSL_BoringSSL_Linux extends OpenSSL_BoringSSL {
                 onEnter: function (args: any) {
                     try{
                         callback_already_set = true;
-                        instance.SSL_CTX_set_keylog_callback(args[0], OpenSSL_BoringSSL.keylog_callback);
+                        instance.SSL_CTX_set_keylog_callback(args[0], instance.keylog_callback);
                     }catch (e) {
                         callback_already_set = false;
                         devlog_error(`Error in SSL_new hook: ${e}`);
@@ -62,7 +62,7 @@ export class OpenSSL_BoringSSL_Linux extends OpenSSL_BoringSSL {
                                 devlog_error("SSL_CTX_new returned NULL");
                                 return;
                             }
-                            instance.SSL_CTX_set_keylog_callback(retval, OpenSSL_BoringSSL.keylog_callback);
+                            instance.SSL_CTX_set_keylog_callback(retval, instance.keylog_callback);
                         }catch (e) {
                             devlog_error(`Error in SSL_CTX_new hook: ${e}`);
                         }
@@ -186,7 +186,7 @@ export class OpenSSL_From_Python_Linux extends OpenSSL_BoringSSL {
 
                     try {
                         devlog("Installing callback for OpenSSL_From_Python for module: " + instance.module_name);
-                        instance.SSL_CTX_set_keylog_callback(ctx_ptr, OpenSSL_BoringSSL.keylog_callback);
+                        instance.SSL_CTX_set_keylog_callback(ctx_ptr, instance.keylog_callback);
                     } catch (e) {
                         devlog_error(`Failed to set keylog callback: ${e}`);
                     }

@@ -69,19 +69,11 @@ export class OpenSSL_BoringSSL {
     module_name: string;
     SSL_SESSION_get_id: any;
     SSL_CTX_set_keylog_callback : any;
+    keylog_callback: any;
     SSL_get_fd: any;
     SSL_get_session: any;
     static modReceiver: ModifyReceiver;
     do_read_write_hooks: boolean = true; // we want to hook read and write by default
-   
-
-    static keylog_callback = new NativeCallback(function (ctxPtr: NativePointer, linePtr: NativePointer) {
-        devlog("invoking keylog_callback from OpenSSL_BoringSSL");
-        var message: { [key: string]: string | number | null } = {}
-        message["contentType"] = "keylog"
-        message["keylog"] = linePtr.readCString().toUpperCase()
-        send(message)
-    }, "void", ["pointer", "pointer"])
 
     is_base_hook: boolean;
     is_openssl: boolean;
@@ -90,6 +82,7 @@ export class OpenSSL_BoringSSL {
 
 
     constructor(public moduleName:string, public socket_library:String,is_base_hook: boolean ,public passed_library_method_mapping?: { [key: string]: Array<string> } ){
+        this.module_name = moduleName;
         OpenSSL_BoringSSL.modReceiver = new ModifyReceiver();
 
         if(typeof passed_library_method_mapping !== 'undefined'){
@@ -113,6 +106,14 @@ export class OpenSSL_BoringSSL {
         }else{
             this.is_openssl = false;
         }
+
+        this.keylog_callback = new NativeCallback(function (ctxPtr: NativePointer, linePtr: NativePointer) {
+            devlog("invoking keylog_callback from OpenSSL_BoringSSL ("+ moduleName +")");
+            var message: { [key: string]: string | number | null } = {}
+            message["contentType"] = "keylog"
+            message["keylog"] = linePtr.readCString().toUpperCase()
+            send(message)
+        }, "void", ["pointer", "pointer"]);
 
         // Check and add SSL_write_ex if available
         if (isSymbolAvailable(moduleName, "SSL_write_ex")) {

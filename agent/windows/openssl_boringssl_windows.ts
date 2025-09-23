@@ -81,7 +81,7 @@ export class OpenSSL_From_Python_Windows extends OpenSSL_BoringSSL {
 
                     try {
                         devlog("Installing callback for OpenSSL_From_Python for module: " + instance.module_name);
-                        instance.SSL_CTX_set_keylog_callback(ctx_ptr, OpenSSL_BoringSSL.keylog_callback);
+                        instance.SSL_CTX_set_keylog_callback(ctx_ptr, instance.keylog_callback);
                     } catch (e) {
                         devlog_error(`Failed to set keylog callback: ${e}`);
                     }

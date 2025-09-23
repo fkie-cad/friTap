@@ -469,132 +469,154 @@ export class PatternBasedHooking {
     }
 
     private hookByPatternOnlyReadablePartsOnReturn(
-        patterns: { primary: string; fallback: string },
+        patterns: { primary: string; fallback: string; second_fallback?: string },
         pattern_name: string,
         userCallback: (args: any[], retval?: NativePointer) => void,
         onCompleteCallback: (found: boolean) => void,
         maxArgs: number = 8
     ): void {
+        const mod = this.module;
+        const moduleName = mod?.name;
+        const protSets = ["r-x", "r--", "rw-", "rwx"] as const;
+
         devlog(`Trying to scan only readable parts of ${this.module.name} ...`);
 
-        let pattern: string;
-        if (pattern_name === "primary_pattern") {
+        let pattern: string = "";;
+         if (pattern_name === "primary_pattern") {
             pattern = patterns.primary;
-        } else {
+        } else if (pattern_name === "fallback_pattern") {
+            pattern = patterns.fallback;
+        } else if (pattern_name === "second_fallback_pattern" && patterns.second_fallback) {
+            pattern = patterns.second_fallback;
+        }else{
             pattern = patterns.fallback;
         }
 
-        const ranges = Process.enumerateRanges('r--');
-        let completedRanges = 0;
-        let callbackExecuted = false;
-        let patternFound = false;
-
-        // Early exit helper function
-        const executeCallbackOnce = (found: boolean) => {
-            if (!callbackExecuted) {
-                callbackExecuted = true;
-                onCompleteCallback(found);
-            }
-        };
-
-        // Handle case where no ranges are found
-        if (ranges.length === 0) {
-            executeCallbackOnce(false);
+        if (!mod) {
+            devlog_error("hookByPatternOnlyReadablePartsOnReturn: module is null");
+            onCompleteCallback(false);
             return;
         }
 
-        // Scan each range
-        for (let i = 0; i < ranges.length; i++) {
-            // Early exit if pattern already found
-            if (patternFound) {
-                break;
+        const start = mod.base;
+        const end = mod.base.add(mod.size);
+
+        let patternFound = false;
+        let callbackDone = false;
+
+        const executeOnce = (ok: boolean) => {
+            if (!callbackDone) {
+            callbackDone = true;
+            onCompleteCallback(ok);
             }
+        };
 
-            const range = ranges[i];
+          // Scan a list of ranges; on first match attach and stop
+        const scanRanges = (ranges: MemoryRange[], tag: string, done: () => void) => {
+            if (patternFound || callbackDone) return done();
+            if (!ranges || ranges.length === 0) return done();
+
+            let completed = 0;
+
+            for (const range of ranges) {
+            if (patternFound || callbackDone) break;
+
             const rangeKey = `${range.base}-${range.size}`;
-
-            // Skip if already rescanned
-            if (this.rescannedRanges.has(rangeKey)) {
-                completedRanges++;
-                if (completedRanges === ranges.length) {
-                    executeCallbackOnce(patternFound);
-                }
+            if (this.rescannedRanges?.has(rangeKey)) {
+                completed++;
+                if (completed === ranges.length && !patternFound && !callbackDone) done();
                 continue;
             }
-
-            /*devlog(
-                `Scanning readable memory range in module: ${this.module.name}, Range: ${range.base} - ${range.base.add(
-                    range.size
-                )}, Size: ${range.size}`
-            );*/
+            try { this.rescannedRanges?.add(rangeKey); } catch {}
 
             Memory.scan(range.base, range.size, pattern, {
                 onMatch: (address: NativePointer) => {
-                    if (!patternFound) {  // Prevent multiple matches from triggering
-                        patternFound = true;
-                        this.found_ssl_log_secret = true;
-                        this.no_hooking_success = false;
-                        var module_by_address = Process.findModuleByAddress(address);
-                        // In some case findModuleByAddress might return null
-                        //devlog(`Pattern: ${pattern}`);
-                        if (module_by_address) {
-                            log(`Pattern found at (${pattern_name}) address: ${address} in module ${module_by_address.name}`);
-                            let local_offset = address.sub(module_by_address.base);
-                            log(`Ghidra offset (Base 0x0): ${local_offset}` );
-                        } else {
-                            log(`Pattern found at (${pattern_name}) address: ${address} in module <name_not_found>`);
-                            log(`Could not get Ghidra offset`);
+                if (patternFound || callbackDone) return "stop";
+                patternFound = true;
+                this.found_ssl_log_secret = true;
+                this.no_hooking_success = false;
+
+                const m = Process.findModuleByAddress(address);
+                if (m) {
+                    log(`Pattern found at (${pattern_name}) address: ${address} in module ${m.name}`);
+                    const local_offset = address.sub(m.base);
+                    log(`Ghidra offset (Base 0x0): ${local_offset}`);
+                } else {
+                    log(`Pattern found at (${pattern_name}) address: ${address} in module <name_not_found>`);
+                    log(`Could not get Ghidra offset`);
+                }
+                devlog_info(`Pattern found for module ${moduleName}`);
+                log(`Pattern-based hooks installed (onReturn).`);
+
+                try {
+                    Interceptor.attach(address, {
+                    onEnter: function (args) {
+                        const stored: NativePointer[] = [];
+                        for (let i = 0; i <= maxArgs; i++) {
+                        try { stored.push(args[i]); } catch { break; }
                         }
-                        devlog_info("Pattern found for module "+ this.module.name);
-                        log(`Pattern-based hooks installed (onReturn).`);
-
-                        Interceptor.attach(address, {
-                            onEnter: function (args) {
-                                // store the arguments so we can use them onLeave
-                                //(this as any).storedArgs = Array.from(args);
-                                const stored: NativePointer[] = [];
-                                // We do a small loop up to maxArgs
-                                for (let i = 0; i <= maxArgs; i++) {
-                                    try {
-                                        stored.push(args[i]);
-                                    } catch (_e) {
-                                        console.log("i = "+i+"  error: "+_e);
-                                        // Possibly out-of-range => break
-                                        break;
-                                    }
-                                }
-                                (this as any).storedArgs = stored;
-                            },
-                            onLeave: function (retval) {
-                                const storedArgs = (this as any).storedArgs || [];
-                                userCallback(storedArgs, retval);
-                            },
-                        });
-
-                        // Execute callback immediately on success
-                        executeCallbackOnce(true);
+                        (this as any).storedArgs = stored;
+                    },
+                    onLeave: function (retval) {
+                        const storedArgs = (this as any).storedArgs || [];
+                        try { userCallback(storedArgs, retval); } catch (e) { console.log(`userCallback error: ${e}`); }
                     }
-                    return "stop";   // Stop scanning the current range immediately
+                    });
+                } catch (e) {
+                    devlog_error(`Interceptor.attach failed at ${address}: ${e}`);
+                }
+
+                executeOnce(true);
+                return "stop"; // stop scanning this range
                 },
-                onError: (reason: string) => {
-                    // only for debugging purpose
-                    /*
-                    devlog_error(
-                        `Error scanning memory for range: ${range.base} - ${range.base.add(
-                            range.size
-                        )}, Reason: ${reason}`
-                    );
-                    */
+                onError: (_reason: string) => {
+                // optionally log per-range errors
                 },
                 onComplete: () => {
-                    completedRanges++;
-                    // Only execute callback when all ranges are completed and no pattern was found
-                    if (completedRanges === ranges.length && !patternFound) {
-                        executeCallbackOnce(false);
-                    }
-                },
+                completed++;
+                if (completed === ranges.length && !patternFound && !callbackDone) {
+                    done();
+                }
+                }
             });
-        }
+            }
+        };
+
+        // Phase 1: module-local ranges by protection
+        const scanModuleLocal = (i: number, after: () => void) => {
+            if (patternFound || callbackDone) return after();
+            if (i >= protSets.length) return after();
+
+            let ranges: MemoryRange[] = [];
+            try { ranges = mod.enumerateRanges(protSets[i]); } catch { ranges = []; }
+            scanRanges(ranges, protSets[i], () => scanModuleLocal(i + 1, after));
+        };
+
+        // Phase 2: process-wide ranges filtered to the module window
+        const scanProcessWide = (i: number, after: () => void) => {
+            if (patternFound || callbackDone) return after();
+            if (i >= protSets.length) return after();
+
+            let ranges: MemoryRange[] = [];
+            try {
+            const all = Process.enumerateRanges(protSets[i]);
+            ranges = all.filter(r => r.base.compare(end) < 0 && r.base.add(r.size).compare(start) > 0);
+            } catch { ranges = []; }
+
+            scanRanges(ranges, protSets[i], () => scanProcessWide(i + 1, after));
+        };
+
+        // Kick off
+        scanModuleLocal(0, () => {
+            if (patternFound || callbackDone) {
+            devlog_debug("Module-local match found; skipping process-wide scan.");
+            return;
+            }
+            devlog_debug(`Module-local scan failed for ${moduleName}, falling back to process-wide filtered ranges...`);
+            scanProcessWide(0, () => {
+            if (!patternFound) executeOnce(false);
+            });
+        });
     }
 
     // Method to hook the module with patterns provided as arguments

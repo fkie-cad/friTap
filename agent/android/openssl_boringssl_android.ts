@@ -20,7 +20,7 @@ export class OpenSSL_BoringSSL_Android extends OpenSSL_BoringSSL {
                 onEnter: function (args: any) {
                     try{
                         callback_already_set = true;
-                        instance.SSL_CTX_set_keylog_callback(args[0], OpenSSL_BoringSSL.keylog_callback);
+                        instance.SSL_CTX_set_keylog_callback(args[0], instance.keylog_callback);
                     }catch (e) {
                         callback_already_set = false;
                         devlog_error(`Error in SSL_new hook: ${e}`);
@@ -38,7 +38,7 @@ export class OpenSSL_BoringSSL_Android extends OpenSSL_BoringSSL {
                                 devlog_error("SSL_CTX_new returned NULL");
                                 return;
                             }
-                            instance.SSL_CTX_set_keylog_callback(retval, OpenSSL_BoringSSL.keylog_callback);
+                            instance.SSL_CTX_set_keylog_callback(retval, instance.keylog_callback);
                         }catch (e) {
                             devlog_error(`Error in SSL_CTX_new hook: ${e}`);
                         }
@@ -74,7 +74,7 @@ export class OpenSSL_BoringSSL_Android extends OpenSSL_BoringSSL {
                 onLeave: function(retval) {
                     const ssl = new NativePointer(retval);
                     if (!ssl.isNull()) {
-                        instance.SSL_CTX_set_keylog_callback(ssl, OpenSSL_BoringSSL.keylog_callback)
+                        instance.SSL_CTX_set_keylog_callback(ssl, instance.keylog_callback)
                     }
                 }
             });

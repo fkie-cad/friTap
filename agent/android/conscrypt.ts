@@ -28,7 +28,7 @@ export class Consycrypt_BoringSSL_Android extends OpenSSL_BoringSSL {
                     const ssl = new NativePointer(retval);
                     if (!ssl.isNull()) {
                         devlog("BoringSSL/Conscrypt SSL_CTX_new - setting keylog callback");
-                        instance.SSL_CTX_set_keylog_callback(ssl, OpenSSL_BoringSSL.keylog_callback);
+                        instance.SSL_CTX_set_keylog_callback(ssl, instance.keylog_callback);
                     }
                 }
             });
