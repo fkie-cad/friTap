@@ -233,7 +233,7 @@ export function cronet_execute(moduleName:string, is_base_hook: boolean){
     let cronet: Cronet_Android;
     if(moduleName.startsWith("stable_cronet")){
         cronet = new Cronet_Android(moduleName,socket_library,is_base_hook, STABLE_CRONET_PATTERNS);
-    }else if(moduleName.startsWith("libsignal_jni") || moduleName.startsWith("libringrtc_rffi")){
+    }else if(moduleName.includes("libsignal_jni") || moduleName.includes("libringrtc_rffi")){
         cronet = new Cronet_Android(moduleName,socket_library,is_base_hook, LIBSIGNAL_PATTERNS);
     }else{
         cronet = new Cronet_Android(moduleName,socket_library,is_base_hook);
