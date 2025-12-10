@@ -4,6 +4,7 @@ from pathlib import Path
 import frida
 import platform
 import os
+import sys
 import logging
 
 def find_pid_by_name(proc_name: str) -> int | None:
@@ -101,3 +102,34 @@ class CustomFormatter(logging.Formatter):
             if color:
                 return f"{color}{text}{self.RESET}"
         return text
+
+class FriTapExit(Exception):
+    code = 0
+    info = None
+    logger = None
+    def __init__(self, logger=None, info=None):
+        if logger:
+            self.logger = logger
+        if info:
+            self.info = info
+
+    def exit(self):
+        if self.info:
+            self.log(self.info)
+        sys.exit(code)
+
+class Success(FriTapExit):
+    info = "\n\nThx for using friTap\nHave a great day\n"
+    def log(self, text):
+        if self.logger:
+            self.logger.info(text)
+        else:
+            print(self.info, file=sys.stderr)
+
+class Failure(FriTapExit):
+    code = 2
+    def log(self, text):
+        if self.logger:
+            self.logger.error(text)
+        else:
+            print(self.info, file=sys.stderr)

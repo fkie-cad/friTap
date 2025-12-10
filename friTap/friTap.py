@@ -25,7 +25,8 @@ except ImportError:
 from .about import __version__
 from .about import __author__
 from .ssl_logger import SSL_Logger
-from .fritap_utility import get_pid_of_lsass, are_we_running_on_windows, supports_color, CustomFormatter
+from .fritap_utility import get_pid_of_lsass, are_we_running_on_windows, supports_color, CustomFormatter, Success, Failure, FriTapExit
+
 
 
 class LsassHookManager:
@@ -339,19 +340,19 @@ Examples:
             
         except frida.TransportError as fe:
             logger.error(f"Problems while attaching to frida-server: {fe}")
-            exit(2)
         except FridaBasedException as e:
             logger.error(f"Frida based error: {e}")
-            exit(2)
         except Exception as e:
             logger.error(f"An error occurred: {e}")
-            exit(2)
-        exit(0)
+        else:
+            # no error, simply exit main
+            return
+        # reach here when error
+        raise Failure
 
-    
     if parsed.full_capture and parsed.pcap is None:
         parser.error("--full_capture requires -p to set the pcap name")
-        exit(2)
+        raise Failure
 
     if parsed.full_capture and parsed.keylog is None:
         logger.warning("Are you sure you want to proceed without recording the key material (-k <keys.log>)?")
@@ -374,26 +375,22 @@ Examples:
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received. Cleaning up...")
         cleanup_lsass_hook()
+        raise
     except SystemExit:
         cleanup_lsass_hook()
+        raise
     except frida.TransportError as fe:
         logger.error(f"Problems while attaching to frida-server: {fe}")
-        exit(2)
     except FridaBasedException as e:
         logger.error(f"Frida based error: {e}")
-        exit(2)
     except frida.TimedOutError as te:
         logger.error(f"TimeOutError: {te}")
-        exit(2)
     except frida.ProcessNotFoundError as pe:
         logger.error(f"ProcessNotFoundError: {pe}")
-        exit(2)
     except frida.PermissionDeniedError as e:
         logger.error(f"Frida Permission Denied: {e}")
-        exit(2)
     except frida.ServerNotRunningError as e:
         logger.error(f"Frida server is not running: {e}")
-        exit(2)
     except frida.InvalidArgumentError as e:
         logger.error(f"Invalid Argument passed to Frida: {e}")
         if "device not found" in str(e):
@@ -402,11 +399,8 @@ Examples:
             logger.error("\t1. Identify the target device ID (e.g., using `adb devices` or `frida-ls-devices`).")
             logger.error("\t2. Run FriTap with the device ID:")
             logger.error("\t   fritap -m <device-id> <target>")
-
-        exit(2)
     except frida.InvalidOperationError as e:
         logger.error(f"Invalid Operation Error in Frida: {e}")
-        exit(2)
     except Exception as ar:
         # Get current system exception
         ex_type, ex_value, ex_traceback = sys.exc_info()
@@ -437,22 +431,30 @@ Examples:
             logger.error(f"Unknown error: {ex_value}")
 
         if "unable to access process with pid" in str(ex_value).lower():
-            special_logger.info("\nThanks for using friTap. Have a great day!")
-            os._exit(0)
+            raise Success(special_logger)
         if "not yet supported on this os" in str(ex_value).lower():
             logger.error("This feature is currently not supported by frida on this OS.")
-            special_logger.info("\nThanks for using friTap. Have a great day!")
-            os._exit(0)
+            raise Success(special_logger)
 
         if 'ssl_log' in locals():
             ssl_log.pcap_cleanup(parsed.full_capture,parsed.mobile,parsed.pcap)
             ssl_log.cleanup(parsed.live,parsed.socket_tracing,parsed.full_capture,parsed.debug,parsed.debugoutput)    
+        return
 
+    else:
+        # normal end, no error
+        return
     finally:
         if 'ssl_log' in locals() and isinstance(ssl_log, SSL_Logger):
             ssl_log.pcap_cleanup(parsed.full_capture,parsed.mobile,parsed.pcap)
             ssl_log.cleanup(parsed.live,parsed.socket_tracing,parsed.full_capture,parsed.debug)
-        
+    
+    # only reached when error
+    raise Failure
+
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except FriTapExit as e:
+        e.exit()
