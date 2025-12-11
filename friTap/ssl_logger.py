@@ -709,8 +709,11 @@ class SSL_Logger():
             except frida.ServerNotRunningError:
                 self.logger.error("Frida server is not running. Please ensure it is started on the device.")
                 sys.exit(1)
-            except frida.DeviceNotFoundError:
-                self.logger.error(f"Device with ID '{self.mobile}' not found. Please check the device ID or ensure it is connected.")
+            except frida.InvalidArgumentError as e:
+                if 'device not found' in e.args:
+                    self.logger.error(f"Device with ID '{self.mobile}' not found. Please check the device ID or ensure it is connected.")
+                else:
+                    self.logger.error(f"Frida encountered an internal error: {e}")
                 sys.exit(1)
             except Exception as e:
                 self.logger.error(f"Unexpected error while attaching to the device: {e}")
@@ -936,8 +939,11 @@ class SSL_Logger():
                 except frida.ServerNotRunningError:
                     self.logger.error("Frida server is not running. Please ensure it is started on the device.")
                     return "Error: Frida server not running"
-                except frida.DeviceNotFoundError:
-                    self.logger.error(f"Device with ID '{self.mobile}' not found. Please check the device ID or ensure it is connected.")
+                except frida.InvalidArgumentError as e:
+                    if 'device not found' in e.args:
+                        self.logger.error(f"Device with ID '{self.mobile}' not found. Please check the device ID or ensure it is connected.")
+                    else:
+                        self.logger.error(f"Frida encountered an internal error: {e}")
                     return "Error: Device not found"
                 except Exception as e:
                     self.logger.error(f"Unexpected error while attaching to the device: {e}")
