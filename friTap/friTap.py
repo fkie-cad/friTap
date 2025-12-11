@@ -210,7 +210,7 @@ class ArgParser(argparse.ArgumentParser):
         print(self.format_help().replace("usage:", "Usage:"))
         self.exit(0)
 
-def main():
+def cli():
     # Initial setup - will be reconfigured after parsing arguments
     logger = logging.getLogger('friTap')
     
@@ -452,9 +452,12 @@ Examples:
     # only reached when error
     raise Failure
 
-
-if __name__ == "__main__":
+def main():
     try:
-        main()
+        cli()
     except FriTapExit as e:
         e.exit()
+
+
+if __name__ == "__main__":
+    main()

@@ -222,7 +222,7 @@ class Android:
         try:
             subprocess.run(['adb', 'version'], capture_output=True, text=True, timeout=5)
             return True
-        except FileNotFoundError, subprocess.TimeoutExpired:
+        except (FileNotFoundError, subprocess.TimeoutExpired):
             print("[-] can't find adb in your path. Please ensure that adb is installed and in your path if you are trying a full capture on Android.")
             return False
 
