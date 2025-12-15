@@ -199,7 +199,7 @@ class Android:
     @assure_android
     def run_tcpdump_capture(self,pcap_name):
         self.pcap_name = pcap_name
-        tcpdump_cmd = f'{self.tcpdump_path} -U -i any -s 0 -w {self.dst_path}{pcap_name} \\"not \\(tcp port 5555 or tcp port 27042\\)\\"'
+        tcpdump_cmd = f'{self.tcpdump_path} -U -i any -s 0 -w {self.dst_path}{pcap_name} "not (tcp port 5555 or tcp port 27042)"'
 
         self.debug_print("[*] Running tcpdump in background:", tcpdump_cmd)
         return self.adb.shell(tcpdump_cmd, popen=True)
