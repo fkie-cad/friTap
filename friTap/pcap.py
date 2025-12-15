@@ -192,7 +192,7 @@ class PCAP:
 
                 # Terminate the tcpdump process if running
                 #if self.android_capture_process and self.android_capture_process.poll() in {None, -2, -15}:
-                if self.is_Mobile and pcap_class.android_Instance.is_Android():
+                if self.is_Mobile and pcap_class.android_Instance.is_Android:
                     if self.android_capture_process != -1 and self.android_capture_process.poll() is None:
                         pcap_class.android_Instance.send_ctrlC_over_adb()
                         self.android_capture_process.terminate()
@@ -214,7 +214,7 @@ class PCAP:
                 
                 
             def full_mobile_capture(self):
-                if pcap_class.android_Instance.is_Android():
+                if pcap_class.android_Instance.is_Android:
                     if not pcap_class.android_Instance.is_tcpdump_available(): 
                         pcap_class.android_Instance.install_tcpdump()
                     self.android_capture_process = pcap_class.android_Instance.run_tcpdump_capture("_"+self._get_pcap_base_name())
