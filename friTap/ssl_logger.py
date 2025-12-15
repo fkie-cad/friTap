@@ -87,6 +87,7 @@ class SSL_Logger():
         self.experimental = experimental
         self.custom_hook_script = custom_hook_script
         self.script = None
+        self.own_message_handler = None
         self.running = True
         self.json_output = json_output
         self.install_lsass_hook = install_lsass_hook
