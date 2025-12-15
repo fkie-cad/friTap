@@ -105,7 +105,7 @@ class Android:
     def is_tcpdump_available(self):
         try:
             # Check if tcpdump is available on the device
-            result = self.adb.run("tcpdump --version")
+            result = self.adb.shell("tcpdump --version")
             return result.returncode == 0
         except Exception as e:
             print(f"Error checking tcpdump availability: {e}")
