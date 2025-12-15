@@ -202,7 +202,7 @@ class Android:
         tcpdump_cmd = f'{self.tcpdump_path} -U -i any -s 0 -w {self.dst_path}{pcap_name} \\"not \\(tcp port 5555 or tcp port 27042\\)\\"'
 
         self.debug_print("[*] Running tcpdump in background:", tcpdump_cmd)
-        return self.adb.Popen(tcpdump_cmd)
+        return self.adb.shell(tcpdump_cmd, popen=True)
 
     def start_tcpdump(self, pcap_name):
         return self.run_tcpdump_capture(pcap_name)
@@ -302,10 +302,13 @@ class ADB:
         popen_kwargs.update(kwargs)
         return subprocess.Popen(self._adb_cmd(*args), **popen_kwargs)
 
-    def shell(self, *args, **kwargs):
+    def shell(self, *args, popen=False, **kwargs):
         cmd = ' '.join(args) if len(args) > 1 else args[0]
         shell_args=['shell'] + self._elevator(cmd)
-        return self.run(*shell_args, **kwargs)
+        if popen:
+            return self.Popen(*shell_args, **kwargs)
+        else:
+            return self.run(*shell_args, **kwargs)
 
     @staticmethod
     def find(device_id=None):
