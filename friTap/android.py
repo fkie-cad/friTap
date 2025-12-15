@@ -175,7 +175,7 @@ class Android:
     def send_ctrlC_over_adb(self):
         pids = self.get_pids(self.tcpdump_cmd)
         if pids:
-            pids_str = " ".join(pids)
+            pids_str = " ".join(map(str, pids))
             self.adb.shell(f"kill -INT {pids_str}")
             self.debug_print(f"[*] Killed processes with PID: {pids_str}")
         else:
