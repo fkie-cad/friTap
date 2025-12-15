@@ -315,14 +315,14 @@ class ADB:
         for adb in ADB.__subclasses__() + [ADB]:
             try:
                 return adb.detect(device_id=device_id)
-            except ValueError:
+            except (ValueError, subprocess.TimeoutExpired):
                 continue
         raise Failure("[-] No ADB: there seems to be no adb and/or connection available")
 
     @classmethod
     def detect(cls, device_id=None):
         adb = cls(device_id=device_id)
-        uid = int(adb.shell('id -u').stdout) # may raise, that's ok
+        uid = int(adb.shell('id -u', timeout=1).stdout) # may raise, that's ok
         if (uid == 0) == adb.is_rooted:
             return adb
         raise ValueError
