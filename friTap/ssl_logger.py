@@ -864,7 +864,7 @@ class SSL_Logger():
                     time.sleep(1)
                     self.pcap_obj.full_capture_thread.mobile_subprocess.terminate()
                     self.pcap_obj.full_capture_thread.mobile_subprocess.wait()
-                    if not self.pcap_obj.android_Instance.is_tcpdump_available():
+                    if not self.pcap_obj.android_Instance.is_tcpdump_available:
                         self.logger.error("tcpdump is not available on the device.")
                         return
                     self.pcap_obj.android_Instance.pull_pcap_from_device()

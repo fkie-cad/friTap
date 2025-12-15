@@ -94,14 +94,15 @@ class Android:
 
     @property
     def tcpdump_path(self):
-        if self.is_tcpdump_available():
+        if self.is_tcpdump_available:
             return "tcpdump"
         return f"{self.dst_path}./{self.tcpdump_version}"
 
     @property
     def tcpdump_cmd(self):
-        return "tcpdump" if self.is_tcpdump_available() else self.tcpdump_version
+        return "tcpdump" if self.is_tcpdump_available else self.tcpdump_version
         
+    @cached_property
     def is_tcpdump_available(self):
         try:
             # Check if tcpdump is available on the device
