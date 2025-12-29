@@ -87,6 +87,7 @@ class SSL_Logger():
         self.experimental = experimental
         self.custom_hook_script = custom_hook_script
         self.script = None
+        self.own_message_handler = None
         self.running = True
         self.json_output = json_output
         self.install_lsass_hook = install_lsass_hook
@@ -709,8 +710,11 @@ class SSL_Logger():
             except frida.ServerNotRunningError:
                 self.logger.error("Frida server is not running. Please ensure it is started on the device.")
                 sys.exit(1)
-            except frida.DeviceNotFoundError:
-                self.logger.error(f"Device with ID '{self.mobile}' not found. Please check the device ID or ensure it is connected.")
+            except frida.InvalidArgumentError as e:
+                if 'device not found' in e.args:
+                    self.logger.error(f"Device with ID '{self.mobile}' not found. Please check the device ID or ensure it is connected.")
+                else:
+                    self.logger.error(f"Frida encountered an internal error: {e}")
                 sys.exit(1)
             except Exception as e:
                 self.logger.error(f"Unexpected error while attaching to the device: {e}")
@@ -861,7 +865,7 @@ class SSL_Logger():
                     time.sleep(1)
                     self.pcap_obj.full_capture_thread.mobile_subprocess.terminate()
                     self.pcap_obj.full_capture_thread.mobile_subprocess.wait()
-                    if not self.pcap_obj.android_Instance.is_tcpdump_available():
+                    if not self.pcap_obj.android_Instance.is_tcpdump_available:
                         self.logger.error("tcpdump is not available on the device.")
                         return
                     self.pcap_obj.android_Instance.pull_pcap_from_device()
@@ -936,8 +940,11 @@ class SSL_Logger():
                 except frida.ServerNotRunningError:
                     self.logger.error("Frida server is not running. Please ensure it is started on the device.")
                     return "Error: Frida server not running"
-                except frida.DeviceNotFoundError:
-                    self.logger.error(f"Device with ID '{self.mobile}' not found. Please check the device ID or ensure it is connected.")
+                except frida.InvalidArgumentError as e:
+                    if 'device not found' in e.args:
+                        self.logger.error(f"Device with ID '{self.mobile}' not found. Please check the device ID or ensure it is connected.")
+                    else:
+                        self.logger.error(f"Frida encountered an internal error: {e}")
                     return "Error: Device not found"
                 except Exception as e:
                     self.logger.error(f"Unexpected error while attaching to the device: {e}")
