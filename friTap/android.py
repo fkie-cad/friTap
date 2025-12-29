@@ -9,7 +9,7 @@ import subprocess
 import shlex
 import re
 import logging
-from .fritap_utility import Success, Failure
+from .fritap_utility import Failure
 
 
 class Android:
