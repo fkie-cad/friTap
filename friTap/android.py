@@ -201,11 +201,14 @@ class Android:
     @assure_android
     def run_tcpdump_capture(self,pcap_name):
         self.pcap_name = pcap_name
-        tcpdump_cmd = f'{self.tcpdump_path} -U -i any -s 0 -w {self.dst_path}{pcap_name} "not \\(tcp port 5555 or tcp port 27042\\)"'
+        #tcpdump_cmd = f'{self.tcpdump_path} -U -i any -s 0 -w {self.dst_path}{pcap_name} "not \\(tcp port 5555 or tcp port 27042\\)"'
+        # Note: Parentheses don't need escaping when inside double quotes
+        # The filter excludes ADB (default: 5555) and frida-server (default: 27042) traffic
+        tcpdump_cmd = f'{self.tcpdump_path} -U -i any -s 0 -w {self.dst_path}{pcap_name} "not (tcp port 5555 or tcp port 27042)"'
 
         # Show the full command that will be executed
-        elevator_args = self.adb._elevator(tcpdump_cmd)
-        full_cmd = "adb shell " + " ".join(f'"{arg}"' if " " in arg else arg for arg in elevator_args)
+        elevated_cmd = self.adb._elevator(tcpdump_cmd)
+        full_cmd = f'adb shell "{elevated_cmd}"'
         self.debug_print("Running tcpdump in background:", full_cmd)
         return self.adb.shell(tcpdump_cmd, popen=True)
 
@@ -311,7 +314,8 @@ class ADB:
 
     def shell(self, *args, popen=False, **kwargs):
         cmd = ' '.join(args) if len(args) > 1 else args[0]
-        shell_args=['shell'] + self._elevator(cmd)
+        elevated_cmd = self._elevator(cmd)
+        shell_args = ['shell', elevated_cmd]
         if popen:
             return self.Popen(*shell_args, **kwargs)
         else:
@@ -337,12 +341,16 @@ class ADB:
 class RootADB(ADB):
     # The Root elevator means: no su; works directly on uid-0 shell
     def _elevator(self, cmd):
-        return [cmd]
+        return cmd
 
 class SuADB(ADB):
     def _elevator(self, cmd):
-        return ['su', '0', cmd]
+        return f'su 0 {cmd}'
 
 class MagiskADB(ADB):
     def _elevator(self, cmd):
-        return ['su', '-c', cmd]
+        # Return single string: 'su -c '<cmd>''
+        # The command must be quoted for su -c to handle it as a single argument
+        # Using single quotes; if cmd contains single quotes, they need escaping
+        escaped_cmd = cmd.replace("'", "'\\''")  # Escape single quotes: ' -> '\''
+        return f"su -c '{escaped_cmd}'"

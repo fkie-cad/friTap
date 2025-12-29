@@ -115,7 +115,7 @@ class SSL_Logger():
         
         # JSON session data
         self.session_data = {
-            "friTap_version": "1.4.1.0",  # Should be imported from about.py
+            "friTap_version": "1.4.1.2",  # Should be imported from about.py
             "session_info": {
                 "start_time": datetime.now(timezone.utc).isoformat(),
                 "target_app": app,
