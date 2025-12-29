@@ -8,6 +8,7 @@ import frida
 import subprocess
 import shlex
 import re
+import logging
 from .fritap_utility import Success, Failure
 
 
@@ -24,6 +25,7 @@ class Android:
     def __init__(self, debug_infos=False, device_id=None):
         self.device_id = device_id
         self.print_debug_infos = debug_infos
+        self.logger = logging.getLogger('friTap')
 
     @cached_property
     def adb(self):
@@ -39,9 +41,9 @@ class Android:
         try:
             return self.tcpdump_arch_map[arch]
         except KeyError:
-            print("[-] unknown arch.")
-            print("    We can't find your device architecture using frida, please set mobile arch via --m_arch <arm64|arm|ia32|x64>")
-            print("[-] Leaving....")
+            self.logger.error("unknown arch.")
+            self.logger.error("We can't find your device architecture using frida, please set mobile arch via --m_arch <arm64|arm|ia32|x64>")
+            self.logger.error("Leaving....")
             raise Failure
 
     def get_frida_device(self):
@@ -50,7 +52,7 @@ class Android:
                 return frida.get_device_manager().get_device(self.device_id, timeout=5)
             return frida.get_usb_device()
         except frida.InvalidArgumentError:
-            print(f"[-] Device not found. Please verify the device ID: {self.device_id}")
+            self.logger.error(f"Device not found. Please verify the device ID: {self.device_id}")
             raise Success
 
     def adb_check_root(self):
@@ -81,8 +83,10 @@ class Android:
         self.adb.shell(f'chmod +x "{path}{self.tcpdump_version}"')
 
     def debug_print(self, *args, **kwargs):
-        if self.print_debug_infos:
-            return print(*args, **kwargs)
+        """Print debug messages using the logger's debug level."""
+        # Join args into a single message string for the logger
+        message = ' '.join(str(arg) for arg in args)
+        self.logger.debug(message)
 
     def assure_android(func):
         wraps(func)
@@ -109,7 +113,7 @@ class Android:
             result = self.adb.shell("tcpdump --version")
             return result.returncode == 0
         except Exception as e:
-            print(f"Error checking tcpdump availability: {e}")
+            self.logger.warning(f"Error checking tcpdump availability: {e}")
             return False
             
     
@@ -121,11 +125,11 @@ class Android:
         tcpdump_path = os.path.join(current_dir, 'assets', 'tcpdump_binaries', self.tcpdump_version)
 
         if file_exists(tcpdump_path):
-            print(f"[*] installing tcpdump to Android device: {tcpdump_path}")
+            self.logger.info(f"installing tcpdump to Android device: {tcpdump_path}")
             return tcpdump_path
         else:
-            print("[-] error: can't find "+str(tcpdump_path))
-            print("[-] ensure that "+str(tcpdump_path)+" exits\n")
+            self.logger.error(f"can't find {tcpdump_path}")
+            self.logger.error(f"ensure that {tcpdump_path} exists")
             raise Failure
 
     @assure_android
@@ -134,23 +138,23 @@ class Android:
         return_Value = self._adb_push_file(tcpdump_path,self.dst_path)
 
         if return_Value.returncode != 0:
-            print("[-] error: " +  return_Value.stderr)
-            print("    it might help to adjust the dst_path or to ensure that you have adb in your path\n")
+            self.logger.error(f"error: {return_Value.stderr}")
+            self.logger.error("it might help to adjust the dst_path or to ensure that you have adb in your path")
             raise Failure
 
         self._adb_make_binary_executable(self.dst_path)
-        print(f"[*] pushed tcpdump to {self.dst_path} on your android device")
+        self.logger.info(f"pushed tcpdump to {self.dst_path} on your android device")
         return True
             
     @assure_android
     def pull_pcap_from_device(self):
         pcap_path = self.dst_path + self.pcap_name
         return_Value = self._adb_pull_file(pcap_path,".")
-        print(f"[*] pulling capture from device: {return_Value.stdout.strip()}")
+        self.logger.info(f"pulling capture from device: {return_Value.stdout.strip()}")
         self.debug_print("---------------------------------")
         self.debug_print(return_Value)
         if return_Value.returncode !=0:
-            print(f"[-] error pulling pcap ({pcap_path}) from android device")
+            self.logger.error(f"error pulling pcap ({pcap_path}) from android device")
 
     def get_pid(self, process_name):
         pids = self.get_pids(process_name)
@@ -184,24 +188,25 @@ class Android:
     @assure_android
     def send_kill_tcpdump_over_adb(self):
         pids = self.get_pids(self.tcpdump_cmd)
-        
+
         if pids:
-            pids_str = " ".join(pids)
-            self.run_adb_command_as_root(f"kill -9 {pids_str}")
-            if self.print_debug_infos:
-                print(f"[*] Killed processes with PID: {pids_str}")
+            pids_str = " ".join(map(str, pids))
+            self.adb.shell(f"kill -9 {pids_str}")
+            self.debug_print(f"[*] Killed processes with PID: {pids_str}")
         else:
-            if self.print_debug_infos:
-                print("[-] No running tcpdump processes found")
+            self.debug_print("[-] No running tcpdump processes found")
         
 
 
     @assure_android
     def run_tcpdump_capture(self,pcap_name):
         self.pcap_name = pcap_name
-        tcpdump_cmd = f'{self.tcpdump_path} -U -i any -s 0 -w {self.dst_path}{pcap_name} "not (tcp port 5555 or tcp port 27042)"'
+        tcpdump_cmd = f'{self.tcpdump_path} -U -i any -s 0 -w {self.dst_path}{pcap_name} "not \\(tcp port 5555 or tcp port 27042\\)"'
 
-        self.debug_print("[*] Running tcpdump in background:", tcpdump_cmd)
+        # Show the full command that will be executed
+        elevator_args = self.adb._elevator(tcpdump_cmd)
+        full_cmd = "adb shell " + " ".join(f'"{arg}"' if " " in arg else arg for arg in elevator_args)
+        self.debug_print("[*] Running tcpdump in background:", full_cmd)
         return self.adb.shell(tcpdump_cmd, popen=True)
 
     def start_tcpdump(self, pcap_name):
@@ -224,7 +229,7 @@ class Android:
             subprocess.run(['adb', 'version'], capture_output=True, text=True, timeout=5)
             return True
         except (FileNotFoundError, subprocess.TimeoutExpired):
-            print("[-] can't find adb in your path. Please ensure that adb is installed and in your path if you are trying a full capture on Android.")
+            self.logger.error("can't find adb in your path. Please ensure that adb is installed and in your path if you are trying a full capture on Android.")
             return False
 
     def list_devices(self):
@@ -234,18 +239,19 @@ class Android:
     def list_installed_packages(self):
         lines = self.adb.shell('pm', 'list', 'packages', timeout=15).stdout.splitlines()
         return [self.adb._parse_package_name(x) for x in lines]
-    
+
     @cached_property
     def is_Android(self):
         if self.check_adb_availability() and len(self.list_devices()) >= 1:
             return True
         else:
-            print("[-] No device connected to adb. Ensure that adb devices will print your device if you are trying a full capture on Android.")
+            self.logger.error("No device connected to adb. Ensure that adb devices will print your device if you are trying a full capture on Android.")
             return False
         
 class ADB:
     def __init__(self, device_id=None):
         self.device_id = device_id
+        self.logger = logging.getLogger('friTap')
 
     def _to_runlist(self, *args):
         if len(args) == 1:
@@ -255,10 +261,10 @@ class ADB:
     @property
     def is_rooted(self):
         return type(self) != ADB
-    
+
     def _elevator(self, cmd):
         # if we reach this, no elevator has been found and we are not rooted.
-        print("[-] none rooted device. Please root it before trying a full-capture with friTap and ensure that you are able to run commands with the su-binary....")
+        self.logger.error("none rooted device. Please root it before trying a full-capture with friTap and ensure that you are able to run commands with the su-binary....")
         raise ValueError
 
     @property
@@ -334,9 +340,8 @@ class RootADB(ADB):
 
 class SuADB(ADB):
     def _elevator(self, cmd):
-        return [f'su 0 "{cmd}"']
+        return ['su', '0', cmd]
 
 class MagiskADB(ADB):
     def _elevator(self, cmd):
-        return [f'su -c "{cmd}"']
-
+        return ['su', '-c', cmd]

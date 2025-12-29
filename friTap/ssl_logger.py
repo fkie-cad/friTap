@@ -69,6 +69,8 @@ class SSL_Logger():
         self.pcap_name = pcap_name
         self.mobile = mobile
         self.debug_output = debug_output
+        if self.debug:
+            self.debug_output = True
         self.full_capture = full_capture
         self.target_app = app
         self.verbose = verbose
@@ -113,7 +115,7 @@ class SSL_Logger():
         
         # JSON session data
         self.session_data = {
-            "friTap_version": "1.3.7.1",  # Should be imported from about.py
+            "friTap_version": "1.4.1.0",  # Should be imported from about.py
             "session_info": {
                 "start_time": datetime.now(timezone.utc).isoformat(),
                 "target_app": app,
@@ -174,7 +176,7 @@ class SSL_Logger():
             self.frida_agent_script = "_ssl_log.js"
 
         if self.pcap_name:
-            self.pcap_obj =  PCAP(self.pcap_name,SSL_READ,SSL_WRITE,self.full_capture, self.mobile,self.debug)
+            self.pcap_obj =  PCAP(self.pcap_name,SSL_READ,SSL_WRITE,self.full_capture, self.mobile,self.debug_output)
 
         if self.offsets is not None:
             if os.path.exists(self.offsets):
@@ -206,7 +208,7 @@ class SSL_Logger():
             self.logger.info(f'Created named pipe for Wireshark live view to {fifo_file}')
             self.logger.info(f'Now open this named pipe with Wireshark in another terminal: sudo wireshark -k -i {fifo_file}')
             self.logger.info('friTap will continue after the named pipe is ready....')
-            self.pcap_obj =  PCAP(fifo_file,SSL_READ,SSL_WRITE,self.full_capture, self.mobile,self.debug)
+            self.pcap_obj =  PCAP(fifo_file,SSL_READ,SSL_WRITE,self.full_capture, self.mobile,self.debug_output)
 
     
     def on_detach(self, reason):
@@ -217,7 +219,7 @@ class SSL_Logger():
         self.logger.info(f"Target process stopped: {reason}")
         self._log_session_end(reason)
         self.pcap_cleanup(self.full_capture,self.mobile,self.pcap_name)
-        self.cleanup(self.live,self.socket_trace,self.full_capture,self.debug)
+        self.cleanup(self.live,self.socket_trace,self.full_capture,self.debug_output)
 
     
     def _to_datetime(self, ts):

@@ -34,7 +34,7 @@ except ImportError:
     # Only print warning if not in testing mode
     import sys
     if 'pytest' not in sys.modules:
-        print('[-]: scapy is not installed, please install it by running: pip3 install scapy')
+        logging.getLogger('friTap').warning('scapy is not installed, please install it by running: pip3 install scapy')
 
 from .android import Android
  
@@ -47,45 +47,48 @@ warnings.simplefilter("ignore", ResourceWarning)
 
 
 def terminate_lingering_processes(parent_pid):
+    logger = logging.getLogger('friTap')
     parent = psutil.Process(parent_pid)
     for child in parent.children(recursive=True):
-        print(f"Terminating child process: {child.pid} ({child.name()})")
+        logger.info(f"Terminating child process: {child.pid} ({child.name()})")
         child.terminate()
         try:
             child.wait(timeout=2)
         except psutil.TimeoutExpired:
-            print(f"Forcing kill of child process: {child.pid}")
+            logger.warning(f"Forcing kill of child process: {child.pid}")
             child.kill()
 
 class PCAP:
-    
+
     def __init__(self,pcap_file_name,SSL_READ,SSL_WRITE, doFullCapture, isMobile, print_debug_infos=False):
         self.pcap_file_name = pcap_file_name
+        self.logger = logging.getLogger('friTap')
         if isMobile is True:  # No device ID provided
             self.device_id = None
         else:
             self.device_id = isMobile
         self.pkt ={}
         self.print_debug_infos = print_debug_infos
-        
-            
+
+
         self.is_Mobile = isMobile
-        
+
         # ssl_session[<SSL_SESSION id>] = (<bytes sent by client>,
         #                                  <bytes sent by server>)
         self.ssl_sessions = {}
         self.SSL_READ = SSL_READ
         self.SSL_WRITE = SSL_WRITE
-        
+
         if doFullCapture:
             if isMobile:
+                self.logger.debug(f"Applying debug mode: {self.print_debug_infos}")
                 self.android_Instance = Android(self.print_debug_infos,device_id=self.device_id)
             self.full_capture_thread = self.get_instance_of_FullCaptureThread()
             self.full_capture_thread.start()
             if self.full_capture_thread.is_alive():
-                print("[*] capturing whole traffic of target app")
+                self.logger.info("capturing whole traffic of target app")
         else:
-            print("[*] capturing only plaintext data")
+            self.logger.info("capturing only plaintext data")
             self.pcap_file = self.__create_plaintext_pcap()
             
     
@@ -132,51 +135,51 @@ class PCAP:
             
             def clean_up_and_exit(self):
                 """Gracefully exit the FullCaptureThread"""
-                print("[*] Cleaning up FullCaptureThread resources.")
+                pcap_class.logger.info("Cleaning up FullCaptureThread resources.")
                 if self.socket:
                     try:
-                        print("[*] Closing network socket.")
+                        pcap_class.logger.info("Closing network socket.")
                         self.socket.close()
                     except Exception as e:
-                        print(f"[-] Error while closing the socket: {e}")
+                        pcap_class.logger.error(f"Error while closing the socket: {e}")
                 if self.android_capture_process != -1:
                     try:
-                        print("[*] Terminating android capture process.")
+                        pcap_class.logger.info("Terminating android capture process.")
                         self.android_capture_process.terminate()
                         self.android_capture_process.wait(timeout=2)
                     except Exception as e:
-                        print(f"[-] Error while terminating android capture process: {e}")
+                        pcap_class.logger.error(f"Error while terminating android capture process: {e}")
 
             
             
             def full_local_capture(self):
                 try:
-                        
+
                     self.socket = conf.L2listen(
                         type=ETH_P_ALL
                     )
-                    
-                    print("[*] doing full local capture")
-                    
+
+                    pcap_class.logger.info("doing full local capture")
+
                     sniff(
                         opened_socket=self.socket,
                         prn=self.write_packet_to_pcap,
                         stop_filter=self.stop_capture_thread
                     )
                 except PermissionError as e:
-                    print(f"[-] PermissionError: {e}")
-                    print("[!] It seems you do not have permissions to access /dev/bpf. Please run the script with 'sudo' or grant your user access to /dev/bpf* files.")
-                    print("[!] Exiting the program.")
+                    pcap_class.logger.error(f"PermissionError: {e}")
+                    pcap_class.logger.debug("It seems you do not have permissions to access /dev/bpf. Please run the script with 'sudo' or grant your user access to /dev/bpf* files.")
+                    pcap_class.logger.debug("Exiting the program.")
                     self.clean_up_and_exit()
                 except Scapy_Exception as e:
-                    print(f"[-] Scapy_Exception: {e}")
-                    print("[!] Scapy could not open /dev/bpf for network capture. Ensure you have the correct permissions.")
-                    print("[!] Run the script with 'sudo' (not recommended for security reasons).")
+                    pcap_class.logger.error(f"Scapy_Exception: {e}")
+                    pcap_class.logger.debug("Scapy could not open /dev/bpf for network capture. Ensure you have the correct permissions.")
+                    pcap_class.logger.debug("Run the script with 'sudo' (not recommended for security reasons).")
                     self.clean_up_and_exit()
                 except Exception as e:
-                    print(f"[-] Unknown error: {e}")
-                    print("[!] Full traceback for debugging:")
-                    traceback.print_exc()
+                    pcap_class.logger.error(f"Unknown error: {e}")
+                    pcap_class.logger.debug("Full traceback for debugging:")
+                    pcap_class.logger.debug(traceback.format_exc())
                     self.clean_up_and_exit()
                 
                 
@@ -199,7 +202,7 @@ class PCAP:
                         try:
                             self.android_capture_process.wait(timeout=2)  # Wait for graceful termination
                         except subprocess.TimeoutExpired:
-                            print("[-] Android capture thread did not terminate. Forcing kill.")
+                            pcap_class.logger.error("Android capture thread did not terminate. Forcing kill.")
                             self.android_capture_process.kill()
 
                 super().join(timeout)
@@ -215,14 +218,14 @@ class PCAP:
                 
             def full_mobile_capture(self):
                 if pcap_class.android_Instance.is_Android:
-                    if not pcap_class.android_Instance.is_tcpdump_available: 
+                    if not pcap_class.android_Instance.is_tcpdump_available:
                         pcap_class.android_Instance.install_tcpdump()
                     self.android_capture_process = pcap_class.android_Instance.run_tcpdump_capture("_"+self._get_pcap_base_name())
-                    
-                    print("[*] doing full capture on Android")
+
+                    pcap_class.logger.info("doing full capture on Android")
                     return self.android_capture_process
                 else:
-                    print("[-] currently a full capture on iOS is not supported\nAbborting...")
+                    pcap_class.logger.error("currently a full capture on iOS is not supported\nAbborting...")
                     exit(2)
                     
         ## End of inner class FullCaptureThread 
@@ -362,7 +365,7 @@ class PCAP:
             self.pcap_file.write(data)
 
         else:
-            print("Packet has unknown/unsupported family!")
+            self.logger.warning("Packet has unknown/unsupported family!")
 
         if function in self.SSL_READ:
             server_sent += len(data)
@@ -417,7 +420,7 @@ class PCAP:
             )
 
         if not traced_Socket_Set:
-            print("[-] No sockets traced. The resulting PCAP will contain all traffic from the device.")
+            self.logger.error("No sockets traced. The resulting PCAP will contain all traffic from the device.")
             return
 
         # Convert each frozenset in the traced_Socket_Set back to a dictionary
@@ -425,16 +428,16 @@ class PCAP:
 
         valid_sockets = [socket for socket in socket_dicts if is_valid_socket(socket)]
         if not valid_sockets:
-            print("[-] No valid sockets found. The resulting PCAP will contain all traffic.")
+            self.logger.error("No valid sockets found. The resulting PCAP will contain all traffic.")
             return
 
         bpf_filter = PCAP.get_filter_from_traced_sockets(valid_sockets, filter_type="bpf")
         if not bpf_filter:
-            print("[-] Failed to generate a valid BPF filter.")
+            self.logger.error("Failed to generate a valid BPF filter.")
             return
 
         if is_verbose:
-            print(f"[*] Filtering with BPF filter:\n{bpf_filter}")
+            self.logger.info(f"Filtering with BPF filter:\n{bpf_filter}")
         try:
             """
             There is currently a bug which is happening when invoking sniff. Currently we just ignore this warning:
@@ -445,12 +448,12 @@ class PCAP:
             ResourceWarning: subprocess 63901 is still running
             reading from file <name>.pcap, link-type LINUX_SLL2 (Linux cooked v2)
             """
-            filtered_capture = sniff(offline="_" + self.pcap_file_name, filter=bpf_filter) 
+            filtered_capture = sniff(offline="_" + self.pcap_file_name, filter=bpf_filter)
             wrpcap(self.pcap_file_name, filtered_capture)
         except Exception as e:
-            print(f"[-] Error during PCAP filtering: {e}")
+            self.logger.error(f"Error during PCAP filtering: {e}")
         else:
-            print(f"[*] Successfully filtered. Output written to {self.pcap_file_name}")
+            self.logger.info(f"Successfully filtered. Output written to {self.pcap_file_name}")
 
     
     
@@ -468,6 +471,3 @@ class PCAP:
         if src_addr == "::" or dst_addr == "::" or not src_addr or not dst_addr:
             return ""  # Skip invalid entries
         return f"(src host {src_addr} and dst host {dst_addr})"
-
-
-
