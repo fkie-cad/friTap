@@ -3,7 +3,6 @@
 
 import argparse
 import sys
-import os
 import frida
 import logging
 import traceback

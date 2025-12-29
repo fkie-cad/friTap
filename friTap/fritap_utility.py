@@ -104,32 +104,51 @@ class CustomFormatter(logging.Formatter):
         return text
 
 class FriTapExit(Exception):
-    code = 0
-    info = None
-    logger = None
-    def __init__(self, logger=None, info=None):
-        if logger:
-            self.logger = logger
-        if info:
-            self.info = info
+    """
+    Base exception for controlled friTap exits.
 
-    def exit(self):
+    Subclasses should set `default_code` and `default_info` class attributes,
+    and override `_log_level` property if needed.
+    """
+    default_code: int = 0
+    default_info: str = ""
+
+    def __init__(self, info: str = None, logger: logging.Logger = None, code: int = None):
+        # Use provided values or fall back to class defaults
+        self.info = info if info is not None else self.default_info
+        self.logger = logger
+        self.code = code if code is not None else self.default_code
+        # Call parent Exception with the info message
+        super().__init__(self.info)
+
+    @property
+    def _log_level(self) -> int:
+        return logging.INFO
+
+    def log(self, text: str) -> None:
+        if self.logger:
+            self.logger.log(self._log_level, text)
+        else:
+            print(text, file=sys.stderr)
+
+    def exit(self) -> None:
         if self.info:
             self.log(self.info)
-        sys.exit(code)
+        sys.exit(self.code)
+
 
 class Success(FriTapExit):
-    info = "\n\nThx for using friTap\nHave a great day\n"
-    def log(self, text):
-        if self.logger:
-            self.logger.info(text)
-        else:
-            print(self.info, file=sys.stderr)
+    default_code = 0
+    default_info = "\n\nThx for using friTap\nHave a great day\n"
+
+    @property
+    def _log_level(self) -> int:
+        return logging.INFO
 
 class Failure(FriTapExit):
-    code = 2
-    def log(self, text):
-        if self.logger:
-            self.logger.error(text)
-        else:
-            print(self.info, file=sys.stderr)
+    default_code = 2
+    default_info = ""
+
+    @property
+    def _log_level(self) -> int:
+        return logging.ERROR

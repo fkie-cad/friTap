@@ -152,7 +152,7 @@ emulator-5554	device
         mock_result.stdout = "2000"
         mock_subprocess.return_value = mock_result
         
-        android = Android()
+        _android = Android()
 
         
     @patch('subprocess.run')

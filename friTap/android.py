@@ -53,7 +53,7 @@ class Android:
             return frida.get_usb_device()
         except frida.InvalidArgumentError:
             self.logger.error(f"Device not found. Please verify the device ID: {self.device_id}")
-            raise Success
+            raise Failure
 
     def adb_check_root(self):
         return self.adb.is_rooted
@@ -206,7 +206,7 @@ class Android:
         # Show the full command that will be executed
         elevator_args = self.adb._elevator(tcpdump_cmd)
         full_cmd = "adb shell " + " ".join(f'"{arg}"' if " " in arg else arg for arg in elevator_args)
-        self.debug_print("[*] Running tcpdump in background:", full_cmd)
+        self.debug_print("Running tcpdump in background:", full_cmd)
         return self.adb.shell(tcpdump_cmd, popen=True)
 
     def start_tcpdump(self, pcap_name):
@@ -217,7 +217,8 @@ class Android:
             try:
                 capture_process.terminate()
                 capture_process.wait(timeout=2)
-            except:
+            except Exception as exc:
+                self.debug_print("Exception while closing tcpdump:", exc)
                 return False
         else:
             self.send_kill_tcpdump_over_adb()
@@ -260,7 +261,7 @@ class ADB:
 
     @property
     def is_rooted(self):
-        return type(self) != ADB
+        return type(self) is not ADB
 
     def _elevator(self, cmd):
         # if we reach this, no elevator has been found and we are not rooted.
