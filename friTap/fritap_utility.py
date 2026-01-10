@@ -42,7 +42,14 @@ def get_pid_of_lsass() -> int | None:
     """
     return find_pid_by_name("lsass")  # LSASS is typically named "lsass.exe" on Windows
 
-
+def stringify_list(*args):
+    """
+    Turn a potenially nested list-ish into a string, typically for debug purposes.
+    """
+    return ' '.join([
+        stringify_list(*arg) if isinstance(arg, (list, tuple)) else str(arg) \
+        for arg in args
+    ])
      
 def are_we_running_on_windows() -> bool:
     """

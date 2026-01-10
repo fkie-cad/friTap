@@ -22,9 +22,8 @@ class Android:
     dst_path = "/data/local/tmp/"
     pcap_name = ""
 
-    def __init__(self, debug_infos=False, device_id=None):
+    def __init__(self,  device_id=None):
         self.device_id = device_id
-        self.print_debug_infos = debug_infos
         self.logger = logging.getLogger('friTap')
 
     @cached_property
@@ -81,12 +80,6 @@ class Android:
     
     def _adb_make_binary_executable(self, path):
         self.adb.shell(f'chmod +x "{path}{self.tcpdump_version}"')
-
-    def debug_print(self, *args, **kwargs):
-        """Print debug messages using the logger's debug level."""
-        # Join args into a single message string for the logger
-        message = ' '.join(str(arg) for arg in args)
-        self.logger.debug(message)
 
     def assure_android(func):
         wraps(func)
@@ -151,8 +144,7 @@ class Android:
         pcap_path = self.dst_path + self.pcap_name
         return_Value = self._adb_pull_file(pcap_path,".")
         self.logger.info(f"pulling capture from device: {return_Value.stdout.strip()}")
-        self.debug_print("---------------------------------")
-        self.debug_print(return_Value)
+        self.logger.debug("---------------------------------\n%s", return_Value)
         if return_Value.returncode !=0:
             self.logger.error(f"error pulling pcap ({pcap_path}) from android device")
 
@@ -167,35 +159,29 @@ class Android:
             pids = pid_result.strip().split()
 
             if not pids:
-                self.debug_print("[-] No PID found. Process may not be running.")
+                self.logger.debug("No PID found. Process may not be running.")
             return [int(pid) for pid in pids]
         except subprocess.CalledProcessError as e:
-            self.debug_print(f"Error: {e.stderr.strip()}")
+            self.logger.exception("Running error: %s", e.stderr.strip())
         except ValueError as e:
-            self.debug_print(f"Error: got non-numeric pids? {e}")
+            self.logger.exception("got non-numeric pids?")
         return []
-            
+
     @assure_android
-    def send_ctrlC_over_adb(self):
+    def _run_for_pids(self, cmd_on_pids):
         pids = self.get_pids(self.tcpdump_cmd)
         if pids:
             pids_str = " ".join(map(str, pids))
-            self.adb.shell(f"kill -INT {pids_str}")
-            self.debug_print(f"[*] Killed processes with PID: {pids_str}")
+            self.adb.shell(cmd_on_pids % pids_str)
+            self.logger.debug("Killed processes with PID: %s", pids_str)
         else:
-            self.debug_print("[-] No running tcpdump processes found")
-
-    @assure_android
-    def send_kill_tcpdump_over_adb(self):
-        pids = self.get_pids(self.tcpdump_cmd)
-
-        if pids:
-            pids_str = " ".join(map(str, pids))
-            self.adb.shell(f"kill -9 {pids_str}")
-            self.debug_print(f"[*] Killed processes with PID: {pids_str}")
-        else:
-            self.debug_print("[-] No running tcpdump processes found")
+            self.logger.debug("No running tcpdump processes found")
         
+    def send_ctrlC_over_adb(self):
+        return self._run_for_pids("kill -INT %s")
+
+    def send_kill_tcpdump_over_adb(self): 
+        return self._run_for_pids("kill -9 %s")
 
 
     @assure_android
@@ -206,11 +192,7 @@ class Android:
         # The filter excludes ADB (default: 5555) and frida-server (default: 27042) traffic
         tcpdump_cmd = f'{self.tcpdump_path} -U -i any -s 0 -w {self.dst_path}{pcap_name} "not (tcp port 5555 or tcp port 27042)"'
 
-        # Show the full command that will be executed
-        elevated_cmd = self.adb._elevator(tcpdump_cmd)
-        full_cmd = f'adb shell "{elevated_cmd}"'
-        self.debug_print("Running tcpdump in background:", full_cmd)
-        return self.adb.shell(tcpdump_cmd, popen=True)
+        return self.adb.shell(tcpdump_cmd, background=True)
 
     def start_tcpdump(self, pcap_name):
         return self.run_tcpdump_capture(pcap_name)
@@ -221,7 +203,7 @@ class Android:
                 capture_process.terminate()
                 capture_process.wait(timeout=2)
             except Exception as exc:
-                self.debug_print("Exception while closing tcpdump:", exc)
+                self.logger.debug("Exception while closing tcpdump: %s", exc)
                 return False
         else:
             self.send_kill_tcpdump_over_adb()
@@ -261,6 +243,16 @@ class ADB:
         if len(args) == 1:
             return shlex.split(args[0]) if isinstance(args[0], str) else args[0]
         return args
+
+    def logger_debug(self, msg, *args):
+        """
+        Logging helper that stringifys the args but only if logging is DEBUG.
+        This is to not unnecessarily build lists in non-debug cases.
+        """
+        from .fritap_utility import stringify_list
+        if self.logger.level <= logging.DEBUG:
+            args_list = stringify_list(args)
+            self.logger.debug(msg, args_list)
 
     @property
     def is_rooted(self):
@@ -304,19 +296,27 @@ class ADB:
 
     def run(self, *args, **kwargs):
         run_kwargs = {"capture_output": True, "text": True, "timeout": 5}
-        run_kwargs.update(kwargs)        
-        return subprocess.run(self._adb_cmd(*args), **run_kwargs)
+        run_kwargs.update(kwargs)       
+        return self._run(self._adb_cmd(*args), **run_kwargs)
+
+    def _run(self, *args, **kwargs):
+        self.logger_debug('Running `%s`', args)
+        return subprocess.run(*args, **kwargs)
 
     def Popen(self, *args, **kwargs):
         popen_kwargs = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
         popen_kwargs.update(kwargs)
-        return subprocess.Popen(self._adb_cmd(*args), **popen_kwargs)
+        return self._Popen(self._adb_cmd(*args), **popen_kwargs)
 
-    def shell(self, *args, popen=False, **kwargs):
+    def _Popen(self, *args, **kwargs):
+        self.logger_debug('Running (popen/background) `%s`', args)
+        return subprocess.Popen(*args, **kwargs)
+
+    def shell(self, *args, background=False, **kwargs):
         cmd = ' '.join(args) if len(args) > 1 else args[0]
         elevated_cmd = self._elevator(cmd)
         shell_args = ['shell', elevated_cmd]
-        if popen:
+        if background:
             return self.Popen(*shell_args, **kwargs)
         else:
             return self.run(*shell_args, **kwargs)
