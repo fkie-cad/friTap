@@ -161,9 +161,9 @@ class Android:
             if not pids:
                 self.logger.debug("No PID found. Process may not be running.")
             return [int(pid) for pid in pids]
-        except subprocess.CalledProcessError as e:
+        except subprocess.CalledProcessError:
             self.logger.exception("Running error: %s", e.stderr.strip())
-        except ValueError as e:
+        except ValueError:
             self.logger.exception("got non-numeric pids?")
         return []
 
