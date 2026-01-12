@@ -82,7 +82,7 @@ class PCAP:
         if doFullCapture:
             if isMobile:
                 self.logger.debug(f"Applying debug mode: {self.print_debug_infos}")
-                self.android_Instance = Android(self.print_debug_infos,device_id=self.device_id)
+                self.android_Instance = Android(device_id=self.device_id)
             self.full_capture_thread = self.get_instance_of_FullCaptureThread()
             self.full_capture_thread.start()
             if self.full_capture_thread.is_alive():
