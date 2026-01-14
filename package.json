@@ -1,6 +1,6 @@
 {
     "name": "friTap",
-    "version": "1.4.1.2",
+    "version": "1.4.1.4",
     "description": "Frida agent for logging SSL traffic as plaintext and extracting SSL keys",
     "private": true,
     "main": "agent/ssl_log.ts",
@@ -25,11 +25,11 @@
         "typescript": "^5.8.2"
     },
     "dependencies": {
+        "JSON": "^1.0.0",
         "frida": "^17.2.0",
         "frida-fs": "^5.2.1",
-        "frida-java-bridge": "^7.0.7",
+        "frida-java-bridge": "^7.0.10",
         "frida-objc-bridge": "^8.0.5",
-        "JSON": "^1.0.0",
         "util": "^0.12.5"
     }
 }

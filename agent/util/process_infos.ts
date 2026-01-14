@@ -186,6 +186,69 @@ export function isLinux(): boolean {
     }
 }
 
+
+/**
+ * Detect if we're running inside a Wine process on Linux.
+ * Wine processes are Linux processes that load Windows DLLs via Wine's loader.
+ *
+ * Detection strategy:
+ * 1. At spawn time, Wine hasn't loaded ntdll.dll.so yet, but the main process
+ *    module is "wine64" or "wine-preloader"
+ * 2. After initialization, Wine-specific modules like ntdll.dll.so are loaded
+ *
+ * We check for both early (wine64/wine-preloader) and late (ntdll.dll.so) indicators.
+ */
+export function isWine(): boolean {
+    if (Process.platform !== "linux") {
+        return false;
+    }
+
+    try {
+        const modules = Process.enumerateModules();
+        const moduleNames = modules.map(m => m.name.toLowerCase());
+
+        // Early indicators: Wine process loader (available at spawn time)
+        const earlyIndicators = [
+            "wine64",
+            "wine-preloader",
+            "wine64-preloader"
+        ];
+
+        // Late indicators: Wine DLL wrappers (available after Wine initializes)
+        const lateIndicators = [
+            "ntdll.dll.so",
+            "ntdll.so",
+            "kernelbase.dll.so",
+            "kernel32.dll.so"
+        ];
+
+        // Check early indicators first (exact match for main module)
+        const hasEarlyIndicator = earlyIndicators.some(indicator =>
+            moduleNames.some(mod => mod === indicator || mod.includes(indicator))
+        );
+
+        if (hasEarlyIndicator) {
+            devlog("[Wine Detection] Detected Wine via process loader");
+            return true;
+        }
+
+        // Check late indicators (substring match for .dll.so modules)
+        const hasLateIndicator = lateIndicators.some(indicator =>
+            moduleNames.some(mod => mod.includes(indicator))
+        );
+
+        if (hasLateIndicator) {
+            devlog("[Wine Detection] Detected Wine via DLL modules");
+            return true;
+        }
+
+        return false;
+    } catch (error) {
+        devlog(`[Wine Detection] Error checking for Wine: ${error}`);
+        return false;
+    }
+}
+
 export function isWindows(): boolean{
     if( Process.platform == "windows"){
         return true

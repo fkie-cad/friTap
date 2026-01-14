@@ -3,7 +3,8 @@ import { load_ios_hooking_agent } from "./ios/ios_agent.js";
 import { load_macos_hooking_agent } from "./macos/macos_agent.js";
 import { load_linux_hooking_agent } from "./linux/linux_agent.js";
 import { load_windows_hooking_agent, load_windows_lsass_agent } from "./windows/windows_agent.js";
-import { isWindows, isLinux, isAndroid, isiOS, isMacOS, getDetailedPlatformInfo } from "./util/process_infos.js";
+import { load_wine_hooking_agent } from "./wine/wine_agent.js";
+import { isWindows, isLinux, isWine, isAndroid, isiOS, isMacOS, getDetailedPlatformInfo } from "./util/process_infos.js";
 import { anti_root_execute } from "./util/anti_root.js";
 import { socket_trace_execute } from "./misc/socket_tracer.js"
 import { devlog, log } from "./util/log.js";
@@ -225,6 +226,22 @@ function load_os_specific_agent() {
             socket_trace_execute();
         }
         load_android_hooking_agent()
+    }else if(isWine()){
+        // Wine must be checked BEFORE isLinux() since Wine processes are Linux processes
+        if(experimental){
+            log('Running Script on Wine (experimental)')
+            if(enable_socket_tracing){
+                socket_trace_execute();
+            }
+            load_wine_hooking_agent()
+        }else{
+            log('[!] Wine process detected. Wine support is experimental and requires the --experimental flag.')
+            log('[!] Falling back to standard Linux agent.')
+            if(enable_socket_tracing){
+                socket_trace_execute();
+            }
+            load_linux_hooking_agent()
+        }
     }else if(isLinux()){
         if(enable_socket_tracing){
             socket_trace_execute();
