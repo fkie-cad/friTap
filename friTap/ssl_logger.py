@@ -16,6 +16,7 @@ import logging
 from datetime import datetime, timezone
 from .pcap import PCAP
 from .fritap_utility import supports_color, CustomFormatter
+from .about import __version__
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -44,7 +45,7 @@ SSL_WRITE = ["SSL_write", "wolfSSL_write", "writeApplicationData", "NSS_write","
 
 class SSL_Logger():
 
-    def __init__(self, app, pcap_name=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, mobile=False, live=False, environment_file=None, debug_mode=False,full_capture=False, socket_trace=False, host=False, offsets=None, debug_output=False, experimental=False, anti_root=False, payload_modification=False,enable_default_fd=False, patterns=None, custom_hook_script=None, json_output=None, install_lsass_hook=True, timeout=None):
+    def __init__(self, app, pcap_name=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, spawn_gating_all=False, enable_child_gating=False, mobile=False, live=False, environment_file=None, debug_mode=False,full_capture=False, socket_trace=False, host=False, offsets=None, debug_output=False, experimental=False, anti_root=False, payload_modification=False,enable_default_fd=False, patterns=None, custom_hook_script=None, json_output=None, install_lsass_hook=True, timeout=None):
         # Set up logging
         self.logger = logging.getLogger('friTap')
         if not self.logger.handlers:
@@ -83,6 +84,8 @@ class SSL_Logger():
         self.environment_file = environment_file
         self.host = host
         self.enable_spawn_gating = enable_spawn_gating
+        self.spawn_gating_all = spawn_gating_all
+        self.enable_child_gating = enable_child_gating
         self.live = live
         self.payload_modification = payload_modification
         self.enable_default_fd = enable_default_fd
@@ -115,7 +118,7 @@ class SSL_Logger():
         
         # JSON session data
         self.session_data = {
-            "friTap_version": "1.4.1.2",  # Should be imported from about.py
+            "friTap_version": __version__,
             "session_info": {
                 "start_time": datetime.now(timezone.utc).isoformat(),
                 "target_app": app,
@@ -583,9 +586,37 @@ class SSL_Logger():
 
 
     def on_spawn_added(self, spawn):
-        self.logger.info(f"Process spawned with pid {spawn.pid}. Name: {spawn.identifier}")
-        self.instrument(self.device.attach(spawn.pid), self.own_message_handler)
-        self.device.resume(spawn.pid)
+        # If spawn_gating_all is set, instrument ALL spawned processes (old behavior)
+        # Otherwise, filter by target app identifier
+        if self.spawn_gating_all or self._should_instrument_spawn(spawn.identifier):
+            self.logger.info(f"Instrumenting spawned process with pid {spawn.pid}. Name: {spawn.identifier}")
+            self.instrument(self.device.attach(spawn.pid), self.own_message_handler)
+            self.device.resume(spawn.pid)
+        else:
+            # Resume unrelated processes immediately to prevent them from hanging
+            self.logger.debug(f"Skipping unrelated spawn with pid {spawn.pid}. Name: {spawn.identifier}")
+            self.device.resume(spawn.pid)
+
+    def _should_instrument_spawn(self, identifier):
+        """Check if a spawned process should be instrumented based on its identifier."""
+        if not identifier:
+            return False
+
+        # For mobile (Android/iOS), identifier is the package name
+        # e.g., "com.example.app" or "com.example.app:service"
+        if self.mobile:
+            return identifier.startswith(self.target_app)
+
+        # For desktop, check if target app name is contained in the identifier
+        # The identifier could be a path or executable name
+        target_name = self.target_app.split()[-1] if ' ' in self.target_app else self.target_app
+        # Handle paths: extract base name for comparison
+        if '/' in target_name:
+            target_name = target_name.split('/')[-1]
+        if '\\' in target_name:
+            target_name = target_name.split('\\')[-1]
+
+        return target_name.lower() in identifier.lower()
         
 
     def instrument(self, process, own_message_handler):
@@ -726,8 +757,9 @@ class SSL_Logger():
         else:
             self.device = frida.get_local_device()
 
-        self.device.on("child_added", self.on_child_added)
-        if self.enable_spawn_gating:
+        if self.enable_child_gating:
+            self.device.on("child_added", self.on_child_added)
+        if self.enable_spawn_gating or self.spawn_gating_all:
             self.device.enable_spawn_gating()
             self.device.on("spawn_added", self.on_spawn_added)
         if self.spawn:
@@ -755,6 +787,8 @@ class SSL_Logger():
                     self.logger.info(f"Suspending main thread {main_thread.id} for {self.timeout} seconds...")
                     self.process.suspend(main_thread.id)
 
+        if self.enable_child_gating:
+            self.process.enable_child_gating()
 
         script = self.instrument(self.process, own_message_handler)
 

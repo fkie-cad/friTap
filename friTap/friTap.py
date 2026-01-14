@@ -262,7 +262,11 @@ Examples:
                       const=True, help="Show verbose output")
     args.add_argument('--version', action='version',version='friTap v{version}'.format(version=__version__))
     args.add_argument("--enable_spawn_gating", required=False, action="store_const", const=True,
-                      help="Catch newly spawned processes. ATTENTION: These could be unrelated to the current process!")
+                      help="Catch newly spawned processes matching the target app (useful for Android multi-process apps)")
+    args.add_argument("--spawn_gating_all", required=False, action="store_const", const=True,
+                      help="Catch ALL newly spawned processes without filtering (use with caution)")
+    args.add_argument("--enable_child_gating", required=False, action="store_const", const=True,
+                      help="Intercept child processes spawned by the target application")
     args.add_argument("exec", metavar="<executable/app name/pid>",
                       help="executable/app whose SSL calls to log")
     args.add_argument("--offsets", required=False, metavar="<offsets.json>",
@@ -327,10 +331,10 @@ Examples:
         try:
             # Create a minimal SSL_Logger instance for library inspection
             temp_ssl_log = SSL_Logger(parsed.exec, None, parsed.verbose,
-                    parsed.spawn, False, parsed.enable_spawn_gating, parsed.mobile, 
-                    False, parsed.environment, parsed.debug, False, False, 
-                    parsed.host, parsed.offsets, parsed.debugoutput, parsed.experimental, 
-                    parsed.anti_root, False, parsed.enable_default_fd, parsed.patterns, 
+                    parsed.spawn, False, parsed.enable_spawn_gating, False, False, parsed.mobile,
+                    False, parsed.environment, parsed.debug, False, False,
+                    parsed.host, parsed.offsets, parsed.debugoutput, parsed.experimental,
+                    parsed.anti_root, False, parsed.enable_default_fd, parsed.patterns,
                     parsed.custom_script, None)
             
             # Use the SSL_Logger's library inspection capability
@@ -362,7 +366,7 @@ Examples:
         special_logger.info("Start logging")
         special_logger.info("Press Ctrl+C to stop logging")
         ssl_log = SSL_Logger(parsed.exec, parsed.pcap, parsed.verbose,
-                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.mobile, parsed.live, parsed.environment, parsed.debug, parsed.full_capture, parsed.socket_tracing, parsed.host, parsed.offsets, parsed.debugoutput, parsed.experimental, parsed.anti_root, parsed.payload_modification, parsed.enable_default_fd, parsed.patterns, parsed.custom_script, parsed.json, install_lsass_hook, parsed.timeout)
+                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.spawn_gating_all, parsed.enable_child_gating, parsed.mobile, parsed.live, parsed.environment, parsed.debug, parsed.full_capture, parsed.socket_tracing, parsed.host, parsed.offsets, parsed.debugoutput, parsed.experimental, parsed.anti_root, parsed.payload_modification, parsed.enable_default_fd, parsed.patterns, parsed.custom_script, parsed.json, install_lsass_hook, parsed.timeout)
 
         ssl_log.install_signal_handler()        
         ssl_log.start_fritap_session()  
