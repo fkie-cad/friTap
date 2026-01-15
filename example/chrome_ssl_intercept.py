@@ -362,11 +362,11 @@ Examples:
         print("\n[*] Interrupt received, cleaning up...")
         try:
             script.unload()
-        except:
+        except Exception:
             pass
         try:
             process.detach()
-        except:
+        except Exception:
             pass
         print("[*] Detached. Goodbye!")
         sys.exit(0)
