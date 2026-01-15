@@ -145,26 +145,47 @@ fritap -m --enable_default_fd --pcap traffic.pcap com.example.app
 
 ## SSL/TLS Libraries on Android
 
-### Common Libraries
+### Supported Libraries
 
-| Library | Apps Using It | friTap Support |
-|---------|---------------|----------------|
-| **BoringSSL** | Chrome, many Google apps | ✅ Full |
-| **Conscrypt** | Android system, some apps | ✅ Full |
-| **OpenSSL** | Older apps, native code | ✅ Full |
-| **NSS** | Firefox, Mozilla apps | ⚠️ Limited |
-| **OkHttp** | Many modern apps | ✅ Full (uses system SSL --> BoringSSL) |
+friTap has comprehensive support for Android TLS libraries, covering both system libraries and statically-linked implementations.
 
-### Pattern-Based Hooking
+| Library | Apps Using It | friTap Support | Notes |
+|---------|---------------|----------------|-------|
+| **BoringSSL/OpenSSL** | Chrome, most Google apps | ✅ Full | Key extraction + traffic |
+| **Conscrypt** | Android system, many apps | ✅ Full | Uses BoringSSL internally |
+| **GnuTLS** | Some native apps | ✅ Full | Key extraction + traffic |
+| **WolfSSL** | IoT/embedded apps | ✅ Full | Key extraction + traffic |
+| **mbedTLS** | Embedded/IoT apps | 🔄 R/W | Traffic hooks only |
+| **NSS** | Firefox, Mozilla apps | ✅ Full | Key extraction + traffic |
+| **Cronet** | Chrome-based networking | ✅ Full | Pattern-based hooking |
+| **Flutter** | Flutter applications | ✅ Full | Built-in patterns |
+| **S2N-TLS** | AWS SDK apps | ✅ Full | Key extraction + traffic |
+| **Rustls** | Rust-based apps | 🔑 Keys | Key extraction only |
+| **Go TLS** | Go applications | ✅ Full | Runtime version detection |
+| **BouncyCastle/Spongycastle** | Java crypto apps | ✅ Full | Java-level hooking |
+| **Mono BTLS** | Xamarin/.NET apps | ✅ Full | Pattern-based hooking |
+| **MetaRTC** | WebRTC applications | ✅ Full | Pattern-based hooking |
+| **Java TLS** | Pure Java apps | ✅ Full | Java-level hooking |
 
-For apps with stripped or statically linked SSL libraries:
+**Legend:**
+- ✅ **Full**: Key extraction + traffic decryption
+- 🔄 **R/W**: Read/Write hooks (traffic without keys)
+- 🔑 **Keys**: Key extraction only
+
+### Pattern-Based Hooking for Stripped Libraries
+
+For apps with stripped or statically linked SSL libraries (Flutter, Cronet, Signal):
 
 ```bash
 # Use patterns for Flutter apps
 fritap -m --patterns flutter_patterns.json -k keys.log com.flutter.app
+
+# Generate custom patterns with BoringSecretHunter
+docker run --rm -v "$(pwd)/binary":/usr/local/src/binaries \
+  -v "$(pwd)/results":/host_output boringsecrethunter
 ```
 
-We are trying to provide aleady working pattern to friTap but when these patterns don't work you might to provide friTap with you own pattern. More at [Pattern-based Hooking](../advanced/patterns.md) page. 
+friTap includes built-in patterns for common libraries, but you may need to generate custom patterns for specific app versions. See [Pattern-based Hooking](../advanced/patterns.md) for details. 
 
 ## Application Categories
 

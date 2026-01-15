@@ -22,27 +22,32 @@ import time
 
 # Create SSL logger instance
 logger = SSL_Logger(
-    target="firefox",           # Target application
-    pcap_file="traffic.pcap",   # PCAP output file
+    app="firefox",              # Target application (process name, PID, or package name)
+    pcap_name="traffic.pcap",   # PCAP output file path
     verbose=True,               # Enable verbose output
-    spawn=False,                # Attach to existing process
-    keylog_file="keys.log",     # Key log file
-    enable_spawn_gating=False,  # Spawn gating
-    mobile=False,               # Mobile mode
-    live=False,                 # Live analysis
-    environment=None,           # Environment variables
-    debug=False,                # Debug mode
-    full_capture=False,         # Full packet capture
-    socket_tracing=False,       # Socket tracing
-    host=None,                  # Remote host
-    offsets=None,               # Custom offsets
-    debug_output=False,         # Debug output only
-    experimental=False,         # Experimental features
-    anti_root=False,            # Anti-root bypass
-    payload_modification=False, # Payload modification
-    enable_default_fd=False,    # Default FD info
-    patterns=None,              # Pattern file
-    custom_script=None          # Custom Frida script
+    spawn=False,                # Attach to existing process (True = spawn new process)
+    keylog="keys.log",          # Key log file path (or False to disable)
+    enable_spawn_gating=False,  # Intercept spawned child processes
+    spawn_gating_all=False,     # Catch ALL spawned processes (use with caution)
+    enable_child_gating=False,  # Intercept child processes
+    mobile=False,               # Mobile mode (True or device ID string)
+    live=False,                 # Live Wireshark analysis via named pipe
+    environment_file=None,      # JSON file with environment variables
+    debug_mode=False,           # Enable debug mode with Chrome Inspector
+    full_capture=False,         # Full packet capture (requires tcpdump)
+    socket_trace=False,         # Enable socket tracing
+    host=False,                 # Remote Frida host (IP:port string or False)
+    offsets=None,               # Custom function offsets (JSON file path)
+    debug_output=False,         # Enable debug output only (no Chrome Inspector)
+    experimental=False,         # Enable experimental features (e.g., Wine support)
+    anti_root=False,            # Enable anti-root detection bypass (Android)
+    payload_modification=False, # Enable payload modification capabilities
+    enable_default_fd=False,    # Use default socket info when FD lookup fails
+    patterns=None,              # Pattern file path for symbol-less hooking
+    custom_hook_script=None,    # Custom Frida script to load before friTap hooks
+    json_output=None,           # JSON output file for session metadata
+    install_lsass_hook=True,    # Hook LSASS for Schannel key extraction (Windows)
+    timeout=None                # Timeout in seconds for process suspension
 )
 
 # Install signal handler for cleanup
@@ -69,18 +74,18 @@ from friTap import SSL_Logger
 
 class FriTapConfig:
     def __init__(self):
-        self.target = None
-        self.pcap_file = None
-        self.keylog_file = None
+        self.app = None
+        self.pcap_name = None
+        self.keylog = None
         self.verbose = False
         self.mobile = False
         self.patterns = None
-        
+
     def to_dict(self):
         return {
-            'target': self.target,
-            'pcap_file': self.pcap_file,
-            'keylog_file': self.keylog_file,
+            'app': self.app,
+            'pcap_name': self.pcap_name,
+            'keylog': self.keylog,
             'verbose': self.verbose,
             'mobile': self.mobile,
             'patterns': self.patterns
@@ -88,8 +93,8 @@ class FriTapConfig:
 
 # Usage
 config = FriTapConfig()
-config.target = "firefox"
-config.keylog_file = "keys.log"
+config.app = "firefox"
+config.keylog = "keys.log"
 config.verbose = True
 
 logger = SSL_Logger(**config.to_dict())
@@ -105,14 +110,14 @@ import json
 
 def analyze_android_app(package_name, output_dir):
     """Analyze Android application SSL traffic"""
-    
-    keylog_file = f"{output_dir}/{package_name}_keys.log"
-    pcap_file = f"{output_dir}/{package_name}_traffic.pcap"
-    
+
+    keylog_path = f"{output_dir}/{package_name}_keys.log"
+    pcap_path = f"{output_dir}/{package_name}_traffic.pcap"
+
     logger = SSL_Logger(
-        target=package_name,
-        pcap_file=pcap_file,
-        keylog_file=keylog_file,
+        app=package_name,
+        pcap_name=pcap_path,
+        keylog=keylog_path,
         verbose=True,
         mobile=True,                    # Enable mobile mode
         spawn=True,                     # Spawn application
@@ -120,18 +125,18 @@ def analyze_android_app(package_name, output_dir):
         anti_root=True,                 # Bypass root detection
         enable_default_fd=True          # Fallback socket info
     )
-    
+
     logger.install_signal_handler()
     logger.start_fritap_session()
-    
+
     # Wait for analysis completion
     while logger.running:
         time.sleep(1)
-    
+
     return {
-        'keylog_file': keylog_file,
-        'pcap_file': pcap_file,
-        'target': package_name
+        'keylog': keylog_path,
+        'pcap': pcap_path,
+        'app': package_name
     }
 
 # Usage
@@ -145,25 +150,25 @@ print(f"Analysis complete: {result}")
 from friTap import SSL_Logger
 import json
 
-def analyze_with_patterns(target, pattern_file):
+def analyze_with_patterns(target_app, pattern_file):
     """Analyze application using custom patterns"""
-    
-    # Load pattern file
+
+    # Load pattern file to verify format
     with open(pattern_file, 'r') as f:
-        patterns = json.load(f)
-    
+        patterns_data = json.load(f)
+
     logger = SSL_Logger(
-        target=target,
-        keylog_file="pattern_keys.log",
-        pcap_file="pattern_traffic.pcap",
+        app=target_app,
+        keylog="pattern_keys.log",
+        pcap_name="pattern_traffic.pcap",
         verbose=True,
         patterns=pattern_file,          # Use pattern file
         debug_output=True               # Enable debug output
     )
-    
+
     logger.install_signal_handler()
     logger.start_fritap_session()
-    
+
     while logger.running:
         time.sleep(1)
 
@@ -186,35 +191,35 @@ class BatchAnalyzer:
         
     def analyze_target(self, target, duration=300):
         """Analyze single target for specified duration"""
-        
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        keylog_file = f"{self.output_dir}/{target}_{timestamp}_keys.log"
-        pcap_file = f"{self.output_dir}/{target}_{timestamp}_traffic.pcap"
-        
+        keylog_path = f"{self.output_dir}/{target}_{timestamp}_keys.log"
+        pcap_path = f"{self.output_dir}/{target}_{timestamp}_traffic.pcap"
+
         logger = SSL_Logger(
-            target=target,
-            keylog_file=keylog_file,
-            pcap_file=pcap_file,
+            app=target,
+            keylog=keylog_path,
+            pcap_name=pcap_path,
             verbose=False,              # Reduce output for batch
             timeout=duration
         )
-        
+
         logger.install_signal_handler()
         logger.start_fritap_session()
-        
+
         # Wait for completion or timeout
         start_time = time.time()
         while logger.running and (time.time() - start_time) < duration:
             time.sleep(1)
-        
+
         result = {
-            'target': target,
-            'keylog_file': keylog_file,
-            'pcap_file': pcap_file,
+            'app': target,
+            'keylog': keylog_path,
+            'pcap': pcap_path,
             'duration': time.time() - start_time,
             'timestamp': timestamp
         }
-        
+
         self.results.append(result)
         return result
     
@@ -225,7 +230,7 @@ class BatchAnalyzer:
             print(f"Starting analysis of {target}")
             try:
                 result = self.analyze_target(target, duration)
-                print(f"Completed {target}: {result['keylog_file']}")
+                print(f"Completed {target}: {result['keylog']}")
             except Exception as e:
                 print(f"Error analyzing {target}: {e}")
         
@@ -237,7 +242,7 @@ targets = ["firefox", "curl", "wget"]
 results = analyzer.analyze_multiple(targets, duration=180)
 
 for result in results:
-    print(f"Target: {result['target']}, Keys: {result['keylog_file']}")
+    print(f"App: {result['app']}, Keys: {result['keylog']}")
 ```
 
 ### Custom Callback Integration
@@ -261,14 +266,14 @@ class CustomAnalyzer:
         self.data_transferred += data_info.get('size', 0)
         print(f"Data captured: {data_info['size']} bytes")
         
-    def analyze_with_callbacks(self, target):
+    def analyze_with_callbacks(self, target_app):
         """Analyze target with custom callbacks"""
-        
+
         # Note: This is a conceptual example
         # Actual callback integration would require friTap modifications
         logger = SSL_Logger(
-            target=target,
-            keylog_file="callback_keys.log",
+            app=target_app,
+            keylog="callback_keys.log",
             verbose=True
         )
         
@@ -315,15 +320,15 @@ class FriTapConfigManager:
         with open(config_file, 'w') as f:
             json.dump(self.config, f, indent=2)
     
-    def create_logger(self, target, overrides=None):
+    def create_logger(self, target_app, overrides=None):
         """Create SSL_Logger with configuration"""
-        
+
         config = self.config.copy()
         if overrides:
             config.update(overrides)
-        
-        config['target'] = target
-        
+
+        config['app'] = target_app
+
         return SSL_Logger(**config)
 
 # Example configuration file (config.json)
@@ -342,8 +347,8 @@ with open("config.json", "w") as f:
 # Usage
 config_manager = FriTapConfigManager("config.json")
 logger = config_manager.create_logger(
-    target="firefox",
-    overrides={"keylog_file": "firefox_keys.log"}
+    target_app="firefox",
+    overrides={"keylog": "firefox_keys.log"}
 )
 ```
 
@@ -369,16 +374,16 @@ class EnvironmentConfig:
         }
     
     @staticmethod
-    def create_logger(target, **overrides):
+    def create_logger(target_app, **overrides):
         """Create logger with environment configuration"""
-        
+
         config = EnvironmentConfig.from_environment()
         config.update(overrides)
-        config['target'] = target
-        
+        config['app'] = target_app
+
         # Remove None values
         config = {k: v for k, v in config.items() if v is not None}
-        
+
         return SSL_Logger(**config)
 
 # Usage with environment variables
@@ -388,7 +393,7 @@ class EnvironmentConfig:
 
 logger = EnvironmentConfig.create_logger(
     "com.example.app",
-    keylog_file="env_keys.log"
+    keylog="env_keys.log"
 )
 ```
 
@@ -425,7 +430,7 @@ class AnalysisSession:
         """Run analysis in thread"""
         try:
             self.logger = SSL_Logger(
-                target=self.target,
+                app=self.target,
                 **self.config
             )
             self.logger.install_signal_handler()
@@ -485,14 +490,14 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import time
 
-def analyze_and_visualize(target, duration=60):
+def analyze_and_visualize(target_app, duration=60):
     """Analyze target and create visualizations"""
-    
+
     # Start analysis
     logger = SSL_Logger(
-        target=target,
-        keylog_file=f"{target}_keys.log",
-        pcap_file=f"{target}_traffic.pcap",
+        app=target_app,
+        keylog=f"{target_app}_keys.log",
+        pcap_name=f"{target_app}_traffic.pcap",
         verbose=True
     )
     
@@ -510,7 +515,7 @@ def analyze_and_visualize(target, duration=60):
     # Read key log file
     keys_data = []
     try:
-        with open(f"{target}_keys.log", 'r') as f:
+        with open(f"{target_app}_keys.log", 'r') as f:
             for line in f:
                 if line.startswith('CLIENT_RANDOM'):
                     keys_data.append({
@@ -527,7 +532,7 @@ def analyze_and_visualize(target, duration=60):
     if not df.empty:
         plt.figure(figsize=(10, 6))
         plt.plot(df['timestamp'], range(len(df)))
-        plt.title(f'TLS Sessions for {target}')
+        plt.title(f'TLS Sessions for {target_app}')
         plt.xlabel('Time')
         plt.ylabel('Session Count')
         plt.show()
@@ -555,15 +560,15 @@ class RobustAnalyzer:
     def __init__(self):
         self.logger = None
         
-    def analyze_with_retry(self, target, max_retries=3, **config):
+    def analyze_with_retry(self, target_app, max_retries=3, **config):
         """Analyze target with retry logic"""
-        
+
         for attempt in range(max_retries):
             try:
-                logger.info(f"Analysis attempt {attempt + 1} for {target}")
-                
+                logger.info(f"Analysis attempt {attempt + 1} for {target_app}")
+
                 self.logger = SSL_Logger(
-                    target=target,
+                    app=target_app,
                     **config
                 )
                 
@@ -573,18 +578,18 @@ class RobustAnalyzer:
                 while self.logger.running:
                     time.sleep(1)
                 
-                logger.info(f"Analysis completed successfully for {target}")
+                logger.info(f"Analysis completed successfully for {target_app}")
                 return True
-                
+
             except Exception as e:
                 logger.error(f"Attempt {attempt + 1} failed: {e}")
                 logger.debug(traceback.format_exc())
-                
+
                 if attempt < max_retries - 1:
                     logger.info(f"Retrying in 5 seconds...")
                     time.sleep(5)
                 else:
-                    logger.error(f"All {max_retries} attempts failed for {target}")
+                    logger.error(f"All {max_retries} attempts failed for {target_app}")
                     return False
         
         return False
@@ -600,7 +605,7 @@ analyzer = RobustAnalyzer()
 success = analyzer.analyze_with_retry(
     "firefox",
     max_retries=3,
-    keylog_file="robust_keys.log",
+    keylog="robust_keys.log",
     verbose=True
 )
 
@@ -619,20 +624,20 @@ from contextlib import contextmanager
 from friTap import SSL_Logger
 
 @contextmanager
-def fritap_session(target, **config):
+def fritap_session(target_app, **config):
     """Context manager for friTap sessions"""
-    logger = None
+    ssl_logger = None
     try:
-        logger = SSL_Logger(target=target, **config)
-        logger.install_signal_handler()
-        yield logger
+        ssl_logger = SSL_Logger(app=target_app, **config)
+        ssl_logger.install_signal_handler()
+        yield ssl_logger
     finally:
-        if logger:
+        if ssl_logger:
             # Cleanup is handled automatically
             pass
 
 # Usage
-with fritap_session("firefox", keylog_file="keys.log") as session:
+with fritap_session("firefox", keylog="keys.log") as session:
     session.start_fritap_session()
     # Session automatically cleaned up on exit
 ```
@@ -642,22 +647,22 @@ with fritap_session("firefox", keylog_file="keys.log") as session:
 ```python
 def validate_config(config):
     """Validate friTap configuration"""
-    required_fields = ['target']
-    
+    required_fields = ['app']
+
     for field in required_fields:
         if field not in config:
             raise ValueError(f"Missing required field: {field}")
-    
-    if config.get('mobile') and not config.get('target', '').startswith('com.'):
+
+    if config.get('mobile') and not config.get('app', '').startswith('com.'):
         raise ValueError("Mobile targets should be package names")
-    
+
     return True
 
 # Usage
 config = {
-    'target': 'com.example.app',
+    'app': 'com.example.app',
     'mobile': True,
-    'keylog_file': 'keys.log'
+    'keylog': 'keys.log'
 }
 
 if validate_config(config):
@@ -679,25 +684,25 @@ logging.basicConfig(
 class LoggingAnalyzer:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
-        
-    def analyze(self, target, **config):
+
+    def analyze(self, target_app, **config):
         """Analyze with proper logging"""
-        
-        self.logger.info(f"Starting analysis of {target}")
+
+        self.logger.info(f"Starting analysis of {target_app}")
         self.logger.debug(f"Configuration: {config}")
-        
+
         try:
-            ssl_logger = SSL_Logger(target=target, **config)
+            ssl_logger = SSL_Logger(app=target_app, **config)
             ssl_logger.install_signal_handler()
             ssl_logger.start_fritap_session()
-            
+
             while ssl_logger.running:
                 time.sleep(1)
-                
-            self.logger.info(f"Analysis completed for {target}")
-            
+
+            self.logger.info(f"Analysis completed for {target_app}")
+
         except Exception as e:
-            self.logger.error(f"Analysis failed for {target}: {e}")
+            self.logger.error(f"Analysis failed for {target_app}: {e}")
             raise
 ```
 

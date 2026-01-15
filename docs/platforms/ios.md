@@ -2,6 +2,9 @@
 
 This guide covers iOS-specific setup, considerations, and best practices for using friTap on iOS devices.
 
+!!! warning "Limited iOS Support"
+    iOS support is currently limited to **TLS key extraction only** (keylog). Full plaintext traffic interception is not yet implemented for iOS. Apple's native SecureTransport and Network.framework are **not supported**. Only BoringSSL-based applications (like Chrome) and Flutter apps can be analyzed.
+
 ## Prerequisites
 
 ### Device Requirements
@@ -187,27 +190,37 @@ fritap -m -k enterprise_keys.log com.company.app
 
 ## SSL/TLS Libraries on iOS
 
-### Common iOS SSL Libraries
+### Supported iOS SSL Libraries
 
-**SecureTransport (Apple's SSL/TLS):**
+friTap's iOS support is limited to specific TLS libraries. Here's the current status:
+
+| Library | Support | Notes |
+|---------|---------|-------|
+| **BoringSSL** | 🔑 Keylog | Key extraction via callback hooking |
+| **Flutter** | 🔑 Keylog | Pattern-based key extraction |
+| **Cronet** | 🧪 Experimental | Untested, may require patterns |
+| **SecureTransport** | ❌ Not implemented | Apple's native TLS - no support |
+| **Network.framework** | ❌ Not implemented | Modern Apple TLS - no support |
+
+!!! note "Keylog Only"
+    iOS support extracts TLS keys (keylog) but does **not** intercept plaintext traffic. Use the extracted keys with Wireshark to decrypt captured traffic.
+
+**BoringSSL (Chrome, Google apps):**
 ```bash
-# Most iOS apps use SecureTransport
-fritap -m -v com.example.app | grep -i securetransport
+# Extract keys from BoringSSL apps
+fritap -m -k chrome_keys.log com.google.chrome.ios
 ```
 
-**Network.framework:**
+**Flutter Applications:**
 ```bash
-# Modern iOS apps may use Network.framework
-fritap -m -v com.example.app | grep -i network
+# Flutter apps with built-in BoringSSL patterns
+fritap -m -k flutter_keys.log com.flutter.app
 ```
 
-**Third-party Libraries:**
+**Pattern-based Hooking:**
 ```bash
-# Some apps use OpenSSL/BoringSSL
-fritap -m --patterns openssl_patterns.json com.example.app
-
-# Apps with custom SSL
-fritap -m --offsets custom_offsets.json com.example.app
+# Custom patterns for stripped libraries
+fritap -m --patterns ios_patterns.json -k keys.log com.example.app
 ```
 
 ### Library Detection
@@ -219,6 +232,12 @@ fritap -m -do -v com.example.app
 # Look for SSL-related output in logs
 fritap -m -v com.example.app 2>&1 | grep -i ssl
 ```
+
+### Limitations
+
+- **No SecureTransport support** - Most native iOS apps using Apple's TLS cannot be analyzed
+- **No plaintext interception** - Only keylog extraction is available
+- **Socket FD unavailable** - Cannot extract socket information from SSL operations
 
 ## Certificate Pinning on iOS
 

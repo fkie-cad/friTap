@@ -9,15 +9,16 @@ friTap supports multiple platforms and operating systems. This section provides 
 | Platform | Status | Guide | Key Features |
 |----------|--------|-------|--------------|
 | **Linux** | ✅ Full Support | [Linux Guide](linux.md) | Native OpenSSL/GnuTLS, BPF capture, containers |
-| **macOS** | ✅ Full Support | [macOS Guide](macos.md) | Secure Transport, Network.framework, Apple Silicon |
-| **Windows** | ✅ Full Support | [Windows Guide](windows.md) | Schannel, .NET Framework, UWP apps |
+| **macOS** | 🔑 Partial Support | [macOS Guide](macos.md) | BoringSSL keylog extraction, Python OpenSSL |
+| **Windows** | ✅ Full Support | [Windows Guide](windows.md) | Schannel (via LSASS), OpenSSL, bundled libraries |
+| **Wine** | 🧪 Experimental | [Wine Guide](wine.md) | Windows apps on Linux, hybrid DLL/SO hooking |
 
 ### Mobile Platforms
 
 | Platform | Status | Guide | Key Features |
 |----------|--------|-------|--------------|
-| **Android** | ✅ Full Support | [Android Guide](android.md) | BoringSSL, Java SSL, root required |
-| **iOS** | ✅ Full Support | [iOS Guide](ios.md) | Secure Transport, jailbreak required |
+| **Android** | ✅ Full Support | [Android Guide](android.md) | BoringSSL, Conscrypt, Java SSL, root required |
+| **iOS** | 🔑 Partial Support | [iOS Guide](ios.md) | BoringSSL keylog, Flutter, jailbreak required |
 
 ## Quick Platform Selection
 
@@ -25,8 +26,9 @@ friTap supports multiple platforms and operating systems. This section provides 
 
 **For Desktop Applications:**
 - **Linux**: Best for server applications, command-line tools, and development environments
-- **macOS**: Ideal for macOS applications, Safari, and Apple ecosystem apps
-- **Windows**: Perfect for Windows applications, .NET software, and enterprise environments
+- **macOS**: Limited to BoringSSL-based applications (Chrome) and Python OpenSSL
+- **Windows**: Perfect for Windows applications - comprehensive Schannel support via LSASS hooking
+- **Wine**: Analyze Windows applications running under Wine on Linux (experimental)
 
 **For Mobile Applications:**
 - **Android**: Comprehensive Android app analysis with root access
@@ -36,15 +38,15 @@ friTap supports multiple platforms and operating systems. This section provides 
 
 ### Feature Matrix
 
-| Feature | Linux | macOS | Windows | Android | iOS |
-|---------|-------|-------|---------|---------|-----|
-| **Native SSL Libraries** | OpenSSL, GnuTLS | Secure Transport | Schannel | BoringSSL | Secure Transport |
-| **Root/Admin Required** | Yes | Yes | Yes | Yes | Yes (Jailbreak) |
-| **Full Packet Capture** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **JSON Output** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Pattern Hooking** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Live Analysis** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Spawn Mode** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Feature | Linux | macOS | Windows | Android | iOS | Wine |
+|---------|-------|-------|---------|---------|-----|------|
+| **Primary TLS Libraries** | OpenSSL, GnuTLS, NSS | BoringSSL (keylog) | Schannel (via LSASS) | BoringSSL, Conscrypt | BoringSSL (keylog) | Windows DLLs + Linux .so |
+| **Full Key + Traffic** | ✅ | ❌ | ✅ | ✅ | ❌ | ✅ |
+| **Keylog Only** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Root/Admin Required** | Yes | Yes | Yes | Yes | Yes (Jailbreak) | Yes |
+| **Pattern Hooking** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Live Analysis** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Spawn Mode** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 ### Installation Complexity
 
@@ -156,34 +158,41 @@ fritap -m -k keys.log --pcap traffic.pcap com.example.app
 ### Common SSL/TLS Libraries
 
 **Linux:**
-- OpenSSL (most common)
-- GnuTLS
-- LibreSSL
-- BoringSSL (Chrome)
-- NSS (Firefox)
+- OpenSSL (most common) - ✅ Full support
+- GnuTLS - ✅ Full support
+- NSS (Firefox) - ✅ Full support
+- BoringSSL (Chrome) - ✅ Full support
+- WolfSSL - ✅ Full support
+- Rustls - 🔑 Keylog only
+- Go TLS - ✅ Full support
 
 **macOS:**
-- Secure Transport (native)
-- LibreSSL (system)
-- BoringSSL (Chrome)
-- Network.framework
+- BoringSSL (Chrome) - 🔑 Keylog only
+- Python OpenSSL - 🔑 Keylog only
+- Secure Transport - ❌ Not implemented
+- Network.framework - ❌ Not implemented
 
 **Windows:**
-- Schannel (native)
-- OpenSSL (third-party)
-- CryptoAPI
-- .NET Security classes
+- Schannel (native via LSASS) - ✅ Full support
+- OpenSSL/BoringSSL - ✅ Full support
+- WolfSSL - ✅ Full support
+- GnuTLS - ✅ Full support
 
 **Android:**
-- BoringSSL (most apps)
-- Conscrypt
-- Java SSL libraries
-- OpenSSL (legacy)
+- BoringSSL (most apps) - ✅ Full support
+- Conscrypt - ✅ Full support
+- Java SSL libraries - ✅ Full support
+- GnuTLS - ✅ Full support
+- WolfSSL - ✅ Full support
+- Go TLS - ✅ Full support
+- Flutter - ✅ Full support
 
 **iOS:**
-- Secure Transport (native)
-- Network.framework
-- OpenSSL (rare)
+- BoringSSL - 🔑 Keylog only
+- Flutter - 🔑 Keylog only
+- Cronet - 🧪 Experimental
+- Secure Transport - ❌ Not implemented
+- Network.framework - ❌ Not implemented
 
 ## Architecture Support
 
@@ -318,13 +327,15 @@ pip install fritap
 
 Choose your platform and dive into the detailed guides:
 
-1. **[Linux Platform Guide](linux.md)** - Comprehensive Linux analysis
-2. **[macOS Platform Guide](macos.md)** - macOS-specific features and setup
-3. **[Windows Platform Guide](windows.md)** - Windows analysis and troubleshooting
-4. **[Android Platform Guide](android.md)** - Mobile Android app analysis
-5. **[iOS Platform Guide](ios.md)** - iOS app analysis on jailbroken devices
+1. **[Linux Platform Guide](linux.md)** - Comprehensive Linux analysis (full support)
+2. **[macOS Platform Guide](macos.md)** - macOS analysis (keylog extraction only)
+3. **[Windows Platform Guide](windows.md)** - Windows analysis with Schannel/LSASS support
+4. **[Android Platform Guide](android.md)** - Mobile Android app analysis (full support)
+5. **[iOS Platform Guide](ios.md)** - iOS app analysis (keylog extraction only)
+6. **[Wine Platform Guide](wine.md)** - Windows apps on Linux (experimental)
 
 For advanced features and cross-platform topics:
 - **[Pattern-based Hooking](../advanced/patterns.md)** - Custom library detection
+- **[Standalone Agent Usage](../advanced/standalone-agent.md)** - Using _ssl_log.js directly
 - **[Common Issues](../troubleshooting/common-issues.md)** - Platform-agnostic troubleshooting
 - **[Examples](../examples/index.md)** - Real-world analysis scenarios

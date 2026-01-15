@@ -178,7 +178,7 @@ fritap -c script1.js -c script2.js -k keys.log target
 ### Process and Network Options
 
 #### `--enable_spawn_gating`
-Intercept and analyze child processes.
+Intercept and analyze child processes that match the target application name.
 
 ```bash
 # Capture subprocess traffic
@@ -186,6 +186,34 @@ fritap --enable_spawn_gating -p all_traffic.pcap parent_app
 
 # Mobile app with services
 fritap -m --enable_spawn_gating -k keys.log com.example.app
+```
+
+#### `--spawn_gating_all`
+Catch ALL newly spawned processes without filtering by target name.
+
+!!! warning "Use with Caution"
+    This option hooks every new process spawned on the system/device, which can cause significant overhead and may affect system stability. Use only when necessary.
+
+```bash
+# Hook all spawned processes (use carefully)
+fritap --spawn_gating_all -k keys.log target_app
+
+# Mobile - catch all spawned processes
+fritap -m --spawn_gating_all -k keys.log com.example.app
+```
+
+#### `--enable_child_gating`
+Intercept child processes spawned by the target application (via fork/clone).
+
+```bash
+# Capture forked child processes
+fritap --enable_child_gating -k keys.log parent_app
+
+# Combined with spawn gating for comprehensive coverage
+fritap --enable_spawn_gating --enable_child_gating -k keys.log target_app
+
+# Mobile with child gating
+fritap -m --enable_child_gating -k keys.log com.example.app
 ```
 
 #### `-ed, --enable_default_fd`
@@ -370,21 +398,62 @@ fritap --payload_modification -k keys.log target
 
 !!! tip "How to Modify Payloads"
     When `--payload_modification` is active, friTap's agent listens for two specific Frida messages: `readmod` for modifying incoming data (from `SSL_read`) and `writemod` for modifying outgoing data (from `SSL_write`).
-    
+
     You must use a separate script to send a message with a payload containing the new data as a byte array. For example, using Frida's Python bindings:
     ```python
     # script.py
     import frida
-    
+
     new_payload = [0x48, 0x45, 0x4C, 0x4C, 0x4F] # "HELLO"
-    
+
     session = frida.attach("target_app")
     script = session.create_script("...") # Your agent script
     script.load()
-    
+
     # To modify the next SSL_write call's data
     script.post({'type': 'writemod', 'payload': new_payload})
     ```
+
+#### `-t, --timeout SECONDS`
+Set a timeout in seconds for the process. After the timeout, the process will be resumed automatically.
+
+```bash
+# Run analysis for 60 seconds
+fritap -t 60 -k keys.log firefox
+
+# Mobile analysis with timeout
+fritap -m -t 120 -k keys.log com.example.app
+
+# Batch analysis with timeout
+fritap -t 300 -k keys.log -p traffic.pcap target
+```
+
+### Windows-Specific Options
+
+#### `-nl, --no-lsass`
+Skip LSASS (Local Security Authority Subsystem Service) hooking on Windows.
+
+By default, friTap hooks lsass.exe to extract TLS keys from Windows' native Schannel TLS implementation. This provides system-wide Schannel traffic decryption but requires administrator privileges.
+
+!!! info "Windows TLS Architecture"
+    Windows uses **Schannel** (Secure Channel) as its native TLS library, which implements the **SSPI** (Security Support Provider Interface). Due to Windows' **key isolation** architecture, all TLS secrets are stored in **lsass.exe** and never leave that process. By hooking lsass.exe, friTap can extract keys for ALL applications using Schannel (Edge, .NET apps, PowerShell, etc.).
+
+```bash
+# Default behavior - hooks both target app and LSASS
+fritap -k keys.log firefox.exe
+
+# Disable LSASS hooking (only hook target application directly)
+fritap --no-lsass -k keys.log firefox.exe
+
+# Skip LSASS when analyzing apps using OpenSSL instead of Schannel
+fritap -nl -k keys.log curl.exe
+```
+
+!!! warning "Requirements for LSASS Hooking"
+    - Administrator privileges required
+    - May not work with Protected Process Light (PPL) enabled
+    - Antivirus software may interfere with LSASS access
+    - Use `--no-lsass` if you only need to analyze non-Schannel traffic
 
 ## Practical Examples
 

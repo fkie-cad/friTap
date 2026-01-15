@@ -2,6 +2,9 @@
 
 This guide covers macOS-specific setup, considerations, and best practices for using friTap on macOS systems.
 
+!!! warning "Limited macOS Support"
+    macOS support is currently limited to **TLS key extraction only** (keylog). Full plaintext traffic interception is not yet implemented for macOS. Apple's native **SecureTransport and Network.framework are not supported**. Only BoringSSL-based applications (like Chrome) and Python's OpenSSL can be analyzed.
+
 ## Prerequisites
 
 ### System Requirements
@@ -194,44 +197,55 @@ sudo fritap -s --enable_default_fd -k keys.log application
 
 ## SSL/TLS Libraries on macOS
 
-### Common macOS SSL Libraries
+### Supported macOS SSL Libraries
 
-**Secure Transport (macOS native):**
+friTap's macOS support is limited to specific TLS libraries. Here's the current status:
+
+| Library | Support | Notes |
+|---------|---------|-------|
+| **BoringSSL** | 🔑 Keylog | Key extraction via callback hooking (Chrome) |
+| **Python OpenSSL** | 🔑 Keylog | Special handling for Python's bundled OpenSSL |
+| **Cronet** | 🔑 Keylog | Pattern-based, requires external patterns |
+| **SecureTransport** | ❌ Not implemented | Apple's native TLS - no support |
+| **Network.framework** | ❌ Not implemented | Modern Apple TLS - no support |
+| **LibreSSL** | ❌ Not implemented | System SSL - no support |
+
+!!! note "Keylog Only"
+    macOS support extracts TLS keys (keylog) but does **not** intercept plaintext traffic. Use the extracted keys with Wireshark to decrypt captured traffic.
+
+**BoringSSL (Chrome and Chromium-based browsers):**
 ```bash
-# Most macOS applications use Secure Transport
-sudo fritap -k securetransport_keys.log Safari
-
-# Debug Secure Transport detection
-sudo fritap -do -v Safari | grep -i "secure\|transport"
-```
-
-**LibreSSL (macOS system library):**
-```bash
-# macOS includes LibreSSL as system OpenSSL
-which openssl
-openssl version
-
-# Applications may use system LibreSSL
-sudo fritap -k libressl_keys.log application
-```
-
-**BoringSSL (Chrome and others):**
-```bash
-# Chrome uses BoringSSL
-sudo fritap -k boringssl_keys.log "Google Chrome"
+# Extract keys from Chrome
+sudo fritap -k chrome_keys.log "Google Chrome"
 
 # Debug BoringSSL detection
 sudo fritap -do -v "Google Chrome" | grep -i boring
 ```
 
-**Custom SSL Libraries:**
+**Python Applications (Special Support):**
 ```bash
-# Some applications bundle their own SSL libraries
-otool -L "/Applications/App.app/Contents/MacOS/App" | grep -i ssl
+# Python applications using OpenSSL have special macOS support
+sudo fritap -k python_keys.log python3 script.py
 
-# Use pattern-based hooking for custom libraries
+# Python's bundled OpenSSL keylog callbacks are intercepted
+```
+
+**Pattern-based Hooking:**
+```bash
+# Custom patterns for other libraries
 sudo fritap --patterns macos_patterns.json -k keys.log application
 ```
+
+### Unsupported Applications
+
+!!! warning "Native macOS Apps Not Supported"
+    The following applications use SecureTransport or Network.framework and **cannot** be analyzed with friTap:
+
+    - Safari
+    - Mail
+    - Messages
+    - Most native macOS applications
+    - App Store applications using Apple TLS
 
 ### Library Detection Commands
 
@@ -248,39 +262,63 @@ otool -L "/Applications/App.app/Contents/MacOS/App" | grep -i security
 
 ## Application Categories
 
-### Web Browsers
+### Supported Applications
 
+!!! tip "Focus on BoringSSL-based Applications"
+    friTap on macOS works best with Chromium-based browsers and Python applications. Native macOS apps using SecureTransport will not work.
+
+**Chromium-based Browsers (Supported):**
 ```bash
-# Safari
-sudo fritap -k safari_keys.log --pcap safari_traffic.pcap Safari
-
-# Chrome
+# Chrome - uses BoringSSL
 sudo fritap -k chrome_keys.log "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
-# Firefox
-sudo fritap -k firefox_keys.log Firefox
-
-# Edge
+# Edge - uses BoringSSL
 sudo fritap -k edge_keys.log "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
+
+# Brave - uses BoringSSL
+sudo fritap -k brave_keys.log "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
 ```
 
-### Communication Applications
+**Python Applications (Supported):**
+```bash
+# Python scripts using requests/urllib
+sudo fritap -k python_keys.log python3 script.py
+
+# Python with specific SSL module
+sudo fritap -k python_keys.log python3 -c "import ssl; import urllib.request; urllib.request.urlopen('https://example.com')"
+```
+
+### Unsupported Applications
+
+!!! warning "These Will NOT Work"
+    The following use SecureTransport/Network.framework and are not supported:
 
 ```bash
-# Messages
-sudo fritap -k messages_keys.log Messages
+# Safari - uses SecureTransport (NOT SUPPORTED)
+# sudo fritap -k safari_keys.log Safari  # Will not capture keys
 
-# FaceTime
-sudo fritap -k facetime_keys.log FaceTime
+# Messages - uses SecureTransport (NOT SUPPORTED)
+# sudo fritap -k messages_keys.log Messages  # Will not capture keys
 
-# Zoom
-sudo fritap -k zoom_keys.log zoom.us
+# FaceTime - uses SecureTransport (NOT SUPPORTED)
+# sudo fritap -k facetime_keys.log FaceTime  # Will not capture keys
 
-# Slack
+# Firefox - uses NSS (LIMITED SUPPORT on macOS)
+# sudo fritap -k firefox_keys.log Firefox  # May have limited functionality
+```
+
+### Electron Applications (May Work)
+
+Some Electron apps bundle Chromium and may work:
+```bash
+# Discord - Electron based
+sudo fritap -k discord_keys.log Discord
+
+# Slack - Electron based
 sudo fritap -k slack_keys.log Slack
 
-# Discord
-sudo fritap -k discord_keys.log Discord
+# VS Code - Electron based
+sudo fritap -k vscode_keys.log "/Applications/Visual Studio Code.app/Contents/MacOS/Electron"
 ```
 
 ### Development Tools

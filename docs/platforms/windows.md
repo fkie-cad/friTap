@@ -151,25 +151,138 @@ fritap -k python_keys.log python.exe my_script.py
 
 ## Windows-Specific Features
 
-### Windows API SSL Libraries
+### Windows TLS Architecture: Schannel and LSASS
 
-**Schannel (Windows native SSL/TLS):**
-```powershell
-# Most Windows applications use Schannel
-fritap -k schannel_keys.log application.exe
+Understanding Windows' TLS architecture is essential for effective traffic analysis. Unlike other platforms, Windows uses a centralized security model where TLS secrets are isolated in the LSASS process.
 
-# Debug Schannel detection
-fritap -do -v application.exe | Select-String "schannel"
+#### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    YOUR APPLICATION                             │
+│           (Edge, .NET apps, PowerShell, curl, etc.)             │
+└──────────────────────────────┬──────────────────────────────────┘
+                               │ SSPI API calls (InitializeSecurityContext, etc.)
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                 secur32.dll / sspicli.dll                       │
+│                 (User-mode SSPI interface)                      │
+└──────────────────────────────┬──────────────────────────────────┘
+                               │ ALPC (Asynchronous Local Procedure Call)
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                         LSASS.EXE                               │
+│  ┌────────────────────────────────────────────────────────────┐ │
+│  │                    schannel.dll                            │ │
+│  │        (TLS protocol implementation - LSA mode)            │ │
+│  │                                                            │ │
+│  │   ★ ALL TLS SECRETS ARE STORED HERE (Key Isolation) ★      │ │
+│  │   - Master secrets (TLS 1.2)                               │ │
+│  │   - Traffic secrets (TLS 1.3)                              │ │
+│  │   - Session keys                                           │ │
+│  └────────────────────────────────────────────────────────────┘ │
+│  ┌────────────────────────────────────────────────────────────┐ │
+│  │              ncrypt.dll / bcrypt.dll                       │ │
+│  │         (CNG - Cryptography Next Generation)               │ │
+│  │                                                            │ │
+│  │   Provides: SslGenerateMasterKey, SslExpandTrafficKeys     │ │
+│  └────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-**CryptoAPI Integration:**
-```powershell
-# Applications using Windows CryptoAPI
-fritap -k cryptoapi_keys.log --json crypto_metadata.json application.exe
+#### Key Concepts
 
-# Check for CryptoAPI usage in metadata
-Get-Content crypto_metadata.json | ConvertFrom-Json | Select-Object -ExpandProperty libraries_detected
+| Term | Description |
+|------|-------------|
+| **Schannel** | Windows native TLS library (Security Support Provider) |
+| **SSPI** | Security Support Provider Interface - the API for security services |
+| **LSASS** | Local Security Authority Subsystem Service |
+| **Key Isolation** | Security feature: TLS secrets NEVER leave lsass.exe memory |
+| **ALPC** | Asynchronous Local Procedure Calls - Windows IPC mechanism |
+| **CNG** | Cryptography Next Generation - Windows crypto API layer |
+
+#### Why friTap Hooks LSASS
+
+Due to Windows' key isolation architecture:
+
+1. **Applications never see TLS secrets** - When your app calls SSPI functions, the actual TLS handshake happens INSIDE lsass.exe
+2. **Centralized key storage** - ALL Schannel TLS keys from ALL applications are stored in lsass.exe
+3. **Single hook point** - By hooking lsass.exe, friTap captures keys for every Windows application using native TLS
+
+#### friTap's LSASS Hooking Implementation
+
+friTap automatically hooks lsass.exe (enabled by default) to intercept:
+
+- `SslGenerateMasterKey` - Captures TLS 1.2 master secrets during key exchange
+- `SslExpandTrafficKeys` - Captures TLS 1.3 traffic secrets
+- `SslHashHandshake` - Extracts client random values
+
+**Default behavior (hooks both application and LSASS):**
+```powershell
+# Captures keys from both the target app AND system-wide Schannel traffic
+fritap -k keys.log firefox.exe
 ```
+
+**Disable LSASS hooking:**
+```powershell
+# Only hook the target application directly (useful for OpenSSL apps)
+fritap --no-lsass -k keys.log curl.exe
+
+# Short form
+fritap -nl -k keys.log application.exe
+```
+
+#### Requirements and Limitations
+
+!!! warning "Administrator Privileges Required"
+    Hooking lsass.exe requires administrator privileges. Run PowerShell or Command Prompt as Administrator.
+
+!!! warning "Security Software Interference"
+    - Windows Defender may block LSASS access
+    - EDR/antivirus solutions often protect lsass.exe
+    - Protected Process Light (PPL) prevents hooking on some systems
+    - Add friTap to your security software's exclusion list
+
+**Checking LSASS protection status:**
+```powershell
+# Check if LSASS is running as Protected Process Light
+Get-Process lsass | Select-Object Name, Id, @{N='Protection';E={(Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" -Name "RunAsPPL" -ErrorAction SilentlyContinue).RunAsPPL}}
+```
+
+#### When to Use --no-lsass
+
+Use `--no-lsass` when:
+
+- Analyzing applications that use **OpenSSL** or **BoringSSL** (not Schannel)
+- You only need traffic from a specific application
+- LSASS hooking is blocked by security software
+- Running on systems with LSASS protection enabled
+
+```powershell
+# Chrome uses BoringSSL, not Schannel - LSASS hook not needed
+fritap -nl -k keys.log chrome.exe
+
+# Firefox uses NSS, not Schannel
+fritap -nl -k keys.log firefox.exe
+
+# curl on Windows may use OpenSSL
+fritap -nl -k keys.log curl.exe
+```
+
+### Applications Using Schannel vs Other Libraries
+
+| Application | TLS Library | Needs LSASS Hook |
+|-------------|-------------|------------------|
+| Microsoft Edge | Schannel | Yes (default) |
+| Internet Explorer | Schannel | Yes (default) |
+| .NET Applications | Schannel | Yes (default) |
+| PowerShell | Schannel | Yes (default) |
+| Windows Update | Schannel | Yes (default) |
+| Chrome | BoringSSL | No (`--no-lsass`) |
+| Firefox | NSS | No (`--no-lsass`) |
+| curl (OpenSSL build) | OpenSSL | No (`--no-lsass`) |
+| Python (ssl module) | OpenSSL | No (`--no-lsass`) |
+| Java applications | Java SSL | No (`--no-lsass`) |
 
 ### .NET Framework Applications
 
