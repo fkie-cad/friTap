@@ -92,8 +92,10 @@ nav:
     - Linux: platforms/linux.md
     - macOS: platforms/macos.md
     - Windows: platforms/windows.md
+    - Wine: platforms/wine.md
   - Advanced Features:
     - Pattern-based Hooking: advanced/patterns.md
+    - Standalone Agent Usage: advanced/standalone-agent.md
   - SSL/TLS Libraries:
     - Overview: libraries/index.md
     - BoringSSL: libraries/boringssl.md
