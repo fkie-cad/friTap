@@ -30,37 +30,37 @@ This script automatically handles all setup requirements and verifies the instal
 
 The `setup_developer_env.py` script performs the following steps:
 
-### ✅ Python Environment Setup
+### Python Environment Setup
 - Validates Python 3.7+ installation
 - Installs friTap in development mode (`pip install -e .`)
 - Installs all development dependencies from `requirements-dev.txt`
 
-### ✅ Node.js Environment Setup
+### Node.js Environment Setup
 - Verifies Node.js 16+ and npm availability
 - Installs TypeScript compilation dependencies (`npm install`)
 - Provides platform-specific installation guidance if missing
 
-### ✅ frida-compile Installation
+### frida-compile Installation
 - Installs latest frida-tools package (`pip install --upgrade frida-tools`)
 - Verifies frida-compile availability and version
 - Ensures compatibility with current Frida releases
 
-### ✅ Agent Compilation Testing
+### Agent Compilation Testing
 - Tests TypeScript agent compilation (`npm run build`)
 - Verifies generated JavaScript files exist
 - Validates compilation process works correctly
 
-### ✅ Testing Framework Setup
+### Testing Framework Setup
 - Installs pytest and testing dependencies
 - Runs basic framework validation
 - Sets up coverage reporting tools
 
-### ✅ Pre-commit Hooks
+### Pre-commit Hooks
 - Installs pre-commit framework
 - Configures code quality hooks
 - Sets up automated formatting and linting
 
-### ✅ BoringSecretHunter Environment
+### BoringSecretHunter Environment
 - Checks Docker availability
 - Creates necessary directories (`binary/`, `results/`)
 - Provides Docker setup guidance

@@ -128,47 +128,47 @@ For critical bugs requiring immediate release:
 
 Brief description of the release focus and major improvements.
 
-## 🚀 New Features
+## New Features
 
 - **Feature name**: Description of new capability
 - **Enhancement**: Improvement to existing functionality
 
-## 🐛 Bug Fixes
+## Bug Fixes
 
 - **Issue description**: Fix applied
 - **Platform fix**: Platform-specific correction
 
-## 📚 Documentation
+## Documentation
 
 - Updated installation guide
 - New examples and tutorials
 - Improved troubleshooting
 
-## 🔧 Technical Changes
+## Technical Changes
 
 - Dependency updates
 - Performance improvements
 - Code refactoring
 
-## 📦 Installation
+## Installation
 
 ```bash
 pip install --upgrade fritap
 ```
 
-## 🔗 Links
+## Links
 
 - [Full Changelog](https://github.com/fkie-cad/friTap/blob/main/CHANGELOG.md)
 - [Documentation](https://fkie-cad.github.io/friTap)
 - [GitHub Releases](https://github.com/fkie-cad/friTap/releases)
 
-## 🙏 Contributors
+## Contributors
 
 Thanks to all contributors for this release:
 - @contributor1
 - @contributor2
 
-## 📋 Next Steps
+## Next Steps
 
 Preview of next release focus and timeline.
 ```

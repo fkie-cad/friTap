@@ -8,17 +8,17 @@ friTap supports multiple platforms and operating systems. This section provides 
 
 | Platform | Status | Guide | Key Features |
 |----------|--------|-------|--------------|
-| **Linux** | ✅ Full Support | [Linux Guide](linux.md) | Native OpenSSL/GnuTLS, BPF capture, containers |
-| **macOS** | 🔑 Partial Support | [macOS Guide](macos.md) | BoringSSL keylog extraction, Python OpenSSL |
-| **Windows** | ✅ Full Support | [Windows Guide](windows.md) | Schannel (via LSASS), OpenSSL, bundled libraries |
-| **Wine** | 🧪 Experimental | [Wine Guide](wine.md) | Windows apps on Linux, hybrid DLL/SO hooking |
+| **Linux** | ✓ Full Support | [Linux Guide](linux.md) | Native OpenSSL/GnuTLS, BPF capture, containers |
+| **macOS** | Keys (Partial) | [macOS Guide](macos.md) | BoringSSL keylog extraction, Python OpenSSL |
+| **Windows** | ✓ Full Support | [Windows Guide](windows.md) | Schannel (via LSASS), OpenSSL, bundled libraries |
+| **Wine** | Experimental | [Wine Guide](wine.md) | Windows apps on Linux, hybrid DLL/SO hooking |
 
 ### Mobile Platforms
 
 | Platform | Status | Guide | Key Features |
 |----------|--------|-------|--------------|
-| **Android** | ✅ Full Support | [Android Guide](android.md) | BoringSSL, Conscrypt, Java SSL, root required |
-| **iOS** | 🔑 Partial Support | [iOS Guide](ios.md) | BoringSSL keylog, Flutter, jailbreak required |
+| **Android** | ✓ Full Support | [Android Guide](android.md) | BoringSSL, Conscrypt, Java SSL, root required |
+| **iOS** | Keys (Partial) | [iOS Guide](ios.md) | BoringSSL keylog, Flutter, jailbreak required |
 
 ## Quick Platform Selection
 
@@ -41,12 +41,12 @@ friTap supports multiple platforms and operating systems. This section provides 
 | Feature | Linux | macOS | Windows | Android | iOS | Wine |
 |---------|-------|-------|---------|---------|-----|------|
 | **Primary TLS Libraries** | OpenSSL, GnuTLS, NSS | BoringSSL (keylog) | Schannel (via LSASS) | BoringSSL, Conscrypt | BoringSSL (keylog) | Windows DLLs + Linux .so |
-| **Full Key + Traffic** | ✅ | ❌ | ✅ | ✅ | ❌ | ✅ |
-| **Keylog Only** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Full Key + Traffic** | ✓ | ✗ | ✓ | ✓ | ✗ | ✓ |
+| **Keylog Only** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | **Root/Admin Required** | Yes | Yes | Yes | Yes | Yes (Jailbreak) | Yes |
-| **Pattern Hooking** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Live Analysis** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Spawn Mode** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Pattern Hooking** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **Live Analysis** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **Spawn Mode** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 ### Installation Complexity
 
@@ -158,41 +158,41 @@ fritap -m -k keys.log --pcap traffic.pcap com.example.app
 ### Common SSL/TLS Libraries
 
 **Linux:**
-- OpenSSL (most common) - ✅ Full support
-- GnuTLS - ✅ Full support
-- NSS (Firefox) - ✅ Full support
-- BoringSSL (Chrome) - ✅ Full support
-- WolfSSL - ✅ Full support
-- Rustls - 🔑 Keylog only
-- Go TLS - ✅ Full support
+- OpenSSL (most common) - ✓ Full support
+- GnuTLS - ✓ Full support
+- NSS (Firefox) - ✓ Full support
+- BoringSSL (Chrome) - ✓ Full support
+- WolfSSL - ✓ Full support
+- Rustls - Keylog only
+- Go TLS - ✓ Full support
 
 **macOS:**
-- BoringSSL (Chrome) - 🔑 Keylog only
-- Python OpenSSL - 🔑 Keylog only
-- Secure Transport - ❌ Not implemented
-- Network.framework - ❌ Not implemented
+- BoringSSL (Chrome) - Keylog only
+- Python OpenSSL - Keylog only
+- Secure Transport - ✗ Not implemented
+- Network.framework - ✗ Not implemented
 
 **Windows:**
-- Schannel (native via LSASS) - ✅ Full support
-- OpenSSL/BoringSSL - ✅ Full support
-- WolfSSL - ✅ Full support
-- GnuTLS - ✅ Full support
+- Schannel (native via LSASS) - ✓ Full support
+- OpenSSL/BoringSSL - ✓ Full support
+- WolfSSL - ✓ Full support
+- GnuTLS - ✓ Full support
 
 **Android:**
-- BoringSSL (most apps) - ✅ Full support
-- Conscrypt - ✅ Full support
-- Java SSL libraries - ✅ Full support
-- GnuTLS - ✅ Full support
-- WolfSSL - ✅ Full support
-- Go TLS - ✅ Full support
-- Flutter - ✅ Full support
+- BoringSSL (most apps) - ✓ Full support
+- Conscrypt - ✓ Full support
+- Java SSL libraries - ✓ Full support
+- GnuTLS - ✓ Full support
+- WolfSSL - ✓ Full support
+- Go TLS - ✓ Full support
+- Flutter - ✓ Full support
 
 **iOS:**
-- BoringSSL - 🔑 Keylog only
-- Flutter - 🔑 Keylog only
-- Cronet - 🧪 Experimental
-- Secure Transport - ❌ Not implemented
-- Network.framework - ❌ Not implemented
+- BoringSSL - Keylog only
+- Flutter - Keylog only
+- Cronet - Experimental
+- Secure Transport - ✗ Not implemented
+- Network.framework - ✗ Not implemented
 
 ## Architecture Support
 
@@ -200,11 +200,11 @@ fritap -m -k keys.log --pcap traffic.pcap com.example.app
 
 | Platform | x86_64 | ARM64 | x86 (32-bit) | ARM (32-bit) |
 |----------|--------|-------|--------------|--------------|
-| **Linux** | ✅ | ✅ | ✅ | ✅ |
-| **macOS** | ✅ | ✅ (M1/M2) | ❌ | ❌ |
-| **Windows** | ✅ | ✅ (ARM64) | ✅ | ❌ |
-| **Android** | ✅ | ✅ | ✅ | ✅ |
-| **iOS** | ❌ | ✅ | ❌ | ✅ (legacy) |
+| **Linux** | ✓ | ✓ | ✓ | ✓ |
+| **macOS** | ✓ | ✓ (M1/M2) | ✗ | ✗ |
+| **Windows** | ✓ | ✓ (ARM64) | ✓ | ✗ |
+| **Android** | ✓ | ✓ | ✓ | ✓ |
+| **iOS** | ✗ | ✓ | ✗ | ✓ (legacy) |
 
 ### Special Considerations
 

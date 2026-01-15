@@ -196,11 +196,11 @@ friTap's iOS support is limited to specific TLS libraries. Here's the current st
 
 | Library | Support | Notes |
 |---------|---------|-------|
-| **BoringSSL** | 🔑 Keylog | Key extraction via callback hooking |
-| **Flutter** | 🔑 Keylog | Pattern-based key extraction |
-| **Cronet** | 🧪 Experimental | Untested, may require patterns |
-| **SecureTransport** | ❌ Not implemented | Apple's native TLS - no support |
-| **Network.framework** | ❌ Not implemented | Modern Apple TLS - no support |
+| **BoringSSL** | Keys (Keylog) | Key extraction via callback hooking |
+| **Flutter** | Keys (Keylog) | Pattern-based key extraction |
+| **Cronet** | Experimental | Untested, may require patterns |
+| **SecureTransport** | ✗ Not implemented | Apple's native TLS - no support |
+| **Network.framework** | ✗ Not implemented | Modern Apple TLS - no support |
 
 !!! note "Keylog Only"
     iOS support extracts TLS keys (keylog) but does **not** intercept plaintext traffic. Use the extracted keys with Wireshark to decrypt captured traffic.

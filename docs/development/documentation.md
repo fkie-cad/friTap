@@ -67,14 +67,14 @@ docs/
 #### Language Guidelines
 ```markdown
 # Good examples
-✅ "Run the following command to install friTap:"
-✅ "This extracts SSL keys from the target application."
-✅ "You can configure friTap using command-line options."
+"Run the following command to install friTap:"
+"This extracts SSL keys from the target application."
+"You can configure friTap using command-line options."
 
 # Avoid
-❌ "It is possible to run the command below for friTap installation:"
-❌ "SSL keys may be extracted by friTap from applications."
-❌ "Configuration of friTap can be done through options."
+"It is possible to run the command below for friTap installation:"
+"SSL keys may be extracted by friTap from applications."
+"Configuration of friTap can be done through options."
 ```
 
 #### Formatting Standards
@@ -106,11 +106,11 @@ log("TypeScript example");
 
 **Links**: Use descriptive link text
 ```markdown
-✅ [Installation Guide](getting-started/installation.md)
-✅ See the [CLI Reference](api/cli.md) for all options
+[Installation Guide](getting-started/installation.md)
+See the [CLI Reference](api/cli.md) for all options
 
-❌ [Click here](getting-started/installation.md)
-❌ More info [here](api/cli.md)
+[Click here](getting-started/installation.md)
+More info [here](api/cli.md)
 ```
 
 **Images**: Always include alt text and descriptive captions

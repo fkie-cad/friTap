@@ -681,11 +681,11 @@ NewLibrary is a [description of the library, its features, common usage].
 
 | Platform | Key Extraction | Traffic Capture | Notes |
 |----------|---------------|-----------------|-------|
-| Linux    | ✅ Full       | ✅ Full         | All versions |
-| Windows  | ✅ Full       | ✅ Full         | Windows 10+ |
-| Android  | ✅ Full       | ✅ Full         | API 21+ |
-| macOS    | ⚠️ Limited    | ✅ Full         | Key extraction partial |
-| iOS      | ⚠️ Limited    | ✅ Full         | Requires jailbreak |
+| Linux    | Full       | Full         | All versions |
+| Windows  | Full       | Full         | Windows 10+ |
+| Android  | Full       | Full         | API 21+ |
+| macOS    | Limited    | Full         | Key extraction partial |
+| iOS      | Limited    | Full         | Requires jailbreak |
 
 ## Usage Examples
 

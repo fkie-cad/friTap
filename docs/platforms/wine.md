@@ -143,12 +143,12 @@ Wine support intercepts Windows DLLs by hooking `LdrLoadDll` in Wine's `ntdll.dl
 
 | Library | Support | Notes |
 |---------|---------|-------|
-| OpenSSL/BoringSSL | ✅ Full | Key extraction + traffic |
-| WolfSSL | ✅ Full | Key extraction + traffic |
-| GnuTLS | ✅ Full | Key extraction + traffic |
-| NSS | ✅ Full | Key extraction + traffic |
-| mbedTLS | 🔄 R/W | Traffic hooks only |
-| Cronet | ✅ Full | Pattern-based hooking |
+| OpenSSL/BoringSSL | Full | Key extraction + traffic |
+| WolfSSL | Full | Key extraction + traffic |
+| GnuTLS | Full | Key extraction + traffic |
+| NSS | Full | Key extraction + traffic |
+| mbedTLS | R/W | Traffic hooks only |
+| Cronet | Full | Pattern-based hooking |
 
 ### Native Linux Libraries
 
@@ -156,13 +156,13 @@ Wine applications can also use native Linux TLS libraries. All standard Linux li
 
 | Library | Support | Notes |
 |---------|---------|-------|
-| OpenSSL/BoringSSL | ✅ Full | Key extraction + traffic |
-| GnuTLS | ✅ Full | Key extraction + traffic |
-| NSS | ✅ Full | Key extraction + traffic |
-| WolfSSL | ✅ Full | Key extraction + traffic |
-| Rustls | 🔑 Keys | Key extraction only |
-| Go TLS | ✅ Full | Go crypto/tls |
-| S2N-TLS | ✅ Full | AWS TLS library |
+| OpenSSL/BoringSSL | Full | Key extraction + traffic |
+| GnuTLS | Full | Key extraction + traffic |
+| NSS | Full | Key extraction + traffic |
+| WolfSSL | Full | Key extraction + traffic |
+| Rustls | Keys | Key extraction only |
+| Go TLS | Full | Go crypto/tls |
+| S2N-TLS | Full | AWS TLS library |
 
 ## Technical Details
 

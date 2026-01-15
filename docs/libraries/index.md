@@ -6,30 +6,30 @@ friTap supports a wide range of SSL/TLS libraries across different platforms. Th
 
 | Library | Linux | Windows | macOS | Android | iOS | Key Features |
 |---------|-------|---------|-------|---------|-----|--------------|
-| **OpenSSL** | ✅ Full | 🔄 R/W | 🔑 Keys | ✅ Full | 🔑 Keys | Most widely used |
-| **BoringSSL** | ✅ Full | 🔄 R/W | 🔑 Keys | ✅ Full | 🔑 Keys | Google's OpenSSL fork |
-| **NSS** | ✅ Full | 🔄 R/W | 🚧 TBI | ✅ Full | 🚧 TBI | Mozilla's library |
-| **GnuTLS** | 🔄 R/W | 🔄 R/W | 🚧 TBI | ✅ Full | 🚧 TBI | GNU project library |
-| **WolfSSL** | 🔄 R/W | 🔄 R/W | 🚧 TBI | ✅ Full | 🚧 TBI | Embedded/IoT focused |
-| **mbedTLS** | 🔄 R/W | 🔄 R/W | 🚧 TBI | 🔄 R/W | 🚧 TBI | Lightweight library |
-| **Schannel** | ❌ | ✅ Full | ❌ | ❌ | ❌ | Windows native (via LSASS) |
-| **Conscrypt** | 🚧 TBA | 🚧 TBA | 🚧 TBA | ✅ Full | 🚧 TBA | Android system SSL |
-| **S2N-TLS** | ✅ Full | ❌ | 🚧 TBA | ✅ Full | ❌ | AWS library |
-| **Rustls** | 🔑 Keys | 🚧 TBI | 🚧 TBI | 🔑 Keys | 🚧 TBI | Rust implementation |
-| **Go TLS** | ✅ Full | ✅ Full | ✅ Full | ✅ Full | ✅ Full | Go crypto/tls |
-| **Cronet** | ✅ Full | ✅ Full | ✅ Full | ✅ Full | ✅ Full | Chrome network stack |
-| **Flutter** | 🚧 TBI | 🚧 TBI | 🚧 TBI | ✅ Full | ✅ Full | Built-in patterns |
-| **Mono BTLS** | 🚧 TBI | 🚧 TBI | 🚧 TBI | ✅ Full | 🚧 TBI | Xamarin/.NET |
-| **MatrixSSL** | ✅ Full | 🚧 TBI | 🚧 TBI | 🚧 TBI | 🚧 TBI | Commercial SSL |
-| **BouncyCastle** | 🚧 TBA | 🚧 TBA | 🚧 TBA | ✅ Full | 🚧 TBA | Java crypto |
+| **OpenSSL** | ✓ Full | R/W | Keys | ✓ Full | Keys | Most widely used |
+| **BoringSSL** | ✓ Full | R/W | Keys | ✓ Full | Keys | Google's OpenSSL fork |
+| **NSS** | ✓ Full | R/W | TBI | ✓ Full | TBI | Mozilla's library |
+| **GnuTLS** | R/W | R/W | TBI | ✓ Full | TBI | GNU project library |
+| **WolfSSL** | R/W | R/W | TBI | ✓ Full | TBI | Embedded/IoT focused |
+| **mbedTLS** | R/W | R/W | TBI | R/W | TBI | Lightweight library |
+| **Schannel** | ✗ | ✓ Full | ✗ | ✗ | ✗ | Windows native (via LSASS) |
+| **Conscrypt** | TBA | TBA | TBA | ✓ Full | TBA | Android system SSL |
+| **S2N-TLS** | ✓ Full | ✗ | TBA | ✓ Full | ✗ | AWS library |
+| **Rustls** | Keys | TBI | TBI | Keys | TBI | Rust implementation |
+| **Go TLS** | ✓ Full | ✓ Full | ✓ Full | ✓ Full | ✓ Full | Go crypto/tls |
+| **Cronet** | ✓ Full | ✓ Full | ✓ Full | ✓ Full | ✓ Full | Chrome network stack |
+| **Flutter** | TBI | TBI | TBI | ✓ Full | ✓ Full | Built-in patterns |
+| **Mono BTLS** | TBI | TBI | TBI | ✓ Full | TBI | Xamarin/.NET |
+| **MatrixSSL** | ✓ Full | TBI | TBI | TBI | TBI | Commercial SSL |
+| **BouncyCastle** | TBA | TBA | TBA | ✓ Full | TBA | Java crypto |
 
 **Legend:**
-- ✅ **Full**: Complete support (keys + traffic decryption)
-- 🔄 **R/W**: Read/Write hooks only (traffic without keys)
-- 🔑 **Keys**: Key extraction only
-- 🚧 **TBI**: To Be Implemented
-- 🚧 **TBA**: To Be Analyzed
-- ❌ **N/A**: Not applicable to platform
+- ✓ **Full**: Complete support (keys + traffic decryption)
+- **R/W**: Read/Write hooks only (traffic without keys)
+- **Keys**: Key extraction only
+- **TBI**: To Be Implemented
+- **TBA**: To Be Analyzed
+- ✗ **N/A**: Not applicable to platform
 
 !!! note "Schannel Support"
     Windows Schannel support is implemented via LSASS hooking, providing system-wide TLS key extraction for all applications using Windows native TLS. See [Windows Platform Guide](../platforms/windows.md) for details.

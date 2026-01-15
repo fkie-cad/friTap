@@ -14,38 +14,38 @@ This section provides comprehensive, real-world examples of using friTap for var
 
 ## Example Categories
 
-### 🌐 [Desktop Applications](desktop.md)
+### [Desktop Applications](desktop.md)
 - Web browsers (Firefox, Chrome, Safari)
 - Email clients (Thunderbird, Outlook)
 - Desktop applications (Slack, Discord)
 - Command-line tools (curl, wget)
 
-### 📱 [Android Applications](android.md)
+### [Android Applications](android.md)
 - Social media apps (Instagram, Twitter)
 - Banking applications
 - E-commerce apps
 - Custom applications
 
-### 🍎 iOS Applications
+### iOS Applications
 - System applications
 - Third-party apps
 - Jailbreak considerations
 - *See Platform Guides for iOS-specific examples*
 
-### 🌍 Web Browsers
+### Web Browsers
 - Chrome/Chromium analysis
 - Firefox analysis
 - Safari analysis
 - Edge analysis
 - *See Desktop Applications examples for browser analysis*
 
-### 🦠 [Malware Analysis](malware.md)
+### [Malware Analysis](malware.md)
 - C&C communication
 - Data exfiltration
 - Cryptocurrency miners
 - APT analysis
 
-### 🔴 Live Analysis
+### Live Analysis
 - Real-time monitoring
 - Wireshark integration
 - Continuous analysis

@@ -26,12 +26,12 @@ friTap is a powerful cybersecurity research tool that simplifies SSL/TLS traffic
 
 ### Key Capabilities
 
-- **🔑 Real-time Key Extraction**: Automatically extract TLS keys as they're generated
-- **📊 Live Traffic Decryption**: Decrypt and save TLS payload as PCAP files
-- **🌐 Multi-Platform Support**: Works on Linux, Windows, macOS, Android, and iOS
-- **🔧 Extensive Library Support**: Supports OpenSSL, BoringSSL, NSS, GnuTLS, WolfSSL, and more
-- **🚀 Pattern-Based Hooking**: Hook stripped libraries without symbols
-- **🔍 Advanced Analysis**: Bypass anti-analysis techniques and SSL pinning
+- **Real-time Key Extraction**: Automatically extract TLS keys as they're generated
+- **Live Traffic Decryption**: Decrypt and save TLS payload as PCAP files
+- **Multi-Platform Support**: Works on Linux, Windows, macOS, Android, and iOS
+- **Extensive Library Support**: Supports OpenSSL, BoringSSL, NSS, GnuTLS, WolfSSL, and more
+- **Pattern-Based Hooking**: Hook stripped libraries without symbols
+- **Advanced Analysis**: Bypass anti-analysis techniques and SSL pinning
 
 ### Use Cases
 
@@ -56,24 +56,24 @@ friTap uses dynamic instrumentation to intercept SSL/TLS operations at the libra
 
 | Library | Linux | Windows | macOS | Android | iOS | Key Features |
 |---------|-------|---------|-------|---------|-----|--------------|
-| **OpenSSL** | ✅ Full | 🔄 R/W | 🚧 TBI | ✅ Full | 🚧 TBI | Most widely used |
-| **BoringSSL** | ✅ Full | 🔄 R/W | 🔑 Keys | ✅ Full | 🔑 Keys | Google's OpenSSL fork |
-| **NSS** | ✅ Full | 🔄 R/W | 🚧 TBI | 🔑 Keys | 🚧 TBI | Mozilla's library |
-| **GnuTLS** | 🔄 R/W | 🔄 R/W | 🚧 TBI | ✅ Full | 🚧 TBI | GNU project library |
-| **WolfSSL** | 🔄 R/W | 🔄 R/W | 🚧 TBI | ✅ Full | 🚧 TBI | Embedded/IoT focused |
-| **mbedTLS** | 🔄 R/W | 🔄 R/W | 🚧 TBI | ✅ Full | 🚧 TBI | Lightweight library |
-| **Schannel** | ❌ | ✅ Full | ❌ | ❌ | ❌ | Windows native SSL/TLS |
-| **Conscrypt** | 🚧 TBA | 🚧 TBA | 🚧 TBA | ✅ Full | 🚧 TBA | Android system SSL |
-| **S2N-TLS** | ✅ Full | ❌ | 🚧 TBA | ✅ Full | ❌ | AWS library |
-| **RustTLS** | 🔑 Keys | 🚧 TBI | 🚧 TBI | 🔑 Keys | 🚧 TBI | Rust implementation |
+| **OpenSSL** | ✓ Full | R/W | TBI | ✓ Full | TBI | Most widely used |
+| **BoringSSL** | ✓ Full | R/W | Keys | ✓ Full | Keys | Google's OpenSSL fork |
+| **NSS** | ✓ Full | R/W | TBI | Keys | TBI | Mozilla's library |
+| **GnuTLS** | R/W | R/W | TBI | ✓ Full | TBI | GNU project library |
+| **WolfSSL** | R/W | R/W | TBI | ✓ Full | TBI | Embedded/IoT focused |
+| **mbedTLS** | R/W | R/W | TBI | ✓ Full | TBI | Lightweight library |
+| **Schannel** | ✗ | ✓ Full | ✗ | ✗ | ✗ | Windows native SSL/TLS |
+| **Conscrypt** | TBA | TBA | TBA | ✓ Full | TBA | Android system SSL |
+| **S2N-TLS** | ✓ Full | ✗ | TBA | ✓ Full | ✗ | AWS library |
+| **RustTLS** | Keys | TBI | TBI | Keys | TBI | Rust implementation |
 
 **Legend:**
-- ✅ **Full**: Complete support (keys + traffic decryption)
-- 🔄 **R/W**: Read/Write hooks only (traffic without keys)
-- 🔑 **Keys**: Key extraction only
-- 🚧 **TBI**: To Be Implemented
-- 🚧 **TBA**: To Be Analyzed
-- ❌ **N/A**: Not applicable to platform
+- ✓ **Full**: Complete support (keys + traffic decryption)
+- **R/W**: Read/Write hooks only (traffic without keys)
+- **Keys**: Key extraction only
+- **TBI**: To Be Implemented
+- **TBA**: To Be Analyzed
+- ✗ **N/A**: Not applicable to platform
 
 ## Getting Started
 
@@ -125,30 +125,30 @@ fritap --help
 
 ## Documentation Sections
 
-### 📖 [Getting Started](getting-started/installation.md)
+### [Getting Started](getting-started/installation.md)
 Installation, setup, and basic concepts to get you up and running quickly.
 
-### 💡 [Usage Examples](examples/index.md)
+### [Usage Examples](examples/index.md)
 Comprehensive examples for different platforms and use cases with real-world scenarios.
 
-### 🔧 [Platform Guides](platforms/android.md)
+### [Platform Guides](platforms/android.md)
 Detailed guides for Android, iOS, Linux, Windows, and macOS analysis.
 
-### 🚀 [Advanced Features](advanced/patterns.md)
+### [Advanced Features](advanced/patterns.md)
 Pattern-based hooking, spawn gating, anti-detection techniques, and custom scripts.
 
-### 📚 [API Reference](api/python.md)
+### [API Reference](api/python.md)
 Complete API documentation for Python integration and CLI usage.
 
-### 🐛 [Troubleshooting](troubleshooting/common-issues.md)
+### [Troubleshooting](troubleshooting/common-issues.md)
 Solutions for common issues, debugging techniques, and performance optimization.
 
 ## Community & Support
 
-- 🐙 **GitHub**: [fkie-cad/friTap](https://github.com/fkie-cad/friTap)
-- 📧 **Email**: daniel.baier@fkie.fraunhofer.de
-- 📄 **Research**: [OSDFCon Webinar](https://github.com/fkie-cad/friTap/blob/main/assets/friTapOSDFConwebinar.pdf)
-- 📝 **Blog**: [Technical Deep Dive](https://lolcads.github.io/posts/2022/08/fritap/)
+- **GitHub**: [fkie-cad/friTap](https://github.com/fkie-cad/friTap)
+- **Email**: daniel.baier@fkie.fraunhofer.de
+- **Research**: [OSDFCon Webinar](https://github.com/fkie-cad/friTap/blob/main/assets/friTapOSDFConwebinar.pdf)
+- **Blog**: [Technical Deep Dive](https://lolcads.github.io/posts/2022/08/fritap/)
 
 ## License
 

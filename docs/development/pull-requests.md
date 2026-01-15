@@ -265,12 +265,12 @@ Every pull request triggers automated checks:
 
 ```yaml
 # GitHub Actions workflow
-✅ Python Tests (3.8, 3.9, 3.10, 3.11)
-✅ TypeScript Compilation
-✅ Code Quality (Black, flake8, mypy)
-✅ Documentation Build
-✅ Cross-Platform Testing
-✅ Security Scan
+Python Tests (3.8, 3.9, 3.10, 3.11)
+TypeScript Compilation
+Code Quality (Black, flake8, mypy)
+Documentation Build
+Cross-Platform Testing
+Security Scan
 ```
 
 ### Review Criteria
@@ -350,10 +350,10 @@ This improves readability and makes testing easier. See commit abc123."
 ```markdown
 @reviewer Thanks for the feedback! I've addressed all the points:
 
-1. ✅ Refactored complex function into smaller units
-2. ✅ Added comprehensive error handling  
-3. ✅ Updated tests to cover new error cases
-4. ✅ Improved documentation with examples
+1. Refactored complex function into smaller units
+2. Added comprehensive error handling
+3. Updated tests to cover new error cases
+4. Improved documentation with examples
 
 Could you please take another look when you have a chance?
 ```

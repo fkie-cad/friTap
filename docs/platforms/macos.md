@@ -203,12 +203,12 @@ friTap's macOS support is limited to specific TLS libraries. Here's the current 
 
 | Library | Support | Notes |
 |---------|---------|-------|
-| **BoringSSL** | 🔑 Keylog | Key extraction via callback hooking (Chrome) |
-| **Python OpenSSL** | 🔑 Keylog | Special handling for Python's bundled OpenSSL |
-| **Cronet** | 🔑 Keylog | Pattern-based, requires external patterns |
-| **SecureTransport** | ❌ Not implemented | Apple's native TLS - no support |
-| **Network.framework** | ❌ Not implemented | Modern Apple TLS - no support |
-| **LibreSSL** | ❌ Not implemented | System SSL - no support |
+| **BoringSSL** | Keys Keylog | Key extraction via callback hooking (Chrome) |
+| **Python OpenSSL** | Keys Keylog | Special handling for Python's bundled OpenSSL |
+| **Cronet** | Keys Keylog | Pattern-based, requires external patterns |
+| **SecureTransport** | ✗ Not implemented | Apple's native TLS - no support |
+| **Network.framework** | ✗ Not implemented | Modern Apple TLS - no support |
+| **LibreSSL** | ✗ Not implemented | System SSL - no support |
 
 !!! note "Keylog Only"
     macOS support extracts TLS keys (keylog) but does **not** intercept plaintext traffic. Use the extracted keys with Wireshark to decrypt captured traffic.

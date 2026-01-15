@@ -56,14 +56,14 @@ Report issues to: [daniel.baier@fkie.fraunhofer.de](mailto:daniel.baier@fkie.fra
 **Best Practices**:
 ```markdown
 # Good issue titles
-✅ "Android: friTap fails to detect BoringSSL in Flutter apps"
-✅ "Feature request: Add support for RustTLS library"
-✅ "Documentation: Installation guide missing Node.js requirements"
+"Android: friTap fails to detect BoringSSL in Flutter apps"
+"Feature request: Add support for RustTLS library"
+"Documentation: Installation guide missing Node.js requirements"
 
 # Avoid
-❌ "It doesn't work"
-❌ "Help needed"
-❌ "Bug"
+"It doesn't work"
+"Help needed"
+"Bug"
 ```
 
 **Issue Templates**:
@@ -148,20 +148,20 @@ interesting certificate pinning bypass techniques. Here's what I learned...
 
 ```markdown
 # Good PR feedback
-✅ "This function could be more efficient. Consider using a dict lookup instead 
+"This function could be more efficient. Consider using a dict lookup instead
    of multiple if-statements. Here's an example: [code snippet]"
 
-✅ "Great approach! One concern: how does this handle the case where the SSL 
+"Great approach! One concern: how does this handle the case where the SSL
    library is dynamically loaded? Should we add a retry mechanism?"
 
-✅ "The TypeScript looks good, but we should add error handling for the case 
-   where Module.getExportByName() fails. What do you think about wrapping 
+"The TypeScript looks good, but we should add error handling for the case
+   where Module.getExportByName() fails. What do you think about wrapping
    it in a try-catch?"
 
 # Avoid
-❌ "This is wrong."
-❌ "Bad code."
-❌ "Why did you do it this way?"
+"This is wrong."
+"Bad code."
+"Why did you do it this way?"
 ```
 
 ### Email Communication
@@ -241,18 +241,18 @@ Has anyone seen this before? Could the app be using a custom SSL implementation?
 
 ```markdown
 # When you get help
-✅ "Thank you! That solved the issue. The problem was [explanation]. 
+"Thank you! That solved the issue. The problem was [explanation].
    This might help others with similar setups."
 
-✅ "I tried your suggestion but I'm still getting errors. Here's the updated 
+"I tried your suggestion but I'm still getting errors. Here's the updated
    debug output: [new information]"
 
 # Provide updates
-✅ "Update: I figured it out! The issue was [solution]. Thanks for pointing 
+"Update: I figured it out! The issue was [solution]. Thanks for pointing
    me in the right direction."
 
 # Close the loop
-✅ "Resolved! For anyone else with this issue: [summary of solution]"
+"Resolved! For anyone else with this issue: [summary of solution]"
 ```
 
 ### Response Times

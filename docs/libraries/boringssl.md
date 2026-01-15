@@ -16,11 +16,11 @@ BoringSSL is Google's fork of OpenSSL, designed for use in Google's various prod
 
 | Platform | Key Extraction | Traffic Capture | Notes |
 |----------|---------------|-----------------|-------|
-| Linux    | ✅ Full       | ✅ Full         | All versions |
-| Windows  | ✅ Limited    | ✅ Full         | Read/Write hooks only |
-| macOS    | ⚠️ KeyEo      | ✅ Full         | Key extraction only |
-| Android  | ✅ Full       | ✅ Full         | All Android versions |
-| iOS      | ⚠️ KeyEo      | ✅ Full         | Key extraction only |
+| Linux    | ✓ Full       | ✓ Full         | All versions |
+| Windows  | ✓ Limited    | ✓ Full         | Read/Write hooks only |
+| macOS    | KeyEo      | ✓ Full         | Key extraction only |
+| Android  | ✓ Full       | ✓ Full         | All Android versions |
+| iOS      | KeyEo      | ✓ Full         | Key extraction only |
 
 **Legend:**
 - **Full**: Complete key extraction and traffic capture
@@ -329,11 +329,11 @@ BoringSSL versions and compatibility:
 
 | BoringSSL Version | Chrome Version | Status |
 |-------------------|----------------|--------|
-| Latest (main)     | Chrome 110+    | ✅ Supported |
-| 2023 releases     | Chrome 100-109| ✅ Supported |
-| 2022 releases     | Chrome 90-99   | ✅ Supported |
-| 2021 releases     | Chrome 80-89   | ✅ Supported |
-| Older versions    | Chrome <80     | ⚠️ Limited |
+| Latest (main)     | Chrome 110+    | ✓ Supported |
+| 2023 releases     | Chrome 100-109| ✓ Supported |
+| 2022 releases     | Chrome 90-99   | ✓ Supported |
+| 2021 releases     | Chrome 80-89   | ✓ Supported |
+| Older versions    | Chrome <80     | Limited |
 
 ## Next Steps
 

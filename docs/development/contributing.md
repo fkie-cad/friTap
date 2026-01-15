@@ -18,21 +18,21 @@ Quick access to detailed documentation:
 
 ## Quick Start
 
-### 🐛 Found a Bug?
+### Found a Bug?
 
 1. **Check existing issues** on [GitHub Issues](https://github.com/fkie-cad/friTap/issues)
 2. **Create a detailed bug report** with reproduction steps
 3. **Include system information** (OS, Python version, friTap version)
 4. **Provide sample code or applications** if possible
 
-### 💡 Have a Feature Idea?
+### Have a Feature Idea?
 
 1. **Search existing feature requests** to avoid duplicates
 2. **Open a feature request issue** with detailed description
 3. **Explain the use case** and why it would benefit users
 4. **Discuss implementation approaches** with maintainers
 
-### 🔧 Want to Contribute Code?
+### Want to Contribute Code?
 
 1. **Fork the repository** and create a feature branch
 2. **Set up development environment** (see [Development Setup](development-setup.md))
@@ -97,13 +97,13 @@ python setup_developer_env.py
 ```
 
 This script will:
-- ✅ Install Python development dependencies
-- ✅ Install Node.js dependencies for agent compilation
-- ✅ Set up frida-compile from frida-tools
-- ✅ Test agent compilation
-- ✅ Set up testing environment
-- ✅ Configure pre-commit hooks
-- ✅ Set up BoringSecretHunter Docker environment
+- Install Python development dependencies
+- Install Node.js dependencies for agent compilation
+- Set up frida-compile from frida-tools
+- Test agent compilation
+- Set up testing environment
+- Configure pre-commit hooks
+- Set up BoringSecretHunter Docker environment
 
 ### Manual Setup
 
@@ -266,7 +266,7 @@ Ready to contribute? Here's how to start:
 4. **[Follow the coding standards](coding-standards.md)**
 5. **[Submit your pull request](pull-requests.md)**
 
-Thank you for contributing to friTap! 🚀
+Thank you for contributing to friTap!
 
 ---
 

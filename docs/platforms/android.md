@@ -151,26 +151,26 @@ friTap has comprehensive support for Android TLS libraries, covering both system
 
 | Library | Apps Using It | friTap Support | Notes |
 |---------|---------------|----------------|-------|
-| **BoringSSL/OpenSSL** | Chrome, most Google apps | ✅ Full | Key extraction + traffic |
-| **Conscrypt** | Android system, many apps | ✅ Full | Uses BoringSSL internally |
-| **GnuTLS** | Some native apps | ✅ Full | Key extraction + traffic |
-| **WolfSSL** | IoT/embedded apps | ✅ Full | Key extraction + traffic |
-| **mbedTLS** | Embedded/IoT apps | 🔄 R/W | Traffic hooks only |
-| **NSS** | Firefox, Mozilla apps | ✅ Full | Key extraction + traffic |
-| **Cronet** | Chrome-based networking | ✅ Full | Pattern-based hooking |
-| **Flutter** | Flutter applications | ✅ Full | Built-in patterns |
-| **S2N-TLS** | AWS SDK apps | ✅ Full | Key extraction + traffic |
-| **Rustls** | Rust-based apps | 🔑 Keys | Key extraction only |
-| **Go TLS** | Go applications | ✅ Full | Runtime version detection |
-| **BouncyCastle/Spongycastle** | Java crypto apps | ✅ Full | Java-level hooking |
-| **Mono BTLS** | Xamarin/.NET apps | ✅ Full | Pattern-based hooking |
-| **MetaRTC** | WebRTC applications | ✅ Full | Pattern-based hooking |
-| **Java TLS** | Pure Java apps | ✅ Full | Java-level hooking |
+| **BoringSSL/OpenSSL** | Chrome, most Google apps | ✓ Full | Key extraction + traffic |
+| **Conscrypt** | Android system, many apps | ✓ Full | Uses BoringSSL internally |
+| **GnuTLS** | Some native apps | ✓ Full | Key extraction + traffic |
+| **WolfSSL** | IoT/embedded apps | ✓ Full | Key extraction + traffic |
+| **mbedTLS** | Embedded/IoT apps | R/W | Traffic hooks only |
+| **NSS** | Firefox, Mozilla apps | ✓ Full | Key extraction + traffic |
+| **Cronet** | Chrome-based networking | ✓ Full | Pattern-based hooking |
+| **Flutter** | Flutter applications | ✓ Full | Built-in patterns |
+| **S2N-TLS** | AWS SDK apps | ✓ Full | Key extraction + traffic |
+| **Rustls** | Rust-based apps | Keys | Key extraction only |
+| **Go TLS** | Go applications | ✓ Full | Runtime version detection |
+| **BouncyCastle/Spongycastle** | Java crypto apps | ✓ Full | Java-level hooking |
+| **Mono BTLS** | Xamarin/.NET apps | ✓ Full | Pattern-based hooking |
+| **MetaRTC** | WebRTC applications | ✓ Full | Pattern-based hooking |
+| **Java TLS** | Pure Java apps | ✓ Full | Java-level hooking |
 
 **Legend:**
-- ✅ **Full**: Key extraction + traffic decryption
-- 🔄 **R/W**: Read/Write hooks (traffic without keys)
-- 🔑 **Keys**: Key extraction only
+- ✓ **Full**: Key extraction + traffic decryption
+- R/W: Read/Write hooks (traffic without keys)
+- Keys: Key extraction only
 
 ### Pattern-Based Hooking for Stripped Libraries
 
