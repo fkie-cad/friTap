@@ -143,7 +143,7 @@ def on_message(message, data):
                 print(f"[{func_name}] SSL Session: {ssl_session}")
                 print(f"  {src_addr}:{src_port} --> {dst_addr}:{dst_port}")
                 print(f"  Data length: {len(data)} bytes")
-                print(f"  Data (first 200 bytes):")
+                print("  Data (first 200 bytes):")
 
                 # Print hex dump of the data
                 hex_data = data[:200].hex()
@@ -226,7 +226,7 @@ Examples:
     # Determine if target is a PID or package name
     is_pid = target.isdigit()
 
-    print(f"[*] friTap Chrome SSL Interceptor")
+    print("[*] friTap Chrome SSL Interceptor")
     print(f"[*] Target: {target} ({'PID' if is_pid else 'package name'})")
     print(f"[*] Mode: {'spawn' if spawn_mode else 'attach'}")
     if device_id:
@@ -283,7 +283,7 @@ Examples:
             pid = device.spawn(target)
             print(f"[+] Spawned process with PID: {pid}")
             process = device.attach(pid)
-            print(f"[+] Attached to spawned process")
+            print("[+] Attached to spawned process")
         except frida.NotSupportedError as e:
             print(f"[!] Error spawning: {e}")
             sys.exit(1)
@@ -293,35 +293,35 @@ Examples:
     else:
         # Attach to existing process
         print(f"[*] Attaching to {target}...")
-        print(f"[*] This may take a while on emulators...")
+        print("[*] This may take a while on emulators...")
         try:
             process = attach_with_retry(device, target, is_pid, args.retries)
-            print(f"[+] Attached to process")
+            print("[+] Attached to process")
         except frida.TimedOutError:
             print(f"[!] Error: Timeout while attaching to {target}.")
-            print(f"[!] Possible causes:")
-            print(f"[!]   - Emulator/device is slow - increase --retries")
-            print(f"[!]   - SELinux blocking attachment - check: adb shell getenforce")
-            print(f"[!]   - Process is protected/hardened")
+            print("[!] Possible causes:")
+            print("[!]   - Emulator/device is slow - increase --retries")
+            print("[!]   - SELinux blocking attachment - check: adb shell getenforce")
+            print("[!]   - Process is protected/hardened")
             if is_pid:
-                print(f"[!] Try attaching by name instead:")
+                print("[!] Try attaching by name instead:")
                 print(f"[!]   python {sys.argv[0]} com.android.chrome")
-            print(f"[!] Or try spawning the app:")
+            print("[!] Or try spawning the app:")
             print(f"[!]   python {sys.argv[0]} --spawn com.android.chrome")
             sys.exit(1)
         except frida.ProcessNotFoundError:
             print(f"[!] Error: Process '{target}' not found.")
             if is_pid:
-                print(f"[!] Find Chrome PID with: adb shell pidof com.android.chrome")
+                print("[!] Find Chrome PID with: adb shell pidof com.android.chrome")
             else:
-                print(f"[!] Make sure the app is running or use --spawn to start it")
+                print("[!] Make sure the app is running or use --spawn to start it")
             sys.exit(1)
         except frida.PermissionDeniedError:
-            print(f"[!] Error: Permission denied. Is frida-server running as root?")
+            print("[!] Error: Permission denied. Is frida-server running as root?")
             sys.exit(1)
 
     # Load the friTap JavaScript agent
-    print(f"[*] Loading friTap agent...")
+    print("[*] Loading friTap agent...")
     try:
         with open(FRITAP_JS_PATH, encoding='utf-8', newline='\n') as f:
             script_code = f.read()
@@ -335,7 +335,7 @@ Examples:
         script = process.create_script(script_code, runtime="qjs")
         script.on("message", on_message)
         script.load()
-        print(f"[+] Agent loaded successfully")
+        print("[+] Agent loaded successfully")
     except frida.TransportError as e:
         print(f"[!] Transport error: {e}")
         print("[!] This might be a timeout issue. Make sure frida-server is running.")
@@ -346,9 +346,9 @@ Examples:
 
     # Resume the process if we spawned it
     if spawn_mode and pid:
-        print(f"[*] Resuming spawned process...")
+        print("[*] Resuming spawned process...")
         device.resume(pid)
-        print(f"[+] Process resumed")
+        print("[+] Process resumed")
         time.sleep(1)  # Give the app time to initialize
 
     print()
