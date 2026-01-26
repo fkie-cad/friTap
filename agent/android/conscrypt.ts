@@ -140,25 +140,55 @@ export function execute() {
         //Part one: Hook ProviderInstallerImpl
         var javaClassLoader: JavaWrapper = Java.use("java.lang.ClassLoader")
         var backupImplementation = javaClassLoader.loadClass.overload("java.lang.String").implementation
-        //The classloader for ProviderInstallerImpl might not be present on startup, so we hook the loadClass method.  
-        javaClassLoader.loadClass.overload("java.lang.String").implementation = function (className: string) {
-            let retval = this.loadClass(className)
-            if (className.endsWith("ProviderInstallerImpl")) {
-                log("Process is loading ProviderInstallerImpl")
-                var providerInstallerImpl = findProviderInstallerImplFromClassloaders(javaClassLoader, backupImplementation)
-                if (providerInstallerImpl === null) {
-                    log("ProviderInstallerImpl could not be found, although it has been loaded")
-                } else {
-                    providerInstallerImpl.insertProvider.implementation = function () {
-                        log("ProviderinstallerImpl redirection/blocking")
+        //The classloader for ProviderInstallerImpl might not be present on startup, so we hook the loadClass method.
+        try {
+            javaClassLoader.loadClass.overload("java.lang.String").implementation = function (className: string) {
+                let retval = this.loadClass(className)
+                if (className.endsWith("ProviderInstallerImpl")) {
+                    log("Process is loading ProviderInstallerImpl")
+                    var providerInstallerImpl = findProviderInstallerImplFromClassloaders(javaClassLoader, backupImplementation)
+                    if (providerInstallerImpl === null) {
+                        log("ProviderInstallerImpl could not be found, although it has been loaded")
+                    } else {
+                        providerInstallerImpl.insertProvider.implementation = function () {
+                            log("ProviderinstallerImpl redirection/blocking")
+
+                        }
 
                     }
-
                 }
+                return retval
             }
-            return retval
+        } catch (error) {
+            devlog_error(`Failed to hook ClassLoader.loadClass: ${error}`);
+            devlog("Attempting fallback: hooking ProviderInstallerImpl via class enumeration");
+
+            // Fallback: Try to hook ProviderInstallerImpl directly if already loaded
+            try {
+                Java.enumerateLoadedClasses({
+                    onMatch: function(className: string) {
+                        if (className === "com.google.android.gms.common.security.ProviderInstallerImpl") {
+                            try {
+                                var providerInstallerImpl = Java.use(className);
+                                providerInstallerImpl.insertProvider.implementation = function() {
+                                    log("ProviderinstallerImpl redirection/blocking (fallback)");
+                                };
+                                devlog("Successfully hooked ProviderInstallerImpl via fallback");
+                            } catch (hookError) {
+                                devlog_error(`Failed to hook ProviderInstallerImpl in fallback: ${hookError}`);
+                            }
+                        }
+                    },
+                    onComplete: function() {
+                        devlog("Fallback class enumeration complete");
+                    }
+                });
+            } catch (fallbackError) {
+                devlog_error(`Fallback enumeration also failed: ${fallbackError}`);
+                devlog("Conscrypt provider blocking may not work on this device/Android version");
+            }
         }
-        
+
         //Part two: Hook Providerinstaller
         try {
             var providerInstaller = Java.use("com.google.android.gms.security.ProviderInstaller")
