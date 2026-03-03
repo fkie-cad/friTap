@@ -1,7 +1,7 @@
 import { readAddresses, getBaseAddress, dumpMemory } from "../shared/shared_functions.js";
 import { pointerSize, AF_INET, AF_INET6 } from "../shared/shared_structures.js";
 import { log, devlog } from "../util/log.js";
-import { offsets,enable_default_fd } from "../ssl_log.js";
+import { offsets,enable_default_fd } from "../fritap_agent.js";
 import { Java } from "../shared/javalib.js";
 
 /**

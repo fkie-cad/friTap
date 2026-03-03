@@ -1,6 +1,6 @@
 import { readAddresses, getPortsAndAddresses, toHexString, getBaseAddress } from "../shared/shared_functions.js";
 import { log } from "../util/log.js";
-import { offsets, enable_default_fd } from "../ssl_log.js";
+import { offsets, enable_default_fd } from "../fritap_agent.js";
 
 export class WolfSSL {
 

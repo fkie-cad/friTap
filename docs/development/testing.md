@@ -43,7 +43,7 @@ Test Python components in isolation with mocked dependencies.
 #### Test Structure
 
 ```python
-# tests/unit/test_ssl_logger.py
+# tests/unit/testfritap_agentger.py
 import pytest
 from unittest.mock import Mock, patch, MagicMock
 from friTap.ssl_logger import SSL_Logger
@@ -133,8 +133,8 @@ class TestAgentCompilation:
         subprocess.run(['npm', 'run', 'build'], check=True)
         
         # Check files exist
-        ssl_log_js = Path("friTap/_ssl_log.js")
-        ssl_log_legacy_js = Path("friTap/_ssl_log_legacy.js")
+        ssl_log_js = Path("friTap/fritap_agent.js")
+        ssl_log_legacy_js = Path("friTap/fritap_agent_legacy.js")
         
         assert ssl_log_js.exists()
         assert ssl_log_legacy_js.exists()
@@ -144,7 +144,7 @@ class TestAgentCompilation:
         """Test that compiled agent has valid JavaScript syntax."""
         subprocess.run(['npm', 'run', 'build'], check=True)
         
-        with open('friTap/_ssl_log.js', 'r') as f:
+        with open('friTap/fritap_agent.js', 'r') as f:
             content = f.read()
         
         # Basic syntax validation
@@ -174,7 +174,7 @@ class TestAgentFunctionality:
         import frida
         
         # Load compiled agent
-        with open('friTap/_ssl_log.js', 'r') as f:
+        with open('friTap/fritap_agent.js', 'r') as f:
             agent_code = f.read()
         
         # Test with local device
@@ -598,10 +598,10 @@ tox
 pytest-watch tests/unit/
 
 # Run specific test file
-pytest tests/unit/test_ssl_logger.py -v
+pytest tests/unit/testfritap_agentger.py -v
 
 # Run with debugging output
-pytest tests/unit/test_ssl_logger.py::TestSSLLogger::test_specific -v -s
+pytest tests/unit/testfritap_agentger.py::TestSSLLogger::test_specific -v -s
 
 # Profile test performance
 pytest --profile tests/unit/
@@ -676,7 +676,7 @@ import time
 class TestMemoryUsage:
     """Test memory usage patterns."""
     
-    def test_ssl_logger_memory_usage(self):
+    def testfritap_agentger_memory_usage(self):
         """Test that SSL_Logger doesn't leak memory."""
         initial_memory = psutil.Process().memory_info().rss
         
@@ -798,10 +798,10 @@ jobs:
 pytest --cache-clear
 
 # Run tests in verbose mode
-pytest -v -s tests/unit/test_ssl_logger.py
+pytest -v -s tests/unit/testfritap_agentger.py
 
 # Debug specific test failure
-pytest --pdb tests/unit/test_ssl_logger.py::test_specific_function
+pytest --pdb tests/unit/testfritap_agentger.py::test_specific_function
 
 # Check test coverage
 pytest --cov=friTap --cov-report=html tests/unit/
@@ -812,7 +812,7 @@ pytest --cov=friTap --cov-report=html tests/unit/
 ```bash
 # Clean compilation artifacts
 npm run clean
-rm -f friTap/_ssl_log*.js
+rm -f friTap/fritap_agent*.js
 
 # Rebuild and test
 npm run build

@@ -174,9 +174,9 @@ class SSL_Logger():
     
     def init_fritap(self):
         if frida.__version__ < "17":
-            self.frida_agent_script = "_ssl_log_legacy.js"
+            self.frida_agent_script = "fritap_agent_legacy.js"
         else:
-            self.frida_agent_script = "_ssl_log.js"
+            self.frida_agent_script = "fritap_agent.js"
 
         if self.pcap_name:
             self.pcap_obj =  PCAP(self.pcap_name,SSL_READ,SSL_WRITE,self.full_capture, self.mobile,self.debug_output)
@@ -388,10 +388,10 @@ class SSL_Logger():
             dependent on message type.
         data: The string of captured decrypted data or the caputured decryption keys
 
-        IMPORTANT: 'anti' MUST be the LAST startup message sent by the agent (ssl_log.ts).
+        IMPORTANT: 'anti' MUST be the LAST startup message sent by the agent (fritap_agent.ts).
         self.startup = False here terminates the startup handshake. Any startup message
         sent AFTER 'anti' will never receive a response, causing a deadlock in the agent.
-        New startup messages must be placed BEFORE 'anti' in both ssl_log.ts and here.
+        New startup messages must be placed BEFORE 'anti' in both fritap_agent.ts and here.
         """
 
 

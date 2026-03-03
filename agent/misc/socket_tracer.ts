@@ -1,7 +1,7 @@
 import { log, devlog } from "../util/log.js";
 import { get_process_architecture } from "../util/process_infos.js";
 import { readAddresses, getPortsAndAddresses } from "../shared/shared_functions.js";
-import { enable_default_fd } from "../ssl_log.js";
+import { enable_default_fd } from "../fritap_agent.js";
 import { ObjC } from "../shared/objclib.js";
 
 function has_valid_socket_type(fd : number): boolean{

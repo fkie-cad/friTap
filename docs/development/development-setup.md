@@ -120,7 +120,7 @@ python -c "import friTap; print('friTap imported successfully')"
 npm run build
 
 # Verify compiled agents exist
-ls -la friTap/_ssl_log.js friTap/_ssl_log_legacy.js
+ls -la friTap/fritap_agent.js friTap/fritap_agent_legacy.js
 
 # Run test framework check
 python run_tests.py summary
@@ -251,7 +251,7 @@ python run_tests.py agent
 1. **Processes TypeScript** files using frida-compile
 2. **Bundles modules** into single JavaScript files
 3. **Generates two versions**:
-   - Modern: `friTap/_ssl_log.js` (Frida 17+)
+   - Modern: `friTap/fritap_agent.js` (Frida 17+)
    - Legacy: `friTap/_ssl_log_legacy.js` (Frida <17)
 4. **Injects placeholders** for runtime values (offsets, patterns)
 
@@ -260,10 +260,10 @@ python run_tests.py agent
 ```bash
 $ npm run build
 > friTap@1.3.5.0 build
-> frida-compile agent/ssl_log.ts -o friTap/_ssl_log.js
+> frida-compile agent/ssl_log.ts -o friTap/fritap_agent.js
 
 Compiling main agent...
-✓ Generated friTap/_ssl_log.js (450KB)
+✓ Generated friTap/fritap_agent.js (450KB)
 ✓ Generated friTap/_ssl_log_legacy.js (420KB)
 ```
 

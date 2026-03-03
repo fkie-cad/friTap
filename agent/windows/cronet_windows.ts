@@ -2,7 +2,7 @@
 import {Cronet } from "../ssl_lib/cronet.js";
 import { socket_library } from "./windows_agent.js";
 import {PatternBasedHooking } from "../shared/pattern_based_hooking.js";
-import { patterns, isPatternReplaced } from "../ssl_log.js"
+import { patterns, isPatternReplaced } from "../fritap_agent.js"
 import { devlog, devlog_error, devlog_info, devlog_warn, devlog_debug } from "../util/log.js";
 
 export type HookingResult = [success: boolean, handle: PatternBasedHooking | null];

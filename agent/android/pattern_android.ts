@@ -2,7 +2,7 @@
 import {Cronet } from "../ssl_lib/cronet.js";
 import { socket_library } from "./android_agent.js";
 import {PatternBasedHooking } from "../shared/pattern_based_hooking.js";
-import { patterns, isPatternReplaced } from "../ssl_log.js"
+import { patterns, isPatternReplaced } from "../fritap_agent.js"
 import { devlog } from "../util/log.js";
 import { rustls_execute } from "./rustls_android.js";
 

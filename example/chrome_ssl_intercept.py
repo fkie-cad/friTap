@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Standalone script to intercept SSL/TLS traffic from Chrome on Android
-using friTap's _ssl_log.js agent.
+using friTap's fritap_agent.js agent.
 
 This script shows how to handle initialization messages 
 from the friTap agent properly.
@@ -38,7 +38,7 @@ import argparse
 
 # Path to the friTap JavaScript agent (relative to this script)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-FRITAP_JS_PATH = os.path.join(SCRIPT_DIR, "friTap", "_ssl_log.js")
+FRITAP_JS_PATH = os.path.join(SCRIPT_DIR, "friTap", "fritap_agent.js")
 
 # Default target
 DEFAULT_TARGET = "com.android.chrome"

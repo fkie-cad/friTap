@@ -1,5 +1,5 @@
 import { readAddresses, getPortsAndAddresses, getBaseAddress, isSymbolAvailable, checkNumberOfExports, calculateZeroBytePercentage } from "../shared/shared_functions.js";
-import { getOffsets, offsets, enable_default_fd } from "../ssl_log.js";
+import { getOffsets, offsets, enable_default_fd } from "../fritap_agent.js";
 import { devlog, devlog_error, log, devlog_info, devlog_warn } from "../util/log.js";
 import { ObjC } from "../shared/objclib.js";
 

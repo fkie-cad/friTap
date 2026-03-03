@@ -2,7 +2,7 @@
 import {GoTLS, symbol_writeKeyLog, GoTlsLogger } from "../ssl_lib/gotls.js";
 import { socket_library } from "./android_agent.js";
 import {PatternBasedHooking, get_CPU_specific_pattern } from "../shared/pattern_based_hooking.js";
-import { patterns, isPatternReplaced, experimental } from "../ssl_log.js"
+import { patterns, isPatternReplaced, experimental } from "../fritap_agent.js"
 import { devlog, devlog_error } from "../util/log.js";
 
 export class GoTLS_Android extends GoTLS {

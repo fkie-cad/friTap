@@ -148,13 +148,13 @@ def test_agent_compilation():
         return False
     
     # Check if compiled files exist
-    ssl_log_js = Path("friTap/_ssl_log.js")
-    ssl_log_legacy_js = Path("friTap/_ssl_log_legacy.js")
+    fritap_agent_js = Path("friTap/fritap_agent.js")
+    fritap_agent_legacy_js = Path("friTap/_fritap_agent_legacy.js")
     
-    if ssl_log_js.exists() and ssl_log_legacy_js.exists():
+    if fritap_agent_js.exists() and fritap_agent_legacy_js.exists():
         print("✅ Agent compilation successful")
-        print(f"📁 Generated: {ssl_log_js}")
-        print(f"📁 Generated: {ssl_log_legacy_js}")
+        print(f"📁 Generated: {fritap_agent_js}")
+        print(f"📁 Generated: {fritap_agent_legacy_js}")
         return True
     else:
         print("❌ Compiled agent files not found")

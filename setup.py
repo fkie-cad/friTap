@@ -53,8 +53,8 @@ setup(
     # Include non-Python assets inside the package
     package_data={
         "friTap": [
-            "_ssl_log.js",
-            "_ssl_log_legacy.js",
+            "fritap_agent.js",
+            "fritap_agent_legacy.js",
             "assets/tcpdump_binaries/*",
         ]
     },

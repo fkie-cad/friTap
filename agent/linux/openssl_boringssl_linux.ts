@@ -1,7 +1,7 @@
 
 import {OpenSSL_BoringSSL } from "../ssl_lib/openssl_boringssl.js";
 import { socket_library } from "./linux_agent.js";
-import { patterns, isPatternReplaced } from "../ssl_log.js"
+import { patterns, isPatternReplaced } from "../fritap_agent.js"
 import {PatternBasedHooking, get_CPU_specific_pattern } from "../shared/pattern_based_hooking.js";
 import { devlog, devlog_error } from "../util/log.js";
 

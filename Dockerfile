@@ -1,13 +1,12 @@
-FROM ubuntu:20.04
+FROM ubuntu:24.04
 WORKDIR /root/
 COPY entrypoint.sh .
 RUN chmod +x entrypoint.sh
-RUN apt-get update
-RUN apt-get upgrade -y
-RUN apt-get install dos2unix python3 curl -y
-RUN curl -s https://deb.nodesource.com/setup_16.x | bash
-RUN apt install nodejs -y
-RUN npm update -g
-RUN dos2unix /root/entrypoint.sh /root/entrypoint.sh
+RUN apt-get update && apt-get upgrade -y && \
+    apt-get install -y python3 python3-pip curl && \
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y nodejs && \
+    pip3 install --break-system-packages frida-tools && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 ENTRYPOINT [ "/root/entrypoint.sh" ]

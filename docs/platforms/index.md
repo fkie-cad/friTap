@@ -336,6 +336,6 @@ Choose your platform and dive into the detailed guides:
 
 For advanced features and cross-platform topics:
 - **[Pattern-based Hooking](../advanced/patterns.md)** - Custom library detection
-- **[Standalone Agent Usage](../advanced/standalone-agent.md)** - Using _ssl_log.js directly
+- **[Standalone Agent Usage](../advanced/standalone-agent.md)** - Using fritap_agent.js directly
 - **[Common Issues](../troubleshooting/common-issues.md)** - Platform-agnostic troubleshooting
 - **[Examples](../examples/index.md)** - Real-world analysis scenarios

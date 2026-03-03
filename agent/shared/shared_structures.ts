@@ -17,3 +17,4 @@ export const AddressFamilyMapping: { [key: number]: string } = {
     17: "AF_PACKET", // Raw packets
     // Add other address families as needed
 };
+

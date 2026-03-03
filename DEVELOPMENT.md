@@ -123,14 +123,14 @@ friTap consists of two main components:
 2. **TypeScript Agent** (`agent/` directory): Performs actual SSL/TLS hooking inside target processes
 
 The TypeScript agent is compiled into two JavaScript files:
-- `friTap/_ssl_log.js` - Modern agent (Frida 17+)  
-- `friTap/_ssl_log_legacy.js` - Legacy agent (Frida <17)
+- `friTap/fritap_agent.js` - Modern agent (Frida 17+)  
+- `friTap/fritap_agent_legacy.js` - Legacy agent (Frida <17)
 
 ### TypeScript Agent Structure
 
 ```
 agent/
-├── ssl_log.ts              # Main agent entry point
+├── fritap_agent.ts              # Main agent entry point
 ├── util/                   # Utility functions
 │   ├── process_infos.ts    # OS/platform detection
 │   ├── log.ts              # Logging functions
@@ -191,8 +191,8 @@ python run_tests.py agent
 1. **Processes TypeScript** files using frida-compile
 2. **Bundles modules** into single JavaScript files
 3. **Generates two versions**:
-   - Modern: `friTap/_ssl_log.js`
-   - Legacy: `friTap/_ssl_log_legacy.js`
+   - Modern: `friTap/fritap_agent.js`
+   - Legacy: `friTap/fritap_agent_legacy.js`
 4. **Injects placeholders** for runtime values (offsets, patterns)
 
 #### Compilation Output
@@ -202,11 +202,11 @@ After compilation, you'll see:
 ```bash
 $ npm run build
 > friTap@1.3.5.0 build
-> frida-compile agent/ssl_log.ts -o friTap/_ssl_log.js
+> frida-compile agent/ssl_log.ts -o friTap/fritap_agent.js
 
 Compiling main agent...
-✓ Generated friTap/_ssl_log.js (450KB)
-✓ Generated friTap/_ssl_log_legacy.js (420KB)
+✓ Generated friTap/fritap_agent.js (450KB)
+✓ Generated friTap/fritap_agent_legacy.js (420KB)
 ```
 
 ### Agent Development Workflow

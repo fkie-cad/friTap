@@ -1,6 +1,6 @@
 import { readAddresses, checkNumberOfExports, getBaseAddress } from "../shared/shared_functions.js";
 import { devlog, log } from "../util/log.js";
-import { offsets } from "../ssl_log.js";
+import { offsets } from "../fritap_agent.js";
 
 
 

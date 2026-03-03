@@ -30,7 +30,7 @@ class TestAgentCompilation:
     @pytest.fixture
     def compiled_agent_path(self, fritap_root):
         """Get path to compiled agent."""
-        return fritap_root / "friTap" / "_ssl_log.js"
+        return fritap_root / "friTap" / "fritap_agent.js"
         
     def test_typescript_config_exists(self, fritap_root):
         """Test that TypeScript configuration exists."""
@@ -196,13 +196,13 @@ class TestCompiledAgentValidation:
     def compiled_agent_path(self):
         """Get path to compiled agent."""
         fritap_root = Path(__file__).parent.parent.parent
-        return fritap_root / "friTap" / "_ssl_log.js"
+        return fritap_root / "friTap" / "fritap_agent.js"
         
     @pytest.fixture
     def legacy_agent_path(self):
         """Get path to legacy compiled agent."""
         fritap_root = Path(__file__).parent.parent.parent
-        return fritap_root / "friTap" / "_ssl_log_legacy.js"
+        return fritap_root / "friTap" / "fritap_agent_legacy.js"
         
     def test_compiled_agent_exists(self, compiled_agent_path):
         """Test that compiled agent file exists."""
@@ -398,7 +398,7 @@ class TestCompilationOutput:
         
     def test_compilation_produces_expected_files(self, fritap_root):
         """Test that compilation produces all expected output files."""
-        compiled_agent = fritap_root / "friTap" / "_ssl_log.js"
+        compiled_agent = fritap_root / "friTap" / "fritap_agent.js"
         
         if compiled_agent.exists():
             # Main agent should exist
@@ -419,7 +419,7 @@ class TestCompilationOutput:
             
     def test_compilation_preserves_functionality(self, fritap_root):
         """Test that compilation preserves agent functionality."""
-        compiled_agent = fritap_root / "friTap" / "_ssl_log.js"
+        compiled_agent = fritap_root / "friTap" / "fritap_agent.js"
         
         if not compiled_agent.exists():
             pytest.skip("Compiled agent not found")
@@ -456,7 +456,7 @@ class TestCompilationOutput:
             
     def test_compilation_output_encoding(self, fritap_root):
         """Test that compilation output has correct encoding."""
-        compiled_agent = fritap_root / "friTap" / "_ssl_log.js"
+        compiled_agent = fritap_root / "friTap" / "fritap_agent.js"
         
         if not compiled_agent.exists():
             pytest.skip("Compiled agent not found")

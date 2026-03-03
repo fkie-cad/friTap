@@ -2,7 +2,7 @@
 import {Cronet } from "../ssl_lib/cronet.js";
 import { socket_library } from "./android_agent.js";
 import {PatternBasedHooking, get_CPU_specific_pattern } from "../shared/pattern_based_hooking.js";
-import { patterns, isPatternReplaced } from "../ssl_log.js"
+import { patterns, isPatternReplaced } from "../fritap_agent.js"
 import { devlog, devlog_debug, devlog_error, devlog_info, devlog_warn } from "../util/log.js";
 
 export type HookingResult = [success: boolean, handle: PatternBasedHooking | null];

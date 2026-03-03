@@ -1,13 +1,13 @@
 # Standalone Agent Usage
 
-This guide explains how to use friTap's `_ssl_log.js` JavaScript agent directly with Frida, without the friTap Python wrapper. This is useful for custom integrations, research, or when you need more control over the instrumentation process.
+This guide explains how to use friTap's `fritap_agent.js` JavaScript agent directly with Frida, without the friTap Python wrapper. This is useful for custom integrations, research, or when you need more control over the instrumentation process.
 
 ## Overview
 
 friTap consists of two main components:
 
 1. **Python Host (`SSL_Logger`)** - Manages Frida sessions, handles output, generates PCAP files
-2. **JavaScript Agent (`_ssl_log.js`)** - Performs the actual SSL/TLS hooking inside the target process
+2. **JavaScript Agent (`fritap_agent.js`)** - Performs the actual SSL/TLS hooking inside the target process
 
 You can use the agent standalone if you:
 
@@ -21,7 +21,7 @@ You can use the agent standalone if you:
 The compiled JavaScript agent is located at:
 
 ```
-friTap/friTap/_ssl_log.js        # Modern agent (Frida 17+)
+friTap/friTap/fritap_agent.js        # Modern agent (Frida 17+)
 friTap/friTap/_ssl_log_legacy.js # Legacy agent (Frida <17)
 ```
 
@@ -178,7 +178,7 @@ import os
 import signal
 
 # Path to the friTap agent
-AGENT_PATH = "path/to/friTap/_ssl_log.js"
+AGENT_PATH = "path/to/friTap/fritap_agent.js"
 
 script = None
 

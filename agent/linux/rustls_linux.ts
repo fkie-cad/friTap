@@ -3,7 +3,7 @@ import { RusTLS } from "../ssl_lib/rustls.js";
 import { log, devlog } from "../util/log.js"
 import { hasMoreThanFiveExports } from "../shared/shared_functions.js";
 import { PatternBasedHooking, get_CPU_specific_pattern } from "../shared/pattern_based_hooking.js";
-import { patterns, isPatternReplaced} from "../ssl_log.js"
+import { patterns, isPatternReplaced} from "../fritap_agent.js"
 
 export class Rustls_Linux extends RusTLS {
     private default_pattern: { [arch: string]: { primary: string, fallback:string } };

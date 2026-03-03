@@ -126,72 +126,43 @@ export let enable_default_fd: boolean = false;
 //@ts-ignore
 export let install_lsass_hook: boolean = true;
 //@ts-ignore
+export let selected_protocol: string = "tls";
+//@ts-ignore
 export let patterns: string = "{PATTERNS}";
 
-/* 
-Our way to get the JSON strings into the loaded frida script 
-*/
-send("offset_hooking")
-const enable_offset_based_hooking_state = recv('offset_hooking', value => {
-    if (value.payload !== null && value.payload !== undefined) {
-        offsets = value.payload;
-    }
-});
-enable_offset_based_hooking_state.wait();
-
-send("pattern_hooking")
-const enable_pattern_based_hooking_state = recv('pattern_hooking', value => {
-    if (value.payload !== null && value.payload !== undefined) {
-        patterns = value.payload;
-    }
-});
-enable_pattern_based_hooking_state.wait();
-
-
-/*
-This way we are providing boolean values from the commandline directly to our frida script
-*/
-send("socket_tracing")
-const enable_socket_tracing_state = recv('socket_tracing', value => {
-    enable_socket_tracing = value.payload;
-});
-enable_socket_tracing_state.wait();
-
-
-send("defaultFD")
-const enable_default_fd_state = recv('defaultFD', value => {
-    enable_default_fd = value.payload;
-});
-enable_default_fd_state.wait();
-
-
-send("experimental")
-const exp_recv_state = recv('experimental', value => {
-    experimental = value.payload;
-});
-exp_recv_state.wait();
-
-
-send("install_lsass_hook")
-const install_lsass_hook_state = recv('install_lsass_hook', value => {
-    install_lsass_hook = value.payload;
-});
-install_lsass_hook_state.wait();
-
-
-send("anti")
-const antiroot_recv_state = recv('antiroot', value => {
-    anti_root = value.payload;
-});
-antiroot_recv_state.wait();
-/*
- * STARTUP HANDSHAKE: These send/recv pairs request config values from the Python host.
- * Each send() requests a value; recv().wait() blocks until the host responds.
- *
- * IMPORTANT: "anti" MUST be the LAST message in this sequence. The Python handler
- * (ssl_logger.py) sets self.startup = False upon receiving it, disabling all
- * subsequent startup handlers. New startup messages must go BEFORE "anti".
+/**
+ * Perform a send/recv handshake with the Python host to receive a configuration value.
+ * @param sendChannel Channel name to send on
+ * @param defaultValue Default value if no payload received
+ * @param recvChannel Channel name to receive on (defaults to sendChannel)
  */
+function recvHandshake<T>(sendChannel: string, defaultValue: T, recvChannel?: string): T {
+    let result = defaultValue;
+    send(sendChannel);
+    recv(recvChannel || sendChannel, (value: any) => {
+        if (value.payload !== null && value.payload !== undefined) {
+            result = value.payload;
+        }
+    }).wait();
+    return result;
+}
+
+/* Our way to get the JSON strings into the loaded frida script */
+offsets = recvHandshake("offset_hooking", offsets);
+patterns = recvHandshake("pattern_hooking", patterns);
+
+/* Providing boolean/string values from the commandline directly to our frida script */
+enable_socket_tracing = recvHandshake("socket_tracing", enable_socket_tracing);
+enable_default_fd = recvHandshake("defaultFD", enable_default_fd);
+experimental = recvHandshake("experimental", experimental);
+selected_protocol = recvHandshake("protocol_select", selected_protocol);
+
+// install_lsass_hook handshake — must come before "anti" to avoid startup deadlock
+install_lsass_hook = recvHandshake("install_lsass_hook", install_lsass_hook);
+
+// "anti" handshake must be LAST in the startup sequence to prevent deadlock
+anti_root = recvHandshake("anti", anti_root, "antiroot");
+
 
 /*
 

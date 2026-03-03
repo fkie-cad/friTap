@@ -12,7 +12,7 @@ Install/update Frida tooling and compile the agent:
 
 ```bash
 python -m pip install -U frida frida-tools
-frida-compile agent/ssl_log.ts -o _ssl_log.js
+frida-compile agent/fritap_agent.ts -o fritap_agent.js
 ```
 
 ### Deprecated: Docker-based compiler

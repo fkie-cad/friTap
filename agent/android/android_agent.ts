@@ -13,7 +13,7 @@ import { conscrypt_native_execute } from "./conscrypt.js";
 import { flutter_execute } from "./flutter_android.js";
 import { s2ntls_execute } from "./s2ntls_android.js";
 import { mono_btls_execute } from "./mono_btls_android.js";
-import { patterns, isPatternReplaced } from "../ssl_log.js"
+import { patterns, isPatternReplaced } from "../fritap_agent.js"
 import { pattern_execute } from "./pattern_android.js"
 import { rustls_execute } from "./rustls_android.js";
 import { gotls_execute } from "./gotls_android.js";

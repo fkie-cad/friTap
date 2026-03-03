@@ -2,7 +2,7 @@
 import { Flutter } from "../ssl_lib/flutter.js";
 import { socket_library } from "./android_agent.js";
 import {PatternBasedHooking, get_CPU_specific_pattern } from "../shared/pattern_based_hooking.js";
-import { patterns, isPatternReplaced } from "../ssl_log.js"
+import { patterns, isPatternReplaced } from "../fritap_agent.js"
 import { devlog, devlog_error } from "../util/log.js";
 
 

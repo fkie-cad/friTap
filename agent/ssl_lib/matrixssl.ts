@@ -1,5 +1,5 @@
 import { readAddresses, getPortsAndAddresses, getBaseAddress} from "../shared/shared_functions.js";
-import { enable_default_fd, offsets } from "../ssl_log.js";
+import { enable_default_fd, offsets } from "../fritap_agent.js";
 import { log } from "../util/log.js";
 
 

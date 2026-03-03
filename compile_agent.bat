@@ -1,2 +1,3 @@
-docker build --no-cache -t fritap-compiler .
-docker run --rm -it --name friTap-compile -v "%cd%"/:/fritap fritap-compiler
+@echo off
+frida-pm install frida-objc-bridge frida-java-bridge
+frida-compile agent/fritap_agent.ts -o friTap/fritap_agent.js
