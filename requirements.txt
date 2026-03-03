@@ -1,10 +1,10 @@
-frida>=15.0.0
-frida-tools>=10.0.0
+frida>=17.0.0
+frida-tools>=12.0.0
 AndroidFridaManager
 hexdump
 scapy
 watchdog
 click
-importlib-resources
 psutil
 rich>=13.0.0
+textual>=0.80.0

@@ -11,6 +11,7 @@ friTap supports multiple backends for dynamic instrumentation:
 """
 
 from __future__ import annotations
+import functools
 from abc import ABC, abstractmethod
 from typing import Any, Callable
 
@@ -236,9 +237,13 @@ class Backend(ABC):
 
     def version_at_least(self, major: int, minor: int = 0) -> bool:
         """Check if the backend version is at least major.minor."""
+        return self._parsed_version >= (major, minor)
+
+    @functools.cached_property
+    def _parsed_version(self) -> tuple:
+        """Parse and cache the version string as a comparable tuple."""
         try:
             raw_parts = self.version.split(".")[:2]
-            parts = tuple(int(p) for p in raw_parts if p.isdigit())
-            return parts >= (major, minor)
-        except AttributeError:
-            return False
+            return tuple(int(p) for p in raw_parts if p.isdigit())
+        except (AttributeError, ValueError):
+            return (0, 0)
