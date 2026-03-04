@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from .base import ProtocolHandler
+from .base import ProtocolHandler, BackendSupport
 
 SSH_LIBRARY_PATTERNS = [
     "libssh", "sshd", "openssh",
@@ -33,3 +33,11 @@ class SSHHandler(ProtocolHandler):
 
     def get_display_filter_template(self) -> str:
         return "ip.addr == {src} && ip.addr == {dst} && tcp.port == {port} && ssh"
+
+    @property
+    def supported_backends(self) -> dict[str, str]:
+        return {
+            "frida": BackendSupport.FULL,
+            "gdb": BackendSupport.FULL,
+            "lldb": BackendSupport.FULL,
+        }

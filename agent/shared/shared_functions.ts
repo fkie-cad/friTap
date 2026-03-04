@@ -12,6 +12,53 @@ function wait_for_library_loaded(module_name: string){
 }
 
 /**
+ * Loader that uses HookRegistry to find and invoke hooks for loaded modules.
+ * Queries the registry for hooks matching each module name and invokes them.
+ *
+ * @param platform Target platform (e.g., "linux", "android", "ios")
+ * @param hookRegistry The HookRegistry singleton instance
+ * @param moduleNames Array of loaded module names to check against
+ * @param platformOs Human-readable platform OS name for logging
+ * @param is_base_hook Boolean indicating if this is a base hook or dynamic load
+ */
+export function ssl_library_loader_v2(platform: string, hookRegistry: any, moduleNames: Array<string>, platformOs: string, is_base_hook: boolean, protocol?: string): void {
+    for (let module_name of moduleNames) {
+        // Get module info for path filtering
+        let modulePath: string | undefined;
+        try {
+            const module = Process.getModuleByName(module_name);
+            modulePath = module.path;
+        } catch (error) {
+            // Module might not be loaded yet, continue without path
+        }
+
+        // Find all hooks matching this module name (filtered by protocol if provided)
+        const matches = hookRegistry.findAllMatches(platform, module_name, modulePath, protocol);
+
+        for (let match of matches) {
+            try {
+                log(`${module_name} found & will be hooked on ${platformOs}!`)
+
+                try {
+                    Process.getModuleByName(module_name).ensureInitialized();
+                } catch (error) {
+                    wait_for_library_loaded(module_name);
+                }
+
+                // Invoke the hook function
+                match.hookFn(module_name, is_base_hook);
+
+            } catch (error) {
+                if (checkNumberOfExports(module_name) > 3) {
+                    devlog_error(`error: skipping module ${module_name}`)
+                    devlog_error("Loader error: " + error)
+                }
+            }
+        }
+    }
+}
+
+/**
  * This file contains methods which are shared for reading
  * secrets/data from different libraries. These methods are
  * indipendent from the implementation of ssl/tls, but they depend

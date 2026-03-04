@@ -1,0 +1,35 @@
+import { devlog } from "../../util/log.js";
+
+
+export function findModulesWithSSLKeyLogCallback(): string[] {
+    const modules = Process.enumerateModules();
+    const matchedModules: string[] = [];
+
+    for (const mod of modules) {
+        // Skip modules we are already hooking
+        if (/.*libssl_sb\.so/.test(mod.name) || /.*libssl\.so/.test(mod.name) || /ibconscrypt_jni.so/.test(mod.name) || /libconscrypt_gmscore_jni.so/.test(mod.name)) {
+            continue;
+        }
+
+        /*
+        in future releases we want the below checks to be done only on these packages
+        let targetAppPackageName = getPackageName();
+        if (targetAppPackageName && mod.path.includes(targetAppPackageName)) {
+        }
+        */
+
+        const targetModule = Process.getModuleByName(mod.name);
+
+        const exports = targetModule.enumerateExports();
+        for (const exp of exports) {
+            if (exp.name === "SSL_CTX_set_keylog_callback") {
+                matchedModules.push(mod.name);
+                // Once we know it has the symbol, no need to check other exports
+                break;
+            }
+        }
+    }
+
+    return matchedModules;
+}
+

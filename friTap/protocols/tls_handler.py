@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from .base import ProtocolHandler
+from .base import ProtocolHandler, BackendSupport
 
 TLS_LIBRARY_PATTERNS = [
     "libssl", "libcrypto", "libgnutls", "libwolfssl", "libmbedtls",
@@ -35,3 +35,12 @@ class TLSHandler(ProtocolHandler):
 
     def get_display_filter_template(self) -> str:
         return "ip.addr == {src} && ip.addr == {dst} && tcp.port == {port}"
+
+    @property
+    def supported_backends(self) -> dict[str, str]:
+        return {
+            "frida": BackendSupport.FULL,
+            "gdb": BackendSupport.STUB,
+            "lldb": BackendSupport.STUB,
+            "ebpf": BackendSupport.STUB,
+        }

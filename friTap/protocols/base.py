@@ -5,7 +5,14 @@
 
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from typing import List
+from typing import Any, List, Optional
+
+
+class BackendSupport:
+    """Support level constants for protocol-backend combinations."""
+    FULL = "full"
+    STUB = "stub"
+    UNSUPPORTED = "unsupported"
 
 
 class ProtocolHandler(ABC):
@@ -57,3 +64,42 @@ class ProtocolHandler(ABC):
             for lib in detected_libraries
             for pattern in self.library_patterns
         )
+
+    @property
+    def supported_backends(self) -> dict[str, str]:
+        """Map of backend name to support level. Override in subclasses."""
+        return {"frida": BackendSupport.FULL}
+
+    def is_backend_supported(self, backend_name: str) -> bool:
+        """Check if a backend has FULL support for this protocol."""
+        return self.supported_backends.get(backend_name) == BackendSupport.FULL
+
+    def get_backend_support_level(self, backend_name: str) -> str:
+        """Return the support level for a given backend."""
+        return self.supported_backends.get(backend_name, BackendSupport.UNSUPPORTED)
+
+
+class BaseKeyProcessor:
+    """Base class for protocol-specific key processors.
+
+    Provides shared constructor, extracted-keys storage, and
+    ``format_keylog()`` template.  Subclasses override
+    ``process_key_event()`` and optionally ``format_keylog()``.
+    """
+
+    def __init__(self, event_bus: Any = None) -> None:
+        self._event_bus = event_bus
+        self._extracted_keys: list[dict] = []
+
+    @property
+    def extracted_keys(self) -> list[dict]:
+        """Return all extracted key records."""
+        return list(self._extracted_keys)
+
+    def process_key_event(self, event: dict) -> Optional[dict]:
+        """Process an incoming key event. Override in subclasses."""
+        return None
+
+    def format_keylog(self) -> str:
+        """Format extracted keys as a keylog string. Override in subclasses."""
+        return ""

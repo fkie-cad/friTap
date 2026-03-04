@@ -13,6 +13,11 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
+class UnsupportedProtocolBackendError(ValueError):
+    """Raised when a protocol does not support the selected backend."""
+    pass
+
+
 @dataclass
 class DeviceConfig:
     """Configuration for target device connection."""
@@ -76,6 +81,36 @@ class FriTapConfig:
     def __post_init__(self):
         if self.debug:
             self.debug_output = True
+
+    def validate_protocol_backend(self, protocol_handler=None) -> None:
+        """Validate that the selected backend supports the configured protocol.
+
+        Parameters
+        ----------
+        protocol_handler
+            A ProtocolHandler instance. If None, validation is skipped.
+
+        Raises
+        ------
+        UnsupportedProtocolBackendError
+            When the backend support level is STUB or UNSUPPORTED.
+        """
+        if self.protocol == "auto":
+            return  # auto always starts with Frida default
+        if protocol_handler is None:
+            return
+        from .protocols.base import BackendSupport
+        level = protocol_handler.get_backend_support_level(self.backend)
+        if level != BackendSupport.FULL:
+            supported = [
+                name for name, lvl in protocol_handler.supported_backends.items()
+                if lvl == BackendSupport.FULL
+            ]
+            raise UnsupportedProtocolBackendError(
+                f"Protocol '{self.protocol}' does not fully support the "
+                f"'{self.backend}' backend (level: {level}). "
+                f"Supported backends: {', '.join(supported)}"
+            )
 
     @classmethod
     def from_legacy_params(

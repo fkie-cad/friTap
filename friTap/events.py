@@ -194,10 +194,23 @@ class EventBus:
         descending priority so higher-priority subscribers run first.
         """
         with self._lock:
-            handlers = list(self._subscribers.get(type(event), []))
+            specific = self._subscribers.get(type(event), [])
             if type(event) is not FriTapEvent:
-                handlers = handlers + list(self._subscribers.get(FriTapEvent, []))
-            handlers.sort(key=lambda t: t[0], reverse=True)
+                catch_all = self._subscribers.get(FriTapEvent, [])
+                # Merge two pre-sorted (descending priority) lists
+                handlers = []
+                i, j = 0, 0
+                while i < len(specific) and j < len(catch_all):
+                    if specific[i][0] >= catch_all[j][0]:
+                        handlers.append(specific[i])
+                        i += 1
+                    else:
+                        handlers.append(catch_all[j])
+                        j += 1
+                handlers.extend(specific[i:])
+                handlers.extend(catch_all[j:])
+            else:
+                handlers = list(specific)
 
         for _prio, cb in handlers:
             try:
