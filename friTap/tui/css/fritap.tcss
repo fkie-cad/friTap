@@ -1,0 +1,151 @@
+/* friTap TUI Theme — Midnight Cyan */
+
+Screen {
+    background: #050811;
+}
+
+Header {
+    background: #0b1628;
+    color: #7dd3fc;
+}
+
+Footer {
+    background: #0b1628;
+    color: #7dd3fc;
+}
+
+/* Main split layout */
+#main-split {
+    height: 1fr;
+}
+
+#left-panel {
+    width: 45%;
+    height: 100%;
+    background: #080c18;
+    border-right: solid #111827;
+    padding: 0 1;
+}
+
+#right-panel {
+    width: 55%;
+    height: 100%;
+    background: #080c18;
+    padding: 0 1;
+}
+
+/* Status bar */
+#status-bar {
+    dock: top;
+    height: 1;
+    background: #0b1628;
+    color: #7dd3fc;
+    padding: 0 1;
+}
+
+/* Menu panel */
+MenuPanel {
+    height: 1fr;
+    scrollbar-size: 1 1;
+    background: #080c18;
+}
+
+#menu-title {
+    text-align: center;
+    text-style: bold;
+    color: #38bdf8;
+    padding: 1 0;
+}
+
+#menu-content {
+    padding: 0 1;
+}
+
+/* Activity log */
+#activity-title {
+    text-align: center;
+    text-style: bold;
+    color: #4ade80;
+    padding: 1 0;
+    height: 3;
+}
+
+ActivityLog {
+    height: 1fr;
+    scrollbar-size: 1 1;
+    background: #080c18;
+}
+
+/* Modal overlay backgrounds */
+ModalScreen {
+    align: center middle;
+    background: rgba(5, 8, 17, 0.8);
+}
+
+/* Option lists inside modals */
+OptionList {
+    background: #080c18;
+    border: solid #1e3a5f;
+    scrollbar-size: 1 1;
+}
+
+OptionList:focus {
+    border: solid #38bdf8;
+}
+
+OptionList > .option-list--option-highlighted {
+    background: #2563eb;
+    color: #ffffff;
+    text-style: bold;
+}
+
+/* Inputs */
+Input {
+    background: #0d1117;
+    border: solid #1e3a5f;
+    color: #e2e8f0;
+}
+
+Input:focus {
+    border: solid #38bdf8;
+}
+
+/* Buttons */
+Button {
+    margin: 0 1;
+    background: #1e3a5f;
+    color: #e2e8f0;
+    border: none;
+}
+
+Button:hover {
+    background: #2563eb;
+}
+
+Button.-primary {
+    background: #2563eb;
+    color: #ffffff;
+}
+
+Button.-primary:hover {
+    background: #3b82f6;
+}
+
+/* Legacy screen styles (preserved for reference) */
+.screen-title {
+    text-align: center;
+    text-style: bold;
+    color: #e2e8f0;
+    padding: 1;
+    margin-bottom: 1;
+}
+
+.status-ok {
+    color: #4ade80;
+    margin-bottom: 1;
+}
+
+.status-error {
+    color: #fb7185;
+    margin-bottom: 1;
+}

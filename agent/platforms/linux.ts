@@ -102,11 +102,11 @@ export function load_linux_hooking_agent() {
         { platform: plattform_name, pattern: /.*rustls.*/, hookFn: invokeHookingFunction(rustls_execute), library: "Rustls" },
         { platform: plattform_name, pattern: /.*\.go.so$/, hookFn: invokeHookingFunction(gotls_execute), library: "Go TLS" },
         { platform: plattform_name, pattern: /.*go[0-9.]+$/, hookFn: invokeHookingFunction(gotls_execute), library: "Go TLS" },
-        // IPSec libraries (detection stubs — key extraction in Phase 3.8)
+        // IPSec libraries (detection stubs — key extraction in the future)
         { platform: plattform_name, pattern: /.*libcharon\.so/, hookFn: invokeHookingFunction(ipsec_detect_execute), library: "strongSwan (charon)", protocol: "ipsec" },
         { platform: plattform_name, pattern: /.*libstrongswan\.so/, hookFn: invokeHookingFunction(ipsec_detect_execute), library: "strongSwan", protocol: "ipsec" },
         { platform: plattform_name, pattern: /.*libipsec\.so/, hookFn: invokeHookingFunction(ipsec_detect_execute), library: "strongSwan (IPSec)", protocol: "ipsec" },
-        // SSH libraries (detection stubs — key extraction in Phase 3.8)
+        // SSH libraries (detection stubs)
         { platform: plattform_name, pattern: /.*libssh2?\.so/, hookFn: invokeHookingFunction(ssh_detect_execute), library: "libssh", protocol: "ssh" },
         { platform: plattform_name, pattern: /.*sshd/, hookFn: invokeHookingFunction(ssh_detect_execute), library: "OpenSSH", protocol: "ssh" },
     ]);

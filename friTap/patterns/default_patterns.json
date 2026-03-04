@@ -1,0 +1,66 @@
+{
+    "_meta": {
+        "description": "Default pattern database for friTap",
+        "version": "1.1.0",
+        "format": "friTap pattern format v1"
+    },
+    "_docs": {
+        "categories": {
+            "Dump-Keys": "Key extraction function (ssl_log_secret, keylog callback invocation)",
+            "SSL_Read": "Read plaintext function",
+            "SSL_Write": "Write plaintext function",
+            "Install-Key-Log-Callback": "Function that sets up keylog callback",
+            "KeyLogCallback-Function": "The actual keylog callback code"
+        },
+        "architectures": ["x64", "arm64", "arm", "x86"],
+        "notes": "Patterns should be contributed per library per architecture. See CONTRIBUTING.md for format."
+    },
+    "openssl": {
+        "x64": {
+            "ssl_log_secret": [
+                "F3 0F 1E FA 48 89 F8 49 89 D0 48 89 F7 49 89 C9 48 8D 90 40 01 00 00 B9 20 00 00 00 48 89 C6 E9 8C 63 FF FF",
+                "55 41 57 41 56 41 54 53 48 83 EC 30 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84"
+            ]
+        },
+        "arm64": {
+            "ssl_log_secret": [
+                "3F 23 03 D5 FD 7B BF A9 E4 03 01 AA FD 03 00 91 FD 7B C1 A8 BF 23 03 D5 E1 03 00 AA E5 03 03 AA E0 03 04 AA 03 04 80 D2 E4 03 02 AA 22 80 05 91",
+                "3F 23 03 D5 FF ?3 02 D1 FD 7B 0? A9 F? ?? 0? ?9 F6 57 0? A9 F4 4F 0? A9 FD ?3 01 91 08 34 40 F9 08 ?? 41 F9 ?8 ?? 00 B4"
+            ]
+        },
+        "arm": {
+            "ssl_log_secret": [
+                "2D E9 F0 43 89 B0 04 46 40 6B D0 F8 2C 01 00 28 49 D0",
+                "2D E9 F0 41 86 B0 04 46 40 6B D0 F8 30 01 00 28 53 D0"
+            ]
+        },
+        "x86": {
+            "ssl_log_secret": [
+                "55 53 57 56 83 EC 4C E8 00 00 00 00 5B 81 C3 A9 CB 13 00 8B 44 24 60 8B 40 34",
+                "55 53 57 56 83 EC 4C E8 00 00 00 00 5B 81 C3 A9 CB 13 00 8B 44 24 60"
+            ]
+        }
+    },
+    "openssh": {
+        "_comment": "Patterns for OpenSSH key derivation. Empty until extracted from target binaries.",
+        "x64": {
+            "kex_derive_keys": [],
+            "ssh_set_newkeys": []
+        },
+        "arm64": {
+            "kex_derive_keys": [],
+            "ssh_set_newkeys": []
+        }
+    },
+    "strongswan": {
+        "_comment": "Patterns for strongSwan IKE key derivation. Empty until extracted from target binaries.",
+        "x64": {
+            "ikev2_derive_child_sa_keys": [],
+            "derive_ike_keys": []
+        },
+        "arm64": {
+            "ikev2_derive_child_sa_keys": [],
+            "derive_ike_keys": []
+        }
+    }
+}
