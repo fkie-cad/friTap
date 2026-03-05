@@ -14,7 +14,7 @@ try:
     from textual.binding import Binding
     from textual.screen import Screen
     from textual.widgets import Static
-    from textual.containers import Vertical, VerticalScroll
+    from textual.containers import VerticalScroll
     TEXTUAL_AVAILABLE = True
 except ImportError:
     TEXTUAL_AVAILABLE = False

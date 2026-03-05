@@ -169,9 +169,11 @@ if TEXTUAL_AVAILABLE:
 
                 self.app.call_from_thread(_done)
             except Exception as e:
+                err = e
+
                 def _fail():
                     self.query_one("#status-message", Static).update(
-                        f"[bold #ef4444]Install failed:[/] {e}"
+                        f"[bold #ef4444]Install failed:[/] {err}"
                     )
                     self.phase = "prompt"
 

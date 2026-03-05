@@ -13,7 +13,7 @@ Usage (future):
 import sys
 
 try:
-    import gdb
+    import gdb  # noqa: F401
 except ImportError:
     print("ERROR: This script must be run inside GDB.")
     print("Usage: gdb -x tls_key_extract.py -p <pid>")

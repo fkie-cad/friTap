@@ -166,7 +166,7 @@ class SshSetNewkeysBreakpoint(gdb.Breakpoint):
 
     def stop(self):
         try:
-            frame = gdb.selected_frame()
+            _frame = gdb.selected_frame()
             try:
                 mode = int(gdb.parse_and_eval("$rsi"))
             except Exception:
@@ -186,8 +186,8 @@ def main():
 
     # Set breakpoints
     try:
-        kex_bp = KexDeriveKeysBreakpoint()
-        newkeys_bp = SshSetNewkeysBreakpoint()
+        _kex_bp = KexDeriveKeysBreakpoint()
+        _newkeys_bp = SshSetNewkeysBreakpoint()
     except Exception as e:
         print(f"[SSH] Failed to set breakpoints: {e}")
         print("[SSH] Make sure the target has debug symbols or is OpenSSH.")

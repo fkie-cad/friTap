@@ -11,7 +11,7 @@ backends is not yet implemented (planned: HKDF/PRF hooking).
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Optional
 
 from .base import BaseKeyProcessor
 

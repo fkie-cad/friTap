@@ -11,7 +11,7 @@ Usage (future):
 """
 
 try:
-    import lldb
+    import lldb  # noqa: F401
 except ImportError:
     print("ERROR: This script must be run inside LLDB.")
     raise

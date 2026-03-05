@@ -8,8 +8,6 @@ Creates and configures output handlers based on a FriTapConfig,
 decoupling handler instantiation from SSL_Logger.
 """
 
-import logging
-
 
 class OutputHandlerFactory:
     """Factory that creates output handler instances based on configuration."""
@@ -31,7 +29,7 @@ class OutputHandlerFactory:
         """
         from . import (
             PcapOutputHandler, KeylogOutputHandler, JsonOutputHandler,
-            JsonlOutputHandler, ConsoleOutputHandler, LiveWiresharkHandler,
+            JsonlOutputHandler, ConsoleOutputHandler,
             PcapngOutputHandler, LivePcapngHandler,
         )
 

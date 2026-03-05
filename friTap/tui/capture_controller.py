@@ -8,13 +8,7 @@ Handles config building, session start/stop, background worker management,
 and post-session UI cleanup.
 """
 
-from __future__ import annotations
-
 import time
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from ..tui.app import AppState
 
 try:
     from textual.widgets import Static
@@ -191,8 +185,9 @@ class CaptureController:
             while self._ssl_logger.running:
                 time.sleep(0.2)
         except Exception as e:
+            err = e
             self._screen.app.call_from_thread(
-                lambda: self._screen._get_activity_log().log_error(str(e))
+                lambda: self._screen._get_activity_log().log_error(str(err))
             )
         finally:
             self._screen.app.call_from_thread(self._on_session_ended)

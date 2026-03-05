@@ -70,17 +70,38 @@ if TEXTUAL_AVAILABLE:
 
         # All reactive properties trigger the same menu rebuild.
         # Textual calls watch_<name> automatically for each reactive.
-        watch_capture_active = lambda self, _: self._update_menu()
-        watch_has_target = lambda self, _: self._update_menu()
-        watch_target_name = lambda self, _: self._update_menu()
-        watch_current_mode = lambda self, _: self._update_menu()
-        watch_verbose = lambda self, _: self._update_menu()
-        watch_experimental = lambda self, _: self._update_menu()
-        watch_target_mode = lambda self, _: self._update_menu()
-        watch_keylog_path = lambda self, _: self._update_menu()
-        watch_pcap_path = lambda self, _: self._update_menu()
-        watch_server_running = lambda self, _: self._update_menu()
-        watch_protocol = lambda self, _: self._update_menu()
+        def watch_capture_active(self, _) -> None:
+            self._update_menu()
+
+        def watch_has_target(self, _) -> None:
+            self._update_menu()
+
+        def watch_target_name(self, _) -> None:
+            self._update_menu()
+
+        def watch_current_mode(self, _) -> None:
+            self._update_menu()
+
+        def watch_verbose(self, _) -> None:
+            self._update_menu()
+
+        def watch_experimental(self, _) -> None:
+            self._update_menu()
+
+        def watch_target_mode(self, _) -> None:
+            self._update_menu()
+
+        def watch_keylog_path(self, _) -> None:
+            self._update_menu()
+
+        def watch_pcap_path(self, _) -> None:
+            self._update_menu()
+
+        def watch_server_running(self, _) -> None:
+            self._update_menu()
+
+        def watch_protocol(self, _) -> None:
+            self._update_menu()
 
         def on_mount(self) -> None:
             """Render the initial menu."""
@@ -160,7 +181,7 @@ if TEXTUAL_AVAILABLE:
 
             # Control section (dynamic)
             lines.append("")
-            lines.append(f"[bold #64748b]=== Control ===[/]")
+            lines.append("[bold #64748b]=== Control ===[/]")
             for text, condition in self._build_control_section():
                 enabled = self._is_enabled(condition)
                 formatted = self._format_item(text, enabled)
@@ -168,7 +189,7 @@ if TEXTUAL_AVAILABLE:
 
             # Setup section
             lines.append("")
-            lines.append(f"[bold #64748b]=== Setup ===[/]")
+            lines.append("[bold #64748b]=== Setup ===[/]")
             for text, condition in self._SETUP_SECTION:
                 enabled = self._is_enabled(condition)
                 formatted = self._format_item(text, enabled)
@@ -176,7 +197,7 @@ if TEXTUAL_AVAILABLE:
 
             # Options section (toggles with inline state)
             lines.append("")
-            lines.append(f"[bold #64748b]=== Options ===[/]")
+            lines.append("[bold #64748b]=== Options ===[/]")
             for text, condition, toggle_attr in self._build_options_section():
                 enabled = self._is_enabled(condition)
                 formatted = self._format_item(text, enabled)

@@ -2,6 +2,8 @@
 # -*- coding: utf-8 -*-
 """Reusable TUI widgets for friTap."""
 
+__all__ = ["ActivityLog", "StatusBar", "MenuPanel"]
+
 try:
     from .activity_log import ActivityLog
     from .status_bar import StatusBar

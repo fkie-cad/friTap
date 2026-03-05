@@ -19,7 +19,6 @@ if TYPE_CHECKING:
 
 try:
     from textual.app import ComposeResult
-    from textual.binding import Binding
     from textual.screen import Screen
     from textual.widgets import Header, Footer, Static
     from textual.containers import Horizontal, Vertical
@@ -35,8 +34,6 @@ if TEXTUAL_AVAILABLE:
     from ..modals.process_modal import ProcessSelectModal
     from ..modals.spawn_modal import SpawnInputModal
     from ..modals.help_modal import HelpScreen
-    from ..modals.alert_modal import AlertModal
-    from ..modals.capture_mode_modal import CaptureModeModal
     from ..modals.protocol_modal import ProtocolSelectModal
     from ..wizard import CaptureWizard
     from ..capture_controller import CaptureController
@@ -68,7 +65,7 @@ if TEXTUAL_AVAILABLE:
 
         def on_mount(self) -> None:
             """Initialize the screen with welcome message and device info."""
-            state = self._get_state()
+            _state = self._get_state()
 
             # Show welcome banner
             activity = self.query_one("#activity-log", ActivityLog)
@@ -434,8 +431,9 @@ if TEXTUAL_AVAILABLE:
                     self._get_status_bar().server_status = "running"
                 self.app.call_from_thread(_on_install_success)
             except Exception as e:
+                err = e
                 self.app.call_from_thread(
-                    lambda: self._get_activity_log().log_error(f"Install failed: {e}")
+                    lambda: self._get_activity_log().log_error(f"Install failed: {err}")
                 )
 
         # ----------------------------------------------------------

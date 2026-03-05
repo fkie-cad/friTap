@@ -8,16 +8,15 @@ Launch with `fritap` (no arguments) for the interactive experience.
 """
 
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..events import EventBus
 
 try:
-    from textual.app import App, ComposeResult
+    from textual.app import App
     from textual.binding import Binding
-    from textual.widgets import Header, Footer
     TEXTUAL_AVAILABLE = True
 except ImportError:
     TEXTUAL_AVAILABLE = False

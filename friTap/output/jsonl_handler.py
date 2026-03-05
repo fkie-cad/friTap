@@ -11,7 +11,7 @@ from typing import IO, Optional, TYPE_CHECKING
 from .base import OutputHandler
 
 if TYPE_CHECKING:
-    from ..events import EventBus, KeylogEvent, DatalogEvent, FriTapEvent
+    from ..events import EventBus, FriTapEvent
 
 
 class JsonlOutputHandler(OutputHandler):

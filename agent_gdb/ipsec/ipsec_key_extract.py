@@ -95,7 +95,7 @@ class DeriveChildSaKeysBreakpoint(gdb.Breakpoint):
                 except Exception:
                     arg_addrs.append(0)
 
-            print(f"[IPSec] ikev2_derive_child_sa_keys hit")
+            print("[IPSec] ikev2_derive_child_sa_keys hit")
 
             # Finish to get output values
             gdb.execute("finish")
@@ -138,7 +138,7 @@ class DeriveIkeKeysBreakpoint(gdb.Breakpoint):
                 except Exception:
                     arg_addrs.append(0)
 
-            print(f"[IPSec] derive_ike_keys hit")
+            print("[IPSec] derive_ike_keys hit")
             gdb.execute("finish")
 
             lines = []
@@ -168,8 +168,8 @@ def main():
     print("=" * 60)
 
     try:
-        child_bp = DeriveChildSaKeysBreakpoint()
-        ike_bp = DeriveIkeKeysBreakpoint()
+        _child_bp = DeriveChildSaKeysBreakpoint()
+        _ike_bp = DeriveIkeKeysBreakpoint()
     except Exception as e:
         print(f"[IPSec] Failed to set breakpoints: {e}")
         print("[IPSec] Make sure the target is strongSwan charon with debug symbols.")
