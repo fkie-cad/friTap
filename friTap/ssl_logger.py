@@ -19,7 +19,7 @@ from .fritap_utility import supports_color, CustomFormatter
 from .about import __version__
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-
+from typing import Any
 
 try:
     import hexdump  # pylint: disable=g-import-not-at-top
@@ -115,6 +115,10 @@ class SSL_Logger():
         self.keydump_Set = {*()}
         self.traced_Socket_Set = {*()}
         self.traced_scapy_socket_Set = {*()}
+
+        # Initialize backend components (e.g., Frida session)
+        #from .backends import get_backend
+        #self._backend = get_backend("frida")
         
         # JSON session data
         self.session_data = {
@@ -242,6 +246,10 @@ class SSL_Logger():
             return datetime.fromisoformat(str(ts))
         except Exception:
             return None
+    
+
+    def post_message(self, script: Any, msg_type: str, payload: Any) -> None:
+        script.post({"type": msg_type, "payload": payload})
 
     
 
@@ -402,31 +410,31 @@ class SSL_Logger():
             self.script = job.script
 
         msg_type = message.get('type')
+        self.protocol = "tls"  # default protocol; can be updated by agent messages if needed
 
         if msg_type == 'send':
             payload = message.get('payload')
 
-            if self.startup and payload == 'experimental':
-                self.script.post({'type':'experimental', 'payload': self.experimental})
-
-            if self.startup and payload == 'defaultFD':
-                self.script.post({'type':'defaultFD', 'payload': self.enable_default_fd})
-
-            if self.startup and payload == 'socket_tracing':
-                self.script.post({'type':'socket_tracing', 'payload': self.socket_trace})
-
-            if self.startup and payload == 'pattern_hooking':
-                self.script.post({'type':'pattern_hooking', 'payload': self.pattern_data})
-
-            if self.startup and payload == 'offset_hooking':
-                self.script.post({'type':'offset_hooking', 'payload': self.offsets_data})
-
-            if self.startup and payload == 'install_lsass_hook':
-                self.script.post({'type':'install_lsass_hook', 'payload': self.install_lsass_hook})
-            
-            if self.startup and payload == 'anti':
-                self.script.post({'type':'antiroot', 'payload': self.anti_root})
+            # Startup handshake: agent requests config values one by one
+        if self.startup and isinstance(payload, str):
+            startup_responses = {
+                'experimental': ('experimental', self.experimental),
+                'defaultFD': ('defaultFD', self.enable_default_fd),
+                'socket_tracing': ('socket_tracing', self.socket_trace),
+                'pattern_hooking': ('pattern_hooking', self.pattern_data),
+                'offset_hooking': ('offset_hooking', self.offsets_data),
+                'install_lsass_hook': ('install_lsass_hook', self.install_lsass_hook),
+                'protocol_select': ('protocol_select', self.protocol),
+            }
+            if payload in startup_responses:
+                msg_type_key, value = startup_responses[payload]
+                self.post_message(self.script, msg_type_key, value)
+            elif payload == 'anti':
+                self.post_message(self.script, 'antiroot', self.anti_root)
                 self.startup = False
+
+        if not isinstance(payload, dict) or "contentType" not in payload:
+            return
             
         
         if message["type"] == "error":
