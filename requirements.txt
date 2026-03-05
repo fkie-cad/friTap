@@ -8,3 +8,4 @@ click
 psutil
 rich>=13.0.0
 textual>=0.80.0
+tlsLibHunter

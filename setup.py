@@ -52,7 +52,7 @@ setup(
     package_data={
         "friTap": [
             "fritap_agent.js",
-            "_ssl_log_legacy.js",
+            "fritap_agent_legacy.js",
             "assets/tcpdump_binaries/*",
             "tui/css/*.tcss",
             "patterns/*.json",
