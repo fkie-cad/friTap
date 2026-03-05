@@ -4,13 +4,14 @@
 """
 Configuration dataclasses for friTap.
 
-Replaces the 25+ parameter SSL_Logger constructor with structured,
-validated configuration objects.
+Defines structured configuration for device connection, output options, hooking strategies, and overall session settings. Includes validation for protocol-backend compatibility.
 """
 
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
+
+from .backends.base import BackendName
 
 
 class UnsupportedProtocolBackendError(ValueError):
@@ -71,7 +72,7 @@ class FriTapConfig:
     output: OutputConfig = field(default_factory=OutputConfig)
     hooking: HookingConfig = field(default_factory=HookingConfig)
     protocol: str = "tls"
-    backend: str = "frida"
+    backend: str = BackendName.FRIDA
     debug: bool = False
     debug_output: bool = False
     custom_hook_script: Optional[str] = None
@@ -141,7 +142,7 @@ class FriTapConfig:
         json_output: Optional[str] = None,
         install_lsass_hook: bool = True,
         timeout: Optional[int] = None,
-        backend: str = "frida",
+        backend: str = BackendName.FRIDA,
         protocol: str = "tls",
     ) -> "FriTapConfig":
         """

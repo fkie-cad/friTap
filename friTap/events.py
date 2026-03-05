@@ -4,7 +4,7 @@
 """
 Event bus system for friTap.
 
-Replaces the monolithic on_fritap_message() if/elif chain with a
+Replaces the legacy on_fritap_message() if/elif chain with a
 publish-subscribe event system. Output handlers, the TUI, and
 external integrations subscribe to typed events.
 """
