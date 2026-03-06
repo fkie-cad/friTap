@@ -2,6 +2,8 @@ include requirements.txt
 include LICENSE
 include README.md
 recursive-include friTap/patterns *.json
+recursive-include friTap/plugins/shared_utility *.js
 recursive-include friTap/tui/css *.tcss
 recursive-include friTap/assets *
+recursive-include friTap/plugins/examples README*
 recursive-include integrations *.py *.sh README*

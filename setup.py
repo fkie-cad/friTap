@@ -33,7 +33,7 @@ setup(
     url="https://github.com/fkie-cad/friTap",
     author=about.__author__,
     author_email="daniel.baier@fkie.fraunhofer.de",
-    license="GPL-3.0-only",  # or "GPL-3.0-or-later" to match your LICENSE
+    license="GPL-3.0-or-later",
 
     packages=find_packages(exclude=("create_legacy_agent", "create_standalone_release")),
     python_requires=">=3.10",
@@ -56,6 +56,7 @@ setup(
             "assets/tcpdump_binaries/*",
             "tui/css/*.tcss",
             "patterns/*.json",
+            "plugins/shared_utility/*.js",
         ]
     },
     include_package_data=True,
