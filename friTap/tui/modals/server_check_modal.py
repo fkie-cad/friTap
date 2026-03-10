@@ -118,8 +118,10 @@ if TEXTUAL_AVAILABLE:
             """Background worker to check whether frida-server is reachable."""
             try:
                 from friTap.backends import get_backend
-                device = get_backend().get_device(mobile=self._device_id)
-                device.enumerate_processes()
+                backend = get_backend()
+                device = backend.get_device(mobile=self._device_id)
+                if not backend.check_connectivity(device):
+                    raise ConnectionError("Server not reachable")
 
                 # Server is running
                 def _success():
@@ -169,9 +171,7 @@ if TEXTUAL_AVAILABLE:
 
                 self.app.call_from_thread(_done)
             except Exception as e:
-                err = e
-
-                def _fail():
+                def _fail(err=e):
                     self.query_one("#status-message", Static).update(
                         f"[bold #ef4444]Install failed:[/] {err}"
                     )

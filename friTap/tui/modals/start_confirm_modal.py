@@ -52,16 +52,19 @@ if TEXTUAL_AVAILABLE:
         BINDINGS = [
             Binding("v", "toggle_verbose", "Verbose", show=False),
             Binding("e", "toggle_experimental", "Experimental", show=False),
+            Binding("l", "toggle_library_scan", "Library Scan", show=False),
         ]
 
         verbose: reactive[bool] = reactive(False)
         experimental: reactive[bool] = reactive(False)
+        library_scan: reactive[bool] = reactive(False)
 
         def __init__(self, summary: dict, **kwargs) -> None:
             super().__init__(**kwargs)
             self._summary = summary
             self.verbose = summary.get("verbose", False)
             self.experimental = summary.get("experimental", False)
+            self.library_scan = summary.get("library_scan", False)
 
         def compose(self) -> ComposeResult:
             with Vertical(id="modal-container"):
@@ -71,7 +74,7 @@ if TEXTUAL_AVAILABLE:
                 )
                 yield Static("", id="summary-block")
                 yield Static(
-                    "[#64748b]Enter: Start  |  v: Verbose  |  e: Experimental  |  Esc: Back[/]",
+                    "[#64748b]Enter: Start  |  v: Verbose  |  e: Experimental  |  l: Library Scan  |  Esc: Back[/]",
                     classes="key-hints",
                 )
                 with Horizontal(classes="button-row"):
@@ -110,6 +113,7 @@ if TEXTUAL_AVAILABLE:
 
             verbose_indicator = "[bold green]ON[/]" if self.verbose else "[dim]off[/]"
             experimental_indicator = "[bold green]ON[/]" if self.experimental else "[dim]off[/]"
+            library_scan_indicator = "[bold green]ON[/]" if self.library_scan else "[dim]off[/]"
 
             lines = [
                 f"  Device:        [{type_tag}] {device_name}",
@@ -125,6 +129,7 @@ if TEXTUAL_AVAILABLE:
             lines.append("")
             lines.append(f"  Verbose:       {verbose_indicator}")
             lines.append(f"  Experimental:  {experimental_indicator}")
+            lines.append(f"  Library Scan:  {library_scan_indicator}")
 
             return "\n".join(lines)
 
@@ -134,6 +139,9 @@ if TEXTUAL_AVAILABLE:
         def watch_experimental(self, value: bool) -> None:
             self._refresh_summary()
 
+        def watch_library_scan(self, value: bool) -> None:
+            self._refresh_summary()
+
         def action_toggle_verbose(self) -> None:
             """Toggle verbose flag."""
             self.verbose = not self.verbose
@@ -141,6 +149,10 @@ if TEXTUAL_AVAILABLE:
         def action_toggle_experimental(self) -> None:
             """Toggle experimental flag."""
             self.experimental = not self.experimental
+
+        def action_toggle_library_scan(self) -> None:
+            """Toggle library scan flag."""
+            self.library_scan = not self.library_scan
 
         def on_button_pressed(self, event: Button.Pressed) -> None:
             if event.button.id == "btn-start":

@@ -2,10 +2,8 @@
 # -*- coding: utf-8 -*-
 """TUI screen modules."""
 
-__all__ = ["MainScreen"]
-
 try:
-    from .main_screen import MainScreen
+    from .main_screen import MainScreen  # noqa: F401
     SCREENS_AVAILABLE = True
 except ImportError:
     SCREENS_AVAILABLE = False

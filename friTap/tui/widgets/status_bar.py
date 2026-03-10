@@ -84,12 +84,16 @@ if TEXTUAL_AVAILABLE:
             if mode:
                 self.capture_mode = mode
 
-        def check_server_status(self, device=None) -> None:
+        def check_server_status(self, device=None, backend=None) -> None:
             """Check if frida-server is reachable on the device."""
             if device is None:
                 return
-            try:
-                device.enumerate_processes()
-                self.server_status = "running"
-            except Exception:
-                self.server_status = "not running"
+            if backend is not None:
+                reachable = backend.check_connectivity(device)
+            else:
+                try:
+                    device.enumerate_processes()
+                    reachable = True
+                except Exception:
+                    reachable = False
+            self.server_status = "running" if reachable else "not running"

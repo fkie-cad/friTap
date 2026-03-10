@@ -8,7 +8,13 @@ Handles config building, session start/stop, background worker management,
 and post-session UI cleanup.
 """
 
+from __future__ import annotations
+
 import time
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    pass
 
 try:
     from textual.widgets import Static
@@ -50,11 +56,16 @@ class CaptureController:
     # Actions
     # ----------------------------------------------------------
 
-    def _warn(self, modal_message: str, log_message: str) -> None:
+    def _warn(
+        self, modal_message: str, log_message: str,
+        title: str = "Warning", severity: str = "warning",
+    ) -> None:
         """Show a warning alert modal and log the message."""
         from ..modals.alert_modal import AlertModal
 
-        self._screen.app.push_screen(AlertModal(message=modal_message, title="Warning"))
+        self._screen.app.push_screen(
+            AlertModal(message=modal_message, title=title, severity=severity)
+        )
         self._screen._get_activity_log().log_warning(log_message)
 
     def action_start_capture(self) -> None:
@@ -82,7 +93,25 @@ class CaptureController:
             )
             return
 
+        self._check_plugin_compatibility(state)
         self.start_capture(state)
+
+    def _check_plugin_compatibility(self, state) -> None:
+        """Warn the user if loaded plugins are incompatible with the selected backend."""
+        plugin_loader = getattr(self._screen.app, "_plugin_loader", None)
+        if plugin_loader is None:
+            return
+
+        backend_name = getattr(state, "backend_name", "frida")
+        incompatible = plugin_loader.check_backend_compatibility(backend_name)
+        if incompatible:
+            names = ", ".join(incompatible)
+            self._warn(
+                f"The following plugins require the Frida backend "
+                f"and will be skipped:\n\n[bold]{names}[/]",
+                f"Plugins skipped (backend={backend_name}): {names}",
+                title="Plugin Warning",
+            )
 
     def action_stop_capture(self) -> None:
         """Stop the active capture session."""
@@ -140,7 +169,7 @@ class CaptureController:
             target=state.target,
             device=device,
             output=output,
-            hooking=HookingConfig(),
+            hooking=HookingConfig(library_scan=getattr(state, 'library_scan', False)),
             protocol=getattr(state, 'protocol', 'tls'),
         )
 
@@ -185,10 +214,9 @@ class CaptureController:
             while self._ssl_logger.running:
                 time.sleep(0.2)
         except Exception as e:
-            err = e
-            self._screen.app.call_from_thread(
-                lambda: self._screen._get_activity_log().log_error(str(err))
-            )
+            def _log_error(err=e):
+                self._screen._get_activity_log().log_error(str(err))
+            self._screen.app.call_from_thread(_log_error)
         finally:
             self._screen.app.call_from_thread(self._on_session_ended)
 
@@ -242,6 +270,20 @@ class CaptureController:
             title.update("[bold #4ade80]friTap Console[/]")
         except Exception:
             pass
+
+        # Suggest library scan if no libraries detected
+        if self._ssl_logger and not self._ssl_logger._detected_libraries:
+            if not result_paths:
+                from ..modals.alert_modal import AlertModal
+                self._screen.app.push_screen(
+                    AlertModal(
+                        message="No TLS libraries were detected.\n\n"
+                                "Consider enabling [bold]Library Scan[/] (press [bold]l[/] in the start screen) "
+                                "to discover renamed or statically linked libraries.",
+                        title="No Libraries Found",
+                        severity="warning",
+                    )
+                )
 
         # Show results summary
         if result_paths:

@@ -3,35 +3,19 @@
 """Modal dialog package for friTap TUI."""
 
 try:
-    from .base import FriTapModal
-    from .alert_modal import AlertModal
-    from .backend_modal import BackendSelectModal
-    from .capture_mode_modal import CaptureModeModal
-    from .capture_select_modal import CaptureSelectModal
-    from .device_modal import DeviceSelectModal
-    from .help_modal import HelpScreen
-    from .process_modal import ProcessSelectModal
-    from .protocol_modal import ProtocolSelectModal
-    from .server_check_modal import ServerCheckModal
-    from .spawn_modal import SpawnInputModal
-    from .start_confirm_modal import StartConfirmModal
-    from .target_mode_modal import TargetModeModal
+    from .base import FriTapModal  # noqa: F401
+    from .alert_modal import AlertModal  # noqa: F401
+    from .backend_modal import BackendSelectModal  # noqa: F401
+    from .capture_mode_modal import CaptureModeModal  # noqa: F401
+    from .capture_select_modal import CaptureSelectModal  # noqa: F401
+    from .device_modal import DeviceSelectModal  # noqa: F401
+    from .help_modal import HelpScreen  # noqa: F401
+    from .process_modal import ProcessSelectModal  # noqa: F401
+    from .protocol_modal import ProtocolSelectModal  # noqa: F401
+    from .server_check_modal import ServerCheckModal  # noqa: F401
+    from .spawn_modal import SpawnInputModal  # noqa: F401
+    from .start_confirm_modal import StartConfirmModal  # noqa: F401
+    from .target_mode_modal import TargetModeModal  # noqa: F401
     MODALS_AVAILABLE = True
-
-    __all__ = [
-        "FriTapModal",
-        "AlertModal",
-        "BackendSelectModal",
-        "CaptureModeModal",
-        "CaptureSelectModal",
-        "DeviceSelectModal",
-        "HelpScreen",
-        "ProcessSelectModal",
-        "ProtocolSelectModal",
-        "ServerCheckModal",
-        "SpawnInputModal",
-        "StartConfirmModal",
-        "TargetModeModal",
-    ]
 except ImportError:
     MODALS_AVAILABLE = False

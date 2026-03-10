@@ -266,6 +266,7 @@ class CaptureWizard:
             "verbose": state.verbose,
             "protocol": getattr(state, 'protocol', 'tls'),
             "experimental": getattr(state, "_experimental", False),
+            "library_scan": getattr(state, "library_scan", False),
         }
 
         confirm_modal = StartConfirmModal(summary=summary)
@@ -282,6 +283,7 @@ class CaptureWizard:
                 state._experimental = False
             state._experimental = confirm_modal.experimental
             self._screen._get_menu_panel().experimental = state._experimental
+            state.library_scan = confirm_modal.library_scan
             self._finish_and_start()
 
         self._screen.app.push_screen(confirm_modal, callback=_on_result)

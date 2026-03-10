@@ -70,38 +70,17 @@ if TEXTUAL_AVAILABLE:
 
         # All reactive properties trigger the same menu rebuild.
         # Textual calls watch_<name> automatically for each reactive.
-        def watch_capture_active(self, _) -> None:
-            self._update_menu()
-
-        def watch_has_target(self, _) -> None:
-            self._update_menu()
-
-        def watch_target_name(self, _) -> None:
-            self._update_menu()
-
-        def watch_current_mode(self, _) -> None:
-            self._update_menu()
-
-        def watch_verbose(self, _) -> None:
-            self._update_menu()
-
-        def watch_experimental(self, _) -> None:
-            self._update_menu()
-
-        def watch_target_mode(self, _) -> None:
-            self._update_menu()
-
-        def watch_keylog_path(self, _) -> None:
-            self._update_menu()
-
-        def watch_pcap_path(self, _) -> None:
-            self._update_menu()
-
-        def watch_server_running(self, _) -> None:
-            self._update_menu()
-
-        def watch_protocol(self, _) -> None:
-            self._update_menu()
+        def watch_capture_active(self, _): self._update_menu()
+        def watch_has_target(self, _): self._update_menu()
+        def watch_target_name(self, _): self._update_menu()
+        def watch_current_mode(self, _): self._update_menu()
+        def watch_verbose(self, _): self._update_menu()
+        def watch_experimental(self, _): self._update_menu()
+        def watch_target_mode(self, _): self._update_menu()
+        def watch_keylog_path(self, _): self._update_menu()
+        def watch_pcap_path(self, _): self._update_menu()
+        def watch_server_running(self, _): self._update_menu()
+        def watch_protocol(self, _): self._update_menu()
 
         def on_mount(self) -> None:
             """Render the initial menu."""

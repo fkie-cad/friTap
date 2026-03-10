@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
 try:
     from textual.app import ComposeResult
+    from textual.binding import Binding  # noqa: F401
     from textual.screen import Screen
     from textual.widgets import Header, Footer, Static
     from textual.containers import Horizontal, Vertical
@@ -65,7 +66,7 @@ if TEXTUAL_AVAILABLE:
 
         def on_mount(self) -> None:
             """Initialize the screen with welcome message and device info."""
-            _state = self._get_state()
+            self._get_state()  # ensure state is initialized
 
             # Show welcome banner
             activity = self.query_one("#activity-log", ActivityLog)
@@ -113,12 +114,12 @@ if TEXTUAL_AVAILABLE:
                 return
             try:
                 from friTap.backends import get_backend
-                device = get_backend().get_device(mobile=state.device_id)
-                device.enumerate_processes()
-                server_status = "running"
+                backend = get_backend()
+                device = backend.get_device(mobile=state.device_id)
+                is_running = backend.check_connectivity(device)
             except Exception:
-                server_status = "not running"
-            is_running = server_status == "running"
+                is_running = False
+            server_status = "running" if is_running else "not running"
             def _update_ui():
                 status = self._get_status_bar()
                 status.update_device(status.device_name, status.device_type, server_status)
@@ -431,10 +432,9 @@ if TEXTUAL_AVAILABLE:
                     self._get_status_bar().server_status = "running"
                 self.app.call_from_thread(_on_install_success)
             except Exception as e:
-                err = e
-                self.app.call_from_thread(
-                    lambda: self._get_activity_log().log_error(f"Install failed: {err}")
-                )
+                def _log_install_error(err=e):
+                    self._get_activity_log().log_error(f"Install failed: {err}")
+                self.app.call_from_thread(_log_install_error)
 
         # ----------------------------------------------------------
         # Options toggles

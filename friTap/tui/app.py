@@ -15,8 +15,9 @@ if TYPE_CHECKING:
     from ..events import EventBus
 
 try:
-    from textual.app import App
-    from textual.binding import Binding
+    from textual.app import App, ComposeResult  # noqa: F401
+    from textual.binding import Binding  # noqa: F401
+    from textual.widgets import Header, Footer  # noqa: F401
     TEXTUAL_AVAILABLE = True
 except ImportError:
     TEXTUAL_AVAILABLE = False
@@ -46,6 +47,7 @@ class AppState:
     live: bool = False
     full_capture: bool = False
     protocol: str = "tls"  # "tls", "ipsec", "ssh", "auto"
+    library_scan: bool = False
 
     # Runtime
     session: Optional[object] = None

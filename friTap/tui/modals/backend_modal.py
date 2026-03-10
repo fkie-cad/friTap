@@ -19,6 +19,7 @@ except ImportError:
     TEXTUAL_AVAILABLE = False
 
 if TEXTUAL_AVAILABLE:
+    from ...backends.base import BackendName
 
     class BackendSelectModal(ModalScreen[str | None]):
         """Modal to choose the instrumentation backend."""
@@ -79,9 +80,9 @@ if TEXTUAL_AVAILABLE:
 
         def on_button_pressed(self, event: Button.Pressed) -> None:
             button_map = {
-                "btn-frida": "frida",
-                "btn-lldb": "lldb",
-                "btn-gdb": "gdb",
+                "btn-frida": BackendName.FRIDA,
+                "btn-lldb": BackendName.LLDB,
+                "btn-gdb": BackendName.GDB,
                 "backend-cancel": None,
             }
             result = button_map.get(event.button.id)
