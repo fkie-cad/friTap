@@ -6,8 +6,8 @@ This guide helps developers quickly set up a development environment for friTap 
 
 ### Prerequisites
 
-- **Python 3.7+** (recommended: 3.9+)
-- **Node.js 16+** (for TypeScript agent compilation)
+- **Python 3.10+**
+- **Node.js 16+** (for frida-compile runtime)
 - **Git**
 
 ### Development Setup
@@ -22,24 +22,22 @@ python -m venv venv
 source venv/bin/activate  # Linux/macOS
 # venv\Scripts\activate   # Windows
 
-# 3. Install development dependencies
-pip install -r requirements-dev.txt
+# 3. Install frida-tools and Frida module dependencies
+pip install frida-tools
+frida-pm install frida-objc-bridge frida-java-bridge
 
-# 4. Install Node.js dependencies (for agent compilation)
-npm install
-
-# 5. Install friTap in development mode
+# 4. Install friTap in development mode
 pip install -e .
 
-# 6. Verify setup
-python run_tests.py summary
+# 5. Verify setup
+python dev/run_tests.py summary
 ```
 
 ### Alternative: One-Command Setup
 
 ```bash
 # Run the automated setup script
-python setup_dev.py
+python dev/setup_dev.py
 ```
 
 ## Testing
@@ -48,22 +46,22 @@ python setup_dev.py
 
 ```bash
 # Run all fast tests (recommended for development)
-python run_tests.py --fast
+python dev/run_tests.py --fast
 
 # Run specific test categories
-python run_tests.py unit           # Unit tests only
-python run_tests.py agent          # Agent compilation tests
-python run_tests.py integration    # Mock integration tests
+python dev/run_tests.py unit           # Unit tests only
+python dev/run_tests.py agent          # Agent compilation tests
+python dev/run_tests.py integration    # Mock integration tests
 ```
 
 ### Comprehensive Testing
 
 ```bash
 # Run all applicable tests
-python run_tests.py all
+python dev/run_tests.py all
 
 # Generate coverage report
-python run_tests.py coverage
+python dev/run_tests.py coverage
 open tests/coverage_html/index.html
 ```
 
@@ -98,7 +96,7 @@ mypy friTap/
 isort friTap/ tests/
 
 # Run all quality checks
-python run_tests.py lint
+python dev/run_tests.py lint
 ```
 
 ### Pre-commit Hooks
@@ -122,33 +120,46 @@ friTap consists of two main components:
 1. **Python Host** (`friTap/` directory): Handles process attachment, argument parsing, and communication
 2. **TypeScript Agent** (`agent/` directory): Performs actual SSL/TLS hooking inside target processes
 
-The TypeScript agent is compiled into two JavaScript files:
-- `friTap/fritap_agent.js` - Modern agent (Frida 17+)  
-- `friTap/fritap_agent_legacy.js` - Legacy agent (Frida <17)
+The TypeScript agent is compiled into a single JavaScript file:
+- `friTap/fritap_agent.js` — compiled via `frida-compile`
 
 ### TypeScript Agent Structure
 
 ```
 agent/
 ├── fritap_agent.ts              # Main agent entry point
-├── util/                   # Utility functions
-│   ├── process_infos.ts    # OS/platform detection
-│   ├── log.ts              # Logging functions
-│   └── ssl_library_infos.ts # Library inspection
-├── shared/                 # Common functionality
-│   ├── shared_functions.ts # Cross-platform functions
-│   └── pattern_based_hooking.ts # Pattern matching
-├── ssl_lib/               # SSL library implementations
-│   ├── openssl_boringssl.ts
-│   ├── nss.ts
-│   ├── gnutls.ts
-│   └── ...
-└── {platform}/            # Platform-specific implementations
-    ├── android/
-    ├── ios/
-    ├── linux/
-    ├── windows/
-    └── macos/
+├── core/                        # Modern hooking infrastructure
+│   ├── context.ts               # AgentContext, AgentConfig
+│   ├── hook_definition.ts       # HookDefinition type
+│   ├── loader.ts                # executeFromDefinition()
+│   └── executors/               # Hook installers
+├── schemas/                     # Generated TS interfaces
+│   └── messages.ts              # From Pydantic models
+├── shared/                      # Common functionality
+│   ├── shared_functions.ts      # Cross-platform functions
+│   ├── hooking_pipeline.ts      # Pipeline with strategies
+│   └── registry.ts              # Hook registration
+├── tls/                         # TLS library implementations
+│   ├── libs/                    # Base library classes
+│   ├── definitions/             # Modern hook definitions
+│   ├── platforms/               # Platform-specific hooks
+│   │   ├── android/
+│   │   ├── ios/
+│   │   ├── linux/
+│   │   ├── macos/
+│   │   └── windows/
+│   └── decoders/                # Hex/datum readers
+├── platforms/                   # Platform dispatchers
+│   ├── linux.ts
+│   ├── android.ts
+│   ├── ios.ts
+│   ├── macos.ts
+│   └── windows.ts
+├── legacy/                      # V1 hooking code
+└── util/                        # Utility functions
+    ├── process_infos.ts         # OS/platform detection
+    ├── log.ts                   # Logging functions
+    └── ssl_library_infos.ts     # Library inspection
 ```
 
 ### TypeScript Agent Compilation
@@ -159,8 +170,8 @@ agent/
 # Install frida-tools (includes latest frida-compile)
 pip install --upgrade frida-tools
 
-# Install Node.js dependencies
-npm install
+# Install Frida module dependencies
+frida-pm install frida-objc-bridge frida-java-bridge
 
 # Verify frida-compile is available
 frida-compile --version
@@ -172,42 +183,22 @@ frida-compile --version
 #### Compilation Commands
 
 ```bash
-# Primary compilation (recommended)
-npm run build
+# Direct compilation (recommended)
+frida-compile agent/fritap_agent.ts -o friTap/fritap_agent.js
 
-# Platform-specific scripts
-./compile_agent.sh     # Linux/macOS  
-compile_agent.bat      # Windows
-
-# Watch mode for development
-npm run watch
+# Platform-specific scripts (install bridges + compile)
+./dev/compile_agent.sh     # Linux/macOS
+dev\compile_agent.bat      # Windows
 
 # Test compilation
-python run_tests.py agent
+python dev/run_tests.py agent
 ```
 
 #### What Compilation Does
 
 1. **Processes TypeScript** files using frida-compile
-2. **Bundles modules** into single JavaScript files
-3. **Generates two versions**:
-   - Modern: `friTap/fritap_agent.js`
-   - Legacy: `friTap/fritap_agent_legacy.js`
-4. **Injects placeholders** for runtime values (offsets, patterns)
-
-#### Compilation Output
-
-After compilation, you'll see:
-
-```bash
-$ npm run build
-> friTap@1.3.5.0 build
-> frida-compile agent/ssl_log.ts -o friTap/fritap_agent.js
-
-Compiling main agent...
-✓ Generated friTap/fritap_agent.js (450KB)
-✓ Generated friTap/fritap_agent_legacy.js (420KB)
-```
+2. **Bundles modules** into a single JavaScript file: `friTap/fritap_agent.js`
+3. **Injects placeholders** for runtime values (offsets, patterns)
 
 ### Agent Development Workflow
 
@@ -215,13 +206,13 @@ Compiling main agent...
 
 ```bash
 # 1. Edit TypeScript source
-vim agent/ssl_lib/new_library.ts
+vim agent/tls/libs/new_library.ts
 
-# 2. Compile agent  
-npm run build
+# 2. Compile agent
+frida-compile agent/fritap_agent.ts -o friTap/fritap_agent.js
 
 # 3. Test compilation
-python run_tests.py agent
+python dev/run_tests.py agent
 
 # 4. Test with real application
 fritap -k keys.log target_app
@@ -234,31 +225,25 @@ fritap -d -k keys.log target_app
 
 ```bash
 # 1. Create library implementation
-touch agent/ssl_lib/mylibrary.ts
+touch agent/tls/libs/mylibrary.ts
 
 # 2. Add platform-specific hooks
-touch agent/linux/mylibrary_linux.ts
+touch agent/tls/platforms/linux/mylibrary_linux.ts
 
 # 3. Update main agent loader
-vim agent/ssl_log.ts
+vim agent/fritap_agent.ts
 
 # 4. Compile and test
-npm run build
-python run_tests.py agent
+frida-compile agent/fritap_agent.ts -o friTap/fritap_agent.js
+python dev/run_tests.py agent
 ```
 
 #### 3. Debugging Agent Issues
 
 ```bash
-# Enable TypeScript source maps (development)
-npm run build:debug
-
 # Debug with Chrome DevTools
 fritap -d target_app
 # Open chrome://inspect in Chrome
-
-# Verbose compilation
-npm run build -- --verbose
 ```
 
 ### Important Development Considerations
@@ -268,7 +253,6 @@ npm run build -- --verbose
 - **All hooking logic** is in TypeScript
 - **Python cannot directly execute** TypeScript files
 - **Must recompile** after any agent/ changes
-- **Both modern and legacy** versions need compilation
 
 #### 2. Frida-Specific TypeScript
 
@@ -278,7 +262,7 @@ const module = Process.getModuleByName("libssl.so");
 const exports = module.enumerateExports();
 
 // Not valid - uses Node.js APIs
-import fs from 'fs';  // ❌ Won't work in Frida
+import fs from 'fs';  // Won't work in Frida
 ```
 
 #### 3. Placeholder System
@@ -309,7 +293,7 @@ if (isiOS()) {
 #### 1. Custom Hook Development
 
 ```typescript
-// agent/ssl_lib/custom.ts
+// agent/tls/libs/custom.ts
 export class CustomSSLLibrary {
     static install_hooks(): void {
         const module = Process.getModuleByName("libcustom.so");
@@ -356,239 +340,45 @@ try {
 
 ### Logging Functions
 
-friTap provides three main logging functions for agent development, all imported from `./util/log.js`:
+friTap provides three logging functions for agent development, imported from `./util/log.js`:
 
 ```typescript
 import { log, devlog, devlog_error } from "./util/log.js";
 ```
 
-#### `log(message: string)`
-
-**Purpose**: Standard output logging for important information
-**Usage**: User-visible messages, successful operations, key findings
-**Output**: Always visible (controlled by Python host)
+| Function | Visibility | Purpose |
+|----------|-----------|---------|
+| `log(msg)` | Always visible | User-facing messages, successful operations |
+| `devlog(msg)` | Only with `-do` or `-d` flags | Debug traces, verbose output |
+| `devlog_error(msg)` | Only with `-do` or `-d` flags | Non-fatal errors, debug warnings |
 
 ```typescript
 // Examples
-log("Running Script on Android");
-log("Found SSL_CTX_set_info_callback at 0x19ff01984");
 log("Successfully hooked SSL_read function");
-log(`Attached to ${moduleName} at ${moduleBase}`);
-```
-
-#### `devlog(message: string)`
-
-**Purpose**: Debug logging for development and troubleshooting
-**Usage**: Detailed debugging information, trace messages, verbose output
-**Output**: Only visible when debug mode is enabled (`-do` or `-d` flags)
-
-```typescript
-// Examples
 devlog("[OS Detection] AppKit without UIKit -> macOS");
-devlog(`[SSL Library] Trying to hook ${functionName}`);
-devlog(`Found ${exportCount} exports in ${moduleName}`);
-devlog("Pattern matching succeeded for SSL_read");
-
-// Complex debugging
-devlog(`[Memory Scan] Searching for pattern: ${pattern}`);
-devlog(`[Hook Status] ${functionName}: ${hookSuccess ? 'SUCCESS' : 'FAILED'}`);
+devlog_error("Failed to find SSL_write, trying fallback");
 ```
 
-#### `devlog_error(message: string)`
+Use bracketed prefixes for debug categories: `[Hook]`, `[Pattern]`, `[Memory]`, `[OS Detection]`, `[Library]`.
 
-**Purpose**: Error logging for debugging issues
-**Usage**: Non-fatal errors, warning conditions, debugging problems
-**Output**: Only visible when debug mode is enabled (`-do` or `-d` flags)
-
-```typescript
-// Examples
-devlog_error("Failed to enumerate exports - continuing with fallback");
-devlog_error(`Module ${moduleName} not found in process`);
-devlog_error("Pattern match failed, trying secondary pattern");
-devlog_error("SSL function hook failed - library may be stripped");
-
-// Error context
-devlog_error(`Hook error for ${functionName}: ${errorMessage}`);
-```
-
-### Logging Best Practices
-
-#### 1. Use Appropriate Log Levels
-
-```typescript
-// Good practices
-log("SSL_read hooked successfully");                    // Important success
-devlog("Checking for SSL exports in libcrypto.so");   // Debug trace
-devlog_error("Failed to find SSL_write, trying fallback"); // Debug error
-
-// Avoid
-devlog("SSL_read hooked successfully");                 // Don't hide success
-log("Checking exports in module 47 of 156");          // Too verbose for log()
-```
-
-#### 2. Include Context Information
-
-```typescript
-// Good - provides context
-devlog(`[${libraryName}] Found ${functionCount} SSL functions`);
-log(`Hooked ${libraryName} SSL functions: read=${readHooked}, write=${writeHooked}`);
-
-// Better - includes addresses and details
-devlog(`[Pattern Match] SSL_read found at ${address} in ${moduleName}`);
-log(`SSL library detected: ${libraryName} v${version} at ${baseAddress}`);
-```
-
-#### 3. Use Consistent Formatting
-
-```typescript
-// Consistent patterns for different types
-log(`Successfully ${action}: ${details}`);              // Success messages
-devlog(`[${component}] ${action}: ${details}`);         // Debug traces  
-devlog_error(`Failed ${action}: ${reason}`);            // Error messages
-
-// Examples
-log("Successfully hooked OpenSSL functions: SSL_read, SSL_write");
-devlog("[OS Detection] Platform: darwin, Architecture: arm64");
-devlog_error("Failed to hook SSL_CTX_new: function not found");
-```
-
-#### 4. Debug Categories
-
-Use consistent prefixes for different debugging categories:
-
-```typescript
-// OS and platform detection
-devlog("[OS Detection] UIKit found -> iOS");
-devlog("[Platform] Architecture: arm64, Platform: darwin");
-
-// Library analysis
-devlog("[Library] Scanning exports in libssl.so");
-devlog("[Pattern] Trying primary pattern for SSL_read");
-
-// Hook status
-devlog("[Hook] Installing interceptor for SSL_write");
-devlog("[Hook] SSL_read hook successful");
-
-// Memory operations
-devlog("[Memory] Scanning 0x1000 bytes at 0x7fff12345000");
-devlog("[Memory] Found pattern at offset 0x234");
-```
-
-### Advanced Logging Patterns
-
-#### Conditional Logging
-
-```typescript
-// Only log in specific conditions
-if (Process.arch === "arm64") {
-    devlog("[ARM64] Using ARM64-specific SSL patterns");
-}
-
-// Log with function success status
-const hookResult = installSSLHook(functionAddress);
-if (hookResult) {
-    log(`SSL function hooked at ${functionAddress}`);
-} else {
-    devlog_error(`Failed to hook SSL function at ${functionAddress}`);
-}
-```
-
-#### Performance Logging
-
-```typescript
-// Time-sensitive operations
-const startTime = Date.now();
-const results = scanForPatterns(moduleBase, moduleSize);
-const duration = Date.now() - startTime;
-devlog(`[Performance] Pattern scan completed in ${duration}ms, found ${results.length} matches`);
-```
-
-#### Structured Information
-
-```typescript
-// Complex data logging
-const moduleInfo = {
-    name: module.name,
-    base: module.base,
-    size: module.size,
-    exports: exportCount
-};
-devlog(`[Module Info] ${JSON.stringify(moduleInfo)}`);
-
-// Hook summary
-const hookSummary = `SSL hooks: read=${readSuccess}, write=${writeSuccess}, session=${sessionSuccess}`;
-log(hookSummary);
-```
-
-### Integration with Python Host
-
-The TypeScript logging functions integrate with the Python host's logging system:
-
-```typescript
-// TypeScript agent                     // Python output (with custom formatter)
-log("Start logging");                   // [*] Start logging  
-devlog("Debug information");            // [!] Debug information (only with -do/-d)
-devlog_error("Debug error");            // [!] Debug error (only with -do/-d)
-```
-
-#### Python Debug Flags
+### Python Debug Flags
 
 - **No flags**: Only `log()` messages visible
 - **`-do` (debug output)**: All logging functions visible
 - **`-d` (full debug)**: All logging functions + Chrome Inspector
 
 ```bash
-# Standard mode - only log() visible
-fritap -k keys.log target
-
-# Debug output - all logging visible  
-fritap -do -k keys.log target
-
-# Full debug - all logging + inspector
-fritap -d -k keys.log target
-```
-
-## Environment Management
-
-### Multiple Python Versions
-
-```bash
-# Test with multiple Python versions using tox
-tox
-
-# Test with specific Python version
-tox -e py39
-```
-
-### Platform-Specific Development
-
-```bash
-# Linux development
-sudo apt-get install build-essential  # For native dependencies
-
-# macOS development
-brew install node                      # Node.js via Homebrew
-
-# Windows development
-# Use Visual Studio Build Tools for native dependencies
+fritap -k keys.log target        # Standard mode
+fritap -do -k keys.log target    # Debug output
+fritap -d -k keys.log target     # Full debug + inspector
 ```
 
 ## Dependency Management
 
 ### Adding New Dependencies
 
-1. **Runtime dependencies**: Add to `requirements.txt`
-2. **Development dependencies**: Add to `requirements-dev.txt`
-3. **TypeScript dependencies**: Add to `package.json`
-
-```bash
-# Update requirements files
-pip-compile requirements.in          # Generate requirements.txt
-pip-compile requirements-dev.in      # Generate requirements-dev.txt
-
-# Update Node.js dependencies
-npm update
-```
+1. **Runtime dependencies**: Add to `requirements.txt` and `setup.py`
+2. **Frida bridge modules**: Install via `frida-pm install <module>`
 
 ### Handling Optional Dependencies
 
@@ -613,10 +403,10 @@ The codebase gracefully handles missing optional dependencies.
 
 ```bash
 # Check test environment
-python run_tests.py summary
+python dev/run_tests.py summary
 
 # Setup test environment
-python run_tests.py setup
+python dev/run_tests.py setup
 
 # Install missing test dependencies
 pip install -r tests/requirements.txt
@@ -634,10 +424,10 @@ See [Testing Framework Guide](tests/README.md) for detailed guidance on:
 
 ### Adding SSL Library Support
 
-1. Create TypeScript implementation in `agent/ssl_lib/`
-2. Add platform-specific integration in `agent/{platform}/`
-3. Update main agent in `agent/ssl_log.ts`
-4. Compile agent: `npm run build`
+1. Create TypeScript implementation in `agent/tls/libs/`
+2. Add platform-specific hooks in `agent/tls/platforms/{platform}/`
+3. Update main agent in `agent/fritap_agent.ts`
+4. Compile agent: `frida-compile agent/fritap_agent.ts -o friTap/fritap_agent.js`
 5. Add tests in `tests/unit/` and `tests/integration/`
 6. Update documentation
 
@@ -646,9 +436,6 @@ See [Testing Framework Guide](tests/README.md) for detailed guidance on:
 ```bash
 # Run with debug output
 fritap -do -v target_application
-
-# Debug agent compilation
-npm run build -- --verbose
 
 # Debug test failures
 pytest tests/unit/test_ssl_logger.py::TestSSLLogger::test_specific -v -s
@@ -673,20 +460,9 @@ mkdocs gh-deploy
 
 The repository includes GitHub Actions workflows for:
 - Multi-platform testing (Linux, Windows, macOS)
-- Multiple Python versions (3.8-3.11)
+- Python 3.10+
 - Agent compilation validation
 - Code quality checks
-
-### Local CI Simulation
-
-```bash
-# Run tests as they would run in CI
-tox
-
-# Test specific environments
-tox -e py39-linux
-tox -e py310-windows
-```
 
 ## Troubleshooting
 
@@ -700,13 +476,9 @@ pip install -e .
 
 **Agent Compilation Failures:**
 ```bash
-# Check Node.js and npm versions
-node --version
-npm --version
-
-# Clean and reinstall Node.js dependencies
-rm -rf node_modules package-lock.json
-npm install
+# Reinstall Frida module dependencies
+pip install --upgrade frida-tools
+frida-pm install frida-objc-bridge frida-java-bridge
 ```
 
 **Test Failures:**
@@ -720,8 +492,9 @@ pip install -r tests/requirements.txt
 
 **Missing Dependencies:**
 ```bash
-# Install all development dependencies
-pip install -r requirements-dev.txt
+# Install all dependencies
+pip install -r requirements.txt
+pip install -e .
 
 # For optional dependencies, install manually
 pip install scapy  # Linux/macOS only
@@ -754,46 +527,21 @@ xcode-select --install
 3. Search [existing issues](https://github.com/fkie-cad/friTap/issues)
 4. Join discussions in [GitHub Discussions](https://github.com/fkie-cad/friTap/discussions)
 
-## Performance Tips
-
-### Development Performance
-
-```bash
-# Run only fast tests during development
-python run_tests.py --fast
-
-# Use pytest-xdist for parallel testing
-pytest -n auto tests/unit/
-
-# Skip slow tests
-pytest -m "not slow" tests/
-```
-
-### Memory Usage
-
-```bash
-# Monitor memory usage during tests
-pytest --memray tests/unit/
-
-# Profile specific tests
-python -m cProfile -o profile_output.prof -m pytest tests/unit/test_ssl_logger.py
-```
-
 ## Release Process
 
 ### Pre-release Checklist
 
-1. Run comprehensive tests: `python run_tests.py all`
+1. Run comprehensive tests: `python dev/run_tests.py all`
 2. Update version in `friTap/about.py`
 3. Update CHANGELOG.md
 4. Ensure documentation is up to date
-5. Run code quality checks: `python run_tests.py lint`
+5. Run code quality checks: `python dev/run_tests.py lint`
 
 ### Building Distribution
 
 ```bash
 # Build distribution packages
-python setup.py sdist bdist_wheel
+python -m build --sdist --wheel
 
 # Check distribution
 twine check dist/*
@@ -803,7 +551,5 @@ pip install dist/fritap-*.whl
 ```
 
 ---
-
-**Happy coding! 🚀**
 
 For questions or contributions, please refer to our [Contributing Guide](docs/development/contributing.md) or open an issue on GitHub.

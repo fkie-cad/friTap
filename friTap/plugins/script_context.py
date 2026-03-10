@@ -10,11 +10,12 @@ plugins can create/load scripts without reaching into SSL_Logger internals.
 
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Any, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..backends.base import Backend
     from ..events import EventBus
+    from ..session import Session
 
 
 @dataclass(frozen=True)
@@ -49,3 +50,4 @@ class ScriptContext:
     backend_name: str
     debug: bool = False
     debug_output: bool = False
+    session: Optional["Session"] = None

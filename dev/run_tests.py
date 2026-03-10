@@ -17,174 +17,112 @@ class FriTapTestRunner:
     """Test runner for friTap testing suite."""
     
     def __init__(self):
-        self.root_dir = Path(__file__).parent
+        self.root_dir = Path(__file__).parent.parent
         self.test_dir = self.root_dir / "tests"
         self.platform = platform.system().lower()
         
+    def _run_pytest(self, label, path, marker, verbose, extra_args=None):
+        """Run a pytest suite with standard options."""
+        print(f"Running {label}")
+        print("=" * 50)
+
+        cmd = [
+            sys.executable, "-m", "pytest",
+            str(path),
+            "-m", marker,
+            "--tb=short",
+        ]
+        if extra_args:
+            cmd.extend(extra_args)
+        if verbose:
+            cmd.extend(["-v", "-s"])
+
+        return subprocess.call(cmd)
+
     def run_unit_tests(self, verbose: bool = False) -> int:
         """Run unit tests."""
-        print("🧪 Running Unit Tests")
-        print("=" * 50)
-        
-        cmd = [
-            sys.executable, "-m", "pytest",
-            str(self.test_dir / "unit"),
-            "-m", "not slow",
-            "--tb=short"
-        ]
-        
-        if verbose:
-            cmd.extend(["-v", "-s"])
-        
-        return subprocess.call(cmd)
-    
+        return self._run_pytest("Unit Tests", self.test_dir / "unit", "not slow", verbose)
+
     def run_agent_compilation_tests(self, verbose: bool = False) -> int:
         """Run agent compilation tests."""
-        print("⚙️  Running Agent Compilation Tests")
-        print("=" * 50)
-        
-        # Check if Node.js is available
         if not self._check_nodejs():
-            print("❌ Node.js not available, skipping agent compilation tests")
+            print("[SKIP] Node.js not available, skipping agent compilation tests")
             return 0
-            
-        cmd = [
-            sys.executable, "-m", "pytest", 
-            str(self.test_dir / "agent"),
-            "-m", "agent_compilation",
-            "--tb=short"
-        ]
-        
-        if verbose:
-            cmd.extend(["-v", "-s"])
-            
-        return subprocess.call(cmd)
-    
+        return self._run_pytest("Agent Compilation Tests", self.test_dir / "agent", "agent_compilation", verbose)
+
     def run_mock_integration_tests(self, verbose: bool = False) -> int:
         """Run mock integration tests."""
-        print("🔗 Running Mock Integration Tests") 
-        print("=" * 50)
-        
-        cmd = [
-            sys.executable, "-m", "pytest",
-            str(self.test_dir / "integration"),
-            "-m", "mock_integration",
-            "--tb=short"
-        ]
-        
-        if verbose:
-            cmd.extend(["-v", "-s"])
-            
-        return subprocess.call(cmd)
-    
+        return self._run_pytest("Mock Integration Tests", self.test_dir / "integration", "mock_integration", verbose)
+
     def run_platform_specific_tests(self, verbose: bool = False) -> int:
         """Run platform-specific tests."""
-        print(f"🖥️  Running {self.platform.title()} Platform Tests")
-        print("=" * 50)
-        
-        cmd = [
-            sys.executable, "-m", "pytest",
-            str(self.test_dir),
-            "-m", self.platform,
-            "--tb=short"
-        ]
-        
-        if verbose:
-            cmd.extend(["-v", "-s"])
-            
-        return subprocess.call(cmd)
-    
+        return self._run_pytest(f"{self.platform.title()} Platform Tests", self.test_dir, self.platform, verbose)
+
     def run_ground_truth_tests(self, verbose: bool = False) -> int:
         """Run ground truth tests (requires built test applications)."""
-        print("🎯 Running Ground Truth Tests")
-        print("=" * 50)
-        
-        # Check if ground truth applications are built
         ground_truth_dir = self.root_dir / "ground_truth"
         if not self._check_ground_truth_apps(ground_truth_dir):
-            print("⚠️  Ground truth applications not built, skipping tests")
+            print("[WARN] Ground truth applications not built, skipping tests")
             print("Run 'make all' in ground_truth/ directories to build test apps")
             return 0
-            
-        cmd = [
-            sys.executable, "-m", "pytest",
-            str(self.test_dir),
-            "-m", "ground_truth",
-            "--tb=short",
-            "--timeout=60"
-        ]
-        
-        if verbose:
-            cmd.extend(["-v", "-s"])
-            
-        return subprocess.call(cmd)
-    
+        return self._run_pytest("Ground Truth Tests", self.test_dir, "ground_truth", verbose, ["--timeout=60"])
+
     def run_android_tests(self, verbose: bool = False) -> int:
         """Run Android-specific tests (requires connected device)."""
-        print("📱 Running Android Tests")
-        print("=" * 50)
-        
-        # Check if Android device is connected
         if not self._check_android_device():
-            print("❌ No Android device connected, skipping Android tests")
+            print("[SKIP] No Android device connected, skipping Android tests")
             return 0
-            
-        cmd = [
-            sys.executable, "-m", "pytest",
-            str(self.test_dir),
-            "-m", "android",
-            "--tb=short",
-            "--timeout=120"
-        ]
-        
-        if verbose:
-            cmd.extend(["-v", "-s"])
-            
-        return subprocess.call(cmd)
+        return self._run_pytest("Android Tests", self.test_dir, "android", verbose, ["--timeout=120"])
     
     def run_all_tests(self, verbose: bool = False, fast: bool = False) -> int:
         """Run all applicable tests."""
-        print("🚀 Running All friTap Tests")
+        print("Running All friTap Tests")
         print("=" * 50)
         
-        total_result = 0
-        
+        any_failed = False
+
         # Unit tests (always run)
         result = self.run_unit_tests(verbose)
-        total_result += result
+        if result != 0:
+            any_failed = True
         print()
-        
+
         # Agent compilation tests
         result = self.run_agent_compilation_tests(verbose)
-        total_result += result
+        if result != 0:
+            any_failed = True
         print()
-        
+
         # Mock integration tests
         result = self.run_mock_integration_tests(verbose)
-        total_result += result
+        if result != 0:
+            any_failed = True
         print()
-        
+
         if not fast:
             # Platform-specific tests
             result = self.run_platform_specific_tests(verbose)
-            total_result += result
+            if result != 0:
+                any_failed = True
             print()
-            
+
             # Ground truth tests (if available)
             result = self.run_ground_truth_tests(verbose)
-            total_result += result
+            if result != 0:
+                any_failed = True
             print()
-            
+
             # Android tests (if device available)
             result = self.run_android_tests(verbose)
-            total_result += result
+            if result != 0:
+                any_failed = True
             print()
-        
-        return total_result
+
+        return 1 if any_failed else 0
     
     def run_coverage_report(self) -> int:
         """Generate coverage report."""
-        print("📊 Generating Coverage Report")
+        print("Generating Coverage Report")
         print("=" * 50)
         
         cmd = [
@@ -203,29 +141,29 @@ class FriTapTestRunner:
         if result == 0:
             coverage_html = self.test_dir / "coverage_html" / "index.html"
             if coverage_html.exists():
-                print(f"📈 Coverage report generated: {coverage_html}")
+                print(f"[OK] Coverage report generated: {coverage_html}")
         
         return result
     
     def lint_tests(self) -> int:
         """Run linting on test code."""
-        print("🔍 Linting Test Code")
+        print("Linting Test Code")
         print("=" * 50)
         
         # Run flake8 on tests
-        cmd = ["flake8", str(self.test_dir), "--max-line-length=88"]
+        cmd = [sys.executable, "-m", "flake8", str(self.test_dir), "--max-line-length=88"]
         result = subprocess.call(cmd)
         
         if result == 0:
-            print("✅ Test code linting passed")
+            print("[OK] Test code linting passed")
         else:
-            print("❌ Test code linting failed")
+            print("[FAIL] Test code linting failed")
             
         return result
     
     def setup_test_environment(self) -> int:
         """Setup test environment and install dependencies."""
-        print("🔧 Setting Up Test Environment")
+        print("Setting Up Test Environment")
         print("=" * 50)
         
         # Install test requirements
@@ -235,26 +173,26 @@ class FriTapTestRunner:
             result = subprocess.call(cmd)
             
             if result == 0:
-                print("✅ Test dependencies installed")
+                print("[OK] Test dependencies installed")
             else:
-                print("❌ Failed to install test dependencies")
+                print("[FAIL] Failed to install test dependencies")
                 return result
         
         # Check friTap installation
         try:
             __import__('friTap')
-            print("✅ friTap package available")
+            print("[OK] friTap package available")
         except ImportError:
-            print("❌ friTap package not installed")
+            print("[FAIL] friTap package not installed")
             print("Install with: pip install -e .")
             return 1
         
         # Check Frida availability
         try:
             __import__('frida')
-            print("✅ Frida available")
+            print("[OK] Frida available")
         except ImportError:
-            print("⚠️  Frida not available - some tests will be skipped")
+            print("[WARN] Frida not available - some tests will be skipped")
         
         return 0
     
@@ -302,7 +240,7 @@ class FriTapTestRunner:
     
     def print_test_summary(self):
         """Print test environment summary."""
-        print("🔍 friTap Test Environment Summary")
+        print("friTap Test Environment Summary")
         print("=" * 50)
         print(f"Platform: {platform.system()} {platform.release()}")
         print(f"Python: {sys.version}")
@@ -320,20 +258,20 @@ class FriTapTestRunner:
             try:
                 if cmd == "pytest":
                     import pytest
-                    print(f"✅ {name}: {pytest.__version__}")
+                    print(f"[OK] {name}: {pytest.__version__}")
                 elif cmd == "frida":
                     import frida
-                    print(f"✅ {name}: {frida.__version__}")
+                    print(f"[OK] {name}: {frida.__version__}")
                 elif cmd in ["node", "adb"]:
                     result = subprocess.run([cmd, "--version"], 
                                           capture_output=True, text=True, timeout=5)
                     if result.returncode == 0:
                         version = result.stdout.strip().split('\n')[0]
-                        print(f"✅ {name}: {version}")
+                        print(f"[OK] {name}: {version}")
                     else:
-                        print(f"❌ {name}: Not available")
+                        print(f"[FAIL] {name}: Not available")
             except (ImportError, FileNotFoundError, subprocess.TimeoutExpired):
-                print(f"❌ {name}: Not available")
+                print(f"[FAIL] {name}: Not available")
         
         print()
 

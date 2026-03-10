@@ -19,6 +19,7 @@ from .base import FriTapPlugin
 
 if TYPE_CHECKING:
     from .script_context import ScriptContext
+    from ..session import Session
 
 logger = logging.getLogger("friTap.plugins.script")
 
@@ -46,6 +47,13 @@ class ScriptPlugin(FriTapPlugin):
     def __init__(self) -> None:
         self._scripts: List[Any] = []
         self._context: Optional["ScriptContext"] = None
+
+    @property
+    def session(self) -> "Optional[Session]":
+        """Return the Session if available."""
+        if self._context is not None:
+            return self._context.session
+        return None
 
     # ------------------------------------------------------------------
     # Configuration hooks (override in subclasses)
@@ -128,7 +136,7 @@ class ScriptPlugin(FriTapPlugin):
         """
         self._unload_scripts(context)
 
-    def on_unload(self) -> None:
+    def on_unload(self, session: "Session") -> None:
         """Final cleanup — unloads all remaining scripts."""
         if self._context is not None:
             self._unload_scripts(self._context)

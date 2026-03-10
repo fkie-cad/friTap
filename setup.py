@@ -24,7 +24,7 @@ setup(
     name="friTap",
     version=about.__version__,
     description=(
-        "Real-time key extraction and traffic decryption for security research "
+        "Simplifies SSL/TLS traffic analysis and key extraction using Frida "
         "across major platforms."
     ),
     long_description=long_description,
@@ -33,7 +33,7 @@ setup(
     url="https://github.com/fkie-cad/friTap",
     author=about.__author__,
     author_email="daniel.baier@fkie.fraunhofer.de",
-    license="GPL-3.0-or-later",
+    license="GPL-3.0-only", # GPLv3 or later (see LICENSE file)
 
     packages=find_packages(exclude=("create_legacy_agent", "create_standalone_release")),
     python_requires=">=3.10",
@@ -57,6 +57,7 @@ setup(
             "tui/css/*.tcss",
             "patterns/*.json",
             "plugins/shared_utility/*.js",
+            "plugins/examples/README.md",
         ]
     },
     include_package_data=True,

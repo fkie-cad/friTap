@@ -42,6 +42,35 @@ def _add_socket_trace_entries(logger_instance, src_addr, dst_addr, payload):
     )
 
 
+def handle_startup_legacy(logger_instance, payload):
+    """Handle individual startup handshake messages (pre-config_batch fallback).
+
+    This is the legacy per-field handshake that older agent versions use.
+    Modern agents use config_batch for a single round-trip.
+
+    Args:
+        logger_instance: The SSL_Logger instance (self)
+        payload: The string payload from the agent (e.g., 'experimental', 'defaultFD')
+    """
+    startup_responses = {
+        'experimental': ('experimental', logger_instance.experimental),
+        'defaultFD': ('defaultFD', logger_instance.enable_default_fd),
+        'socket_tracing': ('socket_tracing', logger_instance.socket_trace),
+        'pattern_hooking': ('pattern_hooking', logger_instance.pattern_data),
+        'offset_hooking': ('offset_hooking', logger_instance.offsets_data),
+        'install_lsass_hook': ('install_lsass_hook', logger_instance.install_lsass_hook),
+        'protocol_select': ('protocol_select', logger_instance.protocol),
+        'library_scan': ('library_scan', logger_instance.scan_results_data),
+        'use_modern': ('use_modern', getattr(logger_instance, 'use_modern', False)),
+    }
+    if payload in startup_responses:
+        msg_type_key, value = startup_responses[payload]
+        logger_instance._backend.post_message(logger_instance.script, msg_type_key, value)
+    elif payload == 'anti':
+        logger_instance._backend.post_message(logger_instance.script, 'antiroot', logger_instance.anti_root)
+        logger_instance.startup = False
+
+
 def handle_message_legacy(logger_instance, payload, data, message):
     """Legacy inline message handling extracted from ssl_logger.py.
 
@@ -51,7 +80,7 @@ def handle_message_legacy(logger_instance, payload, data, message):
         data: The binary data from the message
         message: The full message dict
     """
-    from ..ssl_logger import get_addr_string
+    from .ssl_logger_core import get_addr_string
 
     if payload["contentType"] == "console":
         if payload["console"].startswith("[*]"):

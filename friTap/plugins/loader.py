@@ -14,7 +14,7 @@ import platformdirs
 from .base import FriTapPlugin
 
 if TYPE_CHECKING:
-    from ..events import EventBus
+    from ..session import Session
     from .script_context import ScriptContext
     from .script_plugin import ScriptLoadOrder
 
@@ -47,7 +47,15 @@ def _resolve_plugin_dir() -> Path:
     return native_dir
 
 
-PLUGIN_DIR = _resolve_plugin_dir()
+_PLUGIN_DIR: Optional[Path] = None
+
+
+def _get_plugin_dir() -> Path:
+    """Return the resolved plugin directory, lazily initializing on first call."""
+    global _PLUGIN_DIR
+    if _PLUGIN_DIR is None:
+        _PLUGIN_DIR = _resolve_plugin_dir()
+    return _PLUGIN_DIR
 
 
 class PluginLoader:
@@ -67,9 +75,9 @@ class PluginLoader:
             matches = [ep for ep in matches if ep.name == kwargs["name"]]
         return list(matches)
 
-    def _activate_plugin(self, plugin: FriTapPlugin, event_bus: "EventBus") -> None:
+    def _activate_plugin(self, plugin: FriTapPlugin, session: "Session") -> None:
         """Call on_load, register, and log a loaded plugin."""
-        plugin.on_load(event_bus)
+        plugin.on_load(session)
         self._plugins[plugin.name] = plugin
         logger.info("Loaded plugin: %s v%s", plugin.name, plugin.version)
 
@@ -78,8 +86,9 @@ class PluginLoader:
         found = []
 
         # 1. Check plugin directory (auto-created at import; guard kept for safety)
-        if PLUGIN_DIR.exists():
-            for item in PLUGIN_DIR.iterdir():
+        plugin_dir = _get_plugin_dir()
+        if plugin_dir.exists():
+            for item in plugin_dir.iterdir():
                 if item.suffix == ".py" and not item.name.startswith("_"):
                     found.append(f"file:{item}")
 
@@ -93,15 +102,15 @@ class PluginLoader:
 
         return found
 
-    def load_all(self, event_bus: "EventBus") -> None:
+    def load_all(self, session: "Session") -> None:
         """Load all discovered plugins."""
         for source in self.discover():
             try:
-                self._load_plugin(source, event_bus)
+                self._load_plugin(source, session)
             except Exception as e:
                 logger.error("Failed to load plugin %s: %s", source, e)
 
-    def _load_plugin(self, source: str, event_bus: "EventBus") -> None:
+    def _load_plugin(self, source: str, session: "Session") -> None:
         """Load a single plugin from source descriptor."""
         if source.startswith("file:"):
             path = source[5:]
@@ -112,7 +121,7 @@ class PluginLoader:
                 if hasattr(mod, "Plugin"):
                     plugin = mod.Plugin()
                     if isinstance(plugin, FriTapPlugin):
-                        self._activate_plugin(plugin, event_bus)
+                        self._activate_plugin(plugin, session)
 
         elif source.startswith("entrypoint:"):
             name = source[11:]
@@ -120,13 +129,13 @@ class PluginLoader:
                 plugin_cls = ep.load()
                 plugin = plugin_cls()
                 if isinstance(plugin, FriTapPlugin):
-                    self._activate_plugin(plugin, event_bus)
+                    self._activate_plugin(plugin, session)
 
-    def unload_all(self) -> None:
+    def unload_all(self, session: "Session") -> None:
         """Unload all loaded plugins."""
         for name, plugin in self._plugins.items():
             try:
-                plugin.on_unload()
+                plugin.on_unload(session)
                 logger.info("Unloaded plugin: %s", name)
             except Exception as e:
                 logger.error("Error unloading plugin %s: %s", name, e)
@@ -142,12 +151,12 @@ class PluginLoader:
     # ScriptPlugin support
     # ------------------------------------------------------------------
 
-    def register_builtin(self, plugin: FriTapPlugin, event_bus: "EventBus") -> None:
+    def register_builtin(self, plugin: FriTapPlugin, session: "Session") -> None:
         """Register a built-in plugin (not from file discovery).
 
         Calls ``on_load`` immediately and adds the plugin to the registry.
         """
-        self._activate_plugin(plugin, event_bus)
+        self._activate_plugin(plugin, session)
 
     def check_backend_compatibility(self, backend_name: str) -> List[str]:
         """Return names of ScriptPlugins that won't work with the given backend."""

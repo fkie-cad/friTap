@@ -62,6 +62,29 @@ class LibraryInspector:
             return f"Error: Failed to extract libraries - {e}"
 
     @staticmethod
+    def scan_to_dicts(config, logger) -> list:
+        """Run tlsLibHunter scan and return results as serializable dicts."""
+        try:
+            from tlslibhunter import TLSLibHunter
+            hc = LibraryInspector._build_hunter_config(config)
+            with TLSLibHunter.from_config(hc) as hunter:
+                result = hunter.scan()
+            return [
+                {
+                    "name": lib.name,
+                    "path": lib.path,
+                    "base_address": lib.base_address,
+                    "library_type": lib.library_type,
+                    "matched_exports": lib.matched_exports,
+                    "detected_version": lib.detected_version,
+                }
+                for lib in result.libraries
+            ]
+        except Exception as e:
+            logger.warning("Library pre-scan failed: %s", e)
+            return []
+
+    @staticmethod
     def _build_hunter_config(config):
         """Map FriTapConfig fields to a HunterConfig."""
         from tlslibhunter import HunterConfig

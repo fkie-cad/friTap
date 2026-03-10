@@ -17,7 +17,8 @@ from typing import Any, TYPE_CHECKING
 from ..script_plugin import ScriptPlugin, ScriptLoadOrder
 
 if TYPE_CHECKING:
-    from ...events import EventBus, LibraryDetectedEvent
+    from ...events import LibraryDetectedEvent
+    from ...session import Session
     from ..script_context import ScriptContext
 
 logger = logging.getLogger("friTap.plugins.examples.module_logger")
@@ -59,10 +60,10 @@ class ModuleLoggerPlugin(ScriptPlugin):
     def supported_backends(self) -> list[str]:
         return ["frida"]
 
-    def on_load(self, event_bus: "EventBus") -> None:
+    def on_load(self, session: "Session") -> None:
         """Subscribe to LibraryDetectedEvent to trigger module enumeration."""
         from ...events import LibraryDetectedEvent
-        event_bus.subscribe(LibraryDetectedEvent, self._on_library_detected)
+        session.lifecycle_bus.subscribe(LibraryDetectedEvent, self._on_library_detected)
 
     def get_script_source(self, context: "ScriptContext") -> str:
         return _MODULE_LOGGER_JS

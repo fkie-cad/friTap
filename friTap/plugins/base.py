@@ -16,7 +16,8 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..events import EventBus, FriTapEvent
+    from ..events import FriTapEvent
+    from ..session import Session
 
 
 class FriTapPlugin(ABC):
@@ -42,8 +43,8 @@ class FriTapPlugin(ABC):
         from friTap.events import DatalogEvent, EventBus
 
         class MyPlugin(FriTapPlugin):
-            def on_load(self, event_bus: EventBus) -> None:
-                event_bus.subscribe(
+            def on_load(self, session) -> None:
+                session.lifecycle_bus.subscribe(
                     DatalogEvent,
                     self._handle_data,
                     priority=EventBus.PLUGIN_PRIORITY,
@@ -75,7 +76,7 @@ class FriTapPlugin(ABC):
         """Human-readable plugin description."""
         return ""
 
-    def on_load(self, event_bus: "EventBus") -> None:
+    def on_load(self, session: "Session") -> None:
         """Called when the plugin is loaded. Subscribe to events here."""
         pass
 
@@ -83,6 +84,6 @@ class FriTapPlugin(ABC):
         """Called for every event (catch-all handler)."""
         pass
 
-    def on_unload(self) -> None:
+    def on_unload(self, session: "Session") -> None:
         """Called when the plugin is unloaded. Release resources here."""
         pass

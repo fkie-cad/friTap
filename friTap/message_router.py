@@ -4,31 +4,27 @@
 """
 Message routing for friTap.
 
-Routes Frida message payloads to the EventBus as typed events.
+Extracted from SSL_Logger to reduce file length.
+Routes agent message payloads to the EventBus as typed events.
 """
 
 from __future__ import annotations
-import socket
-import struct
 import logging
 
 from .events import EventBus, KeylogEvent, DatalogEvent, LibraryDetectedEvent, ConsoleEvent
-
-# Names of all supported read functions:
-SSL_READ = frozenset({"SSL_read", "wolfSSL_read", "readApplicationData", "NSS_read", "Full_read"})
-# Names of all supported write functions:
-SSL_WRITE = frozenset({"SSL_write", "wolfSSL_write", "writeApplicationData", "NSS_write", "Full_write"})
+from .constants import SSL_READ
+from .ssl_logger import get_addr_string
 
 
 class MessageRouter:
-    """Routes Frida message payloads to typed EventBus events."""
+    """Routes agent message payloads to typed EventBus events."""
 
     def __init__(self, event_bus: "EventBus") -> None:
         self._event_bus = event_bus
         self._logger = logging.getLogger("friTap.router")
 
     def route(self, payload: dict, data: bytes) -> None:
-        """Parse a Frida message payload and emit the corresponding event."""
+        """Parse an agent message payload and emit the corresponding event."""
         content_type = payload.get("contentType")
 
         if content_type == "keylog" and payload.get("keylog"):
@@ -53,15 +49,8 @@ class MessageRouter:
         dst_addr = payload.get("dst_addr", "")
         ss_family = payload.get("ss_family", "AF_INET")
 
-        if ss_family == "AF_INET" and isinstance(src_addr, int):
-            src_addr_str = socket.inet_ntop(socket.AF_INET, struct.pack(">I", src_addr))
-            dst_addr_str = socket.inet_ntop(socket.AF_INET, struct.pack(">I", dst_addr))
-        elif ss_family == "AF_INET6" and isinstance(src_addr, str):
-            src_addr_str = socket.inet_ntop(socket.AF_INET6, struct.pack(">16s", bytes.fromhex(src_addr)))
-            dst_addr_str = socket.inet_ntop(socket.AF_INET6, struct.pack(">16s", bytes.fromhex(dst_addr)))
-        else:
-            src_addr_str = str(src_addr)
-            dst_addr_str = str(dst_addr)
+        src_addr_str = get_addr_string(src_addr, ss_family)
+        dst_addr_str = get_addr_string(dst_addr, ss_family)
 
         function = payload.get("function", "")
         self._event_bus.emit(DatalogEvent(

@@ -30,13 +30,13 @@ class Plugin(FriTapPlugin):
     def description(self) -> str:
         return "Counts captured events and prints summary on exit"
 
-    def on_load(self, event_bus) -> None:
+    def on_load(self, session) -> None:
         self._counts = {"keylog": 0, "data": 0, "console": 0, "error": 0}
-        self._event_bus = event_bus
-        event_bus.subscribe(KeylogEvent, self._on_keylog)
-        event_bus.subscribe(DatalogEvent, self._on_data)
-        event_bus.subscribe(ConsoleEvent, self._on_console)
-        event_bus.subscribe(ErrorEvent, self._on_error)
+        self._session = session
+        session.lifecycle_bus.subscribe(KeylogEvent, self._on_keylog)
+        session.lifecycle_bus.subscribe(DatalogEvent, self._on_data)
+        session.lifecycle_bus.subscribe(ConsoleEvent, self._on_console)
+        session.lifecycle_bus.subscribe(ErrorEvent, self._on_error)
 
     def _on_keylog(self, event) -> None:
         self._counts["keylog"] += 1
@@ -50,7 +50,7 @@ class Plugin(FriTapPlugin):
     def _on_error(self, event) -> None:
         self._counts["error"] += 1
 
-    def on_unload(self) -> None:
+    def on_unload(self, session) -> None:
         total = sum(self._counts.values())
         logger.info(
             "[stats] Session summary: %d events "

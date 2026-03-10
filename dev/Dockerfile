@@ -1,6 +1,6 @@
 FROM ubuntu:24.04
 WORKDIR /root/
-COPY entrypoint.sh .
+COPY dev/entrypoint.sh .
 RUN chmod +x entrypoint.sh
 RUN apt-get update && apt-get upgrade -y && \
     apt-get install -y python3 python3-pip curl && \

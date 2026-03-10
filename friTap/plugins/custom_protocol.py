@@ -25,7 +25,7 @@ from .script_plugin import ScriptPlugin
 
 if TYPE_CHECKING:
     from .script_context import ScriptContext
-    from ..events import EventBus
+    from ..session import Session
 
 logger = logging.getLogger("friTap.plugins.custom_protocol")
 
@@ -111,7 +111,7 @@ class CustomProtocolPlugin(ScriptPlugin):
     def __init__(self) -> None:
         super().__init__()
         self._hook_defs: List[HookDefinition] = []
-        self._event_bus: Optional["EventBus"] = None
+        self._session: Optional["Session"] = None
 
     # ------------------------------------------------------------------
     # ScriptPlugin overrides
@@ -129,9 +129,9 @@ class CustomProtocolPlugin(ScriptPlugin):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    def on_load(self, event_bus: "EventBus") -> None:
+    def on_load(self, session: "Session") -> None:
         """Auto-register protocol handler in the ProtocolRegistry."""
-        self._event_bus = event_bus
+        self._session = session
         self._register_protocol_handler()
         logger.info(
             "Custom protocol plugin loaded: %s (%s)", self.name, self.display_name,
@@ -314,21 +314,21 @@ class CustomProtocolPlugin(ScriptPlugin):
 
     def emit_key(self, label: str, key_hex: str) -> None:
         """Manually emit a KeylogEvent."""
-        if self._event_bus is None:
+        if self._session is None:
             logger.warning("Plugin %s: emit_key called before on_load", self.name)
             return
         formatted = self.format_template.format(label=label, secret=key_hex, secret_base64=key_hex)
-        self._event_bus.emit(KeylogEvent(
+        self._session.lifecycle_bus.emit(KeylogEvent(
             key_data=formatted,
             protocol=self.name,
         ))
 
     def emit_data(self, data_bytes: bytes, direction: str, function: str = "") -> None:
         """Manually emit a DatalogEvent."""
-        if self._event_bus is None:
+        if self._session is None:
             logger.warning("Plugin %s: emit_data called before on_load", self.name)
             return
-        self._event_bus.emit(DatalogEvent(
+        self._session.lifecycle_bus.emit(DatalogEvent(
             data=data_bytes,
             direction=direction,
             function=function or f"{self.name}_{direction}",
@@ -337,10 +337,10 @@ class CustomProtocolPlugin(ScriptPlugin):
 
     def log(self, message: str) -> None:
         """Emit a ConsoleEvent."""
-        if self._event_bus is None:
+        if self._session is None:
             logger.info("Plugin %s: %s", self.name, message)
             return
-        self._event_bus.emit(ConsoleEvent(
+        self._session.lifecycle_bus.emit(ConsoleEvent(
             message=f"[{self.display_name}] {message}",
             protocol=self.name,
         ))
@@ -352,7 +352,7 @@ class CustomProtocolPlugin(ScriptPlugin):
     def _register_protocol_handler(self) -> None:
         """Create and register a TemplateProtocolHandler in the global registry."""
         try:
-            from ..protocols.registry import ProtocolRegistry
+            from ..protocols.registry import ProtocolRegistry  # noqa: F401
             from ..protocols.base import ProtocolHandler
 
             plugin = self
@@ -448,9 +448,9 @@ class CustomProtocolPlugin(ScriptPlugin):
 
     def _emit_error(self, description: str, stack: str = "") -> None:
         """Emit an ErrorEvent."""
-        if self._event_bus is None:
+        if self._session is None:
             return
-        self._event_bus.emit(ErrorEvent(
+        self._session.lifecycle_bus.emit(ErrorEvent(
             error=f"Plugin {self.name} error",
             description=description,
             stack=stack,
