@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from .base import ProtocolHandler, BackendSupport
+from ..backends.base import BackendName
 
 SSH_LIBRARY_PATTERNS = [
     "libssh", "sshd", "openssh",
@@ -37,7 +38,7 @@ class SSHHandler(ProtocolHandler):
     @property
     def supported_backends(self) -> dict[str, str]:
         return {
-            "frida": BackendSupport.FULL,
-            "gdb": BackendSupport.FULL,
-            "lldb": BackendSupport.FULL,
+            BackendName.FRIDA: BackendSupport.FULL,
+            BackendName.GDB: BackendSupport.FULL,
+            BackendName.LLDB: BackendSupport.FULL,
         }

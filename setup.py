@@ -24,7 +24,7 @@ setup(
     name="friTap",
     version=about.__version__,
     description=(
-        "Simplifies SSL/TLS traffic analysis and key extraction using Frida "
+        "Simplifies (SSL/TLS) traffic analysis and key extraction using Frida "
         "across major platforms."
     ),
     long_description=long_description,
