@@ -3,8 +3,17 @@
 
 import argparse
 import sys
-import frida
+from .backends import (
+    BackendTransportError,
+    BackendTimedOutError,
+    BackendProcessNotFoundError,
+    BackendPermissionDeniedError,
+    BackendNotRunningError,
+    BackendInvalidArgumentError,
+    BackendInvalidOperationError,
+)
 import logging
+import time
 import traceback
 import threading
 import atexit
@@ -24,8 +33,9 @@ except ImportError:
 from .about import __version__
 from .about import __author__
 from .ssl_logger import SSL_Logger
-from .fritap_utility import get_pid_of_lsass, are_we_running_on_windows, supports_color, CustomFormatter, Success, Failure, FriTapExit
-
+from .config import FriTapConfig, UnsupportedProtocolBackendError
+from .backends.base import BackendName
+from .fritap_utility import get_pid_of_lsass, are_we_running_on_windows, setup_fritap_logging, Success, Failure, FriTapExit
 
 
 class LsassHookManager:
@@ -95,12 +105,10 @@ class LsassHookManager:
                 
                 # Keep the thread alive while the hook is running
                 while self.running and self.lsass_logger.running:
-                    import time
                     time.sleep(1)
                     
             except Exception as e:
                 self.logger.error(f"LSASS hook failed: {e}")
-                import traceback
                 traceback.print_exc()
             finally:
                 self.running = False
@@ -113,8 +121,6 @@ class LsassHookManager:
         )
         self.lsass_thread.start()
         
-        # Give the thread time to start
-        import time
         time.sleep(2)
         
         return pid_of_lsass
@@ -134,9 +140,9 @@ class LsassHookManager:
                 self.lsass_logger.finish_fritap()
                 
             # Detach from LSASS process
-            if self.lsass_process:
+            if self.lsass_process and self.lsass_logger:
                 try:
-                    self.lsass_process.detach()
+                    self.lsass_logger._backend.detach(self.lsass_process)
                 except Exception as e:
                     self.logger.debug(f"LSASS process detach error (expected): {e}")
                     
@@ -190,10 +196,9 @@ def is_lsass_hook_running():
 # usually not needed - but sometimes the replacements of the script result into minor issues
 # than we have to look into the generated final frida script we supply
 def write_debug_frida_file(debug_script_version):
-    debug_script_file = "_ssl_log_debug.js"
-    f = open(debug_script_file, 'wt', encoding='utf-8')
-    f.write(debug_script_version)
-    f.close()
+    debug_script_file = "fritap_agent_debug.js"
+    with open(debug_script_file, 'wt', encoding='utf-8') as f:
+        f.write(debug_script_version)
     logger = logging.getLogger('friTap')
     logger.info(f"written debug version of the frida script: {debug_script_file}")
 
@@ -235,9 +240,9 @@ Examples:
     args = parser.add_argument_group("Arguments")
     args.add_argument("-m", "--mobile",  metavar="<device_id>", default=False, required=False, nargs='?', const=True, help="Attach to a process on Android or iOS. If you have multpile device you specify with the device id.")
     args.add_argument("-H", "--host", metavar="<ip:port>", required=False,
-                      help="Attach to a process on remote frida device")
+                      help="Attach to a process on a remote device")
     args.add_argument("-c", "--custom_script", metavar="<path>", required=False,
-                      help="Path to the custom Frida script that will be executed prior to applying the friTap hooks.")
+                      help="Path to a custom hook script that will be executed prior to applying the friTap hooks.")
     args.add_argument("-d", "--debug", required=False, action="store_const", const=True,
                       help="Set friTap into debug mode this include debug output as well as a listening Chrome Inspector server for remote debugging.")
     args.add_argument("-do", "--debugoutput", required=False, action="store_const", const=True,
@@ -277,40 +282,32 @@ Examples:
                       help="Capability to alter the decrypted payload. Be careful here, because this can crash the application.")                  
     args.add_argument("-exp","--experimental", required=False, action="store_const", const=True, default=False,
                       help="Activates all existing experimental feature (see documentation for more information)")
+    args.add_argument("--library-scan", "-ls", required=False, action="store_const",
+                      const=True, default=False,
+                      help="Pre-scan for TLS libraries using tlsLibHunter before hooking. "
+                           "Discovers renamed or statically linked libraries.",
+                      dest="library_scan")
     args.add_argument("-j", "--json", metavar="<path>", required=False,
                       help="Save session metadata and analysis results in JSON format")
     args.add_argument("-ll", "--list-libraries", required=False, action="store_const", const=True,
                       help="List loaded libraries in order to help debugging the hooking process. This will not start the logging process, but only list the libraries and exit.", dest="list_libraries")
+    args.add_argument("--extract-libraries", required=False, metavar="<dir>",
+                      help="Extract detected TLS libraries to the specified directory and exit.", dest="extract_libraries")
     args.add_argument("-nl", "--no-lsass", required=False, action="store_const", const=True,default=False,
                       help="Only applied on windows systems. By default friTap is hooking the Local Security Authority Subsystem Service (LSASS) process as well as its the default TLS provider on Windows systems. With this parameter we are not hooking LSASS", dest="no_lsass")
     args.add_argument("-t", "--timeout", metavar="<seconds>", type=int, required=False, default=None,
                       help="Set a timeout in seconds for the process. After the timeout, the process will be resumed automatically. If not set, the process will resume immediately.")
+    args.add_argument("--backend", choices=[b.value for b in BackendName], default=BackendName.FRIDA,
+                      help="Instrumentation backend to use (default: frida)")
+    args.add_argument("--protocol", type=str, default="tls",
+                      choices=["tls", "ipsec", "ssh", "auto"],
+                      help="Protocol to intercept (default: tls)")
     parsed = parser.parse_args()
 
     # Configure logging after parsing arguments to respect debug flags
-    if parsed.debug or parsed.debugoutput:
-        log_level = logging.DEBUG
-    else:
-        log_level = logging.INFO
-        
-    logger.setLevel(log_level)
-    
-    # Create console handler with custom formatter
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(CustomFormatter(use_color=supports_color(console_handler.stream)))
-    console_handler.setLevel(log_level)
-    logger.addHandler(console_handler)
-
-    # Create a special logger to print clean messages without prefixes (e.g. farewell line)
-    special_logger = logging.getLogger('friTap.no_prefix')
-    special_logger.setLevel(log_level)
-    special_handler = logging.StreamHandler()
-    special_handler.setFormatter(logging.Formatter("%(message)s"))
-    special_logger.addHandler(special_handler)
-    special_logger.propagate = False
-    logger.propagate = False  # Prevent duplicate messages
-
-    install_lsass_hook = True
+    logger, special_logger = setup_fritap_logging(
+        debug=parsed.debug, debug_output=parsed.debugoutput
+    )
 
     if are_we_running_on_windows() and not parsed.mobile:
         if parsed.no_lsass:
@@ -318,40 +315,49 @@ Examples:
         else:
             logger.info("Hooking LSASS process for SSL/TLS traffic decryption.")
             hook_lsass(parsed.pcap, parsed.verbose, parsed.keylog, parsed.live, parsed.debug, parsed.host, parsed.debugoutput, parsed.enable_default_fd, parsed.patterns, parsed.custom_script, parsed.json)
-            
-            # Register cleanup handler for LSASS hook
             atexit.register(cleanup_lsass_hook)
 
-        install_lsass_hook = False
-    else:
-        install_lsass_hook = False
+    install_lsass_hook = False
     
-    if parsed.list_libraries:
-        logger.info("Listing loaded libraries...")
+    def _make_inspection_config(parsed):
+        return FriTapConfig.from_legacy_params(
+            app=parsed.exec, verbose=parsed.verbose, spawn=parsed.spawn,
+            mobile=parsed.mobile, environment_file=parsed.environment,
+            debug_mode=parsed.debug, host=parsed.host, offsets=parsed.offsets,
+            debug_output=parsed.debugoutput, experimental=parsed.experimental,
+            anti_root=parsed.anti_root, enable_default_fd=parsed.enable_default_fd,
+            patterns=parsed.patterns, custom_hook_script=parsed.custom_script,
+            backend=parsed.backend,
+        )
+
+    def _run_early_exit_command(label, action_fn, logger, special_logger):
+        logger.info(label)
         try:
-            # Create a minimal SSL_Logger instance for library inspection
-            temp_ssl_log = SSL_Logger(parsed.exec, None, parsed.verbose,
-                    parsed.spawn, False, parsed.enable_spawn_gating, False, False, parsed.mobile,
-                    False, parsed.environment, parsed.debug, False, False,
-                    parsed.host, parsed.offsets, parsed.debugoutput, parsed.experimental,
-                    parsed.anti_root, False, parsed.enable_default_fd, parsed.patterns,
-                    parsed.custom_script, None)
-            
-            # Use the SSL_Logger's library inspection capability
-            result = temp_ssl_log.inspect_libraries()
+            result = action_fn()
             special_logger.info(result)
-            
-        except frida.TransportError as fe:
-            logger.error(f"Problems while attaching to frida-server: {fe}")
+        except BackendTransportError as fe:
+            logger.error(f"Backend transport error: {fe}")
         except FridaBasedException as e:
-            logger.error(f"Frida based error: {e}")
+            logger.error(f"Backend error: {e}")
         except Exception as e:
             logger.error(f"An error occurred: {e}")
         else:
-            # no error, simply exit main
             return
-        # reach here when error
         raise Failure
+
+    if parsed.list_libraries:
+        config = _make_inspection_config(parsed)
+        ssl_log = SSL_Logger(config=config)
+        _run_early_exit_command("Listing loaded libraries...",
+            ssl_log.inspect_libraries, logger, special_logger)
+
+    if parsed.extract_libraries:
+        config = _make_inspection_config(parsed)
+        ssl_log = SSL_Logger(config=config)
+        _run_early_exit_command(
+            f"Extracting TLS libraries to {parsed.extract_libraries} ...",
+            lambda: ssl_log.extract_libraries(parsed.extract_libraries),
+            logger, special_logger)
 
     if parsed.full_capture and parsed.pcap is None:
         parser.error("--full_capture requires -p to set the pcap name")
@@ -365,15 +371,44 @@ Examples:
     try:
         special_logger.info("Start logging")
         special_logger.info("Press Ctrl+C to stop logging")
-        ssl_log = SSL_Logger(parsed.exec, parsed.pcap, parsed.verbose,
-                parsed.spawn, parsed.keylog, parsed.enable_spawn_gating, parsed.spawn_gating_all, parsed.enable_child_gating, parsed.mobile, parsed.live, parsed.environment, parsed.debug, parsed.full_capture, parsed.socket_tracing, parsed.host, parsed.offsets, parsed.debugoutput, parsed.experimental, parsed.anti_root, parsed.payload_modification, parsed.enable_default_fd, parsed.patterns, parsed.custom_script, parsed.json, install_lsass_hook, parsed.timeout)
+        config = FriTapConfig.from_legacy_params(
+            app=parsed.exec,
+            pcap_name=parsed.pcap,
+            verbose=parsed.verbose,
+            spawn=parsed.spawn,
+            keylog=parsed.keylog,
+            enable_spawn_gating=parsed.enable_spawn_gating,
+            spawn_gating_all=parsed.spawn_gating_all,
+            enable_child_gating=parsed.enable_child_gating,
+            mobile=parsed.mobile,
+            live=parsed.live,
+            environment_file=parsed.environment,
+            debug_mode=parsed.debug,
+            full_capture=parsed.full_capture,
+            socket_trace=parsed.socket_tracing,
+            host=parsed.host,
+            offsets=parsed.offsets,
+            debug_output=parsed.debugoutput,
+            experimental=parsed.experimental,
+            anti_root=parsed.anti_root,
+            payload_modification=parsed.payload_modification,
+            library_scan=parsed.library_scan,
+            enable_default_fd=parsed.enable_default_fd,
+            patterns=parsed.patterns,
+            custom_hook_script=parsed.custom_script,
+            json_output=parsed.json,
+            install_lsass_hook=install_lsass_hook,
+            timeout=parsed.timeout,
+            backend=parsed.backend,
+            protocol=parsed.protocol,
+        )
+        ssl_log = SSL_Logger(config=config)
 
         ssl_log.install_signal_handler()        
         ssl_log.start_fritap_session()  
         
         # Wait for user input or interrupt
-        while ssl_log.running:
-            pass
+        ssl_log.wait_for_completion()
             
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received. Cleaning up...")
@@ -382,66 +417,60 @@ Examples:
     except SystemExit:
         cleanup_lsass_hook()
         raise
-    except frida.TransportError as fe:
-        logger.error(f"Problems while attaching to frida-server: {fe}")
+    except BackendTransportError as fe:
+        logger.error(f"Backend transport error: {fe}")
     except FridaBasedException as e:
-        logger.error(f"Frida based error: {e}")
-    except frida.TimedOutError as te:
+        logger.error(f"Backend error: {e}")
+    except BackendTimedOutError as te:
         logger.error(f"TimeOutError: {te}")
-    except frida.ProcessNotFoundError as pe:
+    except BackendProcessNotFoundError as pe:
         logger.error(f"ProcessNotFoundError: {pe}")
-    except frida.PermissionDeniedError as e:
-        logger.error(f"Frida Permission Denied: {e}")
-    except frida.ServerNotRunningError as e:
-        logger.error(f"Frida server is not running: {e}")
-    except frida.InvalidArgumentError as e:
-        logger.error(f"Invalid Argument passed to Frida: {e}")
+    except BackendPermissionDeniedError as e:
+        logger.error(f"Permission denied: {e}")
+    except BackendNotRunningError as e:
+        logger.error(f"Backend server is not running: {e}")
+    except BackendInvalidArgumentError as e:
+        logger.error(f"Invalid argument: {e}")
         if "device not found" in str(e):
-            logger.error("Frida is unable to identify the target device.")
+            logger.error("Unable to identify the target device.")
             logger.error("If you have multiple devices connected, please specify the device ID using the `-m` option:")
-            logger.error("\t1. Identify the target device ID (e.g., using `adb devices` or `frida-ls-devices`).")
+            logger.error("\t1. Identify the target device ID (e.g., using `adb devices`).")
             logger.error("\t2. Run FriTap with the device ID:")
             logger.error("\t   fritap -m <device-id> <target>")
-    except frida.InvalidOperationError as e:
-        logger.error(f"Invalid Operation Error in Frida: {e}")
+    except BackendInvalidOperationError as e:
+        logger.error(f"Invalid operation: {e}")
+    except UnsupportedProtocolBackendError as e:
+        logger.error(f"Unsupported protocol-backend combination: {e}")
     except Exception as ar:
-        # Get current system exception
         ex_type, ex_value, ex_traceback = sys.exc_info()
-        
-        # Extract unformatter stack traces as tuples
         trace_back = traceback.extract_tb(ex_traceback)
-        
-        # Format stacktrace
-        stack_trace = list()
-        
-        for trace in trace_back:
-            stack_trace.append("File : %s , Line : %d, Func.Name : %s, Message : %s" % (trace[0], trace[1], trace[2], trace[3]))
+        stack_trace = [
+            "File : %s , Line : %d, Func.Name : %s, Message : %s" % (trace[0], trace[1], trace[2], trace[3])
+            for trace in trace_back
+        ]
         
         if parsed.debug or parsed.debugoutput:
             if "NotSupportedError" in ex_type.__name__:
-                logger.error("Frida based error:")
+                logger.error("Backend error:")
             logger.error("Exception type : %s " % ex_type.__name__)
             logger.error("Exception message : %s" %ex_value)
             logger.error("Stack trace : %s" %stack_trace)
 
 
         if "unable to connect to remote frida-server: closed" in str(ar):
-            logger.error("frida-server is not running in remote device. Please run frida-server and rerun")
+            logger.error("Backend server is not running on remote device. Please start it and rerun.")
             
         if "NotSupportedError" in ex_type.__name__:
-            logger.error(f"Frida error: {ex_value}")
+            logger.error(f"Backend error: {ex_value}")
         else:
             logger.error(f"Unknown error: {ex_value}")
 
         if "unable to access process with pid" in str(ex_value).lower():
             raise Success(special_logger)
         if "not yet supported on this os" in str(ex_value).lower():
-            logger.error("This feature is currently not supported by frida on this OS.")
+            logger.error("This feature is currently not supported on this OS.")
             raise Success(special_logger)
 
-        if 'ssl_log' in locals():
-            ssl_log.pcap_cleanup(parsed.full_capture,parsed.mobile,parsed.pcap)
-            ssl_log.cleanup(parsed.live,parsed.socket_tracing,parsed.full_capture,parsed.debug,parsed.debugoutput)    
         return
 
     else:
@@ -450,12 +479,21 @@ Examples:
     finally:
         if 'ssl_log' in locals() and isinstance(ssl_log, SSL_Logger):
             ssl_log.pcap_cleanup(parsed.full_capture,parsed.mobile,parsed.pcap)
-            ssl_log.cleanup(parsed.live,parsed.socket_tracing,parsed.full_capture,parsed.debug)
+            ssl_log.cleanup(parsed.live,parsed.socket_tracing,parsed.full_capture,parsed.debug,parsed.debugoutput)
     
     # only reached when error
     raise Failure
 
 def main():
+    # When invoked with no arguments, launch the interactive TUI
+    if len(sys.argv) == 1:
+        try:
+            from .tui.app import run_tui
+            run_tui()
+            return
+        except ImportError:
+            logging.getLogger('friTap').error("Textual TUI is not available. Please install the 'textual' package to use the interactive interface.")
+
     try:
         cli()
     except FriTapExit as e:

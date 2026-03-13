@@ -1,5 +1,5 @@
 import { readAddresses, get_hex_string_from_byte_array, getBaseAddress, isSymbolAvailable } from "../../shared/shared_functions.js";
-import { sendWithProtocol } from "../../shared/shared_structures.js";
+import { sendKeylog, sendDatalog } from "../../shared/shared_structures.js";
 import { devlog, devlog_error, log } from "../../util/log.js";
 import { GoRuntimeParser } from "../../util/go_runtime_parser.js";
 
@@ -301,10 +301,7 @@ export class GoTLS {
             }
     
             //devlog("invoking writeKeyLog() from GoTLS");
-            var message: { [key: string]: string | number | null } = {}
-            message["contentType"] = "keylog"
-            message["keylog"] = labelStr+" "+client_random+" "+secret_key;
-            sendWithProtocol(message)
+            sendKeylog(labelStr+" "+client_random+" "+secret_key);
         }
     
     
@@ -475,11 +472,7 @@ export class GoTLS {
                         }
                         
                         // Send the extracted TLS key log message
-                        const message: { [key: string]: string | number | null } = {
-                            "contentType": "keylog",
-                            "keylog": `${labelStr} ${client_random} ${secret_key}`
-                        };
-                        sendWithProtocol(message);
+                        sendKeylog(`${labelStr} ${client_random} ${secret_key}`);
                         devlog(`[GoTLS] Key extracted on ${Process.arch}: ${labelStr} ${client_random.substring(0, 16)}...`);
                         return true;
                     }catch (e) {
@@ -514,8 +507,7 @@ export class GoTLS {
                         devlog(`[GoTLS] write plaintext (${len} bytes): ${buf ? buf.toString() : "[unreadable]"}`);
                         
                         // Send plaintext data to friTap
-                        sendWithProtocol({
-                            contentType: "datalog",
+                        sendDatalog({
                             function: "SSL_write"
                         }, buf);
                     }
@@ -549,8 +541,7 @@ export class GoTLS {
                     devlog(`[GoTLS] read plaintext (${len} bytes): ${buf ? buf.toString() : "[unreadable]"}`);
                     
                     // Send plaintext data to friTap
-                    sendWithProtocol({
-                        contentType: "datalog",
+                    sendDatalog({
                         function: "SSL_read"
                     }, buf);
                 }

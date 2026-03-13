@@ -1,8 +1,9 @@
 import { readAddresses, resolveOffsets, dumpMemory } from "../../shared/shared_functions.js";
-import { pointerSize, AF_INET, AF_INET6, sendWithProtocol } from "../../shared/shared_structures.js";
+import { pointerSize, AF_INET, AF_INET6, sendKeylog, sendDatalog } from "../../shared/shared_structures.js";
 import { log, devlog, devlog_error } from "../../util/log.js";
 import { enable_default_fd } from "../../fritap_agent.js";
 import { Java } from "../../shared/javalib.js";
+import { resolveWithPipeline } from "../../shared/pipeline_utils.js";
 
 /**
  *  Current Todo:
@@ -222,6 +223,11 @@ export class NSS {
         this.module_name = moduleName;
 
         resolveOffsets(this.addresses, this.moduleName, socket_library, "nss");
+
+        resolveWithPipeline(this.addresses, this.moduleName, "nss", [
+            "PR_Write", "PR_Read", "PR_FileDesc2NativeHandle",
+            "SSL_ImportFD", "PK11_ExtractKeyValue", "PK11_GetKeyData"
+        ]);
 
         if(!Java.available){
             NSS.SSL_SESSION_get_id = new NativeFunction(this.addresses[this.moduleName]["SSL_GetSessionID"], "pointer", ["pointer"]);
@@ -1284,8 +1290,6 @@ typedef union PRNetAddr PRNetAddr;
      */
 
     static getTLS_Keys(pRFileDesc: NativePointer, dumping_handshake_secrets: number) {
-        var message: { [key: string]: string | number } = {}
-        message["contentType"] = "keylog";
         devlog("trying to log some keying materials ...");
 
 
@@ -1314,8 +1318,7 @@ typedef union PRNetAddr PRNetAddr;
             //var early_exporter_secret = get_Secret_As_HexString(ssl3_struct.add(768).readPointer()); //EARLY_EXPORTER_SECRET
             var early_exporter_secret = NSS.get_Secret_As_HexString(ssl3.hs.earlyExporterSecret); //EARLY_EXPORTER_SECRET
             devlog(NSS.get_Keylog_Dump("EARLY_EXPORTER_SECRET", client_random, early_exporter_secret));
-            message["keylog"] = NSS.get_Keylog_Dump("EARLY_EXPORTER_SECRET", client_random, early_exporter_secret);
-            sendWithProtocol(message);
+            sendKeylog(NSS.get_Keylog_Dump("EARLY_EXPORTER_SECRET", client_random, early_exporter_secret));
             NSS.doTLS13_RTT0 = -1;
         }
 
@@ -1329,16 +1332,14 @@ typedef union PRNetAddr PRNetAddr;
 
             //parse_struct_ssl3Str(ssl3_struct)
             devlog(NSS.get_Keylog_Dump("CLIENT_HANDSHAKE_TRAFFIC_SECRET", client_random, client_handshake_traffic_secret));
-            message["keylog"] = NSS.get_Keylog_Dump("CLIENT_HANDSHAKE_TRAFFIC_SECRET", client_random, client_handshake_traffic_secret);
-            sendWithProtocol(message);
+            sendKeylog(NSS.get_Keylog_Dump("CLIENT_HANDSHAKE_TRAFFIC_SECRET", client_random, client_handshake_traffic_secret));
 
             //var server_handshake_traffic_secret = get_Secret_As_HexString(ssl3_struct.add(744).readPointer()); //SERVER_HANDSHAKE_TRAFFIC_SECRET
             var server_handshake_traffic_secret = NSS.get_Secret_As_HexString(ssl3.hs.serverHsTrafficSecret); //SERVER_HANDSHAKE_TRAFFIC_SECRET
             devlog(NSS.get_Keylog_Dump("SERVER_HANDSHAKE_TRAFFIC_SECRET", client_random, server_handshake_traffic_secret));
 
 
-            message["keylog"] = NSS.get_Keylog_Dump("SERVER_HANDSHAKE_TRAFFIC_SECRET", client_random, server_handshake_traffic_secret);
-            sendWithProtocol(message);
+            sendKeylog(NSS.get_Keylog_Dump("SERVER_HANDSHAKE_TRAFFIC_SECRET", client_random, server_handshake_traffic_secret));
 
             return;
         } else if (dumping_handshake_secrets == 2) {
@@ -1346,8 +1347,7 @@ typedef union PRNetAddr PRNetAddr;
 
             var client_early_traffic_secret = NSS.get_Secret_As_HexString(ssl3.hs.clientEarlyTrafficSecret); //CLIENT_EARLY_TRAFFIC_SECRET
             devlog(NSS.get_Keylog_Dump("CLIENT_EARLY_TRAFFIC_SECRET", client_random, client_early_traffic_secret));
-            message["keylog"] = NSS.get_Keylog_Dump("CLIENT_EARLY_TRAFFIC_SECRET", client_random, client_early_traffic_secret);
-            sendWithProtocol(message);
+            sendKeylog(NSS.get_Keylog_Dump("CLIENT_EARLY_TRAFFIC_SECRET", client_random, client_early_traffic_secret));
             NSS.doTLS13_RTT0 = 1; // there is no callback for the EARLY_EXPORTER_SECRET
             return;
         }
@@ -1389,19 +1389,16 @@ typedef union PRNetAddr PRNetAddr;
 
             var client_traffic_secret = NSS.get_Secret_As_HexString(ssl3.hs.clientTrafficSecret); //CLIENT_TRAFFIC_SECRET_0
             devlog(NSS.get_Keylog_Dump("CLIENT_TRAFFIC_SECRET_0", client_random, client_traffic_secret));
-            message["keylog"] = NSS.get_Keylog_Dump("CLIENT_TRAFFIC_SECRET_0", client_random, client_traffic_secret);
-            sendWithProtocol(message);
+            sendKeylog(NSS.get_Keylog_Dump("CLIENT_TRAFFIC_SECRET_0", client_random, client_traffic_secret));
 
 
             var server_traffic_secret = NSS.get_Secret_As_HexString(ssl3.hs.serverTrafficSecret); //SERVER_TRAFFIC_SECRET_0
             devlog(NSS.get_Keylog_Dump("SERVER_TRAFFIC_SECRET_0", client_random, server_traffic_secret));
-            message["keylog"] = NSS.get_Keylog_Dump("SERVER_TRAFFIC_SECRET_0", client_random, server_traffic_secret);
-            sendWithProtocol(message);
+            sendKeylog(NSS.get_Keylog_Dump("SERVER_TRAFFIC_SECRET_0", client_random, server_traffic_secret));
 
             var exporter_secret = NSS.get_Secret_As_HexString(ssl3.hs.exporterSecret); //EXPORTER_SECRET 
             devlog(NSS.get_Keylog_Dump("EXPORTER_SECRET", client_random, exporter_secret));
-            message["keylog"] = NSS.get_Keylog_Dump("EXPORTER_SECRET", client_random, exporter_secret);
-            sendWithProtocol(message);
+            sendKeylog(NSS.get_Keylog_Dump("EXPORTER_SECRET", client_random, exporter_secret));
 
 
         } else {
@@ -1409,8 +1406,7 @@ typedef union PRNetAddr PRNetAddr;
 
             var master_secret = NSS.getMasterSecret(ssl3);
             devlog(NSS.get_Keylog_Dump("CLIENT_RANDOM", client_random, master_secret));
-            message["keylog"] = NSS.get_Keylog_Dump("CLIENT_RANDOM", client_random, master_secret);
-            sendWithProtocol(message);
+            sendKeylog(NSS.get_Keylog_Dump("CLIENT_RANDOM", client_random, master_secret));
 
         }
 
@@ -1462,9 +1458,8 @@ typedef union PRNetAddr PRNetAddr;
                         message["function"] = "NSS_read"
                         this.message = message
 
-                        this.message["contentType"] = "datalog"
                         var data = this.buf.readByteArray((new Uint32Array([retval]))[0])
-                        sendWithProtocol(message, data)
+                        sendDatalog(message, data)
                     } else {
                         /*
                         var message = NSS.getPortsAndAddressesFromNSS( this.fd as NativePointer, true, lib_addesses[current_module_name], enable_default_fd)
@@ -1509,8 +1504,7 @@ typedef union PRNetAddr PRNetAddr;
                         var message = NSS.getPortsAndAddressesFromNSS(this.fd as NativePointer, false, lib_addesses[current_module_name], enable_default_fd)
                         message["ssl_session_id"] = NSS.getSslSessionIdFromFD(this.fd)
                         message["function"] = "NSS_write"
-                        message["contentType"] = "datalog"
-                        sendWithProtocol(message, this.buf.readByteArray((parseInt(this.len))))
+                        sendDatalog(message, this.buf.readByteArray((parseInt(this.len))))
                     }else {
                         /*
                         log("The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys")

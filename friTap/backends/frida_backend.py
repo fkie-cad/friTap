@@ -24,6 +24,8 @@ from .base import (
     BackendProcessNotFoundError,
     BackendTimedOutError,
     BackendTransportError,
+    ProcessInfo,
+    ThreadInfo,
 )
 
 
@@ -167,8 +169,17 @@ class FridaBackend(Backend):
     # Thread management
     # ------------------------------------------------------------------
 
-    def enumerate_threads(self, process: Any) -> list:
-        return process.enumerate_threads()
+    def enumerate_threads(self, process: Any) -> list[ThreadInfo]:
+        return [
+            ThreadInfo(
+                id=t.id,
+                name=getattr(t, 'name', None) or f"Thread-{t.id}",
+                index=getattr(t, 'index', 0),
+                entrypoint=getattr(t, 'entrypoint', None),
+                is_stopped=False,
+            )
+            for t in process.enumerate_threads()
+        ]
 
     def suspend_thread(self, process: Any, thread_id: int) -> None:
         process.suspend(thread_id)
@@ -183,6 +194,17 @@ class FridaBackend(Backend):
     @_wrap_frida_errors
     def enumerate_devices(self) -> list:
         return frida.enumerate_devices()
+
+    @_wrap_frida_errors
+    def query_system_parameters(self, device: Any) -> dict:
+        return device.query_system_parameters()
+
+    @_wrap_frida_errors
+    def enumerate_processes(self, device: Any) -> list[ProcessInfo]:
+        return [
+            ProcessInfo(pid=p.pid, name=p.name)
+            for p in device.enumerate_processes()
+        ]
 
     def get_device_manager(self) -> Any:
         return frida.get_device_manager()

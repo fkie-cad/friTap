@@ -53,6 +53,7 @@ class HookingConfig:
     enable_default_fd: bool = False
     anti_root: bool = False
     payload_modification: bool = False
+    library_scan: bool = False
 
 
 @dataclass
@@ -136,6 +137,7 @@ class FriTapConfig:
         experimental: bool = False,
         anti_root: bool = False,
         payload_modification: bool = False,
+        library_scan: bool = False,
         enable_default_fd: bool = False,
         patterns: Optional[str] = None,
         custom_hook_script: Optional[str] = None,
@@ -176,6 +178,7 @@ class FriTapConfig:
                 enable_default_fd=enable_default_fd,
                 anti_root=anti_root,
                 payload_modification=payload_modification,
+                library_scan=library_scan,
             ),
             protocol=protocol,
             backend=backend,

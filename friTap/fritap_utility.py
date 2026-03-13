@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from pathlib import Path
-import frida
+from .backends import get_backend
 import platform
 import os
 import sys
@@ -23,8 +23,9 @@ def find_pid_by_name(proc_name: str) -> int | None:
         PID of the first match, or None if not found.
     """
     target = proc_name.lower().removesuffix(".exe")
-    dev = frida.get_local_device()        # works on Windows & other OSes
-    for p in dev.enumerate_processes():
+    backend = get_backend()
+    dev = backend.get_local_device()
+    for p in backend.enumerate_processes(dev):
         name = Path(p.name).stem.lower()
         if name == target:
             return p.pid
@@ -55,25 +56,61 @@ def are_we_running_on_windows() -> bool:
     """
     Pure Python check if the host system is Windows.
     This runs before spawning the target application.
-    
-    Returns:
-        str: "Running on Windows" if the host system is Windows, 
-                "Not running on Windows" otherwise.
     """
-    if platform.system().lower() == "windows":
-        return True
-    else:
-        return False
+    return platform.system().lower() == "windows"
     
 def supports_color(stream) -> bool:
-        try:
-            return (
-                hasattr(stream, "isatty") and stream.isatty() and
-                os.getenv("NO_COLOR") is None and
-                os.getenv("TERM", "") not in ("", "dumb")
-            )
-        except Exception:
-            return False
+    try:
+        return (
+            hasattr(stream, "isatty") and stream.isatty() and
+            os.getenv("NO_COLOR") is None and
+            os.getenv("TERM", "") not in ("", "dumb")
+        )
+    except Exception:
+        return False
+
+
+def setup_fritap_logging(logger_name="friTap", debug=False, debug_output=False):
+    """
+    Shared logging setup for friTap.
+
+    Creates both the main logger (with CustomFormatter prefix) and
+    a special logger for clean messages without prefixes.
+
+    Parameters
+    ----------
+    logger_name : str
+        Base name for the logger (default "friTap").
+    debug : bool
+        Enable debug-level logging.
+    debug_output : bool
+        Enable debug-level logging (alternative flag).
+
+    Returns
+    -------
+    tuple[logging.Logger, logging.Logger]
+        (main_logger, special_logger)
+    """
+    level = logging.DEBUG if (debug or debug_output) else logging.INFO
+
+    logger = logging.getLogger(logger_name)
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(CustomFormatter(use_color=supports_color(handler.stream)))
+        handler.setLevel(level)
+        logger.setLevel(level)
+        logger.addHandler(handler)
+        logger.propagate = False
+
+    special = logging.getLogger(f"{logger_name}.no_prefix")
+    if not special.handlers:
+        special.setLevel(level)
+        h = logging.StreamHandler()
+        h.setFormatter(logging.Formatter("%(message)s"))
+        special.addHandler(h)
+        special.propagate = False
+
+    return logger, special
 
 
 class CustomFormatter(logging.Formatter):

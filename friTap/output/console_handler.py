@@ -5,17 +5,14 @@
 
 from __future__ import annotations
 import logging
-from typing import Set, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from .base import OutputHandler
+from .dedup import KeyDeduplicator
+from .formatters import format_hexdump, format_data_header
 
 if TYPE_CHECKING:
     from ..events import EventBus, KeylogEvent, DatalogEvent, ConsoleEvent
-
-try:
-    import hexdump as hexdump_mod
-except ImportError:
-    hexdump_mod = None
 
 
 class ConsoleOutputHandler(OutputHandler):
@@ -23,7 +20,7 @@ class ConsoleOutputHandler(OutputHandler):
 
     def __init__(self, verbose: bool = False) -> None:
         self._verbose = verbose
-        self._seen_keys: Set[str] = set()
+        self._dedup = KeyDeduplicator()
         self._logger = logging.getLogger("friTap")
 
     def setup(self, event_bus: "EventBus") -> None:
@@ -36,8 +33,7 @@ class ConsoleOutputHandler(OutputHandler):
     def on_keylog(self, event: "KeylogEvent") -> None:
         if event.cancelled:
             return
-        if event.key_data and event.key_data not in self._seen_keys:
-            self._seen_keys.add(event.key_data)
+        if event.key_data and self._dedup.is_new(event.key_data):
             self._logger.info(event.key_data)
 
     def on_data(self, event: "DatalogEvent") -> None:
@@ -46,17 +42,10 @@ class ConsoleOutputHandler(OutputHandler):
         if not event.data:
             return
         self._logger.info(
-            "[%s] %s:%d --> %s:%d",
-            event.function,
-            event.src_addr,
-            event.src_port,
-            event.dst_addr,
-            event.dst_port,
+            format_data_header(event.function, event.src_addr, event.src_port,
+                               event.dst_addr, event.dst_port)
         )
-        if hexdump_mod:
-            hexdump_mod.hexdump(event.data)
-        else:
-            self._logger.info("Data: %s", event.data.hex())
+        self._logger.info(format_hexdump(event.data))
 
     def on_console(self, event: "ConsoleEvent") -> None:
         msg = event.message

@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from ..output.dedup import KeyDeduplicator
 from ..output.formatters import format_hexdump, format_data_header
 
 if TYPE_CHECKING:
@@ -21,6 +22,7 @@ class ConsoleSink:
 
     def __init__(self, verbose: bool = False) -> None:
         self._verbose = verbose
+        self._dedup = KeyDeduplicator()
         self._logger = logging.getLogger("friTap")
 
     def open(self) -> None:
@@ -29,7 +31,7 @@ class ConsoleSink:
     def on_keylog(self, event: "KeylogCanonical") -> None:
         if not self._verbose:
             return
-        if event.key_data:
+        if event.key_data and self._dedup.is_new(event.key_data):
             self._logger.info(event.key_data)
 
     def on_data(self, event: "DataCanonical") -> None:
@@ -61,4 +63,4 @@ class ConsoleSink:
         pass
 
     def close(self) -> None:
-        pass
+        self._dedup.clear()

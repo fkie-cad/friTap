@@ -1,5 +1,10 @@
 import { devlog } from "../../util/log.js";
 
+// Platform-specific excludes for known non-TLS modules (JNI wrappers, etc.)
+const ANDROID_EXCLUDES = [/libjavacrypto\.so/];
+
+// Minimum number of exports for a module to be considered a real TLS implementation
+const MIN_EXPORT_COUNT = 5;
 
 export function findModulesWithSSLKeyLogCallback(): string[] {
     const modules = Process.enumerateModules();
@@ -11,22 +16,22 @@ export function findModulesWithSSLKeyLogCallback(): string[] {
             continue;
         }
 
-        /*
-        in future releases we want the below checks to be done only on these packages
-        let targetAppPackageName = getPackageName();
-        if (targetAppPackageName && mod.path.includes(targetAppPackageName)) {
-        }
-        */
-
-        const targetModule = Process.getModuleByName(mod.name);
-
-        const exports = targetModule.enumerateExports();
-        for (const exp of exports) {
-            if (exp.name === "SSL_CTX_set_keylog_callback") {
-                matchedModules.push(mod.name);
-                // Once we know it has the symbol, no need to check other exports
-                break;
+        // Skip known non-TLS modules per platform (fast path)
+        if (Process.platform === "linux") {
+            if (ANDROID_EXCLUDES.some(re => re.test(mod.name))) {
+                devlog(`Skipping known non-TLS module: ${mod.name}`);
+                continue;
             }
+        }
+
+        // Targeted lookup first (cheap), then validate export count (expensive)
+        if (mod.findExportByName("SSL_CTX_set_keylog_callback") !== null) {
+            const exportCount = mod.enumerateExports().length;
+            if (exportCount < MIN_EXPORT_COUNT) {
+                devlog(`Skipping ${mod.name}: only ${exportCount} exports (minimum ${MIN_EXPORT_COUNT})`);
+                continue;
+            }
+            matchedModules.push(mod.name);
         }
     }
 

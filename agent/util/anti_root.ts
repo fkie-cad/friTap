@@ -131,7 +131,7 @@ export class AntiRoot {
             NativeFile.exists.implementation = function() {
                 var name = NativeFile.getName.call(this);
                 var shouldFakeReturn = (this.RootBinaries.indexOf(name) > -1);
-                console.log(shouldFakeReturn);
+                devlog(shouldFakeReturn);
                 if (shouldFakeReturn) {
                    log("Bypass return value for binary: " + name);
                     return false;

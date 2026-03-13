@@ -1,5 +1,5 @@
 import { get_hex_string_from_byte_array, readAddresses } from "../../shared/shared_functions.js";
-import { sendWithProtocol } from "../../shared/shared_structures.js";
+import { sendKeylog } from "../../shared/shared_structures.js";
 import { devlog } from "../../util/log.js";
 
 
@@ -105,10 +105,7 @@ export class Mono_BTLS {
         }
 
         //devlog("invoking ssl_log_secret() from BoringSSL statically linked into Mono BTLS");
-        var message: { [key: string]: string | number | null } = {}
-        message["contentType"] = "keylog"
-        message["keylog"] = labelStr+" "+client_random+" "+secret_key;
-        sendWithProtocol(message)
+        sendKeylog(labelStr+" "+client_random+" "+secret_key);
     }
 
     install_plaintext_read_hook(){

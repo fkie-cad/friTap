@@ -4,7 +4,7 @@
 from os.path import exists as file_exists
 from functools import cached_property, wraps
 import os
-import frida
+from .backends import get_backend, BackendInvalidArgumentError
 import subprocess
 import shlex
 import re
@@ -25,6 +25,7 @@ class Android:
     def __init__(self,  device_id=None):
         self.device_id = device_id
         self.logger = logging.getLogger('friTap')
+        self._backend = get_backend()
 
     @cached_property
     def adb(self):
@@ -41,16 +42,16 @@ class Android:
             return self.tcpdump_arch_map[arch]
         except KeyError:
             self.logger.error("unknown arch.")
-            self.logger.error("We can't find your device architecture using frida, please set mobile arch via --m_arch <arm64|arm|ia32|x64>")
+            self.logger.error("We can't find your device architecture, please set mobile arch via --m_arch <arm64|arm|ia32|x64>")
             self.logger.error("Leaving....")
             raise Failure
 
     def get_frida_device(self):
         try:
             if self.device_id:
-                return frida.get_device_manager().get_device(self.device_id, timeout=5)
-            return frida.get_usb_device()
-        except frida.InvalidArgumentError:
+                return self._backend.get_device(mobile=self.device_id)
+            return self._backend.get_device(mobile=True)
+        except BackendInvalidArgumentError:
             self.logger.error(f"Device not found. Please verify the device ID: {self.device_id}")
             raise Failure
 
@@ -71,11 +72,11 @@ class Android:
 
     def _get_android_device_arch(self):
         try:
-            frida_usb_json_data = self.device.query_system_parameters()
+            system_params = self._backend.query_system_parameters(self.device)
         except Exception:
             # Defaulting to ARM64
             return "arm64"
-        return frida_usb_json_data['arch']
+        return system_params.get('arch', 'arm64')
     
     
     def _adb_make_binary_executable(self, path):
@@ -150,7 +151,7 @@ class Android:
 
     def get_pid(self, process_name):
         pids = self.get_pids(process_name)
-        if len(pids) > 0:
+        if pids:
             return pids[0]
 
     def get_pids(self, process_name):
@@ -177,6 +178,36 @@ class Android:
         else:
             self.logger.debug("No running tcpdump processes found")
         
+    def start_application(self, package_name, activity=None):
+        """Start an Android application using the instrumentation backend."""
+        pid = self._backend.spawn_raw(self.device, package_name)
+        self._backend.resume(self.device, pid)
+        return True
+
+    def detect_ssl_libraries(self, package_name):
+        """Detect SSL/TLS libraries available for an Android application."""
+        result = self.adb.shell(
+            f'find /system/lib* /data/app/{package_name}/ -name "*.so" 2>/dev/null',
+            timeout=15,
+        )
+        ssl_patterns = ['ssl', 'crypto', 'boringssl', 'conscrypt', 'nss', 'gnutls', 'wolfssl', 'mbedtls']
+        all_libs = result.stdout.strip().splitlines()
+        return [lib for lib in all_libs if any(p in lib.lower() for p in ssl_patterns)]
+
+    def get_library_path(self, package_name, library_name):
+        """Get the path of a specific library in an Android application."""
+        result = self.adb.shell(
+            f'find /system/lib* /data/app/{package_name}/ -name "{library_name}" 2>/dev/null',
+            timeout=15,
+        )
+        lines = result.stdout.strip().splitlines()
+        return lines[0] if lines else None
+
+    def check_library_exports(self, library_path):
+        """Check exports of a library on the Android device."""
+        result = self.adb.run('shell', 'nm', '-D', library_path, timeout=15)
+        return result.stdout.strip().splitlines()
+
     def send_ctrlC_over_adb(self):
         return self._run_for_pids("kill -INT %s")
 
@@ -228,11 +259,10 @@ class Android:
 
     @cached_property
     def is_Android(self):
-        if self.check_adb_availability() and len(self.list_devices()) >= 1:
+        if self.check_adb_availability() and self.list_devices():
             return True
-        else:
-            self.logger.error("No device connected to adb. Ensure that adb devices will print your device if you are trying a full capture on Android.")
-            return False
+        self.logger.error("No device connected to adb. Ensure that adb devices will print your device if you are trying a full capture on Android.")
+        return False
         
 class ADB:
     def __init__(self, device_id=None):
@@ -275,7 +305,7 @@ class ADB:
         return self._adb_base + list(args)
 
     def _parse_package_name(self, name):
-        return name.split(":")[1] if  ":" in name else name
+        return name.split(":")[1] if ":" in name else name
 
     package_re = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$")
     def _validate_package_name(self, name):

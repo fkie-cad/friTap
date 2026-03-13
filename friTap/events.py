@@ -4,16 +4,16 @@
 """
 Event bus system for friTap.
 
-Replaces the legacy on_fritap_message() if/elif chain with a
+Replaces the monolithic on_fritap_message() if/elif chain with a
 publish-subscribe event system. Output handlers, the TUI, and
 external integrations subscribe to typed events.
 """
 
 from __future__ import annotations
 import logging
+import time
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 
 
@@ -24,7 +24,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 @dataclass
 class FriTapEvent:
     """Base class for all friTap events."""
-    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    timestamp: float = field(default_factory=time.time)
     protocol: str = "tls"
     _cancelled: bool = field(default=False, init=False, repr=False, compare=False)
 
@@ -160,7 +160,7 @@ class EventBus:
 
     def __init__(self, on_handler_error: Optional[Callable] = None) -> None:
         self._subscribers: Dict[Type[FriTapEvent], List[Tuple[int, Callable]]] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._logger = logging.getLogger("friTap.events")
         self._failure_counts: Dict[str, int] = {}
         self._on_handler_error = on_handler_error
@@ -197,18 +197,22 @@ class EventBus:
             specific = self._subscribers.get(type(event), [])
             if type(event) is not FriTapEvent:
                 catch_all = self._subscribers.get(FriTapEvent, [])
-                # Merge two pre-sorted (descending priority) lists
-                handlers = []
-                i, j = 0, 0
-                while i < len(specific) and j < len(catch_all):
-                    if specific[i][0] >= catch_all[j][0]:
-                        handlers.append(specific[i])
-                        i += 1
-                    else:
-                        handlers.append(catch_all[j])
-                        j += 1
-                handlers.extend(specific[i:])
-                handlers.extend(catch_all[j:])
+                if not catch_all:
+                    # Fast path: no catch-all subscribers
+                    handlers = list(specific)
+                else:
+                    # Merge two pre-sorted (descending priority) lists
+                    handlers = []
+                    i, j = 0, 0
+                    while i < len(specific) and j < len(catch_all):
+                        if specific[i][0] >= catch_all[j][0]:
+                            handlers.append(specific[i])
+                            i += 1
+                        else:
+                            handlers.append(catch_all[j])
+                            j += 1
+                    handlers.extend(specific[i:])
+                    handlers.extend(catch_all[j:])
             else:
                 handlers = list(specific)
 

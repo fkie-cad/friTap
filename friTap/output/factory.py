@@ -9,6 +9,7 @@ decoupling handler instantiation from SSL_Logger.
 """
 
 
+
 class OutputHandlerFactory:
     """Factory that creates output handler instances based on configuration."""
 
@@ -29,8 +30,7 @@ class OutputHandlerFactory:
         """
         from . import (
             PcapOutputHandler, KeylogOutputHandler, JsonOutputHandler,
-            JsonlOutputHandler, ConsoleOutputHandler,
-            PcapngOutputHandler, LivePcapngHandler,
+            JsonlOutputHandler, ConsoleOutputHandler, PcapngOutputHandler, LivePcapngHandler,
         )
 
         handlers = []

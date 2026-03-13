@@ -1,5 +1,5 @@
 import { get_hex_string_from_byte_array, readAddresses, checkNumberOfExports, isSymbolAvailable } from "../../shared/shared_functions.js";
-import { sendWithProtocol } from "../../shared/shared_structures.js";
+import { sendKeylog } from "../../shared/shared_structures.js";
 import { devlog } from "../../util/log.js";
 
 
@@ -36,10 +36,7 @@ export class Cronet {
 
         this.keylog_callback = new NativeCallback(function (ctxPtr: NativePointer, linePtr: NativePointer) {
             devlog("invoking keylog_callback from Cronet ("+ moduleName +")");
-            var message: { [key: string]: string | number | null } = {}
-            message["contentType"] = "keylog"
-            message["keylog"] = linePtr.readCString().toUpperCase()
-            sendWithProtocol(message)
+            sendKeylog(linePtr.readCString().toUpperCase());
         }, "void", ["pointer", "pointer"])
 
         try{
@@ -187,10 +184,7 @@ export class Cronet {
         }
 
         //devlog("invoking ssl_log_secret() from BoringSSL statically linked into Cronet");
-        var message: { [key: string]: string | number | null } = {}
-        message["contentType"] = "keylog"
-        message["keylog"] = labelStr+" "+client_random+" "+secret_key;
-        sendWithProtocol(message)
+        sendKeylog(labelStr+" "+client_random+" "+secret_key);
     }
 
     install_plaintext_read_hook(){

@@ -15,6 +15,8 @@ type ActionPatterns = {
     "KeyLogCallback-Function": Pattern;
 };
 
+export { hasModulePatterns } from "./cronet_patterns.js";
+
 export function get_CPU_specific_pattern(
     default_pattern: { [arch: string]: { primary: string; fallback: string; second_fallback?: string } }
 ): { primary: string; fallback: string; second_fallback?: string } {

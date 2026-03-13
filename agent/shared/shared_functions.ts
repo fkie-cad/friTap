@@ -1,6 +1,9 @@
-import { log, devlog, devlog_error, devlog_warn } from "../util/log.js";
-import { AF_INET, AF_INET6, AddressFamilyMapping, unwantedFDs, ModuleHookingType } from "./shared_structures.js";
+import { log, devlog, devlog_error } from "../util/log.js";
+import { AF_INET, AF_INET6, AddressFamilyMapping, unwantedFDs, Platform } from "./shared_structures.js";
+import { HookRegistration, HookRegistry } from "./registry.js";
 import { Java, JavaWrapper } from "./javalib.js";
+import { offsets } from "../fritap_agent.js";
+import { isModuleHooked, markModuleHooked } from "./library_scanner.js";
 
 function wait_for_library_loaded(module_name: string){
     let timeout_library = 5;
@@ -12,6 +15,13 @@ function wait_for_library_loaded(module_name: string){
 }
 
 /**
+ * This file contains methods which are shared for reading
+ * secrets/data from different libraries. These methods are
+ * indipendent from the implementation of ssl/tls, but they depend
+ * on libc.
+ */
+
+/**
  * Loader that uses HookRegistry to find and invoke hooks for loaded modules.
  * Queries the registry for hooks matching each module name and invokes them.
  *
@@ -21,7 +31,7 @@ function wait_for_library_loaded(module_name: string){
  * @param platformOs Human-readable platform OS name for logging
  * @param is_base_hook Boolean indicating if this is a base hook or dynamic load
  */
-export function ssl_library_loader_v2(platform: string, hookRegistry: any, moduleNames: Array<string>, platformOs: string, is_base_hook: boolean, protocol?: string): void {
+export function ssl_library_loader(platform: Platform, hookRegistry: HookRegistry, moduleNames: Array<string>, platformOs: string, is_base_hook: boolean, protocol?: string): void {
     for (let module_name of moduleNames) {
         // Get module info for path filtering
         let modulePath: string | undefined;
@@ -30,6 +40,11 @@ export function ssl_library_loader_v2(platform: string, hookRegistry: any, modul
             modulePath = module.path;
         } catch (error) {
             // Module might not be loaded yet, continue without path
+        }
+
+        if (isModuleHooked(module_name)) {
+            devlog(`${module_name} already hooked, skipping`);
+            continue;
         }
 
         // Find all hooks matching this module name (filtered by protocol if provided)
@@ -47,6 +62,10 @@ export function ssl_library_loader_v2(platform: string, hookRegistry: any, modul
 
                 // Invoke the hook function
                 match.hookFn(module_name, is_base_hook);
+                markModuleHooked(module_name);
+
+                // Notify host that a library was detected
+                send({contentType: "library_detected", library: module_name, path: modulePath || "", protocol: protocol || "tls"});
 
             } catch (error) {
                 if (checkNumberOfExports(module_name) > 3) {
@@ -58,59 +77,150 @@ export function ssl_library_loader_v2(platform: string, hookRegistry: any, modul
     }
 }
 
+
+
+// ---------------------------------------------------------------------------
+// Dynamic Loader Hooking
+// ---------------------------------------------------------------------------
+
+export interface DynamicLoaderConfig {
+    /** Platform identifier for registry queries */
+    platform: Platform;
+    /** Human-readable label for log messages (e.g., "Android", "Linux", "iOS") */
+    platformLabel: string;
+    /** Regex pattern to find the loader module among loaded modules (not needed when resolveViaApi is set) */
+    loaderLibrary?: string | RegExp;
+    /** Primary function name to hook (e.g., "dlopen", "LoadLibraryExW") */
+    functionName: string;
+    /** If set, use ApiResolver instead of module export lookup (e.g., "exports:KERNELBASE.dll!*LoadLibraryExW") */
+    resolveViaApi?: string;
+    /** Check for this export first; fall back to functionName if not found (e.g., "android_dlopen_ext") */
+    preferFunction?: string;
+    /** If true, resolve modulePath from loaded module in onLeave (for path-based registry filtering) */
+    extractModulePath?: boolean;
+    /** If true, derive module name from ModuleMap(retval) instead of args[0].readCString() (Windows) */
+    moduleFromRetval?: boolean;
+    /** Optional callback invoked for each matched module (e.g., Windows lsass log) */
+    onMatchExtra?: (moduleName: string) => void;
+}
+
 /**
- * This file contains methods which are shared for reading
- * secrets/data from different libraries. These methods are
- * indipendent from the implementation of ssl/tls, but they depend
- * on libc.
+ * Hook a platform's dynamic loader to intercept library loads and apply registry hooks.
+ *
+ * Replaces the per-platform hook_<Platform>_Dynamic_Loader() functions with a single
+ * configurable implementation.
+ *
+ * @param config       Platform-specific loader configuration
+ * @param hookRegistry The HookRegistry singleton
+ * @param moduleNames  Array of currently loaded module names
+ * @param is_base_hook Whether this is a base hook or dynamic load
+ * @param protocol     Active protocol filter (e.g., "tls", "ssh", "auto")
  */
+export function hookDynamicLoader(
+    config: DynamicLoaderConfig,
+    hookRegistry: HookRegistry,
+    moduleNames: Array<string>,
+    is_base_hook: boolean,
+    protocol?: string
+): void {
+    try {
+        let hookAddress: NativePointer;
 
-export function ssl_library_loader(plattform_name: string, module_library_mapping: { [key: string]: Array<[any, ModuleHookingType, string?]> }, moduleNames: Array<string> , plattform_os: string, is_base_hook: boolean): void{
-    for(let map of module_library_mapping[plattform_name]){
-        let regex = new RegExp(map[0])
-        let func = map[1]
-        let optionalPathFilter = map[2]; // Optional path for module matching
+        if (config.resolveViaApi) {
+            // Windows-style: use ApiResolver to find the function
+            const resolver: ApiResolver = new ApiResolver('module');
+            const matches = resolver.enumerateMatches(config.resolveViaApi);
+            if (matches.length === 0) {
+                log(`[-] Missing ${config.platformLabel} dynamic loader!`);
+                return;
+            }
+            hookAddress = matches[0].address;
+        } else {
+            // Unix-style: find the loader module, then get export
+            const loaderRegex = config.loaderLibrary instanceof RegExp
+                ? config.loaderLibrary
+                : new RegExp(config.loaderLibrary);
+            const loaderModule = moduleNames.find(element => element.match(loaderRegex));
+            if (loaderModule === undefined) {
+                throw `${config.platformLabel} Dynamic loader not found!`;
+            }
 
-        for(let module_name of moduleNames){
-            if (regex.test(module_name)){
-                try{
+            // Determine which function to hook (prefer alternative if available)
+            let funcName = config.functionName;
+            if (config.preferFunction) {
+                const exports = Process.getModuleByName(loaderModule).enumerateExports();
+                for (const ex of exports) {
+                    if (ex.name === config.preferFunction) {
+                        funcName = config.preferFunction;
+                        break;
+                    }
+                }
+            }
 
-                    // If an optional path filter exists, skip if not matched
-                    if (optionalPathFilter){
-                        const module = Process.getModuleByName(module_name);
-                        if(!module.path.toLowerCase().includes(optionalPathFilter.toLowerCase())){
-                            continue;
+            hookAddress = Process.getModuleByName(loaderModule).getExportByName(funcName);
+        }
+
+        Interceptor.attach(hookAddress, {
+            onEnter: function (args) {
+                if (!config.moduleFromRetval) {
+                    this.moduleName = args[0].readCString();
+                }
+            },
+            onLeave: function (retval: any) {
+                let moduleName: string | undefined;
+
+                if (config.moduleFromRetval) {
+                    // Windows: derive name from return value via ModuleMap
+                    const map = new ModuleMap();
+                    moduleName = map.findName(retval);
+                    if (moduleName === null) return;
+                } else {
+                    moduleName = this.moduleName;
+                }
+
+                if (moduleName != undefined) {
+                    // Optionally resolve module path for registry filtering
+                    let modulePath: string | undefined;
+                    if (config.extractModulePath) {
+                        try {
+                            const mod = Process.getModuleByName(moduleName);
+                            modulePath = mod.path;
+                        } catch (_) {
+                            // Module not yet loaded, continue without path
                         }
                     }
 
-
-                    log(`${module_name} found & will be hooked on ${plattform_os}!`)
-                    try {
-                        Process.getModuleByName(module_name).ensureInitialized();
-                    }catch(error){
-                        wait_for_library_loaded(module_name);
+                    if (isModuleHooked(moduleName)) {
+                        devlog(`${moduleName} already hooked, skipping (dynamic loader)`);
+                        return;
                     }
-                    
-                    // on some Android Apps we encounterd the problem of multiple SSL libraries but only one is used for the SSL encryption/decryption
-                    func(module_name, is_base_hook); 
-                    
-                }catch (error) {
 
-                    if(checkNumberOfExports(module_name) > 3){
-                        devlog_error(`error: skipping module ${module_name}`)
-                        // when we enable the logging of devlogs we can print the error message as well for further improving this part
-                        devlog_error("Loader error: "+error)
-                        //  {'description': 'Could not find *libssl*.so!SSL_ImportFD', 'type': 'error'}
+                    const matches = hookRegistry.findAllMatches(config.platform, moduleName, modulePath, protocol);
+                    for (let match of matches) {
+                        log(`${moduleName} was loaded & will be hooked on ${config.platformLabel}!`);
+                        try {
+                            match.hookFn(moduleName, is_base_hook);
+                            markModuleHooked(moduleName);
+
+                            // Notify host that a library was detected
+                            send({contentType: "library_detected", library: moduleName, path: modulePath || "", protocol: protocol || "tls"});
+                        } catch (error_msg) {
+                            devlog(`${config.platformLabel} dynamic loader error: ${error_msg}`);
+                        }
+                        if (config.onMatchExtra) {
+                            config.onMatchExtra(moduleName);
+                        }
                     }
                 }
-                
-            } 
-        }
+            }
+        });
+
+        log(`[*] ${config.platformLabel} dynamic loader hooked.`);
+    } catch (error) {
+        devlog("Dynamic loader error: " + error);
+        log(`No dynamic loader present for hooking on ${config.platformLabel}.`);
     }
-
 }
-
-
 
 export function getSocketLibrary(){
     var moduleNames: Array<String> = getModuleNames()
@@ -154,36 +264,11 @@ export function checkNumberOfExports(moduleName: string): number {
     }
 }
 
-export function hasMoreThanFiveExports(moduleName: string): boolean {
-    // Get the target module
-    const targetModule = Process.getModuleByName(moduleName);
-    
-    // Return false if module doesn't exist
-    if (!targetModule) {
-        devlog(`Module ${moduleName} not found`);
-        return false;
-    }
-
-    try {
-        // Enumerate exports from the module
-        const exports = targetModule.enumerateExports();
-        
-        // Return true if there are more than 5 exports
-        return exports.length > 5;
-    } catch (error) {
-        devlog(`Error enumerating exports for ${moduleName}:`+ error);
-        return false;
-    }
-}
-
 export function readAddresses(moduleName: string, library_method_mapping: { [key: string]: Array<string> }): { [library_name: string]: { [functionName: string]: NativePointer } } {
     const resolver = new ApiResolver("module");
     const addresses: { [library_name: string]: { [functionName: string]: NativePointer } } = {};
 
-    // Initialize addresses[moduleName] as an empty object if not already initialized
-    if (!addresses[moduleName]) {
-        addresses[moduleName] = {};
-    }
+    addresses[moduleName] = {};
 
     for (const library_name in library_method_mapping) {
         library_method_mapping[library_name].forEach(function (method) {
@@ -201,7 +286,8 @@ export function readAddresses(moduleName: string, library_method_mapping: { [key
             }
 
             if (matches.length == 0) {
-                throw "Could not find " + library_name + "!" + method;
+                devlog(`[readAddresses] Could not find ${library_name}!${method} (deferring to pipeline)`);
+                return;
             } else if (matches.length == 1) {
                 devlog("Found " + method + " " + matches[0].address);
             } else {
@@ -224,54 +310,6 @@ export function readAddresses(moduleName: string, library_method_mapping: { [key
 
 
 
-/**
- * Read the addresses for the given methods from the given modules
- * @param {{[key: string]: Array<String> }} library_method_mapping A string indexed list of arrays, mapping modules to methods
- * @param is_base_hook a boolean value to indicate if this hooks are done on the start or during dynamic library loading
- * @return {{[key: string]: { [functionName: string]: NativePointer } }} A string indexed list of NativePointers, which point to the respective methods
- */
- export function readAddresses2(moduleName: string, library_method_mapping: { [key: string]: Array<string> }): { [library_name: string]: { [functionName: string]: NativePointer } } {
-    var resolver = new ApiResolver("module");
-    var addresses: { [library_name: string]: { [functionName: string]: NativePointer } } = {};
-    
-
-    // Initialize addresses[library_name] as an empty object if not already initialized
-    if (!addresses[moduleName]) {
-        addresses[moduleName] = {};
-    }
-
-    for (let library_name in library_method_mapping) {
-
-        library_method_mapping[library_name].forEach(function (method) {
-            var matches = resolver.enumerateMatches("exports:" + library_name + "!" + method);
-            var match_number = 0;
-            var method_name = method.toString();
-
-            if (method_name.endsWith("*")) { // this is for the temporary iOS bug using Frida's ApiResolver
-                method_name = method_name.substring(0, method_name.length - 1);
-            }
-
-            if (matches.length == 0) {
-                throw "Could not find " + library_name + "!" + method;
-            } else if (matches.length == 1) {
-                devlog("Found " + method + " " + matches[0].address);
-            } else {
-                // Sometimes Frida returns duplicates or it finds more than one result.
-                for (var k = 0; k < matches.length; k++) {
-                    if (matches[k].name.endsWith(method_name)) {
-                        match_number = k;
-                        devlog("Found " + method + " " + matches[match_number].address);
-                        break;
-                    }
-                }
-            }
-
-            addresses[moduleName][method_name] = matches[match_number].address;
-        });
-    }
-
-    return addresses;
-}
 
 
 
@@ -282,17 +320,23 @@ export function readAddresses(moduleName: string, library_method_mapping: { [key
  */
  export function getBaseAddress(moduleName: String): NativePointer | null {
     devlog("Module to find: "+moduleName);
-    const modules = Process.enumerateModules()
-
-    for(const module of modules){
-        if(module.name == moduleName){
-            return module.base;
-        }
+    try {
+        return Process.getModuleByName(moduleName as string).base;
+    } catch (e) {
+        return null;
     }
-
-    return null;
 }
 
+
+// Cache for NativeFunction wrappers (created once, reused per call)
+let _cachedSocketFns: {
+    getpeername: NativeFunction<number, [number, NativePointer, NativePointer]>;
+    getsockname: NativeFunction<number, [number, NativePointer, NativePointer]>;
+    ntohs: NativeFunction<number, [number]>;
+    ntohl: NativeFunction<number, [number]>;
+} | null = null;
+let _cachedAddrBuf: NativePointer | null = null;
+let _cachedAddrLenBuf: NativePointer | null = null;
 
 /**
 * Returns a dictionary of a sockfd's "src_addr", "src_port", "dst_addr", and
@@ -308,11 +352,11 @@ export function getPortsAndAddresses(sockfd: number, isRead: boolean, methodAddr
 
     var message: { [key: string]: string | number } = {}
     if (enable_default_fd && (sockfd < 0)){
-        
+
         message["src" + "_port"] = 1234
-        message["src" + "_addr"] = 0x7F000001    // 127.0.0.1 as uint32
+        message["src" + "_addr"] = 0x7F000001
         message["dst" + "_port"] = 2345
-        message["dst" + "_addr"] = 0x7F000001    // 127.0.0.1 as uint32
+        message["dst" + "_addr"] = 0x7F000001
         message["ss_family"] = "AF_INET"
 
         return message
@@ -323,13 +367,22 @@ export function getPortsAndAddresses(sockfd: number, isRead: boolean, methodAddr
         return null; // Skip further processing
     }
 
-    var getpeername = new NativeFunction(methodAddresses["getpeername"], "int", ["int", "pointer", "pointer"])
-    var getsockname = new NativeFunction(methodAddresses["getsockname"], "int", ["int", "pointer", "pointer"])
-    var ntohs = new NativeFunction(methodAddresses["ntohs"], "uint16", ["uint16"])
-    var ntohl = new NativeFunction(methodAddresses["ntohl"], "uint32", ["uint32"])
-
-    var addrlen = Memory.alloc(4)
-    var addr = Memory.alloc(128)
+    if (!_cachedSocketFns) {
+        _cachedSocketFns = {
+            getpeername: new NativeFunction(methodAddresses["getpeername"], "int", ["int", "pointer", "pointer"]),
+            getsockname: new NativeFunction(methodAddresses["getsockname"], "int", ["int", "pointer", "pointer"]),
+            ntohs: new NativeFunction(methodAddresses["ntohs"], "uint16", ["uint16"]),
+            ntohl: new NativeFunction(methodAddresses["ntohl"], "uint32", ["uint32"]),
+        };
+        _cachedAddrLenBuf = Memory.alloc(4);
+        _cachedAddrBuf = Memory.alloc(128);
+    }
+    var getpeername = _cachedSocketFns.getpeername;
+    var getsockname = _cachedSocketFns.getsockname;
+    var ntohs = _cachedSocketFns.ntohs;
+    var ntohl = _cachedSocketFns.ntohl;
+    var addrlen = _cachedAddrLenBuf;
+    var addr = _cachedAddrBuf;
     var src_dst = ["src", "dst"]
     for (let i = 0; i < src_dst.length; i++) {
         addrlen.writeU32(128)
@@ -346,11 +399,11 @@ export function getPortsAndAddresses(sockfd: number, isRead: boolean, methodAddr
         const familyName = AddressFamilyMapping[family] || `UNKNOWN`;
 
 
-        if (addr.readU16() == AF_INET) {
+        if (family == AF_INET) {
             message[src_dst[i] + "_port"] = ntohs(addr.add(2).readU16()) as number
             message[src_dst[i] + "_addr"] = ntohl(addr.add(4).readU32()) as number
             message["ss_family"] = "AF_INET"
-        } else if (addr.readU16() == AF_INET6) {
+        } else if (family == AF_INET6) {
             message[src_dst[i] + "_port"] = ntohs(addr.add(2).readU16()) as number
             message[src_dst[i] + "_addr"] = ""
             var ipv6_addr = addr.add(8)
@@ -365,12 +418,15 @@ export function getPortsAndAddresses(sockfd: number, isRead: boolean, methodAddr
                 message["ss_family"] = "AF_INET6"
             }
         } else {
+            // only uncomment this if you really need to debug this
+            //devlog("[-] getPortsAndAddresses resolving error: Only supporting IPv4/6");
+            //devlog(`[-] Inspecting fd: ${sockfd}, Address family: ${family} (${familyName})`);
+            //throw "Only supporting IPv4/6"
+            
             if (!unwantedFDs.has(sockfd)) {
-                devlog_warn("getPortsAndAddresses: unsupported address family " + family
-                    + " (" + familyName + ") for fd " + sockfd
-                    + ". Skipping this socket. Use --enable_default_fd (-ed) if you need to capture traffic regardless.")
+                //devlog(`Skipping unsupported address family: ${family}:${familyName} (fd: ${sockfd})`);
             }
-            unwantedFDs.add(sockfd);
+            unwantedFDs.add(sockfd); // Mark this fd as unwanted
             return null;
         }
     }
@@ -378,6 +434,57 @@ export function getPortsAndAddresses(sockfd: number, isRead: boolean, methodAddr
     return message
 }
 
+
+
+/**
+ * Resolve offset-based addresses for both socket and library offsets.
+ * Replaces the duplicated offset resolution block found in every SSL library constructor.
+ *
+ * @param addresses The addresses dictionary to populate (modified in place)
+ * @param moduleName The module name key in the addresses dictionary
+ * @param socket_library The socket library name (e.g., libc)
+ * @param offsetKey The key in the offsets object for this library (e.g., "gnutls", "wolfssl", "openssl")
+ */
+export function resolveOffsets(
+    addresses: { [key: string]: { [functionName: string]: NativePointer } },
+    moduleName: string,
+    socket_library: String,
+    offsetKey: string
+): void {
+    // @ts-ignore
+    if (offsets == "{OFFSETS}" || offsets[offsetKey] == null) {
+        return;
+    }
+
+    if ((offsets as any).sockets != null) {
+        const socketBaseAddress = getBaseAddress(socket_library);
+        for (const method of Object.keys((offsets as any).sockets)) {
+            const methodOffset = (offsets as any).sockets[method];
+            const methodAddress = ptr(methodOffset.address);
+            if (methodOffset.absolute || socketBaseAddress == null) {
+                addresses[moduleName][method] = methodAddress;
+            } else {
+                addresses[moduleName][method] = socketBaseAddress.add(methodAddress);
+            }
+        }
+    }
+
+    const libraryBaseAddress = getBaseAddress(moduleName);
+    if (libraryBaseAddress == null) {
+        log("Unable to find library base address! Given address values will be interpreted as absolute ones!");
+    }
+
+    const libraryOffsets = (offsets as any)[offsetKey];
+    for (const method of Object.keys(libraryOffsets)) {
+        const methodOffset = libraryOffsets[method];
+        const methodAddress = ptr(methodOffset.address);
+        if (methodOffset.absolute || libraryBaseAddress == null) {
+            addresses[moduleName][method] = methodAddress;
+        } else {
+            addresses[moduleName][method] = libraryBaseAddress.add(methodAddress);
+        }
+    }
+}
 
 
 /**
@@ -391,13 +498,13 @@ export function byteArrayToString(byteArray: any) {
     }).join('')
 }
 
-export function toHexString (byteArray: any) {
-    const byteToHex: any = [];
+// Pre-built lookup table: byte value -> two-char hex string (built once at module load)
+const byteToHex: string[] = [];
+for (let n = 0; n <= 0xff; ++n) {
+    byteToHex.push(n.toString(16).padStart(2, "0"));
+}
 
-    for (let n = 0; n <= 0xff; ++n){
-        const hexOctet = n.toString(16).padStart(2, "0");
-        byteToHex.push(hexOctet);
-    }
+export function toHexString (byteArray: any) {
     return Array.prototype.map.call(
         new Uint8Array(byteArray),
         n => byteToHex[n]
@@ -464,34 +571,21 @@ export function isSymbolAvailable(moduleName: string, symbolName: string): boole
 }
 
 
-// Wrapper function to ensure all execute functions conform to the required signature
-export function invokeHookingFunction(func: (moduleName: string, is_base_hook: boolean) => void): (moduleName: string, is_base_hook: boolean) => void {
-    return (moduleName: string, is_base_hook: boolean) => {
-        func(moduleName, is_base_hook);
-    };
-}
-
-
 export function get_hex_string_from_byte_array(keyData: ArrayBuffer | Uint8Array): string{
-    return Array
-        .from(new Uint8Array(keyData)) // Convert byte array to Uint8Array and then to Array
-        .map(byte => byte.toString(16).padStart(2, '0').toUpperCase()) // Convert each byte to a 2-digit hex string
-        .join(''); // Join all the hex values with a space
+    return toHexString(keyData).toUpperCase();
 }
 
 
 export function dumpMemory(ptrValue,size) {
     //var size = 0x100;
     try {
-        console.log("[!] dumping memory at address: "+ptrValue);
+        devlog("[!] dumping memory at address: "+ptrValue);
 
         var data = ptrValue.readByteArray(size);
-        console.log(hexdump(data));
+        devlog(hexdump(data));
         return data;
-        // console.log(hexdump(data, { offset: 0, length: size, header: true, ansi: true }));
     } catch (error) {
-        console.log("Error dumping memory at: " + ptrValue + " - " + error);
-        console.log("\n")
+        devlog("Error dumping memory at: " + ptrValue + " - " + error);
         return null;
     }
 }

@@ -81,21 +81,6 @@ class EBPFBackend(Backend):
     def detach(self, process: Any) -> None:
         pass
 
-    def enable_child_gating(self, process: Any) -> None:
-        raise NotImplementedError("eBPF backend does not support child gating")
-
-    def enable_spawn_gating(self, device: Any) -> None:
-        raise NotImplementedError("eBPF backend does not support spawn gating")
-
-    def on_child_added(self, device: Any, callback: Callable) -> None:
-        raise NotImplementedError("eBPF backend does not support child events")
-
-    def on_spawn_added(self, device: Any, callback: Callable) -> None:
-        raise NotImplementedError("eBPF backend does not support spawn events")
-
-    def enable_debugger(self, script: Any, port: int) -> None:
-        raise NotImplementedError("eBPF backend does not support debugging")
-
     def enumerate_threads(self, process: Any) -> list:
         self._not_implemented("enumerate_threads")
 
@@ -105,17 +90,8 @@ class EBPFBackend(Backend):
     def resume_thread(self, process: Any, thread_id: int) -> None:
         self._not_implemented("resume_thread")
 
-    def enumerate_devices(self) -> list:
-        raise NotImplementedError("eBPF backend does not support device enumeration")
-
-    def get_device_manager(self) -> Any:
-        raise NotImplementedError("eBPF backend does not support device manager")
-
     def get_local_device(self) -> Any:
         return "local"  # eBPF only works locally
-
-    def get_usb_device(self) -> Any:
-        raise NotImplementedError("eBPF backend does not support USB devices")
 
     @property
     def name(self) -> str:

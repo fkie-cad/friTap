@@ -1,12 +1,9 @@
 import { readAddresses, getPortsAndAddresses, resolveOffsets, isSymbolAvailable, checkNumberOfExports, calculateZeroBytePercentage } from "../../shared/shared_functions.js";
 import { enable_default_fd } from "../../fritap_agent.js";
 import { devlog, devlog_error, log, devlog_info } from "../../util/log.js";
-import { defaultPipeline } from "../../shared/hooking_pipeline.js";
-import { SymbolStrategy } from "../../shared/strategies/symbol_strategy.js";
-import { PatternStrategy } from "../../shared/strategies/pattern_strategy.js";
-import { MemoryScanStrategy } from "../../shared/strategies/memory_scan_strategy.js";
+import { initializePipeline as sharedInitializePipeline, resolveWithPipeline as sharedResolveWithPipeline } from "../../shared/pipeline_utils.js";
 import { ObjC } from "../../shared/objclib.js";
-import { sendWithProtocol } from "../../shared/shared_structures.js";
+import { sendKeylog, sendDatalog } from "../../shared/shared_structures.js";
 
 class ModifyReceiver{
     public readModification: ArrayBuffer | null = null;
@@ -88,7 +85,9 @@ export class OpenSSL_BoringSSL {
 
     constructor(public moduleName:string, public socket_library:String,is_base_hook: boolean ,public passed_library_method_mapping?: { [key: string]: Array<string> } ){
         this.module_name = moduleName;
-        OpenSSL_BoringSSL.modReceiver = new ModifyReceiver();
+        if (!OpenSSL_BoringSSL.modReceiver) {
+            OpenSSL_BoringSSL.modReceiver = new ModifyReceiver();
+        }
 
         if(typeof passed_library_method_mapping !== 'undefined'){
             this.library_method_mapping = passed_library_method_mapping;
@@ -114,10 +113,7 @@ export class OpenSSL_BoringSSL {
 
         this.keylog_callback = new NativeCallback(function (ctxPtr: NativePointer, linePtr: NativePointer) {
             devlog("invoking keylog_callback from OpenSSL_BoringSSL ("+ moduleName +")");
-            var message: { [key: string]: string | number | null } = {}
-            message["contentType"] = "keylog"
-            message["keylog"] = linePtr.readCString().toUpperCase()
-            sendWithProtocol(message)
+            sendKeylog(linePtr.readCString().toUpperCase());
         }, "void", ["pointer", "pointer"]);
 
         // Check and add SSL_write_ex if available
@@ -171,61 +167,20 @@ export class OpenSSL_BoringSSL {
      * Never overwrites existing non-null addresses from readAddresses().
      */
     protected resolveWithPipeline(requiredFunctions: string[]): void {
-        const modAddrs = this.addresses[this.module_name] || {};
-        const missing = requiredFunctions.filter(
-            fn => !modAddrs[fn] || modAddrs[fn].isNull()
-        );
-        if (missing.length === 0) return;
-
-        devlog(`[Pipeline] ${missing.length} unresolved: ${missing.join(", ")}`);
-        const result = defaultPipeline.hookModule(this.module_name, "openssl", missing);
-
-        if (result.resolvedAddresses.size > 0) {
-            if (!this.addresses[this.module_name]) {
-                this.addresses[this.module_name] = {} as any;
-            }
-            for (const [fn, addr] of result.resolvedAddresses) {
-                if (!this.addresses[this.module_name][fn] ||
-                    this.addresses[this.module_name][fn].isNull()) {
-                    this.addresses[this.module_name][fn] = addr;
-                    devlog(`[Pipeline] Resolved ${fn} via ${result.strategy}: ${addr}`);
-                }
-            }
-        } else {
-            devlog(`[Pipeline] Could not resolve any of: ${missing.join(", ")}`);
-        }
+        sharedResolveWithPipeline(this.addresses, this.module_name, "openssl", requiredFunctions);
     }
 
     /**
      * Initialize the singleton pipeline with available strategies.
-     * Uses dependency injection to avoid circular imports with fritap_agent.ts.
+     * Delegates to shared pipeline_utils — kept for backward compatibility
+     * with existing platform agent call sites.
      * Idempotent — safe to call from every platform agent.
      *
      * @param patternData - Pattern data from fritap_agent.ts patterns global (or undefined)
      * @param experimentalMode - Whether --experimental flag is set
      */
     static initializePipeline(patternData?: any, experimentalMode?: boolean): void {
-        if (defaultPipeline.size > 0) return;
-
-        // Priority 100: Symbol resolution (always)
-        defaultPipeline.addStrategy(new SymbolStrategy());
-
-        // Priority 80: Pattern-based (always registered; functional only when data available)
-        if (patternData) {
-            const ps = new PatternStrategy();
-            ps.setPatternData(patternData);
-            defaultPipeline.addStrategy(ps);
-        }
-
-        // Priority 40: Memory scan (only when user explicitly enables --experimental)
-        if (experimentalMode) {
-            defaultPipeline.addStrategy(new MemoryScanStrategy());
-        }
-
-        // NOTE: OffsetStrategy is NOT registered here.
-        // Offsets are applied directly by the constructor when user provides --offsets flag.
-
-        devlog(`[Pipeline] Initialized with ${defaultPipeline.size} strategies`);
+        sharedInitializePipeline(patternData, experimentalMode);
     }
 
 
@@ -287,11 +242,7 @@ export class OpenSSL_BoringSSL {
                         retval = OpenSSL_BoringSSL.modReceiver.readmod.byteLength;                
                     }
     
-                    this.message["contentType"] = "datalog"
-
-
-
-                    sendWithProtocol(this.message, this.buf.readByteArray(retval))
+                    sendDatalog(this.message, this.buf.readByteArray(retval))
 
                 }
             })
@@ -353,17 +304,14 @@ export class OpenSSL_BoringSSL {
                     if (message === null) { return; }
                     message["ssl_session_id"] = instance.getSslSessionId(args[0])
                     message["function"] = "SSL_write"
-                    message["contentType"] = "datalog"
-                    
-    
                     if(OpenSSL_BoringSSL.modReceiver.writemod !== null){
                         const newPointer = Memory.alloc(OpenSSL_BoringSSL.modReceiver.writemod.byteLength)
-                        newPointer.writeByteArray(OpenSSL_BoringSSL.modReceiver.writemod);                    
+                        newPointer.writeByteArray(OpenSSL_BoringSSL.modReceiver.writemod);
                         args[1] = newPointer;
-                        args[2] = new NativePointer(OpenSSL_BoringSSL.modReceiver.writemod.byteLength); 
+                        args[2] = new NativePointer(OpenSSL_BoringSSL.modReceiver.writemod.byteLength);
                     }
-    
-                    sendWithProtocol(message, args[1].readByteArray(args[2].toInt32()))
+
+                    sendDatalog(message, args[1].readByteArray(args[2].toInt32()))
                     } // this is a temporary workaround for the fd problem on iOS
                 },
                 onLeave: function (retval: any) {
@@ -478,10 +426,7 @@ export class OpenSSL_BoringSSL {
         }
 
         //devlog("OpenSSL log: "+labelStr+" "+client_random_str+" "+secret_key);
-        var message: { [key: string]: string | number | null } = {}
-        message["contentType"] = "keylog"
-        message["keylog"] = labelStr+" "+client_random_str+" "+secret_key;
-        sendWithProtocol(message);
+        sendKeylog(labelStr+" "+client_random_str+" "+secret_key);
     }
 
     install_boringssl_key_extraction_hook(){
@@ -526,8 +471,7 @@ export class OpenSSL_BoringSSL {
                         return
                     }
 
-                    this.message["contentType"] = "datalog"
-                    sendWithProtocol(this.message, this.buf.readByteArray(actual_bytes))
+                    sendDatalog(this.message, this.buf.readByteArray(actual_bytes))
 
                 }
             });
@@ -567,9 +511,7 @@ export class OpenSSL_BoringSSL {
                     if (message === null) { return; }
                     message["ssl_session_id"] = instance.getSslSessionId(args[0])
                     message["function"] = "SSL_write_ex"
-                    message["contentType"] = "datalog"
-
-                    sendWithProtocol(message, args[1].readByteArray(args[2].toInt32()))
+                    sendDatalog(message, args[1].readByteArray(args[2].toInt32()))
                     } // this is a temporary workaround for the fd problem on iOS
                 },
                 onLeave: function (retval: any) {

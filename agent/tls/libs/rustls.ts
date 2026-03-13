@@ -1,5 +1,5 @@
-import { readAddresses, checkNumberOfExports, resolveOffsets } from "../../shared/shared_functions.js";
-import { sendWithProtocol } from "../../shared/shared_structures.js";
+import { readAddresses, checkNumberOfExports, resolveOffsets, toHexString } from "../../shared/shared_functions.js";
+import { sendKeylog } from "../../shared/shared_structures.js";
 import { devlog, log } from "../../util/log.js";
 
 
@@ -20,8 +20,6 @@ export class RusTLS {
     // Callbackfuntion for logging keying material
     static keyLogCB = new NativeCallback (function(label: [NativePointer, UInt64], client_random: NativePointer, client_random_len: UInt64 , secret: NativePointer, secret_size:UInt64) {
         devlog("invoking keyLogCB from rustls");
-        var message: { [key: string]: string | number | null } = {};
-        message["contentType"] = "keylog";
         var labelStr: string;
 
         // If no label is provided the keyLog should begin with "CLIENT_RANDOM "
@@ -35,14 +33,13 @@ export class RusTLS {
         var clientRandomStr = client_random.readByteArray(client_random_len.toNumber());
         var secretStr = secret.readByteArray(secret_size.toNumber());
 
-        
+
         // Convert byte arrays to hex strings for better logging
-        var clientRandomHex = Array.from(new Uint8Array(clientRandomStr)).map(b => b.toString(16).padStart(2, '0')).join('');
-        var secretHex = Array.from(new Uint8Array(secretStr)).map(b => b.toString(16).padStart(2, '0')).join('');
+        var clientRandomHex = toHexString(clientRandomStr);
+        var secretHex = toHexString(secretStr);
 
         // Construct the keylog message
-        message["keylog"] = `${labelStr} ${clientRandomHex} ${secretHex}`;
-        sendWithProtocol(message);
+        sendKeylog(`${labelStr} ${clientRandomHex} ${secretHex}`);
 
         return 1;
     }, 'void', [['pointer', 'size_t'], 'pointer', 'size_t', 'pointer', 'size_t']);
@@ -150,33 +147,24 @@ export class RusTLS {
         if (client_random_ptr != null) {
             const randomData = client_random_ptr.readByteArray(RANDOM_KEY_LENGTH);
             if (randomData) {
-                client_random = Array
-                .from(new Uint8Array(randomData))
-                .map(byte => byte.toString(16).padStart(2, '0').toUpperCase())
-                .join('');
+                client_random = toHexString(randomData);
             }
         } else {
           //devlog("[Error] Argument 'client_random_ptr' is NULL");
           client_random = "<identify using PCAP> ";
         }
-    
+
         if (!key.isNull()) {
-            
+
             const keyData = key.readByteArray(KEY_LENGTH);
             if (keyData) {
-                secret_key = Array
-                .from(new Uint8Array(keyData))
-                .map(byte => byte.toString(16).padStart(2, '0').toUpperCase())
-                .join('');
+                secret_key = toHexString(keyData);
             }
         } else {
             devlog("[Error] Argument 'key' is NULL");
         }
     
-        var message: { [key: string]: string | number | null } = {}
-        message["contentType"] = "keylog"
-        message["keylog"] = labelStr+" "+client_random+" "+secret_key;
-        sendWithProtocol(message)
+        sendKeylog(labelStr+" "+client_random+" "+secret_key);
         return true;
     }
 
@@ -199,32 +187,23 @@ export class RusTLS {
         if (!key.isNull()) {
             const keyData = key.readByteArray(MASTER_SECRET_LEN);
             if (keyData) {
-                secret_key = Array
-                .from(new Uint8Array(keyData))
-                .map(byte => byte.toString(16).padStart(2, '0').toUpperCase())
-                .join('');
+                secret_key = toHexString(keyData);
             }
         } else {
           devlog("[!] Argument 'key' is NULL");
         }
-    
+
         if (!client_random_ptr.isNull()) {
             const keyData = client_random_ptr.readByteArray(KEY_LENGTH);
             if (keyData) {
-                client_random = Array
-                .from(new Uint8Array(keyData))
-                .map(byte => byte.toString(16).padStart(2, '0').toUpperCase())
-                .join('');
+                client_random = toHexString(keyData);
             }
         } else {
           devlog("[!] Argument 'client_random_ptr' is NULL");
         }
     
 
-        var message: { [key: string]: string | number | null } = {}
-        message["contentType"] = "keylog"
-        message["keylog"] = labelStr+" "+client_random+" "+secret_key;
-        sendWithProtocol(message)
+        sendKeylog(labelStr+" "+client_random+" "+secret_key);
         return true;
     }
 
@@ -256,31 +235,22 @@ export class RusTLS {
         if (client_random_ptr != null) {
             const randomData = client_random_ptr.readByteArray(RANDOM_KEY_LENGTH);
             if (randomData) {
-                client_random = Array
-                .from(new Uint8Array(randomData))
-                .map(byte => byte.toString(16).padStart(2, '0').toUpperCase())
-                .join('');
+                client_random = toHexString(randomData);
             }
         } else {
           client_random = "<identify using PCAP> ";
         }
-    
+
         if (!key.isNull()) {
             const keyData = key.readByteArray(KEY_LENGTH);
             if (keyData) {
-                secret_key = Array
-                .from(new Uint8Array(keyData))
-                .map(byte => byte.toString(16).padStart(2, '0').toUpperCase())
-                .join('');
+                secret_key = toHexString(keyData);
             }
         } else {
             devlog("[Error] Argument 'key' is NULL");
         }
     
-        var message: { [key: string]: string | number | null } = {}
-        message["contentType"] = "keylog"
-        message["keylog"] = labelStr+" "+client_random+" "+secret_key;
-        sendWithProtocol(message)
+        sendKeylog(labelStr+" "+client_random+" "+secret_key);
         return true;
     }
 

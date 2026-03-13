@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from ..output.dedup import KeyDeduplicator
 from ..output.formatters import write_keylog_line
 
 if TYPE_CHECKING:
@@ -22,6 +23,7 @@ class KeylogFileSink:
     def __init__(self, path: str) -> None:
         self._path = path
         self._file = None
+        self._dedup = KeyDeduplicator()
         self._logger = logging.getLogger("friTap.sinks.keylog")
 
     def open(self) -> None:
@@ -31,7 +33,7 @@ class KeylogFileSink:
     def on_keylog(self, event: "KeylogCanonical") -> None:
         if not self._file:
             return
-        if event.key_data:
+        if event.key_data and self._dedup.is_new(event.key_data):
             write_keylog_line(self._file, event.key_data)
 
     def on_data(self, event: "DataCanonical") -> None:
@@ -48,4 +50,5 @@ class KeylogFileSink:
         if self._file:
             self._file.close()
             self._file = None
+            self._dedup.clear()
             self._logger.debug("Closed keylog file: %s", self._path)

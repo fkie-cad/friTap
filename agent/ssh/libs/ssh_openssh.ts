@@ -6,6 +6,7 @@
  */
 
 import { log, devlog } from "../../util/log.js";
+import { sendWithProtocol } from "../../shared/shared_structures.js";
 
 export class SSH_OpenSSH {
     module_name: string;
@@ -77,10 +78,9 @@ export class SSH_OpenSSH {
             },
             onLeave: function (retval) {
                 const direction = this.mode === 0 ? "client" : "server";
-                send({
+                sendWithProtocol({
                     contentType: "ssh_newkeys",
                     direction: direction,
-                    protocol: "ssh",
                     message: `SSH new keys activated: ${direction}`,
                 });
             }

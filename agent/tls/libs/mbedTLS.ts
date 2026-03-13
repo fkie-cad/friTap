@@ -1,7 +1,8 @@
 import { readAddresses, getPortsAndAddresses, resolveOffsets} from "../../shared/shared_functions.js";
-import { sendWithProtocol } from "../../shared/shared_structures.js";
+import { sendDatalog } from "../../shared/shared_structures.js";
 import { enable_default_fd } from "../../fritap_agent.js";
 import { log } from "../../util/log.js";
+import { resolveWithPipeline } from "../../shared/pipeline_utils.js";
 
 /**
  * 
@@ -116,7 +117,9 @@ export class mbed_TLS {
 
         resolveOffsets(this.addresses, this.moduleName, socket_library, "mbedtls");
 
-
+        resolveWithPipeline(this.addresses, this.moduleName, "mbedtls", [
+            "mbedtls_ssl_read", "mbedtls_ssl_write"
+        ]);
 
     }
 
@@ -187,8 +190,7 @@ export class mbed_TLS {
                 }
 
                 var data = this.buffer.readByteArray(retval);
-                this.message["contentType"] = "datalog"
-                sendWithProtocol(this.message, data)
+                sendDatalog(this.message, data)
 
 
             }
@@ -215,8 +217,7 @@ export class mbed_TLS {
                 var message = getPortsAndAddresses(mbed_TLS.getSocketDescriptor(args[0]) as number, false, lib_addesses[current_module_name], enable_default_fd)
                 message["ssl_session_id"] = mbed_TLS.getSessionId(args[0])
                 message["function"] = "mbedtls_ssl_write"
-                message["contentType"] = "datalog"
-                sendWithProtocol(message, data)
+                sendDatalog(message, data)
             }
         });
 

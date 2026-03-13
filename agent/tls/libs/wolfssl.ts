@@ -1,7 +1,8 @@
 import { readAddresses, getPortsAndAddresses, resolveOffsets } from "../../shared/shared_functions.js";
-import { sendWithProtocol } from "../../shared/shared_structures.js";
+import { sendDatalog } from "../../shared/shared_structures.js";
 import { log } from "../../util/log.js";
 import { enable_default_fd } from "../../fritap_agent.js";
+import { resolveWithPipeline } from "../../shared/pipeline_utils.js";
 
 export class WolfSSL {
 
@@ -29,7 +30,12 @@ export class WolfSSL {
 
         resolveOffsets(this.addresses, this.moduleName, socket_library, "wolfssl");
 
-        
+        resolveWithPipeline(this.addresses, this.moduleName, "wolfssl", [
+            "wolfSSL_read", "wolfSSL_write", "wolfSSL_get_fd",
+            "wolfSSL_get_session", "wolfSSL_connect",
+            "wolfSSL_SESSION_get_master_key", "wolfSSL_get_client_random",
+            "wolfSSL_get_server_random"
+        ]);
 
         WolfSSL.wolfSSL_get_fd = new NativeFunction(this.addresses[this.moduleName]["wolfSSL_get_fd"], "int", ["pointer"])
         WolfSSL.wolfSSL_get_session = new NativeFunction(this.addresses[this.moduleName]["wolfSSL_get_session"], "pointer", ["pointer"])
@@ -93,8 +99,7 @@ export class WolfSSL {
                 if (retval <= 0) {
                     return
                 }
-                this.message["contentType"] = "datalog"
-                sendWithProtocol(this.message, this.buf.readByteArray(retval))
+                sendDatalog(this.message, this.buf.readByteArray(retval))
             }
         })
     }
@@ -109,8 +114,7 @@ export class WolfSSL {
                 var message = getPortsAndAddresses(WolfSSL.wolfSSL_get_fd(args[0]) as number, false, lib_addesses[current_module_name], enable_default_fd)
                 message["ssl_session_id"] = WolfSSL.getSslSessionId(args[0])
                 message["function"] = "wolfSSL_write"
-                message["contentType"] = "datalog"
-                sendWithProtocol(message, args[1].readByteArray(parseInt(args[2])))
+                sendDatalog(message, args[1].readByteArray(parseInt(args[2])))
             },
             onLeave: function (retval: any) {
             }

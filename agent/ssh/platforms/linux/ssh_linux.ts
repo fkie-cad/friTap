@@ -9,6 +9,8 @@
  */
 
 import { log, devlog } from "../../../util/log.js";
+import { sendWithProtocol } from "../../../shared/shared_structures.js";
+import { toHexString } from "../../../shared/shared_functions.js";
 
 // sshenc struct offsets (OpenSSH 9.x/10.x)
 // These match the struct layout: cipher_name(+0), key_len(+20), iv_len(+24), key_ptr(+32), iv_ptr(+32+ptrSize)
@@ -30,17 +32,15 @@ function readSshEncKeys(sshencPtr: NativePointer, direction: string): void {
         if (keyLen > 0 && keyLen < 256 && !keyPtr.isNull()) {
             const keyData = keyPtr.readByteArray(keyLen);
             if (keyData) {
-                const keyHex = Array.from(new Uint8Array(keyData))
-                    .map(b => b.toString(16).padStart(2, '0')).join('');
+                const keyHex = toHexString(keyData);
 
-                send({
+                sendWithProtocol({
                     contentType: "ssh_key",
                     direction: direction,
                     key_type: `SSH_ENC_KEY_${direction.toUpperCase()}`,
                     cipher: cipherName,
                     key_len: keyLen,
                     key_data: keyHex,
-                    protocol: "ssh",
                 });
 
                 log(`[SSH] ${direction} key extracted: cipher=${cipherName}, len=${keyLen}`);
@@ -50,17 +50,15 @@ function readSshEncKeys(sshencPtr: NativePointer, direction: string): void {
         if (ivLen > 0 && ivLen < 256 && !ivPtr.isNull()) {
             const ivData = ivPtr.readByteArray(ivLen);
             if (ivData) {
-                const ivHex = Array.from(new Uint8Array(ivData))
-                    .map(b => b.toString(16).padStart(2, '0')).join('');
+                const ivHex = toHexString(ivData);
 
-                send({
+                sendWithProtocol({
                     contentType: "ssh_key",
                     direction: direction,
                     key_type: `SSH_IV_${direction.toUpperCase()}`,
                     cipher: cipherName,
                     iv_len: ivLen,
                     key_data: ivHex,
-                    protocol: "ssh",
                 });
 
                 log(`[SSH] ${direction} IV extracted: cipher=${cipherName}, len=${ivLen}`);
@@ -76,10 +74,9 @@ export function ssh_execute(moduleName: string, is_base_hook: boolean): void {
     log(`[*] SSH library found: ${moduleName}`);
 
     // Notify Python side about the detected library
-    send({
+    sendWithProtocol({
         contentType: "library_detected",
         library: moduleName,
-        protocol: "ssh",
         message: `SSH library detected: ${moduleName}`,
     });
 
@@ -137,10 +134,9 @@ export function ssh_execute(moduleName: string, is_base_hook: boolean): void {
             onLeave: function (retval) {
                 const direction = this.mode === 0 ? "client" : "server";
                 log(`[SSH] New keys activated for ${direction} direction`);
-                send({
+                sendWithProtocol({
                     contentType: "ssh_newkeys",
                     direction: direction,
-                    protocol: "ssh",
                     message: `SSH new keys activated: ${direction}`,
                 });
             }

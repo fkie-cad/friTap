@@ -53,11 +53,34 @@ export class IPSec_StrongSwan {
 
     private _hookDeriveChildSaKeys(): void {
         const addr = this.addresses["ikev2_derive_child_sa_keys"];
-        devlog(`[IPSec_StrongSwan] Hooks for ikev2_derive_child_sa_keys needs to be implemented in the future`);
+        Interceptor.attach(addr, {
+            onEnter: function (args) {
+                this.args = [];
+                for (let i = 0; i < 8; i++) {
+                    this.args.push(args[i]);
+                }
+            },
+            onLeave: function (retval) {
+                devlog("[IPSec_StrongSwan] ikev2_derive_child_sa_keys returned");
+                // Full key extraction in ipsec_linux.ts ipsec_execute()
+            }
+        });
+        devlog(`[IPSec_StrongSwan] Hooked ikev2_derive_child_sa_keys`);
     }
 
     private _hookDeriveIkeKeys(): void {
         const addr = this.addresses["derive_ike_keys"];
-        devlog(`[IPSec_StrongSwan] Hooks for derive_ike_keys needs to be implemented in the future`);
+        Interceptor.attach(addr, {
+            onEnter: function (args) {
+                this.args = [];
+                for (let i = 0; i < 6; i++) {
+                    this.args.push(args[i]);
+                }
+            },
+            onLeave: function (retval) {
+                devlog("[IPSec_StrongSwan] derive_ike_keys returned");
+            }
+        });
+        devlog(`[IPSec_StrongSwan] Hooked derive_ike_keys`);
     }
 }

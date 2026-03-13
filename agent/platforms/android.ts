@@ -1,29 +1,40 @@
-import { hookRegistry } from "../shared/registry.js";
-import { getModuleNames, ssl_library_loader_v2, invokeHookingFunction } from "../shared/shared_functions.js";
+import { hookRegistry, HookRegistry } from "../shared/registry.js";
+import { getModuleNames, ssl_library_loader, hookDynamicLoader } from "../shared/shared_functions.js";
+import { Platform, PLATFORM_LINUX } from "../shared/shared_structures.js";
 import { log, devlog } from "../util/log.js";
 import { findModulesWithSSLKeyLogCallback } from "../tls/shared/library_identification.js";
-import { gnutls_execute } from "../tls/platforms/android/gnutls_android.js";
-import { wolfssl_execute } from "../tls/platforms/android/wolfssl_android.js";
-import { nss_execute } from "../tls/platforms/android/nss_android.js";
-import { mbedTLS_execute } from "../tls/platforms/android/mbedTLS_android.js";
-import { boring_execute } from "../tls/platforms/android/openssl_boringssl_android.js";
-import { java_execute} from "../tls/platforms/android/android_java_tls_libs.js";
-import { cronet_execute } from "../tls/platforms/android/cronet_android.js";
-import { conscrypt_native_execute } from "../tls/platforms/android/conscrypt.js";
+// Modern (definition-based) executors
+import { gnutls_execute_modern } from "../tls/platforms/android/gnutls_android.js";
+import { wolfssl_execute_modern } from "../tls/platforms/android/wolfssl_android.js";
+import { nss_execute_modern } from "../tls/platforms/android/nss_android.js";
+import { mbedTLS_execute_modern } from "../tls/platforms/android/mbedTLS_android.js";
+import { boring_execute_modern } from "../tls/platforms/android/openssl_boringssl_android.js";
+import { conscrypt_execute_modern } from "../tls/platforms/android/conscrypt.js";
+import { s2ntls_execute_modern } from "../tls/platforms/android/s2ntls_android.js";
+// Legacy (class-based) executors
+import { boring_execute } from "../legacy/tls/platforms/android/openssl_boringssl_android.js";
+import { gnutls_execute } from "../legacy/tls/platforms/android/gnutls_android.js";
+import { wolfssl_execute } from "../legacy/tls/platforms/android/wolfssl_android.js";
+import { nss_execute } from "../legacy/tls/platforms/android/nss_android.js";
+import { mbedTLS_execute } from "../legacy/tls/platforms/android/mbedTLS_android.js";
+import { cronet_execute } from "../legacy/tls/platforms/android/cronet_android.js";
+import { conscrypt_native_execute } from "../legacy/tls/platforms/android/conscrypt.js";
+import { s2ntls_execute } from "../legacy/tls/platforms/android/s2ntls_android.js";
+// V1-only (re-exported from legacy)
+import { java_execute } from "../tls/platforms/android/android_java_tls_libs.js";
 import { flutter_execute } from "../tls/platforms/android/flutter_android.js";
-import { s2ntls_execute } from "../tls/platforms/android/s2ntls_android.js";
 import { mono_btls_execute } from "../tls/platforms/android/mono_btls_android.js";
-import { patterns, isPatternReplaced, selected_protocol } from "../fritap_agent.js"
+import { patterns, isPatternReplaced, selected_protocol, use_modern, scan_results, library_scan_enabled } from "../fritap_agent.js"
+import { processScanResults } from "../shared/library_scanner.js";
 import { pattern_execute } from "../tls/platforms/android/pattern_android.js"
 import { rustls_execute } from "../tls/platforms/android/rustls_android.js";
 import { gotls_execute } from "../tls/platforms/android/gotls_android.js";
 import { metartc_execute } from "../tls/platforms/android/metartc.js";
-//import { ipsec_detect_execute } from "../ipsec/platforms/linux/ipsec_linux.js";
+import { ipsec_detect_execute } from "../ipsec/platforms/linux/ipsec_linux.js";
 import { ssh_detect_execute } from "../ssh/platforms/linux/ssh_linux.js";
 
-var plattform_name = "linux";
+var plattform_name: Platform = PLATFORM_LINUX;
 var moduleNames: Array<string> = getModuleNames();
-(globalThis as any).addresses = {};
 
 export const socket_library = "libc"
 
@@ -31,54 +42,8 @@ function install_java_hooks(){
     java_execute();
 }
 
-function hook_Android_Dynamic_Loader(hookRegistry: any, is_base_hook: boolean): void{
-    try {
-    const regex_libdl = /.*libdl.*\.so/
-    const libdl = moduleNames.find(element => element.match(regex_libdl))
-    if (libdl === undefined){
-        throw "Android Dynamic loader not found!"
-    }
-
-    let dl_exports = Process.getModuleByName(libdl).enumerateExports()
-    var dlopen = "dlopen"
-    for (var ex of dl_exports) {
-        if (ex.name === "android_dlopen_ext") {
-            dlopen = "android_dlopen_ext"
-            break
-        }
-    }
-
-
-    Interceptor.attach(Process.getModuleByName(libdl).getExportByName(dlopen), {
-        onEnter: function (args) {
-            this.moduleName = args[0].readCString()
-        },
-        onLeave: function (retval: any) {
-            if (this.moduleName != undefined) {
-                const matches = hookRegistry.findAllMatches(plattform_name, this.moduleName, undefined, selected_protocol);
-                for (let match of matches) {
-                    log(`${this.moduleName} was loaded & will be hooked on Android!`)
-                    try {
-                        match.hookFn(this.moduleName, is_base_hook)
-                    } catch (error_msg) {
-                        devlog(`[-] Error in hooking ${this.moduleName}: ${error_msg}`)
-                    }
-                }
-            }
-        }
-
-
-    })
-
-    log(`[*] Android dynamic loader hooked.`)
-} catch (error) {
-    devlog("Dynamic loader error: "+ error)
-    log("No dynamic loader present for hooking on Android.")
-}
-}
-
-function hook_native_Android_SSL_Libs(hookRegistry: any, is_base_hook: boolean){
-    ssl_library_loader_v2(plattform_name, hookRegistry, moduleNames, "Android", is_base_hook, selected_protocol)
+function hook_native_Android_SSL_Libs(hookRegistry: HookRegistry, is_base_hook: boolean){
+    ssl_library_loader(plattform_name, hookRegistry, moduleNames, "Android", is_base_hook, selected_protocol)
 
 }
 
@@ -103,7 +68,7 @@ function install_pattern_based_hooks(){
                     hookRegistry.register({
                         platform: plattform_name,
                         pattern: new RegExp(moduleName),
-                        hookFn: invokeHookingFunction(pattern_execute),
+                        hookFn: pattern_execute,
                         library: "Pattern: " + moduleName,
                     });
                 }
@@ -135,87 +100,82 @@ function install_pattern_based_hooks(){
 
 
 export function load_android_hooking_agent() {
-    // LEGACY: module_library_mapping[plattform_name] = [
-    //     [/.*libssl_sb.so/, invokeHookingFunction(boring_execute)],
-    //     [/.*libssl\.so/, invokeHookingFunction(boring_execute)],
-    //     [/libconscrypt_gmscore_jni.so/, invokeHookingFunction(conscrypt_native_execute)],
-    //     [/libconscrypt_jni.so/, invokeHookingFunction(conscrypt_native_execute)],
-    //     [/.*flutter.*\.so/, invokeHookingFunction(flutter_execute)],
-    //     [/.*libgnutls\.so/, invokeHookingFunction(gnutls_execute)],
-    //     [/.*libwolfssl\.so/, invokeHookingFunction(wolfssl_execute)],
-    //     [/.*libnss[3-4]\.so/,invokeHookingFunction(nss_execute)],
-    //     [/libmbedtls\.so.*/, invokeHookingFunction(mbedTLS_execute)],
-    //     [/.*libs2n.so/, invokeHookingFunction(s2ntls_execute)],
-    //     [/.*mono-btls.*\.so/, invokeHookingFunction(mono_btls_execute)],
-    //     [/.*cronet.*\.so/, invokeHookingFunction(cronet_execute)],
-    //     [/.*libringrtc_rffi.*\.so/, invokeHookingFunction(cronet_execute)],
-    //     [/.*libsignal_jni.*\.so/, invokeHookingFunction(cronet_execute)],
-    //     [/.*monochrome.*\.so/, invokeHookingFunction(cronet_execute)],
-    //     [/.*libwarp_mobile.*\.so/, invokeHookingFunction(cronet_execute)],
-    //     [/.*lib*quiche*.*\.so/, invokeHookingFunction(cronet_execute)],
-    //     [/.*librustls.*\.so/, invokeHookingFunction(rustls_execute)],
-    //     [/.*libstartup.*\.so/, invokeHookingFunction(metartc_execute)],
-    //     [/libgojni.*\.so/, invokeHookingFunction(gotls_execute)]
-    // ];
     hookRegistry.registerAll([
-        { platform: plattform_name, pattern: /.*libssl_sb.so/, hookFn: invokeHookingFunction(boring_execute), library: "OpenSSL/BoringSSL" },
-        { platform: plattform_name, pattern: /.*libssl\.so/, hookFn: invokeHookingFunction(boring_execute), library: "OpenSSL/BoringSSL" },
-        { platform: plattform_name, pattern: /libconscrypt_gmscore_jni.so/, hookFn: invokeHookingFunction(conscrypt_native_execute), library: "Conscrypt" },
-        { platform: plattform_name, pattern: /libconscrypt_jni.so/, hookFn: invokeHookingFunction(conscrypt_native_execute), library: "Conscrypt" },
-        { platform: plattform_name, pattern: /.*flutter.*\.so/, hookFn: invokeHookingFunction(flutter_execute), library: "Flutter BoringSSL" },
-        { platform: plattform_name, pattern: /.*libgnutls\.so/, hookFn: invokeHookingFunction(gnutls_execute), library: "GnuTLS" },
-        { platform: plattform_name, pattern: /.*libwolfssl\.so/, hookFn: invokeHookingFunction(wolfssl_execute), library: "WolfSSL" },
-        { platform: plattform_name, pattern: /.*libnss[3-4]\.so/, hookFn: invokeHookingFunction(nss_execute), library: "NSS" },
-        { platform: plattform_name, pattern: /libmbedtls\.so.*/, hookFn: invokeHookingFunction(mbedTLS_execute), library: "mbedTLS" },
-        { platform: plattform_name, pattern: /.*libs2n.so/, hookFn: invokeHookingFunction(s2ntls_execute), library: "s2n-tls" },
-        { platform: plattform_name, pattern: /.*mono-btls.*\.so/, hookFn: invokeHookingFunction(mono_btls_execute), library: "Mono BTLS" },
-        { platform: plattform_name, pattern: /.*cronet.*\.so/, hookFn: invokeHookingFunction(cronet_execute), library: "Cronet" },
-        { platform: plattform_name, pattern: /.*libringrtc_rffi.*\.so/, hookFn: invokeHookingFunction(cronet_execute), library: "Cronet (RingRTC)" },
-        { platform: plattform_name, pattern: /.*libsignal_jni.*\.so/, hookFn: invokeHookingFunction(cronet_execute), library: "Cronet (Signal)" },
-        { platform: plattform_name, pattern: /.*monochrome.*\.so/, hookFn: invokeHookingFunction(cronet_execute), library: "Cronet (Monochrome)" },
-        { platform: plattform_name, pattern: /.*libwarp_mobile.*\.so/, hookFn: invokeHookingFunction(cronet_execute), library: "Cronet (Warp Mobile)" },
-        { platform: plattform_name, pattern: /.*lib*quiche*.*\.so/, hookFn: invokeHookingFunction(cronet_execute), library: "Cronet (QUICHE)" },
-        { platform: plattform_name, pattern: /.*librustls.*\.so/, hookFn: invokeHookingFunction(rustls_execute), library: "Rustls" },
-        { platform: plattform_name, pattern: /.*libstartup.*\.so/, hookFn: invokeHookingFunction(metartc_execute), library: "metaRTC" },
-        { platform: plattform_name, pattern: /libgojni.*\.so/, hookFn: invokeHookingFunction(gotls_execute), library: "Go TLS" },
+        { platform: plattform_name, pattern: /.*libssl_sb.so/, hookFn: (use_modern ? boring_execute_modern : boring_execute), library: "OpenSSL/BoringSSL", libraryType: "openssl" },
+        { platform: plattform_name, pattern: /.*libssl\.so/, hookFn: (use_modern ? boring_execute_modern : boring_execute), library: "OpenSSL/BoringSSL", libraryType: "openssl" },
+        { platform: plattform_name, pattern: /libconscrypt_gmscore_jni.so/, hookFn: (use_modern ? conscrypt_execute_modern : conscrypt_native_execute), library: "Conscrypt", libraryType: "boringssl" },
+        { platform: plattform_name, pattern: /libconscrypt_jni.so/, hookFn: (use_modern ? conscrypt_execute_modern : conscrypt_native_execute), library: "Conscrypt", libraryType: "boringssl" },
+        { platform: plattform_name, pattern: /.*flutter.*\.so/, hookFn: flutter_execute, library: "Flutter BoringSSL", libraryType: "boringssl" },
+        { platform: plattform_name, pattern: /.*libgnutls\.so/, hookFn: (use_modern ? gnutls_execute_modern : gnutls_execute), library: "GnuTLS", libraryType: "gnutls" },
+        { platform: plattform_name, pattern: /.*libwolfssl\.so/, hookFn: (use_modern ? wolfssl_execute_modern : wolfssl_execute), library: "WolfSSL", libraryType: "wolfssl" },
+        { platform: plattform_name, pattern: /.*libnss[3-4]\.so/, hookFn: (use_modern ? nss_execute_modern : nss_execute), library: "NSS", libraryType: "nss" },
+        { platform: plattform_name, pattern: /libmbedtls\.so.*/, hookFn: (use_modern ? mbedTLS_execute_modern : mbedTLS_execute), library: "mbedTLS", libraryType: "mbedtls" },
+        { platform: plattform_name, pattern: /.*libs2n.so/, hookFn: (use_modern ? s2ntls_execute_modern : s2ntls_execute), library: "s2n-tls", libraryType: "s2ntls" },
+        { platform: plattform_name, pattern: /.*mono-btls.*\.so/, hookFn: mono_btls_execute, library: "Mono BTLS", libraryType: "boringssl" },
+        { platform: plattform_name, pattern: /.*cronet.*\.so/, excludePattern: /_(libpki|libcrypto)\.so$/, hookFn: cronet_execute, library: "Cronet", libraryType: "boringssl" },
+        { platform: plattform_name, pattern: /.*libringrtc_rffi.*\.so/, hookFn: cronet_execute, library: "Cronet (RingRTC)", libraryType: "boringssl" },
+        { platform: plattform_name, pattern: /.*libsignal_jni.*\.so/, excludePattern: /_testing\.so$/, hookFn: cronet_execute, library: "Cronet (Signal)", libraryType: "boringssl" },
+        { platform: plattform_name, pattern: /.*monochrome.*\.so/, hookFn: cronet_execute, library: "Cronet (Monochrome)", libraryType: "boringssl" },
+        { platform: plattform_name, pattern: /.*libwarp_mobile.*\.so/, hookFn: cronet_execute, library: "Cronet (Warp Mobile)", libraryType: "boringssl" },
+        { platform: plattform_name, pattern: /.*lib*quiche*.*\.so/, hookFn: cronet_execute, library: "Cronet (QUICHE)", libraryType: "boringssl" },
+        { platform: plattform_name, pattern: /.*librustls.*\.so/, hookFn: rustls_execute, library: "Rustls", libraryType: "rustls" },
+        { platform: plattform_name, pattern: /.*libstartup.*\.so/, hookFn: metartc_execute, library: "metaRTC" },
+        { platform: plattform_name, pattern: /libgojni.*\.so/, hookFn: gotls_execute, library: "Go TLS", libraryType: "gotls" },
         // IPSec libraries — strongSwan VPN is common on Android (detection stub, key extraction in Phase 3.8)
-        /*
-        { platform: plattform_name, pattern: /.*libcharon\.so/, hookFn: invokeHookingFunction(ipsec_detect_execute), library: "strongSwan (charon)", protocol: "ipsec" },
-        { platform: plattform_name, pattern: /.*libstrongswan\.so/, hookFn: invokeHookingFunction(ipsec_detect_execute), library: "strongSwan", protocol: "ipsec" },
-         */
+        { platform: plattform_name, pattern: /.*libcharon\.so/, hookFn: ipsec_detect_execute, library: "strongSwan (charon)", protocol: "ipsec" },
+        { platform: plattform_name, pattern: /.*libstrongswan\.so/, hookFn: ipsec_detect_execute, library: "strongSwan", protocol: "ipsec" },
         // SSH libraries
-        { platform: plattform_name, pattern: /.*libssh2?\.so/, hookFn: invokeHookingFunction(ssh_detect_execute), library: "libssh", protocol: "ssh" },
-        { platform: plattform_name, pattern: /.*dropbear/, hookFn: invokeHookingFunction(ssh_detect_execute), library: "Dropbear", protocol: "ssh" },
+        { platform: plattform_name, pattern: /.*libssh2?\.so/, hookFn: ssh_detect_execute, library: "libssh", protocol: "ssh" },
+        { platform: plattform_name, pattern: /.*dropbear/, hookFn: ssh_detect_execute, library: "Dropbear", protocol: "ssh" },
     ]);
 
 
     install_java_hooks();
     hook_native_Android_SSL_Libs(hookRegistry, true);
-    hook_Android_Dynamic_Loader(hookRegistry, false);
+    processScanResults(scan_results, plattform_name, true, selected_protocol);
+    hookDynamicLoader({
+        platform: plattform_name,
+        platformLabel: "Android",
+        loaderLibrary: /.*libdl.*\.so/,
+        functionName: "dlopen",
+        preferFunction: "android_dlopen_ext",
+    }, hookRegistry, moduleNames, false, selected_protocol);
     if (isPatternReplaced()){
         install_pattern_based_hooks();
     }
 
     /*
-     * Our simple approach to find the modules which might use BoringSSL internally
+     * Our simple approach to find the modules which might use BoringSSL internally.
+     * Only runs when --library-scan is enabled to avoid slow startup from scanning all modules.
      */
-    try{
-        let matchedModules = findModulesWithSSLKeyLogCallback();
-        if (matchedModules.length > 0) {
-            for (const mod of matchedModules) {
-                devlog("[!] Installing BoringSSL hooks for " + mod);
-                hookRegistry.register({
+    if (library_scan_enabled) {
+        try{
+            let matchedModules = findModulesWithSSLKeyLogCallback();
+            // Filter out modules already matched by registry to prevent double-hooking
+            matchedModules = matchedModules.filter(mod => !hookRegistry.findMatch(plattform_name, mod, "", selected_protocol));
+            if (matchedModules.length > 0) {
+                for (const mod of matchedModules) {
+                    devlog("[!] Installing BoringSSL hooks for " + mod);
+                    hookRegistry.register({
+                        platform: plattform_name,
+                        pattern: new RegExp(`.*${mod}`),
+                        hookFn: (use_modern ? boring_execute_modern : boring_execute),
+                        library: "BoringSSL (auto-detected)",
+                        libraryType: "boringssl",
+                    });
+                }
+                hook_native_Android_SSL_Libs(hookRegistry, false);
+                hookDynamicLoader({
                     platform: plattform_name,
-                    pattern: new RegExp(`.*${mod}`),
-                    hookFn: invokeHookingFunction(boring_execute),
-                    library: "BoringSSL (auto-detected)",
-                });
+                    platformLabel: "Android",
+                    loaderLibrary: /.*libdl.*\.so/,
+                    functionName: "dlopen",
+                    preferFunction: "android_dlopen_ext",
+                }, hookRegistry, moduleNames, false, selected_protocol);
+                log("[*] Hooked additional modules with SSL_CTX_set_keylog_callback.");
             }
-            hook_native_Android_SSL_Libs(hookRegistry, false);
-            hook_Android_Dynamic_Loader(hookRegistry, false);
-            log("[*] Hooked additional modules with SSL_CTX_set_keylog_callback.");
+        }catch (error_msg){
+            devlog("[-] Error in hooking additional modules: " + error_msg);
         }
-    }catch (error_msg){
-        devlog("[-] Error in hooking additional modules: " + error_msg);
     }
 }

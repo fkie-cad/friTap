@@ -1,18 +1,26 @@
 import { hookRegistry } from "../shared/registry.js";
-import { selected_protocol } from "../fritap_agent.js";
+import { selected_protocol, use_modern } from "../fritap_agent.js";
 import { log, devlog } from "../util/log.js";
-import { getModuleNames, invokeHookingFunction } from "../shared/shared_functions.js";
+import { getModuleNames } from "../shared/shared_functions.js";
+import { Platform, PLATFORM_WINE } from "../shared/shared_structures.js";
 import { load_linux_hooking_agent } from "./linux.js";
 
 // Import Windows-style TLS library hooks (reuse existing implementations)
-import { boring_execute as boring_execute_windows } from "../tls/platforms/windows/openssl_boringssl_windows.js";
-import { gnutls_execute as gnutls_execute_windows } from "../tls/platforms/windows/gnutls_windows.js";
-import { mbedTLS_execute as mbedTLS_execute_windows } from "../tls/platforms/windows/mbedTLS_windows.js";
-import { nss_execute as nss_execute_windows } from "../tls/platforms/windows/nss_windows.js";
-import { wolfssl_execute as wolfssl_execute_windows } from "../tls/platforms/windows/wolfssl_windows.js";
-import { cronet_execute as cronet_execute_windows } from "../tls/platforms/windows/cronet_windows.js";
+// Legacy v1 executors from legacy copies
+import { boring_execute as boring_execute_windows } from "../legacy/tls/platforms/windows/openssl_boringssl_windows.js";
+import { gnutls_execute as gnutls_execute_windows } from "../legacy/tls/platforms/windows/gnutls_windows.js";
+import { mbedTLS_execute as mbedTLS_execute_windows } from "../legacy/tls/platforms/windows/mbedTLS_windows.js";
+import { nss_execute as nss_execute_windows } from "../legacy/tls/platforms/windows/nss_windows.js";
+import { wolfssl_execute as wolfssl_execute_windows } from "../legacy/tls/platforms/windows/wolfssl_windows.js";
+import { cronet_execute as cronet_execute_windows } from "../legacy/tls/platforms/windows/cronet_windows.js";
+// Modern v2 executors from modern files
+import { boring_execute_modern as boring_execute_modern_windows } from "../tls/platforms/windows/openssl_boringssl_windows.js";
+import { gnutls_execute_modern as gnutls_execute_modern_windows } from "../tls/platforms/windows/gnutls_windows.js";
+import { mbedTLS_execute_modern as mbedTLS_execute_modern_windows } from "../tls/platforms/windows/mbedTLS_windows.js";
+import { nss_execute_modern as nss_execute_modern_windows } from "../tls/platforms/windows/nss_windows.js";
+import { wolfssl_execute_modern as wolfssl_execute_modern_windows } from "../tls/platforms/windows/wolfssl_windows.js";
 
-var platform_name = "wine";
+var platform_name: Platform = PLATFORM_WINE;
 var moduleNames: Array<string> = getModuleNames();
 
 // Wine uses Linux sockets (libc), not Windows sockets (WS2_32.dll)
@@ -92,7 +100,7 @@ function hook_Wine_LdrLoadDll(is_base_hook: boolean): void {
                     const dllName = this.dllName as string;
                     const dllBaseName = dllName.split(/[/\\]/).pop() || dllName;
 
-                    const matches = hookRegistry.findAllMatches("wine", dllBaseName, undefined, selected_protocol);
+                    const matches = hookRegistry.findAllMatches(platform_name, dllBaseName, undefined, selected_protocol);
                     for (const match of matches) {
                         log(`[Wine] ${dllBaseName} loaded & will be hooked (${match.library})!`);
                         try {
@@ -126,7 +134,7 @@ function hook_Wine_Existing_DLLs(is_base_hook: boolean): void {
             continue;
         }
 
-        const matches = hookRegistry.findAllMatches("wine", mod.name, mod.path, selected_protocol);
+        const matches = hookRegistry.findAllMatches(platform_name, mod.name, mod.path, selected_protocol);
         if (matches.length > 0) {
             const match = matches[0];
             log(`[Wine] Found pre-loaded DLL ${mod.name} (${match.library}), hooking...`);
@@ -158,13 +166,13 @@ export function load_wine_hooking_agent(): void {
 
     // Then add Wine-specific DLL hooking
     hookRegistry.registerAll([
-        { platform: platform_name, pattern: /^(libssl|LIBSSL)-[0-9]+(_[0-9]+)?\.dll$/i, hookFn: invokeHookingFunction(boring_execute_windows), library: "OpenSSL/BoringSSL" },
-        { platform: platform_name, pattern: /^.*libssl.*\.dll$/i, hookFn: invokeHookingFunction(boring_execute_windows), library: "OpenSSL/BoringSSL" },
-        { platform: platform_name, pattern: /^.*(wolfssl|WOLFSSL).*\.dll$/i, hookFn: invokeHookingFunction(wolfssl_execute_windows), library: "WolfSSL" },
-        { platform: platform_name, pattern: /^.*(libgnutls|LIBGNUTLS)-[0-9]+\.dll$/i, hookFn: invokeHookingFunction(gnutls_execute_windows), library: "GnuTLS" },
-        { platform: platform_name, pattern: /^(nspr|NSPR)[0-9]*\.dll/i, hookFn: invokeHookingFunction(nss_execute_windows), library: "NSS" },
-        { platform: platform_name, pattern: /mbedTLS\.dll/i, hookFn: invokeHookingFunction(mbedTLS_execute_windows), library: "mbedTLS" },
-        { platform: platform_name, pattern: /^.*(cronet|CRONET).*\.dll/i, hookFn: invokeHookingFunction(cronet_execute_windows), library: "Cronet" },
+        { platform: platform_name, pattern: /^(libssl|LIBSSL)-[0-9]+(_[0-9]+)?\.dll$/i, hookFn: (use_modern ? boring_execute_modern_windows : boring_execute_windows), library: "OpenSSL/BoringSSL", libraryType: "openssl" },
+        { platform: platform_name, pattern: /^.*libssl.*\.dll$/i, hookFn: (use_modern ? boring_execute_modern_windows : boring_execute_windows), library: "OpenSSL/BoringSSL", libraryType: "openssl" },
+        { platform: platform_name, pattern: /^.*(wolfssl|WOLFSSL).*\.dll$/i, hookFn: (use_modern ? wolfssl_execute_modern_windows : wolfssl_execute_windows), library: "WolfSSL", libraryType: "wolfssl" },
+        { platform: platform_name, pattern: /^.*(libgnutls|LIBGNUTLS)-[0-9]+\.dll$/i, hookFn: (use_modern ? gnutls_execute_modern_windows : gnutls_execute_windows), library: "GnuTLS", libraryType: "gnutls" },
+        { platform: platform_name, pattern: /^(nspr|NSPR)[0-9]*\.dll/i, hookFn: (use_modern ? nss_execute_modern_windows : nss_execute_windows), library: "NSS", libraryType: "nss" },
+        { platform: platform_name, pattern: /mbedTLS\.dll/i, hookFn: (use_modern ? mbedTLS_execute_modern_windows : mbedTLS_execute_windows), library: "mbedTLS", libraryType: "mbedtls" },
+        { platform: platform_name, pattern: /^.*(cronet|CRONET).*\.dll/i, hookFn: cronet_execute_windows, library: "Cronet", libraryType: "boringssl" },
     ]);
 
     // Hook existing Windows DLLs that are already loaded

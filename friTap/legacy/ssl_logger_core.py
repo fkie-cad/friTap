@@ -73,6 +73,8 @@ class SSL_Logger():
         else:
             raise ValueError("Either 'app' or 'config' must be provided")
 
+        self._cleanup_done = False
+
         # Set up logging (shared helper fixes bug where special_logger was hardcoded to INFO)
         self.logger, self.special_logger = setup_fritap_logging(
             debug=self._config.debug, debug_output=self._config.debug_output
@@ -136,9 +138,8 @@ class SSL_Logger():
         from ..message_router import MessageRouter
         self._message_router = MessageRouter(self._event_bus)
 
-        # Auto-detect: subscribe to library detection events
-        if self._config.protocol == "auto":
-            self._event_bus.subscribe(LibraryDetectedEvent, self._on_library_detected)
+        # Always track detected libraries (needed for exit hint message)
+        self._event_bus.subscribe(LibraryDetectedEvent, self._on_library_detected)
 
         # JSON session data
         self.session_data = {
@@ -279,23 +280,24 @@ class SSL_Logger():
         return self._config.hooking.patterns
 
     def _on_library_detected(self, event):
-        """Handle library detection events for auto-protocol selection.
+        """Handle library detection events.
 
-        When ``--protocol auto`` is active, each ``LibraryDetectedEvent``
-        from the agent is recorded. The first non-TLS protocol detected
-        (e.g. IPSec, SSH) causes the protocol handler to be switched so
-        that key formatting and PCAP DLT are appropriate.
+        Always tracks detected libraries (for exit hint). When
+        ``--protocol auto`` is active, the first non-TLS protocol
+        detected (e.g. IPSec, SSH) causes the protocol handler to be
+        switched so that key formatting and PCAP DLT are appropriate.
         """
         lib_name = event.library
         if lib_name and lib_name not in self._detected_libraries:
             self._detected_libraries.add(lib_name)
-            self.logger.debug("Auto-detect: library detected — %s (protocol=%s)", lib_name, event.protocol)
+            self.logger.debug("Library detected — %s (protocol=%s)", lib_name, event.protocol)
 
-            # Ask the registry which protocols match the detected libraries
-            matched = self._protocol_registry.auto_detect(list(self._detected_libraries))
-            if matched and matched[0].name != self._protocol_handler.name:
-                self._protocol_handler = matched[0]
-                self.logger.info("Auto-detect: switched protocol handler to %s", self._protocol_handler.name)
+            # Only switch protocol handler when in auto-detect mode
+            if self._config.protocol == "auto":
+                matched = self._protocol_registry.auto_detect(list(self._detected_libraries))
+                if matched and matched[0].name != self._protocol_handler.name:
+                    self._protocol_handler = matched[0]
+                    self.logger.info("Auto-detect: switched protocol handler to %s", self._protocol_handler.name)
 
 
 
@@ -500,6 +502,7 @@ class SSL_Logger():
                     'install_lsass_hook': self.install_lsass_hook,
                     'use_modern': getattr(self, 'use_modern', False),
                     'library_scan': self.scan_results_data,
+                    'library_scan_enabled': self._config.hooking.library_scan,
                 }
                 self._backend.post_message(self.script, 'config_batch', batch)
                 return
@@ -515,22 +518,6 @@ class SSL_Logger():
         content_type = payload.get("contentType")
 
         if self._handlers_active:
-            # console_dev debug logging (not covered by ConsoleOutputHandler)
-            if content_type == ContentType.CONSOLE_DEV and (self.debug or self.debug_output):
-                if payload.get("console_dev") and len(payload["console_dev"]) > 3:
-                    self.logger.debug(payload["console_dev"])
-
-            # Leveled console log routing from agent
-            if content_type == ContentType.CONSOLE_ERROR:
-                self.logger.error(payload.get("console_error", ""))
-            elif content_type == ContentType.CONSOLE_WARN:
-                self.logger.warning(payload.get("console_warn", ""))
-            elif content_type == ContentType.CONSOLE_INFO:
-                self.logger.info(payload.get("console_info", ""))
-            elif content_type == ContentType.CONSOLE_DEBUG:
-                if self.debug or self.debug_output:
-                    self.logger.debug(payload.get("console_debug", ""))
-
             # Socket trace / full capture set tracking (consumed by cleanup())
             if (self.socket_trace or self.full_capture) and "src_addr" in payload:
                 src_addr = get_addr_string(payload["src_addr"], payload["ss_family"])
@@ -789,6 +776,10 @@ class SSL_Logger():
         self._session_manager.pcap_cleanup(is_full_capture, is_mobile, pcap_name)
 
     def cleanup(self, live=False, socket_trace=False, full_capture=False, debug_output=False, debug=False):
+        if self._cleanup_done:
+            return
+        self._cleanup_done = True
+
         # Unload plugins
         if hasattr(self, '_plugin_loader'):
             self._plugin_loader.unload_all(self._plugin_shim)
@@ -839,10 +830,17 @@ class SSL_Logger():
         if self.process:
             self.detach_with_timeout()  # Detach instrumented process if applicable
         if not self._detected_libraries and not self._config.hooking.library_scan:
-            self.special_logger.info(
-                "\n[Hint] No TLS libraries were detected. Consider using "
-                "--library-scan (-ls) to discover renamed or statically linked libraries."
-            )
+            if self._config.protocol in ("tls", "auto"):
+                self.special_logger.info(
+                    "\n[Hint] No TLS libraries were detected. Consider using "
+                    "--library-scan (-ls) to discover renamed or statically linked libraries."
+                )
+            else:
+                self.special_logger.info(
+                    f"\n[Hint] No {self._config.protocol.upper()} libraries were detected. "
+                    "If you believe this is incorrect, please open an issue at "
+                    "https://github.com/fkie-cad/friTap/issues"
+                )
         self.special_logger.info("\nThanks for using friTap. Have a great day!")
         sys.exit(0)
 
@@ -961,6 +959,27 @@ class _PluginSessionShim:
         raise NotImplementedError(
             "push_message() is not supported on the legacy SSL_Logger shim. "
             "Use CoreController + Session for pipeline-based message routing."
+        )
+
+    def astart(self):
+        """Not available in legacy mode."""
+        raise NotImplementedError(
+            "astart() is not available in legacy mode. "
+            "Use CoreController + Session for async API."
+        )
+
+    def astop(self):
+        """Not available in legacy mode."""
+        raise NotImplementedError(
+            "astop() is not available in legacy mode. "
+            "Use CoreController + Session for async API."
+        )
+
+    def await_done(self):
+        """Not available in legacy mode."""
+        raise NotImplementedError(
+            "await_done() is not available in legacy mode. "
+            "Use CoreController + Session for async API."
         )
 
 

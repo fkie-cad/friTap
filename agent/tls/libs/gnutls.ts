@@ -1,7 +1,8 @@
 import { readAddresses, getPortsAndAddresses, resolveOffsets } from "../../shared/shared_functions.js";
-import { sendWithProtocol } from "../../shared/shared_structures.js";
+import { sendKeylog, sendDatalog } from "../../shared/shared_structures.js";
 import { log, devlog_error } from "../../util/log.js";
 import { enable_default_fd } from "../../fritap_agent.js";
+import { resolveWithPipeline } from "../../shared/pipeline_utils.js";
 
 export class GnuTLS {
 
@@ -32,6 +33,13 @@ export class GnuTLS {
 
         resolveOffsets(this.addresses, this.moduleName, socket_library, "gnutls");
 
+        resolveWithPipeline(this.addresses, this.moduleName, "gnutls", [
+            "gnutls_record_recv", "gnutls_record_send",
+            "gnutls_session_set_keylog_function", "gnutls_transport_get_int",
+            "gnutls_session_get_id", "gnutls_init", "gnutls_handshake",
+            "gnutls_session_get_random"
+        ]);
+
         GnuTLS.gnutls_transport_get_int = new NativeFunction(this.addresses[this.moduleName]["gnutls_transport_get_int"], "int", ["pointer"])
         GnuTLS.gnutls_session_get_id = new NativeFunction(this.addresses[this.moduleName]["gnutls_session_get_id"], "int", ["pointer", "pointer", "pointer"])
         GnuTLS.gnutls_session_set_keylog_function = new NativeFunction(this.addresses[this.moduleName]["gnutls_session_set_keylog_function"], "void", ["pointer", "pointer"])
@@ -41,9 +49,6 @@ export class GnuTLS {
 
     //NativeCallback
     static keylog_callback = new NativeCallback(function (session: NativePointer, label: NativePointer, secret: NativePointer) {
-        
-        var message: { [key: string]: string | number | null } = {}
-        message["contentType"] = "keylog"
 
         var secret_len = secret.add(Process.pointerSize).readUInt()
         var secret_str = ""
@@ -56,17 +61,17 @@ export class GnuTLS {
             secret_str +=
                 ("0" + p.add(i).readU8().toString(16).toUpperCase()).substr(-2)
         }
-        
+
         var server_random_ptr = Memory.alloc(Process.pointerSize + 4)
         var client_random_ptr = Memory.alloc(Process.pointerSize + 4)
-        
+
         if( typeof this !== "undefined"){
-            
+
             GnuTLS.gnutls_session_get_random(session, client_random_ptr, server_random_ptr)
         }else{
             devlog_error("[-] Error while installing keylog callback");
         }
-       
+
         var client_random_str = ""
         var client_random_len = 32
         p = client_random_ptr.readPointer()
@@ -77,8 +82,7 @@ export class GnuTLS {
             client_random_str +=
                 ("0" + p.add(i).readU8().toString(16).toUpperCase()).substr(-2)
         }
-        message["keylog"] = label.readCString() + " " + client_random_str + " " + secret_str
-        sendWithProtocol(message)
+        sendKeylog(label.readCString() + " " + client_random_str + " " + secret_str)
         return 0
     }, "int", ["pointer", "pointer", "pointer"])
 
@@ -138,8 +142,7 @@ export class GnuTLS {
             if (retval <= 0) {
                 return
             }
-            this.message["contentType"] = "datalog"
-            sendWithProtocol(this.message, this.buf.readByteArray(retval))
+            sendDatalog(this.message, this.buf.readByteArray(retval))
         }
     })
 
@@ -154,8 +157,7 @@ export class GnuTLS {
             var message = getPortsAndAddresses(GnuTLS.gnutls_transport_get_int(args[0]) as number, false, lib_addesses[current_module_name], enable_default_fd)
             message["ssl_session_id"] = GnuTLS.getSslSessionId(args[0])
             message["function"] = "SSL_write"
-            message["contentType"] = "datalog"
-            sendWithProtocol(message, args[1].readByteArray(parseInt(args[2])))
+            sendDatalog(message, args[1].readByteArray(parseInt(args[2])))
         },
         onLeave: function (retval: any) {
         }

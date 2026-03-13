@@ -16,16 +16,15 @@ If unavailable, all methods raise BackendError with installation instructions.
 from __future__ import annotations
 
 import logging
-import re
-import struct
 from typing import Any, Callable
 
 from .base import (
     Backend,
     BackendError,
-    BackendInvalidOperationError,
     BackendProcessNotFoundError,
+    ThreadInfo,
 )
+from .debugger_script import DebuggerScript
 
 # Optional import — LLDB is not a pip package
 try:
@@ -42,8 +41,8 @@ _INSTALL_HINT = (
 )
 
 
-class LLDBScript:
-    """Simulates a Frida-style script using LLDB breakpoints.
+class LLDBScript(DebuggerScript):
+    """Frida-style script using LLDB breakpoints.
 
     Each 'function name' in the script source is translated to a
     breakpoint. When hit, the registered callback is invoked with
@@ -51,11 +50,8 @@ class LLDBScript:
     """
 
     def __init__(self, target, function_names: list[str], message_callback: Callable | None = None):
+        super().__init__(function_names, message_callback)
         self._target = target
-        self._function_names = function_names
-        self._callback = message_callback
-        self._breakpoints: dict[str, Any] = {}
-        self._loaded = False
 
     def load(self) -> None:
         """Create breakpoints for all function names."""
@@ -84,25 +80,6 @@ class LLDBScript:
             self._breakpoints.clear()
             self._loaded = False
 
-    @property
-    def is_loaded(self) -> bool:
-        return self._loaded
-
-    def set_message_callback(self, callback: Callable) -> None:
-        self._callback = callback
-
-    def post(self, message: dict) -> None:
-        """Simulate posting a message to the script (no-op for LLDB)."""
-        pass
-
-    @property
-    def exports_sync(self):
-        """Not supported for LLDB scripts."""
-        raise BackendInvalidOperationError(
-            "LLDB backend does not support script RPC exports. "
-            "Use breakpoint-based extraction instead."
-        )
-
 
 class LLDBBackend(Backend):
     """
@@ -117,7 +94,7 @@ class LLDBBackend(Backend):
         self._logger = logging.getLogger("friTap.backend.lldb")
         self._lldb = _lldb_module
         self._debugger = None
-        self._detach_callbacks: dict[int, list[Callable]] = {}
+        self._init_detach_callbacks()
 
         if self._lldb is not None:
             self._debugger = self._lldb.SBDebugger.Create()
@@ -254,15 +231,7 @@ class LLDBBackend(Backend):
 
     def create_script(self, process: Any, script_source: str, runtime: str = "qjs") -> Any:
         self._require_lldb()
-        fn_names = re.findall(
-            r'(?:Module\.findExportByName|BreakpointCreateByName)\s*\(\s*["\']([^"\']+)',
-            script_source
-        )
-        # Also handle simple function name lists
-        fn_names += re.findall(
-            r'hookFunction\s*\(\s*["\']([^"\']+)',
-            script_source
-        )
+        fn_names = self._extract_function_names(script_source)
 
         target = process.GetTarget() if hasattr(process, 'GetTarget') else None
         return LLDBScript(target, fn_names)
@@ -291,43 +260,27 @@ class LLDBBackend(Backend):
     # Process management
     # ------------------------------------------------------------------
 
+    def _get_process_pid(self, process: Any) -> int:
+        """Extract PID from an LLDB process handle."""
+        if hasattr(process, 'GetProcessID'):
+            return process.GetProcessID()
+        return 0
+
     def detach(self, process: Any) -> None:
         if process is None:
             return
         self._require_lldb()
         try:
-            pid = process.GetProcessID() if hasattr(process, 'GetProcessID') else 0
             error = process.Detach()
             if error and hasattr(error, 'Fail') and error.Fail():
                 self._logger.warning("LLDB detach warning: %s", error.GetCString())
-            # Fire detach callbacks
-            for cb in self._detach_callbacks.get(pid, []):
-                try:
-                    cb("user-requested")
-                except Exception:
-                    pass
+            self._fire_detach_callbacks(process)
         except Exception as e:
             self._logger.warning("LLDB detach error: %s", e)
 
     def on_detached(self, process: Any, callback: Callable) -> None:
-        pid = process.GetProcessID() if hasattr(process, 'GetProcessID') else 0
+        pid = self._get_process_pid(process)
         self._detach_callbacks.setdefault(pid, []).append(callback)
-
-    # ------------------------------------------------------------------
-    # Gating (not supported)
-    # ------------------------------------------------------------------
-
-    def enable_child_gating(self, process: Any) -> None:
-        raise NotImplementedError("LLDB backend does not support child gating")
-
-    def enable_spawn_gating(self, device: Any) -> None:
-        raise NotImplementedError("LLDB backend does not support spawn gating")
-
-    def on_child_added(self, device: Any, callback: Callable) -> None:
-        raise NotImplementedError("LLDB backend does not support child events")
-
-    def on_spawn_added(self, device: Any, callback: Callable) -> None:
-        raise NotImplementedError("LLDB backend does not support spawn events")
 
     # ------------------------------------------------------------------
     # Debugger
@@ -340,17 +293,17 @@ class LLDBBackend(Backend):
     # Threads
     # ------------------------------------------------------------------
 
-    def enumerate_threads(self, process: Any) -> list:
+    def enumerate_threads(self, process: Any) -> list[ThreadInfo]:
         self._require_lldb()
         threads = []
         for i in range(process.GetNumThreads()):
             thread = process.GetThreadAtIndex(i)
-            threads.append({
-                "id": thread.GetThreadID(),
-                "index": thread.GetIndexID(),
-                "name": thread.GetName() or f"Thread-{thread.GetIndexID()}",
-                "state": str(thread.GetStopReason()),
-            })
+            threads.append(ThreadInfo(
+                id=thread.GetThreadID(),
+                name=thread.GetName() or f"Thread-{thread.GetIndexID()}",
+                index=thread.GetIndexID(),
+                is_stopped=thread.GetStopReason() != 0,
+            ))
         return threads
 
     def _find_thread(self, process: Any, thread_id: int) -> Any:
@@ -375,14 +328,8 @@ class LLDBBackend(Backend):
     def enumerate_devices(self) -> list:
         return [{"id": "local", "name": "Local System", "type": "local"}]
 
-    def get_device_manager(self) -> Any:
-        raise NotImplementedError("LLDB backend does not have a device manager")
-
     def get_local_device(self) -> Any:
         return "local"
-
-    def get_usb_device(self) -> Any:
-        raise NotImplementedError("LLDB backend does not support USB devices")
 
     # ------------------------------------------------------------------
     # Properties
@@ -408,43 +355,10 @@ class LLDBBackend(Backend):
     # Memory helpers (for SSH/IPSec key extraction)
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def read_memory(process, addr: int, size: int) -> bytes:
+    def read_memory(self, target, addr: int, size: int) -> bytes:
         """Read raw bytes from process memory."""
         error = _lldb_module.SBError()
-        data = process.ReadMemory(addr, size, error)
+        data = target.ReadMemory(addr, size, error)
         if error.Fail():
             raise BackendError(f"Memory read failed at 0x{addr:x}: {error.GetCString()}")
         return data
-
-    @staticmethod
-    def read_pointer(process, addr: int) -> int:
-        """Read a pointer-sized value from process memory."""
-        ptr_size = process.GetAddressByteSize()
-        error = _lldb_module.SBError()
-        data = process.ReadMemory(addr, ptr_size, error)
-        if error.Fail():
-            raise BackendError(f"Pointer read failed at 0x{addr:x}: {error.GetCString()}")
-        fmt = "<Q" if ptr_size == 8 else "<I"
-        return struct.unpack(fmt, data)[0]
-
-    @staticmethod
-    def read_uint32(process, addr: int) -> int:
-        """Read a 32-bit unsigned integer from process memory."""
-        error = _lldb_module.SBError()
-        data = process.ReadMemory(addr, 4, error)
-        if error.Fail():
-            raise BackendError(f"uint32 read failed at 0x{addr:x}: {error.GetCString()}")
-        return struct.unpack("<I", data)[0]
-
-    @staticmethod
-    def read_string(process, addr: int, max_len: int = 256) -> str:
-        """Read a null-terminated string from process memory."""
-        error = _lldb_module.SBError()
-        data = process.ReadMemory(addr, max_len, error)
-        if error.Fail():
-            raise BackendError(f"String read failed at 0x{addr:x}: {error.GetCString()}")
-        null_idx = data.find(b'\x00')
-        if null_idx >= 0:
-            data = data[:null_idx]
-        return data.decode('utf-8', errors='replace')

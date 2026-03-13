@@ -1,5 +1,5 @@
 import { readAddresses, getPortsAndAddresses, resolveOffsets } from "../../shared/shared_functions.js";
-import { sendWithProtocol } from "../../shared/shared_structures.js";
+import { sendDatalog } from "../../shared/shared_structures.js";
 import { enable_default_fd } from "../../fritap_agent.js";
 import { log } from "../../util/log.js";
 
@@ -65,8 +65,7 @@ export class matrix_SSL {
                 }
 
                 var data = this.buffer.readByteArray(this.len);
-                this.message["contentType"] = "datalog"
-                sendWithProtocol(this.message, data)
+                sendDatalog(this.message, data)
 
 
             }
@@ -105,8 +104,7 @@ export class matrix_SSL {
                 var message = getPortsAndAddresses(this.fd, false, lib_addesses[current_module_name], enable_default_fd)
                 message["ssl_session_id"] = this.addresses[this.moduleName]["matrixSslGetSid"] === undefined ? matrix_SSL.sessionId : this.getSessionId(args[0]);
                 message["function"] = "matrixSslEncodeWritebuf"
-                message["contentType"] = "datalog"
-                sendWithProtocol(message, data)
+                sendDatalog(message, data)
             }
         });
 

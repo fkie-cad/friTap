@@ -1,0 +1,75 @@
+
+import {OpenSSL_BoringSSL } from "../../../../tls/libs/openssl_boringssl.js";
+import { socket_library } from "../../../../platforms/ios.js";
+import { log, devlog } from "../../../../util/log.js";
+import { ObjC } from "../../../../shared/objclib.js";
+import { patterns, isPatternReplaced, experimental } from "../../../../fritap_agent.js";
+import { executeSSLLibrary } from "../../../shared/shared_functions_legacy.js";
+
+export class OpenSSL_BoringSSL_iOS extends OpenSSL_BoringSSL {
+
+    install_tls_keys_callback_hook(){
+        var instance = this;
+        //console.log(this.addresses) // currently only for debugging purposes will be removed in future releases
+        if (ObjC.available) { // inspired from https://codeshare.frida.re/@andydavies/ios-tls-keylogger/
+            var CALLBACK_OFFSET = 0x2A8;
+
+            var foundationNumber = Process.getModuleByName('CoreFoundation').getExportByName('kCFCoreFoundationVersionNumber')?.readDouble();
+            devlog("[*] Calculating offset to keylog callback based on the FoundationVersionNumber on iOS: "+foundationNumber)
+            if(foundationNumber == undefined){
+                devlog("Installing callback for iOS < 14");
+                CALLBACK_OFFSET = 0x2A8;
+            } else if (foundationNumber >= 1751.108 && foundationNumber < 1854) {
+                devlog("Installing callback for iOS >= 14");
+                CALLBACK_OFFSET = 0x2B8; // >= iOS 14.x
+            } else if (foundationNumber >= 1854 && foundationNumber < 1946.102) {
+                devlog("Installing callback for iOS >= 15");
+                CALLBACK_OFFSET = 0x2F8; // >= iOS 15.x
+            } else if (foundationNumber >= 1946.102 && foundationNumber <= 1979.1) {
+                devlog("Installing callback for iOS >= 16");
+                CALLBACK_OFFSET = 0x300; // >= iOS 16.x
+            } else if (foundationNumber > 1979.1) {
+                devlog("Installing callback for iOS >= 17");
+                CALLBACK_OFFSET = 0x308; // >= iOS 17.x
+            }
+            Interceptor.attach(this.addresses[this.module_name]["SSL_CTX_set_info_callback"], {
+              onEnter: function (args : any) {
+                ptr(args[0]).add(CALLBACK_OFFSET).writePointer(instance.keylog_callback);
+              }
+            });
+
+          }
+
+    }
+
+
+    constructor(public moduleName:string, public socket_library:String, is_base_hook: boolean){
+
+        var library_method_mapping: { [key: string]: Array<string> } = {}
+
+        // the iOS implementation needs some further improvements - currently we are not able to get the sockfd from an SSL_read/write invocation
+        //library_method_mapping[`*${moduleName}*`] = ["SSL_read", "SSL_write", "BIO_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_info_callback"]
+        library_method_mapping[`*${moduleName}*`] = ["SSL_CTX_set_info_callback"]
+        //library_method_mapping[`*${socket_library}*`] = ["getpeername*", "getsockname*", "ntohs*", "ntohl*"] // currently those functions gets only identified if we at an asterisk at the end
+
+        super(moduleName,socket_library,is_base_hook,library_method_mapping);
+    }
+
+    execute_hooks(){
+        OpenSSL_BoringSSL.initializePipeline(
+            isPatternReplaced() ? patterns : undefined,
+            experimental
+        );
+        this.resolveWithPipeline(["SSL_CTX_set_info_callback"]);
+
+        this.install_tls_keys_callback_hook();
+    }
+
+
+
+}
+
+
+export function boring_execute(moduleName:string, is_base_hook: boolean){
+    executeSSLLibrary(OpenSSL_BoringSSL_iOS, moduleName, socket_library, is_base_hook);
+}

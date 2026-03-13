@@ -1,17 +1,18 @@
-import { load_android_hooking_agent } from "./android/android_agent.js";
-import { load_ios_hooking_agent } from "./ios/ios_agent.js";
-import { load_macos_hooking_agent } from "./macos/macos_agent.js";
-import { load_linux_hooking_agent } from "./linux/linux_agent.js";
-import { load_windows_hooking_agent, load_windows_lsass_agent } from "./windows/windows_agent.js";
-import { load_wine_hooking_agent } from "./wine/wine_agent.js";
+import { load_android_hooking_agent } from "./platforms/android.js";
+import { load_ios_hooking_agent } from "./platforms/ios.js";
+import { load_macos_hooking_agent } from "./platforms/macos.js";
+import { load_linux_hooking_agent } from "./platforms/linux.js";
+import { load_windows_hooking_agent, load_windows_lsass_agent } from "./platforms/windows.js";
+import { load_wine_hooking_agent } from "./platforms/wine.js";
 import { isWindows, isLinux, isWine, isAndroid, isiOS, isMacOS, getDetailedPlatformInfo } from "./util/process_infos.js";
 import { anti_root_execute } from "./util/anti_root.js";
 import { socket_trace_execute } from "./misc/socket_tracer.js"
 import { devlog, log } from "./util/log.js";
+import { setSelectedProtocol } from "./shared/shared_structures.js";
+import { initializePipeline } from "./shared/pipeline_utils.js";
 
 // global address which stores the addresses of the hooked modules which aren't loaded via the dynamic loader
 (globalThis as any).init_addresses = {};
-(globalThis as any).global_counter = 0;
 
 interface IAddress{
     address: string,
@@ -124,11 +125,17 @@ export let anti_root: boolean = false;
 //@ts-ignore
 export let enable_default_fd: boolean = false;
 //@ts-ignore
+export let use_modern: boolean = false;
+//@ts-ignore
 export let install_lsass_hook: boolean = true;
 //@ts-ignore
 export let selected_protocol: string = "tls";
 //@ts-ignore
 export let patterns: string = "{PATTERNS}";
+//@ts-ignore
+export let scan_results: string = "{SCAN_RESULTS}";
+//@ts-ignore
+export let library_scan_enabled: boolean = false;
 
 /**
  * Perform a send/recv handshake with the Python host to receive a configuration value.
@@ -147,21 +154,27 @@ function recvHandshake<T>(sendChannel: string, defaultValue: T, recvChannel?: st
     return result;
 }
 
-/* Our way to get the JSON strings into the loaded frida script */
-offsets = recvHandshake("offset_hooking", offsets);
-patterns = recvHandshake("pattern_hooking", patterns);
-
-/* Providing boolean/string values from the commandline directly to our frida script */
-enable_socket_tracing = recvHandshake("socket_tracing", enable_socket_tracing);
-enable_default_fd = recvHandshake("defaultFD", enable_default_fd);
-experimental = recvHandshake("experimental", experimental);
-selected_protocol = recvHandshake("protocol_select", selected_protocol);
-
-// install_lsass_hook handshake — must come before "anti" to avoid startup deadlock
-install_lsass_hook = recvHandshake("install_lsass_hook", install_lsass_hook);
+/* Batch config handshake: receive all config values in a single IPC round-trip */
+const config_batch = recvHandshake<Record<string, any>>("config_batch", {});
+offsets = config_batch.offsets ?? offsets;
+patterns = config_batch.patterns ?? patterns;
+enable_socket_tracing = config_batch.socket_tracing ?? enable_socket_tracing;
+enable_default_fd = config_batch.defaultFD ?? enable_default_fd;
+experimental = config_batch.experimental ?? experimental;
+selected_protocol = config_batch.protocol_select ?? selected_protocol;
+setSelectedProtocol(selected_protocol);
+install_lsass_hook = config_batch.install_lsass_hook ?? install_lsass_hook;
+use_modern = config_batch.use_modern ?? use_modern;
+scan_results = config_batch.library_scan ?? scan_results;
+library_scan_enabled = config_batch.library_scan_enabled ?? library_scan_enabled;
 
 // "anti" handshake must be LAST in the startup sequence to prevent deadlock
 anti_root = recvHandshake("anti", anti_root, "antiroot");
+
+// Initialize the hooking pipeline centrally so it is ready before any library constructor runs.
+// Existing per-platform OpenSSL_BoringSSL.initializePipeline() calls become no-ops (idempotent guard).
+initializePipeline(isPatternReplaced() ? JSON.parse(patterns) : undefined, experimental);
+
 
 
 /*
