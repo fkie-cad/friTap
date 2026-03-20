@@ -23,6 +23,8 @@ The main features of friTap are:
 
 - TLS key extraction in real time (`-k key.log`)
 - Decryption of TLS payload as PCAP in real time (`-p plaintext.pcap`)
+- Interactive TUI mode with guided setup wizard (just run `fritap`)
+- Library scanning to discover renamed/statically linked libraries (`--library-scan`)
 - Library analysis and debugging (`--list-libraries`)
 - Integration with Python. [Learn more](https://github.com/fkie-cad/friTap/blob/main/INTEGRATION.md)
 - Support for custom Frida scripts. [Details](https://github.com/fkie-cad/friTap/blob/main/USAGE.md#custom-script-example)
@@ -172,7 +174,7 @@ fritap -do -v com.example.app
 | Library                   | Linux         | Windows       | MacOSX   | Android  | iOS          |
 |---------------------------|---------------|---------------|----------|----------|--------------|
 | OpenSSL                   |     Full      | R/W-Hook only |  TBI     |   Full   | TBI          |
-| BoringSSL                 |     Full      | R/W-Hook only |  KeyEo   |   Full   | KeyEo        |
+| BoringSSL                 |     Full      | R/W-Hook only |  Keys    |   Full   | Keys         |
 | NSS                       |     Full      | R/W-Hook only |  TBI     |   TBA    | TBI          |
 | GnuTLS                    | R/W-Hook only | R/W-Hook only |  TBI     |   Full   | TBI          |
 | WolfSSL                   | R/W-Hook only | R/W-Hook only |  TBI     |   Full   | TBI          |
@@ -180,10 +182,10 @@ fritap -do -v com.example.app
 | Bouncycastle/Spongycastle |     TBA       |    TBA        |  TBA     |   Full   | TBA          |
 | Conscrypt                 |     TBA       |    TBA        |  TBA     |   Full   | TBA          |
 | S2n-tls                   |     Full      |    LibNO      |  TBA     |   Full   | LibNO        |
-| RusTLS                    |     KeyEo     |    TBI        |  TBI     |   KeyEo  | TBI          |
+| RusTLS                    |     Keys      |    TBI        |  TBI     |   Keys   | TBI          |
 ```
 **R/W-Hook only** = Logging data sent and received by process<br>
-**KeyEo** = Only the keying material can be extracted<br>
+**Keys** = Only the keying material can be extracted<br>
 **Full** = Logging data send and received by process + Logging keys used for secure connection<br>
 **TBA** = To be answered<br>
 **TBI** = To be implemented<br>
@@ -193,16 +195,12 @@ fritap -do -v com.example.app
 
 ## Dependencies
 
-- [frida](https://frida.re) (`>= 17`)
 - `>= python3.10`
-- click (`python3 -m pip install click`)
-- hexdump (`python3 -m pip install hexdump`)
-- scapy (`python3 -m pip install scapy`)
-- watchdog (`python3 -m pip install watchdog`)
-- AndroidFridaManager (`python3 -m pip install AndroidFridaManager`)
-- textual (`python3 -m pip install textual`)
-- rich (`python3 -m pip install rich`)
+- [frida](https://frida.re) (`>= 17`) and frida-tools (`>= 12`)
+- click, hexdump, scapy, watchdog, rich, textual, pydantic, psutil, platformdirs
+- AndroidFridaManager (for Android device management)
 - for hooking on Android ensure that the `adb`-command is in your PATH
+
 
 ## Planned features
 
@@ -261,7 +259,7 @@ python run_tests.py coverage
 
 ### Development Dependencies
 
-- **Python 3.7+** with development dependencies (`requirements-dev.txt`)
+- **Python 3.10+** with development dependencies (`requirements-dev.txt`)
 - **Node.js 16+** for TypeScript agent compilation
 - **Testing framework**: pytest with comprehensive mocking
 - **Code quality**: black, flake8, mypy, pre-commit hooks
