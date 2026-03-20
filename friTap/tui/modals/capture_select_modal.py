@@ -69,7 +69,7 @@ if TEXTUAL_AVAILABLE:
                     id="capture-list",
                 )
                 yield Static(
-                    "[#64748b]1-5: Quick select  |  Enter: Select  |  ↑↓: Browse  |  Esc: Cancel[/]",
+                    "[#64748b]1-5: Select  |  Enter: Confirm  |  ↑↓: Browse  |  Esc: Back[/]",
                     classes="key-hints",
                 )
                 with Horizontal(classes="button-row"):

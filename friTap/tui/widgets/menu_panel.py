@@ -11,6 +11,7 @@ Actions are grouped by category and contextually enabled/disabled.
 from __future__ import annotations
 
 import re
+from contextlib import contextmanager
 from typing import List, Tuple
 
 try:
@@ -41,6 +42,7 @@ if TEXTUAL_AVAILABLE:
         pcap_path: reactive[str] = reactive("")
         server_running: reactive[bool] = reactive(False)
         protocol: reactive[str] = reactive("tls")
+        _batch_depth: int = 0
 
         # Static menu sections (Control is built dynamically)
         _STATIC_SECTIONS: List[Tuple[str, List[Tuple[str, str]]]] = [
@@ -121,8 +123,21 @@ if TEXTUAL_AVAILABLE:
                 ("[?] help", "always", None),
             ]
 
+        @contextmanager
+        def batch_update(self):
+            """Defer _update_menu() calls until the context manager exits."""
+            self._batch_depth += 1
+            try:
+                yield
+            finally:
+                self._batch_depth -= 1
+                if self._batch_depth == 0:
+                    self._update_menu()
+
         def _update_menu(self) -> None:
             """Rebuild the full menu content."""
+            if self._batch_depth > 0:
+                return
             lines: List[str] = []
 
             # Static sections (Target, Capture Mode)

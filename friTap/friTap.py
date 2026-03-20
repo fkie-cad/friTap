@@ -485,6 +485,16 @@ Examples:
     raise Failure
 
 def main():
+    # Handle sub-commands before argparse
+    if len(sys.argv) >= 3 and sys.argv[1] == "install-backend":
+        if sys.argv[2] == "wireshark":
+            from .commands.install_backend import install_wireshark_extcap
+            install_wireshark_extcap()
+            return
+        else:
+            print(f"Unknown backend: {sys.argv[2]}. Available: wireshark")
+            return
+    
     # When invoked with no arguments, launch the interactive TUI
     if len(sys.argv) == 1:
         try:

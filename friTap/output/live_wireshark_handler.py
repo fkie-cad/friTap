@@ -29,6 +29,10 @@ class LiveWiresharkHandler(OutputHandler):
     def fifo_path(self) -> Optional[str]:
         return self._fifo_path
 
+    @property
+    def tmpdir(self) -> Optional[str]:
+        return self._tmpdir
+
     def create_fifo(self) -> str:
         """Create the named pipe and return its path."""
         self._tmpdir = tempfile.mkdtemp()
@@ -39,6 +43,49 @@ class LiveWiresharkHandler(OutputHandler):
     def set_pcap(self, pcap_obj: "PCAP") -> None:
         """Set the PCAP writer that writes to the FIFO."""
         self._pcap = pcap_obj
+
+    def connect(self, timeout: float = 30.0) -> bool:
+        """Open the FIFO for writing (blocks until Wireshark connects or timeout)."""
+        import threading
+
+        file_obj = [None]
+        error = [None]
+
+        def _open_fifo():
+            try:
+                file_obj[0] = open(self._fifo_path, "wb", 0)
+            except Exception as e:
+                error[0] = e
+
+        opener = threading.Thread(target=_open_fifo, daemon=True)
+        opener.start()
+        opener.join(timeout=timeout)
+
+        if opener.is_alive():
+            self._logger.error("Wireshark did not connect within %ds", int(timeout))
+            return False
+
+        if error[0] is not None:
+            self._logger.error("Failed to open FIFO: %s", error[0])
+            return False
+
+        # Create PCAP writer with the already-opened file handle.
+        # We bypass PCAP.__init__() because it calls open() internally
+        # which would deadlock on the FIFO.
+        from ..pcap import PCAP
+        from ..constants import SSL_READ, SSL_WRITE
+        pcap = PCAP.__new__(PCAP)
+        pcap.SSL_READ = SSL_READ
+        pcap.SSL_WRITE = SSL_WRITE
+        pcap.ssl_sessions = {}
+        pcap.pkt = {}
+        pcap.pcap_file_name = self._fifo_path
+        pcap.pcap_file = file_obj[0]
+        pcap.write_pcap_header(pcap.pcap_file)
+        self._pcap = pcap
+
+        self._logger.info("Wireshark connected to FIFO — streaming plaintext")
+        return True
 
     def setup(self, event_bus: "EventBus") -> None:
         from ..events import DatalogEvent
@@ -61,6 +108,11 @@ class LiveWiresharkHandler(OutputHandler):
             self._logger.error("Wireshark pipe broken: %s", e)
 
     def close(self) -> None:
+        if self._pcap and hasattr(self._pcap, 'pcap_file') and self._pcap.pcap_file:
+            try:
+                self._pcap.pcap_file.close()
+            except OSError:
+                pass
         if self._fifo_path and os.path.exists(self._fifo_path):
             try:
                 os.unlink(self._fifo_path)

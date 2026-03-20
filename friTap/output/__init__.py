@@ -12,6 +12,7 @@ from .console_handler import ConsoleOutputHandler
 from .live_wireshark_handler import LiveWiresharkHandler
 from .pcapng_handler import PcapngOutputHandler
 from .live_pcapng_handler import LivePcapngHandler
+from .live_autodecrypt_handler import LiveAutoDecryptHandler
 from .factory import OutputHandlerFactory
 
 __all__ = [
@@ -24,5 +25,6 @@ __all__ = [
     "LiveWiresharkHandler",
     "PcapngOutputHandler",
     "LivePcapngHandler",
+    "LiveAutoDecryptHandler",
     "OutputHandlerFactory",
 ]

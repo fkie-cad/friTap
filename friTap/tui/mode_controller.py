@@ -44,7 +44,7 @@ CAPTURE_MODES = {
         "full",
         "Full Capture",
         default_keylog="keys.log",
-        default_pcap="capture.pcap",
+        default_pcap="capture.pcapng",
     ),
     2: CaptureMode(
         "keys",
@@ -55,12 +55,11 @@ CAPTURE_MODES = {
     3: CaptureMode(
         "plaintext",
         "Plaintext PCAP",
-        default_pcap="plaintext.pcap",
+        default_pcap="plaintext.pcapng",
     ),
     4: CaptureMode(
         "wireshark",
         "Live Wireshark",
-        default_keylog="keys.log",
         is_live=True,
     ),
     5: CaptureMode(

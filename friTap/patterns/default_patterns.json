@@ -62,5 +62,180 @@
             "ikev2_derive_child_sa_keys": [],
             "derive_ike_keys": []
         }
+    },
+    "gnutls": {
+        "_comment": "Patterns for GnuTLS. Empty until extracted from target binaries.",
+        "x64": {
+            "gnutls_record_recv": [],
+            "gnutls_record_send": [],
+            "gnutls_session_set_keylog_function": [],
+            "gnutls_transport_get_int": [],
+            "gnutls_session_get_id": [],
+            "gnutls_init": [],
+            "gnutls_handshake": [],
+            "gnutls_session_get_random": []
+        },
+        "arm64": {
+            "gnutls_record_recv": [],
+            "gnutls_record_send": [],
+            "gnutls_session_set_keylog_function": [],
+            "gnutls_transport_get_int": [],
+            "gnutls_session_get_id": [],
+            "gnutls_init": [],
+            "gnutls_handshake": [],
+            "gnutls_session_get_random": []
+        },
+        "arm": {
+            "gnutls_record_recv": [],
+            "gnutls_record_send": [],
+            "gnutls_session_set_keylog_function": [],
+            "gnutls_transport_get_int": [],
+            "gnutls_session_get_id": [],
+            "gnutls_init": [],
+            "gnutls_handshake": [],
+            "gnutls_session_get_random": []
+        },
+        "x86": {
+            "gnutls_record_recv": [],
+            "gnutls_record_send": [],
+            "gnutls_session_set_keylog_function": [],
+            "gnutls_transport_get_int": [],
+            "gnutls_session_get_id": [],
+            "gnutls_init": [],
+            "gnutls_handshake": [],
+            "gnutls_session_get_random": []
+        }
+    },
+    "wolfssl": {
+        "_comment": "Patterns for WolfSSL. Empty until extracted from target binaries.",
+        "x64": {
+            "wolfSSL_read": [],
+            "wolfSSL_write": [],
+            "wolfSSL_get_fd": [],
+            "wolfSSL_get_session": [],
+            "wolfSSL_connect": [],
+            "wolfSSL_SESSION_get_master_key": [],
+            "wolfSSL_get_client_random": [],
+            "wolfSSL_get_server_random": []
+        },
+        "arm64": {
+            "wolfSSL_read": [],
+            "wolfSSL_write": [],
+            "wolfSSL_get_fd": [],
+            "wolfSSL_get_session": [],
+            "wolfSSL_connect": [],
+            "wolfSSL_SESSION_get_master_key": [],
+            "wolfSSL_get_client_random": [],
+            "wolfSSL_get_server_random": []
+        },
+        "arm": {
+            "wolfSSL_read": [],
+            "wolfSSL_write": [],
+            "wolfSSL_get_fd": [],
+            "wolfSSL_get_session": [],
+            "wolfSSL_connect": [],
+            "wolfSSL_SESSION_get_master_key": [],
+            "wolfSSL_get_client_random": [],
+            "wolfSSL_get_server_random": []
+        },
+        "x86": {
+            "wolfSSL_read": [],
+            "wolfSSL_write": [],
+            "wolfSSL_get_fd": [],
+            "wolfSSL_get_session": [],
+            "wolfSSL_connect": [],
+            "wolfSSL_SESSION_get_master_key": [],
+            "wolfSSL_get_client_random": [],
+            "wolfSSL_get_server_random": []
+        }
+    },
+    "mbedtls": {
+        "_comment": "Patterns for mbedTLS. Empty until extracted from target binaries.",
+        "x64": {
+            "mbedtls_ssl_read": [],
+            "mbedtls_ssl_write": []
+        },
+        "arm64": {
+            "mbedtls_ssl_read": [],
+            "mbedtls_ssl_write": []
+        },
+        "arm": {
+            "mbedtls_ssl_read": [],
+            "mbedtls_ssl_write": []
+        },
+        "x86": {
+            "mbedtls_ssl_read": [],
+            "mbedtls_ssl_write": []
+        }
+    },
+    "nss": {
+        "_comment": "Patterns for NSS (Network Security Services). Empty until extracted from target binaries.",
+        "x64": {
+            "PR_Write": [],
+            "PR_Read": [],
+            "PR_FileDesc2NativeHandle": [],
+            "SSL_ImportFD": [],
+            "PK11_ExtractKeyValue": [],
+            "PK11_GetKeyData": []
+        },
+        "arm64": {
+            "PR_Write": [],
+            "PR_Read": [],
+            "PR_FileDesc2NativeHandle": [],
+            "SSL_ImportFD": [],
+            "PK11_ExtractKeyValue": [],
+            "PK11_GetKeyData": []
+        },
+        "arm": {
+            "PR_Write": [],
+            "PR_Read": [],
+            "PR_FileDesc2NativeHandle": [],
+            "SSL_ImportFD": [],
+            "PK11_ExtractKeyValue": [],
+            "PK11_GetKeyData": []
+        },
+        "x86": {
+            "PR_Write": [],
+            "PR_Read": [],
+            "PR_FileDesc2NativeHandle": [],
+            "SSL_ImportFD": [],
+            "PK11_ExtractKeyValue": [],
+            "PK11_GetKeyData": []
+        }
+    },
+    "s2n": {
+        "_comment": "Patterns for s2n-tls. Empty until extracted from target binaries.",
+        "x64": {
+            "s2n_send": [],
+            "s2n_recv": [],
+            "s2n_connection_get_read_fd": [],
+            "s2n_connection_get_write_fd": [],
+            "s2n_connection_new": [],
+            "s2n_config_set_key_log_cb": []
+        },
+        "arm64": {
+            "s2n_send": [],
+            "s2n_recv": [],
+            "s2n_connection_get_read_fd": [],
+            "s2n_connection_get_write_fd": [],
+            "s2n_connection_new": [],
+            "s2n_config_set_key_log_cb": []
+        },
+        "arm": {
+            "s2n_send": [],
+            "s2n_recv": [],
+            "s2n_connection_get_read_fd": [],
+            "s2n_connection_get_write_fd": [],
+            "s2n_connection_new": [],
+            "s2n_config_set_key_log_cb": []
+        },
+        "x86": {
+            "s2n_send": [],
+            "s2n_recv": [],
+            "s2n_connection_get_read_fd": [],
+            "s2n_connection_get_write_fd": [],
+            "s2n_connection_new": [],
+            "s2n_config_set_key_log_cb": []
+        }
     }
 }

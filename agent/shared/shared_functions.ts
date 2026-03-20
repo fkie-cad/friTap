@@ -286,6 +286,20 @@ export function readAddresses(moduleName: string, library_method_mapping: { [key
             }
 
             if (matches.length == 0) {
+                // Fallback: on macOS, symbols in umbrella libraries (libSystem.B.dylib)
+                // are actually exported by sub-libraries (libsystem_kernel.dylib, etc.)
+                // ApiResolver can't find them via the umbrella pattern, but
+                // Module.findGlobalExportByName resolves them globally.
+                try {
+                    const globalAddr = Module.findGlobalExportByName(method_name);
+                    if (globalAddr && !globalAddr.isNull()) {
+                        devlog(`[readAddresses] Resolved ${method_name} via global export fallback: ${globalAddr}`);
+                        addresses[moduleName][method_name] = globalAddr;
+                        return;
+                    }
+                } catch (_) {
+                    // findGlobalExportByName not available on older Frida versions
+                }
                 devlog(`[readAddresses] Could not find ${library_name}!${method} (deferring to pipeline)`);
                 return;
             } else if (matches.length == 1) {
@@ -575,6 +589,52 @@ export function get_hex_string_from_byte_array(keyData: ArrayBuffer | Uint8Array
     return toHexString(keyData).toUpperCase();
 }
 
+
+/**
+ * Find a non-exported symbol in a module using Module.enumerateSymbols().
+ * Useful for internal symbols (e.g., LibreSSL's tls1_PRF, tls13_hkdf_expand_label)
+ * that are present in the symbol table but not in the export table.
+ *
+ * @param moduleName Name of the module to search
+ * @param symbolName Exact symbol name to find
+ * @returns The symbol's address, or null if not found
+ */
+export function findNonExportedSymbol(moduleName: string, symbolName: string): NativePointer | null {
+    try {
+        const mod = Process.getModuleByName(moduleName);
+        const symbols = mod.enumerateSymbols().filter(s => s.name === symbolName);
+        return symbols.length > 0 ? symbols[0].address : null;
+    } catch (e) {
+        devlog(`[findNonExportedSymbol] ${symbolName} in ${moduleName}: ${e}`);
+        return null;
+    }
+}
+
+/**
+ * Batch-find multiple non-exported symbols in a single Module.enumerateSymbols() pass.
+ * Much more efficient than calling findNonExportedSymbol() repeatedly for the same module.
+ *
+ * @param moduleName Name of the module to search
+ * @param symbolNames Array of exact symbol names to find
+ * @returns Map of symbolName → address (only includes found symbols)
+ */
+export function findNonExportedSymbols(moduleName: string, symbolNames: string[]): Map<string, NativePointer> {
+    const result = new Map<string, NativePointer>();
+    try {
+        const wanted = new Set(symbolNames);
+        const mod = Process.getModuleByName(moduleName);
+        for (const sym of mod.enumerateSymbols()) {
+            if (wanted.has(sym.name)) {
+                result.set(sym.name, sym.address);
+                wanted.delete(sym.name);
+                if (wanted.size === 0) break;
+            }
+        }
+    } catch (e) {
+        devlog(`[findNonExportedSymbols] in ${moduleName}: ${e}`);
+    }
+    return result;
+}
 
 export function dumpMemory(ptrValue,size) {
     //var size = 0x100;

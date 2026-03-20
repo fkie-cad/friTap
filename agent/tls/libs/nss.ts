@@ -229,7 +229,7 @@ export class NSS {
             "SSL_ImportFD", "PK11_ExtractKeyValue", "PK11_GetKeyData"
         ]);
 
-        if(!Java.available){
+        if(!Java.available && this.addresses[this.moduleName]["SSL_GetSessionID"]){
             NSS.SSL_SESSION_get_id = new NativeFunction(this.addresses[this.moduleName]["SSL_GetSessionID"], "pointer", ["pointer"]);
         }
 
@@ -240,6 +240,15 @@ export class NSS {
 
 
     }
+
+    // SSL_SecretCallback support (resolved via SSL_GetExperimentalAPI)
+    static SSL_SecretCallback_fn: NativeFunction<number, [NativePointer, NativePointer, NativePointer]> | null = null;
+    static SSL_SecretCallback_ptr: NativePointer | null = null;
+    static secretCallbackReentryGuard: boolean = false;
+    static originalSecretCallbacks: { [key: string]: { cb: NativePointer, arg: NativePointer, fn: NativeFunction<void, [NativePointer, number, number, NativePointer, NativePointer]> } } = {};
+
+    // Version-dependent ssl3 offset
+    static SSL3_STATE_OFFSET: number = 1432;
 
     static get_NSS_version(): number{
         var getNSSversion = null;
@@ -270,6 +279,50 @@ export class NSS {
         return major * 1000 + minor;
     }
 
+    static detectVersionOffsets() {
+        try {
+            var nss_version = NSS.get_NSS_version();
+            if (nss_version >= 3115) {
+                NSS.SSL3_STATE_OFFSET = 1464;
+            } else if (nss_version >= 3107) {
+                NSS.SSL3_STATE_OFFSET = 1448;
+            } else if (nss_version >= 3101) {
+                NSS.SSL3_STATE_OFFSET = 1440;
+            } else {
+                NSS.SSL3_STATE_OFFSET = 1432;
+            }
+            devlog("NSS version " + nss_version + " — SSL3_STATE_OFFSET=" + NSS.SSL3_STATE_OFFSET);
+        } catch (e) {
+            devlog("NSS version detection failed, using default ssl3 offset: " + e);
+        }
+    }
+
+    static resolveExperimentalAPI() {
+        try {
+            var getExpApiAddr: NativePointer | null = null;
+            try {
+                getExpApiAddr = Module.getGlobalExportByName("SSL_GetExperimentalAPI");
+            } catch (_) {
+                // Not found
+            }
+            if (!getExpApiAddr || getExpApiAddr.isNull()) {
+                devlog("SSL_GetExperimentalAPI not found — secret callback will use struct-write fallback");
+                return;
+            }
+
+            var getExpApiFn = new NativeFunction(getExpApiAddr, "pointer", ["pointer"]);
+            var nameStr = Memory.allocUtf8String("SSL_SecretCallback");
+            var fnPtr = getExpApiFn(nameStr);
+            if (!fnPtr.isNull()) {
+                NSS.SSL_SecretCallback_fn = new NativeFunction(fnPtr, "int", ["pointer", "pointer", "pointer"]);
+                NSS.SSL_SecretCallback_ptr = fnPtr;
+                devlog("SSL_SecretCallback resolved via experimental API at " + fnPtr);
+            }
+        } catch (e) {
+            devlog("SSL_GetExperimentalAPI resolution failed: " + e);
+        }
+    }
+
     /* PARSING functions */
 
     static parse_struct_SECItem(secitem: NativePointer) {
@@ -295,21 +348,28 @@ export class NSS {
             "version": sslSocketFD.add(160),
             "handshakeCallback": sslSocketFD.add(464),
             "secretCallback": sslSocketFD.add(568),
-            "ssl3": sslSocketFD.add(1432)
+            "ssl3": sslSocketFD.add(NSS.SSL3_STATE_OFFSET)
         }
     }
 
     // https://github.com/nss-dev/nss/blob/master/lib/ssl/sslimpl.h#L771
-    static parse_struct_ssl3Str(ssl3_struct: NativePointer): sslSocketStr {
-        NSS.SS3_VERSIONS_OFFSET = 0; // defaulting offset to 0
+    static ssl3OffsetsInitialized: boolean = false;
+
+    static initSsl3Offsets() {
+        if (NSS.ssl3OffsetsInitialized) return;
+        NSS.SS3_VERSIONS_OFFSET = 0;
         NSS.SS3_VERSIONS_CR_OFFSET = 0;
         var nss_version = NSS.get_NSS_version();
-        //console.log("nss_version:"+nss_version);
-        if(nss_version >= 3107){
-            devlog("setting offsets for NSS version "+nss_version);
-            NSS.SS3_VERSIONS_OFFSET = 96; // offset currentSecret
-            NSS.SS3_VERSIONS_CR_OFFSET = 8; // offset for CLIENT_RANDOM
+        if (nss_version >= 3107) {
+            devlog("setting offsets for NSS version " + nss_version);
+            NSS.SS3_VERSIONS_OFFSET = 96;
+            NSS.SS3_VERSIONS_CR_OFFSET = 8;
         }
+        NSS.ssl3OffsetsInitialized = true;
+    }
+
+    static parse_struct_ssl3Str(ssl3_struct: NativePointer): sslSocketStr {
+        NSS.initSsl3Offsets();
 
         // version 3.108 beta
         // https://github.com/nss-dev/nss/blob/c277877bd8c01e107b097bbd57df094b34e37aab/lib/ssl/sslimpl.h#L615
@@ -368,8 +428,8 @@ export class NSS {
             "peerCertChain": ssl3_struct.add(pointerSize * 8 + 24).readPointer(),
             "ca_list": ssl3_struct.add(pointerSize * 9 + 24).readPointer(),
             "hs": { // https://github.com/nss-dev/nss/blob/c277877bd8c01e107b097bbd57df094b34e37aab/lib/ssl/sslimpl.h#L615
-                "server_random": ssl3_struct.add(pointerSize * 10 + 24+ NSS.SS3_VERSIONS_CR_OFFSET),  //SSL3Random --> typedef PRUint8 SSL3Random[SSL3_RANDOM_LENGTH];
-                "client_random": ssl3_struct.add(pointerSize * 10 + 56+ NSS.SS3_VERSIONS_CR_OFFSET),
+                "client_random": ssl3_struct.add(pointerSize * 10 + 24+ NSS.SS3_VERSIONS_CR_OFFSET),  //SSL3Random --> typedef PRUint8 SSL3Random[SSL3_RANDOM_LENGTH];
+                "server_random": ssl3_struct.add(pointerSize * 10 + 56+ NSS.SS3_VERSIONS_CR_OFFSET),
                 "client_inner_random": ssl3_struct.add(pointerSize * 10 + 88+ NSS.SS3_VERSIONS_CR_OFFSET),
                 "ws": ssl3_struct.add(pointerSize * 10 + 120+ NSS.SS3_VERSIONS_OFFSET).readU32(),
                 "hashType": ssl3_struct.add(pointerSize * 10 + 124+ NSS.SS3_VERSIONS_OFFSET).readU32(),
@@ -643,14 +703,46 @@ export class NSS {
      *  More: https://github.com/nss-dev/nss/blob/master/lib/ssl/sslexp.h#L614                           
      * 
      */
-    static secret_callback = new NativeCallback(function (sslSocketFD: NativePointer, epoch: number, dir: number, secret: NativePointer, arg_ptr: NativePointer) {
-        if (typeof this !== "undefined") {
-            NSS.parse_epoch_value_from_SSL_SetSecretCallback(sslSocketFD, epoch);
-        } else {
-            devlog_error("[-] Error while installing parse_epoch_value_from_SSL_SetSecretCallback()");
-        }
+    static SECRET_LABEL_MAP: { [key: string]: string } = {
+        "1:2": "CLIENT_EARLY_TRAFFIC_SECRET",
+        "2:2": "CLIENT_HANDSHAKE_TRAFFIC_SECRET",
+        "2:1": "SERVER_HANDSHAKE_TRAFFIC_SECRET",
+        "3:2": "CLIENT_TRAFFIC_SECRET_0",
+        "3:1": "SERVER_TRAFFIC_SECRET_0"
+    };
 
-        return;
+    static secret_callback = new NativeCallback(function (fd: NativePointer, epoch: number, dir: number, secret: NativePointer, arg_ptr: NativePointer) {
+        try {
+            var label = NSS.SECRET_LABEL_MAP[epoch + ":" + dir];
+            if (!label) return;
+            if (secret.isNull()) return;
+
+            // Extract key directly from PK11SymKey* parameter
+            var secretHex = NSS.get_Secret_As_HexString(secret);
+            if (!secretHex || secretHex.length === 0) return;
+
+            // Get client_random from ssl3 struct
+            var sslSocketFD = NSS.get_SSL_FD(fd);
+            if (sslSocketFD.isNull()) return;
+            var sslSocketStr = NSS.parse_struct_sslSocketStr(sslSocketFD);
+            var ssl3 = NSS.parse_struct_ssl3Str(sslSocketStr.ssl3);
+            var client_random = NSS.getClientRandom(ssl3);
+
+            sendKeylog(NSS.get_Keylog_Dump(label, client_random, secretHex));
+
+            // Call through to original callback if one was saved
+            var sockKey = sslSocketFD.toString();
+            var orig = NSS.originalSecretCallbacks[sockKey];
+            if (orig && orig.cb && !orig.cb.isNull() && !orig.cb.equals(NSS.secret_callback)) {
+                try {
+                    orig.fn(fd, epoch, dir, secret, orig.arg);
+                } catch (e2) {
+                    devlog("secret_callback: original callback call-through failed: " + e2);
+                }
+            }
+        } catch (e) {
+            devlog_error("secret_callback error: " + e);
+        }
     }, "void", ["pointer", "uint16", "uint16", "pointer", "pointer"]);
 
 
@@ -944,7 +1036,7 @@ typedef union PRNetAddr PRNetAddr;
             }
         }*/
         var layer = NSS.NSS_FindIdentityForName(pRFileDesc, 'SSL');
-        if (!layer || Java.available) { // on Android is no SSL_SESSION_get_id available
+        if (!layer || Java.available || !NSS.SSL_SESSION_get_id) { // on Android/macOS SSL_SESSION_get_id may not be available
             return dummySSL_SessionID;
         }
 
@@ -1292,62 +1384,53 @@ typedef union PRNetAddr PRNetAddr;
     static getTLS_Keys(pRFileDesc: NativePointer, dumping_handshake_secrets: number) {
         devlog("trying to log some keying materials ...");
 
+        // When secret_callback API is active, handshake secrets (epochs 1 & 2) are already
+        // delivered with authoritative values — skip expensive struct parsing entirely
+        if ((dumping_handshake_secrets == 1 || dumping_handshake_secrets == 2) && NSS.SSL_SecretCallback_fn) {
+            return;
+        }
 
         var sslSocketFD = NSS.get_SSL_FD(pRFileDesc);
         if (sslSocketFD.isNull()) {
             return;
         }
 
-
-
         var sslSocketStr = NSS.parse_struct_sslSocketStr(sslSocketFD);
         var ssl3_struct = sslSocketStr.ssl3;
         var ssl3 = NSS.parse_struct_ssl3Str(ssl3_struct);
-
-
-        //console.log("[!] inspecting ssl3: ");
-        //dumpMemory(ssl3.hs.currentSecret,0x200);
-
-
-
 
         // the client_random is used to identify the diffrent SSL streams with their corresponding secrets
         var client_random = NSS.getClientRandom(ssl3);
 
         if (NSS.doTLS13_RTT0 == 1) {
-            //var early_exporter_secret = get_Secret_As_HexString(ssl3_struct.add(768).readPointer()); //EARLY_EXPORTER_SECRET
-            var early_exporter_secret = NSS.get_Secret_As_HexString(ssl3.hs.earlyExporterSecret); //EARLY_EXPORTER_SECRET
-            devlog(NSS.get_Keylog_Dump("EARLY_EXPORTER_SECRET", client_random, early_exporter_secret));
-            sendKeylog(NSS.get_Keylog_Dump("EARLY_EXPORTER_SECRET", client_random, early_exporter_secret));
+            var early_exporter_secret = NSS.get_Secret_As_HexString(ssl3.hs.earlyExporterSecret);
+            var earlyExpDump = NSS.get_Keylog_Dump("EARLY_EXPORTER_SECRET", client_random, early_exporter_secret);
+            devlog(earlyExpDump);
+            sendKeylog(earlyExpDump);
             NSS.doTLS13_RTT0 = -1;
         }
 
         if (dumping_handshake_secrets == 1) {
             devlog("exporting TLS 1.3 handshake keying material");
-            /*
-             * Those keys are computed in the beginning of a handshake
-             */
-            //var client_handshake_traffic_secret = get_Secret_As_HexString(ssl3_struct.add(736).readPointer()); //CLIENT_HANDSHAKE_TRAFFIC_SECRET
-            var client_handshake_traffic_secret = NSS.get_Secret_As_HexString(ssl3.hs.clientHsTrafficSecret); //CLIENT_HANDSHAKE_TRAFFIC_SECRET
 
-            //parse_struct_ssl3Str(ssl3_struct)
-            devlog(NSS.get_Keylog_Dump("CLIENT_HANDSHAKE_TRAFFIC_SECRET", client_random, client_handshake_traffic_secret));
-            sendKeylog(NSS.get_Keylog_Dump("CLIENT_HANDSHAKE_TRAFFIC_SECRET", client_random, client_handshake_traffic_secret));
+            var client_handshake_traffic_secret = NSS.get_Secret_As_HexString(ssl3.hs.clientHsTrafficSecret);
+            var chsDump = NSS.get_Keylog_Dump("CLIENT_HANDSHAKE_TRAFFIC_SECRET", client_random, client_handshake_traffic_secret);
+            devlog(chsDump);
+            sendKeylog(chsDump);
 
-            //var server_handshake_traffic_secret = get_Secret_As_HexString(ssl3_struct.add(744).readPointer()); //SERVER_HANDSHAKE_TRAFFIC_SECRET
-            var server_handshake_traffic_secret = NSS.get_Secret_As_HexString(ssl3.hs.serverHsTrafficSecret); //SERVER_HANDSHAKE_TRAFFIC_SECRET
-            devlog(NSS.get_Keylog_Dump("SERVER_HANDSHAKE_TRAFFIC_SECRET", client_random, server_handshake_traffic_secret));
-
-
-            sendKeylog(NSS.get_Keylog_Dump("SERVER_HANDSHAKE_TRAFFIC_SECRET", client_random, server_handshake_traffic_secret));
+            var server_handshake_traffic_secret = NSS.get_Secret_As_HexString(ssl3.hs.serverHsTrafficSecret);
+            var shsDump = NSS.get_Keylog_Dump("SERVER_HANDSHAKE_TRAFFIC_SECRET", client_random, server_handshake_traffic_secret);
+            devlog(shsDump);
+            sendKeylog(shsDump);
 
             return;
         } else if (dumping_handshake_secrets == 2) {
             devlog("exporting TLS 1.3 RTT0 handshake keying material");
 
-            var client_early_traffic_secret = NSS.get_Secret_As_HexString(ssl3.hs.clientEarlyTrafficSecret); //CLIENT_EARLY_TRAFFIC_SECRET
-            devlog(NSS.get_Keylog_Dump("CLIENT_EARLY_TRAFFIC_SECRET", client_random, client_early_traffic_secret));
-            sendKeylog(NSS.get_Keylog_Dump("CLIENT_EARLY_TRAFFIC_SECRET", client_random, client_early_traffic_secret));
+            var client_early_traffic_secret = NSS.get_Secret_As_HexString(ssl3.hs.clientEarlyTrafficSecret);
+            var cetsDump = NSS.get_Keylog_Dump("CLIENT_EARLY_TRAFFIC_SECRET", client_random, client_early_traffic_secret);
+            devlog(cetsDump);
+            sendKeylog(cetsDump);
             NSS.doTLS13_RTT0 = 1; // there is no callback for the EARLY_EXPORTER_SECRET
             return;
         }
@@ -1355,58 +1438,37 @@ typedef union PRNetAddr PRNetAddr;
 
         var ssl_version_internal_Code = NSS.get_SSL_Version(pRFileDesc);
 
-
-
         if (NSS.is_TLS_1_3(ssl_version_internal_Code)) {
             devlog("exporting TLS 1.3 keying material");
 
-           
-            /*
-            Testing offsets via brute force...
+            // When secret_callback API is active, it already delivers traffic secrets with authoritative values
+            if (!NSS.SSL_SecretCallback_fn) {
+                var client_traffic_secret = NSS.get_Secret_As_HexString(ssl3.hs.clientTrafficSecret);
+                var ctsDump = NSS.get_Keylog_Dump("CLIENT_TRAFFIC_SECRET_0", client_random, client_traffic_secret);
+                devlog(ctsDump);
+                sendKeylog(ctsDump);
 
-            var i = 432;
-            try{
-                for (; i <= 850; i += 8) {
-                    try{
-                        var dst_ptr = ssl3_struct.add(i).readPointer();
-                        if(!dst_ptr.isNull()){
-                            devlog(i);
-                            var server_handshake_traffic_secret = NSS.get_Secret_As_HexString(dst_ptr);
-                            devlog("[!] server_handshake_traffic_secret (offset: "+i+"): "+server_handshake_traffic_secret);
-                        }
-                    }catch(innere){}
-                    
-                }
+                var server_traffic_secret = NSS.get_Secret_As_HexString(ssl3.hs.serverTrafficSecret);
+                var stsDump = NSS.get_Keylog_Dump("SERVER_TRAFFIC_SECRET_0", client_random, server_traffic_secret);
+                devlog(stsDump);
+                sendKeylog(stsDump);
+            }
 
-            }catch(e){
-
-            }*/
-            
-
-            
-
-
-
-            var client_traffic_secret = NSS.get_Secret_As_HexString(ssl3.hs.clientTrafficSecret); //CLIENT_TRAFFIC_SECRET_0
-            devlog(NSS.get_Keylog_Dump("CLIENT_TRAFFIC_SECRET_0", client_random, client_traffic_secret));
-            sendKeylog(NSS.get_Keylog_Dump("CLIENT_TRAFFIC_SECRET_0", client_random, client_traffic_secret));
-
-
-            var server_traffic_secret = NSS.get_Secret_As_HexString(ssl3.hs.serverTrafficSecret); //SERVER_TRAFFIC_SECRET_0
-            devlog(NSS.get_Keylog_Dump("SERVER_TRAFFIC_SECRET_0", client_random, server_traffic_secret));
-            sendKeylog(NSS.get_Keylog_Dump("SERVER_TRAFFIC_SECRET_0", client_random, server_traffic_secret));
-
-            var exporter_secret = NSS.get_Secret_As_HexString(ssl3.hs.exporterSecret); //EXPORTER_SECRET 
-            devlog(NSS.get_Keylog_Dump("EXPORTER_SECRET", client_random, exporter_secret));
-            sendKeylog(NSS.get_Keylog_Dump("EXPORTER_SECRET", client_random, exporter_secret));
-
+            // EXPORTER_SECRET is not delivered by secret_callback, so always extract from struct
+            var exporter_secret = NSS.get_Secret_As_HexString(ssl3.hs.exporterSecret);
+            if (exporter_secret) {
+                var expDump = NSS.get_Keylog_Dump("EXPORTER_SECRET", client_random, exporter_secret);
+                devlog(expDump);
+                sendKeylog(expDump);
+            }
 
         } else {
             devlog("exporting TLS 1.2 keying material");
 
             var master_secret = NSS.getMasterSecret(ssl3);
-            devlog(NSS.get_Keylog_Dump("CLIENT_RANDOM", client_random, master_secret));
-            sendKeylog(NSS.get_Keylog_Dump("CLIENT_RANDOM", client_random, master_secret));
+            var crDump = NSS.get_Keylog_Dump("CLIENT_RANDOM", client_random, master_secret);
+            devlog(crDump);
+            sendKeylog(crDump);
 
         }
 
@@ -1608,32 +1670,84 @@ function tls13_RecordKeyLog(pRFileDesc, secret_label, secret){
 
     }
 
+    static installSecretCallbackInterceptor() {
+        if (!NSS.SSL_SecretCallback_ptr) return;
+
+        Interceptor.attach(NSS.SSL_SecretCallback_ptr, {
+            onEnter(args: any) {
+                this.fd = args[0];
+                this.cb = args[1];
+                this.arg = args[2];
+                this.isOurs = args[1].equals(NSS.secret_callback);
+            },
+            onLeave(retval: any) {
+                if (this.isOurs || NSS.secretCallbackReentryGuard) return;
+                if (retval.toInt32() < 0) return;
+
+                // External registration detected — save original and re-register ours
+                try {
+                    var sslSocketFD = NSS.get_SSL_FD(this.fd);
+                    if (sslSocketFD && !sslSocketFD.isNull()) {
+                        NSS.originalSecretCallbacks[sslSocketFD.toString()] = {
+                            cb: this.cb, arg: this.arg,
+                            fn: new NativeFunction(this.cb, "void", [
+                                "pointer", "uint16", "uint16", "pointer", "pointer"
+                            ])
+                        };
+                    }
+                } catch (e) { /* ignore */ }
+
+                NSS.secretCallbackReentryGuard = true;
+                try {
+                    NSS.SSL_SecretCallback_fn!(this.fd, NSS.secret_callback, NULL);
+                } finally {
+                    NSS.secretCallbackReentryGuard = false;
+                }
+                devlog("Re-registered secret callback after external override");
+            }
+        });
+        devlog("SSL_SecretCallback interceptor installed");
+    }
+
     /**
          * Registers a secret_callback through inserting the address to our TLS 1.3 callback function at the apprioate offset of the  SSL Socket struct
          * This is neccassy because the computed handshake secrets are already freed after the handshake is completed.
-         * 
-         * 
+         *
+         *
          * @param {*} pRFileDesc a file descriptor (NSS PRFileDesc) to a SSL socket
-         * @returns 
+         * @returns
          */
     static register_secret_callback(pRFileDesc: NativePointer) {
         var sslSocketFD = NSS.get_SSL_FD(pRFileDesc);
         if (sslSocketFD.isNull()) {
-            devlog("[-] error while installing secret callback: unable get SSL socket descriptor");
+            devlog("[-] register_secret_callback: unable to get SSL socket descriptor");
             return;
         }
-        var sslSocketStr = NSS.parse_struct_sslSocketStr(sslSocketFD);
 
+        // Preferred: use SSL_SecretCallback API (works on macOS Firefox)
+        if (NSS.SSL_SecretCallback_fn) {
+            NSS.secretCallbackReentryGuard = true;
+            var rv: number;
+            try {
+                rv = NSS.SSL_SecretCallback_fn(pRFileDesc, NSS.secret_callback, NULL);
+            } finally {
+                NSS.secretCallbackReentryGuard = false;
+            }
+            if (rv >= 0) {
+                devlog("secret_callback registered via SSL_SecretCallback API");
+                return;
+            }
+            devlog("SSL_SecretCallback API call failed (rv=" + rv + "), falling back to struct write");
+        }
+
+        // Fallback: write directly to struct offset (old approach)
+        var sslSocketStr = NSS.parse_struct_sslSocketStr(sslSocketFD);
         if (NSS.is_ptr_at_mem_location(sslSocketStr.secretCallback.readPointer()) == 1) {
             NSS.insert_hook_into_secretCallback(sslSocketStr.secretCallback.readPointer());
         } else {
             sslSocketStr.secretCallback.writePointer(NSS.secret_callback);
         }
-
-
-        devlog("secret callback (" + NSS.secret_callback + ") installed to address: " + sslSocketStr.secretCallback);
-
-
+        devlog("secret_callback installed via struct write at: " + sslSocketStr.secretCallback);
     }
 
 

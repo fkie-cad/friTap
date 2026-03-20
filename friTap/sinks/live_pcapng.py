@@ -55,7 +55,14 @@ class LivePcapngSink:
         return self._tmpdir
 
     def create_fifo(self) -> str:
-        """Create the named pipe and return its path."""
+        """Create the named pipe and return its path.
+
+        Raises:
+            RuntimeError: On Windows where os.mkfifo is not available.
+        """
+        from ..fritap_utility import are_we_running_on_windows, WINDOWS_LIVE_UNSUPPORTED
+        if are_we_running_on_windows():
+            raise RuntimeError(WINDOWS_LIVE_UNSUPPORTED)
         self._tmpdir = tempfile.mkdtemp()
         self._fifo_path = os.path.join(self._tmpdir, "fritap_sharkfin.pcapng")
         os.mkfifo(self._fifo_path)

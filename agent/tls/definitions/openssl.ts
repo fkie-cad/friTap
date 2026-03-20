@@ -12,15 +12,15 @@ import { readHexFromPointer } from "../decoders/hex_utils.js";
 import { enable_default_fd } from "../../fritap_agent.js";
 import { STANDARD_SOCKET_SYMBOLS, DUMMY_SESSION_ID_OPENSSL } from "./shared_constants.js";
 
-function openSslFdDecoder(ssl: NativePointer, fns: ResolvedFunctions): number {
+export function openSslFdDecoder(ssl: NativePointer, fns: ResolvedFunctions): number {
     if (!fns["SSL_get_fd"]) return -1;
     return fns["SSL_get_fd"](ssl) as number;
 }
 
 // Pre-allocated buffer for session ID length (reused across calls)
-const _sessionIdLenPtr = Memory.alloc(4);
+export const _sessionIdLenPtr = Memory.alloc(4);
 
-function openSslSessionIdDecoder(ssl: NativePointer, fns: ResolvedFunctions): string {
+export function openSslSessionIdDecoder(ssl: NativePointer, fns: ResolvedFunctions): string {
     if (!fns["SSL_get_session"] || !fns["SSL_SESSION_get_id"]) {
         if (enable_default_fd) {
             return DUMMY_SESSION_ID_OPENSSL;

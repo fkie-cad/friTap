@@ -45,6 +45,7 @@ class AppState:
     json_path: str = ""
     verbose: bool = False
     live: bool = False
+    live_mode: str = ""  # "", "wireshark", "live_pcapng"
     full_capture: bool = False
     protocol: str = "tls"  # "tls", "ipsec", "ssh", "auto"
     library_scan: bool = False

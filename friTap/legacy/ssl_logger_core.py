@@ -74,6 +74,7 @@ class SSL_Logger():
             raise ValueError("Either 'app' or 'config' must be provided")
 
         self._cleanup_done = False
+        self._tui_mode = False
 
         # Set up logging (shared helper fixes bug where special_logger was hardcoded to INFO)
         self.logger, self.special_logger = setup_fritap_logging(
@@ -107,6 +108,7 @@ class SSL_Logger():
         self.keydump_Set = set()
         self.traced_Socket_Set = set()
         self.traced_scapy_socket_Set = set()
+        self._live_handler = None
 
         # Event bus for decoupled event handling
         self._event_bus = EventBus()
@@ -362,12 +364,17 @@ class SSL_Logger():
             self.tmpdir = live_info.get('tmpdir')
             self.filename = live_info.get('filename')
 
-        # Setup handlers on event bus
+        # Setup handlers on event bus (non-blocking for live handler)
         from ..output import KeylogOutputHandler
+        from ..output.live_pcapng_handler import LivePcapngHandler
+        from ..output.live_autodecrypt_handler import LiveAutoDecryptHandler
+        from ..output.live_wireshark_handler import LiveWiresharkHandler
         for handler in self._output_handlers:
             handler.setup(self._event_bus)
             if isinstance(handler, KeylogOutputHandler):
                 self.keylog_file = handler._file
+            if isinstance(handler, (LivePcapngHandler, LiveAutoDecryptHandler, LiveWiresharkHandler)):
+                self._live_handler = handler
 
         # Load plugins
         from ..plugins.loader import PluginLoader
@@ -718,7 +725,47 @@ class SSL_Logger():
         script = self.instrument(self.process, own_message_handler)
         return script
 
+    def connect_live(self) -> bool:
+        """Connect the live Wireshark FIFO handler.
+
+        Emits LiveReadyEvent (so the TUI can launch Wireshark), waits
+        briefly for the launch, then blocks until Wireshark connects to
+        the FIFO or times out.
+
+        Call this AFTER wiring any event subscribers (e.g. TuiOutputHandler)
+        so they receive the LiveReadyEvent. Idempotent: no-op if no live
+        handler or already connected.
+
+        Returns True if connected (or not in live mode), False on timeout.
+        """
+        if self._live_handler is None:
+            return True
+
+        live_handler = self._live_handler
+        self._live_handler = None  # Consume — idempotent
+
+        from ..events import LiveReadyEvent
+        self._event_bus.emit(LiveReadyEvent(fifo_path=self.filename))
+
+        time.sleep(1.0)  # Give event loop time to process Wireshark launch
+
+        connected = live_handler.connect(timeout=30)
+        if connected:
+            from ..events import WiresharkConnectedEvent
+            self._event_bus.emit(WiresharkConnectedEvent(fifo_path=self.filename))
+            return True
+
+        from ..events import LiveConnectionFailedEvent
+        self._event_bus.emit(LiveConnectionFailedEvent(
+            fifo_path=self.filename,
+            reason="Wireshark did not connect within 30 seconds",
+        ))
+        self._output_handlers.remove(live_handler)
+        live_handler.close()
+        return False
+
     def start_fritap_session(self, own_message_handler=None):
+        self.connect_live()  # No-op if already connected or not in live mode
         return self._session_manager.start_session(own_message_handler)
 
     def finish_fritap(self):
@@ -842,7 +889,8 @@ class SSL_Logger():
                     "https://github.com/fkie-cad/friTap/issues"
                 )
         self.special_logger.info("\nThanks for using friTap. Have a great day!")
-        sys.exit(0)
+        if not self._tui_mode:
+            sys.exit(0)
 
     def wait_for_completion(self):
         """Block until the session ends. Responds to KeyboardInterrupt."""

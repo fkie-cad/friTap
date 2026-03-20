@@ -4,8 +4,7 @@
 """
 Event bus system for friTap.
 
-Replaces the monolithic on_fritap_message() if/elif chain with a
-publish-subscribe event system. Output handlers, the TUI, and
+A publish-subscribe event system. Output handlers, the TUI, and
 external integrations subscribe to typed events.
 """
 
@@ -135,6 +134,25 @@ class ScriptLoadedEvent(FriTapEvent):
     script_name: str = ""
     plugin_name: str = ""
     load_order: str = ""
+
+
+@dataclass
+class LiveReadyEvent(FriTapEvent):
+    """Emitted when live Wireshark FIFO is ready."""
+    fifo_path: str = ""
+
+
+@dataclass
+class WiresharkConnectedEvent(FriTapEvent):
+    """Emitted when Wireshark connects to the FIFO."""
+    fifo_path: str = ""
+
+
+@dataclass
+class LiveConnectionFailedEvent(FriTapEvent):
+    """Emitted when Wireshark fails to connect within the timeout."""
+    fifo_path: str = ""
+    reason: str = ""
 
 
 # ---------------------------------------------------------------------------

@@ -62,21 +62,47 @@ class OutputHandlerFactory:
                     json_output, session_info=session_data.get("session_info", {})
                 ))
 
-        # Live Wireshark (PCAPNG pipe)
+        # Live Wireshark modes
         if config.output.live:
-            if pcap_name:
-                logger.warning(
-                    "YOU ARE TRYING TO WRITE A PCAP AND HAVING A LIVE VIEW\n"
-                    "THIS IS NOT SUPPORTED!\n"
-                    "WHEN YOU DO A LIVE VIEW YOU CAN SAVE YOUR CAPTURE WITH WIRESHARK."
-                )
-            live_handler = LivePcapngHandler()
-            fifo_file = live_handler.create_fifo()
-            live_info['tmpdir'] = live_handler.tmpdir
-            live_info['filename'] = live_handler.fifo_path
-            logger.info('friTap live view on Wireshark (PCAPNG with auto-decrypt)')
-            logger.info('Created named pipe: %s', fifo_file)
-            logger.info('Open with: sudo wireshark -k -i %s', fifo_file)
-            handlers.append(live_handler)
+            from ..fritap_utility import are_we_running_on_windows, WINDOWS_LIVE_UNSUPPORTED
+            if are_we_running_on_windows():
+                logger.error(WINDOWS_LIVE_UNSUPPORTED)
+            else:
+                if pcap_name:
+                    logger.warning(
+                        "YOU ARE TRYING TO WRITE A PCAP AND HAVING A LIVE VIEW\n"
+                        "THIS IS NOT SUPPORTED!\n"
+                        "WHEN YOU DO A LIVE VIEW YOU CAN SAVE YOUR CAPTURE WITH WIRESHARK."
+                    )
+                live_mode = config.output.live_mode
+                if live_mode == "live_pcapng":
+                    from .live_autodecrypt_handler import LiveAutoDecryptHandler
+                    is_mobile = bool(config.device.mobile)
+                    device_id = (
+                        config.device.mobile
+                        if isinstance(config.device.mobile, str)
+                        else None
+                    )
+                    live_handler = LiveAutoDecryptHandler(
+                        is_mobile=is_mobile, device_id=device_id
+                    )
+                    description = 'friTap live auto-decrypt (raw capture + TLS keys)'
+                elif live_mode == "wireshark":
+                    from .live_wireshark_handler import LiveWiresharkHandler
+                    # PCAP created lazily in connect() to avoid FIFO deadlock
+                    live_handler = LiveWiresharkHandler()
+                    description = 'friTap live view on Wireshark (plaintext stream)'
+                else:
+                    live_handler = LivePcapngHandler()
+                    description = 'friTap live view on Wireshark (PCAPNG with auto-decrypt)'
+
+                fifo_file = live_handler.create_fifo()
+                live_info['tmpdir'] = live_handler.tmpdir
+                live_info['filename'] = live_handler.fifo_path
+
+                logger.info(description)
+                logger.info('Created named pipe: %s', fifo_file)
+                logger.info('Open with: wireshark -k -i %s', fifo_file)
+                handlers.append(live_handler)
 
         return handlers, live_info

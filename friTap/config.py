@@ -39,6 +39,7 @@ class OutputConfig:
     json_output: Optional[str] = None
     output_format: str = "auto"
     live: bool = False
+    live_mode: str = ""  # "", "wireshark", "live_pcapng"
     verbose: bool = False
     full_capture: bool = False
     socket_trace: bool | str = False

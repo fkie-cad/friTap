@@ -17,10 +17,10 @@ class CaptureWizard:
     """Guided setup wizard for friTap TUI capture sessions."""
 
     _CAPTURE_MODE_DEFAULTS = {
-        "full": ("Full Capture", "full", "keys.log", "capture.pcap", False),
+        "full": ("Full Capture", "full", "keys.log", "capture.pcapng", False),
         "keys": ("Key Extraction Only", "keys", "keys.log", "", False),
-        "plaintext": ("Plaintext PCAP", "plaintext", "", "plaintext.pcap", False),
-        "wireshark": ("Live Wireshark", "wireshark", "keys.log", "", True),
+        "plaintext": ("Plaintext PCAP", "plaintext", "", "plaintext.pcapng", False),
+        "wireshark": ("Live Wireshark", "wireshark", "", "", True),
         "live_pcapng": ("Live Wireshark (auto-decrypt)", "live_pcapng", "", "", True),
     }
 
@@ -134,22 +134,8 @@ class CaptureWizard:
         self._screen.app.push_screen(TargetModeModal(), callback=_on_result)
 
     def _apply_target(self, display_name: str, frida_target: str, is_spawn: bool) -> None:
-        """Apply target selection to state and UI widgets."""
-        state = self._screen._get_state()
-        mode = "spawn" if is_spawn else "attach"
-        mode_tag = mode.upper()
-
-        state.target = frida_target
-        state.target_display = display_name
-        state.spawn = is_spawn
-        self._screen._get_status_bar().update_target(display_name, mode_tag)
-        menu = self._screen._get_menu_panel()
-        menu.has_target = True
-        menu.target_name = display_name
-        menu.target_mode = mode
-        self._screen._get_activity_log().log_info(
-            f"Target: [bold #d4945a]{display_name}[/] [{mode_tag}]"
-        )
+        """Delegate to MainScreen._apply_target()."""
+        self._screen._apply_target(display_name, frida_target, is_spawn)
 
     def _step_4_select_target(self) -> None:
         """Step 4: Select target (process list or spawn input)."""
@@ -182,7 +168,13 @@ class CaptureWizard:
                 self._apply_target(target, target, is_spawn=True)
                 self._step_5_capture_mode()
 
-            self._screen.app.push_screen(SpawnInputModal(), callback=_on_spawn)
+            self._screen.app.push_screen(
+                SpawnInputModal(
+                    device_id=state.device_id,
+                    device_type=state.device_type,
+                ),
+                callback=_on_spawn,
+            )
 
     def _step_5_capture_mode(self) -> None:
         """Step 5: Select capture mode."""
@@ -263,6 +255,7 @@ class CaptureWizard:
             "keylog_path": state.keylog_path,
             "pcap_path": state.pcap_path,
             "live": state.live,
+            "capture_mode_id": self._capture_mode_id,
             "verbose": state.verbose,
             "protocol": getattr(state, 'protocol', 'tls'),
             "experimental": getattr(state, "_experimental", False),

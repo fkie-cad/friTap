@@ -10,17 +10,46 @@ and post-session UI cleanup.
 
 from __future__ import annotations
 
+import os
 import time
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    pass
+from .modals.alert_modal import AlertModal
 
 try:
     from textual.widgets import Static
     TEXTUAL_AVAILABLE = True
 except ImportError:
     TEXTUAL_AVAILABLE = False
+
+
+def _format_size(size_bytes: int) -> str:
+    """Format a byte count as a human-readable string."""
+    size = float(size_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024:
+            return f"{int(size)} B" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
+
+
+def _count_keys(path: str) -> int | None:
+    """Count non-empty, non-comment lines in a keylog file."""
+    try:
+        with open(path) as f:
+            return sum(
+                1 for line in f
+                if (s := line.strip()) and not s.startswith("#")
+            )
+    except OSError:
+        return None
+
+
+def _get_file_size(path: str) -> int | None:
+    """Return file size in bytes, or None if file doesn't exist."""
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return None
 
 
 class CaptureController:
@@ -57,16 +86,14 @@ class CaptureController:
     # ----------------------------------------------------------
 
     def _warn(
-        self, modal_message: str, log_message: str,
+        self, message: str,
         title: str = "Warning", severity: str = "warning",
     ) -> None:
         """Show a warning alert modal and log the message."""
-        from ..modals.alert_modal import AlertModal
-
         self._screen.app.push_screen(
-            AlertModal(message=modal_message, title=title, severity=severity)
+            AlertModal(message=message, title=title, severity=severity)
         )
-        self._screen._get_activity_log().log_warning(log_message)
+        self._screen._get_activity_log().log_warning(message.replace("\n", " "))
 
     def action_start_capture(self) -> None:
         """Build config, create SSL_Logger, wire handler, start session."""
@@ -75,21 +102,18 @@ class CaptureController:
         if not state.target:
             self._warn(
                 "No target selected.\nPress [bold]a[/] to attach or [bold]s[/] to spawn.",
-                "No target selected. Press [bold]a[/] to attach or [bold]s[/] to spawn.",
             )
             return
 
         if self._ssl_logger and self._ssl_logger.running:
             self._warn(
                 "Capture already running.\nPress [bold]Enter[/] to stop first.",
-                "Capture already running. Press [bold]Enter[/] or [bold]Esc[/] to stop first.",
             )
             return
 
         if not state.keylog_path and not state.pcap_path and not state.live:
             self._warn(
                 "No capture mode set.\nPress [bold]1[/]-[bold]4[/] to select a mode.",
-                "No capture mode set. Press [bold]1[/]-[bold]4[/] to select a mode.",
             )
             return
 
@@ -109,7 +133,6 @@ class CaptureController:
             self._warn(
                 f"The following plugins require the Frida backend "
                 f"and will be skipped:\n\n[bold]{names}[/]",
-                f"Plugins skipped (backend={backend_name}): {names}",
                 title="Plugin Warning",
             )
 
@@ -162,6 +185,7 @@ class CaptureController:
             json_output=state.json_path or None,
             verbose=state.verbose,
             live=state.live,
+            live_mode=state.live_mode,
             full_capture=state.full_capture,
         )
 
@@ -174,21 +198,20 @@ class CaptureController:
         )
 
     def start_capture(self, state) -> None:
-        """Build config, create SSL_Logger, wire TUI handler, start."""
-        from friTap.ssl_logger import SSL_Logger
+        """Build config, wire TUI handler, start session on background thread.
+
+        SSL_Logger creation (which includes FIFO setup) runs on the
+        background thread to prevent the blocking FIFO open from
+        freezing the Textual event loop.
+        """
         from friTap.tui.handlers import TuiOutputHandler
 
-        config = self.build_config(state)
-        self._ssl_logger = SSL_Logger(config=config)
-
-        # Wire TUI output handler
+        self._pending_config = self.build_config(state)
         self._tui_handler = TuiOutputHandler(self._screen.app)
-        self._tui_handler.setup(self._ssl_logger._event_bus)
-        self._ssl_logger._output_handlers.append(self._tui_handler)
 
-        # Update UI state
+        # Update UI state to STARTING
         mode_display = self._capture_mode or "Custom"
-        self._screen._get_status_bar().update_capture("CAPTURING", mode_display)
+        self._screen._get_status_bar().update_capture("STARTING", mode_display)
         menu = self._screen._get_menu_panel()
         menu.capture_active = True
         menu.target_name = state.target_display or state.target
@@ -197,33 +220,89 @@ class CaptureController:
         mode_action = "Spawning" if state.spawn else "Attaching to"
         log.log_info(f"{mode_action}: [bold #d4945a]{state.target_display or state.target}[/]...")
 
-        # Update console title with CAPTURING badge
-        try:
-            title = self._screen.query_one("#activity-title", Static)
-            title.update("[bold #4ade80]friTap Console[/]  [bold green on #1a3a1a] CAPTURING [/]")
-        except Exception:
-            pass
-
         # CRITICAL: Do NOT call install_signal_handler() -- it calls os._exit(0)
         self._screen.run_worker(self._run_session, thread=True)
 
     def _run_session(self) -> None:
-        """Run the SSL_Logger session in a background thread."""
+        """Run the SSL_Logger session in a background thread.
+
+        SSL_Logger is created here (not on the Textual thread) so that
+        the blocking FIFO open in live mode doesn't freeze the UI.
+        """
+        result_stats: dict[str, str] = {}
         try:
+            from friTap.ssl_logger import SSL_Logger
+            self._ssl_logger = SSL_Logger(config=self._pending_config)
+            self._ssl_logger._tui_mode = True
+            self._pending_config = None
+
+            # Wire TUI output handler to the event bus BEFORE connect_live()
+            # so it receives LiveReadyEvent and can launch Wireshark
+            self._tui_handler.setup(self._ssl_logger._event_bus)
+            self._ssl_logger._output_handlers.append(self._tui_handler)
+
+            # Connect live Wireshark handler (emits LiveReadyEvent → TUI
+            # launches Wireshark → blocks until FIFO connected or timeout)
+            self._ssl_logger.connect_live()
+
+            # Update UI to CAPTURING now that SSL_Logger is ready
+            def _update_capturing():
+                mode_display = self._capture_mode or "Custom"
+                self._screen._get_status_bar().update_capture("CAPTURING", mode_display)
+                try:
+                    title = self._screen.query_one("#activity-title", Static)
+                    title.update("[bold #4ade80]friTap Console[/]  [bold green on #1a3a1a] CAPTURING [/]")
+                except Exception:
+                    pass
+            self._screen.app.call_from_thread(_update_capturing)
+
             self._ssl_logger.start_fritap_session()
             while self._ssl_logger.running:
                 time.sleep(0.2)
-        except Exception as e:
+        except (Exception, SystemExit) as e:
             def _log_error(err=e):
                 self._screen._get_activity_log().log_error(str(err))
             self._screen.app.call_from_thread(_log_error)
         finally:
-            self._screen.app.call_from_thread(self._on_session_ended)
+            # All blocking I/O runs here on the background thread
+            if self._ssl_logger:
+                try:
+                    sl = self._ssl_logger
+                    sl.pcap_cleanup(sl.full_capture, sl.mobile, sl.pcap_name)
+                    sl.cleanup(sl.live, sl.socket_trace, sl.full_capture, sl.debug_output)
+                except Exception as e:
+                    def _log_cleanup(err=e):
+                        self._screen._get_activity_log().log_error(f"Cleanup error: {err}")
+                    self._screen.app.call_from_thread(_log_cleanup)
 
-    def _on_session_ended(self) -> None:
+                # Gather file stats on background thread to avoid blocking UI
+                result_stats = self._gather_result_stats()
+
+            def _finalize(stats=result_stats):
+                self._on_session_ended(stats)
+            self._screen.app.call_from_thread(_finalize)
+
+    def _gather_result_stats(self) -> dict[str, str]:
+        """Gather capture statistics (file I/O). Must run on background thread."""
+        stats: dict[str, str] = {}
+        state = self._screen._get_state()
+        if state.keylog_path:
+            key_count = _count_keys(state.keylog_path)
+            if key_count is not None:
+                stats["Key log"] = f"{key_count} key{'s' if key_count != 1 else ''}"
+        if state.pcap_path:
+            size = _get_file_size(state.pcap_path)
+            if size is None:
+                dirname, basename = os.path.split(state.pcap_path)
+                size = _get_file_size(os.path.join(dirname, f"_{basename}"))
+            if size is not None:
+                stats["PCAP"] = _format_size(size)
+        return stats
+
+    def _on_session_ended(self, result_stats: dict[str, str] | None = None) -> None:
         """Called when the capture session ends (on Textual thread)."""
-        from ..modals.alert_modal import AlertModal
-
+        if result_stats is None:
+            result_stats = {}
         state = self._screen._get_state()
 
         # Save paths BEFORE resetting
@@ -233,6 +312,8 @@ class CaptureController:
         if state.pcap_path:
             result_paths["PCAP"] = state.pcap_path
         target_display = state.target_display or state.target or "unknown"
+        saved_live_mode = state.live_mode
+        is_mobile = state.device_type == "usb"
 
         # Reset AppState (preserve device info)
         state.target = ""
@@ -242,6 +323,7 @@ class CaptureController:
         state.keylog_path = ""
         state.json_path = ""
         state.live = False
+        state.live_mode = ""
         state.full_capture = False
 
         # Reset status bar
@@ -250,15 +332,16 @@ class CaptureController:
         status.update_target("", "")
         status.capture_mode = ""
 
-        # Reset menu panel
+        # Reset menu panel (batch to avoid 7 redundant rebuilds)
         menu = self._screen._get_menu_panel()
-        menu.capture_active = False
-        menu.has_target = False
-        menu.target_name = ""
-        menu.target_mode = ""
-        menu.current_mode = ""
-        menu.keylog_path = ""
-        menu.pcap_path = ""
+        with menu.batch_update():
+            menu.capture_active = False
+            menu.has_target = False
+            menu.target_name = ""
+            menu.target_mode = ""
+            menu.current_mode = ""
+            menu.keylog_path = ""
+            menu.pcap_path = ""
 
         self._capture_mode = ""
 
@@ -271,10 +354,15 @@ class CaptureController:
         except Exception:
             pass
 
+        # Teardown handler and clear references
+        saved_key_count = self._tui_handler.key_count if self._tui_handler else 0
+        if self._tui_handler is not None:
+            self._tui_handler.teardown()
+            self._tui_handler = None
+
         # Suggest library scan if no libraries detected
         if self._ssl_logger and not self._ssl_logger._detected_libraries:
             if not result_paths:
-                from ..modals.alert_modal import AlertModal
                 self._screen.app.push_screen(
                     AlertModal(
                         message="No TLS libraries were detected.\n\n"
@@ -285,11 +373,50 @@ class CaptureController:
                     )
                 )
 
-        # Show results summary
+        # Show results summary with pre-computed statistics
         if result_paths:
             lines = [f"Capture of [bold]{target_display}[/] completed.\n"]
             for label, path in result_paths.items():
-                lines.append(f"  {label}: [bold]{path}[/]")
+                stat = result_stats.get(label)
+                suffix = f" ({stat})" if stat else ""
+                lines.append(f"  {label}: [bold]{path}[/]{suffix}")
             self._screen.app.push_screen(
                 AlertModal(message="\n".join(lines), title="Capture Results", severity="info")
             )
+
+        # Mode 5: live auto-decrypt has no file output — show save instructions
+        elif saved_live_mode == "live_pcapng":
+            key_count = saved_key_count
+            key_label = f"{key_count} key{'s' if key_count != 1 else ''}" if key_count else "No keys"
+
+            lines = [
+                f"Live capture of [bold]{target_display}[/] completed.\n",
+                f"[bold #4ade80]TLS secrets extracted:[/] [bold]{key_label}[/]",
+                "  Secrets are already embedded in the PCAPNG stream.\n",
+                "[bold #f59e0b]Save your capture:[/]",
+                "  In Wireshark: [bold]File → Save As → .pcapng[/]\n",
+                "[bold #818cf8]Note:[/] This was a full network capture.",
+                "  Packets from other applications may be present.",
+                "  Wireshark auto-decrypts only traffic with matching TLS keys.",
+            ]
+            if not is_mobile:
+                display_filter = "not tcp.port == 27042"
+                lines.append("")
+                lines.append(f"[bold #4ade80]Filter out Frida traffic:[/]")
+                lines.append(f"  Display filter: [bold]{display_filter}[/]")
+            self._screen.app.push_screen(
+                AlertModal(message="\n".join(lines), title="Live Capture Complete", severity="info")
+            )
+
+        # Mode 4: plaintext Wireshark — also no file output
+        elif saved_live_mode == "wireshark":
+            lines = [
+                f"Live capture of [bold]{target_display}[/] completed.\n",
+                "[bold #f59e0b]Save your capture:[/]",
+                "  In Wireshark: [bold]File → Save As[/]",
+            ]
+            self._screen.app.push_screen(
+                AlertModal(message="\n".join(lines), title="Live Capture Complete", severity="info")
+            )
+
+        self._ssl_logger = None

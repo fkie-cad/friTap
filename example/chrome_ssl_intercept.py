@@ -13,7 +13,7 @@ Usage:
     python chrome_ssl_intercept.py --spawn com.android.chrome
 
     PID: Process ID of Chrome (e.g., 27913)
-    PACKAGE_NAME: Android package name (e.g., com.android.chrome)
+    PACKAGE_NAME: Android package name (e.g., com.android.chrome) - recommended for spawning
 
 Examples:
     python chrome_ssl_intercept.py 27913
@@ -38,13 +38,24 @@ import argparse
 
 # Path to the friTap JavaScript agent (relative to this script)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-FRITAP_JS_PATH = os.path.join(SCRIPT_DIR, "friTap", "fritap_agent.js")
+FRITAP_JS_PATH = os.path.join(SCRIPT_DIR, "../friTap", "fritap_agent.js")
 
 # Default target
-DEFAULT_TARGET = "com.android.chrome"
+DEFAULT_TARGET = "Chrome"
 
 # Number of attach retries
 MAX_RETRIES = 3
+
+# ── friTap agent configuration ──────────────────────────────────
+# Toggle these to enable/disable features in the agent.
+EXPERIMENTAL = False          # Enable experimental hooking strategies
+DEFAULT_FD = False            # Use fallback file-descriptor extraction
+SOCKET_TRACING = False        # Log socket addresses
+INSTALL_LSASS_HOOK = False    # Hook LSASS (Windows only)
+USE_MODERN = False            # Use modern definition-based hooking
+PROTOCOL = "tls"              # Protocol: "tls", "ssh", or "ipsec"
+PATTERNS = None               # JSON string of custom patterns, or None for defaults
+OFFSETS = None                # JSON string of custom offsets, or None
 
 # Global script reference for message handler
 script = None
@@ -81,30 +92,24 @@ def on_message(message, data):
         payload = message.get("payload", {})
 
 
-        if payload == "experimental":
-            script.post({"type": "experimental", "payload": False})
+        # ── Agent handshake (config_batch + anti) ────────────────
+        # The agent sends "config_batch" and blocks until we reply
+        # with a single dict containing ALL configuration values.
+        if payload == "config_batch":
+            script.post({"type": "config_batch", "payload": {
+                "offsets": OFFSETS,
+                "patterns": PATTERNS,
+                "socket_tracing": SOCKET_TRACING,
+                "defaultFD": DEFAULT_FD,
+                "experimental": EXPERIMENTAL,
+                "protocol_select": PROTOCOL,
+                "install_lsass_hook": INSTALL_LSASS_HOOK,
+                "use_modern": USE_MODERN,
+                "library_scan": None,
+            }})
             return
 
-        if payload == "defaultFD":
-            script.post({"type": "defaultFD", "payload": False})
-            return
-
-        if payload == "socket_tracing":
-            script.post({"type": "socket_tracing", "payload": False})
-            return
-
-        if payload == "pattern_hooking":
-            script.post({"type": "pattern_hooking", "payload": None})
-            return
-
-        if payload == "offset_hooking":
-            script.post({"type": "offset_hooking", "payload": None})
-            return
-
-        if payload == "install_lsass_hook":
-            script.post({"type": "install_lsass_hook", "payload": False})
-            return
-
+        # "anti" is always the LAST handshake message (separate from config_batch)
         if payload == "anti":
             script.post({"type": "antiroot", "payload": False})
             return

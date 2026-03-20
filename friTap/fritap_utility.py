@@ -58,7 +58,33 @@ def are_we_running_on_windows() -> bool:
     This runs before spawning the target application.
     """
     return platform.system().lower() == "windows"
-    
+
+
+WINDOWS_LIVE_UNSUPPORTED = (
+    "Live Wireshark mode is not supported on Windows. "
+    "Named pipes (os.mkfifo) are not available on Windows. "
+    "Use -p <file.pcapng> to write a PCAP file instead, "
+    "then open it in Wireshark."
+)
+
+
+def find_wireshark_binary() -> str | None:
+    """Locate the Wireshark executable on the system.
+
+    Checks PATH first, then falls back to the macOS app bundle location.
+    """
+    import shutil
+    for name in ("wireshark", "Wireshark"):
+        path = shutil.which(name)
+        if path:
+            return path
+    # macOS app bundle fallback
+    mac_path = "/Applications/Wireshark.app/Contents/MacOS/Wireshark"
+    if os.path.isfile(mac_path):
+        return mac_path
+    return None
+
+
 def supports_color(stream) -> bool:
     try:
         return (

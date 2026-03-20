@@ -9,7 +9,7 @@ export class NSS_Android extends NSS {
     constructor(public moduleName:string, public socket_library:String, is_base_hook: boolean){
         var library_method_mapping : { [key: string]: Array<string> }= {};
         devlog("Hooking module "+moduleName);
-        library_method_mapping[`*${moduleName}*`] = ["PR_Write", "PR_Read", "PR_FileDesc2NativeHandle", "PR_GetPeerName", "PR_GetSockName", "PR_GetNameForIdentity", "PR_GetDescType", "SSL_ImportFD", "SSL_HandshakeCallback", "PK11_ExtractKeyValue", "PK11_GetKeyData"]
+        library_method_mapping[`*${moduleName}*`] = ["PR_Write", "PR_Read", "PR_FileDesc2NativeHandle", "PR_GetPeerName", "PR_GetSockName", "PR_GetNameForIdentity", "PR_GetDescType", "SSL_ImportFD", "SSL_HandshakeCallback", "PK11_ExtractKeyValue", "PK11_GetKeyData", "SSL_GetExperimentalAPI", "NSSSSL_GetVersion"]
         // "SSL_GetSessionID" is not available
         //library_method_mapping[`*libnss.*`] = ["PK11_ExtractKeyValue", "PK11_GetKeyData"]
         //library_method_mapping["*libssl*.so"] = ["SSL_ImportFD", "SSL_GetSessionID", "SSL_HandshakeCallback"]
@@ -34,6 +34,9 @@ export class NSS_Android extends NSS {
     }
 
     install_tls_keys_callback_hook() {
+        // Version detection + experimental API resolution
+        NSS.detectVersionOffsets();
+        NSS.resolveExperimentalAPI();
 
         NSS.getDescType = new NativeFunction(this.addresses[this.module_name]['PR_GetDescType'], "int", ["pointer"]);
 
@@ -120,6 +123,8 @@ export class NSS_Android extends NSS {
 
             });
 
+        // Install SSL_SecretCallback interceptor for Firefox override detection
+        NSS.installSecretCallbackInterceptor();
 
     }
 

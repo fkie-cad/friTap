@@ -62,6 +62,10 @@ if TEXTUAL_AVAILABLE:
         def __init__(self, summary: dict, **kwargs) -> None:
             super().__init__(**kwargs)
             self._summary = summary
+            self._ws_found: bool = False
+            if summary.get("live", False):
+                from ...fritap_utility import find_wireshark_binary
+                self._ws_found = find_wireshark_binary() is not None
             self.verbose = summary.get("verbose", False)
             self.experimental = summary.get("experimental", False)
             self.library_scan = summary.get("library_scan", False)
@@ -74,7 +78,8 @@ if TEXTUAL_AVAILABLE:
                 )
                 yield Static("", id="summary-block")
                 yield Static(
-                    "[#64748b]Enter: Start  |  v: Verbose  |  e: Experimental  |  l: Library Scan  |  Esc: Back[/]",
+                    "[#64748b]Enter: Start  |  v: Verbose  |  e: Experimental\n"
+                    "l: Library Scan  |  Esc: Back[/]",
                     classes="key-hints",
                 )
                 with Horizontal(classes="button-row"):
@@ -107,6 +112,7 @@ if TEXTUAL_AVAILABLE:
             keylog_path = self._summary.get("keylog_path", "")
             pcap_path = self._summary.get("pcap_path", "")
             live = self._summary.get("live", False)
+            capture_mode_id = self._summary.get("capture_mode_id", "")
 
             type_tag = _TYPE_TAGS.get(device_type, "L")
             target_mode_upper = target_mode.upper()
@@ -115,16 +121,23 @@ if TEXTUAL_AVAILABLE:
             experimental_indicator = "[bold green]ON[/]" if self.experimental else "[dim]off[/]"
             library_scan_indicator = "[bold green]ON[/]" if self.library_scan else "[dim]off[/]"
 
+            # Determine display values for keys/output based on mode
+            keys_display = "(embedded in PCAPNG stream)" if live and capture_mode_id == "live_pcapng" else keylog_path or "\u2014"
+            output_display = "Named pipe (auto-created)" if live else pcap_path or "\u2014"
+
             lines = [
                 f"  Device:        [{type_tag}] {device_name}",
                 f"  Target:        {target_name} [{target_mode_upper}]",
                 f"  Mode:          {capture_mode_display}",
-                f"  Keys:          {keylog_path or '\u2014'}",
-                f"  PCAP:          {pcap_path or '\u2014'}",
+                f"  Keys:          {keys_display}",
+                f"  Output:        {output_display}",
             ]
 
             if live:
-                lines.append("  Live:          Streaming to Wireshark")
+                if self._ws_found:
+                    lines.append("  Wireshark:     [#4ade80]Will auto-launch when capture starts[/]")
+                else:
+                    lines.append("  Wireshark:     [#f59e0b]Not found — manual connection required[/]")
 
             lines.append("")
             lines.append(f"  Verbose:       {verbose_indicator}")

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from .base import ProtocolHandler, BackendSupport
+from ..backends.base import BackendName
 
 TLS_LIBRARY_PATTERNS = [
     "libssl", "libcrypto", "libgnutls", "libwolfssl", "libmbedtls",
@@ -39,8 +40,8 @@ class TLSHandler(ProtocolHandler):
     @property
     def supported_backends(self) -> dict[str, str]:
         return {
-            "frida": BackendSupport.FULL,
-            "gdb": BackendSupport.STUB,
-            "lldb": BackendSupport.STUB,
-            "ebpf": BackendSupport.STUB,
+            BackendName.FRIDA: BackendSupport.FULL,
+            BackendName.GDB: BackendSupport.STUB,
+            BackendName.LLDB: BackendSupport.STUB,
+            BackendName.EBPF: BackendSupport.STUB,
         }

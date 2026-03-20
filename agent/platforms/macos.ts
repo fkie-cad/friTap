@@ -6,7 +6,11 @@ import { getModuleNames, ssl_library_loader, hookDynamicLoader } from "../shared
 import { Platform, PLATFORM_DARWIN } from "../shared/shared_structures.js";
 import { boring_execute, ssl_python_execute } from "../legacy/tls/platforms/macos/openssl_boringssl_macos.js";
 import { boring_execute_modern, ssl_python_execute_modern } from "../tls/platforms/macos/openssl_boringssl_macos.js";
+import { libressl_execute } from "../legacy/tls/platforms/macos/libressl_macos.js";
+import { libressl_execute_modern } from "../tls/platforms/macos/libressl_macos.js";
 import { cronet_execute } from "../legacy/tls/platforms/macos/cronet_macos.js";
+import { nss_execute } from "../legacy/tls/platforms/macos/nss_macos.js";
+import { nss_execute_modern } from "../tls/platforms/macos/nss_macos.js";
 import { ssh_detect_execute } from "../ssh/platforms/linux/ssh_linux.js";
 
 
@@ -25,9 +29,12 @@ function hook_macOS_SSL_Libs(hookRegistry: HookRegistry, is_base_hook: boolean) 
 export function load_macos_hooking_agent() {
     hookRegistry.registerAll([
         { platform: plattform_name, pattern: /.*libboringssl\.dylib/, hookFn: (use_modern ? boring_execute_modern : boring_execute), library: "BoringSSL", libraryType: "boringssl" },
+        // LibreSSL (macOS system SSL at /usr/lib/libssl.*.dylib) — must be before generic OpenSSL
+        { platform: plattform_name, pattern: /libssl\.\d+\.dylib/, hookFn: (use_modern ? libressl_execute_modern : libressl_execute), library: "LibreSSL", pathFilter: "/usr/lib/", priority: 150, libraryType: "libressl" },
         { platform: plattform_name, pattern: /.*libssl.*\.dylib/, hookFn: (use_modern ? ssl_python_execute_modern : ssl_python_execute), library: "Python OpenSSL", pathFilter: "python", libraryType: "openssl" },
-        { platform: plattform_name, pattern: /.*libssl.*\.dylib/, hookFn: (use_modern ? boring_execute_modern : boring_execute), library: "OpenSSL/BoringSSL", libraryType: "openssl" },
+        { platform: plattform_name, pattern: /.*libssl.*\.dylib/, hookFn: (use_modern ? boring_execute_modern : boring_execute), library: "OpenSSL/BoringSSL", excludePattern: /^libssl\.\d+\.dylib$/, libraryType: "openssl" },
         { platform: plattform_name, pattern: /.*cronet.*\.dylib/, hookFn: cronet_execute, library: "Cronet", libraryType: "boringssl" },
+        { platform: plattform_name, pattern: /.*libnss[0-9]*\.dylib/, hookFn: (use_modern ? nss_execute_modern : nss_execute), library: "NSS", libraryType: "nss" },
         // SSH libraries
         { platform: plattform_name, pattern: /.*libssh2?\.dylib/, hookFn: ssh_detect_execute, library: "libssh", protocol: "ssh" },
         { platform: plattform_name, pattern: /.*sshd/, hookFn: ssh_detect_execute, library: "OpenSSH", protocol: "ssh" },

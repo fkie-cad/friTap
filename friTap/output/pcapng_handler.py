@@ -49,8 +49,12 @@ class PcapngOutputHandler(OutputHandler):
         self._protocol_handler = protocol_handler
 
     def setup(self, event_bus: "EventBus") -> None:
+        self.setup_with_file(open(self._path, "wb"), event_bus)
+
+    def setup_with_file(self, file_obj: IO, event_bus: "EventBus") -> None:
+        """Set up with an already-open file handle (used by LivePcapngHandler)."""
         from ..events import KeylogEvent, DatalogEvent
-        self._file = open(self._path, "wb")
+        self._file = file_obj
         self._write_shb()
         self._write_idb()
         event_bus.subscribe(KeylogEvent, self.on_keylog)

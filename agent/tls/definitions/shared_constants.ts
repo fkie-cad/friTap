@@ -15,3 +15,13 @@ const DUMMY_SESSION_ID_BASE = "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC4
 export const DUMMY_SESSION_ID_OPENSSL  = DUMMY_SESSION_ID_BASE + "6";
 export const DUMMY_SESSION_ID_GNUTLS   = DUMMY_SESSION_ID_BASE + "7";
 export const DUMMY_SESSION_ID_WOLFSSL  = DUMMY_SESSION_ID_BASE + "8";
+
+/** TLS 1.3 HKDF internal label → SSLKEYLOGFILE label mapping (RFC 8446 section 7.1). */
+export const TLS13_LABEL_MAP: { [key: string]: string } = {
+    "c hs traffic":   "CLIENT_HANDSHAKE_TRAFFIC_SECRET",
+    "s hs traffic":   "SERVER_HANDSHAKE_TRAFFIC_SECRET",
+    "c ap traffic":   "CLIENT_TRAFFIC_SECRET_0",
+    "s ap traffic":   "SERVER_TRAFFIC_SECRET_0",
+    "exp master":     "EXPORTER_SECRET",
+    "res master":     "RESUMPTION_MASTER_SECRET",
+};

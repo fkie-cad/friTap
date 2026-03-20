@@ -5,7 +5,7 @@ export type ModuleHookingType = (moduleName: string, is_base_hook: boolean) => v
 export type Platform = "linux" | "darwin" | "windows" | "wine";
 
 export type LibraryType =
-    | "openssl" | "boringssl" | "gnutls" | "wolfssl"
+    | "openssl" | "boringssl" | "libressl" | "gnutls" | "wolfssl"
     | "nss" | "mbedtls" | "s2ntls" | "rustls"
     | "gotls" | "matrixssl" | "sspi";
 export const PLATFORM_LINUX: Platform = "linux";

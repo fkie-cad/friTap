@@ -313,7 +313,14 @@ if TEXTUAL_AVAILABLE:
                     return
                 self._apply_target(target, target, is_spawn=True)
 
-            self.app.push_screen(SpawnInputModal(), callback=_on_result)
+            state = self._get_state()
+            self.app.push_screen(
+                SpawnInputModal(
+                    device_id=state.device_id,
+                    device_type=state.device_type,
+                ),
+                callback=_on_result,
+            )
 
         # ----------------------------------------------------------
         # Capture mode presets
@@ -345,6 +352,7 @@ if TEXTUAL_AVAILABLE:
             state.keylog_path = config.get("keylog", "")
             state.pcap_path = config.get("pcap", "")
             state.live = config.get("live", False)
+            state.live_mode = config.get("live_mode", "")
             state.full_capture = config.get("full_capture", False)
 
             self._capture_mode = mode_id
@@ -357,7 +365,7 @@ if TEXTUAL_AVAILABLE:
             if state.keylog_path:
                 self._get_activity_log().log_info(f"  -> Keys: {state.keylog_path}")
             if state.pcap_path:
-                self._get_activity_log().log_info(f"  -> PCAP: {state.pcap_path}")
+                self._get_activity_log().log_info(f"  -> Output: {state.pcap_path}")
 
         # ----------------------------------------------------------
         # Log management

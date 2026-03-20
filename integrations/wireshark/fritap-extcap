@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+friTap extcap plugin for Wireshark.
+
+Install: copy to ~/.local/lib/wireshark/extcap/ and chmod +x
+         OR run: fritap install-backend wireshark
+
+This script implements the Wireshark extcap protocol so that friTap
+appears as a capture interface directly in the Wireshark GUI.
+
+Usage in Wireshark:
+  1. Copy this file to your Wireshark extcap directory
+  2. Make it executable: chmod +x fritap-extcap
+  3. Restart Wireshark
+  4. Select "friTap" from the capture interface list
+  5. Configure target app, device, protocol options
+  6. Start capture
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import struct
+import sys
+import time
+
+EXTCAP_VERSION = "1.0.0"
+INTERFACE_NAME = "fritap"
+INTERFACE_DISPLAY = "friTap TLS/SSL Capture"
+DLT_RAW = 101       # LINKTYPE_RAW (IPv4/IPv6)
+DLT_ETHERNET = 1    # LINKTYPE_ETHERNET
+
+
+def extcap_interfaces() -> None:
+    """List available extcap interfaces."""
+    print(f"extcap {{version={EXTCAP_VERSION}}}{{help=https://github.com/fkie-cad/friTap}}")
+    print(f"interface {{value={INTERFACE_NAME}}}{{display={INTERFACE_DISPLAY}}}")
+
+
+def extcap_dlts() -> None:
+    """List supported Data Link Types."""
+    print(f"dlt {{number={DLT_RAW}}}{{name=RAW}}{{display=Raw IPv4/IPv6}}")
+
+
+def extcap_config() -> None:
+    """List configuration options for the Wireshark GUI."""
+    # Target application
+    print("arg {number=0}{call=--target}{display=Target Application}"
+          "{type=string}{tooltip=Process name, PID, or package name to instrument}"
+          "{required=true}{group=Target}")
+
+    # Mobile device
+    print("arg {number=1}{call=--mobile}{display=Mobile Device}"
+          "{type=boolflag}{default=false}"
+          "{tooltip=Attach to a mobile device (Android/iOS)}{group=Target}")
+
+    # Device ID
+    print("arg {number=2}{call=--device-id}{display=Device ID}"
+          "{type=string}{tooltip=Specific device ID (for multiple devices)}"
+          "{required=false}{group=Target}")
+
+    # Spawn
+    print("arg {number=3}{call=--do-spawn}{display=Spawn Process}"
+          "{type=boolflag}{default=false}"
+          "{tooltip=Spawn the target instead of attaching}{group=Target}")
+
+    # Protocol
+    print("arg {number=4}{call=--protocol}{display=Protocol}"
+          "{type=selector}{tooltip=Protocol to intercept}{group=Capture}")
+    print("value {arg=4}{value=tls}{display=TLS/SSL}{default=true}")
+    print("value {arg=4}{value=auto}{display=Auto-detect}")
+
+    # Keylog output
+    print("arg {number=5}{call=--keylog}{display=Keylog File}"
+          "{type=fileselect}{tooltip=Save TLS keys for offline decryption}"
+          "{required=false}{group=Output}")
+
+    # Verbose
+    print("arg {number=6}{call=--verbose-output}{display=Verbose}"
+          "{type=boolflag}{default=false}"
+          "{tooltip=Show verbose console output}{group=Debug}")
+
+    # Remote host
+    print("arg {number=7}{call=--remote-host}{display=Remote Host}"
+          "{type=string}{tooltip=Remote frida-server address (ip:port)}"
+          "{required=false}{group=Target}")
+
+
+def write_pcap_header(fifo) -> None:
+    """Write PCAP global header to the fifo."""
+    fifo.write(struct.pack("=I", 0xa1b2c3d4))   # Magic number
+    fifo.write(struct.pack("=H", 2))              # Major version
+    fifo.write(struct.pack("=H", 4))              # Minor version
+    fifo.write(struct.pack("=i", 0))              # GMT correction
+    fifo.write(struct.pack("=I", 0))              # Accuracy
+    fifo.write(struct.pack("=I", 65535))           # Max packet length
+    fifo.write(struct.pack("=I", DLT_RAW))        # Data link type
+    fifo.flush()
+
+
+def run_capture(fifo_path: str, target: str, mobile: bool = False,
+                device_id: str = None, do_spawn: bool = False,
+                protocol: str = "tls", keylog: str = None,
+                verbose: bool = False, remote_host: str = None) -> None:
+    """Run friTap capture and write PCAP data to the fifo."""
+    try:
+        from friTap.api import FriTap
+    except ImportError:
+        # Fall back to direct SSL_Logger usage
+        from friTap.ssl_logger import SSL_Logger
+
+        ssl_log = SSL_Logger(
+            app=target,
+            pcap_name=fifo_path,
+            verbose=verbose,
+            spawn=do_spawn,
+            keylog=keylog,
+            mobile=device_id or mobile,
+            host=remote_host or False,
+        )
+        ssl_log.install_signal_handler()
+        ssl_log.start_fritap_session()
+
+        while ssl_log.running:
+            time.sleep(0.1)
+        return
+
+    # Use the new API
+    builder = FriTap(target).pcapng(fifo_path)
+
+    if mobile:
+        builder = builder.mobile(device_id)
+    if do_spawn:
+        builder = builder.spawn()
+    if keylog:
+        builder = builder.keylog(keylog)
+    if verbose:
+        builder = builder.verbose()
+    if remote_host:
+        builder = builder.host(remote_host)
+    if protocol and protocol != "tls":
+        builder = builder.protocol(protocol)
+
+    session = builder.start()
+    session.wait()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="friTap extcap plugin for Wireshark")
+
+    # Extcap standard arguments
+    parser.add_argument("--extcap-interfaces", action="store_true")
+    parser.add_argument("--extcap-version", nargs="?", default=None)
+    parser.add_argument("--extcap-dlts", action="store_true")
+    parser.add_argument("--extcap-interface", type=str)
+    parser.add_argument("--extcap-config", action="store_true")
+    parser.add_argument("--capture", action="store_true")
+    parser.add_argument("--fifo", type=str)
+
+    # friTap-specific arguments
+    parser.add_argument("--target", type=str, default="")
+    parser.add_argument("--mobile", action="store_true", default=False)
+    parser.add_argument("--device-id", type=str, default=None)
+    parser.add_argument("--do-spawn", action="store_true", default=False)
+    parser.add_argument("--protocol", type=str, default="tls")
+    parser.add_argument("--keylog", type=str, default=None)
+    parser.add_argument("--verbose-output", action="store_true", default=False)
+    parser.add_argument("--remote-host", type=str, default=None)
+
+    args = parser.parse_args()
+
+    if args.extcap_interfaces:
+        extcap_interfaces()
+    elif args.extcap_dlts:
+        extcap_dlts()
+    elif args.extcap_config:
+        extcap_config()
+    elif args.capture:
+        if not args.fifo:
+            sys.stderr.write("Error: --fifo is required for capture\n")
+            sys.exit(1)
+        if not args.target:
+            sys.stderr.write("Error: --target is required for capture\n")
+            sys.exit(1)
+        run_capture(
+            fifo_path=args.fifo,
+            target=args.target,
+            mobile=args.mobile,
+            device_id=args.device_id,
+            do_spawn=args.do_spawn,
+            protocol=args.protocol,
+            keylog=args.keylog,
+            verbose=args.verbose_output,
+            remote_host=args.remote_host,
+        )
+    else:
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    main()

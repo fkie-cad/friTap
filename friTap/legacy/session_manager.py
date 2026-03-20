@@ -4,7 +4,6 @@
 """
 Session lifecycle management for friTap.
 
-Extracted from SSL_Logger to reduce file length.
 SessionManager handles the session start/stop lifecycle,
 signal handling, and cleanup.
 """
@@ -44,12 +43,8 @@ class SessionManager:
         if logger.mobile:
             try:
                 if logger.mobile is True:
-                    if logger.debug_output or logger.debug:
-                        self._logger.debug("Attaching to the first available USB device...")
                     logger.device = logger._backend.get_device(mobile=True)
                 else:
-                    if logger.debug_output or logger.debug:
-                        self._logger.debug(f"Attaching to the device with ID: {logger.mobile}")
                     logger.device = logger._backend.get_device(mobile=logger.mobile)
                 self._logger.info("Successfully attached to the mobile device.")
             except BackendNotRunningError:

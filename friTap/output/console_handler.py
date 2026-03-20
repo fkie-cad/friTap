@@ -48,10 +48,16 @@ class ConsoleOutputHandler(OutputHandler):
         self._logger.info(format_hexdump(event.data))
 
     def on_console(self, event: "ConsoleEvent") -> None:
-        msg = event.message
-        if msg.startswith("[*]"):
-            msg = msg.replace("[*] ", "")
-        self._logger.info(msg)
+        msg = event.message.removeprefix("[*] ")
+        level = event.level
+        if level == "debug":
+            self._logger.debug(msg)
+        elif level == "error":
+            self._logger.error(msg)
+        elif level in ("warn", "warning"):
+            self._logger.warning(msg)
+        else:
+            self._logger.info(msg)
 
     def close(self) -> None:
         pass

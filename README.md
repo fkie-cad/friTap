@@ -49,18 +49,6 @@ $ fritap -m -k keys.log com.example.app
 Further ensure that the frida-server is running on the Android/iOS device. 
 
 
-Remember when working with the pip installation you have to invoke the `fritap` command with sudo a little bit different. Either as module:
-```bash
-$ sudo -E python3 -m friTap.friTap --pcap mycapture.pcap thunderbird
-```
-or directly invoking the script:
-```bash
-$ which friTap
-/home/daniel/.local/bin/friTap
-
-$ sudo -E /home/daniel/.local/bin/friTap
-```
-
 friTap can also be used as a Python library within your project:
 ```python
 from friTap import SSL_Logger
@@ -69,6 +57,32 @@ For more details on integrating friTap into your Python project, check out the [
 
 friTap allows you to enhance its functionality by providing a custom Frida script during your session. This custom script will be invoked just before friTap applies its own hooks. To do so, use the `-c` parameter ([more](./USAGE.md#custom-script-example)).
 More examples on using friTap can be found in the [USAGE.md](./USAGE.md). A detailed introduction using friTap on Android is under [EXAMPLE.md](./EXAMPLE.md) as well.
+
+## Interactive TUI Mode
+
+Running `fritap` without any arguments launches an interactive Terminal User Interface (TUI):
+
+```bash
+$ fritap
+```
+
+<div align="center">
+    <img src="assets/fritap_tui.png" alt="friTap TUI" width="700"/>
+</div>
+
+The TUI provides a guided setup wizard that walks you through device selection, target process, and capture mode. You can also configure everything manually using keyboard shortcuts:
+
+| Key | Action | Key | Action |
+|-----|--------|-----|--------|
+| `d` | Select device | `1` | Full capture (keys + pcap) |
+| `a` | Attach to process | `2` | Key extraction only |
+| `s` | Spawn application | `3` | Plaintext pcap |
+| `Enter` | Start/stop capture | `4` | Live Wireshark (pipe) |
+| `v` | Toggle verbose | `5` | Live Wireshark (auto-decrypt) |
+| `p` | Select protocol | `?` | Help |
+| `q` | Quit | `e` | Toggle experimental |
+
+The TUI supports device selection for local, USB (Android/iOS), and remote devices, and can automatically install and start frida-server on connected devices.
 
 ## Hooking Libraries Without Symbols
 

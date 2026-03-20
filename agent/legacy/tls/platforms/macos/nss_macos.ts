@@ -1,29 +1,33 @@
-
-import {NSS } from "../../../../tls/libs/nss.js";
-import { socket_library } from "../../../../platforms/linux.js";
-import { log, devlog } from "../../../../util/log.js";
+import { NSS } from "../../../../tls/libs/nss.js";
+import { socket_library } from "../../../../platforms/macos.js";
+import { devlog } from "../../../../util/log.js";
 import { executeSSLLibrary } from "../../../shared/shared_functions_legacy.js";
 
-export class NSS_Linux extends NSS {
+export class NSS_MacOS extends NSS {
 
-    constructor(public moduleName:string, public socket_library:String){
-        var library_method_mapping : { [key: string]: Array<string> }= {};
-        library_method_mapping[`*${moduleName}*`] = ["PR_Write", "PR_Read", "PR_FileDesc2NativeHandle", "PR_GetPeerName", "PR_GetSockName", "PR_GetNameForIdentity", "PR_GetDescType"]
-        library_method_mapping[`*libnss*`] = ["PK11_ExtractKeyValue", "PK11_GetKeyData", "NSSSSL_GetVersion"]
-        library_method_mapping["*libssl*.so"] = ["SSL_ImportFD", "SSL_GetSessionID", "SSL_HandshakeCallback", "SSL_GetExperimentalAPI"]
+    constructor(public moduleName: string, public socket_library: String, is_base_hook: boolean) {
+        var library_method_mapping: { [key: string]: Array<string> } = {};
+        devlog("Hooking module " + moduleName);
+        // On macOS, Firefox bundles all NSS/NSPR/SSL symbols into a single libnss3.dylib
+        library_method_mapping[`*${moduleName}*`] = ["PR_Write", "PR_Read", "PR_FileDesc2NativeHandle", "PR_GetPeerName", "PR_GetSockName", "PR_GetNameForIdentity", "PR_GetDescType", "SSL_ImportFD", "SSL_HandshakeCallback", "PK11_ExtractKeyValue", "PK11_GetKeyData", "SSL_GetExperimentalAPI", "NSSSSL_GetVersion"]
         library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
 
-        super(moduleName,socket_library,library_method_mapping);
+        super(moduleName, socket_library, library_method_mapping);
     }
 
-
-    execute_hooks(){
+    execute_hooks() {
         this.install_plaintext_read_hook();
         this.install_plaintext_write_hook();
-        this.install_tls_keys_callback_hook()
+        try {
+            this.install_tls_keys_callback_hook();
+        } catch (e) {
+            devlog("Installing NSS key hooking failed");
+            devlog("NSS Error code: " + e);
+        }
     }
 
     install_tls_keys_callback_hook() {
+        var nssModuleName = this.module_name;
         // Version detection + experimental API resolution
         NSS.detectVersionOffsets();
         NSS.resolveExperimentalAPI();
@@ -38,7 +42,6 @@ export class NSS_Linux extends NSS {
         */
         NSS.get_SSL_Callback = new NativeFunction(this.addresses[this.module_name]["SSL_HandshakeCallback"], "int", ["pointer", "pointer", "pointer"]);
 
-
         // SSL Key helper Functions
         NSS.PK11_ExtractKeyValue = new NativeFunction(this.addresses[this.module_name]["PK11_ExtractKeyValue"], "int", ["pointer"]);
         NSS.PK11_GetKeyData = new NativeFunction(this.addresses[this.module_name]["PK11_GetKeyData"], "pointer", ["pointer"]);
@@ -51,37 +54,31 @@ export class NSS_Linux extends NSS {
                 onLeave(retval: any) {
 
                     if (retval.isNull()) {
-                        devlog("[-] SSL_ImportFD error: unknow null")
+                        devlog("[-] SSL_ImportFD error: unknown null")
                         return
                     }
-
 
                     var retValue = NSS.get_SSL_Callback(retval, NSS.keylog_callback, NULL);
                     NSS.register_secret_callback(retval);
 
-
-
-
                     // typedef enum { PR_FAILURE = -1, PR_SUCCESS = 0 } PRStatus;
                     if (retValue < 0) {
                         devlog("Callback Error")
-                        var getErrorText = new NativeFunction(Process.getModuleByName('libnspr4.so').getExportByName('PR_GetErrorText'), "int", ["pointer"])
-                        var outbuffer = Memory.alloc(200); // max out size
-                        devlog("typeof outbuffer: " + typeof outbuffer);
-                        devlog("outbuffer: " + outbuffer); // should be a pointer
-                        getErrorText(outbuffer.readPointer())
-                        devlog("Error msg: " + outbuffer)
+                        try {
+                            var getErrorText = new NativeFunction(Process.getModuleByName(nssModuleName).getExportByName('PR_GetErrorText'), "int", ["pointer"])
+                            var outbuffer = Memory.alloc(200);
+                            getErrorText(outbuffer.readPointer())
+                            devlog("Error msg: " + outbuffer)
+                        } catch (e) {
+                            devlog("Could not retrieve NSS error text: " + e);
+                        }
                     } else {
-                        devlog("[*] NSS keylog callback successfull installed")
+                        devlog("[*] NSS keylog callback successfully installed")
                     }
 
                 }
 
             });
-
-
-
-
 
         /*
             SECStatus SSL_HandshakeCallback(
@@ -100,7 +97,7 @@ export class NSS_Linux extends NSS {
                         {
                             onEnter(args: any) {
                                 var sslSocketFD = args[0];
-                                devlog("[*] keylog callback successfull installed via applications callback function");
+                                devlog("[*] NSS keylog callback successfully installed via applications callback function");
                                 NSS.ssl_RecordKeyLog(sslSocketFD);
                             },
                             onLeave(retval: any) {
@@ -115,12 +112,11 @@ export class NSS_Linux extends NSS {
 
         // Install SSL_SecretCallback interceptor for Firefox override detection
         NSS.installSecretCallbackInterceptor();
-
     }
 
 }
 
 
-export function nss_execute(moduleName:string, is_base_hook: boolean){
-    executeSSLLibrary(NSS_Linux as any, moduleName, socket_library, is_base_hook);
+export function nss_execute(moduleName: string, is_base_hook: boolean) {
+    executeSSLLibrary(NSS_MacOS, moduleName, socket_library, is_base_hook);
 }

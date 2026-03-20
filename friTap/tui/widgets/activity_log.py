@@ -31,6 +31,7 @@ _CLR_LIBRARY = "#67e8f9"
 _CLR_TIMESTAMP = "#8f9bb3"
 _CLR_SESSION = "#818cf8"
 _CLR_DETACH = "#fbbf24"
+_CLR_LIVE = "#22d3ee"
 
 _CLR_FRI = "#e8756e"
 _CLR_TAP = "#6b8db5"
@@ -68,6 +69,8 @@ if TEXTUAL_AVAILABLE:
     class ActivityLog(RichLog):
         """Real-time activity log with typed log methods."""
 
+        _MAX_LINES = 10_000
+
         def __init__(self, **kwargs) -> None:
             super().__init__(
                 highlight=True,
@@ -77,6 +80,11 @@ if TEXTUAL_AVAILABLE:
                 **kwargs,
             )
             self._plain_lines: List[str] = []
+
+        def _trim_lines(self) -> None:
+            """Cap _plain_lines to _MAX_LINES, keeping the most recent."""
+            if len(self._plain_lines) > self._MAX_LINES:
+                self._plain_lines = self._plain_lines[-self._MAX_LINES:]
 
         # ----------------------------------------------------------
         # Welcome banner
@@ -101,30 +109,35 @@ if TEXTUAL_AVAILABLE:
             """Log an informational message."""
             ts = _ts()
             self._plain_lines.append(f"{ts} INFO: {message}")
+            self._trim_lines()
             self.write(f"[{_CLR_TIMESTAMP}]{ts}[/] [{_CLR_INFO}]INFO[/]  {message}")
 
         def log_error(self, message: str) -> None:
             """Log an error message."""
             ts = _ts()
             self._plain_lines.append(f"{ts} ERROR: {message}")
+            self._trim_lines()
             self.write(f"[{_CLR_TIMESTAMP}]{ts}[/] [{_CLR_ERROR}]ERROR[/] {message}")
 
         def log_warning(self, message: str) -> None:
             """Log a warning message."""
             ts = _ts()
             self._plain_lines.append(f"{ts} WARNING: {message}")
+            self._trim_lines()
             self.write(f"[{_CLR_TIMESTAMP}]{ts}[/] [{_CLR_WARNING}]WARN[/]  {message}")
 
         def log_success(self, message: str) -> None:
             """Log a success message."""
             ts = _ts()
             self._plain_lines.append(f"{ts} SUCCESS: {message}")
+            self._trim_lines()
             self.write(f"[{_CLR_TIMESTAMP}]{ts}[/] [{_CLR_SUCCESS}]OK[/]    {message}")
 
         def log_key(self, preview: str) -> None:
             """Log a TLS key extraction event."""
             ts = _ts()
             self._plain_lines.append(f"{ts} KEY: {preview}")
+            self._trim_lines()
             self.write(f"[{_CLR_TIMESTAMP}]{ts}[/] [{_CLR_KEY}]KEY[/]   {preview}")
 
         def log_data(self, function: str, src: str, dst: str, size: str) -> None:
@@ -132,6 +145,7 @@ if TEXTUAL_AVAILABLE:
             ts = _ts()
             line = f"{function}: {src} -> {dst} ({size} bytes)"
             self._plain_lines.append(f"{ts} DATA: {line}")
+            self._trim_lines()
             self.write(
                 f"[{_CLR_TIMESTAMP}]{ts}[/] [{_CLR_DATA}]DATA[/]  "
                 f"[bold]{function}[/] {src} -> {dst} ({size}B)"
@@ -141,6 +155,7 @@ if TEXTUAL_AVAILABLE:
             """Log a library detection event."""
             ts = _ts()
             self._plain_lines.append(f"{ts} LIB: {name} ({path})")
+            self._trim_lines()
             self.write(
                 f"[{_CLR_TIMESTAMP}]{ts}[/] [{_CLR_LIBRARY}]LIB[/]   "
                 f"[bold]{name}[/] ({path})"
@@ -150,6 +165,7 @@ if TEXTUAL_AVAILABLE:
             """Log a session lifecycle event."""
             ts = _ts()
             self._plain_lines.append(f"{ts} SESSION: {event_type}")
+            self._trim_lines()
             self.write(
                 f"[{_CLR_TIMESTAMP}]{ts}[/] [{_CLR_SESSION}]SESSION[/] {event_type}"
             )
@@ -158,9 +174,17 @@ if TEXTUAL_AVAILABLE:
             """Log a detach notification."""
             ts = _ts()
             self._plain_lines.append(f"{ts} DETACH: {reason}")
+            self._trim_lines()
             self.write(
                 f"[{_CLR_TIMESTAMP}]{ts}[/] [{_CLR_DETACH}]DETACH[/] {reason}"
             )
+
+        def log_live(self, message: str) -> None:
+            """Log a live Wireshark event."""
+            ts = _ts()
+            self._plain_lines.append(f"{ts} LIVE: {message}")
+            self._trim_lines()
+            self.write(f"[{_CLR_TIMESTAMP}]{ts}[/] [{_CLR_LIVE}]LIVE[/]  {message}")
 
         # ----------------------------------------------------------
         # Utilities
