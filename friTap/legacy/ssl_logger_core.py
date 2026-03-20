@@ -25,7 +25,7 @@ from ..events import (
     ScriptLoadedEvent,
 )
 from ..config import FriTapConfig
-from ..constants import SSL_READ, SSL_WRITE, ContentType
+from ..constants import SSL_READ, SSL_WRITE
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -521,8 +521,6 @@ class SSL_Logger():
 
         # Emit events through the event bus for all content types
         self._emit_event_from_payload(payload, data)
-
-        content_type = payload.get("contentType")
 
         if self._handlers_active:
             # Socket trace / full capture set tracking (consumed by cleanup())

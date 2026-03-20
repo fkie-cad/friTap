@@ -402,7 +402,7 @@ class CaptureController:
             if not is_mobile:
                 display_filter = "not tcp.port == 27042"
                 lines.append("")
-                lines.append(f"[bold #4ade80]Filter out Frida traffic:[/]")
+                lines.append("[bold #4ade80]Filter out Frida traffic:[/]")
                 lines.append(f"  Display filter: [bold]{display_filter}[/]")
             self._screen.app.push_screen(
                 AlertModal(message="\n".join(lines), title="Live Capture Complete", severity="info")

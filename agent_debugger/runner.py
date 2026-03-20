@@ -9,12 +9,7 @@ Pattern 2 (IPSec): Multiple struct_extractions, each with its own
     base_arg and label -> read key_material_t fields -> format output.
 """
 
-from typing import Any, Dict, List, Optional
-
 from .definitions.base import (
-    BreakpointSpec,
-    ExtractionDefinition,
-    StructField,
     resolve_offset,
 )
 from .output import KeylogWriter
@@ -348,7 +343,6 @@ def create_lldb_runner(definition, debugger):
         debugger: The ``lldb.SBDebugger`` instance (passed by LLDB when
                   loading a script).
     """
-    import lldb  # noqa: F811 — only available inside LLDB
     from .adapters.lldb_adapter import LldbMemoryReader
 
     writer = KeylogWriter(definition.keylog_env_var, definition.default_keylog_file)
@@ -362,8 +356,8 @@ def create_lldb_runner(definition, debugger):
         return
 
     process = target.GetProcess()
-    reader = LldbMemoryReader(process)
-    runner = ExtractionRunner(definition, writer)
+    _reader = LldbMemoryReader(process)
+    _runner = ExtractionRunner(definition, writer)
 
     for bp_spec in definition.breakpoints:
         bp = target.BreakpointCreateByName(bp_spec.function_name)
@@ -411,8 +405,6 @@ def run_lldb_main(definition, debugger):
     Intended to be the single call in an LLDB entry-point shim after
     setting up ``sys.path`` and importing the definition.
     """
-    import lldb  # noqa: F811
-
     proto = definition.protocol.upper()
     print("[{}] {} key extraction loaded".format(proto, definition.library))
 

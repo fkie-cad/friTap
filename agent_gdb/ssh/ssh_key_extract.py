@@ -29,7 +29,7 @@ _project_root = os.path.dirname(os.path.dirname(_script_dir))
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-from agent_debugger.definitions.ssh_openssh import SSH_OPENSSH
-from agent_debugger.runner import run_gdb_main
+from agent_debugger.definitions.ssh_openssh import SSH_OPENSSH  # noqa: E402
+from agent_debugger.runner import run_gdb_main  # noqa: E402
 
 run_gdb_main(SSH_OPENSSH)
