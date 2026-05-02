@@ -38,6 +38,7 @@ export type KeylogApproach =
     | {
         kind: "callback_on_init";
         initSymbol: string;
+        sslArgIndex?: number; // which arg holds the pointer-to-session (default 0)
         callbackInstaller: (session: NativePointer, resolvedFns: ResolvedFunctions) => void;
     }
     | {
@@ -48,6 +49,7 @@ export type KeylogApproach =
     | {
         kind: "manual_on_connect";
         connectSymbol: string;
+        sslArgIndex?: number; // which arg holds the SSL pointer (default 0)
         extractKeys: (ssl: NativePointer, resolvedFns: ResolvedFunctions) => void;
     }
     | {

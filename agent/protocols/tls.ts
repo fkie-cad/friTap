@@ -16,21 +16,7 @@ export class TLSProtocol implements Protocol {
         return /(?:libssl|libcrypto|libgnutls|libwolfssl|libmbedtls|libnss|boringssl|schannel|secur32|security)/.test(lower);
     }
 
-    getLibraryPatterns(): RegExp[] {
-        return [
-            /.*libssl\.so/,
-            /.*libssl_sb\.so/,
-            /.*libcrypto\.so/,
-            /.*libgnutls\.so/,
-            /.*libwolfssl\.so/,
-            /.*libmbedtls\.so/,
-            /.*libnss.*\.so/,
-            /.*cronet.*\.so/,
-            /.*libflutter\.so/,
-            /.*schannel\.dll/i,
-            /.*secur32\.dll/i,
-        ];
-    }
+
 
     getRequiredFunctions(): string[] {
         return [

@@ -23,7 +23,7 @@ export interface Protocol {
     detect(moduleName: string): boolean;
 
     /** Library name regex patterns to watch for */
-    getLibraryPatterns(): RegExp[];
+    //getLibraryPatterns(): RegExp[];
 
     /** Function names required for hooking */
     getRequiredFunctions(): string[];
