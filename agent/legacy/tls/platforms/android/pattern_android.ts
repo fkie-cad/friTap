@@ -14,7 +14,7 @@ export class Pattern_Android extends Cronet {
     }
 
     install_key_extraction_pattern_hook(){
-        if(isPatternReplaced){
+        if(isPatternReplaced()){
             const patternModuleName = Process.findModuleByName(this.module_name);
             const hooker = new PatternBasedHooking(patternModuleName);
 

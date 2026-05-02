@@ -49,6 +49,7 @@ deb_dist/
 *.log
 *.keys
 *.pcapng
+*.tap
 
 #keys and certs for testing
 *.pem
@@ -109,3 +110,4 @@ node_modules
 # Debug/test artifacts
 output.json
 *.bin
+tls_libs_Chrome/

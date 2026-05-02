@@ -130,12 +130,19 @@ export let use_modern: boolean = false;
 export let install_lsass_hook: boolean = true;
 //@ts-ignore
 export let selected_protocol: string = "tls";
+// Sentinel detected at the handshake boundary; renaming this literal
+// no longer changes gate behavior the way the previous `length > 10`
+// heuristic did.
+const PATTERNS_PLACEHOLDER = "{PATTERNS}";
 //@ts-ignore
-export let patterns: string = "{PATTERNS}";
+export let patterns: string = PATTERNS_PLACEHOLDER;
+let parsedPatterns: any = null;
 //@ts-ignore
 export let scan_results: string = "{SCAN_RESULTS}";
 //@ts-ignore
 export let library_scan_enabled: boolean = false;
+//@ts-ignore
+export let ohttp_enabled: boolean = true;
 
 /**
  * Perform a send/recv handshake with the Python host to receive a configuration value.
@@ -157,7 +164,20 @@ function recvHandshake<T>(sendChannel: string, defaultValue: T, recvChannel?: st
 /* Batch config handshake: receive all config values in a single IPC round-trip */
 const config_batch = recvHandshake<Record<string, any>>("config_batch", {});
 offsets = config_batch.offsets ?? offsets;
-patterns = config_batch.patterns ?? patterns;
+// Parse pattern data once at the boundary. On failure, `patterns` stays
+// at the placeholder so isPatternReplaced() and the raw string export
+// remain consistent.
+if (typeof config_batch.patterns === "string"
+    && config_batch.patterns !== PATTERNS_PLACEHOLDER
+    && config_batch.patterns.length > 0) {
+    try {
+        parsedPatterns = JSON.parse(config_batch.patterns);
+        patterns = config_batch.patterns;
+    } catch (e: any) {
+        log(`[patterns] handshake delivered invalid JSON: ${e && e.message ? e.message : e} - disabling patterns`);
+        parsedPatterns = null;
+    }
+}
 enable_socket_tracing = config_batch.socket_tracing ?? enable_socket_tracing;
 enable_default_fd = config_batch.defaultFD ?? enable_default_fd;
 experimental = config_batch.experimental ?? experimental;
@@ -167,13 +187,13 @@ install_lsass_hook = config_batch.install_lsass_hook ?? install_lsass_hook;
 use_modern = config_batch.use_modern ?? use_modern;
 scan_results = config_batch.library_scan ?? scan_results;
 library_scan_enabled = config_batch.library_scan_enabled ?? library_scan_enabled;
+ohttp_enabled = config_batch.ohttp_enabled ?? ohttp_enabled;
 
 // "anti" handshake must be LAST in the startup sequence to prevent deadlock
 anti_root = recvHandshake("anti", anti_root, "antiroot");
 
 // Initialize the hooking pipeline centrally so it is ready before any library constructor runs.
-// Existing per-platform OpenSSL_BoringSSL.initializePipeline() calls become no-ops (idempotent guard).
-initializePipeline(isPatternReplaced() ? JSON.parse(patterns) : undefined, experimental);
+initializePipeline(parsedPatterns ?? undefined, experimental);
 
 
 
@@ -191,13 +211,8 @@ export function getOffsets(){
     return offsets;
 }
 
-// Function to check if the patterns have been replaced
 export function isPatternReplaced(): boolean {
-    if(patterns === null){
-        return false;
-    }
-    // The default placeholder is quite short, so if the length exceeds a certain threshold, we assume it's replaced
-    return patterns.length > 10;
+    return parsedPatterns !== null;
 }
 
 
@@ -269,15 +284,4 @@ function load_os_specific_agent() {
 
 }
 
-load_os_specific_agent()
-
-
-
-
-
-
-
-
-
-
-
+load_os_specific_agent();

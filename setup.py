@@ -77,7 +77,7 @@ setup(
         "Topic :: Security",
         "Topic :: Software Development :: Debuggers",
     ],
-    keywords=["mobile", "instrumentation", "frida", "hook", "SSL decryption"],
+    keywords=["mobile", "instrumentation", "frida", "hook", "SSL decryption", "protocol decryption"],
 
     entry_points={
         "console_scripts": [

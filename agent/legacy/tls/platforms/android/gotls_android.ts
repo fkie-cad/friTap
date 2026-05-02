@@ -13,7 +13,7 @@ export class GoTLS_Android extends GoTLS {
 
         /*
          * Default patterns for GoTLS hooking.
-         * These patterns are used to hook the writeKeyLog function in GoTLS but for now only the primary pattern for ARM64 is valid.
+         * These patterns are used to hook the writeKeyLog function in GoTLS but for now only the primary pattern for ARM64 and ARM32 are valid.
          */
 
         this.default_pattern = {
@@ -31,7 +31,7 @@ export class GoTLS_Android extends GoTLS {
             },
 
             "arm": {
-                primary: "2D E9 F0 41 86 B0 04 46 40 6B D0 F8 30 01 00 28 53 D0", // ARM32 pattern
+                primary: "08 10 9A E5 01 00 5D E1 63 00 00 9A 5C E0 2D E5 60 20 9D E5 AC 30 92 E5", // ARM32 pattern
                 fallback: "" // TODO: additional ARM32 patterns needed
             }
         };
