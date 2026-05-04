@@ -23,6 +23,7 @@ except ImportError:
     TEXTUAL_AVAILABLE = False
 
 if TEXTUAL_AVAILABLE:
+    from friTap.tui.themes import c
     from .base import FriTapModal
 
     _MODE_MAP: dict[int, str] = {
@@ -37,14 +38,14 @@ if TEXTUAL_AVAILABLE:
         TargetModeModal > #modal-container {
             width: 70;
             max-height: 80%;
-            background: #0d1117;
-            border: solid #1e3a5f;
+            background: $fritap-bg-modal;
+            border: solid $fritap-border-default;
             padding: 1 2;
         }
         TargetModeModal #target-list {
             height: 6;
             margin: 1 0;
-            background: #080c18;
+            background: $surface;
         }
         """
 
@@ -56,7 +57,7 @@ if TEXTUAL_AVAILABLE:
         def compose(self) -> ComposeResult:
             with Vertical(id="modal-container"):
                 yield Static(
-                    "[bold #38bdf8]Select Target Mode[/]",
+                    f"[bold {c('primary')}]Select Target Mode[/]",
                     classes="modal-title",
                 )
                 yield OptionList(
@@ -71,7 +72,7 @@ if TEXTUAL_AVAILABLE:
                     id="target-list",
                 )
                 yield Static(
-                    "[#64748b]Enter: Select  |  a: Attach  |  s: Spawn  |  Esc: Cancel[/]",
+                    f"[{c('text-muted')}]Enter: Select  |  a: Attach  |  s: Spawn  |  Esc: Cancel[/]",
                     classes="key-hints",
                 )
                 with Horizontal(classes="button-row"):

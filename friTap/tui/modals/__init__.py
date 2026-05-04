@@ -9,13 +9,19 @@ try:
     from .capture_mode_modal import CaptureModeModal  # noqa: F401
     from .capture_select_modal import CaptureSelectModal  # noqa: F401
     from .device_modal import DeviceSelectModal  # noqa: F401
+    from .encapsulated_protocol_modal import EncapsulatedProtocolModal  # noqa: F401
+    from .filter_help_modal import FilterHelpScreen  # noqa: F401
+    from .filter_modal import FilterModal, FilterResult  # noqa: F401
     from .help_modal import HelpScreen  # noqa: F401
     from .process_modal import ProcessSelectModal  # noqa: F401
     from .protocol_modal import ProtocolSelectModal  # noqa: F401
     from .server_check_modal import ServerCheckModal  # noqa: F401
     from .spawn_modal import SpawnInputModal  # noqa: F401
+    from .quit_modal import QuitConfirmModal  # noqa: F401
+    from .save_tap_modal import SaveTapModal  # noqa: F401
     from .start_confirm_modal import StartConfirmModal  # noqa: F401
     from .target_mode_modal import TargetModeModal  # noqa: F401
+    from .body_processing_modal import BodyProcessingModal, BodyProcessingResult, ProtobufModal  # noqa: F401
     MODALS_AVAILABLE = True
 except ImportError:
     MODALS_AVAILABLE = False

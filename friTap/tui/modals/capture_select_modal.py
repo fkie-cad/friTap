@@ -23,6 +23,7 @@ except ImportError:
     TEXTUAL_AVAILABLE = False
 
 if TEXTUAL_AVAILABLE:
+    from friTap.tui.themes import c
     from .base import FriTapModal
 
     _MODE_MAP = {0: "full", 1: "keys", 2: "plaintext", 3: "wireshark", 4: "live_pcapng"}
@@ -35,14 +36,14 @@ if TEXTUAL_AVAILABLE:
             width: 65;
             height: auto;
             max-height: 70%;
-            background: #0d1117;
-            border: solid #1e3a5f;
+            background: $fritap-bg-modal;
+            border: solid $fritap-border-default;
             padding: 1 2;
         }
         CaptureSelectModal #capture-list {
             height: 10;
             margin: 1 0;
-            background: #080c18;
+            background: $surface;
         }
         """
 
@@ -57,19 +58,19 @@ if TEXTUAL_AVAILABLE:
         def compose(self) -> ComposeResult:
             with Vertical(id="modal-container"):
                 yield Static(
-                    "[bold #38bdf8]Select Capture Mode[/]",
+                    f"[bold {c('primary')}]Select Capture Mode[/]",
                     classes="modal-title",
                 )
                 yield OptionList(
-                    Option("[1] Full Capture — TLS keys + PCAP file"),
-                    Option("[2] Key Extraction Only — Extract TLS session keys"),
+                    Option("[1] Full Capture — Decryption keys + PCAP file"),
+                    Option("[2] Key Extraction Only — Extract decryption keys"),
                     Option("[3] Plaintext PCAP — Decrypted traffic to PCAP"),
                     Option("[4] Live Wireshark — Stream to Wireshark pipe"),
                     Option("[5] Live Wireshark (auto-decrypt) — PCAPNG with embedded keys"),
                     id="capture-list",
                 )
                 yield Static(
-                    "[#64748b]1-5: Select  |  Enter: Confirm  |  ↑↓: Browse  |  Esc: Back[/]",
+                    f"[{c('text-muted')}]1-5: Select  |  Enter: Confirm  |  ↑↓: Browse  |  Esc: Back[/]",
                     classes="key-hints",
                 )
                 with Horizontal(classes="button-row"):

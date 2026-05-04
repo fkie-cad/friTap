@@ -8,7 +8,11 @@ Launch with `fritap` (no arguments) for the interactive experience.
 """
 
 from __future__ import annotations
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import platformdirs
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -44,11 +48,14 @@ class AppState:
     keylog_path: str = ""
     json_path: str = ""
     verbose: bool = False
+    debug_log: bool = False
     live: bool = False
     live_mode: str = ""  # "", "wireshark", "live_pcapng"
     full_capture: bool = False
     protocol: str = "tls"  # "tls", "ipsec", "ssh", "auto"
+    view_mode: str = "legacy"  # "legacy", "flow"
     library_scan: bool = False
+    encapsulated_protocols: dict = field(default_factory=lambda: {"ohttp": True})
 
     # Runtime
     session: Optional[object] = None
@@ -57,6 +64,8 @@ class AppState:
 
 if TEXTUAL_AVAILABLE:
     from .screens.main_screen import MainScreen
+    from .modals.quit_modal import QuitConfirmModal
+    from .themes import FRITAP_DARK, FRITAP_LIGHT, set_theme, c
 
     class FriTapApp(App):
         """The friTap interactive TUI application."""
@@ -83,14 +92,101 @@ if TEXTUAL_AVAILABLE:
             Binding("v", "verbose_toggle", "Verbose", show=False),
             Binding("e", "experimental_toggle", "Experimental", show=False),
             Binding("p", "protocol_select", "Protocol", show=False),
+            Binding("t", "toggle_theme", "Theme", show=False),
             Binding("question_mark", "show_help", "Help", show=True),
             Binding("y", "copy_log", "Copy Log", show=False),
+            Binding("w", "save_tap", "Save .tap", show=False),
         ]
+
+        _THEME_CONFIG_PATH = Path(platformdirs.user_config_dir("friTap")) / "tui_prefs.json"
+
+        def __init__(self, replay_file: str | None = None, **kwargs) -> None:
+            super().__init__(**kwargs)
+            self._replay_file = replay_file
+            # Register themes before CSS is parsed so $fritap-* variables resolve
+            self.register_theme(FRITAP_DARK)
+            self.register_theme(FRITAP_LIGHT)
+            saved = self._load_theme_pref()
+            if saved == "fritap-light":
+                self.theme = "fritap-light"
+                set_theme(FRITAP_LIGHT)
+            else:
+                self.theme = "fritap-dark"
+                set_theme(FRITAP_DARK)
 
         def on_mount(self) -> None:
             """Start with the main screen."""
             self.app_state = AppState()
-            self.push_screen(MainScreen())
+            self.push_screen(MainScreen(replay_file=self._replay_file))
+
+        def action_toggle_theme(self) -> None:
+            """Toggle between dark and light themes."""
+            if self.theme == "fritap-dark":
+                self.theme = "fritap-light"
+                set_theme(FRITAP_LIGHT)
+            else:
+                self.theme = "fritap-dark"
+                set_theme(FRITAP_DARK)
+            self._save_theme_pref(self.theme)
+            self._refresh_themed_widgets()
+
+        def _refresh_themed_widgets(self) -> None:
+            """Force re-render of all widgets that use c() for inline colors."""
+            from .screens.main_screen import MainScreen
+            from .widgets.menu_panel import MenuPanel
+            from .widgets.status_bar import StatusBar
+            from .widgets.activity_log import ActivityLog
+            from textual.widgets import Static
+
+            ms = self._main_screen()
+            if not ms:
+                return
+
+            # Rebuild menu panel content (uses c() in markup)
+            try:
+                menu = ms.query_one("#menu-panel", MenuPanel)
+                # Re-render the title with updated colors
+                title = menu.query_one("#menu-title", Static)
+                title.update(f"[bold {c('primary')}]friTap Interactive Menu[/]")
+                menu._update_menu()
+            except Exception:
+                pass
+
+            # Re-render status bar (uses c() in render())
+            try:
+                ms.query_one("#status-bar", StatusBar).refresh()
+            except Exception:
+                pass
+
+            # Re-render activity title
+            try:
+                title = ms.query_one("#activity-title", Static)
+                title.update(f"[bold {c('success')}]friTap Console[/]")
+            except Exception:
+                pass
+
+        def _load_theme_pref(self) -> str:
+            """Load saved theme preference, return theme name or empty string."""
+            try:
+                data = json.loads(self._THEME_CONFIG_PATH.read_text())
+                return data.get("theme", "")
+            except Exception:
+                return ""
+
+        def _save_theme_pref(self, theme_name: str) -> None:
+            """Persist the current theme preference to disk."""
+            try:
+                self._THEME_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+                existing = {}
+                if self._THEME_CONFIG_PATH.exists():
+                    try:
+                        existing = json.loads(self._THEME_CONFIG_PATH.read_text())
+                    except Exception:
+                        pass
+                existing["theme"] = theme_name
+                self._THEME_CONFIG_PATH.write_text(json.dumps(existing, indent=2) + "\n")
+            except Exception:
+                pass  # Non-critical — don't break UX for config save failures
 
         # -------------------------------------------------------
         # Action delegation to MainScreen
@@ -140,6 +236,8 @@ if TEXTUAL_AVAILABLE:
             self._delegate("action_toggle_capture")
 
         def action_escape_action(self) -> None:
+            if not isinstance(self.screen, MainScreen):
+                return
             self._delegate("action_escape_action")
 
         def action_clear_log(self) -> None:
@@ -163,19 +261,46 @@ if TEXTUAL_AVAILABLE:
         def action_copy_log(self) -> None:
             self._delegate("action_copy_log")
 
+        def action_save_tap(self) -> None:
+            self._delegate("action_save_tap")
 
-    def run_tui() -> None:
-        """Entry point to launch the TUI."""
+        def action_quit(self) -> None:
+            """Show quit confirmation modal before exiting."""
+            if isinstance(self.screen, QuitConfirmModal):
+                return
+
+            ms = self._main_screen()
+            if ms:
+                def _on_result(result) -> None:
+                    if result is True:
+                        ms.stop_if_capturing()
+                        self.exit()
+
+                self.push_screen(QuitConfirmModal(), callback=_on_result)
+                return
+            super().action_quit()
+
+
+    def run_tui(replay_file: str | None = None) -> None:
+        """Entry point to launch the TUI.
+
+        Args:
+            replay_file: If set, open this .tap file in replay mode
+                         instead of starting a live capture wizard.
+        """
         if not TEXTUAL_AVAILABLE:
             import sys
             print("Error: The TUI requires the 'textual' package.")
             print("Install it with: pip install fritap[tui]  or  pip install textual>=0.80.0")
             sys.exit(1)
-        app = FriTapApp()
-        app.run()
+        app = FriTapApp(replay_file=replay_file)
+        try:
+            app.run()
+        except KeyboardInterrupt:
+            pass
 
 else:
-    def run_tui() -> None:
+    def run_tui(replay_file: str | None = None) -> None:
         import sys
         print("Error: The TUI requires the 'textual' package.")
         print("Install it with: pip install fritap[tui]  or  pip install textual>=0.80.0")

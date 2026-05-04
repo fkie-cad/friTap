@@ -22,6 +22,7 @@ except ImportError:
     TEXTUAL_AVAILABLE = False
 
 if TEXTUAL_AVAILABLE:
+    from friTap.tui.themes import c
     from .base import FriTapModal
 
     class ServerCheckModal(FriTapModal[Optional[str]]):
@@ -32,19 +33,19 @@ if TEXTUAL_AVAILABLE:
             width: 65;
             height: auto;
             max-height: 70%;
-            background: #0d1117;
-            border: solid #1e3a5f;
+            background: $fritap-bg-modal;
+            border: solid $fritap-border-default;
             padding: 1 2;
         }
         ServerCheckModal #status-message {
             margin: 1 0;
             text-align: center;
-            color: #94a3b8;
+            color: $fritap-text-secondary;
         }
         ServerCheckModal #prompt-message {
             margin: 1 0;
             text-align: center;
-            color: #fbbf24;
+            color: $warning;
         }
         """
 
@@ -57,7 +58,7 @@ if TEXTUAL_AVAILABLE:
 
         def compose(self) -> ComposeResult:
             with Vertical(id="modal-container"):
-                yield Static("[bold #38bdf8]Server Check[/]", classes="modal-title")
+                yield Static(f"[bold {c('primary')}]Server Check[/]", classes="modal-title")
                 yield Static("", id="status-message")
                 yield Static("", id="prompt-message")
                 with Horizontal(classes="button-row", id="action-buttons"):
@@ -85,7 +86,7 @@ if TEXTUAL_AVAILABLE:
             elif self.phase == "prompt":
                 status.update("")
                 prompt.update(
-                    "[bold #fbbf24]frida-server not detected on this device.[/]"
+                    f"[bold {c('warning')}]frida-server not detected on this device.[/]"
                 )
                 buttons.display = True
                 try:
@@ -97,7 +98,7 @@ if TEXTUAL_AVAILABLE:
                 prompt.update("")
                 buttons.display = False
             elif self.phase == "done":
-                status.update("[bold #4ade80]frida-server is running![/]")
+                status.update(f"[bold {c('success')}]frida-server is running![/]")
                 prompt.update("")
                 buttons.display = False
 
@@ -173,7 +174,7 @@ if TEXTUAL_AVAILABLE:
             except Exception as e:
                 def _fail(err=e):
                     self.query_one("#status-message", Static).update(
-                        f"[bold #ef4444]Install failed:[/] {err}"
+                        f"[bold {c('error-strong')}]Install failed:[/] {err}"
                     )
                     self.phase = "prompt"
 

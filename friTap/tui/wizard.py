@@ -203,13 +203,60 @@ class CaptureWizard:
             state.protocol = protocol
             if protocol != "tls":
                 self._screen._get_activity_log().log_info(f"Protocol: {protocol.upper()}")
-            self._step_6_configure(self._capture_mode_id)
+            # Keys-only mode skips encapsulated protocols and view mode
+            if self._capture_mode_id == "keys":
+                self._step_6_configure(self._capture_mode_id)
+            elif protocol in ("tls", "auto"):
+                self._step_5c_encapsulated_protocols()
+            else:
+                self._step_5d_view_mode()
 
         # Pass protocol registry for dynamic protocol list (custom plugins)
         registry = getattr(self._screen, '_protocol_registry', None)
         self._screen.app.push_screen(
             ProtocolSelectModal(registry=registry), callback=_on_result,
         )
+
+    def _step_5c_encapsulated_protocols(self) -> None:
+        """Step 5c: Configure encapsulated-protocol decryption (TLS/auto only)."""
+        from .modals.encapsulated_protocol_modal import EncapsulatedProtocolModal
+
+        def _on_result(result: Optional[dict]) -> None:
+            if result is None:
+                # ESC -> back to step 5b
+                self._step_5b_protocol()
+                return
+            state = self._screen._get_state()
+            if result:
+                state.encapsulated_protocols = result
+            self._step_5d_view_mode()
+
+        self._screen.app.push_screen(EncapsulatedProtocolModal(), callback=_on_result)
+
+    def _step_5d_view_mode(self) -> None:
+        """Step 5d: Select display mode (legacy vs flow view).
+
+        Skipped for 'keys' capture mode since there is no data to display.
+        """
+        from .modals.view_mode_modal import ViewModeModal
+
+        def _on_result(view_mode: Optional[str]) -> None:
+            if view_mode is None:
+                # Back -> step 5c (encapsulated protocols) or 5b (non-tls protocols)
+                state = self._screen._get_state()
+                protocol = getattr(state, 'protocol', 'tls')
+                if protocol in ("tls", "auto"):
+                    self._step_5c_encapsulated_protocols()
+                else:
+                    self._step_5b_protocol()
+                return
+            state = self._screen._get_state()
+            state.view_mode = view_mode
+            if view_mode != "legacy":
+                self._screen._get_activity_log().log_info(f"Display mode: {view_mode}")
+            self._step_6_configure(self._capture_mode_id)
+
+        self._screen.app.push_screen(ViewModeModal(), callback=_on_result)
 
     def _step_6_configure(self, mode_id: str) -> None:
         """Step 6: Configure output paths for the selected mode."""
@@ -260,6 +307,8 @@ class CaptureWizard:
             "protocol": getattr(state, 'protocol', 'tls'),
             "experimental": getattr(state, "_experimental", False),
             "library_scan": getattr(state, "library_scan", False),
+            "debug_log": getattr(state, "debug_log", False),
+            "encapsulated_protocols": getattr(state, "encapsulated_protocols", {}),
         }
 
         confirm_modal = StartConfirmModal(summary=summary)
@@ -277,6 +326,7 @@ class CaptureWizard:
             state._experimental = confirm_modal.experimental
             self._screen._get_menu_panel().experimental = state._experimental
             state.library_scan = confirm_modal.library_scan
+            state.debug_log = confirm_modal.debug_log
             self._finish_and_start()
 
         self._screen.app.push_screen(confirm_modal, callback=_on_result)

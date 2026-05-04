@@ -23,6 +23,7 @@ except ImportError:
     TEXTUAL_AVAILABLE = False
 
 if TEXTUAL_AVAILABLE:
+    from friTap.tui.themes import c
     from .base import FriTapModal
 
     _TYPE_TAGS = {
@@ -39,13 +40,13 @@ if TEXTUAL_AVAILABLE:
             width: 65;
             height: auto;
             max-height: 70%;
-            background: #0d1117;
-            border: solid #1e3a5f;
+            background: $fritap-bg-modal;
+            border: solid $fritap-border-default;
             padding: 1 2;
         }
         StartConfirmModal #summary-block {
             margin: 1 2;
-            color: #94a3b8;
+            color: $fritap-text-secondary;
         }
         """
 
@@ -53,11 +54,13 @@ if TEXTUAL_AVAILABLE:
             Binding("v", "toggle_verbose", "Verbose", show=False),
             Binding("e", "toggle_experimental", "Experimental", show=False),
             Binding("l", "toggle_library_scan", "Library Scan", show=False),
+            Binding("d", "toggle_debug_log", "Debug Log", show=False),
         ]
 
         verbose: reactive[bool] = reactive(False)
         experimental: reactive[bool] = reactive(False)
         library_scan: reactive[bool] = reactive(False)
+        debug_log: reactive[bool] = reactive(False)
 
         def __init__(self, summary: dict, **kwargs) -> None:
             super().__init__(**kwargs)
@@ -69,17 +72,18 @@ if TEXTUAL_AVAILABLE:
             self.verbose = summary.get("verbose", False)
             self.experimental = summary.get("experimental", False)
             self.library_scan = summary.get("library_scan", False)
+            self.debug_log = summary.get("debug_log", False)
 
         def compose(self) -> ComposeResult:
             with Vertical(id="modal-container"):
                 yield Static(
-                    "[bold #4ade80]Ready to Capture[/]",
+                    f"[bold {c('success')}]Ready to Capture[/]",
                     classes="modal-title",
                 )
                 yield Static("", id="summary-block")
                 yield Static(
-                    "[#64748b]Enter: Start  |  v: Verbose  |  e: Experimental\n"
-                    "l: Library Scan  |  Esc: Back[/]",
+                    f"[{c('text-muted')}]Enter: Start  |  v: Verbose  |  e: Experimental\n"
+                    f"l: Library Scan  |  d: Debug Log  |  Esc: Back[/]",
                     classes="key-hints",
                 )
                 with Horizontal(classes="button-row"):
@@ -120,6 +124,7 @@ if TEXTUAL_AVAILABLE:
             verbose_indicator = "[bold green]ON[/]" if self.verbose else "[dim]off[/]"
             experimental_indicator = "[bold green]ON[/]" if self.experimental else "[dim]off[/]"
             library_scan_indicator = "[bold green]ON[/]" if self.library_scan else "[dim]off[/]"
+            debug_log_indicator = "[bold green]ON[/]" if self.debug_log else "[dim]off[/]"
 
             # Determine display values for keys/output based on mode
             keys_display = "(embedded in PCAPNG stream)" if live and capture_mode_id == "live_pcapng" else keylog_path or "\u2014"
@@ -135,14 +140,15 @@ if TEXTUAL_AVAILABLE:
 
             if live:
                 if self._ws_found:
-                    lines.append("  Wireshark:     [#4ade80]Will auto-launch when capture starts[/]")
+                    lines.append(f"  Wireshark:     [{c('success')}]Will auto-launch when capture starts[/]")
                 else:
-                    lines.append("  Wireshark:     [#f59e0b]Not found — manual connection required[/]")
+                    lines.append(f"  Wireshark:     [{c('warning-amber')}]Not found — manual connection required[/]")
 
             lines.append("")
             lines.append(f"  Verbose:       {verbose_indicator}")
             lines.append(f"  Experimental:  {experimental_indicator}")
             lines.append(f"  Library Scan:  {library_scan_indicator}")
+            lines.append(f"  Debug Log:     {debug_log_indicator}")
 
             return "\n".join(lines)
 
@@ -153,6 +159,9 @@ if TEXTUAL_AVAILABLE:
             self._refresh_summary()
 
         def watch_library_scan(self, value: bool) -> None:
+            self._refresh_summary()
+
+        def watch_debug_log(self, value: bool) -> None:
             self._refresh_summary()
 
         def action_toggle_verbose(self) -> None:
@@ -166,6 +175,10 @@ if TEXTUAL_AVAILABLE:
         def action_toggle_library_scan(self) -> None:
             """Toggle library scan flag."""
             self.library_scan = not self.library_scan
+
+        def action_toggle_debug_log(self) -> None:
+            """Toggle debug log file creation."""
+            self.debug_log = not self.debug_log
 
         def on_button_pressed(self, event: Button.Pressed) -> None:
             if event.button.id == "btn-start":

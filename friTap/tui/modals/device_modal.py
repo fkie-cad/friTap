@@ -24,6 +24,7 @@ except ImportError:
 _PLATFORM_NAMES = {"darwin": "macOS", "win32": "Windows"}
 
 if TEXTUAL_AVAILABLE:
+    from friTap.tui.themes import c
     from .base import FriTapModal
 
     class DeviceSelectModal(FriTapModal[Optional[str]]):
@@ -33,14 +34,14 @@ if TEXTUAL_AVAILABLE:
         DeviceSelectModal > #modal-container {
             width: 70;
             max-height: 80%;
-            background: #0d1117;
-            border: solid #1e3a5f;
+            background: $fritap-bg-modal;
+            border: solid $fritap-border-default;
             padding: 1 2;
         }
         DeviceSelectModal #device-list {
             height: 12;
             margin: 1 0;
-            background: #080c18;
+            background: $surface;
         }
         DeviceSelectModal #remote-row {
             height: 3;
@@ -58,7 +59,7 @@ if TEXTUAL_AVAILABLE:
 
         def compose(self) -> ComposeResult:
             with Vertical(id="modal-container"):
-                yield Static("[bold #38bdf8]Select Device[/]", classes="modal-title")
+                yield Static(f"[bold {c('primary')}]Select Device[/]", classes="modal-title")
                 yield OptionList(id="device-list")
                 with Horizontal(id="remote-row"):
                     yield Input(
@@ -67,7 +68,7 @@ if TEXTUAL_AVAILABLE:
                     )
                     yield Button("Add Remote", id="btn-add-remote", variant="default")
                 yield Static(
-                    "[#64748b]Enter: Select  |  \u2191\u2193: Browse  |  Tab: Navigate  |  Esc: Cancel[/]",
+                    f"[{c('text-muted')}]Enter: Select  |  \u2191\u2193: Browse  |  Tab: Navigate  |  Esc: Cancel[/]",
                     classes="key-hints",
                 )
                 with Horizontal(classes="button-row"):

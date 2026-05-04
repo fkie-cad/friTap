@@ -23,6 +23,7 @@ except ImportError:
     TEXTUAL_AVAILABLE = False
 
 if TEXTUAL_AVAILABLE:
+    from friTap.tui.themes import c
     from .base import FriTapModal
 
     class SpawnInputModal(FriTapModal[Optional[str]]):
@@ -45,7 +46,7 @@ if TEXTUAL_AVAILABLE:
         }
         SpawnInputModal #app-list {
             height: 20;
-            background: #080c18;
+            background: $surface;
         }
         SpawnInputModal #app-list-view {
             display: none;
@@ -72,7 +73,7 @@ if TEXTUAL_AVAILABLE:
 
         def compose(self) -> ComposeResult:
             with Vertical(id="modal-container"):
-                yield Static("[bold #38bdf8]Spawn Application[/]", classes="modal-title")
+                yield Static(f"[bold {c('primary')}]Spawn Application[/]", classes="modal-title")
 
                 # App list view — shown for mobile devices
                 with Vertical(id="app-list-view"):
@@ -85,8 +86,8 @@ if TEXTUAL_AVAILABLE:
                 # Manual input view — shown for local devices or toggle
                 with Vertical(id="manual-view"):
                     yield Static(
-                        "[#8f9bb3]Enter a package name (e.g. com.example.app) "
-                        "or path to binary (e.g. /usr/bin/curl)[/]"
+                        f"[{c('text-dim')}]Enter a package name (e.g. com.example.app) "
+                        f"or path to binary (e.g. /usr/bin/curl)[/]"
                     )
                     yield Input(
                         placeholder="Package name or /path/to/binary...",
@@ -94,7 +95,7 @@ if TEXTUAL_AVAILABLE:
                     )
 
                 yield Static(
-                    "[#64748b]Enter: Spawn  |  Type: Filter  |  \u2191\u2193: Browse  |  Esc: Cancel[/]",
+                    f"[{c('text-muted')}]Enter: Spawn  |  Type: Filter  |  \u2191\u2193: Browse  |  Esc: Cancel[/]",
                     classes="key-hints",
                 )
                 with Horizontal(classes="button-row"):

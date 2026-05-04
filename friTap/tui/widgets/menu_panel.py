@@ -22,6 +22,8 @@ try:
 except ImportError:
     TEXTUAL_AVAILABLE = False
 
+from friTap.tui.themes import c
+
 # Regex to find [x] bracket patterns
 _KEY_RE = re.compile(r"(?<![\\])\[([a-zA-Z0-9?]|Enter)\]")
 
@@ -67,7 +69,7 @@ if TEXTUAL_AVAILABLE:
         # Options section is built dynamically by _build_options_section()
 
         def compose(self):
-            yield Static("[bold #38bdf8]friTap Interactive Menu[/]", id="menu-title")
+            yield Static(f"[bold {c('primary')}]friTap Interactive Menu[/]", id="menu-title")
             yield Static("", id="menu-content")
 
         # All reactive properties trigger the same menu rebuild.
@@ -95,18 +97,18 @@ if TEXTUAL_AVAILABLE:
             # Dynamic Enter item with mode tag
             mode_tag = ""
             if self.target_mode == "attach":
-                mode_tag = " [bold #4ade80]\\[Attaching][/]"
+                mode_tag = f" [bold {c('success')}]\\[Attaching][/]"
             elif self.target_mode == "spawn":
-                mode_tag = " [bold #818cf8]\\[Spawning][/]"
+                mode_tag = f" [bold {c('secondary')}]\\[Spawning][/]"
 
             if self.capture_active:
                 if self.target_name:
-                    items.append((f"[Enter] stop capture of [bold #d4945a]{self.target_name}[/]{mode_tag}", "always"))
+                    items.append((f"[Enter] stop capture of [bold {c('target')}]{self.target_name}[/]{mode_tag}", "always"))
                 else:
                     items.append(("[Enter] stop capture", "always"))
             else:
                 if self.target_name:
-                    items.append((f"[Enter] start capture of [bold #d4945a]{self.target_name}[/]{mode_tag}", "has_target"))
+                    items.append((f"[Enter] start capture of [bold {c('target')}]{self.target_name}[/]{mode_tag}", "has_target"))
                 else:
                     items.append(("[Enter] start capture", "has_target"))
 
@@ -151,10 +153,10 @@ if TEXTUAL_AVAILABLE:
                     }
                     active = mode_labels.get(self.current_mode, "")
                     lines.append(
-                        f"[bold #64748b]=== Capture Mode[/] [bold green]► {active}[/][bold #64748b] ===[/]"
+                        f"[bold {c('text-muted')}]=== Capture Mode[/] [bold green]► {active}[/][bold {c('text-muted')}] ===[/]"
                     )
                 else:
-                    lines.append(f"[bold #64748b]=== {category} ===[/]")
+                    lines.append(f"[bold {c('text-muted')}]=== {category} ===[/]")
                 for text, condition in items:
                     enabled = self._is_enabled(condition)
                     formatted = self._format_item(text, enabled)
@@ -169,13 +171,13 @@ if TEXTUAL_AVAILABLE:
                 # Show output paths below capture mode items
                 if category == "Capture Mode" and self.current_mode:
                     if self.keylog_path:
-                        lines.append(f"    [#8f9bb3]→ keys: {self.keylog_path}[/]")
+                        lines.append(f"    [{c('text-dim')}]→ keys: {self.keylog_path}[/]")
                     if self.pcap_path:
-                        lines.append(f"    [#8f9bb3]→ pcap: {self.pcap_path}[/]")
+                        lines.append(f"    [{c('text-dim')}]→ pcap: {self.pcap_path}[/]")
 
             # Control section (dynamic)
             lines.append("")
-            lines.append("[bold #64748b]=== Control ===[/]")
+            lines.append(f"[bold {c('text-muted')}]=== Control ===[/]")
             for text, condition in self._build_control_section():
                 enabled = self._is_enabled(condition)
                 formatted = self._format_item(text, enabled)
@@ -183,7 +185,7 @@ if TEXTUAL_AVAILABLE:
 
             # Setup section
             lines.append("")
-            lines.append("[bold #64748b]=== Setup ===[/]")
+            lines.append(f"[bold {c('text-muted')}]=== Setup ===[/]")
             for text, condition in self._SETUP_SECTION:
                 enabled = self._is_enabled(condition)
                 formatted = self._format_item(text, enabled)
@@ -191,7 +193,7 @@ if TEXTUAL_AVAILABLE:
 
             # Options section (toggles with inline state)
             lines.append("")
-            lines.append("[bold #64748b]=== Options ===[/]")
+            lines.append(f"[bold {c('text-muted')}]=== Options ===[/]")
             for text, condition, toggle_attr in self._build_options_section():
                 enabled = self._is_enabled(condition)
                 formatted = self._format_item(text, enabled)
@@ -225,11 +227,11 @@ if TEXTUAL_AVAILABLE:
             """Format a menu item with highlighted bracket keys."""
             if not enabled:
                 escaped = _KEY_RE.sub(lambda m: f"\\[{m.group(1)}]", text)
-                return f"[#6b7280]{escaped}[/]"
+                return f"[{c('text-disabled')}]{escaped}[/]"
 
             def _highlight(match: re.Match) -> str:
                 key = match.group(1)
-                return f"[bold cyan]\\[{key}][/]"
+                return f"[bold {c('accent')}]\\[{key}][/]"
 
             return _KEY_RE.sub(_highlight, text)
 

@@ -23,6 +23,7 @@ except ImportError:
     TEXTUAL_AVAILABLE = False
 
 if TEXTUAL_AVAILABLE:
+    from friTap.tui.themes import c
     from .base import FriTapModal
 
     class ProcessSelectModal(FriTapModal[Optional[tuple[str, str, bool]]]):
@@ -32,8 +33,8 @@ if TEXTUAL_AVAILABLE:
         ProcessSelectModal > #modal-container {
             width: 75;
             max-height: 85%;
-            background: #0d1117;
-            border: solid #1e3a5f;
+            background: $fritap-bg-modal;
+            border: solid $fritap-border-default;
             padding: 1 2;
         }
         ProcessSelectModal #filter-input {
@@ -41,7 +42,7 @@ if TEXTUAL_AVAILABLE:
         }
         ProcessSelectModal #process-list {
             height: 20;
-            background: #080c18;
+            background: $surface;
         }
         """
 
@@ -58,14 +59,14 @@ if TEXTUAL_AVAILABLE:
 
         def compose(self) -> ComposeResult:
             with Vertical(id="modal-container"):
-                yield Static("[bold #38bdf8]Select Process[/]", classes="modal-title")
+                yield Static(f"[bold {c('primary')}]Select Process[/]", classes="modal-title")
                 yield Input(
                     placeholder="Filter processes...",
                     id="filter-input",
                 )
                 yield OptionList(id="process-list")
                 yield Static(
-                    "[#64748b]Enter: Attach  |  Type: Filter  |  \u2191\u2193: Browse  |  Tab: Navigate  |  Esc: Cancel[/]",
+                    f"[{c('text-muted')}]Enter: Attach  |  Type: Filter  |  \u2191\u2193: Browse  |  Tab: Navigate  |  Esc: Cancel[/]",
                     classes="key-hints",
                 )
                 with Horizontal(classes="button-row"):
@@ -79,6 +80,61 @@ if TEXTUAL_AVAILABLE:
             super().on_mount()
             self._init_device()
             self._load_processes()
+
+        def on_key(self, event) -> None:
+            """Smart focus: arrows navigate list, typing filters."""
+            input_widget = self.query_one("#filter-input", Input)
+            option_list = self.query_one("#process-list", OptionList)
+
+            # Arrow keys: always navigate OptionList
+            if event.key in ("up", "down", "pageup", "pagedown", "home", "end"):
+                if self.focused is input_widget:
+                    event.prevent_default()
+                    event.stop()
+                    count = option_list.option_count
+                    if count == 0:
+                        return
+                    current = option_list.highlighted if option_list.highlighted is not None else 0
+                    if event.key == "up":
+                        option_list.highlighted = (current - 1) % count
+                    elif event.key == "down":
+                        option_list.highlighted = (current + 1) % count
+                    elif event.key == "pageup":
+                        option_list.highlighted = max(0, current - 10)
+                    elif event.key == "pagedown":
+                        option_list.highlighted = min(count - 1, current + 10)
+                    elif event.key == "home":
+                        option_list.highlighted = 0
+                    elif event.key == "end":
+                        option_list.highlighted = count - 1
+                return
+
+            # Enter: select from either widget
+            if event.key == "enter":
+                if self.focused in (input_widget, option_list):
+                    event.prevent_default()
+                    event.stop()
+                    self._select_highlighted()
+                return
+
+            # Printable chars: always go to Input
+            if event.is_printable and event.character:
+                if self.focused is not input_widget:
+                    event.prevent_default()
+                    event.stop()
+                    input_widget.focus()
+                    input_widget.insert_text_at_cursor(event.character)
+                return
+
+            # Backspace: redirect to Input
+            if event.key == "backspace":
+                if self.focused is not input_widget:
+                    event.prevent_default()
+                    event.stop()
+                    input_widget.focus()
+                    if input_widget.value:
+                        input_widget.value = input_widget.value[:-1]
+                return
 
         def _init_device(self) -> None:
             """Initialize the Frida device reference."""

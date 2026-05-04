@@ -1,17 +1,17 @@
 /* friTap TUI Theme — Midnight Cyan */
 
 Screen {
-    background: #050811;
+    background: $background;
 }
 
 Header {
-    background: #0b1628;
-    color: #7dd3fc;
+    background: $fritap-bg-header;
+    color: $fritap-info;
 }
 
 Footer {
-    background: #0b1628;
-    color: #7dd3fc;
+    background: $fritap-bg-header;
+    color: $fritap-info;
 }
 
 /* Main split layout */
@@ -22,24 +22,28 @@ Footer {
 #left-panel {
     width: 45%;
     height: 100%;
-    background: #080c18;
-    border-right: solid #111827;
+    background: $surface;
+    border-right: solid $fritap-border-panel;
     padding: 0 1;
 }
 
 #right-panel {
     width: 55%;
     height: 100%;
-    background: #080c18;
+    background: $surface;
     padding: 0 1;
+}
+
+#right-panel.flow-mode {
+    width: 100%;
 }
 
 /* Status bar */
 #status-bar {
     dock: top;
     height: 1;
-    background: #0b1628;
-    color: #7dd3fc;
+    background: $fritap-bg-header;
+    color: $fritap-info;
     padding: 0 1;
 }
 
@@ -47,13 +51,13 @@ Footer {
 MenuPanel {
     height: 1fr;
     scrollbar-size: 1 1;
-    background: #080c18;
+    background: $surface;
 }
 
 #menu-title {
     text-align: center;
     text-style: bold;
-    color: #38bdf8;
+    color: $primary;
     padding: 1 0;
 }
 
@@ -65,7 +69,7 @@ MenuPanel {
 #activity-title {
     text-align: center;
     text-style: bold;
-    color: #4ade80;
+    color: $success;
     padding: 1 0;
     height: 3;
 }
@@ -73,79 +77,147 @@ MenuPanel {
 ActivityLog {
     height: 1fr;
     scrollbar-size: 1 1;
-    background: #080c18;
+    background: $surface;
 }
 
 /* Modal overlay backgrounds */
 ModalScreen {
     align: center middle;
-    background: rgba(5, 8, 17, 0.8);
+    background: $fritap-modal-overlay;
 }
 
 /* Option lists inside modals */
 OptionList {
-    background: #080c18;
-    border: solid #1e3a5f;
+    background: $surface;
+    border: solid $fritap-border-default;
     scrollbar-size: 1 1;
 }
 
 OptionList:focus {
-    border: solid #38bdf8;
+    border: solid $primary;
 }
 
 OptionList > .option-list--option-highlighted {
-    background: #2563eb;
-    color: #ffffff;
+    background: $fritap-bg-selected;
+    color: $text;
     text-style: bold;
 }
 
 /* Inputs */
 Input {
-    background: #0d1117;
-    border: solid #1e3a5f;
-    color: #e2e8f0;
+    background: $fritap-bg-modal;
+    border: solid $fritap-border-default;
+    color: $foreground;
 }
 
 Input:focus {
-    border: solid #38bdf8;
+    border: solid $primary;
 }
 
 /* Buttons */
 Button {
     margin: 0 1;
-    background: #1e3a5f;
-    color: #e2e8f0;
+    background: $fritap-border-default;
+    color: $foreground;
     border: none;
 }
 
 Button:hover {
-    background: #2563eb;
+    background: $fritap-bg-selected;
 }
 
 Button.-primary {
-    background: #2563eb;
-    color: #ffffff;
+    background: $fritap-bg-selected;
+    color: $text;
 }
 
 Button.-primary:hover {
-    background: #3b82f6;
+    background: $fritap-button-hover;
+}
+
+/* Filter status bar (compact indicator) */
+#filter-bar {
+    height: 1;
+    background: $surface;
+    padding: 0 1;
+    display: none;
+}
+
+#filter-summary {
+    width: 1fr;
+}
+
+#filter-status {
+    width: auto;
+    min-width: 16;
+    content-align: right middle;
+}
+
+/* Flow list */
+#flow-list {
+    height: 1fr;
+    scrollbar-size: 1 1;
+    background: $surface;
+}
+
+#flow-list > .datatable--header {
+    background: $fritap-bg-header;
+    color: $primary;
+    text-style: bold;
+}
+
+#flow-list > .datatable--cursor {
+    background: $fritap-bg-selected;
+    color: $text;
+}
+
+#flow-list > .datatable--even-row {
+    background: $surface;
+}
+
+#flow-list > .datatable--odd-row {
+    background: $panel;
+}
+
+/* Flow detail */
+#flow-detail {
+    height: 1fr;
+    background: $surface;
+}
+
+#flow-detail-header {
+    height: auto;
+    max-height: 3;
+    padding: 0 1;
+    background: $fritap-bg-header;
+    color: $foreground;
+}
+
+#flow-tabs {
+    height: 1fr;
+}
+
+#request-log, #response-log, #detail-log {
+    height: 1fr;
+    scrollbar-size: 1 1;
+    background: $surface;
 }
 
 /* Legacy screen styles (preserved for reference) */
 .screen-title {
     text-align: center;
     text-style: bold;
-    color: #e2e8f0;
+    color: $foreground;
     padding: 1;
     margin-bottom: 1;
 }
 
 .status-ok {
-    color: #4ade80;
+    color: $success;
     margin-bottom: 1;
 }
 
 .status-error {
-    color: #fb7185;
+    color: $error;
     margin-bottom: 1;
 }

@@ -21,7 +21,7 @@ try:
     from textual.app import ComposeResult
     from textual.binding import Binding  # noqa: F401
     from textual.screen import Screen
-    from textual.widgets import Header, Footer, Static
+    from textual.widgets import Header, Footer, Static, TabbedContent
     from textual.containers import Horizontal, Vertical
     TEXTUAL_AVAILABLE = True
 except ImportError:
@@ -31,20 +31,58 @@ if TEXTUAL_AVAILABLE:
     from ..widgets.activity_log import ActivityLog
     from ..widgets.status_bar import StatusBar
     from ..widgets.menu_panel import MenuPanel
+    from ..widgets.flow_list import FlowListWidget
+    from ..widgets.flow_detail import FlowDetailWidget
+    from ..widgets.filter_bar import FilterBar
     from ..modals.device_modal import DeviceSelectModal
     from ..modals.process_modal import ProcessSelectModal
     from ..modals.spawn_modal import SpawnInputModal
     from ..modals.help_modal import HelpScreen
     from ..modals.protocol_modal import ProtocolSelectModal
+    from ..modals.filter_modal import FilterModal, FilterResult
     from ..wizard import CaptureWizard
     from ..capture_controller import CaptureController
     from ..mode_controller import ModeController
+    from ..themes import c
+
+    def _needs_reparse(flow, summary) -> bool:
+        """Check if a flow should be re-parsed with current parser code.
+
+        Triggers re-parse for:
+        - Unknown protocol (legacy .tap files without proper detection)
+        - HTTP/2 ghost flows (old code skipped SETTINGS-only control frames)
+        - WebSocket TEXT flows (old code missed permessage-deflate decompression)
+        """
+        proto = flow.display_protocol
+        if proto == "unknown":
+            return True
+        # HTTP/2 ghost flows: protocol detected but no request (SETTINGS-only)
+        if "HTTP/2" in proto and flow.request is None:
+            return True
+        # HTTP/2 control frames from old .tap files: method matches but is_control_frame not set
+        if "HTTP/2" in proto and flow.request is not None:
+            if flow.request.method in ("SETTINGS", "PING", "GOAWAY", "WINDOW_UPDATE"):
+                if not flow.request.is_control_frame:
+                    return True
+        # WebSocket TEXT: always re-parse to apply decompression + content detection
+        # (Old .tap files stored compressed body; new parser decompresses + detects JSON)
+        if proto == "WebSocket" and summary.method == "TEXT":
+            return True
+        return False
 
     class MainScreen(Screen):
         """Single-screen split-pane layout for friTap TUI."""
 
-        def __init__(self, **kwargs) -> None:
+        BINDINGS = [
+            Binding("f", "toggle_view", "Toggle View", show=False),
+            Binding("slash", "focus_filter", "Filter", show=False),
+            Binding("shift+escape", "clear_filter", "Clear Filter", show=False),
+        ]
+
+        def __init__(self, replay_file: str | None = None, **kwargs) -> None:
             super().__init__(**kwargs)
+            self._replay_file = replay_file
+            self._replay_ctrl = None
             self._wizard = CaptureWizard(self)
             self._capture = CaptureController(self)
             self._mode_ctrl = ModeController(self)
@@ -60,13 +98,26 @@ if TEXTUAL_AVAILABLE:
                     yield StatusBar(id="status-bar")
                     yield MenuPanel(id="menu-panel")
                 with Vertical(id="right-panel"):
-                    yield Static("[bold #4ade80]friTap Console[/]", id="activity-title")
+                    yield Static(f"[bold {c('success')}]friTap Console[/]", id="activity-title")
+                    yield FilterBar(id="filter-bar")
                     yield ActivityLog(id="activity-log")
+                    yield FlowListWidget(id="flow-list")
+                    yield FlowDetailWidget(id="flow-detail")
             yield Footer()
 
         def on_mount(self) -> None:
             """Initialize the screen with welcome message and device info."""
             self._get_state()  # ensure state is initialized
+
+            # Hide flow widgets and filter bar initially
+            self.query_one("#filter-bar").display = False
+            self.query_one("#flow-list").display = False
+            self.query_one("#flow-detail").display = False
+
+            # Replay mode — skip wizard, load .tap file directly
+            if self._replay_file:
+                self._init_replay_mode()
+                return
 
             # Show welcome banner
             activity = self.query_one("#activity-log", ActivityLog)
@@ -85,6 +136,192 @@ if TEXTUAL_AVAILABLE:
 
             # Launch guided setup wizard
             self._start_wizard()
+
+        # ----------------------------------------------------------
+        # Replay mode
+        # ----------------------------------------------------------
+
+        def _init_replay_mode(self) -> None:
+            """Initialize replay mode from a .tap file."""
+            from pathlib import Path
+            from ..replay_controller import ReplayController
+            from friTap.flow.models import Flow, FlowState
+
+            path = self._replay_file
+            filename = Path(path).name
+
+            try:
+                self._replay_ctrl = ReplayController(path)
+                meta = self._replay_ctrl.load()
+            except Exception as e:
+                from ..modals.alert_modal import AlertModal
+                self.app.push_screen(
+                    AlertModal(
+                        message=f"Failed to open {filename}:\n\n{e}",
+                        title="Replay Error",
+                        severity="error",
+                    )
+                )
+                return
+
+            # Activate flow view immediately (hides left panel + activity log)
+            self._activate_flow_view()
+
+            # Update title for replay mode
+            count = self._replay_ctrl.flow_count
+            try:
+                title = self.query_one("#activity-title", Static)
+                title.update(
+                    f"[bold {c('primary')}]friTap Replay[/]  "
+                    f"[dim]{filename} ({count} flow{'s' if count != 1 else ''})"
+                    f" | Enter: details | /: filter | Esc: back | w: export | q: quit[/]"
+                )
+            except Exception:
+                pass
+
+            # Populate flow list from summaries
+            from friTap.parsers.base import ParseResult
+            from friTap.flow.reparse import reparse_flow
+            flow_list = self.query_one("#flow-list", FlowListWidget)
+            for summary in self._replay_ctrl.get_summaries():
+                flow = Flow(
+                    flow_id=summary.flow_id,
+                    connection_id=summary.connection_id,
+                    src_addr=summary.src_addr,
+                    src_port=summary.src_port,
+                    dst_addr=summary.dst_addr,
+                    dst_port=summary.dst_port,
+                    ssl_session_id=summary.ssl_session_id,
+                    state=FlowState.COMPLETE,
+                    started=summary.started,
+                    ended=summary.ended,
+                )
+                has_parsed_request = (
+                    summary.method or summary.url or summary.host
+                    or summary.protocol not in ("unknown", "")
+                )
+                if has_parsed_request:
+                    flow.request = ParseResult(
+                        protocol=summary.protocol,
+                        method=summary.method,
+                        url=summary.url,
+                        host=summary.host,
+                        is_request=True,
+                        is_complete=True,
+                        is_control_frame=summary.is_control_frame,
+                    )
+                if summary.status_code > 0:
+                    flow.response = ParseResult(
+                        status_code=summary.status_code,
+                        status_text=summary.status_text,
+                        body_size=summary.body_size,
+                        is_request=False,
+                        is_complete=True,
+                    )
+                # Re-parse flows that can benefit from updated parsers:
+                # - Unknown protocol (legacy .tap files)
+                # - HTTP/2 ghost flows (old code skipped control frames)
+                # - WebSocket with non-UTF-8 TEXT body (old code missed decompression)
+                if summary.total_size > 0 and _needs_reparse(flow, summary):
+                    full_flow = self._replay_ctrl.get_flow(summary.flow_id)
+                    if full_flow is not None and reparse_flow(full_flow):
+                        flow.request = full_flow.request
+                        flow.response = full_flow.response
+                        self._replay_ctrl.store_reparse(
+                            summary.flow_id, full_flow.request, full_flow.response,
+                        )
+
+                flow._total_bytes = summary.total_size
+                flow_list.add_or_update_flow(flow)
+
+        def _present_flow_detail(self, flow) -> None:
+            """Show the flow detail widget for a given Flow object."""
+            self.query_one("#flow-list").display = False
+            self.query_one("#left-panel").display = False
+            detail = self.query_one("#flow-detail", FlowDetailWidget)
+            detail.show_flow(flow)
+            detail.display = True
+            self._update_detail_title()
+
+            def _focus_tabs():
+                try:
+                    inner_tabs = detail.query_one("#flow-tabs Tabs")
+                    inner_tabs.focus()
+                except Exception:
+                    detail.focus()
+                detail.scroll_to_top()
+
+            self.call_after_refresh(_focus_tabs)
+
+        def action_save_tap(self) -> None:
+            """Show save dialog for .tap file export."""
+            # In replay mode, re-export is available too
+            if self._replay_ctrl is not None:
+                collector_has_flows = self._replay_ctrl.flow_count > 0
+            else:
+                collector_has_flows = (
+                    self._capture.flow_collector is not None
+                    and len(self._capture.flow_collector.get_flows()) > 0
+                )
+
+            if not collector_has_flows:
+                from ..modals.alert_modal import AlertModal
+                self.app.push_screen(
+                    AlertModal(
+                        message="No flows to save.\nStart a capture with flow view first.",
+                        title="Save Capture",
+                        severity="warning",
+                    )
+                )
+                return
+
+            from ..modals.save_tap_modal import SaveTapModal
+            self.app.push_screen(SaveTapModal(), callback=self._on_save_tap_result)
+
+        def _on_save_tap_result(self, path: str | None) -> None:
+            """Handle the result from SaveTapModal."""
+            if path is None:
+                return
+
+            if self._replay_ctrl is not None:
+                # Re-export from replay: write all flows to new file
+                self._export_replay_to_tap(path)
+            else:
+                # Live capture: wire the TapWriter to the FlowCollector
+                self._capture.start_tap_recording(path)
+
+        def _export_replay_to_tap(self, path: str) -> None:
+            """Export all replay flows to a new .tap file."""
+            from friTap.flow.tap_writer import TapWriter
+
+            try:
+                writer = TapWriter()
+                header = self._replay_ctrl.header
+                target = header.capture_target if header else ""
+                writer.open(path, target=target)
+
+                for flow in self._replay_ctrl.get_flows():
+                    writer.write_flow(flow)
+
+                writer.close()
+
+                from ..modals.alert_modal import AlertModal
+                self.app.push_screen(
+                    AlertModal(
+                        message=f"Exported {writer.flow_count} flows to:\n[bold]{path}[/]",
+                        title="Export Complete",
+                        severity="info",
+                    )
+                )
+            except Exception as e:
+                from ..modals.alert_modal import AlertModal
+                self.app.push_screen(
+                    AlertModal(
+                        message=f"Export failed:\n{e}",
+                        title="Export Error",
+                        severity="error",
+                    )
+                )
 
         # ----------------------------------------------------------
         # State helpers
@@ -178,11 +415,27 @@ if TEXTUAL_AVAILABLE:
         def action_stop_capture(self) -> None:
             self._capture.action_stop_capture()
 
+        def stop_if_capturing(self) -> None:
+            """Stop capture if one is running. Also cleans up replay. Safe to call from app shutdown."""
+            if self._ssl_logger and self._ssl_logger.running:
+                self._capture.action_stop_capture()
+            if self._replay_ctrl is not None:
+                self._replay_ctrl.close()
+                self._replay_ctrl = None
+
         def action_toggle_capture(self) -> None:
             self._capture.action_toggle_capture()
 
         def action_escape_action(self) -> None:
-            self._capture.action_escape_action()
+            flow_detail = self.query_one("#flow-detail")
+            if flow_detail.display:
+                self._back_to_flow_list()
+                return
+            if self._ssl_logger and self._ssl_logger.running:
+                self._capture.action_escape_action()
+                return
+            # Not capturing → trigger quit confirmation
+            self.app.action_quit()
 
         # ----------------------------------------------------------
         # Device selection
@@ -270,7 +523,7 @@ if TEXTUAL_AVAILABLE:
             menu.target_name = display_name
             menu.target_mode = mode
             self._get_activity_log().log_info(
-                f"Target: [bold #d4945a]{display_name}[/] [{mode_tag}]"
+                f"Target: [bold {c('target')}]{display_name}[/] [{mode_tag}]"
             )
 
         def _guard_target_change(self) -> bool:
@@ -305,6 +558,8 @@ if TEXTUAL_AVAILABLE:
 
         def action_spawn(self) -> None:
             """Open the spawn input modal."""
+            if self.query_one("#flow-detail").display:
+                return
             if self._guard_target_change():
                 return
 
@@ -471,6 +726,8 @@ if TEXTUAL_AVAILABLE:
 
         def action_protocol_select(self) -> None:
             """Open the protocol selection modal."""
+            if self.query_one("#flow-detail").display:
+                return
             if self._wizard_guard():
                 return
             state = self._get_state()
@@ -483,6 +740,178 @@ if TEXTUAL_AVAILABLE:
                 self._get_activity_log().log_info(f"Protocol: {protocol.upper()}")
 
             self.app.push_screen(ProtocolSelectModal(), callback=_on_result)
+
+        # ----------------------------------------------------------
+        # Flow view management
+        # ----------------------------------------------------------
+
+        def _activate_flow_view(self) -> None:
+            """Switch right panel to full-screen flow list view."""
+            self.query_one("#activity-log").display = False
+            self.query_one("#flow-detail").display = False
+            self.query_one("#flow-list").display = True
+            self.query_one("#filter-bar").display = True
+            self.query_one("#left-panel").display = False
+            self.query_one("#right-panel").add_class("flow-mode")
+            self.query_one("#flow-list").focus()
+            self._update_flow_title()
+
+        @property
+        def _mode_label(self) -> str:
+            return "friTap Replay" if self._replay_ctrl else "friTap Flow View"
+
+        def _set_title_hints(self, hint_str: str) -> None:
+            """Update the activity title bar with the given hint text."""
+            try:
+                title = self.query_one("#activity-title", Static)
+                title.update(
+                    f"[bold {c('primary')}]{self._mode_label}[/]  [dim]{hint_str}[/]"
+                )
+            except Exception:
+                pass
+
+        def _update_flow_title(self) -> None:
+            """Update the flow view title bar based on current state."""
+            capturing = self._ssl_logger and self._ssl_logger.running
+            hints = ["Enter: flow details", "/: filter"]
+            try:
+                filter_bar = self.query_one("#filter-bar", FilterBar)
+                if filter_bar.has_active_filter:
+                    hints.append("Shift+Esc: clear filter")
+            except Exception:
+                pass
+            if capturing:
+                hints.append("Esc: stop capture")
+            hints.append("w: save .tap")
+            if self._replay_ctrl is None:
+                hints.append("f: console view")
+            self._set_title_hints(" | ".join(hints))
+
+        def _update_detail_title(self) -> None:
+            """Update the title bar with detail-view hints."""
+            self._set_title_hints("Esc: back | Tab: switch tabs | p: parse | s: save body")
+
+        def _activate_legacy_view(self) -> None:
+            """Switch right panel to legacy activity log view."""
+            self.query_one("#flow-list").display = False
+            self.query_one("#flow-detail").display = False
+            self.query_one("#filter-bar").display = False
+            self.query_one("#activity-log").display = True
+            self.query_one("#left-panel").display = True
+            self.query_one("#right-panel").remove_class("flow-mode")
+            try:
+                title = self.query_one("#activity-title", Static)
+                capturing = self._ssl_logger and self._ssl_logger.running
+                suffix = f"  [bold {c('success')} on {c('bg-capture')}] CAPTURING [/]" if capturing else ""
+                title.update(f"[bold {c('success')}]friTap Console[/]{suffix}  [dim]press f to toggle[/]")
+            except Exception:
+                pass
+
+        def _show_flow_detail(self, flow_id: str) -> None:
+            """Show detail view for a specific flow."""
+            if self._replay_ctrl is not None:
+                flow = self._replay_ctrl.get_flow(flow_id)
+            else:
+                collector = self._capture.flow_collector
+                flow = collector.get_flow(flow_id) if collector else None
+            if not flow:
+                return
+            self._present_flow_detail(flow)
+
+        def _back_to_flow_list(self) -> None:
+            """Return from detail view to flow list."""
+            self.query_one("#flow-detail").display = False
+            self.query_one("#flow-list").display = True
+            self.query_one("#flow-list").focus()
+            self._update_flow_title()
+
+        def on_flow_list_widget_flow_selected(self, event: FlowListWidget.FlowSelected) -> None:
+            """Handle flow selection from the flow list."""
+            self._show_flow_detail(event.flow_id)
+
+        def on_flow_detail_widget_back_requested(self, event: FlowDetailWidget.BackRequested) -> None:
+            """Handle back request from flow detail."""
+            self._back_to_flow_list()
+
+        def action_focus_filter(self) -> None:
+            """Open the filter modal (/ key)."""
+            try:
+                filter_bar = self.query_one("#filter-bar", FilterBar)
+                if not filter_bar.display:
+                    return
+                self.app.push_screen(
+                    FilterModal(
+                        current_text=filter_bar.filter_text,
+                        active_toggles=filter_bar.active_toggles,
+                    ),
+                    callback=self._on_filter_result,
+                )
+            except Exception:
+                pass
+
+        def action_clear_filter(self) -> None:
+            """Clear the active filter (Shift+Esc)."""
+            try:
+                filter_bar = self.query_one("#filter-bar", FilterBar)
+                if not filter_bar.display:
+                    return
+                filter_bar.clear_filter()
+            except Exception:
+                pass
+
+        def _on_filter_result(self, result: FilterResult | None) -> None:
+            """Handle the result from the FilterModal."""
+            if result is None:
+                return
+            try:
+                filter_bar = self.query_one("#filter-bar", FilterBar)
+                filter_bar.apply_result(
+                    text=result.text,
+                    text_engine=result.text_engine,
+                    toggle_engine=result.toggle_engine,
+                    active_toggles=result.active_toggles,
+                )
+            except Exception:
+                pass
+
+        def on_filter_bar_filter_changed(self, event: FilterBar.FilterChanged) -> None:
+            """Handle filter changes from the filter bar."""
+            try:
+                flow_list = self.query_one("#flow-list", FlowListWidget)
+                flow_list.set_filter(event.engine, event.toggle_engine)
+            except Exception:
+                pass
+            self._update_flow_title()
+
+        def action_toggle_view(self) -> None:
+            """Toggle between legacy and flow views."""
+            flow_list = self.query_one("#flow-list")
+            flow_detail = self.query_one("#flow-detail")
+
+            if flow_detail.display:
+                # In detail view → back to flow list
+                self._back_to_flow_list()
+            elif flow_list.display:
+                # In replay mode, legacy view is not available
+                if self._replay_ctrl is not None:
+                    return
+                # In flow view → switch to legacy
+                self._activate_legacy_view()
+            else:
+                # In legacy view → switch to flow
+                self._activate_flow_view()
+
+        def _update_flow_ui(self, flow, event_type: str) -> None:
+            """Update flow list/detail widgets with a flow change (called on Textual thread)."""
+            try:
+                flow_list = self.query_one("#flow-list", FlowListWidget)
+                if flow_list.display:
+                    flow_list.add_or_update_flow(flow)
+                flow_detail = self.query_one("#flow-detail", FlowDetailWidget)
+                if flow_detail.display:
+                    flow_detail.refresh_flow(flow)
+            except Exception:
+                pass
 
         # ----------------------------------------------------------
         # Help

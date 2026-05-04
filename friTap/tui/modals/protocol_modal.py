@@ -24,11 +24,12 @@ except ImportError:
     TEXTUAL_AVAILABLE = False
 
 if TEXTUAL_AVAILABLE:
+    from friTap.tui.themes import c
     from .base import FriTapModal
 
     # Built-in protocols (always present, fixed order)
     _BUILTIN_PROTOCOLS = [
-        ("tls", "TLS/SSL — Standard TLS/SSL interception (default)"),
+        ("tls", "TLS/SSL — TLS/SSL interception (default)"),
         ("ipsec", "IPSec — IPSec/IKE key extraction"),
         ("ssh", "SSH — SSH session key extraction"),
     ]
@@ -44,15 +45,15 @@ if TEXTUAL_AVAILABLE:
             width: 60;
             height: auto;
             max-height: 70%;
-            background: #0d1117;
-            border: solid #1e3a5f;
+            background: $fritap-bg-modal;
+            border: solid $fritap-border-default;
             padding: 1 2;
         }
         ProtocolSelectModal #protocol-list {
             height: auto;
             max-height: 16;
             margin: 1 0;
-            background: #080c18;
+            background: $surface;
         }
         """
 
@@ -89,12 +90,12 @@ if TEXTUAL_AVAILABLE:
 
             with Vertical(id="modal-container"):
                 yield Static(
-                    "[bold #38bdf8]Select Protocol[/]",
+                    f"[bold {c('primary')}]Select Protocol[/]",
                     classes="modal-title",
                 )
                 yield OptionList(*options, id="protocol-list")
                 yield Static(
-                    "[#64748b]Enter: Select  |  Up/Down: Browse  |  Esc: Cancel[/]",
+                    f"[{c('text-muted')}]Enter: Select  |  Up/Down: Browse  |  Esc: Cancel[/]",
                     classes="key-hints",
                 )
                 with Horizontal(classes="button-row"):

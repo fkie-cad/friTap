@@ -20,21 +20,7 @@ try:
 except ImportError:
     TEXTUAL_AVAILABLE = False
 
-# Color scheme
-_CLR_INFO = "#7dd3fc"
-_CLR_ERROR = "#fb7185"
-_CLR_WARNING = "#facc15"
-_CLR_SUCCESS = "#4ade80"
-_CLR_KEY = "#38bdf8"
-_CLR_DATA = "#c4b5fd"
-_CLR_LIBRARY = "#67e8f9"
-_CLR_TIMESTAMP = "#8f9bb3"
-_CLR_SESSION = "#818cf8"
-_CLR_DETACH = "#fbbf24"
-_CLR_LIVE = "#22d3ee"
-
-_CLR_FRI = "#e8756e"
-_CLR_TAP = "#6b8db5"
+from friTap.tui.themes import c
 
 # Raw logo parts: (fri_part, tap_part) — built as Text objects to avoid
 # markup escaping issues (backslash + closing tag) and ReprHighlighter
@@ -53,9 +39,9 @@ def _build_logo_line(fri_part: str, tap_part: str):
     """Build a single logo line as a rich Text object with consistent colors."""
     line = Text(no_wrap=True, overflow="ignore")
     if fri_part:
-        line.append(fri_part, style=_CLR_FRI)
+        line.append(fri_part, style=c('brand-fri'))
     if tap_part:
-        line.append(tap_part, style=_CLR_TAP)
+        line.append(tap_part, style=c('brand-tap'))
     return line
 
 
@@ -95,10 +81,10 @@ if TEXTUAL_AVAILABLE:
             for fri_part, tap_part in _FRITAP_LOGO_PARTS:
                 self.write(_build_logo_line(fri_part, tap_part))
             if version:
-                self.write(f"  [{_CLR_INFO}]v{version}[/]")
-            self.write(f"  [{_CLR_INFO}]Real-time key extraction and traffic decryption[/]")
+                self.write(f"  [{c('info')}]v{version}[/]")
+            self.write(f"  [{c('info')}]Real-time key extraction and traffic decryption[/]")
             self.write("")
-            self.write(f"  [{_CLR_TIMESTAMP}]Press [bold]?[/bold] for help  |  [bold]d[/bold] to select device  |  [bold]q[/bold] to quit[/]")
+            self.write(f"  [{c('text-dim')}]Press [bold]?[/bold] for help  |  [bold]d[/bold] to select device  |  [bold]q[/bold] to quit[/]")
             self.write("")
 
         # ----------------------------------------------------------
@@ -110,35 +96,35 @@ if TEXTUAL_AVAILABLE:
             ts = _ts()
             self._plain_lines.append(f"{ts} INFO: {message}")
             self._trim_lines()
-            self.write(f"[{_CLR_TIMESTAMP}]{ts}[/] [{_CLR_INFO}]INFO[/]  {message}")
+            self.write(f"[{c('text-dim')}]{ts}[/] [{c('info')}]INFO[/]  {message}")
 
         def log_error(self, message: str) -> None:
             """Log an error message."""
             ts = _ts()
             self._plain_lines.append(f"{ts} ERROR: {message}")
             self._trim_lines()
-            self.write(f"[{_CLR_TIMESTAMP}]{ts}[/] [{_CLR_ERROR}]ERROR[/] {message}")
+            self.write(f"[{c('text-dim')}]{ts}[/] [{c('error')}]ERROR[/] {message}")
 
         def log_warning(self, message: str) -> None:
             """Log a warning message."""
             ts = _ts()
             self._plain_lines.append(f"{ts} WARNING: {message}")
             self._trim_lines()
-            self.write(f"[{_CLR_TIMESTAMP}]{ts}[/] [{_CLR_WARNING}]WARN[/]  {message}")
+            self.write(f"[{c('text-dim')}]{ts}[/] [{c('warning')}]WARN[/]  {message}")
 
         def log_success(self, message: str) -> None:
             """Log a success message."""
             ts = _ts()
             self._plain_lines.append(f"{ts} SUCCESS: {message}")
             self._trim_lines()
-            self.write(f"[{_CLR_TIMESTAMP}]{ts}[/] [{_CLR_SUCCESS}]OK[/]    {message}")
+            self.write(f"[{c('text-dim')}]{ts}[/] [{c('success')}]OK[/]    {message}")
 
         def log_key(self, preview: str) -> None:
             """Log a TLS key extraction event."""
             ts = _ts()
             self._plain_lines.append(f"{ts} KEY: {preview}")
             self._trim_lines()
-            self.write(f"[{_CLR_TIMESTAMP}]{ts}[/] [{_CLR_KEY}]KEY[/]   {preview}")
+            self.write(f"[{c('text-dim')}]{ts}[/] [{c('primary')}]KEY[/]   {preview}")
 
         def log_data(self, function: str, src: str, dst: str, size: str) -> None:
             """Log a captured data event."""
@@ -147,7 +133,7 @@ if TEXTUAL_AVAILABLE:
             self._plain_lines.append(f"{ts} DATA: {line}")
             self._trim_lines()
             self.write(
-                f"[{_CLR_TIMESTAMP}]{ts}[/] [{_CLR_DATA}]DATA[/]  "
+                f"[{c('text-dim')}]{ts}[/] [{c('accent-data')}]DATA[/]  "
                 f"[bold]{function}[/] {src} -> {dst} ({size}B)"
             )
 
@@ -157,7 +143,7 @@ if TEXTUAL_AVAILABLE:
             self._plain_lines.append(f"{ts} LIB: {name} ({path})")
             self._trim_lines()
             self.write(
-                f"[{_CLR_TIMESTAMP}]{ts}[/] [{_CLR_LIBRARY}]LIB[/]   "
+                f"[{c('text-dim')}]{ts}[/] [{c('accent-library')}]LIB[/]   "
                 f"[bold]{name}[/] ({path})"
             )
 
@@ -167,7 +153,7 @@ if TEXTUAL_AVAILABLE:
             self._plain_lines.append(f"{ts} SESSION: {event_type}")
             self._trim_lines()
             self.write(
-                f"[{_CLR_TIMESTAMP}]{ts}[/] [{_CLR_SESSION}]SESSION[/] {event_type}"
+                f"[{c('text-dim')}]{ts}[/] [{c('secondary')}]SESSION[/] {event_type}"
             )
 
         def log_detach(self, reason: str) -> None:
@@ -176,7 +162,7 @@ if TEXTUAL_AVAILABLE:
             self._plain_lines.append(f"{ts} DETACH: {reason}")
             self._trim_lines()
             self.write(
-                f"[{_CLR_TIMESTAMP}]{ts}[/] [{_CLR_DETACH}]DETACH[/] {reason}"
+                f"[{c('text-dim')}]{ts}[/] [{c('warning')}]DETACH[/] {reason}"
             )
 
         def log_live(self, message: str) -> None:
@@ -184,7 +170,7 @@ if TEXTUAL_AVAILABLE:
             ts = _ts()
             self._plain_lines.append(f"{ts} LIVE: {message}")
             self._trim_lines()
-            self.write(f"[{_CLR_TIMESTAMP}]{ts}[/] [{_CLR_LIVE}]LIVE[/]  {message}")
+            self.write(f"[{c('text-dim')}]{ts}[/] [{c('accent')}]LIVE[/]  {message}")
 
         # ----------------------------------------------------------
         # Utilities

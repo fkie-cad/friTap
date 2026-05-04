@@ -18,6 +18,7 @@ except ImportError:
     TEXTUAL_AVAILABLE = False
 
 if TEXTUAL_AVAILABLE:
+    from friTap.tui.themes import c
     from .base import FriTapModal
 
     class AlertModal(FriTapModal[None]):
@@ -28,8 +29,8 @@ if TEXTUAL_AVAILABLE:
             width: 60;
             height: auto;
             max-height: 50%;
-            background: #0d1117;
-            border: solid #1e3a5f;
+            background: $fritap-bg-modal;
+            border: solid $fritap-border-default;
             padding: 1 2;
         }
         AlertModal #alert-message {
@@ -38,10 +39,10 @@ if TEXTUAL_AVAILABLE:
         }
         """
 
-        _SEVERITY_STYLES = {
-            "warning": ("#fbbf24", "Warning"),
-            "error": ("#ef4444", "Error"),
-            "info": ("#38bdf8", "Info"),
+        _SEVERITY_ROLES = {
+            "warning": ("warning", "Warning"),
+            "error": ("error-strong", "Error"),
+            "info": ("primary", "Info"),
         }
 
         def __init__(
@@ -54,21 +55,21 @@ if TEXTUAL_AVAILABLE:
             super().__init__(**kwargs)
             self._message = message
             self._severity = severity
-            color, default_title = self._SEVERITY_STYLES.get(
-                severity, self._SEVERITY_STYLES["warning"]
+            role, default_title = self._SEVERITY_ROLES.get(
+                severity, self._SEVERITY_ROLES["warning"]
             )
             self._title = title or default_title
-            self._color = color
+            self._role = role
 
         def compose(self) -> ComposeResult:
             with Vertical(id="modal-container"):
                 yield Static(
-                    f"[bold {self._color}]{self._title}[/]",
+                    f"[bold {c(self._role)}]{self._title}[/]",
                     classes="modal-title",
                 )
                 yield Static(self._message, id="alert-message")
                 yield Static(
-                    "[#64748b]Enter: Dismiss  |  Esc: Close[/]",
+                    f"[{c('text-muted')}]Enter: Dismiss  |  Esc: Close[/]",
                     classes="key-hints",
                 )
                 with Horizontal(classes="button-row"):

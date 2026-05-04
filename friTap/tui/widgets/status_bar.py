@@ -17,6 +17,8 @@ try:
 except ImportError:
     TEXTUAL_AVAILABLE = False
 
+from friTap.tui.themes import c
+
 if TEXTUAL_AVAILABLE:
 
     class StatusBar(Static):
@@ -40,14 +42,14 @@ if TEXTUAL_AVAILABLE:
 
             # frida-server status (only show when set — USB/remote devices)
             if self.server_status == "running":
-                parts.append("frida-server: [bold green]running[/]")
+                parts.append(f"frida-server: [bold {c('success')}]running[/]")
             elif self.server_status == "not running":
-                parts.append("frida-server: [bold red]not running[/]")
+                parts.append(f"frida-server: [bold {c('error')}]not running[/]")
 
             # Target
             if self.target_app:
                 mode_tag = f" [{self.target_mode}]" if self.target_mode else ""
-                parts.append(f"Target: [bold #d4945a]{self.target_app}[/]{mode_tag}")
+                parts.append(f"Target: [bold {c('target')}]{self.target_app}[/]{mode_tag}")
 
             # Capture mode
             if self.capture_mode:
@@ -60,9 +62,9 @@ if TEXTUAL_AVAILABLE:
             # State — only show when actively capturing or just stopped
             state = self.capture_state
             if state == "CAPTURING":
-                parts.append("[bold green]CAPTURING[/]")
+                parts.append(f"[bold {c('success')}]CAPTURING[/]")
             elif state == "STOPPED":
-                parts.append("[bold red]STOPPED[/]")
+                parts.append(f"[bold {c('error')}]STOPPED[/]")
 
             return " | ".join(parts)
 

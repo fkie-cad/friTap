@@ -21,11 +21,12 @@ except ImportError:
     TEXTUAL_AVAILABLE = False
 
 if TEXTUAL_AVAILABLE:
+    from friTap.tui.themes import c
     from .base import FriTapModal
 
     _MODE_DESCRIPTIONS = {
-        "full": "Capture TLS keys and write a PCAPNG file with decrypted traffic.",
-        "keys": "Extract TLS session keys only (no traffic capture).",
+        "full": "Capture decryption keys and write a PCAPNG file with decrypted traffic.",
+        "keys": "Extract decryption keys only (no traffic capture).",
         "plaintext": "Write decrypted plaintext traffic to a PCAPNG file.",
         "wireshark": "Stream decrypted plaintext traffic live to Wireshark — no keylog needed.",
         "live_pcapng": "Stream PCAPNG with embedded decryption keys directly to Wireshark.",
@@ -39,17 +40,17 @@ if TEXTUAL_AVAILABLE:
             width: 65;
             height: auto;
             max-height: 70%;
-            background: #0d1117;
-            border: solid #1e3a5f;
+            background: $fritap-bg-modal;
+            border: solid $fritap-border-default;
             padding: 1 2;
         }
         CaptureModeModal .path-label {
             margin-top: 1;
-            color: #94a3b8;
+            color: $fritap-text-secondary;
         }
         CaptureModeModal .mode-description {
             margin: 1 0;
-            color: #8f9bb3;
+            color: $fritap-text-dim;
             text-align: center;
         }
         CaptureModeModal Input {
@@ -81,14 +82,14 @@ if TEXTUAL_AVAILABLE:
             description = _MODE_DESCRIPTIONS.get(self._mode_id, "")
             with Vertical(id="modal-container"):
                 yield Static(
-                    f"[bold #38bdf8]Configure: {self._mode_display}[/]",
+                    f"[bold {c('primary')}]Configure: {self._mode_display}[/]",
                     classes="modal-title",
                 )
                 if description:
                     yield Static(description, classes="mode-description")
 
                 if self._default_keylog:
-                    yield Static("[#94a3b8]Key log file:[/]", classes="path-label")
+                    yield Static(f"[{c('text-secondary')}]Key log file:[/]", classes="path-label")
                     yield Input(
                         value=self._default_keylog,
                         placeholder="Path for key log file...",
@@ -96,7 +97,7 @@ if TEXTUAL_AVAILABLE:
                     )
 
                 if self._default_pcap:
-                    yield Static("[#94a3b8]Output file (PCAP/PCAPNG):[/]", classes="path-label")
+                    yield Static(f"[{c('text-secondary')}]Output file (PCAP/PCAPNG):[/]", classes="path-label")
                     yield Input(
                         value=self._default_pcap,
                         placeholder="Path for capture file (.pcap or .pcapng)...",
@@ -106,24 +107,24 @@ if TEXTUAL_AVAILABLE:
                 if self._is_live:
                     if self._mode_id == "live_pcapng":
                         yield Static(
-                            "[#818cf8]Keys are embedded in the PCAPNG stream — no file paths needed.\n"
-                            "Wireshark receives a single stream with both traffic and decryption keys.[/]",
+                            f"[{c('secondary')}]Keys are embedded in the PCAPNG stream — no file paths needed.\n"
+                            f"Wireshark receives a single stream with both traffic and decryption keys.[/]",
                             classes="mode-description",
                         )
                     else:
                         yield Static(
-                            "[#818cf8]Decrypted plaintext streams directly to Wireshark via a named pipe.\n"
-                            "No keylog file needed — traffic is already decrypted.[/]",
+                            f"[{c('secondary')}]Decrypted plaintext streams directly to Wireshark via a named pipe.\n"
+                            f"No keylog file needed — traffic is already decrypted.[/]",
                             classes="mode-description",
                         )
                     if self._ws_found:
                         yield Static(
-                            "[#4ade80]Wireshark found — will auto-launch when capture starts.[/]",
+                            f"[{c('success')}]Wireshark found — will auto-launch when capture starts.[/]",
                             classes="mode-description",
                         )
                     else:
                         yield Static(
-                            "[#f59e0b]Wireshark not found in PATH — you will need to connect manually.[/]",
+                            f"[{c('warning-amber')}]Wireshark not found in PATH — you will need to connect manually.[/]",
                             classes="mode-description",
                         )
 
@@ -133,7 +134,7 @@ if TEXTUAL_AVAILABLE:
                     hint_parts.append("Tab: Edit paths")
                 hint_parts.append("Esc: Cancel")
                 yield Static(
-                    f"[#64748b]{'  |  '.join(hint_parts)}[/]",
+                    f"[{c('text-muted')}]{'  |  '.join(hint_parts)}[/]",
                     classes="key-hints",
                 )
                 with Horizontal(classes="button-row"):

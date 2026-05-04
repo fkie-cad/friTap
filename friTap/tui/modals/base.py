@@ -30,22 +30,22 @@ if TEXTUAL_AVAILABLE:
         DEFAULT_CSS = """
         FriTapModal {
             align: center middle;
-            background: rgba(5, 8, 17, 0.85);
+            background: $fritap-modal-overlay;
         }
 
         FriTapModal > #modal-container {
             width: 70;
             height: auto;
             max-height: 80%;
-            background: #0d1117;
-            border: solid #1e3a5f;
+            background: $fritap-bg-modal;
+            border: solid $fritap-border-default;
             padding: 1 2;
         }
 
         FriTapModal .modal-title {
             text-align: center;
             text-style: bold;
-            color: #38bdf8;
+            color: $primary;
             margin-bottom: 1;
         }
 
@@ -61,9 +61,9 @@ if TEXTUAL_AVAILABLE:
 
         FriTapModal .key-hints {
             text-align: center;
-            color: #64748b;
+            color: $fritap-text-muted;
             margin-top: 1;
-            height: 1;
+            height: auto;
         }
         """
 
