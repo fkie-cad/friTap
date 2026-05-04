@@ -13,7 +13,7 @@ Usage:
     python chrome_ssl_intercept.py --spawn com.android.chrome
 
     PID: Process ID of Chrome (e.g., 27913)
-    PACKAGE_NAME: Android package name (e.g., com.android.chrome) - recommended for spawning
+    PACKAGE_NAME: Android package name (e.g., com.android.chrome)
 
 Examples:
     python chrome_ssl_intercept.py 27913
