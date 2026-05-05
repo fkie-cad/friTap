@@ -237,5 +237,31 @@
             "s2n_connection_new": [],
             "s2n_config_set_key_log_cb": []
         }
+    },
+    "quiche": {
+        "_comment": "Patterns for Cloudflare quiche. All symbols are exported so patterns are rarely needed.",
+        "x64": {},
+        "arm64": {},
+        "arm": {},
+        "x86": {}
+    },
+    "google_quiche": {
+        "_comment": "Patterns for Google QUICHE (Chrome/Cronet). Mangled C++ symbols, pattern scanning for stripped binaries.",
+        "x64": {
+            "QuicSpdyStream_Readv": [],
+            "QuicSpdyStream_WriteOrBufferBody": []
+        },
+        "arm64": {
+            "QuicSpdyStream_Readv": [],
+            "QuicSpdyStream_WriteOrBufferBody": []
+        },
+        "arm": {
+            "QuicSpdyStream_Readv": [],
+            "QuicSpdyStream_WriteOrBufferBody": []
+        },
+        "x86": {
+            "QuicSpdyStream_Readv": [],
+            "QuicSpdyStream_WriteOrBufferBody": []
+        }
     }
 }

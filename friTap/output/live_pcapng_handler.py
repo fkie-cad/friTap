@@ -102,8 +102,11 @@ class LivePcapngHandler(OutputHandler):
         opener.join(timeout=timeout)
 
         if opener.is_alive():
+            with self._buffer_lock:
+                lost = len(self._buffer)
             self._logger.error(
-                "Wireshark did not connect within %ds — live view disabled", int(timeout)
+                "Wireshark did not connect within %ds — live view disabled (%d buffered events lost)",
+                int(timeout), lost,
             )
             return False
 
@@ -128,6 +131,12 @@ class LivePcapngHandler(OutputHandler):
 
     def close(self) -> None:
         """Clean up the internal PCAPNG handler and FIFO."""
+        if not self._connected:
+            with self._buffer_lock:
+                lost = len(self._buffer)
+            if lost:
+                self._logger.warning("Closing before Wireshark connected — %d buffered events lost", lost)
+
         if self._pcapng_handler:
             try:
                 self._pcapng_handler.close()

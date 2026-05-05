@@ -18,6 +18,8 @@ from __future__ import annotations
 import logging
 import os
 import struct
+
+from friTap.constants import build_infrastructure_bpf
 import subprocess
 import tempfile
 import threading
@@ -29,7 +31,7 @@ from .base import OutputHandler
 if TYPE_CHECKING:
     from ..events import EventBus, KeylogEvent
 
-from .pcapng_handler import BT_SHB, BT_IDB, BT_EPB, BT_DSB, TLS_KEY_LOG, _pad4
+from .pcapng_blocks import BT_SHB, BT_IDB, BT_EPB, BT_DSB, TLS_KEY_LOG, pad4 as _pad4
 
 # Link types
 LINKTYPE_ETHERNET = 1
@@ -50,6 +52,9 @@ class LiveAutoDecryptHandler(OutputHandler):
         self._file: Optional[IO] = None
         self._logger = logging.getLogger("friTap.output.live_autodecrypt")
         self._event_bus: Optional[EventBus] = None
+        # Lock ordering invariant: _dsb_buffer_lock → _write_lock (never reversed).
+        # _dsb_buffer_lock guards _dsb_buffer list and _idb_written flag.
+        # _write_lock guards all self._file.write() calls.
         self._write_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._capture_thread: Optional[threading.Thread] = None
@@ -310,11 +315,10 @@ class LiveAutoDecryptHandler(OutputHandler):
             self._logger.info("Installing tcpdump on device...")
             android.install_tcpdump()
 
-        # Build adb command for streaming pcap to stdout
         adb_cmd = self._build_adb_cmd()
         tcpdump_cmd = (
             f'{android.tcpdump_path} -U -i any -s 0 -w - '
-            f'"not (tcp port 5555 or tcp port 27042)"'
+            f'"{build_infrastructure_bpf()}"'
         )
         full_cmd = adb_cmd + ["shell", tcpdump_cmd]
 

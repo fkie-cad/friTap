@@ -15,8 +15,11 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
+from typing import Protocol, runtime_checkable
+
 if TYPE_CHECKING:
     from ..events import FriTapEvent
+    from ..flow.models import Flow
     from ..session import Session
 
 
@@ -57,6 +60,48 @@ class FriTapPlugin(ABC):
 
     Cancellation is advisory — file-based handlers (PCAP, keylog, JSON)
     always record data regardless.
+
+    Flow events
+    -----------
+    Plugins can subscribe to FlowEvent to receive parsed HTTP flows
+    in both TUI and CLI modes::
+
+        from friTap.events import FlowEvent
+
+        class MyFlowPlugin(FriTapPlugin):
+            def on_load(self, session) -> None:
+                session.lifecycle_bus.subscribe(
+                    FlowEvent,
+                    self._on_flow,
+                    priority=EventBus.PLUGIN_PRIORITY,
+                )
+
+            def _on_flow(self, event: FlowEvent) -> None:
+                if event.flow_event_type == "completed":
+                    flow = event.flow
+                    if flow.request:
+                        print(f"{flow.request.method} {flow.request.url}")
+
+    Custom protocol parsers
+    -----------------------
+    Plugins can register custom protocol parsers to extend flow detection
+    with additional protocols (e.g., gRPC, MQTT, custom binary protocols)::
+
+        from friTap.parsers.base import BaseParser
+
+        class MqttParser(BaseParser):
+            def can_parse(self, data: bytes) -> bool:
+                return len(data) >= 2 and (data[0] >> 4) in range(1, 15)
+
+            def parse(self, data: bytes, direction: str) -> dict:
+                ...  # parse MQTT packet
+
+        class MqttPlugin(FriTapPlugin):
+            name = "mqtt"
+            version = "1.0.0"
+
+            def on_load(self, session) -> None:
+                session.register_parser(MqttParser, priority=75)
     """
 
     @property
@@ -87,3 +132,44 @@ class FriTapPlugin(ABC):
     def on_unload(self, session: "Session") -> None:
         """Called when the plugin is unloaded. Release resources here."""
         pass
+
+
+@runtime_checkable
+class ColumnProvider(Protocol):
+    """Plugin-provided column for FlowListWidget.
+
+    Plugins implement this protocol and register via session.register_column()
+    to add custom columns to the flow list table.
+    """
+    name: str       # Column header text
+    width: int      # Character width hint
+    key: str        # Unique column key
+
+    def value(self, flow: "Flow") -> str:
+        """Return cell value for this flow.
+
+        This method is called on every flow update in the TUI flow list.
+        Keep it lightweight — avoid expensive computation, network calls,
+        or heavy string formatting. Prefer caching derived values inside
+        the provider rather than recomputing on each call.
+        """
+        ...
+
+    def style(self, flow: "Flow") -> str:
+        """Return Rich style for this cell (optional, defaults to empty)."""
+        ...
+
+
+@runtime_checkable
+class TabProvider(Protocol):
+    """Plugin-provided tab for FlowDetailWidget.
+
+    Plugins implement this protocol and register via session.register_tab()
+    to add custom tabs to the flow detail view.
+    """
+    title: str      # Tab title displayed in tab bar
+    tab_id: str     # Unique tab identifier
+
+    def render(self, flow: "Flow") -> str:
+        """Return text content to display for this flow."""
+        ...

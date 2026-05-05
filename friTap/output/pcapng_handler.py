@@ -11,31 +11,17 @@ keylog file.
 
 from __future__ import annotations
 import logging
-import struct
 import time
 from typing import IO, List, Optional, TYPE_CHECKING
 
 from .base import OutputHandler
+from .dedup import KeyDeduplicator
+from .pcapng_blocks import build_shb, build_idb, build_dsb, build_epb, EPB_FLUSH_INTERVAL
+from ..constants import SSL_READ
+from ..sinks.tcp_state import TcpSessionTracker, build_framed_packet_from_fields
 
 if TYPE_CHECKING:
     from ..events import EventBus, KeylogEvent, DatalogEvent
-
-# PCAPNG block types
-BT_SHB = 0x0A0D0D0A   # Section Header Block
-BT_IDB = 0x00000001   # Interface Description Block
-BT_EPB = 0x00000006   # Enhanced Packet Block
-BT_DSB = 0x0000000A   # Decryption Secrets Block
-
-# Secrets types
-TLS_KEY_LOG = 0x544C534B   # "TLSK" - TLS Key Log
-
-# Link types
-LINKTYPE_RAW = 101
-
-
-def _pad4(n: int) -> int:
-    """Round up to next multiple of 4."""
-    return (n + 3) & ~3
 
 
 class PcapngOutputHandler(OutputHandler):
@@ -47,6 +33,9 @@ class PcapngOutputHandler(OutputHandler):
         self._logger = logging.getLogger("friTap.output.pcapng")
         self._pending_keys: List[str] = []
         self._protocol_handler = protocol_handler
+        self._tracker = TcpSessionTracker()
+        self._dedup = KeyDeduplicator()
+        self._epb_count = 0
 
     def setup(self, event_bus: "EventBus") -> None:
         self.setup_with_file(open(self._path, "wb"), event_bus)
@@ -55,50 +44,21 @@ class PcapngOutputHandler(OutputHandler):
         """Set up with an already-open file handle (used by LivePcapngHandler)."""
         from ..events import KeylogEvent, DatalogEvent
         self._file = file_obj
-        self._write_shb()
-        self._write_idb()
+        self._file.write(build_shb())
+        self._file.write(build_idb())
         event_bus.subscribe(KeylogEvent, self.on_keylog)
         event_bus.subscribe(DatalogEvent, self.on_data)
 
     def on_keylog(self, event: "KeylogEvent") -> None:
-        if event.key_data:
+        if event.key_data and self._dedup.is_new(event.key_data):
             self._pending_keys.append(event.key_data)
             self._flush_dsb()
 
     def on_data(self, event: "DatalogEvent") -> None:
         if not self._file or not event.data:
             return
-        # Flush any pending keys as DSB before the packet
         self._flush_dsb()
         self._write_epb(event)
-
-    def _write_shb(self) -> None:
-        """Write Section Header Block."""
-        if not self._file:
-            return
-        # SHB body: byte order magic + major + minor version
-        body = struct.pack("<I", 0x1A2B3C4D)  # Byte-Order Magic
-        body += struct.pack("<HH", 1, 0)       # Version 1.0
-        body += struct.pack("<q", -1)           # Section Length (unspecified)
-        block_len = 12 + len(body)
-        self._file.write(struct.pack("<I", BT_SHB))
-        self._file.write(struct.pack("<I", block_len))
-        self._file.write(body)
-        self._file.write(struct.pack("<I", block_len))
-
-    def _write_idb(self) -> None:
-        """Write Interface Description Block."""
-        if not self._file:
-            return
-        body = struct.pack("<HH", LINKTYPE_RAW, 0)  # LinkType + Reserved
-        body += struct.pack("<I", 65535)              # SnapLen
-        block_len = 12 + _pad4(len(body))
-        self._file.write(struct.pack("<I", BT_IDB))
-        self._file.write(struct.pack("<I", block_len))
-        self._file.write(body)
-        # Pad to 4-byte boundary
-        self._file.write(b"\x00" * (_pad4(len(body)) - len(body)))
-        self._file.write(struct.pack("<I", block_len))
 
     def _flush_dsb(self) -> None:
         """Write pending key material as a Decryption Secrets Block."""
@@ -110,43 +70,40 @@ class PcapngOutputHandler(OutputHandler):
             else self._pending_keys
         )
         secrets_data = "\n".join(formatted).encode("utf-8") + b"\n"
+        block = build_dsb(secrets_data)
+        try:
+            self._file.write(block)
+            self._file.flush()
+        except OSError:
+            self._dedup.unmark(self._pending_keys)
+            raise
         self._pending_keys.clear()
-        body = struct.pack("<I", TLS_KEY_LOG)
-        body += struct.pack("<I", len(secrets_data))
-        body += secrets_data
-        padded_len = _pad4(len(body))
-        block_len = 12 + padded_len
-        self._file.write(struct.pack("<I", BT_DSB))
-        self._file.write(struct.pack("<I", block_len))
-        self._file.write(body)
-        self._file.write(b"\x00" * (padded_len - len(body)))
-        self._file.write(struct.pack("<I", block_len))
-        self._file.flush()
 
     def _write_epb(self, event: "DatalogEvent") -> None:
-        """Write Enhanced Packet Block."""
+        """Write Enhanced Packet Block with IP+TCP framing."""
         if not self._file or not event.data:
             return
+
+        packet = build_framed_packet_from_fields(
+            ss_family=event.ss_family,
+            src_addr=event.src_addr_raw,
+            src_port=event.src_port,
+            dst_addr=event.dst_addr_raw,
+            dst_port=event.dst_port,
+            is_read=event.function in SSL_READ,
+            data=event.data,
+            tracker=self._tracker,
+        )
+
         t_us = int(time.time() * 1_000_000)
-        ts_high = (t_us >> 32) & 0xFFFFFFFF
-        ts_low = t_us & 0xFFFFFFFF
-        captured_len = len(event.data)
-        original_len = captured_len
-        body = struct.pack("<I", 0)  # Interface ID
-        body += struct.pack("<II", ts_high, ts_low)
-        body += struct.pack("<II", captured_len, original_len)
-        body += event.data
-        padded_len = _pad4(len(body))
-        block_len = 12 + padded_len
-        self._file.write(struct.pack("<I", BT_EPB))
-        self._file.write(struct.pack("<I", block_len))
-        self._file.write(body)
-        self._file.write(b"\x00" * (padded_len - len(body)))
-        self._file.write(struct.pack("<I", block_len))
-        self._file.flush()
+        self._file.write(build_epb(packet, t_us))
+        self._epb_count += 1
+        if self._epb_count % EPB_FLUSH_INTERVAL == 0:
+            self._file.flush()
 
     def close(self) -> None:
         if self._file:
+            self._tracker.clear()
             try:
                 self._flush_dsb()
             except OSError as e:

@@ -17,13 +17,13 @@ class ProtocolRegistry:
 
     _PROCESSOR_MAP: dict[str, str] = {
         "ssh": "SSHKeyProcessor",
-        "ipsec": "IPSecKeyProcessor",
+    #    "ipsec": "IPSecKeyProcessor",
         "tls": "TLSKeyProcessor",
     }
 
     _MODULE_MAP: dict[str, str] = {
         "ssh": ".ssh_extractor",
-        "ipsec": ".ipsec_extractor",
+    #    "ipsec": ".ipsec_extractor",
         "tls": ".tls_extractor",
     }
 
@@ -119,11 +119,11 @@ class ProtocolRegistry:
 def create_default_registry() -> ProtocolRegistry:
     """Create a registry with all built-in protocol handlers."""
     from .tls_handler import TLSHandler
-    #from .ipsec_handler import IPSecHandler
+#    from .ipsec_handler import IPSecHandler # needs to be impl.
     from .ssh_handler import SSHHandler
 
     registry = ProtocolRegistry()
     registry.register(TLSHandler())
-    #registry.register(IPSecHandler())
+#    registry.register(IPSecHandler()) # needs to be impl.
     registry.register(SSHHandler())
     return registry

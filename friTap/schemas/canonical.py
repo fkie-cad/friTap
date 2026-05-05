@@ -45,6 +45,7 @@ class KeylogCanonical:
     key_data: str
     protocol: str = "tls"
     timestamp: float = field(default_factory=time.time)
+    client_random: str = ""
 
 
 @dataclass(frozen=True)
@@ -65,9 +66,14 @@ class DataCanonical:
     protocol: str = "tls"
     timestamp: float = field(default_factory=time.time)
     connection_id: str = ""
+    client_random: str = ""
     # Raw address values for PCAP writing
     src_addr_raw: int | str = 0
     dst_addr_raw: int | str = 0
+    # QUIC-specific fields (None/empty for non-QUIC traffic)
+    stream_id: int | None = None
+    quic_scid: str = ""
+    quic_dcid: str = ""
 
 
 @dataclass(frozen=True)
