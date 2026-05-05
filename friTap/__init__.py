@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-friTap - Frida-based TLS/SSL traffic interception and key extraction.
+friTap - Frida-based encrypted traffic interception and key extraction.
 
 Usage:
     # Legacy API (deprecated, will be removed in friTap 3.0)
@@ -44,10 +44,33 @@ from .events import (
     ErrorEvent,
     SocketTraceEvent,
     DetachEvent,
+    FlowEvent,
 )
 
 # Pipeline
 from .pipeline import MessagePipeline, create_default_pipeline
+
+# Flow models
+from .flow import Flow, FlowChunk, FlowState, FlowEventType, FlowSummary, TapReader
+
+# Analysis framework
+from .analysis import (
+    Severity,
+    Finding,
+    BaseAnalyzer,
+    analyze_tap,
+    analyze_tap_multi,
+    AnalyzerPlugin,
+)
+
+# Protobuf decoding
+from .parsers.protobuf import (
+    decode_raw,
+    format_message,
+    ProtobufMessage,
+    ProtobufField,
+    ProtobufProcessor,
+)
 
 __all__ = [
     # Legacy (deprecated)
@@ -78,4 +101,26 @@ __all__ = [
     # Pipeline
     "MessagePipeline",
     "create_default_pipeline",
+    # Events (flow)
+    "FlowEvent",
+    # Flow models
+    "Flow",
+    "FlowChunk",
+    "FlowState",
+    "FlowEventType",
+    "FlowSummary",
+    "TapReader",
+    # Analysis framework
+    "Severity",
+    "Finding",
+    "BaseAnalyzer",
+    "analyze_tap",
+    "analyze_tap_multi",
+    "AnalyzerPlugin",
+    # Protobuf
+    "decode_raw",
+    "format_message",
+    "ProtobufMessage",
+    "ProtobufField",
+    "ProtobufProcessor",
 ]

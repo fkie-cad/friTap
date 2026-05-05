@@ -4,7 +4,7 @@
 """
 Message processing pipeline for friTap.
 
-Using predefined data-path events (keylog, datalog) with a
+Replaces EventBus for data-path events (keylog, datalog) with a
 deterministic linear pipeline. Lifecycle events (library detection,
 session state, errors) still use the per-session EventBus.
 
@@ -32,7 +32,9 @@ from .schemas.canonical import (
     MetaCanonical,
 )
 
+from .connection_index import DUMMY_SESSION_ID_BASE, NSS_DUMMY_SESSION_ID
 from .constants import SSL_READ
+from .constants import INFRASTRUCTURE_PORTS, LOOPBACK_ADDRS
 
 if TYPE_CHECKING:
     from .sinks.base import Sink
@@ -55,7 +57,8 @@ class PipelineContext:
     __slots__ = (
         "timestamp", "direction", "src", "dst", "ss_family",
         "connection_id", "protocol", "ssl_session_id",
-        "src_addr_raw", "dst_addr_raw", "canonical",
+        "src_addr_raw", "dst_addr_raw", "canonical", "client_random",
+        "stream_id", "quic_scid", "quic_dcid",
     )
 
     def __init__(self) -> None:
@@ -69,7 +72,12 @@ class PipelineContext:
         self.ssl_session_id: str = ""
         self.src_addr_raw: int | str = 0
         self.dst_addr_raw: int | str = 0
+        self.client_random: str = ""
         self.canonical: KeylogCanonical | DataCanonical | MetaCanonical | None = None
+        # QUIC-specific fields
+        self.stream_id: int | None = None
+        self.quic_scid: str = ""
+        self.quic_dcid: str = ""
 
 
 class ValidateStage:
@@ -100,15 +108,15 @@ class DeduplicateStage:
     """Stage 1.5: Drop duplicate keylog entries."""
 
     def __init__(self) -> None:
-        self._seen_keys: set[str] = set()
+        from .output.dedup import KeyDeduplicator
+        self._dedup = KeyDeduplicator()
 
     def process(self, msg: dict, data: bytes | None, ctx: PipelineContext) -> dict | None:
         if msg.get("contentType") != "keylog":
             return msg
         keylog = msg.get("keylog", "")
-        if keylog in self._seen_keys:
+        if not self._dedup.is_new(keylog):
             return None
-        self._seen_keys.add(keylog)
         return msg
 
 
@@ -153,7 +161,15 @@ class NormalizeStage:
 
         function = msg.get("function", "")
         ctx.direction = Direction.READ if function in self.READ_FUNCTIONS else Direction.WRITE
-        ctx.ssl_session_id = str(msg.get("ssl_session_id", ""))
+        ssl_session_id = str(msg.get("ssl_session_id", ""))
+        if ssl_session_id.startswith(DUMMY_SESSION_ID_BASE) or ssl_session_id == NSS_DUMMY_SESSION_ID:
+            ssl_session_id = ""
+        ctx.ssl_session_id = ssl_session_id
+        ctx.client_random = str(msg.get("client_random", ""))
+        # QUIC-specific fields (pass through if present)
+        ctx.stream_id = msg.get("stream_id")
+        ctx.quic_scid = str(msg.get("quic_scid", ""))
+        ctx.quic_dcid = str(msg.get("quic_dcid", ""))
 
     @staticmethod
     def _addr_to_string(addr: int | str, ss_family: str) -> str:
@@ -179,6 +195,62 @@ class NormalizeStage:
         return str(addr)
 
 
+# Known TLS keylog labels (SSLKEYLOGFILE format)
+_TLS_KEYLOG_LABELS = frozenset({
+    "CLIENT_RANDOM",
+    "CLIENT_HANDSHAKE_TRAFFIC_SECRET",
+    "SERVER_HANDSHAKE_TRAFFIC_SECRET",
+    "CLIENT_TRAFFIC_SECRET_0",
+    "SERVER_TRAFFIC_SECRET_0",
+    "EXPORTER_SECRET",
+    "RESUMPTION_MASTER_SECRET",
+    "CLIENT_EARLY_TRAFFIC_SECRET",
+})
+
+
+def _extract_client_random(key_data: str) -> str:
+    """Extract the client_random hex string from an SSLKEYLOGFILE line.
+
+    The SSLKEYLOGFILE format is: ``LABEL CLIENT_RANDOM SECRET``
+    Returns the client_random hex string if the line matches, or ``""``
+    otherwise.
+    """
+    parts = key_data.strip().split()
+    if len(parts) == 3 and parts[0] in _TLS_KEYLOG_LABELS:
+        return parts[1]
+    return ""
+
+
+class InfrastructureFilterStage:
+    """Stage 2.5: Drop frida/adb/loopback infrastructure traffic."""
+
+    def __init__(
+        self,
+        blocked_ports: frozenset[int] = INFRASTRUCTURE_PORTS,
+        filter_loopback: bool = False,
+    ) -> None:
+        self._blocked_ports = blocked_ports
+        self._filter_loopback = filter_loopback
+
+    def process(self, msg: dict, data: bytes | None, ctx: PipelineContext) -> dict | None:
+        if msg.get("contentType") != "datalog":
+            return msg
+        # NormalizeStage always populates ctx.src/ctx.dst for datalog events.
+        if self._blocked_ports:
+            if ctx.src.port in self._blocked_ports or ctx.dst.port in self._blocked_ports:
+                return None
+        if self._filter_loopback:
+            if self._is_loopback(ctx.src.addr) and self._is_loopback(ctx.dst.addr):
+                return None
+        return msg
+
+    @staticmethod
+    def _is_loopback(addr: str) -> bool:
+        if addr in LOOPBACK_ADDRS:
+            return True
+        return addr.startswith("127.")
+
+
 class CanonicalizeStage:
     """Stage 3: Produce frozen canonical events."""
 
@@ -186,10 +258,12 @@ class CanonicalizeStage:
         content_type = msg.get("contentType")
 
         if content_type == "keylog":
+            keylog_str = msg.get("keylog", "")
             ctx.canonical = KeylogCanonical(
-                key_data=msg.get("keylog", ""),
+                key_data=keylog_str,
                 protocol=ctx.protocol,
                 timestamp=ctx.timestamp,
+                client_random=_extract_client_random(keylog_str),
             )
         elif content_type == "datalog" and data:
             ctx.canonical = DataCanonical(
@@ -202,8 +276,12 @@ class CanonicalizeStage:
                 protocol=ctx.protocol,
                 timestamp=ctx.timestamp,
                 connection_id=ctx.connection_id,
+                client_random=ctx.client_random,
                 src_addr_raw=ctx.src_addr_raw,
                 dst_addr_raw=ctx.dst_addr_raw,
+                stream_id=ctx.stream_id,
+                quic_scid=ctx.quic_scid,
+                quic_dcid=ctx.quic_dcid,
             )
         elif content_type in ("console", "console_dev", "console_debug",
                                "console_info", "console_warn", "console_error"):
@@ -304,11 +382,21 @@ class MessagePipeline:
                 logger.exception("Close failed for %s", type(sink).__name__)
 
 
-def create_default_pipeline(debug: bool = False) -> MessagePipeline:
+def create_default_pipeline(
+    debug: bool = False,
+    filter_infrastructure: bool = True,
+    include_loopback: bool = True,
+) -> MessagePipeline:
     """Create a pipeline with the default stage ordering."""
     pipeline = MessagePipeline()
     pipeline.add_stage(ValidateStage(debug=debug))
     pipeline.add_stage(DeduplicateStage())
     pipeline.add_stage(NormalizeStage())
+    drop_loopback = not include_loopback
+    if filter_infrastructure or drop_loopback:
+        pipeline.add_stage(InfrastructureFilterStage(
+            blocked_ports=INFRASTRUCTURE_PORTS if filter_infrastructure else frozenset(),
+            filter_loopback=drop_loopback,
+        ))
     pipeline.add_stage(CanonicalizeStage())
     return pipeline

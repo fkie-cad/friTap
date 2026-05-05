@@ -4,7 +4,8 @@
 """
 Event bus system for friTap.
 
-A publish-subscribe event system. Output handlers, the TUI, and
+Replaces the monolithic on_fritap_message() if/elif chain with a
+publish-subscribe event system. Output handlers, the TUI, and
 external integrations subscribe to typed events.
 """
 
@@ -67,6 +68,7 @@ class DatalogEvent(FriTapEvent):
     dst_addr_raw: Any = 0       # Raw (int for IPv4, hex str for IPv6, for PCAP)
     ss_family: str = "AF_INET"
     ssl_session_id: str = ""
+    client_random: str = ""
 
 
 @dataclass
@@ -77,14 +79,27 @@ class LibraryDetectedEvent(FriTapEvent):
     path: str = ""
 
 
+# Session lifecycle event type constants
+SESSION_STARTED = "started"
+SESSION_RESUMED = "resumed"
+SESSION_ENDED = "ended"
+SESSION_DESTROYED = "destroyed"
+
+
 @dataclass
 class SessionEvent(FriTapEvent):
     """Emitted for SSL/TLS session lifecycle events."""
     session_id: str = ""
-    event_type: str = ""  # "started", "resumed", "ended"
+    event_type: str = ""  # SESSION_STARTED, SESSION_RESUMED, SESSION_ENDED, SESSION_DESTROYED
     cipher_suite: str = ""
     protocol_version: str = ""
     server_name: str = ""
+    client_random: str = ""
+    connection_id: str = ""
+    src_addr: str = ""
+    src_port: int = 0
+    dst_addr: str = ""
+    dst_port: int = 0
 
 
 @dataclass
@@ -153,6 +168,25 @@ class LiveConnectionFailedEvent(FriTapEvent):
     """Emitted when Wireshark fails to connect within the timeout."""
     fifo_path: str = ""
     reason: str = ""
+
+
+@dataclass
+class FlowEvent(FriTapEvent):
+    """Emitted when a flow is created, updated, or completed.
+
+    ``flow_event_type`` should be a :class:`~friTap.flow.models.FlowEventType`
+    value (``"created"``, ``"updated"``, or ``"completed"``).
+    """
+    flow: Any = None  # Flow object from friTap.flow.models
+    flow_event_type: str = ""  # FlowEventType value: "created", "updated", "completed"
+
+
+@dataclass
+class OhttpEvent(FriTapEvent):
+    """Decrypted OHTTP bhttp payload from NSS HPKE hooks."""
+    data: bytes = b""
+    direction: str = ""  # "request" | "response"
+    source: str = ""
 
 
 # ---------------------------------------------------------------------------

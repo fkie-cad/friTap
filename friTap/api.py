@@ -31,7 +31,7 @@ import logging
 from typing import Callable, List, Optional, TYPE_CHECKING
 
 from .config import FriTapConfig, DeviceConfig, OutputConfig, HookingConfig
-from .events import EventBus, KeylogEvent, DatalogEvent, LibraryDetectedEvent, SessionEvent
+from .events import EventBus, KeylogEvent, DatalogEvent, LibraryDetectedEvent, SessionEvent, FlowEvent
 
 if TYPE_CHECKING:
     from .ssl_logger import SSL_Logger
@@ -45,9 +45,10 @@ class FriTapSession:
     with or stop the session.
     """
 
-    def __init__(self, ssl_logger: "SSL_Logger", event_bus: EventBus) -> None:
+    def __init__(self, ssl_logger: "SSL_Logger", event_bus: EventBus, flow_collector=None) -> None:
         self._logger_instance = ssl_logger
         self._event_bus = event_bus
+        self._flow_collector = flow_collector  # kept alive to prevent GC
 
     @property
     def event_bus(self) -> EventBus:
@@ -88,12 +89,14 @@ class FriTap:
         self._custom_hook_script: Optional[str] = None
         self._environment_file: Optional[str] = None
         self._install_lsass_hook = True
+        self._proxy_address: Optional[str] = None
 
         # Event callbacks registered before start()
         self._keylog_callbacks: List[Callable] = []
         self._data_callbacks: List[Callable] = []
         self._library_callbacks: List[Callable] = []
         self._session_callbacks: List[Callable] = []
+        self._flow_callbacks: List[Callable] = []
 
         self._logger = logging.getLogger("friTap.api")
 
@@ -252,6 +255,19 @@ class FriTap:
         self._environment_file = path
         return self
 
+    def proxy(self, address: str) -> "FriTap":
+        """Redirect connections to a proxy and bypass cert pinning.
+
+        Requires the ``fritap-proxy`` package (``pip install fritap-proxy``).
+
+        Parameters
+        ----------
+        address
+            Proxy address in ``host:port`` format (e.g., ``127.0.0.1:8080``).
+        """
+        self._proxy_address = address
+        return self
+
     # ------------------------------------------------------------------
     # Event callbacks
     # ------------------------------------------------------------------
@@ -276,6 +292,16 @@ class FriTap:
         self._session_callbacks.append(callback)
         return self
 
+    def on_flow(self, callback: Callable) -> "FriTap":
+        """Register a callback for flow events (created, updated, completed).
+
+        The callback receives a :class:`~friTap.events.FlowEvent` with
+        ``flow`` (a :class:`~friTap.flow.models.Flow` object) and
+        ``flow_event_type`` (``"created"``, ``"updated"``, or ``"completed"``).
+        """
+        self._flow_callbacks.append(callback)
+        return self
+
     # ------------------------------------------------------------------
     # Build & start
     # ------------------------------------------------------------------
@@ -294,6 +320,7 @@ class FriTap:
             custom_hook_script=self._custom_hook_script,
             environment_file=self._environment_file,
             install_lsass_hook=self._install_lsass_hook,
+            proxy=self._proxy_address,
         )
 
     def start(self) -> FriTapSession:
@@ -326,7 +353,16 @@ class FriTap:
         for plugin in self._script_plugins:
             ssl_log._plugin_loader.register_builtin(plugin, event_bus)
 
+        # Wire FlowCollector if on_flow callbacks are registered
+        flow_collector = None
+        if self._flow_callbacks:
+            from .flow import FlowCollector
+            flow_collector = FlowCollector(event_bus=event_bus)
+            event_bus.subscribe(DatalogEvent, flow_collector.on_data)
+            for cb in self._flow_callbacks:
+                event_bus.subscribe(FlowEvent, cb)
+
         ssl_log.install_signal_handler()
         ssl_log.start_fritap_session()
 
-        return FriTapSession(ssl_log, event_bus)
+        return FriTapSession(ssl_log, event_bus, flow_collector=flow_collector)

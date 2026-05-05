@@ -10,6 +10,7 @@ import shlex
 import re
 import logging
 from .fritap_utility import Failure
+from .constants import build_infrastructure_bpf
 
 
 class Android:
@@ -216,13 +217,10 @@ class Android:
 
 
     @assure_android
-    def run_tcpdump_capture(self,pcap_name):
+    def run_tcpdump_capture(self, pcap_name):
         self.pcap_name = pcap_name
-        #tcpdump_cmd = f'{self.tcpdump_path} -U -i any -s 0 -w {self.dst_path}{pcap_name} "not \\(tcp port 5555 or tcp port 27042\\)"'
-        # Note: Parentheses don't need escaping when inside double quotes
-        # The filter excludes ADB (default: 5555) and frida-server (default: 27042) traffic
-        tcpdump_cmd = f'{self.tcpdump_path} -U -i any -s 0 -w {self.dst_path}{pcap_name} "not (tcp port 5555 or tcp port 27042)"'
-
+        bpf = build_infrastructure_bpf()
+        tcpdump_cmd = f'{self.tcpdump_path} -U -i any -s 0 -w {self.dst_path}{pcap_name} "{bpf}"'
         return self.adb.shell(tcpdump_cmd, background=True)
 
     def start_tcpdump(self, pcap_name):

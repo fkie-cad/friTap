@@ -11,17 +11,37 @@ Routes agent message payloads to the EventBus as typed events.
 from __future__ import annotations
 import logging
 
-from .events import EventBus, KeylogEvent, DatalogEvent, LibraryDetectedEvent, ConsoleEvent
+from .events import EventBus, KeylogEvent, DatalogEvent, LibraryDetectedEvent, ConsoleEvent, SessionEvent, OhttpEvent
 from .constants import SSL_READ
 from .ssl_logger import get_addr_string
 
 
+class _CanonicalProxy:
+    """Minimal proxy satisfying DataCanonical canonical accessors (src, dst, protocol)."""
+    __slots__ = ("src", "dst", "protocol")
+
+    def __init__(self, src, dst, protocol: str) -> None:
+        self.src = src
+        self.dst = dst
+        self.protocol = protocol
+
+
 class MessageRouter:
-    """Routes agent message payloads to typed EventBus events."""
+    """Routes agent message payloads to typed EventBus events.
+
+    Supports optional display filtering via set_filter(). When a filter is
+    active, datalog events that don't match the filter are silently dropped.
+    Keylog, lifecycle, and meta events always pass through.
+    """
 
     def __init__(self, event_bus: "EventBus") -> None:
         self._event_bus = event_bus
         self._logger = logging.getLogger("friTap.router")
+        self._data_filter = None  # Optional FilterEngine for network-level filtering
+
+    def set_filter(self, filter_engine) -> None:
+        """Set a display filter engine. Only network-level fields are checked."""
+        self._data_filter = filter_engine
 
     def route(self, payload: dict, data: bytes) -> None:
         """Parse an agent message payload and emit the corresponding event."""
@@ -33,6 +53,10 @@ class MessageRouter:
             self._emit_datalog(payload, data)
         elif content_type == "library_detected":
             self._emit_library_detected(payload)
+        elif content_type == "connection_lifecycle":
+            self._emit_lifecycle(payload)
+        elif content_type == "ohttp_plaintext":
+            self._emit_ohttp(payload, data)
         elif content_type == "console":
             self._emit_console(payload, level="info")
         elif content_type == "console_dev":
@@ -44,13 +68,31 @@ class MessageRouter:
             protocol=payload.get("protocol", "tls"),
         ))
 
-    def _emit_datalog(self, payload: dict, data: bytes) -> None:
+    @staticmethod
+    def _resolve_addresses(payload: dict) -> tuple:
+        """Extract and normalize source/destination addresses from a payload."""
         src_addr = payload.get("src_addr", "")
         dst_addr = payload.get("dst_addr", "")
         ss_family = payload.get("ss_family", "AF_INET")
+        return (
+            get_addr_string(src_addr, ss_family),
+            payload.get("src_port", 0),
+            get_addr_string(dst_addr, ss_family),
+            payload.get("dst_port", 0),
+            ss_family,
+            src_addr,  # raw
+            dst_addr,  # raw
+        )
 
-        src_addr_str = get_addr_string(src_addr, ss_family)
-        dst_addr_str = get_addr_string(dst_addr, ss_family)
+    def _emit_datalog(self, payload: dict, data: bytes) -> None:
+        src_addr_str, src_port, dst_addr_str, dst_port, ss_family, src_addr, dst_addr = self._resolve_addresses(payload)
+
+        if self._data_filter is not None:
+            if not self._check_data_filter(
+                src_addr_str, src_port, dst_addr_str, dst_port,
+                payload.get("protocol", "tls"),
+            ):
+                return
 
         function = payload.get("function", "")
         self._event_bus.emit(DatalogEvent(
@@ -58,13 +100,14 @@ class MessageRouter:
             function=function,
             direction="read" if function in SSL_READ else "write",
             src_addr=src_addr_str,
-            src_port=payload.get("src_port", 0),
+            src_port=src_port,
             dst_addr=dst_addr_str,
-            dst_port=payload.get("dst_port", 0),
+            dst_port=dst_port,
             src_addr_raw=src_addr,
             dst_addr_raw=dst_addr,
             ss_family=ss_family,
             ssl_session_id=str(payload.get("ssl_session_id", "")),
+            client_random=str(payload.get("client_random", "")),
             protocol=payload.get("protocol", "tls"),
         ))
 
@@ -85,4 +128,44 @@ class MessageRouter:
         self._event_bus.emit(ConsoleEvent(
             message=payload.get("console_dev", ""),
             level="debug",
+        ))
+
+    def _emit_ohttp(self, payload: dict, data: bytes) -> None:
+        self._event_bus.emit(OhttpEvent(
+            data=data,
+            direction=payload.get("direction", ""),
+            source=payload.get("source", ""),
+            protocol=payload.get("protocol", "ohttp"),
+        ))
+
+    def _check_data_filter(
+        self, src_addr: str, src_port: int,
+        dst_addr: str, dst_port: int, protocol: str,
+    ) -> bool:
+        """Check if a datalog event passes the display filter via canonical accessors."""
+        try:
+            from .schemas.canonical import Endpoint
+            proxy = _CanonicalProxy(
+                src=Endpoint(src_addr, src_port),
+                dst=Endpoint(dst_addr, dst_port),
+                protocol=protocol,
+            )
+            return self._data_filter.matches_canonical(proxy)
+        except Exception:
+            return True
+
+    def _emit_lifecycle(self, payload: dict) -> None:
+        src_addr_str, src_port, dst_addr_str, dst_port, *_ = self._resolve_addresses(payload)
+        conn_id = f"{src_addr_str}:{src_port}-{dst_addr_str}:{dst_port}"
+
+        self._event_bus.emit(SessionEvent(
+            session_id=str(payload.get("ssl_session_id", "")),
+            event_type=payload.get("event", ""),
+            client_random=str(payload.get("client_random", "")),
+            connection_id=conn_id,
+            src_addr=src_addr_str,
+            src_port=src_port,
+            dst_addr=dst_addr_str,
+            dst_port=dst_port,
+            protocol=payload.get("protocol", "tls"),
         ))

@@ -6,7 +6,7 @@ Abstract base class for instrumentation backends.
 
 friTap supports multiple backends for dynamic instrumentation:
 - Frida (default): Cross-platform, full-featured
-- eBPF (future): Linux-only, kernel-level, read-only
+- eBPF (future): Linux-only, kernel-level, read-only (maybe windows in the future?)
 - GDB (future): Debugger-based, single-threaded
 - LLDB (future): Debugger-based, single-threaded
 - Other backends may be added in the future (e.g. DynamoRIO, PIN, x64dbg, etc.)

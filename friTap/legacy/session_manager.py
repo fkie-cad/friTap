@@ -40,7 +40,23 @@ class SessionManager:
 
         logger = self._l
 
-        if logger.mobile:
+        if logger.device_id:
+            try:
+                logger.device = logger._backend.get_device(device_id=logger.device_id)
+                self._logger.info("Successfully attached to device (ID: %s).", logger.device_id)
+            except BackendNotRunningError:
+                self._logger.error("%s backend: server is not running. Please ensure it is started on the device.", logger._backend.name)
+                sys.exit(1)
+            except BackendInvalidArgumentError as e:
+                if 'device not found' in e.args:
+                    self._logger.error("Device with ID '%s' not found.", logger.device_id)
+                else:
+                    self._logger.error("Backend error (%s): %s", logger._backend.name, e)
+                sys.exit(1)
+            except Exception as e:
+                self._logger.error("Unexpected error while attaching to the device: %s", e)
+                sys.exit(1)
+        elif logger.mobile:
             try:
                 if logger.mobile is True:
                     logger.device = logger._backend.get_device(mobile=True)
@@ -48,16 +64,16 @@ class SessionManager:
                     logger.device = logger._backend.get_device(mobile=logger.mobile)
                 self._logger.info("Successfully attached to the mobile device.")
             except BackendNotRunningError:
-                self._logger.error(f"{logger._backend.name} backend: server is not running. Please ensure it is started on the device.")
+                self._logger.error("%s backend: server is not running. Please ensure it is started on the device.", logger._backend.name)
                 sys.exit(1)
             except BackendInvalidArgumentError as e:
                 if 'device not found' in e.args:
-                    self._logger.error(f"Device with ID '{logger.mobile}' not found.")
+                    self._logger.error("Device with ID '%s' not found.", logger.mobile)
                 else:
-                    self._logger.error(f"Backend error ({logger._backend.name}): {e}")
+                    self._logger.error("Backend error (%s): %s", logger._backend.name, e)
                 sys.exit(1)
             except Exception as e:
-                self._logger.error(f"Unexpected error while attaching to the device: {e}")
+                self._logger.error("Unexpected error while attaching to the device: %s", e)
                 sys.exit(1)
         elif logger.host:
             logger.device = logger._backend.get_device(host=logger.host)

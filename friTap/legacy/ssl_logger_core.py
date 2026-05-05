@@ -10,6 +10,7 @@ import time
 import sys
 import json
 import threading
+import queue
 import logging
 from datetime import datetime, timezone
 from ..pcap import PCAP
@@ -25,9 +26,16 @@ from ..events import (
     ScriptLoadedEvent,
 )
 from ..config import FriTapConfig
-from ..constants import SSL_READ, SSL_WRITE
+from ..constants import SSL_READ, SSL_WRITE, ContentType
+from dataclasses import dataclass
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+
+
+@dataclass(slots=True)
+class _ChildAddedSentinel:
+    """Internal sentinel queued by on_child_added for the consumer thread."""
+    child: object
 
 
 try:
@@ -91,6 +99,13 @@ class SSL_Logger():
         self.own_message_handler = None
         self.running = True
         self._done_event = threading.Event()
+
+        # Message queue: decouples Frida callback from processing to prevent
+        # GIL contention that freezes the TUI under high message rates.
+        self._message_queue: queue.Queue = queue.Queue(maxsize=10000)
+        self._consumer_stop = threading.Event()
+        self._consumer_thread: threading.Thread | None = None
+        self._queue_drop_count = 0
         self.target_threads = None
         self.tmpdir = None
         self.filename = ""
@@ -103,6 +118,7 @@ class SSL_Logger():
         self.pattern_data = None
         self.scan_results_data = None
         self._observer = None
+        self._proxy_redirector = None
         self._last_runtime = ScriptRuntime.QJS
         self._session_data_lock = threading.Lock()
         self.keydump_Set = set()
@@ -140,8 +156,26 @@ class SSL_Logger():
         from ..message_router import MessageRouter
         self._message_router = MessageRouter(self._event_bus)
 
+        # Wire display filter if configured
+        if self._config.output.filter_expression:
+            try:
+                from ..filter import FilterEngine
+                self._message_router.set_filter(
+                    FilterEngine(self._config.output.filter_expression)
+                )
+                self.logger.info(
+                    "Display filter active: %s",
+                    self._config.output.filter_expression,
+                )
+            except Exception as e:
+                self.logger.warning("Invalid filter expression: %s", e)
+
         # Always track detected libraries (needed for exit hint message)
         self._event_bus.subscribe(LibraryDetectedEvent, self._on_library_detected)
+
+        # FlowCollector created lazily — only when a plugin or TUI accesses it.
+        # The TUI creates its own FlowCollector in capture_controller.py.
+        self._flow_collector = None
 
         # JSON session data
         self.session_data = {
@@ -188,6 +222,10 @@ class SSL_Logger():
     @property
     def pcap_name(self):
         return self._config.output.pcap
+
+    @property
+    def device_id(self):
+        return self._config.device.device_id
 
     @property
     def mobile(self):
@@ -510,6 +548,7 @@ class SSL_Logger():
                     'use_modern': getattr(self, 'use_modern', False),
                     'library_scan': self.scan_results_data,
                     'library_scan_enabled': self._config.hooking.library_scan,
+                    'ohttp_enabled': getattr(self._config.hooking, 'ohttp_enabled', True),
                 }
                 self._backend.post_message(self.script, 'config_batch', batch)
                 return
@@ -521,6 +560,8 @@ class SSL_Logger():
 
         # Emit events through the event bus for all content types
         self._emit_event_from_payload(payload, data)
+
+        content_type = payload.get("contentType")
 
         if self._handlers_active:
             # Socket trace / full capture set tracking (consumed by cleanup())
@@ -558,6 +599,19 @@ class SSL_Logger():
         self._message_router.route(payload, data)
 
     def on_child_added(self, child):
+        """Schedule child instrumentation via the message queue.
+
+        Runs on Frida's event thread — enqueue and return fast (same
+        pattern as the updated frida-python child_gating.py example
+        which uses Reactor.schedule()).
+        """
+        try:
+            self._message_queue.put_nowait((_ChildAddedSentinel(child), None))
+        except queue.Full:
+            self.logger.warning("Message queue full — child pid %s not instrumented", child.pid)
+
+    def _handle_child_added(self, child):
+        """Actually instrument a child process (runs on consumer thread)."""
         self.logger.info(f"Attached to child process with pid {child.pid}")
         self.instrument(self._backend.attach(self.device, str(child.pid)), self.own_message_handler)
         self._backend.resume(self.device, child.pid)
@@ -720,8 +774,58 @@ class SSL_Logger():
 
     def start_fritap_session_instrumentation(self, own_message_handler, process):
         self.process = process
+
+        if self._config.proxy:
+            self._inject_proxy_redirector(process)
+
         script = self.instrument(self.process, own_message_handler)
         return script
+
+    @staticmethod
+    def _parse_proxy_address(addr: str) -> tuple:
+        """Parse host:port string, handling IPv6 bracket notation."""
+        # IPv6 bracket notation: [::1]:8080
+        if addr.startswith("["):
+            bracket_end = addr.find("]")
+            if bracket_end == -1 or bracket_end + 1 >= len(addr) or addr[bracket_end + 1] != ":":
+                raise ValueError(f"Expected [host]:port format, got '{addr}'")
+            host = addr[1:bracket_end]
+            port_str = addr[bracket_end + 2:]
+        elif ":" not in addr:
+            raise ValueError(f"Expected host:port format, got '{addr}'")
+        else:
+            host, port_str = addr.rsplit(":", 1)
+
+        try:
+            port = int(port_str)
+        except ValueError:
+            raise ValueError(f"Invalid port '{port_str}' in proxy address '{addr}'")
+
+        if not (1 <= port <= 65535):
+            raise ValueError(f"Port {port} out of range (1-65535)")
+
+        return host, port
+
+    def _inject_proxy_redirector(self, process) -> None:
+        """Inject fritap-proxy into the Frida session for connection redirect + pinning bypass."""
+        try:
+            from fritap_proxy import ProxyRedirector, ProxyConfig, ProxyTarget
+        except ImportError:
+            raise RuntimeError(
+                "fritap-proxy package not installed. "
+                "Install with: pip install fritap-proxy"
+            )
+
+        host, port = self._parse_proxy_address(self._config.proxy)
+        proxy_config = ProxyConfig(
+            target=self._config.target,
+            proxy=ProxyTarget(host=host, port=port),
+        )
+        self._proxy_redirector = ProxyRedirector.inject(
+            session=process,
+            config=proxy_config,
+        )
+        self.logger.info("Proxy redirect active: connections -> %s:%d", host, port)
 
     def connect_live(self) -> bool:
         """Connect the live Wireshark FIFO handler.
@@ -762,11 +866,85 @@ class SSL_Logger():
         live_handler.close()
         return False
 
+    def _start_consumer_thread(self):
+        """Start background thread that drains the message queue."""
+        if self._consumer_thread is not None:
+            return
+        self._consumer_stop.clear()
+        self._consumer_thread = threading.Thread(
+            target=self._consume_messages, daemon=True, name="fritap-msg-consumer"
+        )
+        self._consumer_thread.start()
+
+    def _consume_messages(self):
+        """Process queued Frida messages on a dedicated thread.
+
+        This keeps the Frida callback thread free (instant put_nowait)
+        and gives the TUI thread fair GIL access via the 0.1 s timeout.
+        """
+        while not self._consumer_stop.is_set():
+            try:
+                message, data = self._message_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            try:
+                if isinstance(message, _ChildAddedSentinel):
+                    self._handle_child_added(message.child)
+                else:
+                    self.on_fritap_message(None, message, data)
+            except Exception:
+                self.logger.debug("Error processing queued message", exc_info=True)
+
+    def _drain_message_queue(self):
+        """Process all remaining queued messages before PCAP is closed."""
+        drained = 0
+        while True:
+            try:
+                message, data = self._message_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                if isinstance(message, _ChildAddedSentinel):
+                    pass  # Skip child gating during shutdown drain
+                else:
+                    self.on_fritap_message(None, message, data)
+                drained += 1
+            except Exception:
+                self.logger.debug("Error draining queued message", exc_info=True)
+        if drained and (self.debug_output or self.debug):
+            self.logger.debug("Drained %d queued messages before cleanup", drained)
+        if self._queue_drop_count:
+            self.logger.warning(
+                "Message queue overflow: %d messages dropped during capture",
+                self._queue_drop_count,
+            )
+
+    def _stop_consumer_thread(self):
+        """Signal the consumer thread to stop and wait for it."""
+        self._consumer_stop.set()
+        if self._consumer_thread is not None:
+            self._consumer_thread.join(timeout=5)
+            self._consumer_thread = None
+        self._drain_message_queue()
+
     def start_fritap_session(self, own_message_handler=None):
         self.connect_live()  # No-op if already connected or not in live mode
+        self._start_consumer_thread()
         return self._session_manager.start_session(own_message_handler)
 
+    def request_stop(self):
+        """Signal the capture to stop. Non-blocking, safe to call from any thread."""
+        self.running = False
+        self._consumer_stop.set()
+
     def finish_fritap(self):
+        self._stop_consumer_thread()  # drain remaining messages before PCAP close
+        if self._proxy_redirector is not None:
+            try:
+                self._proxy_redirector.stop()
+            except Exception:
+                pass
+            self._proxy_redirector = None
         self._session_manager.finish()
 
     def _provide_custom_hooking_handler(self, handler):
@@ -775,7 +953,12 @@ class SSL_Logger():
 
     def _internal_callback_wrapper(self):
         def wrapped_handler(message, data):
-            self.on_fritap_message(None, message, data)
+            # Enqueue only — return from the Frida callback thread ASAP
+            # to prevent GIL contention that starves the TUI thread.
+            try:
+                self._message_queue.put_nowait((message, data))
+            except queue.Full:
+                self._queue_drop_count += 1
 
         return wrapped_handler
 
@@ -824,6 +1007,8 @@ class SSL_Logger():
         if self._cleanup_done:
             return
         self._cleanup_done = True
+
+        self._stop_consumer_thread()
 
         # Unload plugins
         if hasattr(self, '_plugin_loader'):

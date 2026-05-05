@@ -84,7 +84,11 @@ class CoreController:
         """
         from .session import Session
 
-        pipeline = create_default_pipeline(debug=config.debug_output)
+        pipeline = create_default_pipeline(
+            debug=config.debug_output,
+            filter_infrastructure=config.output.filter_infrastructure,
+            include_loopback=config.output.include_loopback,
+        )
 
         session = Session(
             config=config,

@@ -265,6 +265,8 @@ Examples:
                       help="Provide the environment necessary for spawning as an JSON file. For instance: {\"ENV_VAR_NAME\": \"ENV_VAR_VALUE\" }")
     args.add_argument("-v", "--verbose", required=False, action="store_const",
                       const=True, help="Show verbose output")
+    args.add_argument("--hide-control-frames", required=False, action="store_true",
+                      default=False, help="Hide HTTP/2 control frames (PING, SETTINGS, WINDOW_UPDATE, GOAWAY) in flow view")
     args.add_argument('--version', action='version',version='friTap v{version}'.format(version=__version__))
     args.add_argument("--enable_spawn_gating", required=False, action="store_const", const=True,
                       help="Catch newly spawned processes matching the target app (useful for Android multi-process apps)")
@@ -302,6 +304,19 @@ Examples:
     args.add_argument("--protocol", type=str, default="tls",
                       choices=["tls", "ipsec", "ssh", "auto"],
                       help="Protocol to intercept (default: tls)")
+    args.add_argument("--proxy", metavar="<host:port>", required=False, default=None,
+                      help="Redirect connections to a proxy (e.g., mitmproxy) and bypass cert pinning. Requires fritap-proxy package.")
+    args.add_argument("--filter", metavar="<expression>", required=False, default=None,
+                      help='Display filter (Wireshark-like syntax). '
+                           'Example: --filter "http.response.code >= 400 and ip.dst == 10.0.0.1"')
+    args.add_argument("--no-filter-infrastructure", required=False, action="store_false",
+                      default=True, dest="filter_infrastructure",
+                      help="Include frida/adb control traffic in captures (by default, ports "
+                           "5037/5555/27042/27043 are dropped).")
+    args.add_argument("--include-loopback", required=False, action="store_true",
+                      default=False, dest="include_loopback",
+                      help="Include loopback/localhost traffic (e.g. Firefox internal NSS IPC). "
+                           "By default loopback traffic is filtered out to reduce noise.")
     parsed = parser.parse_args()
 
     # Configure logging after parsing arguments to respect debug flags
@@ -401,7 +416,20 @@ Examples:
             timeout=parsed.timeout,
             backend=parsed.backend,
             protocol=parsed.protocol,
+            proxy=parsed.proxy,
+            filter_expression=getattr(parsed, 'filter', None),
+            filter_infrastructure=getattr(parsed, 'filter_infrastructure', True),
+            include_loopback=getattr(parsed, 'include_loopback', False),
         )
+
+        # Validate filter expression early (before session starts)
+        if config.output.filter_expression:
+            from friTap.filter import FilterEngine
+            err = FilterEngine.validate(config.output.filter_expression)
+            if err:
+                logger.error(f"Invalid filter expression: {err}")
+                return
+
         ssl_log = SSL_Logger(config=config)
 
         ssl_log.install_signal_handler()        
@@ -494,7 +522,27 @@ def main():
         else:
             print(f"Unknown backend: {sys.argv[2]}. Available: wireshark")
             return
-    
+
+    # Replay mode: fritap -r capture.tap  or  fritap capture.tap
+    replay_file = None
+    if len(sys.argv) >= 2 and sys.argv[1] in ("-r", "--replay"):
+        if len(sys.argv) < 3:
+            print("Usage: fritap -r <capture.tap>")
+            return
+        replay_file = sys.argv[2]
+    elif len(sys.argv) == 2 and sys.argv[1].endswith(".tap"):
+        replay_file = sys.argv[1]
+
+    if replay_file is not None:
+        try:
+            from .tui.app import run_tui
+            run_tui(replay_file=replay_file)
+        except ImportError:
+            logging.getLogger('friTap').error(
+                "Textual TUI is not available. Please install the 'textual' package."
+            )
+        return
+
     # When invoked with no arguments, launch the interactive TUI
     if len(sys.argv) == 1:
         try:
@@ -502,7 +550,10 @@ def main():
             run_tui()
             return
         except ImportError:
-            logging.getLogger('friTap').error("Textual TUI is not available. Please install the 'textual' package to use the interactive interface.")
+            logging.getLogger('friTap').error(
+                "Textual TUI is not available. Please install the 'textual' package to use the interactive interface."
+            )
+            # fall through to CLI help
 
     try:
         cli()

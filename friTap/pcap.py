@@ -11,6 +11,8 @@ import struct
 import traceback
 import warnings
 
+from friTap.constants import build_infrastructure_bpf
+
 try:
     from scapy.all import wrpcap, conf, ETH_P_ALL, sniff, Scapy_Exception
     SCAPY_AVAILABLE = True
@@ -163,6 +165,7 @@ class PCAP:
 
                     sniff(
                         opened_socket=self.socket,
+                        filter=build_infrastructure_bpf(),
                         prn=self.write_packet_to_pcap,
                         stop_filter=self.stop_capture_thread
                     )

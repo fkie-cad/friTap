@@ -67,7 +67,10 @@ class FridaBackend(Backend):
     # ------------------------------------------------------------------
 
     @_wrap_frida_errors
-    def get_device(self, mobile: bool | str = False, host: str | None = None) -> Any:
+    def get_device(self, mobile: bool | str = False, host: str | None = None, device_id: str | None = None) -> Any:
+        if device_id:
+            self._logger.debug("Attaching to pre-enumerated device with ID: %s", device_id)
+            return frida.get_device(device_id)
         if mobile is True:
             self._logger.debug("Attaching to the first available USB device...")
             return frida.get_usb_device()

@@ -4,12 +4,13 @@
 """
 Configuration dataclasses for friTap.
 
-Defines structured configuration for device connection, output options, hooking strategies, and overall session settings. Includes validation for protocol-backend compatibility.
+Replaces the 25+ parameter SSL_Logger constructor with structured,
+validated configuration objects.
 """
 
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Dict, Optional
 
 from .backends.base import BackendName
 
@@ -22,6 +23,7 @@ class UnsupportedProtocolBackendError(ValueError):
 @dataclass
 class DeviceConfig:
     """Configuration for target device connection."""
+    device_id: Optional[str] = None  # Frida device ID (from TUI enumeration)
     mobile: bool | str = False
     host: Optional[str] = None
     spawn: bool = False
@@ -43,6 +45,11 @@ class OutputConfig:
     verbose: bool = False
     full_capture: bool = False
     socket_trace: bool | str = False
+    filter_expression: Optional[str] = None  # Wireshark-like display filter
+    # Drop frida/adb infrastructure traffic (ports 5037/5555/27042/27043) by default
+    filter_infrastructure: bool = True
+    # Include loopback/localhost traffic (e.g. Firefox NSS IPC) — off by default
+    include_loopback: bool = False
 
 
 @dataclass
@@ -55,6 +62,13 @@ class HookingConfig:
     anti_root: bool = False
     payload_modification: bool = False
     library_scan: bool = False
+    encapsulated_protocols: Dict[str, bool] = field(
+        default_factory=lambda: {"ohttp": True}
+    )
+
+    @property
+    def ohttp_enabled(self) -> bool:
+        return self.encapsulated_protocols.get("ohttp", True)
 
 
 @dataclass
@@ -80,6 +94,7 @@ class FriTapConfig:
     custom_hook_script: Optional[str] = None
     environment_file: Optional[str] = None
     install_lsass_hook: bool = True
+    proxy: Optional[str] = None  # "host:port" or "[ipv6]:port" format
 
     def __post_init__(self):
         if self.debug:
@@ -147,6 +162,10 @@ class FriTapConfig:
         timeout: Optional[int] = None,
         backend: str = BackendName.FRIDA,
         protocol: str = "tls",
+        proxy: Optional[str] = None,
+        filter_expression: Optional[str] = None,
+        filter_infrastructure: bool = True,
+        include_loopback: bool = False,
     ) -> "FriTapConfig":
         """
         Build a FriTapConfig from the legacy SSL_Logger constructor parameters.
@@ -171,6 +190,9 @@ class FriTapConfig:
                 verbose=verbose,
                 full_capture=full_capture,
                 socket_trace=socket_trace,
+                filter_expression=filter_expression,
+                filter_infrastructure=filter_infrastructure,
+                include_loopback=include_loopback,
             ),
             hooking=HookingConfig(
                 offsets=offsets,
@@ -188,4 +210,5 @@ class FriTapConfig:
             custom_hook_script=custom_hook_script,
             environment_file=environment_file,
             install_lsass_hook=install_lsass_hook,
+            proxy=proxy,
         )

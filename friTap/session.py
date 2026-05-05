@@ -29,6 +29,8 @@ from .events import EventBus, SessionEvent
 
 if TYPE_CHECKING:
     from .backends.base import Backend
+    from .parsers.base import BaseParser
+    from .parsers.registry import ParserRegistry
     from .pipeline import MessagePipeline
     from .plugins.loader import PluginLoader
     from .protocols.registry import ProtocolRegistry
@@ -61,6 +63,7 @@ class Session:
         protocol_registry: "ProtocolRegistry",
         plugin_loader: "PluginLoader",
         pipeline: "MessagePipeline",
+        parser_registry: Optional["ParserRegistry"] = None,
         logger: Optional[logging.Logger] = None,
     ) -> None:
         self.id: str = str(uuid.uuid4())
@@ -73,6 +76,7 @@ class Session:
         self._backend = backend
         self._protocol_registry = protocol_registry
         self._plugin_loader = plugin_loader
+        self._parser_registry = parser_registry
         self._logger = logger or logging.getLogger("friTap.session")
         self._done_event = threading.Event()
         self._device = None
@@ -88,6 +92,34 @@ class Session:
     def register_sink(self, sink: "Sink") -> None:
         """Register an additional sink (e.g., from a plugin)."""
         self.pipeline.add_sink(sink)
+
+    def register_parser(
+        self,
+        parser_cls: type["BaseParser"],
+        priority: int = 50,
+    ) -> None:
+        """Register a custom protocol parser for flow detection.
+
+        Plugins call this during ``on_load()`` to inject custom parsers
+        into the parser registry. The parser's ``can_parse()`` method will
+        be tried during protocol detection in priority order (higher first).
+
+        Args:
+            parser_cls: A :class:`~friTap.parsers.base.BaseParser` subclass.
+            priority: Detection priority (higher = tried first). Default 50.
+
+        Raises:
+            RuntimeError: If no parser registry is available on this session.
+        """
+        if self._parser_registry is None:
+            from .parsers.registry import get_default_registry
+            self._parser_registry = get_default_registry()
+        self._parser_registry.register(parser_cls, priority)
+        self._logger.debug(
+            "Plugin registered parser %s at priority %d",
+            parser_cls.__name__,
+            priority,
+        )
 
     def start(self) -> None:
         """Start the capture session.
