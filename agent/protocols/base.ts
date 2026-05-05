@@ -5,7 +5,7 @@
  * and how to format extracted key material.
  */
 
-export interface KeyMaterial {
+ export interface KeyMaterial {
     label: string;
     clientRandom?: string;
     secret: string;
@@ -13,7 +13,7 @@ export interface KeyMaterial {
 }
 
 export interface Protocol {
-    /** Protocol identifier: "tls", "ipsec", "ssh", "signal", "smb3" */
+    /** Protocol identifier: "tls", "ipsec", "ssh", "signal", "smb3", "tbd" */
     name: string;
 
     /** Human-readable display name */
@@ -23,7 +23,7 @@ export interface Protocol {
     detect(moduleName: string): boolean;
 
     /** Library name regex patterns to watch for */
-    //getLibraryPatterns(): RegExp[];
+    getLibraryPatterns(): RegExp[];
 
     /** Function names required for hooking */
     getRequiredFunctions(): string[];

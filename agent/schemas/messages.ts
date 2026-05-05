@@ -24,10 +24,34 @@ export interface DatalogMessage {
     dst_port?: number;
     ss_family?: string;
     ssl_session_id?: string;
+    client_random?: string;
+    stream_id?: number | null;
+    quic_scid?: string;
+    quic_dcid?: string;
 }
 
 export function isDatalogMessage(msg: unknown): msg is DatalogMessage {
     return (msg as any)?.contentType === "datalog";
+}
+
+export interface ConnectionLifecycleMessage {
+    contentType: "connection_lifecycle";
+    protocol?: string;
+    event?: string;
+    ssl_session_id?: string;
+    client_random?: string;
+    src_addr?: number | string;
+    dst_addr?: number | string;
+    src_port?: number;
+    dst_port?: number;
+    ss_family?: string;
+    stream_id?: number | null;
+    quic_scid?: string;
+    quic_dcid?: string;
+}
+
+export function isConnectionLifecycleMessage(msg: unknown): msg is ConnectionLifecycleMessage {
+    return (msg as any)?.contentType === "connection_lifecycle";
 }
 
 export interface LibraryDetectedMessage {
@@ -190,8 +214,20 @@ export function isIPSecIKEKeysMessage(msg: unknown): msg is IPSecIKEKeysMessage 
     return (msg as any)?.contentType === "ipsec_ike_keys";
 }
 
+export interface OhttpPlaintextMessage {
+    contentType: "ohttp_plaintext";
+    protocol?: string;
+    direction?: string;
+    source?: string;
+}
+
+export function isOhttpPlaintextMessage(msg: unknown): msg is OhttpPlaintextMessage {
+    return (msg as any)?.contentType === "ohttp_plaintext";
+}
+
 export type AgentMessage = KeylogMessage
     | DatalogMessage
+    | ConnectionLifecycleMessage
     | LibraryDetectedMessage
     | ConsoleMessage
     | ConsoleDevMessage
@@ -203,4 +239,5 @@ export type AgentMessage = KeylogMessage
     | SSHNewKeysMessage
     | SSHKeyMessage
     | IPSecChildSAKeysMessage
-    | IPSecIKEKeysMessage;
+    | IPSecIKEKeysMessage
+    | OhttpPlaintextMessage;

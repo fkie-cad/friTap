@@ -2,7 +2,7 @@ import { hookRegistry, HookRegistry } from "../shared/registry.js";
 import { selected_protocol, use_modern, scan_results } from "../fritap_agent.js";
 import { processScanResults } from "../shared/library_scanner.js";
 import { log, devlog } from "../util/log.js";
-import { getModuleNames, ssl_library_loader, hookDynamicLoader } from "../shared/shared_functions.js";
+import { getModuleNames, ssl_library_loader, hookDynamicLoader, installOhttpHooks } from "../shared/shared_functions.js";
 import { Platform, PLATFORM_LINUX } from "../shared/shared_structures.js";
 // Modern (definition-based) executors
 import { boring_execute_modern, ssl_python_execute_modern } from "../tls/platforms/linux/openssl_boringssl_linux.js";
@@ -25,6 +25,11 @@ import { rustls_execute } from "../tls/platforms/linux/rustls_linux.js";
 import { gotls_execute } from "../tls/platforms/linux/gotls_linux.js";
 import { ipsec_detect_execute } from "../ipsec/platforms/linux/ipsec_linux.js";
 import { ssh_detect_execute } from "../ssh/platforms/linux/ssh_linux.js";
+import { nss_hpke_execute_linux } from "../ohttp/platforms/linux/nss_hpke_linux.js";
+// QUIC
+import { quiche_execute } from "../quic/platforms/linux/quiche_linux.js";
+import { google_quiche_execute } from "../quic/platforms/linux/google_quiche_linux.js";
+import { neqo_execute } from "../quic/platforms/linux/neqo_linux.js";
 
 var plattform_name: Platform = PLATFORM_LINUX;
 var moduleNames: Array<string> = getModuleNames()
@@ -51,22 +56,30 @@ export function load_linux_hooking_agent() {
         { platform: plattform_name, pattern: /.*rustls.*/, hookFn: rustls_execute, library: "Rustls", libraryType: "rustls" },
         { platform: plattform_name, pattern: /.*\.go.so$/, hookFn: gotls_execute, library: "Go TLS", libraryType: "gotls" },
         { platform: plattform_name, pattern: /.*go[0-9.]+$/, hookFn: gotls_execute, library: "Go TLS", libraryType: "gotls" },
-        // IPSec libraries (detection stubs — key extraction in Phase 3.8)
+        // IPSec libraries (detection stubs — key extraction in the future)
         { platform: plattform_name, pattern: /.*libcharon\.so/, hookFn: ipsec_detect_execute, library: "strongSwan (charon)", protocol: "ipsec" },
         { platform: plattform_name, pattern: /.*libstrongswan\.so/, hookFn: ipsec_detect_execute, library: "strongSwan", protocol: "ipsec" },
         { platform: plattform_name, pattern: /.*libipsec\.so/, hookFn: ipsec_detect_execute, library: "strongSwan (IPSec)", protocol: "ipsec" },
-        // SSH libraries (detection stubs — key extraction in Phase 3.8)
+        // SSH libraries (detection stubs — key extraction in the future)
         { platform: plattform_name, pattern: /.*libssh2?\.so/, hookFn: ssh_detect_execute, library: "libssh", protocol: "ssh" },
         { platform: plattform_name, pattern: /.*sshd/, hookFn: ssh_detect_execute, library: "OpenSSH", protocol: "ssh" },
+        // OHTTP (NSS HPKE) hooks
+        { platform: plattform_name, pattern: /.*libnss3?\.so/, hookFn: nss_hpke_execute_linux, library: "NSS HPKE (OHTTP)", protocol: "ohttp", libraryType: "nss_hpke" },
+        // QUIC libraries
+        { platform: plattform_name, pattern: /.*libquiche\.so/, hookFn: quiche_execute, library: "Cloudflare QUICHE", libraryType: "quiche" },
+        { platform: plattform_name, pattern: /.*libcronet.*\.so/, hookFn: google_quiche_execute, library: "Google QUICHE (Cronet)", libraryType: "google_quiche" },
+        { platform: plattform_name, pattern: /.*libxul\.so/, hookFn: neqo_execute, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo" },
     ]);
 
     hook_Linux_SSL_Libs(hookRegistry, true);
-    processScanResults(scan_results, plattform_name, true, selected_protocol);
-    hookDynamicLoader({
+    const linuxLoaderConfig = {
         platform: plattform_name,
         platformLabel: "Linux",
         loaderLibrary: /.*libdl.*\.so/,
         functionName: "dlopen",
         extractModulePath: true,
-    }, hookRegistry, moduleNames, false, selected_protocol);
+    };
+    installOhttpHooks(plattform_name, hookRegistry, moduleNames, "Linux", linuxLoaderConfig);
+    processScanResults(scan_results, plattform_name, true, selected_protocol);
+    hookDynamicLoader(linuxLoaderConfig, hookRegistry, moduleNames, false, selected_protocol);
 }

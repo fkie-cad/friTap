@@ -5,6 +5,7 @@
 import { HookDefinition, ResolvedFunctions } from "../../core/hook_definition.js";
 import { readHexFromPointer } from "../decoders/hex_utils.js";
 import { STANDARD_SOCKET_SYMBOLS } from "./shared_constants.js";
+import { noOpClientRandomDecoder } from "./shared_factories.js";
 
 /**
  * Decode the file descriptor from an mbedtls_ssl_context struct.
@@ -41,6 +42,9 @@ function mbedTlsSessionIdDecoder(sslCtx: NativePointer, _fns: ResolvedFunctions)
     return readHexFromPointer(sessionPtr.add(20), idLen);
 }
 
+// mbedTLS doesn't expose a simple API for client_random extraction.
+// Would require struct offset into mbedtls_ssl_handshake_params.
+
 export function createMbedTlsDefinition(): HookDefinition {
     return {
         libraryId: "mbedtls",
@@ -52,6 +56,7 @@ export function createMbedTlsDefinition(): HookDefinition {
         nativeFunctions: [],
         fdDecoder: mbedTlsFdDecoder,
         sessionIdDecoder: mbedTlsSessionIdDecoder,
+        clientRandomDecoder: noOpClientRandomDecoder,
         readHook: {
             symbol: "mbedtls_ssl_read",
             args: { sslCtxArgIndex: 0, bufferArgIndex: 1, bytesTransferred: "retval" },

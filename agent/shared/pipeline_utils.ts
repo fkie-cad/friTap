@@ -2,7 +2,7 @@
  * Shared pipeline utility functions for all TLS libraries.
  *
  * Extracted from OpenSSL_BoringSSL so that GnuTLS, WolfSSL, mbedTLS,
- * NSS, and s2n-tls can also use the hooking pipeline.
+ * NSS, and s2n-tls and other libary hooks can also use the hooking pipeline.
  */
 
  import { devlog } from "../util/log.js";

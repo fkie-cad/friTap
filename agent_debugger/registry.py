@@ -1,5 +1,9 @@
 """Registry for extraction definitions."""
 
+from typing import Dict, List, Optional, Tuple
+
+from .definitions.base import ExtractionDefinition
+
 
 class ExtractionRegistry:
     """Stores and retrieves extraction definitions keyed by (protocol, library)."""

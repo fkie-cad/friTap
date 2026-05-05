@@ -6,6 +6,7 @@ import { HookDefinition, ResolvedFunctions } from "../../core/hook_definition.js
 import { sendKeylog } from "../../shared/shared_structures.js";
 import { devlog } from "../../util/log.js";
 import { STANDARD_SOCKET_SYMBOLS } from "./shared_constants.js";
+import { noOpClientRandomDecoder } from "./shared_factories.js";
 
 const keylog_callback = new NativeCallback(
     function (ctxPtr: NativePointer, conn: NativePointer, logline: NativePointer, len: NativePointer) {
@@ -26,8 +27,12 @@ function s2nFdDecoder(conn: NativePointer, fns: ResolvedFunctions): number {
 }
 
 function s2nSessionIdDecoder(_conn: NativePointer, _fns: ResolvedFunctions): string {
-    return "0";
+    // s2n-tls doesn't expose a session ID extraction API.
+    return "";
 }
+
+// s2n-tls doesn't expose a client_random extraction API.
+// Key material is provided via the keylog callback in pre-formatted strings.
 
 export function createS2nTlsDefinition(): HookDefinition {
     return {
@@ -51,6 +56,7 @@ export function createS2nTlsDefinition(): HookDefinition {
         ],
         fdDecoder: s2nFdDecoder,
         sessionIdDecoder: s2nSessionIdDecoder,
+        clientRandomDecoder: noOpClientRandomDecoder,
         readHook: {
             symbol: "s2n_recv",
             args: { sslCtxArgIndex: 0, bufferArgIndex: 1, bytesTransferred: "retval" },

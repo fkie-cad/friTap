@@ -21,6 +21,9 @@ function buildMessage(
         : getPortsAndAddresses(fd, isRead, methodAddresses, enableDefaultFd);
     if (message === null) return null;
     message["ssl_session_id"] = def.sessionIdDecoder(sslCtx, resolvedFns);
+    if (def.clientRandomDecoder) {
+        message["client_random"] = def.clientRandomDecoder(sslCtx, resolvedFns);
+    }
     message["function"] = label;
     return message;
 }

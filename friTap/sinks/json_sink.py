@@ -49,7 +49,14 @@ class JsonSink:
         pass
 
     def flush(self) -> None:
-        pass
+        if self._file:
+            self._file.seek(0)
+            self._file.truncate()
+            json.dump({
+                "key_extractions": self._keylogs,
+                "connections": self._connections,
+            }, self._file, indent=2)
+            self._file.flush()
 
     def close(self) -> None:
         if self._file:
@@ -113,5 +120,6 @@ class JsonlSink:
 
     def close(self) -> None:
         if self._file:
+            self.flush()
             self._file.close()
             self._file = None

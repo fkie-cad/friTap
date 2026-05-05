@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from ..constants import PROTOCOL_QUIC_UNPROCESSED
 from ..output.dedup import KeyDeduplicator
 from ..output.formatters import format_hexdump, format_data_header
 
@@ -24,6 +25,7 @@ class ConsoleSink:
         self._verbose = verbose
         self._dedup = KeyDeduplicator()
         self._logger = logging.getLogger("friTap")
+        self._quic_info_shown: bool = False
 
     def open(self) -> None:
         pass
@@ -39,6 +41,17 @@ class ConsoleSink:
             return
         if not event.data:
             return
+
+        # One-time info banner for QUIC/HTTP/3 raw traffic
+        if event.protocol == PROTOCOL_QUIC_UNPROCESSED:
+            if not self._quic_info_shown:
+                self._logger.info(
+                    "[INFO] Detected HTTP/3/QUIC traffic -- full parsing "
+                    "requires QUIC stream hooks (not yet supported). "
+                    "Showing raw data."
+                )
+                self._quic_info_shown = True
+
         self._logger.info(
             format_data_header(event.direction.value, event.src.addr,
                                event.src.port, event.dst.addr, event.dst.port)

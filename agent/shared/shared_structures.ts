@@ -7,7 +7,8 @@ export type Platform = "linux" | "darwin" | "windows" | "wine";
 export type LibraryType =
     | "openssl" | "boringssl" | "libressl" | "gnutls" | "wolfssl"
     | "nss" | "mbedtls" | "s2ntls" | "rustls"
-    | "gotls" | "matrixssl" | "sspi";
+    | "gotls" | "matrixssl" | "sspi" | "nss_hpke"
+    | "quiche" | "msquic" | "google_quiche" | "neqo";
 export const PLATFORM_LINUX: Platform = "linux";
 export const PLATFORM_DARWIN: Platform = "darwin";
 export const PLATFORM_WINDOWS: Platform = "windows";
@@ -63,4 +64,54 @@ export function sendKeylog(keylogLine: string): void {
 export function sendDatalog(message: { [key: string]: any }, data: ArrayBuffer | number[] | null): void {
     message["contentType"] = "datalog";
     sendWithProtocol(message, data);
+}
+
+export function sendConnectionLifecycle(
+    event: string,
+    message: { [key: string]: any },
+): void {
+    message["contentType"] = "connection_lifecycle";
+    message["event"] = event;
+    sendWithProtocol(message);
+}
+
+/**
+ * Send a QUIC keylog line with BOTH the standard TLS 1.3 label
+ * AND a QUIC_ prefixed duplicate.
+ *
+ * Only used by QUIC library hooks (quiche, Google QUICHE, msquic).
+ * Regular TLS hooks should continue using sendKeylog() directly.
+ */
+export function sendQuicKeylog(keylogLine: string): void {
+    // Emit standard label (Wireshark compatibility)
+    sendKeylog(keylogLine);
+    // Emit QUIC_ prefixed duplicate (other tools)
+    const spaceIdx = keylogLine.indexOf(" ");
+    if (spaceIdx > 0) {
+        const label = keylogLine.substring(0, spaceIdx);
+        const rest = keylogLine.substring(spaceIdx);
+        sendKeylog("QUIC_" + label + rest);
+    }
+}
+
+/**
+ * Send a QUIC datalog message with stream_id and optional connection IDs.
+ *
+ * @param message  The payload (will be mutated with contentType, stream_id, quic_scid, quic_dcid)
+ * @param data     Binary plaintext data
+ * @param streamId QUIC stream ID (-1 for datagrams)
+ * @param scid     Source Connection ID hex (optional)
+ * @param dcid     Destination Connection ID hex (optional)
+ */
+export function sendQuicDatalog(
+    message: { [key: string]: any },
+    data: ArrayBuffer | number[] | null,
+    streamId: number,
+    scid?: string,
+    dcid?: string,
+): void {
+    message["stream_id"] = streamId;
+    if (scid) message["quic_scid"] = scid;
+    if (dcid) message["quic_dcid"] = dcid;
+    sendDatalog(message, data);
 }

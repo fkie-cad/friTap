@@ -9,6 +9,7 @@ import { log } from "../../util/log.js";
 import { readHexFromPointer } from "../decoders/hex_utils.js";
 import { enable_default_fd } from "../../fritap_agent.js";
 import { STANDARD_SOCKET_SYMBOLS, DUMMY_SESSION_ID_WOLFSSL } from "./shared_constants.js";
+import { createLifecycleHook, createBufferedClientRandomDecoder } from "./shared_factories.js";
 
 function wolfSslSessionIdDecoder(ssl: NativePointer, fns: ResolvedFunctions): string {
     const session = fns["wolfSSL_get_session"](ssl) as NativePointer;
@@ -50,6 +51,12 @@ function wolfSslExtractKeys(ssl: NativePointer, fns: ResolvedFunctions): void {
     sendKeylog(keysString);
 }
 
+const wolfSslClientRandomDecoder = createBufferedClientRandomDecoder("wolfSSL_get_client_random");
+
+function wolfSslFdDecoder(sslCtx: NativePointer, fns: ResolvedFunctions): number {
+    return fns["wolfSSL_get_fd"](sslCtx) as number;
+}
+
 export function createWolfSslDefinition(): HookDefinition {
     return {
         libraryId: "wolfssl",
@@ -65,6 +72,7 @@ export function createWolfSslDefinition(): HookDefinition {
                 "wolfSSL_SESSION_get_master_key",
                 "wolfSSL_get_client_random",
                 "wolfSSL_get_server_random",
+                "wolfSSL_free",
             ],
             socketSymbols: STANDARD_SOCKET_SYMBOLS,
         },
@@ -75,8 +83,9 @@ export function createWolfSslDefinition(): HookDefinition {
             { symbol: "wolfSSL_get_server_random", retType: "int", argTypes: ["pointer", "pointer", "int"] },
             { symbol: "wolfSSL_SESSION_get_master_key", retType: "int", argTypes: ["pointer", "pointer", "int"] },
         ],
-        fdDecoder: (sslCtx, fns) => fns["wolfSSL_get_fd"](sslCtx) as number,
+        fdDecoder: wolfSslFdDecoder,
         sessionIdDecoder: wolfSslSessionIdDecoder,
+        clientRandomDecoder: wolfSslClientRandomDecoder,
         readHook: {
             symbol: "wolfSSL_read",
             args: { sslCtxArgIndex: 0, bufferArgIndex: 1, bytesTransferred: "retval" },
@@ -92,5 +101,8 @@ export function createWolfSslDefinition(): HookDefinition {
             connectSymbol: "wolfSSL_connect",
             extractKeys: wolfSslExtractKeys,
         },
+        extraHooks: [
+            createLifecycleHook("wolfSSL_free", wolfSslFdDecoder, wolfSslSessionIdDecoder, wolfSslClientRandomDecoder),
+        ],
     };
 }

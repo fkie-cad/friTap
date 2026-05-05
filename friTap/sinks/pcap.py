@@ -64,5 +64,5 @@ class PcapSink:
         if pcap_file:
             try:
                 pcap_file.close()
-            except Exception:
-                pass
+            except Exception as e:
+                self._logger.error("Error closing PCAP file: %s", e)

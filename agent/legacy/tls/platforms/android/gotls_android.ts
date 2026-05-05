@@ -32,7 +32,7 @@ export class GoTLS_Android extends GoTLS {
 
             "arm": {
                 primary: "08 10 9A E5 01 00 5D E1 63 00 00 9A 5C E0 2D E5 60 20 9D E5 AC 30 92 E5", // ARM32 pattern
-                fallback: "" // TODO: additional ARM32 patterns needed
+                fallback: "2D E9 F0 41 86 B0 04 46 40 6B D0 F8 30 01 00 28 53 D0" // 
             }
         };
     }

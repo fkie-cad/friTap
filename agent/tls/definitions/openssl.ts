@@ -11,6 +11,7 @@ import { getPortsAndAddresses } from "../../shared/shared_functions.js";
 import { readHexFromPointer } from "../decoders/hex_utils.js";
 import { enable_default_fd } from "../../fritap_agent.js";
 import { STANDARD_SOCKET_SYMBOLS, DUMMY_SESSION_ID_OPENSSL } from "./shared_constants.js";
+import { createLifecycleHook, createBufferedClientRandomDecoder } from "./shared_factories.js";
 
 export function openSslFdDecoder(ssl: NativePointer, fns: ResolvedFunctions): number {
     if (!fns["SSL_get_fd"]) return -1;
@@ -41,6 +42,8 @@ export function openSslSessionIdDecoder(ssl: NativePointer, fns: ResolvedFunctio
     return readHexFromPointer(idPtr, len);
 }
 
+export const openSslClientRandomDecoder = createBufferedClientRandomDecoder("SSL_get_client_random");
+
 export interface OpenSslDefOptions {
     includeExSymbols?: boolean;
     skipReadWriteHooks?: boolean;
@@ -58,6 +61,8 @@ export function createOpenSslDefinition(options?: OpenSslDefOptions): HookDefini
         "SSL_SESSION_get_id",
         "SSL_new",
         "SSL_CTX_set_keylog_callback",
+        "SSL_get_client_random",
+        "SSL_free",
     ];
     if (includeEx) {
         librarySymbols.push("SSL_read_ex", "SSL_write_ex", "SSL_CTX_new");
@@ -75,9 +80,11 @@ export function createOpenSslDefinition(options?: OpenSslDefOptions): HookDefini
             { symbol: "SSL_get_session", retType: "pointer", argTypes: ["pointer"] },
             { symbol: "SSL_SESSION_get_id", retType: "pointer", argTypes: ["pointer", "pointer"] },
             { symbol: "SSL_CTX_set_keylog_callback", retType: "void", argTypes: ["pointer", "pointer"] },
+            { symbol: "SSL_get_client_random", retType: "int", argTypes: ["pointer", "pointer", "int"] },
         ],
         fdDecoder: openSslFdDecoder,
         sessionIdDecoder: openSslSessionIdDecoder,
+        clientRandomDecoder: openSslClientRandomDecoder,
         keylog: { kind: "none" },
     };
 
@@ -93,6 +100,11 @@ export function createOpenSslDefinition(options?: OpenSslDefOptions): HookDefini
             functionLabel: "SSL_write",
         };
     }
+
+    def.extraHooks = [
+        ...(def.extraHooks || []),
+        createLifecycleHook("SSL_free", openSslFdDecoder, openSslSessionIdDecoder, openSslClientRandomDecoder),
+    ];
 
     return def;
 }
@@ -172,6 +184,7 @@ export function createSslReadWriteExHooks(): ExtraHookDef[] {
                             const message = getPortsAndAddresses(fd, true, addresses[modName], enableDefaultFd);
                             if (message === null) return;
                             message["ssl_session_id"] = openSslSessionIdDecoder(ssl, resolvedFns);
+                            message["client_random"] = openSslClientRandomDecoder(ssl, resolvedFns);
                             message["function"] = "SSL_read_ex";
                             this.message = message;
                             this.buf = args[1];
@@ -196,6 +209,7 @@ export function createSslReadWriteExHooks(): ExtraHookDef[] {
                             const message = getPortsAndAddresses(fd, false, addresses[modName], enableDefaultFd);
                             if (message === null) return;
                             message["ssl_session_id"] = openSslSessionIdDecoder(ssl, resolvedFns);
+                            message["client_random"] = openSslClientRandomDecoder(ssl, resolvedFns);
                             message["function"] = "SSL_write_ex";
                             const buf = args[1];
                             const bufLen = parseInt(args[2]);

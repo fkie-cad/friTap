@@ -2,7 +2,7 @@ import { hookRegistry, HookRegistry } from "../shared/registry.js";
 import { selected_protocol, use_modern, scan_results } from "../fritap_agent.js";
 import { processScanResults } from "../shared/library_scanner.js";
 import { log, devlog } from "../util/log.js";
-import { getModuleNames, ssl_library_loader, hookDynamicLoader } from "../shared/shared_functions.js";
+import { getModuleNames, ssl_library_loader, hookDynamicLoader, installOhttpHooks } from "../shared/shared_functions.js";
 import { Platform, PLATFORM_WINDOWS } from "../shared/shared_structures.js";
 import { sspi_execute } from "../legacy/tls/platforms/windows/sspi.js";
 import { boring_execute, ssl_python_execute } from "../legacy/tls/platforms/windows/openssl_boringssl_windows.js";
@@ -18,6 +18,10 @@ import { wolfssl_execute_modern } from "../tls/platforms/windows/wolfssl_windows
 import { matrixSSL_execute } from "../legacy/tls/platforms/windows/matrixssl_windows.js";
 import { cronet_execute } from "../legacy/tls/platforms/windows/cronet_windows.js";
 import { lsass_execute } from "../legacy/tls/platforms/windows/lsass.js";
+import { nss_hpke_execute_windows } from "../ohttp/platforms/windows/nss_hpke_windows.js";
+import { quiche_execute } from "../quic/platforms/windows/quiche_windows.js";
+import { google_quiche_execute } from "../quic/platforms/windows/google_quiche_windows.js";
+import { neqo_execute } from "../quic/platforms/windows/neqo_windows.js";
 
 
 var plattform_name: Platform = PLATFORM_WINDOWS;
@@ -40,16 +44,26 @@ export function load_windows_hooking_agent() {
         { platform: plattform_name, pattern: /mbedTLS\.dll/, hookFn: (use_modern ? mbedTLS_execute_modern : mbedTLS_execute), library: "mbedTLS", libraryType: "mbedtls" },
         { platform: plattform_name, pattern: /^.*(cronet|CRONET).*\.dll/, hookFn: cronet_execute, library: "Cronet", libraryType: "boringssl" },
         { platform: plattform_name, pattern: /matrixSSL\.dll/, hookFn: matrixSSL_execute, library: "MatrixSSL", libraryType: "matrixssl" },
+        // OHTTP (NSS HPKE) hooks
+        { platform: plattform_name, pattern: /^(nspr|NSPR)[0-9]*\.dll/, hookFn: nss_hpke_execute_windows, library: "NSS HPKE (OHTTP)", protocol: "ohttp", libraryType: "nss_hpke" },
+        // QUIC (Cloudflare QUICHE) hooks
+        { platform: plattform_name, pattern: /.*quiche\.dll/i, hookFn: quiche_execute, library: "Cloudflare QUICHE", libraryType: "quiche" },
+        { platform: plattform_name, pattern: /chrome\.dll/i, hookFn: google_quiche_execute, library: "Google QUICHE (Chrome)", libraryType: "google_quiche" },
+        { platform: plattform_name, pattern: /.*xul\.dll/i, hookFn: neqo_execute, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo" },
     ]);
 
     hook_Windows_SSL_Libs(hookRegistry, true);
-    processScanResults(scan_results, plattform_name, true, selected_protocol);
-    hookDynamicLoader({
+    const windowsLoaderConfig = {
         platform: plattform_name,
         platformLabel: "Windows",
         resolveViaApi: "exports:KERNELBASE.dll!*LoadLibraryExW",
         functionName: "LoadLibraryExW",
         moduleFromRetval: true,
+    };
+    installOhttpHooks(plattform_name, hookRegistry, moduleNames, "Windows", windowsLoaderConfig);
+    processScanResults(scan_results, plattform_name, true, selected_protocol);
+    hookDynamicLoader({
+        ...windowsLoaderConfig,
         onMatchExtra: () => {
             log("\n[*] Remember to hook the default SSL provider for the Windows API you have to hook lsass.exe\n");
         },

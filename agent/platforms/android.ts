@@ -1,5 +1,5 @@
 import { hookRegistry, HookRegistry } from "../shared/registry.js";
-import { getModuleNames, ssl_library_loader, hookDynamicLoader } from "../shared/shared_functions.js";
+import { getModuleNames, ssl_library_loader, hookDynamicLoader, installOhttpHooks } from "../shared/shared_functions.js";
 import { Platform, PLATFORM_LINUX } from "../shared/shared_structures.js";
 import { log, devlog } from "../util/log.js";
 import { findModulesWithSSLKeyLogCallback } from "../tls/shared/library_identification.js";
@@ -32,6 +32,10 @@ import { gotls_execute } from "../tls/platforms/android/gotls_android.js";
 import { metartc_execute } from "../tls/platforms/android/metartc.js";
 import { ipsec_detect_execute } from "../ipsec/platforms/linux/ipsec_linux.js";
 import { ssh_detect_execute } from "../ssh/platforms/linux/ssh_linux.js";
+import { nss_hpke_execute_android } from "../ohttp/platforms/android/nss_hpke_android.js";
+import { quiche_execute } from "../quic/platforms/android/quiche_android.js";
+import { google_quiche_execute } from "../quic/platforms/android/google_quiche_android.js";
+import { neqo_execute } from "../quic/platforms/android/neqo_android.js";
 
 var plattform_name: Platform = PLATFORM_LINUX;
 var moduleNames: Array<string> = getModuleNames();
@@ -121,25 +125,34 @@ export function load_android_hooking_agent() {
         { platform: plattform_name, pattern: /.*librustls.*\.so/, hookFn: rustls_execute, library: "Rustls", libraryType: "rustls" },
         { platform: plattform_name, pattern: /.*libstartup.*\.so/, hookFn: metartc_execute, library: "metaRTC" },
         { platform: plattform_name, pattern: /libgojni.*\.so/, hookFn: gotls_execute, library: "Go TLS", libraryType: "gotls" },
-        // IPSec libraries — strongSwan VPN is common on Android (detection stub, key extraction in Phase 3.8)
+        // IPSec libraries — strongSwan VPN is common on Android (detection stub, key extraction still needs to be done)
         { platform: plattform_name, pattern: /.*libcharon\.so/, hookFn: ipsec_detect_execute, library: "strongSwan (charon)", protocol: "ipsec" },
         { platform: plattform_name, pattern: /.*libstrongswan\.so/, hookFn: ipsec_detect_execute, library: "strongSwan", protocol: "ipsec" },
         // SSH libraries
         { platform: plattform_name, pattern: /.*libssh2?\.so/, hookFn: ssh_detect_execute, library: "libssh", protocol: "ssh" },
         { platform: plattform_name, pattern: /.*dropbear/, hookFn: ssh_detect_execute, library: "Dropbear", protocol: "ssh" },
+        // OHTTP (NSS HPKE) hooks
+        { platform: plattform_name, pattern: /.*libnss3?\.so/, hookFn: nss_hpke_execute_android, library: "NSS HPKE (OHTTP)", protocol: "ohttp", libraryType: "nss_hpke" },
+        // QUIC (Cloudflare QUICHE) hooks
+        { platform: plattform_name, pattern: /.*libquiche\.so/, hookFn: quiche_execute, library: "Cloudflare QUICHE", libraryType: "quiche" },
+        { platform: plattform_name, pattern: /.*libchrome\.so/, hookFn: google_quiche_execute, library: "Google QUICHE (Chrome)", libraryType: "google_quiche" },
+        { platform: plattform_name, pattern: /.*libcronet.*\.so/, hookFn: google_quiche_execute, library: "Google QUICHE (Cronet)", libraryType: "google_quiche" },
+        { platform: plattform_name, pattern: /.*libxul\.so/, hookFn: neqo_execute, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo" },
     ]);
 
 
     install_java_hooks();
     hook_native_Android_SSL_Libs(hookRegistry, true);
-    processScanResults(scan_results, plattform_name, true, selected_protocol);
-    hookDynamicLoader({
+    const androidLoaderConfig = {
         platform: plattform_name,
         platformLabel: "Android",
         loaderLibrary: /.*libdl.*\.so/,
         functionName: "dlopen",
         preferFunction: "android_dlopen_ext",
-    }, hookRegistry, moduleNames, false, selected_protocol);
+    };
+    installOhttpHooks(plattform_name, hookRegistry, moduleNames, "Android", androidLoaderConfig);
+    processScanResults(scan_results, plattform_name, true, selected_protocol);
+    hookDynamicLoader(androidLoaderConfig, hookRegistry, moduleNames, false, selected_protocol);
     if (isPatternReplaced()){
         install_pattern_based_hooks();
     }

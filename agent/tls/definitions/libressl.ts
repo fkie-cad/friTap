@@ -13,7 +13,7 @@ import { sendKeylog } from "../../shared/shared_structures.js";
 import { findNonExportedSymbols } from "../../shared/shared_functions.js";
 import { readHexFromPointer } from "../decoders/hex_utils.js";
 import { STANDARD_SOCKET_SYMBOLS, TLS13_LABEL_MAP } from "./shared_constants.js";
-import { openSslFdDecoder, openSslSessionIdDecoder } from "./openssl.js";
+import { openSslClientRandomDecoder, openSslFdDecoder, openSslSessionIdDecoder } from "./openssl.js";
 
 // Pre-allocated buffers reused across hook invocations
 const _clientRandomBuf = Memory.alloc(32);
@@ -271,6 +271,7 @@ export function createLibreSslDefinition(): HookDefinition {
         ],
         fdDecoder: openSslFdDecoder,
         sessionIdDecoder: openSslSessionIdDecoder,
+        clientRandomDecoder: openSslClientRandomDecoder,
         readHook: {
             symbol: "SSL_read",
             args: { sslCtxArgIndex: 0, bufferArgIndex: 1, bytesTransferred: "retval" },

@@ -8,6 +8,7 @@ import { log, devlog_error } from "../../util/log.js";
 import { readHexFromPointer } from "../decoders/hex_utils.js";
 import { enable_default_fd } from "../../fritap_agent.js";
 import { STANDARD_SOCKET_SYMBOLS, DUMMY_SESSION_ID_GNUTLS } from "./shared_constants.js";
+import { createLifecycleHook } from "./shared_factories.js";
 
 // Pre-allocated buffers for keylog callback (fixed size, reused across calls)
 const _serverRandomPtr = Memory.alloc(Process.pointerSize + 4);
@@ -36,6 +37,21 @@ function gnuTlsSessionIdDecoder(session: NativePointer, fns: ResolvedFunctions):
         return "";
     }
     return readHexFromPointer(p, len);
+}
+
+// Pre-allocated buffer for client random extraction (gnutls_datum_t: pointer + uint)
+const _gnuTlsClientRandomBuf = Memory.alloc(Process.pointerSize + 4);
+
+function gnuTlsClientRandomDecoder(session: NativePointer, fns: ResolvedFunctions): string {
+    if (!fns["gnutls_session_get_random"]) return "";
+    fns["gnutls_session_get_random"](session, _gnuTlsClientRandomBuf, NULL);
+    const clientRandomP = _gnuTlsClientRandomBuf.readPointer();
+    if (clientRandomP.isNull()) return "";
+    return readHexFromPointer(clientRandomP, 32);
+}
+
+function gnuTlsFdDecoder(sslCtx: NativePointer, fns: ResolvedFunctions): number {
+    return fns["gnutls_transport_get_int"](sslCtx) as number;
 }
 
 export function createGnuTlsDefinition(): HookDefinition {
@@ -80,6 +96,7 @@ export function createGnuTlsDefinition(): HookDefinition {
                 "gnutls_handshake",
                 "gnutls_session_get_keylog_function",
                 "gnutls_session_get_random",
+                "gnutls_deinit",
             ],
             socketSymbols: STANDARD_SOCKET_SYMBOLS,
         },
@@ -89,8 +106,9 @@ export function createGnuTlsDefinition(): HookDefinition {
             { symbol: "gnutls_session_set_keylog_function", retType: "void", argTypes: ["pointer", "pointer"] },
             { symbol: "gnutls_session_get_random", retType: "pointer", argTypes: ["pointer", "pointer", "pointer"] },
         ],
-        fdDecoder: (sslCtx, fns) => fns["gnutls_transport_get_int"](sslCtx) as number,
+        fdDecoder: gnuTlsFdDecoder,
         sessionIdDecoder: gnuTlsSessionIdDecoder,
+        clientRandomDecoder: gnuTlsClientRandomDecoder,
         readHook: {
             symbol: "gnutls_record_recv",
             args: { sslCtxArgIndex: 0, bufferArgIndex: 1, bytesTransferred: "retval" },
@@ -108,6 +126,9 @@ export function createGnuTlsDefinition(): HookDefinition {
                 fns["gnutls_session_set_keylog_function"](session, keylog_callback);
             },
         },
+        extraHooks: [
+            createLifecycleHook("gnutls_deinit", gnuTlsFdDecoder, gnuTlsSessionIdDecoder, gnuTlsClientRandomDecoder),
+        ],
         onNativeFunctionsResolved: (fns) => {
             _fns = fns;
         },

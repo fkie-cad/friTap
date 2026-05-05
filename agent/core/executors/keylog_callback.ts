@@ -22,7 +22,7 @@ function installKeylogCallbackOnInit(
 
     Interceptor.attach(addr, {
         onEnter: function (args: any) {
-            this.session = args[keylog.sslArgIndex ?? 0];
+            this.session = args[0];
         },
         onLeave: function (_retval: any) {
             devlog(this.session);
@@ -70,7 +70,7 @@ function installManualKeyExtraction(
 
     Interceptor.attach(addr, {
         onEnter: function (args: any) {
-            this.ssl = args[keylog.sslArgIndex ?? 0];
+            this.ssl = args[0];
         },
         onLeave: function (_retval: any) {
             keylog.extractKeys(this.ssl, resolvedFns);

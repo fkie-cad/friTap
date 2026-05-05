@@ -72,6 +72,32 @@ class DatalogMessage(BaseAgentMessage):
     dst_port: int = 0
     ss_family: str = "AF_INET"
     ssl_session_id: str = ""
+    client_random: str = ""
+    # QUIC-specific fields (optional, backward compatible)
+    stream_id: Optional[int] = None
+    quic_scid: str = ""
+    quic_dcid: str = ""
+
+
+class ConnectionLifecycleMessage(BaseAgentMessage):
+    """Connection lifecycle event (created/destroyed).
+
+    Emitted by SSL_free / SSL_new hooks to track connection boundaries.
+    """
+
+    contentType: Literal["connection_lifecycle"] = "connection_lifecycle"
+    event: str = ""  # "created" | "destroyed" | "stream_fin"
+    ssl_session_id: str = ""
+    client_random: str = ""
+    src_addr: Union[int, str] = 0
+    dst_addr: Union[int, str] = 0
+    src_port: int = 0
+    dst_port: int = 0
+    ss_family: str = "AF_INET"
+    # QUIC-specific fields (optional, backward compatible)
+    stream_id: Optional[int] = None
+    quic_scid: str = ""
+    quic_dcid: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +270,20 @@ class IPSecIKEKeysMessage(BaseAgentMessage):
 
 
 # ---------------------------------------------------------------------------
+# OHTTP messages
+# ---------------------------------------------------------------------------
+
+class OhttpPlaintextMessage(BaseAgentMessage):
+    """Decrypted OHTTP inner payload from HPKE hooks.
+    Binary bhttp payload is delivered as Frida's second argument (bytes)."""
+
+    contentType: Literal["ohttp_plaintext"] = "ohttp_plaintext"
+    direction: str = ""
+    source: str = ""
+    protocol: str = "ohttp"
+
+
+# ---------------------------------------------------------------------------
 # Discriminated union
 # ---------------------------------------------------------------------------
 
@@ -251,6 +291,7 @@ AgentMessage = Annotated[
     Union[
         KeylogMessage,
         DatalogMessage,
+        ConnectionLifecycleMessage,
         LibraryDetectedMessage,
         ConsoleMessage,
         ConsoleDevMessage,
@@ -263,6 +304,7 @@ AgentMessage = Annotated[
         SSHKeyMessage,
         IPSecChildSAKeysMessage,
         IPSecIKEKeysMessage,
+        OhttpPlaintextMessage,
     ],
     Field(discriminator="contentType"),
 ]

@@ -9,30 +9,14 @@ auto-decrypt without a separate keylog file.
 
 from __future__ import annotations
 import logging
-import struct
 from typing import Callable, IO, List, Optional, TYPE_CHECKING
 
 from ..output.dedup import KeyDeduplicator
+from ..output.pcapng_blocks import build_shb, build_idb, build_dsb, build_epb, EPB_FLUSH_INTERVAL
+from .tcp_state import TcpSessionTracker, build_framed_packet
 
 if TYPE_CHECKING:
     from ..schemas.canonical import KeylogCanonical, DataCanonical, MetaCanonical
-
-# PCAPNG block types
-BT_SHB = 0x0A0D0D0A   # Section Header Block
-BT_IDB = 0x00000001   # Interface Description Block
-BT_EPB = 0x00000006   # Enhanced Packet Block
-BT_DSB = 0x0000000A   # Decryption Secrets Block
-
-# Secrets types
-TLS_KEY_LOG = 0x544C534B   # "TLSK" - TLS Key Log
-
-# Link types
-LINKTYPE_RAW = 101
-
-
-def _pad4(n: int) -> int:
-    """Round up to next multiple of 4."""
-    return (n + 3) & ~3
 
 
 class PcapngSink:
@@ -53,11 +37,13 @@ class PcapngSink:
         self._dedup = KeyDeduplicator()
         self._pending_keys: List[str] = []
         self._key_formatter = key_formatter
+        self._tracker = TcpSessionTracker()
+        self._epb_count = 0
 
     def open(self) -> None:
         self._file = open(self._path, "wb")
-        self._write_shb()
-        self._write_idb()
+        self._file.write(build_shb())
+        self._file.write(build_idb())
 
     def on_keylog(self, event: "KeylogCanonical") -> None:
         if event.key_data and self._dedup.is_new(event.key_data):
@@ -91,28 +77,7 @@ class PcapngSink:
                 self._logger.error("Error closing PCAPNG: %s", e)
             self._file = None
             self._dedup.clear()
-
-    def _write_shb(self) -> None:
-        """Write Section Header Block."""
-        if not self._file:
-            return
-        body = struct.pack("<IHHq", 0x1A2B3C4D, 1, 0, -1)
-        block_len = 12 + len(body)
-        self._file.write(
-            struct.pack("<II", BT_SHB, block_len) + body + struct.pack("<I", block_len)
-        )
-
-    def _write_idb(self) -> None:
-        """Write Interface Description Block."""
-        if not self._file:
-            return
-        body = struct.pack("<HHI", LINKTYPE_RAW, 0, 65535)
-        padded_len = _pad4(len(body))
-        block_len = 12 + padded_len
-        padding = b"\x00" * (padded_len - len(body))
-        self._file.write(
-            struct.pack("<II", BT_IDB, block_len) + body + padding + struct.pack("<I", block_len)
-        )
+            self._tracker.clear()
 
     def _flush_dsb(self) -> None:
         """Write pending key material as a Decryption Secrets Block."""
@@ -124,28 +89,22 @@ class PcapngSink:
             else self._pending_keys
         )
         secrets_data = "\n".join(formatted).encode("utf-8") + b"\n"
+        block = build_dsb(secrets_data)
+        try:
+            self._file.write(block)
+            self._file.flush()
+        except OSError:
+            self._dedup.unmark(self._pending_keys)
+            raise
         self._pending_keys.clear()
-        body = struct.pack("<II", TLS_KEY_LOG, len(secrets_data)) + secrets_data
-        padded_len = _pad4(len(body))
-        block_len = 12 + padded_len
-        padding = b"\x00" * (padded_len - len(body))
-        self._file.write(
-            struct.pack("<II", BT_DSB, block_len) + body + padding + struct.pack("<I", block_len)
-        )
-        self._file.flush()
 
     def _write_epb(self, event: "DataCanonical") -> None:
         """Write Enhanced Packet Block using event.timestamp."""
         if not self._file:
             return
+        packet = build_framed_packet(event, self._tracker)
         t_us = int(event.timestamp * 1_000_000)
-        ts_high = (t_us >> 32) & 0xFFFFFFFF
-        ts_low = t_us & 0xFFFFFFFF
-        captured_len = len(event.data)
-        body = struct.pack("<IIIII", 0, ts_high, ts_low, captured_len, captured_len) + event.data
-        padded_len = _pad4(len(body))
-        block_len = 12 + padded_len
-        padding = b"\x00" * (padded_len - len(body))
-        self._file.write(
-            struct.pack("<II", BT_EPB, block_len) + body + padding + struct.pack("<I", block_len)
-        )
+        self._file.write(build_epb(packet, t_us))
+        self._epb_count += 1
+        if self._epb_count % EPB_FLUSH_INTERVAL == 0:
+            self._file.flush()

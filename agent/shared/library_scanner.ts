@@ -11,15 +11,17 @@ interface ScanResultEntry {
     detected_version: string;
 }
 
-/** Tracks modules already hooked — prevents double-hooking */
+/** Tracks modules already hooked — prevents double-hooking.
+ *  Keys are "${moduleName}:${protocol}" to allow the same module
+ *  to be hooked by different protocols (e.g. TLS and OHTTP). */
 const hookedModules: Set<string> = new Set();
 
-export function markModuleHooked(moduleName: string): void {
-    hookedModules.add(moduleName);
+export function markModuleHooked(moduleName: string, protocol: string = "tls"): void {
+    hookedModules.add(`${moduleName}:${protocol}`);
 }
 
-export function isModuleHooked(moduleName: string): boolean {
-    return hookedModules.has(moduleName);
+export function isModuleHooked(moduleName: string, protocol: string = "tls"): boolean {
+    return hookedModules.has(`${moduleName}:${protocol}`);
 }
 
 /**
@@ -47,9 +49,9 @@ export function processScanResults(
     log(`[Scanner] Processing ${entries.length} pre-scanned libraries`);
 
     for (const entry of entries) {
-        // Skip already-hooked modules
-        if (isModuleHooked(entry.name)) {
-            devlog(`[Scanner] ${entry.name} already hooked, skipping`);
+        // Skip already-hooked modules (for this protocol)
+        if (isModuleHooked(entry.name, protocol || "tls")) {
+            devlog(`[Scanner] ${entry.name} already hooked for ${protocol || "tls"}, skipping`);
             continue;
         }
 
@@ -67,7 +69,7 @@ export function processScanResults(
             try {
                 Process.getModuleByName(entry.name).ensureInitialized();
                 typeMatch.hookFn(entry.name, is_base_hook);
-                markModuleHooked(entry.name);
+                markModuleHooked(entry.name, protocol || "tls");
             } catch (error) {
                 devlog(`[Scanner] Error hooking ${entry.name}: ${error}`);
             }

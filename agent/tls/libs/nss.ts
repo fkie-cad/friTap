@@ -1,9 +1,11 @@
 import { readAddresses, resolveOffsets, dumpMemory } from "../../shared/shared_functions.js";
 import { pointerSize, AF_INET, AF_INET6, sendKeylog, sendDatalog } from "../../shared/shared_structures.js";
-import { log, devlog, devlog_error } from "../../util/log.js";
+import { log, devlog, devlog_debug, devlog_error } from "../../util/log.js";
 import { enable_default_fd } from "../../fritap_agent.js";
 import { Java } from "../../shared/javalib.js";
 import { resolveWithPipeline } from "../../shared/pipeline_utils.js";
+import { DUMMY_SESSION_ID_NSS } from "../definitions/shared_constants.js";
+import { LruMap, FifoSet } from "../../shared/lru.js";
 
 /**
  *  Current Todo:
@@ -894,31 +896,45 @@ typedef union PRNetAddr PRNetAddr;
     * @param {*} layer_name 
     * @returns 
     */
+    /**
+     * Cache of PRFileDesc pointers known to have no SSL layer in their stack
+     * (e.g. Firefox IPC sockets over localhost). Skipping the layer traversal
+     * for these avoids repeated expensive recursion and silences noisy
+     * "error while getting SSL layer" logs for fds that will never resolve.
+     */
+    static noSslLayerFDs = new FifoSet<string>(1024);
+
     static NSS_FindIdentityForName(pRFileDesc: NativePointer, layer_name: string): NativePointer {
-        var lower_ptr = pRFileDesc.add(pointerSize * 2).readPointer();
-        var higher_ptr = pRFileDesc.add(pointerSize * 3).readPointer();
-        var identity = pRFileDesc.add(pointerSize * 5).readPointer();
+        const fdKey = pRFileDesc.toString();
+        if (NSS.noSslLayerFDs.has(fdKey)) {
+            return NULL;
+        }
+        const result = NSS._findIdentityForNameRecursive(pRFileDesc, layer_name);
+        if (result.isNull()) {
+            NSS.noSslLayerFDs.add(fdKey);
+            devlog_debug("NSS: no SSL layer in NSPR stack (likely non-TLS fd)");
+        }
+        return result;
+    }
+
+    private static _findIdentityForNameRecursive(
+        pRFileDesc: NativePointer, layer_name: string,
+    ): NativePointer {
+        const lower_ptr = pRFileDesc.add(pointerSize * 2).readPointer();
+        const identity = pRFileDesc.add(pointerSize * 5).readPointer();
 
         if (!identity.isNull()) {
-            var nameptr = (<NativePointer>NSS.PR_GetNameForIdentity(identity)).readCString();
+            const nameptr = (<NativePointer>NSS.PR_GetNameForIdentity(identity)).readCString();
             if (nameptr == layer_name) {
                 return pRFileDesc;
             }
         }
 
         if (!lower_ptr.isNull()) {
-            return this.NSS_FindIdentityForName(lower_ptr, layer_name);
+            return NSS._findIdentityForNameRecursive(lower_ptr, layer_name);
         }
 
-        if (!higher_ptr.isNull()) {
-            devlog('Have upper')
-        }
-
-
-        // when we reach this we have some sort of error 
-        devlog("[-] error while getting SSL layer");
         return NULL;
-
     }
 
 
@@ -1025,7 +1041,10 @@ typedef union PRNetAddr PRNetAddr;
 
 
     static getSslSessionIdFromFD(pRFileDesc: NativePointer): string {
-        var dummySSL_SessionID = "3E8ABF58649A1A1C58824D704173BA9AAFA2DA33B45FFEA341D218B29BBACF8F";
+        // Per-fd suffix keeps each connection's dummy ID unique so flows are not
+        // collapsed when the SSL layer cannot be resolved (e.g. Firefox IPC).
+        var fdHex = pRFileDesc.toString(16).padStart(8, '0').slice(-8).toUpperCase();
+        var dummySSL_SessionID = DUMMY_SESSION_ID_NSS.slice(0, -8) + fdHex;
         var fdType = NSS.getDescType(pRFileDesc)
         //log("pRFileDescType: "+ fdType)
         /*if(fdType == 4){ // LAYERED 
@@ -1045,9 +1064,9 @@ typedef union PRNetAddr PRNetAddr;
 
         if (sslSessionIdSECItem == null || sslSessionIdSECItem.isNull()) {
             try {
-                devlog("---- getSslSessionIdFromFD -----")
-                devlog("ERROR")
-                devlog("pRFileDescType: " + NSS.getDescType(pRFileDesc))
+                devlog_debug("---- getSslSessionIdFromFD -----")
+                devlog_debug("ERROR")
+                devlog_debug("pRFileDescType: " + NSS.getDescType(pRFileDesc))
                 if (fdType == 2) {
                     var c = Memory.dup(pRFileDesc, 32)
                     //log(hexdump(c))
@@ -1061,45 +1080,45 @@ typedef union PRNetAddr PRNetAddr;
                         getNameOfIdentityLayer = new NativeFunction(Process.getModuleByName('libnss3.so').getExportByName('PR_GetNameForIdentity'), "pointer", ["uint32"])
                     }
                     var layerID = getLayersIdentity(pRFileDesc);
-                    devlog("LayerID: " + layerID);
+                    devlog_debug("LayerID: " + layerID);
                     var nameIDentity = getNameOfIdentityLayer(layerID)
-                    devlog("name address: " + nameIDentity)
-                    devlog("name: " + ptr(nameIDentity.toString()).readCString())
+                    devlog_debug("name address: " + nameIDentity)
+                    devlog_debug("name: " + ptr(nameIDentity.toString()).readCString())
 
 
                     var sslSessionIdSECItem2 = ptr(NSS.getSSL_Layer(pRFileDesc).toString())
-                    devlog("sslSessionIdSECItem2 =" + sslSessionIdSECItem2)
+                    devlog_debug("sslSessionIdSECItem2 =" + sslSessionIdSECItem2)
 
                     if (sslSessionIdSECItem2.toString().startsWith("0x7f")) {
                         var aa = Memory.dup(sslSessionIdSECItem2, 32)
                         //log(hexdump(aa))
 
                         var sslSessionIdSECItem3 = ptr(NSS.SSL_SESSION_get_id(sslSessionIdSECItem2).toString())
-                        devlog("sslSessionIdSECItem3 =" + sslSessionIdSECItem3)
+                        devlog_debug("sslSessionIdSECItem3 =" + sslSessionIdSECItem3)
                     }
 
 
                     var sslSessionIdSECItem4 = ptr(NSS.SSL_SESSION_get_id(pRFileDesc).toString())
-                    devlog("sslSessionIdSECItem4 =" + sslSessionIdSECItem4)
+                    devlog_debug("sslSessionIdSECItem4 =" + sslSessionIdSECItem4)
 
-                    devlog("Using Dummy Session ID")
-                    devlog("")
+                    devlog_debug("Using Dummy Session ID")
+                    devlog_debug("")
                 } else if (fdType == 4) {
                     pRFileDesc = ptr(NSS.getSSL_Layer(pRFileDesc).toString())
                     var sslSessionIdSECItem = ptr(NSS.SSL_SESSION_get_id(pRFileDesc).toString());
 
-                    devlog("new sessionid_ITEM: " + sslSessionIdSECItem)
+                    devlog_debug("new sessionid_ITEM: " + sslSessionIdSECItem)
                 } else {
-                    devlog("---- SSL Session Analysis ------------");
+                    devlog_debug("---- SSL Session Analysis ------------");
                     var c = Memory.dup(sslSessionIdSECItem, 32);
-                    devlog(hexdump(c));
+                    devlog_debug(hexdump(c));
 
                 }
 
-                devlog("---- getSslSessionIdFromFD finished -----");
-                devlog("");
+                devlog_debug("---- getSslSessionIdFromFD finished -----");
+                devlog_debug("");
             } catch (error) {
-                devlog("Error:" + error)
+                devlog_debug("Error:" + error)
 
             }
             return dummySSL_SessionID;
@@ -1120,14 +1139,13 @@ typedef union PRNetAddr PRNetAddr;
 
     static get_SSL_FD(pRFileDesc: NativePointer): NativePointer {
         var ssl_layer = NSS.NSS_FindIdentityForName(pRFileDesc, 'SSL');
-        if (!ssl_layer) {
-            devlog("error: couldn't get SSL Layer from pRFileDesc");
+        if (!ssl_layer || ssl_layer.isNull()) {
             return NULL;
         }
 
         var sslSocketFD = NSS.get_SSL_Socket(ssl_layer);
-        if (!sslSocketFD) {
-            devlog("error: couldn't get sslSocketFD");
+        if (!sslSocketFD || sslSocketFD.isNull()) {
+            devlog_debug("NSS: SSL layer found but sslSocketFD could not be obtained");
             return NULL;
         }
 
@@ -1219,6 +1237,40 @@ typedef union PRNetAddr PRNetAddr;
 
         return client_random;
 
+    }
+
+    /**
+     * Extract client_random from a PRFileDesc, traversing the NSS struct chain.
+     * Reuses the same path as the keylog callback for a single source of truth.
+     * Returns empty string on any failure.
+     *
+     * Results are cached keyed by the underlying sslSocketFD pointer — that
+     * pointer identifies a unique NSS socket state struct and changes on
+     * every new connection, so cached entries cannot be stale even if the
+     * outer PRFileDesc pointer is reused by the OS after close(). An LRU
+     * bound keeps memory bounded on long-running captures.
+     */
+    static clientRandomCache = new LruMap<string, string>(1024);
+
+    static extractClientRandom(fd: NativePointer): string {
+        try {
+            const sslSocketFD = NSS.get_SSL_FD(fd);
+            if (sslSocketFD.isNull()) return "";
+
+            const cacheKey = sslSocketFD.toString();
+            const cached = NSS.clientRandomCache.get(cacheKey);
+            if (cached !== undefined) return cached;
+
+            const sslSocketStr = NSS.parse_struct_sslSocketStr(sslSocketFD);
+            const ssl3 = NSS.parse_struct_ssl3Str(sslSocketStr.ssl3);
+            const clientRandom = NSS.getClientRandom(ssl3) || "";
+
+            NSS.clientRandomCache.set(cacheKey, clientRandom);
+            return clientRandom;
+        } catch (e) {
+            devlog(`NSS extractClientRandom error: ${e}`);
+            return "";
+        }
     }
 
 
@@ -1485,6 +1537,32 @@ typedef union PRNetAddr PRNetAddr;
 
     }
 
+    /**
+     * Return true if the NSPR PRNetAddr starts with a loopback address.
+     * IPv4: 127.0.0.0/8. IPv6: ::1. Used to short-circuit Firefox IPC
+     * traffic before the expensive session-id / client-random extraction.
+     *
+     * Family is passed by the caller so the hot path reads it exactly once.
+     * Byte-level reads are endian-invariant: in_addr and in6_addr are
+     * stored as network-byte-order uint8[] regardless of host endianness.
+     */
+    static isLoopbackSockaddr(addr: NativePointer, family: number): boolean {
+        if (family === 2) {
+            return addr.add(4).readU8() === 0x7F;
+        }
+        if (family === 10 || family === 30 || family === 100) {
+            // Single native read instead of 16 individual readU8 calls.
+            const buf = addr.add(8).readByteArray(16);
+            if (buf === null) return false;
+            const bytes = new Uint8Array(buf);
+            for (let i = 0; i < 15; i++) {
+                if (bytes[i] !== 0) return false;
+            }
+            return bytes[15] === 1;
+        }
+        return false;
+    }
+
 
 
     /***** Installing the hooks *****/
@@ -1502,37 +1580,33 @@ typedef union PRNetAddr PRNetAddr;
                     this.buf = ptr(args[1])
                 },
                 onLeave: function (retval: any) {
-                    
+
                     if (retval.toInt32() <= 0 || NSS.getDescType(this.fd) == PRDescType.PR_DESC_FILE) {
                         return
                     }
-                    //devlog("The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys")
 
-                    var addr = Memory.alloc(8);
-                    var res = NSS.getpeername(this.fd, addr);
-                    // peername return -1 this is due to the fact that a PIPE descriptor is used to read from the SSL socket
+                    // PRNetAddr is up to 28 bytes (IPv6 variant); 32 covers it safely.
+                    var addr = Memory.alloc(32);
+                    NSS.getpeername(this.fd, addr);
+                    // getpeername returns -1 for PIPE descriptors; the family check below
+                    // filters those out.
 
-
-                    if (addr.readU16() == 2 || addr.readU16() == 10 || addr.readU16() == 100) {
+                    var family = addr.readU16();
+                    if (family == 2 || family == 10 || family == 100) {
+                        if (NSS.isLoopbackSockaddr(addr, family)) {
+                            // Drop Firefox internal NSS IPC before touching the expensive
+                            // session-id / client-random extraction paths.
+                            return;
+                        }
                         var message = NSS.getPortsAndAddressesFromNSS(this.fd as NativePointer, true, lib_addesses[current_module_name], enable_default_fd)
                         //devlog("Session ID: " + NSS.getSslSessionIdFromFD(this.fd))
                         message["ssl_session_id"] = NSS.getSslSessionIdFromFD(this.fd)
                         message["function"] = "NSS_read"
+                        message["client_random"] = NSS.extractClientRandom(this.fd as NativePointer);
                         this.message = message
 
                         var data = this.buf.readByteArray((new Uint32Array([retval]))[0])
                         sendDatalog(message, data)
-                    } else {
-                        /*
-                        var message = NSS.getPortsAndAddressesFromNSS( this.fd as NativePointer, true, lib_addesses[current_module_name], enable_default_fd)
-                        message["ssl_session_id"] = NSS.getSslSessionIdFromFD(this.fd)
-                        message["function"] = "NSS_read"
-                        this.message = message
-
-                        this.message["contentType"] = "datalog"
-                        var temp = this.buf.readByteArray((new Uint32Array([retval]))[0])
-                        devlog(JSON.stringify(temp))
-                        send(message, temp)*/
                     }
                 }
             })
@@ -1558,27 +1632,19 @@ typedef union PRNetAddr PRNetAddr;
                         return
                     }
 
-                    var addr = Memory.alloc(8);
-
+                    var addr = Memory.alloc(32);
                     NSS.getsockname(this.fd, addr);
 
-                    if (addr.readU16() == 2 || addr.readU16() == 10 || addr.readU16() == 100) {
+                    var family = addr.readU16();
+                    if (family == 2 || family == 10 || family == 100) {
+                        if (NSS.isLoopbackSockaddr(addr, family)) {
+                            return;
+                        }
                         var message = NSS.getPortsAndAddressesFromNSS(this.fd as NativePointer, false, lib_addesses[current_module_name], enable_default_fd)
                         message["ssl_session_id"] = NSS.getSslSessionIdFromFD(this.fd)
                         message["function"] = "NSS_write"
+                        message["client_random"] = NSS.extractClientRandom(this.fd as NativePointer);
                         sendDatalog(message, this.buf.readByteArray((parseInt(this.len))))
-                    }else {
-                        /*
-                        log("The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys")
-                        var message = NSS.getPortsAndAddressesFromNSS(this.fd as NativePointer, true, lib_addesses[current_module_name], enable_default_fd)
-                        message["ssl_session_id"] = NSS.getSslSessionIdFromFD(this.fd)
-                        message["function"] = "NSS_write"
-                        this.message = message
-
-                        this.message["contentType"] = "datalog"
-                        var temp = this.buf.readByteArray((new Uint32Array([retval]))[0])
-                        devlog(JSON.stringify(temp))
-                        send(message, temp)*/
                     }
 
                 }

@@ -2,8 +2,32 @@ import { log, devlog, devlog_error } from "../util/log.js";
 import { AF_INET, AF_INET6, AddressFamilyMapping, unwantedFDs, Platform } from "./shared_structures.js";
 import { HookRegistration, HookRegistry } from "./registry.js";
 import { Java, JavaWrapper } from "./javalib.js";
-import { offsets } from "../fritap_agent.js";
+import { offsets, ohttp_enabled, selected_protocol } from "../fritap_agent.js";
 import { isModuleHooked, markModuleHooked } from "./library_scanner.js";
+
+/**
+ * Check whether OHTTP hooks should be installed for the current configuration.
+ * Centralizes the protocol guard used across all platform files.
+ */
+export function shouldInstallOhttpHooks(): boolean {
+    return ohttp_enabled && (selected_protocol === "tls" || selected_protocol === "auto");
+}
+
+/**
+ * Install OHTTP hooks via ssl_library_loader and hookDynamicLoader if enabled.
+ * Eliminates repeated guard + call patterns in platform files.
+ */
+export function installOhttpHooks(
+    platform: Platform,
+    hookRegistry: HookRegistry,
+    moduleNames: Array<string>,
+    platformLabel: string,
+    loaderConfig: DynamicLoaderConfig,
+): void {
+    if (!shouldInstallOhttpHooks()) return;
+    ssl_library_loader(platform, hookRegistry, moduleNames, platformLabel, true, "ohttp");
+    hookDynamicLoader(loaderConfig, hookRegistry, moduleNames, false, "ohttp");
+}
 
 function wait_for_library_loaded(module_name: string){
     let timeout_library = 5;
@@ -42,8 +66,8 @@ export function ssl_library_loader(platform: Platform, hookRegistry: HookRegistr
             // Module might not be loaded yet, continue without path
         }
 
-        if (isModuleHooked(module_name)) {
-            devlog(`${module_name} already hooked, skipping`);
+        if (isModuleHooked(module_name, protocol || "tls")) {
+            devlog(`${module_name} already hooked for ${protocol || "tls"}, skipping`);
             continue;
         }
 
@@ -62,7 +86,7 @@ export function ssl_library_loader(platform: Platform, hookRegistry: HookRegistr
 
                 // Invoke the hook function
                 match.hookFn(module_name, is_base_hook);
-                markModuleHooked(module_name);
+                markModuleHooked(module_name, protocol || "tls");
 
                 // Notify host that a library was detected
                 send({contentType: "library_detected", library: module_name, path: modulePath || "", protocol: protocol || "tls"});
@@ -190,8 +214,8 @@ export function hookDynamicLoader(
                         }
                     }
 
-                    if (isModuleHooked(moduleName)) {
-                        devlog(`${moduleName} already hooked, skipping (dynamic loader)`);
+                    if (isModuleHooked(moduleName, protocol || "tls")) {
+                        devlog(`${moduleName} already hooked for ${protocol || "tls"}, skipping (dynamic loader)`);
                         return;
                     }
 
@@ -200,7 +224,7 @@ export function hookDynamicLoader(
                         log(`${moduleName} was loaded & will be hooked on ${config.platformLabel}!`);
                         try {
                             match.hookFn(moduleName, is_base_hook);
-                            markModuleHooked(moduleName);
+                            markModuleHooked(moduleName, protocol || "tls");
 
                             // Notify host that a library was detected
                             send({contentType: "library_detected", library: moduleName, path: modulePath || "", protocol: protocol || "tls"});

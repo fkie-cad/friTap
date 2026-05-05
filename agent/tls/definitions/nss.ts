@@ -3,11 +3,17 @@
 // Data-driven NSS hook definition.
 // NSS uses multiple libraries (nspr, libnss, libssl) and PRNetAddr for addressing.
 
-import { HookDefinition, ResolvedFunctions } from "../../core/hook_definition.js";
+import { HookDefinition, ClientRandomDecoder, ResolvedFunctions } from "../../core/hook_definition.js";
 import { STANDARD_SOCKET_SYMBOLS } from "./shared_constants.js";
 import { readHexFromPointer } from "../decoders/hex_utils.js";
 import { NSS } from "../libs/nss.js";
 import { devlog } from "../../util/log.js";
+
+/** Delegates to ``NSS.extractClientRandom()`` which caches results. */
+function createNssClientRandomDecoder(): ClientRandomDecoder {
+    return (fd: NativePointer, _fns: ResolvedFunctions): string =>
+        NSS.extractClientRandom(fd);
+}
 
 /**
  * Custom keylog installer for NSS.
@@ -105,7 +111,7 @@ export function createNssMacosDefinition(): HookDefinition {
         functions: {
             ...base.functions,
             auxiliaryLibraries: [
-                { pattern: "*libnss*", symbols: ["PK11_ExtractKeyValue", "PK11_GetKeyData", "SSL_ImportFD", "SSL_HandshakeCallback", "SSL_GetExperimentalAPI", "NSSSSL_GetVersion"] },
+                { pattern: "*libnss*", symbols: ["PK11_ExtractKeyValue", "PK11_GetKeyData", "SSL_ImportFD", "SSL_GetSessionID", "SSL_HandshakeCallback", "SSL_GetExperimentalAPI", "NSSSSL_GetVersion"] },
             ],
         },
     };
@@ -164,6 +170,7 @@ export function createNssDefinition(): HookDefinition {
             args: { sslCtxArgIndex: 0, bufferArgIndex: 1, lengthArgIndex: 2, bytesTransferred: "arg" },
             functionLabel: "PR_Write",
         },
+        clientRandomDecoder: createNssClientRandomDecoder(),
         keylog: { kind: "custom", install: installNssKeylog },
     };
 }
