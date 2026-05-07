@@ -7,7 +7,7 @@ import { devlog, devlog_debug, devlog_error, devlog_info, devlog_warn } from "..
 import { sendKeylog } from "../../../../shared/shared_structures.js";
 
 export type HookingResult = [success: boolean, handle: PatternBasedHooking | null];
-const EXCLUDED_MODULE_SUFFIXES = ["_libpki.so", "_libcrypto.so", "libsignal_jni_testing.so"]; // extensible list
+const EXCLUDED_MODULE_SUFFIXES = ["_libpki.so", "_libcrypto.so", "libsignal_jni_testing.so", "_vr_partition.so"]; // extensible list
 
 interface PatternSet {
   primary:  string;

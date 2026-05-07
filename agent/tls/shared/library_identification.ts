@@ -1,7 +1,7 @@
 import { devlog } from "../../util/log.js";
 
 // Platform-specific excludes for known non-TLS modules (JNI wrappers, etc.)
-const ANDROID_EXCLUDES = [/libjavacrypto\.so/];
+const ANDROID_EXCLUDES = [/libjavacrypto\.so/, /_libpki\.so$/, /_libcrypto\.so$/, /_vr_partition\.so$/];
 
 // Minimum number of exports for a module to be considered a real TLS implementation
 const MIN_EXPORT_COUNT = 5;

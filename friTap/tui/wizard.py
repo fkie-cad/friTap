@@ -208,8 +208,10 @@ class CaptureWizard:
                 self._step_6_configure(self._capture_mode_id)
             elif protocol in ("tls", "auto"):
                 self._step_5c_encapsulated_protocols()
-            else:
+            elif self._capture_mode_id == "plaintext":
                 self._step_5d_view_mode()
+            else:
+                self._skip_view_mode_to_configure()
 
         # Pass protocol registry for dynamic protocol list (custom plugins)
         registry = getattr(self._screen, '_protocol_registry', None)
@@ -229,7 +231,10 @@ class CaptureWizard:
             state = self._screen._get_state()
             if result:
                 state.encapsulated_protocols = result
-            self._step_5d_view_mode()
+            if self._capture_mode_id == "plaintext":
+                self._step_5d_view_mode()
+            else:
+                self._skip_view_mode_to_configure()
 
         self._screen.app.push_screen(EncapsulatedProtocolModal(), callback=_on_result)
 
@@ -257,6 +262,12 @@ class CaptureWizard:
             self._step_6_configure(self._capture_mode_id)
 
         self._screen.app.push_screen(ViewModeModal(), callback=_on_result)
+
+    def _skip_view_mode_to_configure(self) -> None:
+        # Force legacy view for non-plaintext modes; AppState persists across wizard re-runs.
+        state = self._screen._get_state()
+        state.view_mode = "legacy"
+        self._step_6_configure(self._capture_mode_id)
 
     def _step_6_configure(self, mode_id: str) -> None:
         """Step 6: Configure output paths for the selected mode."""
