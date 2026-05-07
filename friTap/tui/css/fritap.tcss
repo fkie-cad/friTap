@@ -65,13 +65,29 @@ MenuPanel {
     padding: 0 1;
 }
 
-/* Activity log */
+/* Activity title row — left indicator + centered title + right spacer */
+#activity-title-row {
+    height: 3;
+    background: $surface;
+}
+
+#capture-indicator {
+    width: 30;
+    padding: 1 1 0 1;          /* matches filter-bar horizontal pad so left edge aligns with `/:` */
+    text-align: left;
+    text-style: bold;
+}
+
 #activity-title {
+    width: 1fr;
     text-align: center;
     text-style: bold;
     color: $success;
     padding: 1 0;
-    height: 3;
+}
+
+#title-spacer {
+    width: 30;                 /* mirror of #capture-indicator to keep #activity-title centered */
 }
 
 ActivityLog {

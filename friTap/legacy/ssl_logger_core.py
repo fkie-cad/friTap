@@ -133,17 +133,26 @@ class SSL_Logger():
         from ..backends import get_backend
         self._backend = get_backend(self._config.backend)
 
-        # Protocol registry and handler
+        # Protocol registry and handler. ``auto`` keeps every built-in
+        # registered so the agent can swap on LibraryDetectedEvent; an
+        # explicit selection narrows the registry to just that handler so
+        # we don't load hooks the user didn't ask for.
         from ..protocols.registry import create_default_registry
-        self._protocol_registry = create_default_registry()
-        self._detected_libraries = set()  # tracks libraries detected by agent
         if self._config.protocol == "auto":
+            self._protocol_registry = create_default_registry()
+            self._detected_libraries = set()  # tracks libraries detected by agent
             # Start with TLS as default; will be refined via LibraryDetectedEvent
-            self._protocol_handler = self._protocol_registry.get("tls")
+            self._protocol_handler = self._protocol_registry.get("tls") \
+                or next(iter(self._protocol_registry.get_all()), None)
         else:
+            self._protocol_registry = create_default_registry([self._config.protocol])
+            self._detected_libraries = set()
             self._protocol_handler = self._protocol_registry.get(self._config.protocol)
-        if self._protocol_handler is None:
-            self._protocol_handler = self._protocol_registry.get("tls")
+            if self._protocol_handler is None:
+                raise RuntimeError(
+                    f"Protocol '{self._config.protocol}' is not registered; "
+                    "available: " + ", ".join(self._protocol_registry.list_protocols())
+                )
 
         # Validate protocol-backend compatibility
         self._config.validate_protocol_backend(self._protocol_handler)

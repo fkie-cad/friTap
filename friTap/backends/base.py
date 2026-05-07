@@ -17,17 +17,110 @@ import functools
 import re
 import struct
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable
+from typing import Any, Callable, Dict, Optional
 
 
 # ---------------------------------------------------------------------------
 # Backend exception hierarchy
 # ---------------------------------------------------------------------------
 
+@dataclass
+class BackendErrorContext:
+    """Cheap diagnostic snapshot collected at error time.
+
+    All fields are best-effort and may be ``None``/sentinel when the
+    information could not be sampled. Safe to log; intentionally avoids
+    secrets or full stack traces (those go to the debug log file).
+    """
+    euid: int = -1
+    platform: str = ""
+    sip_enabled: Optional[bool] = None        # macOS only; None elsewhere
+    target_alive: Optional[bool] = None
+    server_reachable: Optional[bool] = None
+    # macOS target binary probes; populated when target is a PID and
+    # ``codesign``/``ps`` are available. ``None`` means "not sampled".
+    target_path: Optional[str] = None
+    target_hardened_runtime: Optional[bool] = None
+    target_library_validation_disabled: Optional[bool] = None
+    target_get_task_allow: Optional[bool] = None
+    extra: Dict[str, str] = field(default_factory=dict)
+
+
 class BackendError(Exception):
-    """Base exception for all backend errors."""
+    """Base exception for all backend errors.
+
+    Carries a rich payload so callers (and the TUI) can distinguish
+    *backend-said-no* from *the-environment-said-no* and surface frida's
+    actual reason verbatim. Positional ``message``-only construction is
+    preserved so any existing ``raise BackendError("msg")`` keeps working.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        original_exception: Optional[BaseException] = None,
+        category: str = "backend_error",
+        context: Optional[BackendErrorContext] = None,
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.original_exception = original_exception
+        self.category = category
+        self.context = context if context is not None else BackendErrorContext()
+
+    def diagnostic_summary(self) -> str:
+        """Return a multi-line, user-facing summary of the error."""
+        lines = [self.message]
+        orig = self.original_exception
+        if orig is not None:
+            # Always show the original exception class — it's how the user
+            # tells "frida said no" (PermissionDeniedError / TimedOutError /
+            # …) apart from a backend bug. Skip the redundant message
+            # repeat when it matches.
+            cls = type(orig).__name__
+            if str(orig) and str(orig) != self.message:
+                lines.append(f"  ↳ {cls}: {orig}")
+            else:
+                lines.append(f"  ↳ {cls}")
+        if self.category == "backend_bug":
+            lines.append(
+                "This is a friTap bug, not your environment. Please file an issue."
+            )
+        elif self.category.startswith("frida_"):
+            ctx = self.context
+            bits = [f"euid={ctx.euid}"]
+            if ctx.sip_enabled is not None:
+                bits.append(f"SIP={'on' if ctx.sip_enabled else 'off'}")
+            if ctx.target_alive is not None:
+                bits.append(f"target_alive={ctx.target_alive}")
+            if ctx.server_reachable is not None:
+                bits.append(f"server_reachable={ctx.server_reachable}")
+            for k, v in ctx.extra.items():
+                bits.append(f"{k}={v}")
+            lines.append("  context: " + ", ".join(bits))
+            # Target-binary probes get their own line — these are the most
+            # likely remaining culprits when the basic context looks fine.
+            tgt_bits = []
+            if ctx.target_path:
+                tgt_bits.append(f"path={ctx.target_path}")
+            if ctx.target_hardened_runtime is not None:
+                tgt_bits.append(
+                    f"hardened_runtime={'on' if ctx.target_hardened_runtime else 'off'}"
+                )
+            if ctx.target_library_validation_disabled is not None:
+                tgt_bits.append(
+                    f"library_validation_disabled={ctx.target_library_validation_disabled}"
+                )
+            if ctx.target_get_task_allow is not None:
+                tgt_bits.append(
+                    f"get_task_allow={ctx.target_get_task_allow}"
+                )
+            if tgt_bits:
+                lines.append("  target: " + ", ".join(tgt_bits))
+        return "\n".join(lines)
 
 
 class BackendNotRunningError(BackendError):

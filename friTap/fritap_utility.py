@@ -537,8 +537,16 @@ def attach_file_handlers(
     handler = logging.StreamHandler(_DebugLogStreamProxy())
     handler.setLevel(level)
     handler.setFormatter(_DEBUG_LOG_FORMATTER)
+    # Stop the friTap logger propagating to root before we attach the same
+    # handler to both — otherwise every friTap.* record would be written
+    # twice (once via friTap's handler, once via root's). setup_fritap_logging
+    # also sets this, but may run after attach_file_handlers, so enforce it
+    # here unconditionally.
+    logging.getLogger("friTap").propagate = False
     for name in targets:
-        logging.getLogger(name).addHandler(handler)
+        lg = logging.getLogger(name)
+        if handler not in lg.handlers:
+            lg.addHandler(handler)
     overrides = dict(_DEFAULT_LOGGER_LEVELS)
     if logger_levels:
         overrides.update(logger_levels)

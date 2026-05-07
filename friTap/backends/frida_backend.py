@@ -11,12 +11,17 @@ imports or references Frida directly.
 from __future__ import annotations
 import functools
 import logging
-from typing import Any, Callable
+import os
+import subprocess
+import sys
+from typing import Any, Callable, Optional
 
 import frida
 
 from .base import (
     Backend,
+    BackendError,
+    BackendErrorContext,
     BackendInvalidArgumentError,
     BackendInvalidOperationError,
     BackendNotRunningError,
@@ -43,16 +48,162 @@ _EXCEPTION_MAP = {
 # Pre-computed tuple of exception types for the except clause (avoids rebuilding per call)
 _FRIDA_EXCEPTION_TYPES = tuple(_EXCEPTION_MAP.keys())
 
+# Stable category tags surfaced via BackendError.category. Used by the TUI
+# to render a meaningful diagnostic instead of just the message string.
+_FRIDA_CATEGORY = {
+    frida.ServerNotRunningError:    "frida_server_down",
+    frida.InvalidArgumentError:     "frida_invalid_arg",
+    frida.TransportError:           "frida_transport",
+    frida.TimedOutError:            "frida_timeout",
+    frida.ProcessNotFoundError:     "frida_not_found",
+    frida.PermissionDeniedError:    "frida_denied",
+    frida.InvalidOperationError:    "frida_invalid_op",
+}
+
+
+def _probe_hardened_runtime(path: str) -> Optional[bool]:
+    """Return True if the binary at ``path`` has the hardened-runtime flag.
+
+    ``codesign --display --verbose=2`` writes a 'flags=...(runtime)' line
+    to stderr on success.
+    """
+    try:
+        r = subprocess.run(
+            ["codesign", "--display", "--verbose=2", path],
+            capture_output=True, text=True, timeout=2,
+        )
+        return "runtime" in (r.stderr or "") + (r.stdout or "")
+    except Exception:
+        return None
+
+
+def _probe_entitlements(path: str) -> tuple[Optional[bool], Optional[bool]]:
+    """Return (library_validation_disabled, get_task_allow) for ``path``."""
+    try:
+        r = subprocess.run(
+            ["codesign", "--display", "--entitlements", "-", "--xml", path],
+            capture_output=True, text=True, timeout=2,
+        )
+        ent = r.stdout or ""
+        if not ent:
+            return None, None
+        return (
+            "com.apple.security.cs.disable-library-validation" in ent,
+            "com.apple.security.get-task-allow" in ent,
+        )
+    except Exception:
+        return None, None
+
+
+def _macos_target_probes(pid: int, ctx: BackendErrorContext) -> None:
+    """Populate ctx.target_path and codesign-derived flags for ``pid``.
+
+    Hardened-runtime + library-validation are the prime remaining culprits
+    when a macOS attach fails even with root and SIP off, so we report them
+    explicitly. The two ``codesign`` calls run concurrently because each
+    takes up to 2 s and they share no state beyond the target path.
+    """
+    try:
+        r = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "comm="],
+            capture_output=True, text=True, timeout=1,
+        )
+        path = r.stdout.strip()
+        if path:
+            ctx.target_path = path
+    except Exception:
+        return  # without a path we can't run codesign anyway
+
+    if not ctx.target_path:
+        return
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f_runtime = ex.submit(_probe_hardened_runtime, ctx.target_path)
+        f_ent = ex.submit(_probe_entitlements, ctx.target_path)
+        ctx.target_hardened_runtime = f_runtime.result()
+        ctx.target_library_validation_disabled, ctx.target_get_task_allow = (
+            f_ent.result()
+        )
+
+
+def _collect_context(device: Any = None, target: Any = None) -> BackendErrorContext:
+    """Sample cheap diagnostic state. Runs only on the error path.
+
+    All probes have safe fallbacks: if ``csrutil`` is missing, the target
+    is a name not a PID, or frida-server is unreachable, the corresponding
+    field stays ``None``. The function is intentionally non-raising.
+    """
+    ctx = BackendErrorContext(
+        euid=os.geteuid() if hasattr(os, "geteuid") else -1,
+        platform=sys.platform,
+    )
+    if sys.platform == "darwin":
+        try:
+            r = subprocess.run(
+                ["csrutil", "status"],
+                capture_output=True,
+                text=True,
+                timeout=1,
+            )
+            ctx.sip_enabled = "enabled" in r.stdout.lower()
+        except Exception:
+            pass
+    pid_int: Optional[int] = None
+    if target is not None:
+        try:
+            target_str = str(target)
+            if target_str.isnumeric():
+                pid_int = int(target_str)
+                os.kill(pid_int, 0)            # raises if the target is gone
+                ctx.target_alive = True
+        except ProcessLookupError:
+            ctx.target_alive = False
+        except Exception:
+            pass
+    if pid_int is not None and sys.platform == "darwin" and ctx.target_alive:
+        _macos_target_probes(pid_int, ctx)
+    if device is not None:
+        try:
+            device.query_system_parameters()
+            ctx.server_reachable = True
+        except Exception:
+            ctx.server_reachable = False
+    return ctx
+
 
 def _wrap_frida_errors(func):
-    """Decorator that translates frida exceptions to backend exceptions."""
+    """Two-tier wrapper: translates frida.* errors with rich context, and
+    re-tags any other exception as a ``backend_bug`` so the TUI can clearly
+    say "this is friTap's fault, not yours".
+    """
     @functools.wraps(func)
-    def wrapper(*args, **kwargs):
+    def wrapper(self, *args, **kwargs):
         try:
-            return func(*args, **kwargs)
+            return func(self, *args, **kwargs)
         except _FRIDA_EXCEPTION_TYPES as exc:
             backend_exc_type = _EXCEPTION_MAP[type(exc)]
-            raise backend_exc_type(str(exc)) from exc
+            # First positional after self is usually device, second is target;
+            # this is best-effort context — we never call methods on stale args.
+            device = args[0] if args else None
+            target = args[1] if len(args) > 1 else None
+            raise backend_exc_type(
+                str(exc),
+                original_exception=exc,
+                category=_FRIDA_CATEGORY.get(type(exc), "frida_error"),
+                context=_collect_context(device, target),
+            ) from exc
+        except BackendError:
+            # Already enriched by an inner wrapped call; let it propagate.
+            raise
+        except Exception as exc:
+            raise BackendError(
+                f"Internal error in {self.__class__.__name__}.{func.__name__}: "
+                f"{type(exc).__name__}: {exc}",
+                original_exception=exc,
+                category="backend_bug",
+                context=_collect_context(),
+            ) from exc
     return wrapper
 
 
@@ -97,8 +248,13 @@ class FridaBackend(Backend):
             env = {}
         try:
             pid = device.spawn(target)
-        except frida.InvalidArgumentError:
-            pid = device.spawn(target.split(" "), env=env)
+        except frida.InvalidArgumentError as inner_exc:
+            # Retry treating ``target`` as a tokenised command line. Preserve
+            # the chain so a follow-up failure still names the original cause.
+            try:
+                pid = device.spawn(target.split(" "), env=env)
+            except Exception as retry_exc:
+                raise retry_exc from inner_exc
         process = device.attach(pid)
         return process, pid
 
@@ -118,17 +274,21 @@ class FridaBackend(Backend):
     # Script management
     # ------------------------------------------------------------------
 
+    @_wrap_frida_errors
     def create_script(self, process: Any, script_source: str, runtime: str = "qjs") -> Any:
         return process.create_script(script_source, runtime=runtime)
 
+    @_wrap_frida_errors
     def load_script(self, script: Any) -> None:
         script.load()
 
     def unload_script(self, script: Any) -> None:
+        # Cleanup is best-effort (the process may already be gone). Log so
+        # latent backend bugs are still visible instead of silently dropped.
         try:
             script.unload()
         except Exception:
-            pass
+            self._logger.debug("unload_script: cleanup error", exc_info=True)
 
     def on_message(self, script: Any, callback: Callable) -> None:
         script.on("message", callback)
@@ -141,10 +301,15 @@ class FridaBackend(Backend):
     # ------------------------------------------------------------------
 
     def detach(self, process: Any) -> None:
+        # Detach often races with the target exiting; treat as best-effort.
+        # Include the exception type so a real backend bug is still findable
+        # in the debug log even though we don't propagate it.
         try:
             process.detach()
         except Exception as e:
-            self._logger.debug("Detach error (may be expected): %s", e)
+            self._logger.debug(
+                "Detach error (may be expected): %s: %s", type(e).__name__, e,
+            )
 
     def enable_child_gating(self, process: Any) -> None:
         process.enable_child_gating()

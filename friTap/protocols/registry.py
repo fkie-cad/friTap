@@ -116,14 +116,36 @@ class ProtocolRegistry:
         return matrix
 
 
-def create_default_registry() -> ProtocolRegistry:
-    """Create a registry with all built-in protocol handlers."""
+def create_default_registry(protocols: Optional[List[str]] = None) -> ProtocolRegistry:
+    """Create a registry with built-in protocol handlers.
+
+    Parameters
+    ----------
+    protocols
+        Names of protocols to register. ``None`` keeps the historical
+        behaviour of registering everything available, so the no-arg
+        callers (lazy discovery, tests, TUI menu) keep working.
+    """
     from .tls_handler import TLSHandler
 #    from .ipsec_handler import IPSecHandler # needs to be impl.
     from .ssh_handler import SSHHandler
 
+    known = {"tls", "ssh"}
+    selected = set(protocols) if protocols is not None else known
+    if not selected:
+        raise ValueError("create_default_registry: at least one protocol required")
+    unknown = selected - known
+    if unknown:
+        raise ValueError(
+            f"create_default_registry: unknown protocol(s): {sorted(unknown)}; "
+            f"known: {sorted(known)}"
+        )
+
     registry = ProtocolRegistry()
-    registry.register(TLSHandler())
-#    registry.register(IPSecHandler()) # needs to be impl.
-    registry.register(SSHHandler())
+    if "tls" in selected:
+        registry.register(TLSHandler())
+#    if "ipsec" in selected:
+#        registry.register(IPSecHandler()) # needs to be impl.
+    if "ssh" in selected:
+        registry.register(SSHHandler())
     return registry

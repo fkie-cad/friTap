@@ -82,6 +82,7 @@ if TEXTUAL_AVAILABLE:
         def __init__(self, replay_file: str | None = None, **kwargs) -> None:
             super().__init__(**kwargs)
             self._replay_file = replay_file
+            self._replay_filename: str | None = None
             self._replay_ctrl = None
             self._wizard = CaptureWizard(self)
             self._capture = CaptureController(self)
@@ -98,7 +99,10 @@ if TEXTUAL_AVAILABLE:
                     yield StatusBar(id="status-bar")
                     yield MenuPanel(id="menu-panel")
                 with Vertical(id="right-panel"):
-                    yield Static(f"[bold {c('success')}]friTap Console[/]", id="activity-title")
+                    with Horizontal(id="activity-title-row"):
+                        yield Static("", id="capture-indicator")
+                        yield Static(f"[bold {c('success')}]friTap Console[/]", id="activity-title")
+                        yield Static("", id="title-spacer")
                     yield FilterBar(id="filter-bar")
                     yield ActivityLog(id="activity-log")
                     yield FlowListWidget(id="flow-list")
@@ -149,6 +153,7 @@ if TEXTUAL_AVAILABLE:
 
             path = self._replay_file
             filename = Path(path).name
+            self._replay_filename = filename
 
             try:
                 self._replay_ctrl = ReplayController(path)
@@ -178,6 +183,7 @@ if TEXTUAL_AVAILABLE:
                 )
             except Exception:
                 pass
+            self._update_capture_indicator()
 
             # Populate flow list from summaries
             from friTap.parsers.base import ParseResult
@@ -761,11 +767,14 @@ if TEXTUAL_AVAILABLE:
             return "friTap Replay" if self._replay_ctrl else "friTap Flow View"
 
         def _set_title_hints(self, hint_str: str) -> None:
-            """Update the activity title bar with the given hint text."""
+            """Update the activity title bar with the given hint text.
+
+            The caller is responsible for any inline markup (e.g. [dim]).
+            """
             try:
                 title = self.query_one("#activity-title", Static)
                 title.update(
-                    f"[bold {c('primary')}]{self._mode_label}[/]  [dim]{hint_str}[/]"
+                    f"[bold {c('primary')}]{self._mode_label}[/]  {hint_str}"
                 )
             except Exception:
                 pass
@@ -773,23 +782,53 @@ if TEXTUAL_AVAILABLE:
         def _update_flow_title(self) -> None:
             """Update the flow view title bar based on current state."""
             capturing = self._ssl_logger and self._ssl_logger.running
-            hints = ["Enter: flow details", "/: filter"]
+            hints: list[str] = [
+                "[dim]Enter: flow details[/]",
+                "[dim]/: filter[/]",
+            ]
             try:
                 filter_bar = self.query_one("#filter-bar", FilterBar)
                 if filter_bar.has_active_filter:
-                    hints.append("Shift+Esc: clear filter")
+                    hints.append("[dim]Shift+Esc: clear filter[/]")
             except Exception:
                 pass
-            if capturing:
-                hints.append("Esc: stop capture")
-            hints.append("w: save .tap")
+            hints.append("[dim]w: save .tap[/]")
             if self._replay_ctrl is None:
-                hints.append("f: console view")
-            self._set_title_hints(" | ".join(hints))
+                hints.append("[dim]f: console view[/]")
+            if capturing:
+                hints.append(f"[bold {c('success')}]Esc: stop capture[/]")
+            self._set_title_hints(" [dim]|[/] ".join(hints))
+            self._update_capture_indicator()
+
+        def _update_capture_indicator(self) -> None:
+            """Refresh the left-pinned indicator: ▣ TAP / ● CAPTURING / ■ stopped."""
+            try:
+                ind = self.query_one("#capture-indicator", Static)
+            except Exception:
+                return
+
+            if self._replay_ctrl is not None:
+                ind.update(f"[bold {c('info')}]▣ TAP: {self._replay_filename or 'tap'}[/]")
+                return
+
+            capturing = self._ssl_logger and self._ssl_logger.running
+            if capturing:
+                ind.update(f"[bold {c('error')}]● CAPTURING[/]")
+            else:
+                ind.update("[dim]■ stopped[/]")
+
+        def _clear_title_indicators(self) -> None:
+            """Blank the left indicator and right spacer (used outside flow view)."""
+            try:
+                self.query_one("#capture-indicator", Static).update("")
+                self.query_one("#title-spacer", Static).update("")
+            except Exception:
+                pass
 
         def _update_detail_title(self) -> None:
             """Update the title bar with detail-view hints."""
-            self._set_title_hints("Esc: back | Tab: switch tabs | p: parse | s: save body")
+            self._clear_title_indicators()
+            self._set_title_hints("[dim]Esc: back | Tab: switch tabs | p: parse | s: save body[/]")
 
         def _activate_legacy_view(self) -> None:
             """Switch right panel to legacy activity log view."""
@@ -799,6 +838,7 @@ if TEXTUAL_AVAILABLE:
             self.query_one("#activity-log").display = True
             self.query_one("#left-panel").display = True
             self.query_one("#right-panel").remove_class("flow-mode")
+            self._clear_title_indicators()
             try:
                 title = self.query_one("#activity-title", Static)
                 capturing = self._ssl_logger and self._ssl_logger.running
