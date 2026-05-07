@@ -5,7 +5,21 @@ import struct
 
 _log = logging.getLogger(__name__)
 
-from hpack import Decoder as HpackDecoder, HPACKDecodingError
+# Try to import hpack for HPACK header decompression
+_hpack_available = False
+try:
+    from hpack import Decoder as HpackDecoder, HPACKDecodingError
+    _hpack_available = True
+except ImportError:
+    HpackDecoder = None  # type: ignore[assignment,misc]
+
+    class HPACKDecodingError(Exception):  # type: ignore[no-redef]
+        """Stub raised when hpack is not installed."""
+
+    _log.warning(
+        "hpack library not available — HTTP/2 frame parsing will work, "
+        "but HPACK header decompression is disabled. Install with: pip install hpack"
+    )
 
 from friTap.constants import PROTOCOL_HTTP2
 from .base import BaseParser, ParseResult, apply_http2_headers
@@ -162,7 +176,7 @@ class Http2Parser(BaseParser):
     def _ensure_direction(self, direction: str) -> None:
         """Lazily initialize per-direction state."""
         if direction not in self._decoders:
-            self._decoders[direction] = HpackDecoder()
+            self._decoders[direction] = HpackDecoder() if _hpack_available else None
             self._buffers[direction] = bytearray()
             self._streams[direction] = {}
             self._preface_seen[direction] = False
@@ -379,6 +393,10 @@ class Http2Parser(BaseParser):
     @staticmethod
     def _decode_headers(stream: _StreamState, decoder: HpackDecoder) -> None:
         """Decode HPACK-encoded headers using hpack library."""
+        if decoder is None:
+            # hpack library not installed — skip HPACK decoding, frame parsing continues.
+            stream.header_bytes = bytearray()
+            return
         try:
             decoded = decoder.decode(bytes(stream.header_bytes))
         except HPACKDecodingError as e:
