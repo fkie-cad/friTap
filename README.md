@@ -24,6 +24,7 @@ The main features of friTap are:
 - TLS key extraction in real time (`-k key.log`)
 - Decryption of TLS payload as PCAP in real time (`-p plaintext.pcap`)
 - Interactive TUI mode with guided setup wizard (just run `fritap`)
+- Store plaintext hook output in its own .tap capture format and replay it (`fritap -r  saved_capture.tap`)
 - Library scanning to discover renamed/statically linked libraries (`--library-scan`)
 - Library analysis and debugging (`--list-libraries`)
 - Integration with Python. [Learn more](https://github.com/fkie-cad/friTap/blob/main/INTEGRATION.md)
@@ -197,7 +198,7 @@ fritap -do -v com.example.app
 
 - `>= python3.10`
 - [frida](https://frida.re) (`>= 17`) and frida-tools (`>= 12`)
-- click, hexdump, scapy, watchdog, rich, textual, pydantic, psutil, platformdirs
+- hexdump, scapy, watchdog, rich, textual, pydantic, psutil, platformdirs, h11
 - AndroidFridaManager (for Android device management)
 - for hooking on Android ensure that the `adb`-command is in your PATH
 
