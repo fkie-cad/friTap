@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import ntpath
+import os
 import subprocess
 from threading import Thread, Event
 import random
@@ -12,26 +13,36 @@ import traceback
 import warnings
 
 from friTap.constants import build_infrastructure_bpf
+from .pcap_utility import is_pcapng_filename
 
 try:
     from scapy.all import wrpcap, conf, ETH_P_ALL, sniff, Scapy_Exception
+    from scapy.utils import PcapReader
     SCAPY_AVAILABLE = True
 except ImportError:
     SCAPY_AVAILABLE = False
     # Create dummy objects for testing environments
     class Scapy_Exception(Exception):
         pass
-    
+
     def wrpcap(*args, **kwargs):
         pass
-    
+
     class conf:
         pass
-    
+
     ETH_P_ALL = None
-    
+
     def sniff(*args, **kwargs):
         return []
+
+    class PcapReader:
+        def __init__(self, *args, **kwargs):
+            self.linktype = 1
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def __iter__(self): return iter(())
+        def close(self): pass
     
     # Only print warning if not in testing mode
     import sys
@@ -91,7 +102,13 @@ class PCAP:
                 self.logger.info("capturing whole traffic of target app")
         else:
             self.logger.info("capturing only plaintext data")
-            self.pcap_file = self.__create_plaintext_pcap()
+            # When the user requested pcapng, PcapngOutputHandler will own
+            # the file and write a proper SHB. Skip the legacy classic-pcap
+            # header write that would otherwise be immediately overwritten.
+            if is_pcapng_filename(self.pcap_file_name):
+                self.pcap_file = None
+            else:
+                self.pcap_file = self.__create_plaintext_pcap()
             
     
 
@@ -411,8 +428,131 @@ class PCAP:
 
 
         
+    def _temp_pcap_path(self):
+        """Return the temp file path produced by FullCaptureThread.
+
+        Mirrors ``_get_tmp_pcap_name`` in the inner thread class so the
+        finalization helpers work for both relative and absolute filenames.
+        For ``capture.pcapng`` → ``_capture.pcapng``; for
+        ``/tmp/capture.pcapng`` → ``/tmp/_capture.pcapng``.
+        """
+        head, tail = os.path.split(self.pcap_file_name)
+        base = tail or os.path.basename(head)
+        return os.path.join(head, "_" + base) if head else "_" + base
+
+    @staticmethod
+    def _write_minimal_pcapng_with_keys(output_pcapng, formatted_keys, link_type=1):
+        """Write a zero-packet pcapng (SHB + IDB + optional DSB).
+
+        Used by ``_emit_pcapng_with_dsb`` when the source pcap is
+        unavailable or unreadable, to ensure the user still keeps the
+        TLS keys instead of getting a scapy traceback. Default link
+        type is DLT_EN10MB (1) for the no-source-to-probe case.
+        """
+        from .output.pcapng_blocks import build_shb, build_idb, build_dsb
+        with open(output_pcapng, "wb") as fh:
+            fh.write(build_shb())
+            fh.write(build_idb(link_type=link_type))
+            if formatted_keys:
+                secrets = ("\n".join(formatted_keys) + "\n").encode("utf-8")
+                fh.write(build_dsb(secrets))
+
+    def _emit_pcapng_with_dsb(self, source_pcap, output_pcapng,
+                              formatted_keys, bpf_filter=None):
+        """Emit a pcapng of source_pcap to output_pcapng with a DSB block
+        embedding all formatted_keys. Linktype is preserved from the source.
+
+        Streams packets via PcapReader so multi-GB captures don't materialise
+        the full PacketList in memory. When a BPF filter is supplied we fall
+        back to ``sniff`` because scapy's BPF compilation needs the L2 layer.
+
+        Defensive: if the source pcap is missing or zero-sized (e.g. the
+        sniff thread saw no packets, or the temp file was already moved
+        away), still write a minimal valid pcapng with SHB+IDB(+DSB) so
+        the user keeps the TLS keys instead of getting a scapy traceback.
+        """
+        from .output.pcapng_blocks import build_shb, build_idb, build_dsb, build_epb
+
+        source_missing = (
+            not source_pcap
+            or not os.path.exists(source_pcap)
+            or os.path.getsize(source_pcap) == 0
+        )
+        if source_missing:
+            self.logger.warning(
+                "Full-capture source pcap missing or empty (%s); "
+                "writing zero-packet %s with embedded keys",
+                source_pcap, output_pcapng,
+            )
+            self._write_minimal_pcapng_with_keys(output_pcapng, formatted_keys)
+            return
+
+        try:
+            with PcapReader(source_pcap) as reader:
+                linktype = reader.linktype
+                with open(output_pcapng, "wb") as fh:
+                    fh.write(build_shb())
+                    fh.write(build_idb(link_type=linktype))
+                    if formatted_keys:
+                        secrets = ("\n".join(formatted_keys) + "\n").encode("utf-8")
+                        fh.write(build_dsb(secrets))
+                    packets = (
+                        sniff(offline=source_pcap, filter=bpf_filter)
+                        if bpf_filter else reader
+                    )
+                    for pkt in packets:
+                        t_us = int(float(pkt.time) * 1_000_000)
+                        fh.write(build_epb(bytes(pkt), t_us))
+        except (EOFError, struct.error, Scapy_Exception) as exc:
+            # Truncated/corrupt source: log the path so the user can
+            # inspect, but still produce a usable output with the keys.
+            self.logger.error(
+                "PCAPNG finalization failed reading %s: %s — emitting keys-only output",
+                source_pcap, exc,
+            )
+            self._write_minimal_pcapng_with_keys(output_pcapng, formatted_keys)
+
+    def _emit_final(self, source_pcap, formatted_keys, bpf_filter=None):
+        """Decide format from self.pcap_file_name extension and emit accordingly.
+
+        For .pcapng targets: emit a fresh pcapng with embedded DSB block.
+        For .pcap (or unrecognised) with a filter: write filtered classic pcap.
+        For .pcap with no filter: rename the temp file in place — source is
+        already classic pcap, and the rename is on the same filesystem
+        because _temp_pcap_path puts the temp alongside the final.
+        """
+        if is_pcapng_filename(self.pcap_file_name):
+            self._emit_pcapng_with_dsb(
+                source_pcap, self.pcap_file_name, formatted_keys, bpf_filter,
+            )
+        elif bpf_filter:
+            wrpcap(self.pcap_file_name, sniff(offline=source_pcap, filter=bpf_filter))
+        else:
+            os.replace(source_pcap, self.pcap_file_name)
+
+    def finalize_full_capture(self, formatted_keys=()):
+        """Finalize the *unfiltered* full capture: emit the temp file at
+        ``self.pcap_file_name`` in the user-requested format. Embeds DSB
+        when the target is pcapng.
+        """
+        try:
+            self._emit_final(self._temp_pcap_path(), formatted_keys, bpf_filter=None)
+        except Exception as e:
+            self.logger.error(f"Error finalizing full capture: {e}")
+        else:
+            self.logger.info(f"Full capture written to {self.pcap_file_name}")
+
     # this function is able to reduce a capture to the traffic from the traced target application by using the information from the socket trace and applying a bpf filter of those traced packets
-    def create_application_traffic_pcap(self, traced_Socket_Set,pcap_obj,  is_verbose=False):
+    def create_application_traffic_pcap(self, traced_Socket_Set, pcap_obj,
+                                        is_verbose=False, formatted_keys=()):
+        """Filter the temp full capture down to application traffic and
+        write the result at ``self.pcap_file_name`` in the user-requested
+        format (pcap or pcapng+DSB).
+
+        On any internal error (no sockets, no valid sockets, no BPF filter
+        producible), falls back to ``finalize_full_capture`` so the user
+        always gets a final file at the requested path with the right format.
+        """
         def is_valid_socket(socket_info):
             return (
                 socket_info.get("src_addr") and socket_info.get("dst_addr")
@@ -423,21 +563,19 @@ class PCAP:
             )
 
         if not traced_Socket_Set:
-            self.logger.error("No sockets traced. The resulting PCAP will contain all traffic from the device.")
-            return
+            self.logger.error("No sockets traced. Falling back to full capture.")
+            return self.finalize_full_capture(formatted_keys)
 
-        # Convert each frozenset in the traced_Socket_Set back to a dictionary
         socket_dicts = [dict(frozenset_entry) for frozenset_entry in traced_Socket_Set]
-
-        valid_sockets = [socket for socket in socket_dicts if is_valid_socket(socket)]
+        valid_sockets = [s for s in socket_dicts if is_valid_socket(s)]
         if not valid_sockets:
-            self.logger.error("No valid sockets found. The resulting PCAP will contain all traffic.")
-            return
+            self.logger.error("No valid sockets found. Falling back to full capture.")
+            return self.finalize_full_capture(formatted_keys)
 
         bpf_filter = PCAP.get_filter_from_traced_sockets(valid_sockets, filter_type="bpf")
         if not bpf_filter:
-            self.logger.error("Failed to generate a valid BPF filter.")
-            return
+            self.logger.error("Failed to generate a valid BPF filter. Falling back to full capture.")
+            return self.finalize_full_capture(formatted_keys)
 
         if is_verbose:
             self.logger.info(f"Filtering with BPF filter:\n{bpf_filter}")
@@ -451,8 +589,7 @@ class PCAP:
             ResourceWarning: subprocess 63901 is still running
             reading from file <name>.pcap, link-type LINUX_SLL2 (Linux cooked v2)
             """
-            filtered_capture = sniff(offline="_" + self.pcap_file_name, filter=bpf_filter)
-            wrpcap(self.pcap_file_name, filtered_capture)
+            self._emit_final(self._temp_pcap_path(), formatted_keys, bpf_filter=bpf_filter)
         except Exception as e:
             self.logger.error(f"Error during PCAP filtering: {e}")
         else:

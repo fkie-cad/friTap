@@ -245,6 +245,9 @@ Examples:
                       help="Path to a custom hook script that will be executed prior to applying the friTap hooks.")
     args.add_argument("-d", "--debug", required=False, action="store_const", const=True,
                       help="Set friTap into debug mode this include debug output as well as a listening Chrome Inspector server for remote debugging.")
+    args.add_argument("--debug-log", metavar="<path>", required=False, default=None, dest="debug_log",
+                      help="Write the friTap debug log to <path> (default: ./fritap_debug_<ts>_<pid>.log). "
+                           "Capture session-level errors, warnings, and uncaught exceptions even in non-TUI mode.")
     args.add_argument("-do", "--debugoutput", required=False, action="store_const", const=True,
                       help="Activate the debug output only.")
     args.add_argument("-ar", "--anti_root", required=False, action="store_const", const=True, default=False, help="Activate anti root hooks for Android")
@@ -323,6 +326,20 @@ Examples:
     logger, special_logger = setup_fritap_logging(
         debug=parsed.debug, debug_output=parsed.debugoutput
     )
+
+    # Bring up the debug-log file subsystem when the user asked for one,
+    # either explicitly via --debug-log or implicitly via --debugoutput.
+    # Done immediately after console-logging is configured so init-time
+    # errors below this line land in the file. The TUI entry point
+    # (run_tui) calls prime_debug_log too — both call sites are idempotent.
+    debug_log_path_override = getattr(parsed, "debug_log", None)
+    if debug_log_path_override or parsed.debugoutput:
+        from .fritap_utility import prime_debug_log
+        opened = prime_debug_log(debug_log_path_override)
+        if opened:
+            logger.info(f"Debug log: {opened}")
+        else:
+            logger.warning("Failed to initialise friTap debug log file")
 
     if are_we_running_on_windows() and not parsed.mobile:
         if parsed.no_lsass:

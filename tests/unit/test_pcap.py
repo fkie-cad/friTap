@@ -491,3 +491,225 @@ class TestPCAPValidation:
         finally:
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
+
+
+import logging
+import struct
+from pathlib import Path
+
+from friTap.pcap_utility import is_pcapng_filename
+
+
+def _bare_pcap(tmp_path: Path, filename: str) -> "PCAP":
+    # PCAP.__init__ requires 6 args and spawns a FullCaptureThread that
+    # needs /dev/bpf — bypass it for finalization-only tests.
+    pcap = PCAP.__new__(PCAP)
+    pcap.pcap_file_name = str(tmp_path / filename)
+    pcap.logger = logging.getLogger("friTap.test")
+    return pcap
+
+
+def _write_classic_pcap_fixture(path: str, linktype: int = 1) -> None:
+    """Write a minimal valid classic-pcap file with one zero-length packet."""
+    with open(path, "wb") as f:
+        # Global header: magic, major, minor, thiszone, sigfigs, snaplen, linktype
+        f.write(struct.pack("<IHHiIII", 0xa1b2c3d4, 2, 4, 0, 0, 65535, linktype))
+        # One record header (ts_sec, ts_usec, incl_len, orig_len) + zero-length payload
+        f.write(struct.pack("<IIII", 0, 0, 0, 0))
+
+
+class TestIsPcapngFilename:
+    """Filename-extension helper used at four sites."""
+
+    def test_pcap_extension(self):
+        assert is_pcapng_filename("a.pcap") is False
+
+    def test_pcapng_extension(self):
+        assert is_pcapng_filename("a.pcapng") is True
+
+    def test_pcapng_uppercase(self):
+        assert is_pcapng_filename("a.PCAPNG") is True
+
+    def test_pcap_mixed_case(self):
+        assert is_pcapng_filename("a.PcAp") is False
+
+    def test_pcap_inside_name_not_at_end(self):
+        assert is_pcapng_filename("a.pcap.bak") is False
+
+    def test_unknown_extension(self):
+        assert is_pcapng_filename("a.bin") is False
+
+    def test_none(self):
+        assert is_pcapng_filename(None) is False
+
+    def test_empty_string(self):
+        assert is_pcapng_filename("") is False
+
+
+class TestFactoryFormatRouting:
+    """The factory must let filename extension win over output_format."""
+
+    def _make_config(self, pcap, output_format="auto", full_capture=False):
+        from friTap.config import FriTapConfig, OutputConfig
+        return FriTapConfig(
+            target="test",
+            output=OutputConfig(
+                pcap=pcap,
+                output_format=output_format,
+                full_capture=full_capture,
+            ),
+        )
+
+    def test_pcap_extension_beats_pcapng_output_format(self):
+        """Extension `.pcap` wins even when output_format='pcapng'."""
+        from friTap.output import OutputHandlerFactory, PcapOutputHandler
+
+        config = self._make_config("a.pcap", output_format="pcapng")
+        handlers, _ = OutputHandlerFactory.create_handlers(
+            config, pcap_obj=object(), protocol_handler=None,
+            session_data={}, logger=logging.getLogger("test"),
+        )
+        types = [type(h).__name__ for h in handlers]
+        assert "PcapOutputHandler" in types
+        assert "PcapngOutputHandler" not in types
+
+    def test_pcapng_extension_beats_pcap_output_format(self):
+        """Extension `.pcapng` always selects the pcapng handler."""
+        from friTap.output import OutputHandlerFactory
+
+        config = self._make_config("a.pcapng", output_format="auto")
+        handlers, _ = OutputHandlerFactory.create_handlers(
+            config, pcap_obj=object(), protocol_handler=None,
+            session_data={}, logger=logging.getLogger("test"),
+        )
+        types = [type(h).__name__ for h in handlers]
+        assert "PcapngOutputHandler" in types
+        assert "PcapOutputHandler" not in types
+
+    def test_full_capture_pcapng_creates_key_collector(self):
+        """Full capture + .pcapng output → KeyCollectorHandler is wired up."""
+        from friTap.output import OutputHandlerFactory
+
+        config = self._make_config("a.pcapng", full_capture=True)
+        handlers, _ = OutputHandlerFactory.create_handlers(
+            config, pcap_obj=None, protocol_handler=None,
+            session_data={}, logger=logging.getLogger("test"),
+        )
+        types = [type(h).__name__ for h in handlers]
+        assert "KeyCollectorHandler" in types
+
+    def test_full_capture_pcap_does_not_create_key_collector(self):
+        """Full capture + .pcap output → no key collector (DSB is pcapng-only)."""
+        from friTap.output import OutputHandlerFactory
+
+        config = self._make_config("a.pcap", full_capture=True)
+        handlers, _ = OutputHandlerFactory.create_handlers(
+            config, pcap_obj=None, protocol_handler=None,
+            session_data={}, logger=logging.getLogger("test"),
+        )
+        types = [type(h).__name__ for h in handlers]
+        assert "KeyCollectorHandler" not in types
+
+
+class TestFinalizeFullCapture:
+    """Branch B: unfiltered full capture finalization with format+DSB."""
+
+    def test_pcapng_target_writes_real_pcapng_with_dsb(self, tmp_path):
+        pcap = _bare_pcap(tmp_path, "x.pcapng")
+        _write_classic_pcap_fixture(str(tmp_path / "_x.pcapng"))
+
+        pcap.finalize_full_capture(formatted_keys=["CLIENT_RANDOM aaa bbb"])
+
+        out = (tmp_path / "x.pcapng").read_bytes()
+        # SHB magic 0x0a0d0d0a stored as <I → 0a 0d 0d 0a
+        assert out[:4] == b"\x0a\x0d\x0d\x0a"
+        # DSB body contains the formatted key string
+        assert b"CLIENT_RANDOM aaa bbb" in out
+
+    def test_pcap_target_renames_temp(self, tmp_path):
+        pcap = _bare_pcap(tmp_path, "x.pcap")
+        _write_classic_pcap_fixture(str(tmp_path / "_x.pcap"))
+
+        pcap.finalize_full_capture()
+
+        # Temp file is gone; final file exists with classic pcap magic
+        assert not (tmp_path / "_x.pcap").exists()
+        assert (tmp_path / "x.pcap").exists()
+        assert (tmp_path / "x.pcap").read_bytes()[:4] == b"\xd4\xc3\xb2\xa1"
+
+    def test_pcapng_with_no_keys_skips_dsb_block(self, tmp_path):
+        """Empty key list → valid pcapng without a DSB block."""
+        from friTap.output.pcapng_blocks import BT_DSB
+
+        pcap = _bare_pcap(tmp_path, "x.pcapng")
+        _write_classic_pcap_fixture(str(tmp_path / "_x.pcapng"))
+
+        pcap.finalize_full_capture(formatted_keys=[])
+
+        out = (tmp_path / "x.pcapng").read_bytes()
+        assert out[:4] == b"\x0a\x0d\x0d\x0a"
+        # No DSB block-type marker should be present
+        dsb_marker = struct.pack("<I", BT_DSB)
+        assert dsb_marker not in out
+
+
+class TestApplicationTrafficPcapFallthrough:
+    """Branch A early-returns must fall through to finalize_full_capture
+    so a .pcapng user gets the file at the requested path."""
+
+    def test_no_sockets_falls_through_to_pcapng(self, tmp_path):
+        pcap = _bare_pcap(tmp_path, "x.pcapng")
+        _write_classic_pcap_fixture(str(tmp_path / "_x.pcapng"))
+
+        pcap.create_application_traffic_pcap(
+            traced_Socket_Set=set(), pcap_obj=None,
+            formatted_keys=["CLIENT_RANDOM zzz www"],
+        )
+
+        out = (tmp_path / "x.pcapng").read_bytes()
+        assert out[:4] == b"\x0a\x0d\x0d\x0a"
+        assert b"CLIENT_RANDOM zzz www" in out
+
+
+class TestLinktypePreservation:
+    """The pcapng IDB linktype must match the temp pcap's linktype so
+    Android-tcpdump captures (LINUX_SLL2 = 276) are not silently rewritten
+    as Ethernet."""
+
+    def test_linktype_276_preserved_in_idb(self, tmp_path):
+        pcap = _bare_pcap(tmp_path, "x.pcapng")
+        _write_classic_pcap_fixture(str(tmp_path / "_x.pcapng"), linktype=276)
+
+        pcap.finalize_full_capture()
+
+        out = (tmp_path / "x.pcapng").read_bytes()
+        # IDB body starts after SHB. SHB total length is at bytes 4..8 of the file
+        # (block_total_length, little-endian), so the IDB block begins at that offset.
+        shb_total_len = struct.unpack("<I", out[4:8])[0]
+        # IDB layout: type(4) total_len(4) link_type(2) reserved(2) snap_len(4) ...
+        idb_body_offset = shb_total_len + 8
+        link_type = struct.unpack("<H", out[idb_body_offset:idb_body_offset + 2])[0]
+        assert link_type == 276
+
+
+class TestKeyCollectorHandler:
+    """Buffered key collection used to feed DSB at finalization."""
+
+    def test_dedups_repeated_keys(self):
+        from friTap.output import KeyCollectorHandler
+        from friTap.events import KeylogEvent
+
+        h = KeyCollectorHandler()
+        h.on_keylog(KeylogEvent(key_data="CLIENT_RANDOM dedup-me 11"))
+        h.on_keylog(KeylogEvent(key_data="CLIENT_RANDOM dedup-me 11"))
+        h.on_keylog(KeylogEvent(key_data="CLIENT_RANDOM unique 22"))
+
+        keys = h.get_collected_keys()
+        assert len(keys) == 2
+        assert "CLIENT_RANDOM dedup-me 11" in keys
+        assert "CLIENT_RANDOM unique 22" in keys
+
+    def test_empty_keys_returned_as_empty_list(self):
+        from friTap.output import KeyCollectorHandler
+        h = KeyCollectorHandler()
+        assert h.get_collected_keys() == []

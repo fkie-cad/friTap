@@ -876,6 +876,26 @@ class SSL_Logger():
         )
         self._consumer_thread.start()
 
+    def _emit_router_error(self, exc: Exception, where: str) -> None:
+        """Surface a frida-thread routing error as an EventBus ErrorEvent.
+
+        The traceback already hit the debug-log file via logger.exception;
+        this additionally emits an ``ErrorEvent(severity="error")`` so the
+        TUI activity log and any other subscriber observe the failure.
+        Never raises.
+        """
+        try:
+            import traceback as _tb
+            from friTap.events import ErrorEvent, ERROR_SEVERITY_ERROR
+            self._event_bus.emit(ErrorEvent(
+                error=f"{type(exc).__name__} in message router ({where})",
+                description=str(exc),
+                stack="".join(_tb.format_exception(type(exc), exc, exc.__traceback__)),
+                severity=ERROR_SEVERITY_ERROR,
+            ))
+        except Exception:
+            self.logger.debug("Failed to emit router ErrorEvent", exc_info=True)
+
     def _consume_messages(self):
         """Process queued Frida messages on a dedicated thread.
 
@@ -892,8 +912,15 @@ class SSL_Logger():
                     self._handle_child_added(message.child)
                 else:
                     self.on_fritap_message(None, message, data)
-            except Exception:
-                self.logger.debug("Error processing queued message", exc_info=True)
+            except Exception as exc:
+                # Frida-side message handlers run on a dedicated thread.
+                # An uncaught exception here used to be debug-only and
+                # would silently drop messages; upgrade to logger.exception
+                # so the traceback always hits the debug log file, and
+                # emit an ErrorEvent so the TUI's activity log + EventBus
+                # subscribers see the failure too.
+                self.logger.exception("Error processing queued frida message")
+                self._emit_router_error(exc, "consume")
 
     def _drain_message_queue(self):
         """Process all remaining queued messages before PCAP is closed."""
@@ -909,8 +936,9 @@ class SSL_Logger():
                 else:
                     self.on_fritap_message(None, message, data)
                 drained += 1
-            except Exception:
-                self.logger.debug("Error draining queued message", exc_info=True)
+            except Exception as exc:
+                self.logger.exception("Error draining queued frida message")
+                self._emit_router_error(exc, "drain")
         if drained and (self.debug_output or self.debug):
             self.logger.debug("Drained %d queued messages before cleanup", drained)
         if self._queue_drop_count:
@@ -1039,21 +1067,37 @@ class SSL_Logger():
             display_filter = PCAP.get_filter_from_traced_sockets(self.traced_Socket_Set, filter_type="display")
             self.logger.info(f"Generated Display Filter for Wireshark:\n{display_filter}")
 
-        if full_capture and self.traced_scapy_socket_Set:
+        if full_capture:
             if debug_output or debug:
                 display_filter = PCAP.get_filter_from_traced_sockets(self.traced_Socket_Set, filter_type="display")
                 self.logger.debug(f"Generated Display Filter for Wireshark:\n{display_filter}")
 
+            from ..output import KeyCollectorHandler
+            formatted_keys = ()
+            for handler in getattr(self, "_output_handlers", []):
+                if isinstance(handler, KeyCollectorHandler):
+                    formatted_keys = handler.get_collected_keys()
+                    break
+
+            pcap_name = self.pcap_obj.pcap_file_name
             try:
-                self.pcap_obj.create_application_traffic_pcap(self.traced_scapy_socket_Set,self.pcap_obj)
+                if self.traced_scapy_socket_Set:
+                    self.pcap_obj.create_application_traffic_pcap(
+                        self.traced_scapy_socket_Set, self.pcap_obj,
+                        formatted_keys=formatted_keys,
+                    )
+                else:
+                    suffix = (
+                        f"PCAP {pcap_name} will contain all captured traffic from "
+                        f"the device (frida/adb infrastructure excluded by default)."
+                    )
+                    if socket_trace:
+                        self.logger.warning(f"friTap observed no sockets during capture. The resulting {suffix}")
+                    else:
+                        self.logger.info(f"Socket tracing disabled. The resulting {suffix}")
+                    self.pcap_obj.finalize_full_capture(formatted_keys)
             except Exception as e:
                 self.logger.error(f"Error: {e}")
-
-        elif full_capture and not self.traced_scapy_socket_Set:
-            if socket_trace:
-                self.logger.warning(f"friTap was unable to identify the used sockets. The resulting PCAP _{self.pcap_obj.pcap_file_name} will contain all traffic from the device.")
-            else:
-                self.logger.info(f"friTap not trace the sockets in use (--socket_tracing option not enabled). The resulting PCAP _{self.pcap_obj.pcap_file_name} will contain all traffic from the device.")
 
         self.running = False
         self._done_event.set()

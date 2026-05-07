@@ -143,12 +143,22 @@ class FriTap:
     # ------------------------------------------------------------------
 
     def pcap(self, path: str) -> "FriTap":
-        """Write decrypted traffic to a PCAP file."""
+        """Write decrypted traffic to a PCAP file.
+
+        The filename extension is authoritative: ``.pcap`` writes classic
+        libpcap, ``.pcapng`` writes pcapng (with embedded DSB if keys are
+        extracted). Extension overrides any prior call to :meth:`pcapng`.
+        """
         self._output.pcap = path
         return self
 
     def pcapng(self, path: str) -> "FriTap":
-        """Write self-decrypting PCAPNG (with DSB)."""
+        """Write self-decrypting PCAPNG (with DSB).
+
+        Equivalent to :meth:`pcap` with a ``.pcapng`` extension. If `path`
+        has a different extension, the extension still wins — e.g.
+        ``.pcapng("a.pcap")`` writes classic libpcap.
+        """
         self._output.pcap = path
         self._output.output_format = "pcapng"
         return self

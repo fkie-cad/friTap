@@ -65,6 +65,7 @@ def reparse_flow(flow: "Flow") -> bool:
     Returns ``True`` if the protocol was successfully upgraded from
     ``"unknown"`` to a real protocol.
     """
+    from friTap.parsers.base import SafeParserAdapter, unwrap_parser
     from friTap.parsers.hexdump import HexdumpParser
     from friTap.parsers.registry import get_default_registry
 
@@ -81,20 +82,26 @@ def reparse_flow(flow: "Flow") -> bool:
 
     try:
         registry = get_default_registry()
-        parser = registry.detect(detect_data)
+        raw_parser = registry.detect(detect_data)
     except Exception:
         return False
 
-    if isinstance(parser, HexdumpParser):
+    if isinstance(raw_parser, HexdumpParser):
         # Try the other direction
         alt_data = read_bytes if detect_data is write_bytes else write_bytes
         if alt_data:
             try:
-                parser = registry.detect(alt_data)
+                raw_parser = registry.detect(alt_data)
             except Exception:
                 return False
-        if isinstance(parser, HexdumpParser):
+        if isinstance(raw_parser, HexdumpParser):
             return False
+
+    # Wrap in SafeParserAdapter so a single malformed chunk can no longer
+    # raise out of feed/flush; on first failure, subsequent feeds are
+    # short-circuited and the adapter's friTap.parsers.safe logger records
+    # the traceback. This replaces the prior per-iteration try/except blocks.
+    parser = SafeParserAdapter(raw_parser)
 
     # Clear existing results so the new parser can replace them.
     # This handles both "unknown" protocol upgrades and re-parsing with
@@ -104,11 +111,7 @@ def reparse_flow(flow: "Flow") -> bool:
 
     # Feed all chunks through the detected parser
     for chunk in flow.chunks:
-        try:
-            results = parser.feed(chunk.data, chunk.direction)
-        except Exception:
-            logger.debug("reparse feed error", exc_info=True)
-            continue
+        results = parser.feed(chunk.data, chunk.direction)
         for result in results:
             if result.is_request and flow.request is None:
                 flow.request = result
@@ -116,14 +119,11 @@ def reparse_flow(flow: "Flow") -> bool:
                 flow.response = result
 
     # Flush remaining partial messages
-    try:
-        for result in parser.flush():
-            if result.is_request and flow.request is None:
-                flow.request = result
-            elif not result.is_request and flow.response is None:
-                flow.response = result
-    except Exception:
-        logger.debug("reparse flush error", exc_info=True)
+    for result in parser.flush():
+        if result.is_request and flow.request is None:
+            flow.request = result
+        elif not result.is_request and flow.response is None:
+            flow.response = result
 
     upgraded = False
     if flow.request and flow.request.protocol != "unknown":
@@ -136,7 +136,8 @@ def reparse_flow(flow: "Flow") -> bool:
     # protocol indicator so the flow list shows the correct label.
     if not upgraded and flow.request is None:
         from friTap.parsers.base import ParseResult
-        proto_label = _parser_protocol_label(parser)
+        # Unwrap the adapter so the protocol label reflects the concrete parser.
+        proto_label = _parser_protocol_label(unwrap_parser(parser))
         if proto_label != "unknown":
             flow.request = ParseResult(
                 protocol=proto_label,

@@ -10,8 +10,9 @@ timestamped output, and ASCII welcome banner.
 
 from __future__ import annotations
 
+import time
 from datetime import datetime
-from typing import List
+from typing import List, Optional, Tuple
 
 try:
     from textual.widgets import RichLog
@@ -56,6 +57,10 @@ if TEXTUAL_AVAILABLE:
         """Real-time activity log with typed log methods."""
 
         _MAX_LINES = 10_000
+        # Suppress identical warning/error messages that fire within this
+        # window. Prevents recovered parser errors (or any noisy
+        # ErrorEvent stream) from flooding the activity log.
+        _DEDUP_WINDOW_SEC = 2.0
 
         def __init__(self, **kwargs) -> None:
             super().__init__(
@@ -66,11 +71,44 @@ if TEXTUAL_AVAILABLE:
                 **kwargs,
             )
             self._plain_lines: List[str] = []
+            # (key, last_emit_ts, suppressed_count, level_name)
+            self._dedup_state: Tuple[Optional[str], float, int, str] = (None, 0.0, 0, "")
 
         def _trim_lines(self) -> None:
             """Cap _plain_lines to _MAX_LINES, keeping the most recent."""
             if len(self._plain_lines) > self._MAX_LINES:
                 self._plain_lines = self._plain_lines[-self._MAX_LINES:]
+
+        def _dedup_should_suppress(self, level: str, message: str) -> bool:
+            """Return True if *message* repeats the previous warn/error.
+
+            On a non-repeat, if a previous run of duplicates was active a
+            collapsed summary line is emitted before the caller writes
+            its own line. Only WARN and ERROR levels feed this — INFO,
+            DATA, etc. are not deduped because they are not flood
+            sources in practice.
+            """
+            now = time.time()
+            key = f"{level}|{message}"
+            last_key, last_ts, count, last_level = self._dedup_state
+            if last_key == key and (now - last_ts) <= self._DEDUP_WINDOW_SEC:
+                self._dedup_state = (key, now, count + 1, level)
+                return True
+            if count > 1:
+                self._emit_dedup_summary(count - 1, last_level)
+            self._dedup_state = (key, now, 1, level)
+            return False
+
+        def _emit_dedup_summary(self, suppressed: int, level: str) -> None:
+            ts = _ts()
+            tag = level if level else "REPEAT"
+            line = f"{ts} {tag}: ... repeated {suppressed} more time(s)"
+            self._plain_lines.append(line)
+            self._trim_lines()
+            self.write(
+                f"[{c('text-dim')}]{ts}[/] [{c('text-dim')}]REPEAT[/] "
+                f"... repeated {suppressed} more time(s)"
+            )
 
         # ----------------------------------------------------------
         # Welcome banner
@@ -99,14 +137,18 @@ if TEXTUAL_AVAILABLE:
             self.write(f"[{c('text-dim')}]{ts}[/] [{c('info')}]INFO[/]  {message}")
 
         def log_error(self, message: str) -> None:
-            """Log an error message."""
+            """Log an error message (with 2-second dedup window)."""
+            if self._dedup_should_suppress("ERROR", message):
+                return
             ts = _ts()
             self._plain_lines.append(f"{ts} ERROR: {message}")
             self._trim_lines()
             self.write(f"[{c('text-dim')}]{ts}[/] [{c('error')}]ERROR[/] {message}")
 
         def log_warning(self, message: str) -> None:
-            """Log a warning message."""
+            """Log a warning message (with 2-second dedup window)."""
+            if self._dedup_should_suppress("WARN", message):
+                return
             ts = _ts()
             self._plain_lines.append(f"{ts} WARNING: {message}")
             self._trim_lines()

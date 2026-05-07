@@ -4,10 +4,13 @@ AndroidFridaManager
 hexdump
 scapy
 watchdog
-click
 psutil
 rich>=13.0.0
 textual>=0.80.0
 tlsLibHunter
 platformdirs>=3.0
 pydantic>=2.0
+h11
+pylsqpack
+zstandard>=0.19
+brotli>=1.0

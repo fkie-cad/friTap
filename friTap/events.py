@@ -109,14 +109,34 @@ class ConsoleEvent(FriTapEvent):
     level: str = "info"
 
 
+# ErrorEvent severity values — controls TUI modal vs activity-log routing.
+ERROR_SEVERITY_INFO = "info"
+ERROR_SEVERITY_WARNING = "warning"
+ERROR_SEVERITY_ERROR = "error"
+ERROR_SEVERITY_FATAL = "fatal"
+ERROR_SEVERITIES = (
+    ERROR_SEVERITY_INFO,
+    ERROR_SEVERITY_WARNING,
+    ERROR_SEVERITY_ERROR,
+    ERROR_SEVERITY_FATAL,
+)
+
+
 @dataclass
 class ErrorEvent(FriTapEvent):
-    """Emitted when an error occurs in the agent or hooking pipeline."""
+    """Emitted when an error occurs in the agent or hooking pipeline.
+
+    ``severity`` is consumed by the TUI to decide whether to show a blocking
+    AlertModal (``"error"``/``"fatal"``) or merely append to the activity log
+    (``"info"``/``"warning"``). Recovered parser failures emit ``"warning"``;
+    session-level uncaught exceptions emit ``"fatal"``.
+    """
     error: str = ""
     description: str = ""
     stack: str = ""
     file: str = ""
     line: str = ""
+    severity: str = ERROR_SEVERITY_WARNING
 
 
 @dataclass
@@ -296,6 +316,7 @@ class EventBus:
                         self.emit(ErrorEvent(
                             error=f"Handler {handler_name} failed",
                             description=str(exc),
+                            severity=ERROR_SEVERITY_ERROR,
                         ))
                     except Exception:
                         pass

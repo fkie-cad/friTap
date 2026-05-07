@@ -10,12 +10,16 @@ and post-session UI cleanup.
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 
 from .modals.alert_modal import AlertModal
 from friTap.constants import build_infrastructure_display_filter
+from friTap.events import ERROR_SEVERITY_ERROR, ERROR_SEVERITY_FATAL
 from friTap.tui.themes import c
+
+logger = logging.getLogger("friTap.tui.capture")
 
 try:
     from textual.widgets import Static
@@ -58,7 +62,14 @@ class CaptureController:
         self._flow_collector = None
         self._tap_writer = None
         self._debug_log_file = None
+        self._debug_log_writer = None
         self._debug_log_path: str = ""
+        self._session_error: str = ""
+        # Severity of the most recent session error. Drives whether the
+        # AlertModal at session-end is shown; recovered parser errors
+        # (severity="warning") never reach _session_error so the modal
+        # stays an exceptional event.
+        self._session_error_severity: str = ERROR_SEVERITY_FATAL
         # UI update batching to prevent call_from_thread() storm
         import threading
         self._ui_lock = threading.Lock()
@@ -254,22 +265,63 @@ class CaptureController:
     def _setup_debug_log(self, event_bus):
         """Set up file-based debug logging for all EventBus events.
 
-        Must be called from a background thread (uses call_from_thread).
+        Reuses the shared :class:`DebugLogWriter` from
+        :mod:`friTap.fritap_utility` if one is already open (which is the
+        case when ``run_tui()`` opened the log early so ``logging``
+        records and uncaught exceptions could be captured before the
+        capture session even starts). Falls back to opening a private
+        line-buffered file if no shared writer exists yet.
+
         Failures are non-fatal — debug logging never aborts the capture.
         """
         import dataclasses as _dc
+        from friTap.fritap_utility import (
+            open_debug_log,
+            attach_file_handlers,
+            enable_warning_capture,
+            install_global_excepthook,
+            install_signal_handlers,
+            get_debug_log_writer,
+            get_debug_log_path,
+        )
 
-        try:
-            ts = time.strftime("%Y%m%d_%H%M%S")
-            self._debug_log_path = f"fritap_debug_{ts}.log"
-            # Line-buffered mode: flushes on newline, avoids costly per-event flush()
-            self._debug_log_file = open(self._debug_log_path, "w", buffering=1)
-            self._debug_log_file.write(f"# friTap debug log — started {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-        except OSError:
-            self._debug_log_file = None
-            return
+        # Prefer the shared writer; if not yet open, bring it up now so
+        # the rest of the boot can also benefit from logging-to-file.
+        writer = get_debug_log_writer()
+        if writer is None:
+            try:
+                open_debug_log()
+                attach_file_handlers()
+                enable_warning_capture()
+                install_global_excepthook()
+                install_signal_handlers()
+            except Exception:
+                logger.exception("Failed to open shared debug log; falling back")
+            writer = get_debug_log_writer()
+
+        if writer is not None:
+            self._debug_log_path = get_debug_log_path()
+            self._debug_log_writer = writer
+            # Mirror legacy attribute so any external check stays truthy.
+            self._debug_log_file = writer
+        else:
+            try:
+                ts = time.strftime("%Y%m%d_%H%M%S")
+                self._debug_log_path = f"fritap_debug_{ts}.log"
+                self._debug_log_file = open(self._debug_log_path, "w", buffering=1)
+                self._debug_log_file.write(
+                    f"# friTap debug log — started {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                )
+                self._debug_log_writer = None
+            except OSError:
+                self._debug_log_file = None
+                self._debug_log_writer = None
+                return
 
         def _log_event(event):
+            target = self._debug_log_writer or self._debug_log_file
+            if target is None:
+                return
             try:
                 ts_str = time.strftime("%H:%M:%S")
                 evt_name = type(event).__name__
@@ -285,7 +337,7 @@ class CaptureController:
                         if len(s) > 200:
                             s = s[:200] + "..."
                         parts.append(f"  {f.name}={s}")
-                self._debug_log_file.write("\n".join(parts) + "\n\n")
+                target.write("\n".join(parts) + "\n\n")
             except Exception:
                 pass
 
@@ -307,15 +359,32 @@ class CaptureController:
 
         def _notify_ui():
             log = self._screen._get_activity_log()
-            if log:
+            if log and self._debug_log_path:
                 log.log_info(f"Debug log: [bold]{self._debug_log_path}[/]")
         self._screen.app.call_from_thread(_notify_ui)
 
     def _close_debug_log(self):
-        """Close the debug log file if open."""
+        """Close the debug log file if open.
+
+        For the shared writer, ownership stays with ``fritap_utility``'s
+        atexit hook — we only release our reference and write a session
+        delimiter. For a privately-opened fallback file, close it here.
+        """
+        if self._debug_log_writer is not None:
+            try:
+                self._debug_log_writer.write(
+                    f"# Capture session ended — {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                )
+            except Exception:
+                pass
+            self._debug_log_writer = None
+            self._debug_log_file = None
+            return
         if self._debug_log_file is not None:
             try:
-                self._debug_log_file.write(f"# Debug log closed — {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                self._debug_log_file.write(
+                    f"# Debug log closed — {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                )
                 self._debug_log_file.close()
             except Exception:
                 pass
@@ -468,6 +537,27 @@ class CaptureController:
                 time.sleep(0.2)
         except (Exception, SystemExit) as e:
             self._session_error = str(e)
+            self._session_error_severity = ERROR_SEVERITY_FATAL
+            # Make sure the traceback lands in the debug log file even if
+            # the modal is the only thing the user sees in the TUI.
+            logger.exception("Capture session failed: %s", e)
+            # Emit ErrorEvent so the EventBus debug-log subscriber (and
+            # any other consumer) records the failure too.
+            try:
+                if self._ssl_logger is not None:
+                    bus = getattr(self._ssl_logger, "_event_bus", None)
+                    if bus is not None:
+                        import traceback as _tb
+                        from friTap.events import ErrorEvent
+                        bus.emit(ErrorEvent(
+                            error=type(e).__name__,
+                            description=str(e),
+                            stack="".join(_tb.format_exception(type(e), e, e.__traceback__)),
+                            severity=ERROR_SEVERITY_FATAL,
+                        ))
+            except Exception:
+                logger.debug("Failed to emit session-error ErrorEvent", exc_info=True)
+
             def _log_error(err=e):
                 self._screen._get_activity_log().log_error(str(err))
             self._screen.app.call_from_thread(_log_error)
@@ -698,15 +788,35 @@ class CaptureController:
             )
 
         # Show error modal LAST so it's on top of any session modals (shown first to user)
-        if self._session_error:
-            # Error was already logged; re-push modal on top of session summary
+        # Only fatal/error session failures pop a blocking modal. Recovered
+        # parser-level warnings reach the activity log + debug file via
+        # ErrorEvent(severity="warning") and never set _session_error.
+        if self._session_error and self._session_error_severity in (
+            ERROR_SEVERITY_FATAL, ERROR_SEVERITY_ERROR,
+        ):
+            body = self._session_error
+            # Discoverability: show the user where the diagnostic log lives
+            # so they can attach it when reporting the issue.
+            try:
+                from friTap.fritap_utility import get_debug_log_path
+                log_path = get_debug_log_path() or self._debug_log_path
+            except Exception:
+                log_path = self._debug_log_path
+            if log_path:
+                body = (
+                    f"{self._session_error}\n\n"
+                    f"Debug log: {log_path}\n"
+                    "Please attach when reporting at "
+                    "https://github.com/fkie-cad/friTap/issues"
+                )
             self._screen.app.push_screen(
                 AlertModal(
-                    message=self._session_error,
+                    message=body,
                     title="Capture Error",
                     severity="error",
                 )
             )
 
         self._session_error = ""
+        self._session_error_severity = ERROR_SEVERITY_FATAL
         self._ssl_logger = None

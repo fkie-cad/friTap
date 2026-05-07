@@ -32,6 +32,7 @@ class OutputHandlerFactory:
             PcapOutputHandler, KeylogOutputHandler, JsonOutputHandler,
             JsonlOutputHandler, ConsoleOutputHandler, PcapngOutputHandler, LivePcapngHandler,
         )
+        from ..pcap_utility import is_pcapng_filename
 
         handlers = []
         live_info = {}
@@ -39,13 +40,26 @@ class OutputHandlerFactory:
         # Console always active
         handlers.append(ConsoleOutputHandler(verbose=config.output.verbose))
 
-        # PCAP/PCAPNG (non-live, non-full-capture only)
+        # Filename extension wins over output_format; the latter only acts
+        # as a fallback for unrecognised extensions.
         pcap_name = config.output.pcap
+        wants_pcapng = bool(pcap_name) and (
+            is_pcapng_filename(pcap_name) or config.output.output_format == "pcapng"
+        )
+
+        # PCAP/PCAPNG (non-live, non-full-capture only)
         if pcap_name and not config.output.live and not config.output.full_capture:
-            if pcap_name.endswith(".pcapng") or config.output.output_format == "pcapng":
+            if pcap_name.lower().endswith(".pcap"):
+                handlers.append(PcapOutputHandler(pcap_obj))
+            elif wants_pcapng:
                 handlers.append(PcapngOutputHandler(pcap_name, protocol_handler=protocol_handler))
             else:
                 handlers.append(PcapOutputHandler(pcap_obj))
+
+        # Key collector enables DSB injection at finalization for full-capture pcapng.
+        if config.output.full_capture and wants_pcapng:
+            from .key_collector_handler import KeyCollectorHandler
+            handlers.append(KeyCollectorHandler(protocol_handler=protocol_handler))
 
         # Keylog
         keylog = config.output.keylog

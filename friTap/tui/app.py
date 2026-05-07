@@ -287,15 +287,29 @@ if TEXTUAL_AVAILABLE:
         Args:
             replay_file: If set, open this .tap file in replay mode
                          instead of starting a live capture wizard.
+
+        Before instantiating the Textual app, the debug-log subsystem is
+        primed: a file is opened, a logging FileHandler is attached, the
+        warnings module is captured, and global exception hooks (sys,
+        threading) are installed. All of this happens BEFORE
+        ``SSL_Logger`` or any frida code runs, so init-time failures are
+        recorded.  Console ``StreamHandler`` levels are temporarily
+        elevated for the duration of ``app.run()`` so log records do not
+        corrupt the TUI screen; the file handler is unaffected.
         """
         if not TEXTUAL_AVAILABLE:
             import sys
             print("Error: The TUI requires the 'textual' package.")
             print("Install it with: pip install fritap[tui]  or  pip install textual>=0.80.0")
             sys.exit(1)
+        from friTap.fritap_utility import prime_debug_log, mute_console_handlers
+        # Best-effort: prime_debug_log swallows its own errors so a debug-log
+        # issue cannot block the TUI from launching.
+        prime_debug_log()
         app = FriTapApp(replay_file=replay_file)
         try:
-            app.run()
+            with mute_console_handlers():
+                app.run()
         except KeyboardInterrupt:
             pass
 

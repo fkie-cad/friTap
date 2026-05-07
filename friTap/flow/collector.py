@@ -8,7 +8,19 @@ from typing import Callable, Optional
 
 from friTap.connection_index import resolve_connection_key
 from friTap.constants import SSL_READ
-from friTap.events import FlowEvent, SESSION_ENDED, SESSION_DESTROYED
+from friTap.events import (
+    FlowEvent,
+    ErrorEvent,
+    ERROR_SEVERITY_WARNING,
+    SESSION_ENDED,
+    SESSION_DESTROYED,
+)
+from friTap.parsers.base import (
+    BaseParser,
+    ParserFailure,
+    SafeParserAdapter,
+    unwrap_parser,
+)
 from friTap.parsers.bhttp import parse_bhttp
 from friTap.parsers.hexdump import HexdumpParser
 from friTap.parsers.http2 import Http2Parser, is_h2_control_frame_data
@@ -50,6 +62,71 @@ class FlowCollector:
         # Orphan request index: dst_key -> [(timestamp, flow_id), ...]
         self._orphan_requests: dict[str, list[tuple[float, str]]] = {}
         self._event_count = 0
+        # ErrorEvents staged by SafeParserAdapter via _on_parser_failure;
+        # populated under _lock and drained by entry-point methods after the
+        # lock is released so EventBus.emit cannot deadlock against TUI
+        # subscribers that may need to read collector state.
+        self._pending_errors: list[ErrorEvent] = []
+
+    def _wrap_parser(
+        self,
+        parser: BaseParser,
+        conn: Optional['_ConnectionState'] = None,
+    ) -> BaseParser:
+        """Wrap *parser* in a SafeParserAdapter unless already wrapped.
+
+        All parsers that get assigned to ``conn.parser`` go through this
+        helper so a malformed stream can never crash the collector. When
+        a connection state is supplied, the per-connection failure
+        callback also resets the active flow's ``detected_protocol`` so
+        the UI does not keep claiming HTTP/1.1 (or whatever the dead
+        parser asserted) while raw bytes are now flowing untyped.
+        """
+        if parser is None or isinstance(parser, SafeParserAdapter):
+            return parser
+        if conn is None:
+            return SafeParserAdapter(parser, on_failure=self._on_parser_failure)
+
+        def _on_failure_with_conn(failure: ParserFailure) -> None:
+            self._on_parser_failure(failure)
+            flow_id = conn.active_flow_id
+            if flow_id and flow_id in self._flows:
+                self._flows[flow_id].detected_protocol = "unknown"
+
+        return SafeParserAdapter(parser, on_failure=_on_failure_with_conn)
+
+    def _on_parser_failure(self, failure: ParserFailure) -> None:
+        """SafeParserAdapter callback. Stages an ErrorEvent for deferred emit.
+
+        Called from within feed/flush while ``self._lock`` is held. Emitting
+        the EventBus event synchronously here would risk a re-entrant
+        deadlock with TUI subscribers, so we append to ``_pending_errors``
+        and let the calling entry-point flush it after releasing the lock.
+        """
+        self._pending_errors.append(ErrorEvent(
+            error=f"Parser {failure.parser_name} failed",
+            description=f"{failure.exc_class}: {failure.exc_message}",
+            stack=failure.traceback_text,
+            severity=ERROR_SEVERITY_WARNING,
+        ))
+
+    def _drain_pending_errors(self) -> list:
+        """Snapshot and clear the pending-error queue. Must be called under _lock."""
+        if not self._pending_errors:
+            return []
+        errors = list(self._pending_errors)
+        self._pending_errors.clear()
+        return errors
+
+    def _emit_errors(self, errors: list) -> None:
+        """Emit deferred ErrorEvents on the event bus. Must NOT hold _lock."""
+        if not errors or self._event_bus is None:
+            return
+        for ev in errors:
+            try:
+                self._event_bus.emit(ev)
+            except Exception:
+                logger.debug("ErrorEvent emit failed", exc_info=True)
 
     def set_event_bus(self, event_bus) -> None:
         """Set the EventBus for FlowEvent emission."""
@@ -126,7 +203,7 @@ class FlowCollector:
 
                 if not is_fallback or conn.pending_bytes >= PARSER_DETECTION_BUFFER_SIZE:
                     # Commit to parser and feed all buffered chunks
-                    conn.parser = detected
+                    conn.parser = self._wrap_parser(detected, conn)
                     for pending_chunk in conn.pending_chunks:
                         results = conn.parser.feed(pending_chunk.data, pending_chunk.direction)
                         results = self._filter_control_frames(results)
@@ -159,7 +236,7 @@ class FlowCollector:
                     pending.append((FlowEventType.UPDATED, flow))
             else:
                 # Parser already committed — try upgrade if on fallback
-                if isinstance(conn.parser, HexdumpParser):
+                if isinstance(unwrap_parser(conn.parser), HexdumpParser):
                     self._try_parser_upgrade(conn, event.data)
 
                 # Feed directly
@@ -178,7 +255,7 @@ class FlowCollector:
                     self._check_parser_upgrade(conn)
                 else:
                     if (not self._show_control_frames
-                            and isinstance(conn.parser, Http2Parser)
+                            and isinstance(unwrap_parser(conn.parser), Http2Parser)
                             and is_h2_control_frame_data(event.data)):
                         pass
                     else:
@@ -191,8 +268,11 @@ class FlowCollector:
             if self._event_count % _SWEEP_INTERVAL == 0:
                 self._periodic_sweep(pending)
 
+            errors_to_emit = self._drain_pending_errors()
+
         for event_type, flow in pending:
             self._notify(event_type, flow)
+        self._emit_errors(errors_to_emit)
 
     def on_ohttp(self, event) -> None:
         """EventBus subscriber for OhttpEvent -- attach decrypted bhttp payload to last active flow."""
@@ -230,6 +310,7 @@ class FlowCollector:
             return
 
         pending = []
+        errors_to_emit: list = []
         with self._lock:
             conn = self._connections.get(conn_id)
             if conn is None:
@@ -239,9 +320,11 @@ class FlowCollector:
 
             # Remove connection state so next data creates fresh state
             del self._connections[conn_id]
+            errors_to_emit = self._drain_pending_errors()
 
         for event_type, flow in pending:
             self._notify(event_type, flow)
+        self._emit_errors(errors_to_emit)
 
     def get_flow_summaries(self) -> list["FlowSummary"]:
         """Lightweight summaries for all flows (no chunks, no body bytes).
@@ -303,10 +386,12 @@ class FlowCollector:
                     flow.ended = time.time()
 
             self._orphan_requests.clear()
+            errors_to_emit = self._drain_pending_errors()
 
         # Notify about removed flows (outside lock)
         for removed_flow in removed_flows:
             self._notify(FlowEventType.REMOVED, removed_flow)
+        self._emit_errors(errors_to_emit)
 
     def _merge_remaining_orphans(self) -> list[Flow]:
         """Match request-only with response-only flows by destination. Must be called under lock.
@@ -481,18 +566,21 @@ class FlowCollector:
                 prefix += c.data
                 if len(prefix) >= PARSER_DETECTION_BUFFER_SIZE:
                     break
-            conn.parser = registry.detect(bytes(prefix))
+            conn.parser = self._wrap_parser(registry.detect(bytes(prefix)), conn)
         except Exception:
-            conn.parser = HexdumpParser()
+            conn.parser = self._wrap_parser(HexdumpParser(), conn)
 
         flow = None
         if conn.active_flow_id and conn.active_flow_id in self._flows:
             flow = self._flows[conn.active_flow_id]
 
         for pending_chunk in conn.pending_chunks:
+            # SafeParserAdapter.feed never raises, but defensive belt+braces
+            # against a future non-adapted parser sneaking in here.
             try:
                 results = conn.parser.feed(pending_chunk.data, pending_chunk.direction)
             except Exception:
+                logger.debug("parser.feed in _commit_pending raised", exc_info=True)
                 continue
             if flow is not None:
                 for result in results:
@@ -544,10 +632,18 @@ class FlowCollector:
         old_trailing = getattr(conn.parser, 'trailing_data', None)
         from friTap.parsers.websocket import WebSocketParser
         if "websocket" in upgrade.lower():
-            conn.parser = WebSocketParser()
-        # Feed any trailing bytes from the old parser to the new one
+            conn.parser = self._wrap_parser(WebSocketParser(), conn)
+        # Feed trailing bytes from the old parser into the new one. Use a
+        # narrow local try/except rather than relying on SafeParserAdapter
+        # so a malformed trailing frame on a freshly-installed parser logs
+        # but does NOT mark the parser as failed for the rest of the flow.
         if old_trailing:
-            conn.parser.feed(old_trailing, "read")
+            try:
+                conn.parser.feed(old_trailing, "read")
+            except Exception:
+                logger.warning(
+                    "Trailing-data feed after upgrade raised", exc_info=True
+                )
 
     def _try_parser_upgrade(self, conn: '_ConnectionState', data: bytes) -> bool:
         """Attempt to upgrade from HexdumpParser if data starts a known protocol.
@@ -555,7 +651,7 @@ class FlowCollector:
         Returns True if parser was upgraded, False otherwise.
         Must be called under lock.
         """
-        if not isinstance(conn.parser, HexdumpParser):
+        if not isinstance(unwrap_parser(conn.parser), HexdumpParser):
             return False
         try:
             registry = get_default_registry()
@@ -564,7 +660,7 @@ class FlowCollector:
             return False
         if isinstance(detected, HexdumpParser):
             return False
-        conn.parser = detected
+        conn.parser = self._wrap_parser(detected, conn)
         return True
 
     def _get_direction(self, function: str) -> str:
