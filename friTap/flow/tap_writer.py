@@ -103,13 +103,8 @@ class TapWriter:
         self._file.write(header_bytes)
 
         # Write META record
-        try:
-            from friTap import __version__
-            version = __version__
-        except (ImportError, AttributeError):
-            version = "unknown"
-
-        meta = TapMeta(fritap_version=version)
+        from friTap import __version__
+        meta = TapMeta(fritap_version=__version__)
         meta_payload = encode_meta(meta)
         self._file.write(encode_record(REC_META, meta_payload))
         self._file.flush()

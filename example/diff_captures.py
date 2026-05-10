@@ -213,8 +213,8 @@ def _format_markdown(diff: dict, before_path: str, after_path: str) -> str:
     lines.append(f"**After:** `{after_path}`\n")
 
     lines.append("## Summary\n")
-    lines.append(f"| Metric | Count |")
-    lines.append(f"|--------|-------|")
+    lines.append("| Metric | Count |")
+    lines.append("|--------|-------|")
     lines.append(f"| Endpoints before | {s['endpoints_before']} |")
     lines.append(f"| Endpoints after | {s['endpoints_after']} |")
     lines.append(f"| Added | {s['added']} |")

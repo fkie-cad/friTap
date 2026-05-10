@@ -245,7 +245,7 @@ class IocAnalyzer:
 
         findings.append(Finding(
             severity=Severity.INFO,
-            title=f"Response body hash (SHA-256)",
+            title="Response body hash (SHA-256)",
             description=f"SHA-256 of response from {flow.display_host} ({len(body)} bytes)",
             source=self.name,
             flow_id=flow.flow_id,

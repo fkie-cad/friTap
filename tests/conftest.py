@@ -167,6 +167,29 @@ def mock_ssl_logger():
         mock_class.return_value = mock_instance
         yield mock_instance
 
+
+@pytest.fixture
+def ssl_logger_factory():
+    """Factory that builds a real SSL_Logger with safe test defaults.
+
+    Used by tests that want to verify post-init invariants on the wire
+    contract (e.g. that ``pattern_data`` is a str-or-None after construction).
+    Callers can override any constructor argument: ``ssl_logger_factory(app="other")``.
+    """
+    from friTap.ssl_logger import SSL_Logger
+
+    def _make(**overrides):
+        defaults = {
+            "app": "test_app",
+            "verbose": False,
+            "spawn": False,
+            "mobile": False,
+        }
+        defaults.update(overrides)
+        return SSL_Logger(**defaults)
+
+    return _make
+
 # SSL library fixtures
 @pytest.fixture
 def openssl_module():

@@ -207,8 +207,6 @@ class Http1Parser(BaseParser):
         lines = header_block.split("\r\n")
         if not lines:
             return False
-        # Status line
-        status_line = lines[0]
         headers: dict[str, str] = {}
         for line in lines[1:]:
             if ":" in line:

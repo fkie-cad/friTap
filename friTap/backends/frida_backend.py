@@ -210,8 +210,38 @@ def _wrap_frida_errors(func):
 class FridaBackend(Backend):
     """Concrete backend using Frida for dynamic instrumentation."""
 
+    # Frida major this friTap release was tested against. Bumped in lockstep
+    # with the `frida>=N,<N+1` constraint in requirements.txt — see RELEASING.md
+    # and scripts/check_compat.py (CI version-guard).
+    SUPPORTED_FRIDA_MAJOR = 17
+
     def __init__(self) -> None:
         self._logger = logging.getLogger("friTap.backend.frida")
+        self._check_frida_compat()
+
+    def _check_frida_compat(self) -> None:
+        """Warn (or fail) when the installed frida major doesn't match the
+        version this friTap release was tested against.
+
+        Suppressing the warning: leave ``FRITAP_STRICT_FRIDA`` unset and the
+        message goes through the standard logger (warning level).
+        Making it fatal: ``FRITAP_STRICT_FRIDA=1`` raises
+        ``BackendInvalidArgumentError`` from the constructor.
+        """
+        try:
+            major = int(frida.__version__.split(".")[0])
+        except (AttributeError, ValueError):
+            return
+        if major == self.SUPPORTED_FRIDA_MAJOR:
+            return
+        msg = (
+            f"friTap was tested with frida {self.SUPPORTED_FRIDA_MAJOR}.x; "
+            f"you have frida {frida.__version__}. "
+            f"See https://github.com/fkie-cad/friTap#frida-compatibility"
+        )
+        if os.environ.get("FRITAP_STRICT_FRIDA") == "1":
+            raise BackendInvalidArgumentError(msg)
+        self._logger.warning(msg)
 
     # ------------------------------------------------------------------
     # Device

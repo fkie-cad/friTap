@@ -132,10 +132,8 @@ if TEXTUAL_AVAILABLE:
 
         def _refresh_themed_widgets(self) -> None:
             """Force re-render of all widgets that use c() for inline colors."""
-            from .screens.main_screen import MainScreen
             from .widgets.menu_panel import MenuPanel
             from .widgets.status_bar import StatusBar
-            from .widgets.activity_log import ActivityLog
             from textual.widgets import Static
 
             ms = self._main_screen()

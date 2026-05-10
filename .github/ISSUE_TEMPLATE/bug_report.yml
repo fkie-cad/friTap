@@ -1,0 +1,99 @@
+name: Bug report
+description: Report a problem with friTap (crash, wrong output, missing keys, etc.)
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. The fields below help us
+        reproduce and triage the issue quickly. **Please complete every required
+        field** — bug reports without version information or a reproduction command
+        will be closed as `needs-info`.
+
+        Before filing, please check:
+        - [Open issues](https://github.com/fkie-cad/friTap/issues?q=is%3Aissue) for duplicates.
+        - The [Frida compatibility](https://github.com/fkie-cad/friTap#frida-compatibility) table — many
+          "agent crash" reports turn out to be a frida-server / frida-client mismatch.
+        - The [troubleshooting wiki](https://github.com/fkie-cad/friTap/wiki).
+
+  - type: input
+    id: fritap_version
+    attributes:
+      label: friTap version
+      description: Output of `fritap --version`.
+      placeholder: "2.0.0"
+    validations:
+      required: true
+
+  - type: input
+    id: frida_version
+    attributes:
+      label: Frida version (client + server)
+      description: |
+        Output of `frida --version` (your local frida-tools client) and `frida-server --version`
+        on the target device. They should agree on the major version.
+      placeholder: "client 17.9.6 / server 17.9.6"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Host OS and architecture
+      description: Where you ran `fritap` from.
+      placeholder: "macOS 14.5 (arm64) / Ubuntu 22.04 (x86_64) / Windows 11 (x64)"
+    validations:
+      required: true
+
+  - type: input
+    id: target
+    attributes:
+      label: Target platform and app/binary
+      description: Android/iOS/Linux/macOS/Windows + the package name or binary path.
+      placeholder: "Android 13 (arm64) / com.example.app"
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Reproduction command
+      description: |
+        The exact `fritap` invocation you used. Include all flags. If the bug only reproduces
+        with a specific app version, mention it here.
+      render: shell
+      placeholder: |
+        fritap -m -k keys.log -p out.pcap com.example.app
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Full friTap output
+      description: |
+        Paste the complete output (stdout + stderr). If the output is huge, attach the
+        contents of any `--debug-output` log file as well.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected to happen
+      description: A clear, one-paragraph description of the expected behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: |
+        Optional: TLS library you suspect (OpenSSL, BoringSSL, NSS, ...), screenshots, links,
+        related issues. If your target is closed-source and confidential, omit identifying
+        details — a redacted reproduction is fine.
+    validations:
+      required: false

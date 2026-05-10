@@ -11,15 +11,168 @@ Pattern 2 (IPSec): Multiple struct_extractions, each with its own
 Expect this to be adjusted in the future when we have more protocols
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple  # noqa: F401  # used in PEP 484 type comments
 
-from .definitions.base import (
+from .definitions.base import (  # noqa: F401  # BreakpointSpec/ExtractionDefinition/StructField used in PEP 484 type comments
     BreakpointSpec,
     ExtractionDefinition,
     StructField,
     resolve_offset,
 )
 from .output import KeylogWriter
+
+
+# ======================================================================
+# LLDB callback dispatch state
+# ======================================================================
+#
+# LLDB scripted breakpoint callbacks run in a fresh exec scope and only
+# receive (frame, bp_loc, internal_dict) — no closures.  We therefore
+# stash per-breakpoint extraction state in module-level registries keyed
+# by ``SBBreakpoint.GetID()`` and let the callback body delegate to
+# :func:`_lldb_dispatch` which looks the entry up.
+#
+# Two registries exist because ``capture_args_on_entry`` and
+# ``timing="on_return"`` both require running extraction *after* the
+# function returns.  The entry-site breakpoint goes in
+# ``_LLDB_BP_REGISTRY``; when it fires, a one-shot return-site
+# breakpoint is created and its id is registered in
+# ``_LLDB_RETURN_REGISTRY`` along with any args captured from the
+# entry frame.
+
+# bp_id -> (BreakpointSpec, ExtractionRunner, proto)
+_LLDB_BP_REGISTRY = {}  # type: Dict[int, Tuple[Any, Any, str]]
+
+# bp_id -> (BreakpointSpec, ExtractionRunner, proto, captured_args)
+_LLDB_RETURN_REGISTRY = {}  # type: Dict[int, Tuple[Any, Any, str, Optional[Dict[str, int]]]]
+
+# Cap the return-site registry so a one-shot that never fires (process
+# exits, longjmp, etc.) cannot leak unboundedly across a session.
+_LLDB_RETURN_REGISTRY_CAP = 1024
+
+# Callback body uses ``__name__`` so a package rename does not silently
+# break the import string LLDB compiles into the callback.
+_LLDB_CALLBACK_BODY = (
+    "import {mod} as _r\n"
+    "return _r._lldb_dispatch(frame, bp_loc)\n"
+).format(mod=__name__)
+
+
+def _make_lldb_reader(process, frame):
+    """Test seam: hides the ``lldb``-dependent adapter import."""
+    from .adapters.lldb_adapter import LldbMemoryReader
+    return LldbMemoryReader(process, frame=frame)
+
+
+def _capture_args(reader, bp_spec):
+    # type: (Any, BreakpointSpec) -> Dict[str, int]
+    """Read each ``base_arg`` register; failed reads fall back to ``0``
+    so a partial capture still yields a usable dict."""
+    captured = {}  # type: Dict[str, int]
+    arg_names = frozenset(
+        ext.base_arg for ext in bp_spec.struct_extractions
+    )
+    for arg_name in arg_names:
+        try:
+            captured[arg_name] = reader.read_register(arg_name)
+        except Exception:
+            captured[arg_name] = 0
+    return captured
+
+
+def _run_and_write(reader, runner, bp_spec, proto, captured=None):
+    # type: (Any, Any, BreakpointSpec, str, Optional[Dict[str, int]]) -> None
+    """Run extraction and write results, swallowing per-hit errors so a
+    single bad hit cannot disable subsequent breakpoints."""
+    try:
+        if captured is None:
+            lines = runner.run_extraction(reader, bp_spec)
+        else:
+            lines = runner.run_extraction(reader, bp_spec, captured)
+        runner.write_results(lines)
+    except Exception as exc:
+        print("[{}] Error: {}".format(proto, exc))
+
+
+def _schedule_on_return(frame, bp_spec, runner, proto, captured):
+    # type: (Any, BreakpointSpec, Any, str, Optional[Dict[str, int]]) -> None
+    """LLDB equivalent of GDB's synchronous ``finish``: arm a one-shot
+    breakpoint at the parent frame's PC so :func:`_lldb_dispatch` can
+    extract after the function returns."""
+    parent = frame.GetParentFrame()
+    if not parent or not parent.IsValid():
+        print(
+            "[{}] Cannot schedule on-return for {}: no parent frame".format(
+                proto, bp_spec.function_name
+            )
+        )
+        return
+    return_pc = parent.GetPC()
+    if not return_pc:
+        print(
+            "[{}] Cannot schedule on-return for {}: parent PC is 0".format(
+                proto, bp_spec.function_name
+            )
+        )
+        return
+    target = frame.GetThread().GetProcess().GetTarget()
+    bp = target.BreakpointCreateByAddress(return_pc)
+    if not bp.IsValid():
+        print(
+            "[{}] Failed to create return-site breakpoint for {}".format(
+                proto, bp_spec.function_name
+            )
+        )
+        return
+    bp.SetOneShot(True)
+    if len(_LLDB_RETURN_REGISTRY) >= _LLDB_RETURN_REGISTRY_CAP:
+        print(
+            "[{}] Return-site registry exceeded {} entries; clearing".format(
+                proto, _LLDB_RETURN_REGISTRY_CAP
+            )
+        )
+        _LLDB_RETURN_REGISTRY.clear()
+    _LLDB_RETURN_REGISTRY[bp.GetID()] = (bp_spec, runner, proto, captured)
+    bp.SetScriptCallbackBody(_LLDB_CALLBACK_BODY)
+
+
+def _lldb_dispatch(frame, bp_loc):
+    # type: (Any, Any) -> bool
+    """Always returns ``False`` so a scripted callback never halts the
+    process — extraction is a silent side effect."""
+    bp_id = bp_loc.GetBreakpoint().GetID()
+
+    # Return-site path takes precedence: the same SBBreakpoint id space
+    # is used, but a one-shot return breakpoint is removed by LLDB after
+    # firing, so checking this registry first is safe and correct.
+    return_entry = _LLDB_RETURN_REGISTRY.pop(bp_id, None)
+    if return_entry is not None:
+        bp_spec, runner, proto, captured = return_entry
+        print("[{}] {} returned".format(proto, bp_spec.function_name))
+        process = frame.GetThread().GetProcess()
+        reader = _make_lldb_reader(process, frame)
+        _run_and_write(reader, runner, bp_spec, proto, captured)
+        return False
+
+    entry = _LLDB_BP_REGISTRY.get(bp_id)
+    if entry is None:
+        return False
+    bp_spec, runner, proto = entry
+    print("[{}] {} hit".format(proto, bp_spec.function_name))
+
+    if not bp_spec.struct_extractions:
+        return False
+
+    process = frame.GetThread().GetProcess()
+    reader = _make_lldb_reader(process, frame)
+    if bp_spec.capture_args_on_entry:
+        captured = _capture_args(reader, bp_spec)
+        _schedule_on_return(frame, bp_spec, runner, proto, captured)
+    elif bp_spec.timing == "on_return":
+        _schedule_on_return(frame, bp_spec, runner, proto, None)
+    else:
+        _run_and_write(reader, runner, bp_spec, proto)
+    return False
 
 
 class ExtractionRunner:
@@ -339,10 +492,13 @@ def create_lldb_runner(definition, debugger):
     # type: (ExtractionDefinition, Any) -> None
     """Create LLDB breakpoints for an extraction definition.
 
-    Sets breakpoints by symbol name on the selected target.  LLDB
-    breakpoint callback registration is left to the caller because
-    the callback mechanism differs between scripted and interactive
-    LLDB sessions.
+    Each ``BreakpointSpec`` becomes an ``SBBreakpoint`` whose script
+    callback delegates to :func:`_lldb_dispatch`.  The dispatcher
+    constructs a frame-aware ``LldbMemoryReader`` at hit time (the
+    setup-time process alone is not enough — register reads need the
+    live ``SBFrame``) and runs the same three-case logic as the GDB
+    factory: logging-only, ``capture_args_on_entry``, and the default
+    entry/on_return path.
 
     Args:
         definition: The extraction definition describing which functions
@@ -350,8 +506,7 @@ def create_lldb_runner(definition, debugger):
         debugger: The ``lldb.SBDebugger`` instance (passed by LLDB when
                   loading a script).
     """
-    import lldb  # noqa: F811 — only available inside LLDB
-    from .adapters.lldb_adapter import LldbMemoryReader
+    import lldb  # noqa: F401, F811  # only available inside LLDB
 
     writer = KeylogWriter(definition.keylog_env_var, definition.default_keylog_file)
     proto = definition.protocol.upper()
@@ -363,13 +518,13 @@ def create_lldb_runner(definition, debugger):
         )
         return
 
-    process = target.GetProcess()
-    reader = LldbMemoryReader(process)
     runner = ExtractionRunner(definition, writer)
 
     for bp_spec in definition.breakpoints:
         bp = target.BreakpointCreateByName(bp_spec.function_name)
         if bp.IsValid():
+            _LLDB_BP_REGISTRY[bp.GetID()] = (bp_spec, runner, proto)
+            bp.SetScriptCallbackBody(_LLDB_CALLBACK_BODY)
             print(
                 "[{}] Breakpoint set on {}".format(
                     proto, bp_spec.function_name
@@ -413,7 +568,7 @@ def run_lldb_main(definition, debugger):
     Intended to be the single call in an LLDB entry-point shim after
     setting up ``sys.path`` and importing the definition.
     """
-    import lldb  # noqa: F811
+    import lldb  # noqa: F401, F811  # only available inside LLDB
 
     proto = definition.protocol.upper()
     print("[{}] {} key extraction loaded".format(proto, definition.library))

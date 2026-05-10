@@ -1,5 +1,5 @@
-frida>=17.0.0
-frida-tools>=12.0.0
+frida>=17.0.0,<18.0.0
+frida-tools>=12.0.0,<13.0.0
 AndroidFridaManager
 hexdump
 scapy

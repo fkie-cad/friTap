@@ -21,7 +21,7 @@ try:
     from textual.app import ComposeResult
     from textual.binding import Binding  # noqa: F401
     from textual.screen import Screen
-    from textual.widgets import Header, Footer, Static, TabbedContent
+    from textual.widgets import Header, Footer, Static
     from textual.containers import Horizontal, Vertical
     TEXTUAL_AVAILABLE = True
 except ImportError:
@@ -157,7 +157,7 @@ if TEXTUAL_AVAILABLE:
 
             try:
                 self._replay_ctrl = ReplayController(path)
-                meta = self._replay_ctrl.load()
+                self._replay_ctrl.load()
             except Exception as e:
                 from ..modals.alert_modal import AlertModal
                 self.app.push_screen(

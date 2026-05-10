@@ -21,7 +21,7 @@ from pathlib import Path
 # Allow standalone execution from the example/ directory
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from friTap.analysis import analyze_tap, Severity
+from friTap.analysis import analyze_tap
 from friTap.analysis.credentials import CredentialAnalyzer
 from friTap.analysis.reporters import (
     JsonReporter,

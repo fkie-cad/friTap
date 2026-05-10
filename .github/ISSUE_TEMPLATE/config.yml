@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/fkie-cad/friTap/wiki
+    about: Read the friTap wiki — debugging, troubleshooting, and architecture notes.
+  - name: Frida compatibility
+    url: https://github.com/fkie-cad/friTap#frida-compatibility
+    about: Check whether your frida version matches your friTap version before filing.
+  - name: Discussions
+    url: https://github.com/fkie-cad/friTap/discussions
+    about: Open-ended questions and ideas — please file bugs and feature requests via the issue templates.

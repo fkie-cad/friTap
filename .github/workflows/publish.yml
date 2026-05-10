@@ -7,13 +7,18 @@ on:
     paths: [ "friTap/about.py" ]
   workflow_dispatch:
 
-permissions:
-  id-token: write   # needed only for OIDC trusted publishing
-  contents: read
+# Workflow-level default: deny everything that isn't explicitly granted on a job.
+permissions: {}
 
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write    # OIDC trusted publishing (PyPI). NOT contents:write.
+      contents: read     # Read-only checkout.
+
+    outputs:
+      new-version: ${{ steps.ver.outputs.new }}
 
     steps:
       - uses: actions/checkout@v4
@@ -22,7 +27,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      # --- Skip if __version__ didn’t change ------------------------------
+      # --- Skip if __version__ didn't change ------------------------------
       - name: Detect version bump
         id: ver
         run: |
@@ -31,7 +36,9 @@ jobs:
           echo "old=$old" >> $GITHUB_OUTPUT
           echo "new=$new" >> $GITHUB_OUTPUT
           if [ "$old" = "$new" ]; then
-            echo "Version unchanged → skip"; exit 78   # neutral exit
+            echo "Version unchanged → skip"
+            echo "new=" >> $GITHUB_OUTPUT
+            exit 78   # neutral exit
           fi
 
       # --- Build -----------------------------------------------------------
@@ -44,3 +51,41 @@ jobs:
           verbose: true
           # uncomment next line ONLY if you use token auth
           # password: ${{ secrets.PYPI_API_TOKEN }}
+
+  # Auto-tag the merge commit after a successful PyPI publish.
+  # Closes the gap that left v1.5.x and v1.6.x published-but-untagged.
+  # Permission scope is bounded to this job only — id-token:write lives
+  # only on build-and-publish; contents:write lives only here. If
+  # publish.yml is ever compromised, the blast radius is limited to
+  # whichever job's secret leaked.
+  tag:
+    needs: build-and-publish
+    if: needs.build-and-publish.outputs.new-version != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write    # Required to push the tag. Scoped to this job only.
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create and push v<version> tag (idempotent)
+        env:
+          NEW_VERSION: ${{ needs.build-and-publish.outputs.new-version }}
+        run: |
+          set -euo pipefail
+          tag="v${NEW_VERSION}"
+
+          # Idempotency: query the exact ref. Using the full refs/tags/<tag>
+          # path avoids the refname-glob ambiguity of `ls-remote --tags <pat>`
+          # and the substring/anchor pitfalls of post-filtering with grep.
+          if [ -n "$(git ls-remote origin "refs/tags/${tag}")" ]; then
+            echo "Tag ${tag} already exists on origin — skipping (idempotent)."
+            exit 0
+          fi
+
+          # `git config` without --global confines the identity to this clone.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${tag}" -m "Release ${tag}"
+          git push origin "${tag}"
+          echo "Pushed tag ${tag} to origin."

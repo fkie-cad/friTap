@@ -46,7 +46,7 @@ def _make_endpoint_data(default_library: str = "unknown") -> dict[str, dict]:
 def _run_live_capture(target: str, mobile: bool, duration: int, output: str | None) -> None:
     """Run a live capture and build library attribution from EventBus events."""
     from friTap import FriTap
-    from friTap.events import LibraryDetectedEvent, DatalogEvent, FlowEvent, EventBus
+    from friTap.events import LibraryDetectedEvent, DatalogEvent
 
     endpoint_data = _make_endpoint_data()
     detected_libraries: list[dict] = []
@@ -216,7 +216,7 @@ def _print_report(
         )
 
     # Summary
-    lines.append(f"\n## Summary\n")
+    lines.append("\n## Summary\n")
     lib_counts: dict[str, int] = defaultdict(int)
     for ep in endpoint_data.values():
         lib_counts[ep.get("library", "unknown")] += 1

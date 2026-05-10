@@ -17,8 +17,6 @@ Both tests use lightweight stubs because instantiating the real Textual
 app or the real SSL_Logger inside a unit test is impractical.
 """
 
-import logging
-import threading
 import types
 from unittest.mock import MagicMock, patch
 
@@ -46,7 +44,6 @@ def _make_screen_stub():
     """
     pushed_screens: list = []
     activity_calls: list = []
-    state_reset_calls: list = []
 
     class _ActivityLog:
         def log_error(self, m): activity_calls.append(("error", m))

@@ -26,7 +26,7 @@ from ..events import (
     ScriptLoadedEvent,
 )
 from ..config import FriTapConfig
-from ..constants import SSL_READ, SSL_WRITE, ContentType
+from ..constants import SSL_READ, SSL_WRITE
 from dataclasses import dataclass
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -351,10 +351,7 @@ class SSL_Logger():
 
 
     def init_fritap(self):
-        if not self._backend.version_at_least(17):
-            self.agent_script = "_ssl_log_legacy.js"
-        else:
-            self.agent_script = "fritap_agent.js"
+        self.agent_script = "fritap_agent.js"
 
         if self.pcap_name:
             self.pcap_obj =  PCAP(self.pcap_name,SSL_READ,SSL_WRITE,self.full_capture, self.mobile,self.debug_output)
@@ -569,8 +566,6 @@ class SSL_Logger():
 
         # Emit events through the event bus for all content types
         self._emit_event_from_payload(payload, data)
-
-        content_type = payload.get("contentType")
 
         if self._handlers_active:
             # Socket trace / full capture set tracking (consumed by cleanup())

@@ -28,7 +28,7 @@ except ImportError:
     TEXTUAL_AVAILABLE = False
 
 
-from friTap.flow.models import format_byte_size
+from friTap.flow.models import format_byte_size  # noqa: E402
 
 
 def _count_keys(path: str) -> int | None:

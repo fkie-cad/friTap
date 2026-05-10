@@ -6,7 +6,6 @@ machine in isolation by binding the methods to a stub object that
 mimics the parts of self that ``log_warning`` / ``log_error`` touch.
 """
 
-import logging
 import time
 import types
 
@@ -63,7 +62,7 @@ class TestDedupSuppressionWithinWindow:
         warning_writes = [w for w in stub_log.written if "WARN" in w and "Parser X failed" in w]
         assert len(warning_writes) == 1
         # plain_lines mirrors the visible state; same invariant.
-        warning_plain = [l for l in stub_log._plain_lines if "Parser X failed" in l]
+        warning_plain = [line for line in stub_log._plain_lines if "Parser X failed" in line]
         assert len(warning_plain) == 1
 
     def test_different_warning_breaks_dedup(self, stub_log, monkeypatch):

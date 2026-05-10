@@ -186,7 +186,7 @@ if TEXTUAL_AVAILABLE:
                 # Incomplete but plausible input
                 self._text_engine = None
                 inp.remove_class("valid", "invalid")
-                status.update(f"[dim]typing...[/]")
+                status.update("[dim]typing...[/]")
             elif isinstance(result, str):
                 # Error
                 self._text_engine = None
@@ -212,7 +212,7 @@ if TEXTUAL_AVAILABLE:
             if not text:
                 # Empty text filter is valid -- dismiss with current toggles
                 self._text_engine = None
-                status.update(f"[dim]Applying...[/]")
+                status.update("[dim]Applying...[/]")
                 self._dismiss_with_result()
                 return
 
@@ -230,7 +230,7 @@ if TEXTUAL_AVAILABLE:
             self._text_engine = result
             inp.remove_class("invalid")
             inp.add_class("valid")
-            status.update(f"[dim]Applying...[/]")
+            status.update("[dim]Applying...[/]")
             self._dismiss_with_result()
 
         # -- Toggle handling --------------------------------------------------

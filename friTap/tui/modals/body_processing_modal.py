@@ -13,7 +13,7 @@ Returns a BodyProcessingResult on Apply, or None on Cancel/ESC.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 try:
@@ -355,8 +355,8 @@ if TEXTUAL_AVAILABLE:
                 return
 
             try:
-                from google.protobuf import descriptor_pool, descriptor_pb2
-                from google.protobuf.compiler import plugin_pb2
+                from google.protobuf import descriptor_pool, descriptor_pb2  # noqa: F401
+                from google.protobuf.compiler import plugin_pb2  # noqa: F401
                 from google.protobuf import text_format
                 import subprocess
                 import tempfile
@@ -395,7 +395,7 @@ if TEXTUAL_AVAILABLE:
                     from google.protobuf import descriptor_pb2 as dp2
                     from google.protobuf import descriptor_pool as pool_mod
                     from google.protobuf import message_factory
-                    from google.protobuf import symbol_database
+                    from google.protobuf import symbol_database  # noqa: F401
 
                     with open(tmp_path, "rb") as f:
                         fds = dp2.FileDescriptorSet.FromString(f.read())

@@ -9,7 +9,7 @@ from friTap.events import (
     ERROR_SEVERITY_WARNING,
 )
 from friTap.flow.collector import FlowCollector
-from friTap.parsers.base import BaseParser, ParseResult, SafeParserAdapter
+from friTap.parsers.base import BaseParser, SafeParserAdapter
 
 
 def _make_event(data: bytes, **kw) -> DatalogEvent:

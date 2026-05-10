@@ -21,8 +21,8 @@ except ImportError:
         "but HPACK header decompression is disabled. Install with: pip install hpack"
     )
 
-from friTap.constants import PROTOCOL_HTTP2
-from .base import BaseParser, ParseResult, apply_http2_headers
+from friTap.constants import PROTOCOL_HTTP2  # noqa: E402
+from .base import BaseParser, ParseResult, apply_http2_headers  # noqa: E402
 
 
 # HTTP/2 connection preface

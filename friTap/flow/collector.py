@@ -4,7 +4,10 @@ import copy
 import logging
 import threading
 import time
-from typing import Callable, Optional
+from typing import Callable, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .models import FlowSummary
 
 from friTap.connection_index import resolve_connection_key
 from friTap.constants import SSL_READ

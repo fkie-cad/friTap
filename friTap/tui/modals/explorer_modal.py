@@ -19,10 +19,13 @@ from __future__ import annotations
 import bisect
 import json
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, TYPE_CHECKING
 
 from rich.segment import Segment
 from rich.style import Style
+
+if TYPE_CHECKING:
+    from friTap.tui.modals.body_processing_modal import BodyProcessingResult
 
 # Display modes
 MODE_HEX = "hex"

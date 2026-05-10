@@ -4,7 +4,7 @@
 </div>
 
 # friTap
-![version](https://img.shields.io/badge/version-1.6.3.1-blue) [![PyPI version](https://d25lcipzij17d.cloudfront.net/badge.svg?id=py&r=r&ts=1683906897&type=6e&v=1.6.3.1&x2=0)](https://badge.fury.io/py/friTap) [![CI](https://github.com/fkie-cad/friTap/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/fkie-cad/friTap/actions/workflows/ci.yml)
+![version](https://img.shields.io/badge/version-2.0.0-blue) [![PyPI version](https://d25lcipzij17d.cloudfront.net/badge.svg?id=py&r=r&ts=1683906897&type=6e&v=2.0.0&x2=0)](https://badge.fury.io/py/friTap) [![CI](https://github.com/fkie-cad/friTap/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/fkie-cad/friTap/actions/workflows/ci.yml)
 [![Ruff](https://github.com/fkie-cad/friTap/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/fkie-cad/friTap/actions/workflows/lint.yml)
 [![Publish status](https://github.com/fkie-cad/friTap/actions/workflows/publish.yml/badge.svg?branch=main)](https://github.com/fkie-cad/friTap/actions/workflows/publish.yml)
 
@@ -194,10 +194,28 @@ fritap -do -v com.example.app
 
 **We verified the Windows implementations only for Windows 10**
 
+## Frida compatibility
+
+friTap targets a single frida major per friTap-major release. From 2.0.0
+onward, every frida major bump produces a friTap major bump in the same
+commit (enforced by CI; see [`RELEASING.md`](RELEASING.md)).
+
+| friTap range          | frida required | frida-tools required |
+|-----------------------|----------------|----------------------|
+| ≤ 1.3.3.3             | ≥ 15           | ≥ 10                 |
+| 1.3.3.4 – 1.4.3.0     | ≥ 16           | ≥ 11                 |
+| 1.4.3.1 – 1.6.3.2     | ≥ 17           | ≥ 12                 |
+| **2.0.0+**            | 17.x           | 12.x                 |
+
+If you cannot upgrade frida-server, install a friTap version matching your
+frida major (e.g. `pip install 'fritap<2'` for frida 17.x with the legacy
+4-segment scheme). Set `FRITAP_STRICT_FRIDA=1` to make a frida-major
+mismatch fatal at startup instead of a warning.
+
 ## Dependencies
 
 - `>= python3.10`
-- [frida](https://frida.re) (`>= 17`) and frida-tools (`>= 12`)
+- [frida](https://frida.re) (`>= 17, < 18`) and frida-tools (`>= 12, < 13`)
 - hexdump, scapy, watchdog, rich, textual, pydantic, psutil, platformdirs, h11, hpack
 - AndroidFridaManager (for Android device management)
 - for hooking on Android ensure that the `adb`-command is in your PATH

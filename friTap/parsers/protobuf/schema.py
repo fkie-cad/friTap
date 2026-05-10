@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 _log = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ class SchemaDecoder:
 
     def __init__(self) -> None:
         _check_protobuf_available()
-        from google.protobuf import descriptor_pool, descriptor_pb2
+        from google.protobuf import descriptor_pool
         self._pool = descriptor_pool.DescriptorPool()
         self._message_class: Any = None
         self._message_type_name: str = ""

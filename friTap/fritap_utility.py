@@ -13,8 +13,6 @@ import sys
 import tempfile
 import threading
 import time
-import traceback as _traceback
-import warnings
 from typing import Iterable, Optional
 
 def find_pid_by_name(proc_name: str) -> int | None:

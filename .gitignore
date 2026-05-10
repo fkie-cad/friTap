@@ -13,6 +13,20 @@ site/
 *.sh
 *.yml
 *.js
+dev/changelog_backfill.py
+
+# Project-tracked files that the broad *.md / *.yml rules above would
+# otherwise hide. Keep this list in sync with files that must ship.
+!RELEASING.md
+!compat.yml
+!CONTRIBUTING.md
+!.github/PULL_REQUEST_TEMPLATE.md
+!.github/ISSUE_TEMPLATE/
+!.github/ISSUE_TEMPLATE/*.yml
+# dev/ shell scripts: the broad *.sh rule above hides them, but they are
+# part of the maintainer toolchain (compile_agent.sh is invoked by the
+# agent-build-check CI job; entrypoint.sh is referenced by dev/Dockerfile).
+!dev/*.sh
 
 # Testing artifacts
 tests/coverage_html/
@@ -30,7 +44,10 @@ env/
 .vscode/launch.json
 
 # npm stuff
-package-lock.json
+# package-lock.json is checked in: agent-build-check (CI) runs `npm ci`
+# which requires it. Keep this in sync with the toolchain pin in
+# package.json — see RELEASING.md.
+!package-lock.json
 
 # debian package generation stuff
 deb_dist/

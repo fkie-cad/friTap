@@ -2,7 +2,6 @@
 
 import logging
 import os
-import tempfile
 import threading
 import warnings
 
@@ -79,8 +78,8 @@ class TestWarningCapture:
         assert "token-pyw-uniq" in body
         # Count records, not substrings.
         record_lines = [
-            l for l in body.splitlines()
-            if "py.warnings:" in l
+            line for line in body.splitlines()
+            if "py.warnings:" in line
         ]
         assert len(record_lines) == 1, body
 
@@ -162,7 +161,7 @@ class TestConcurrentWriters:
         fu.close_debug_log()
 
         body = _read(path)
-        records = [l for l in body.splitlines() if TOKEN in l]
+        records = [line for line in body.splitlines() if TOKEN in line]
         assert len(records) == N_THREADS * N_PER_THREAD, (
             f"expected {N_THREADS * N_PER_THREAD} records, got {len(records)}"
         )
@@ -195,12 +194,15 @@ class TestConcurrentWriters:
 
         t1 = threading.Thread(target=_logger_calls, name="logger")
         t2 = threading.Thread(target=_prose_calls, name="prose")
-        t1.start(); t2.start(); t1.join(); t2.join()
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
         fu.close_debug_log()
 
         body = _read(path)
-        log_records = [l for l in body.splitlines() if "LOG-LINE-" in l]
-        prose_records = [l for l in body.splitlines() if "PROSE-BLOCK-" in l]
+        log_records = [line for line in body.splitlines() if "LOG-LINE-" in line]
+        prose_records = [line for line in body.splitlines() if "PROSE-BLOCK-" in line]
         assert len(log_records) == 500
         assert len(prose_records) == 500
         for line in log_records:

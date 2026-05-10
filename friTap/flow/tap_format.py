@@ -17,11 +17,10 @@ import json
 import struct
 import zlib
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from friTap.flow.models import Flow, FlowChunk, FlowState
+    from friTap.flow.models import Flow
     from friTap.parsers.base import ParseResult
 
 # ---------------------------------------------------------------------------

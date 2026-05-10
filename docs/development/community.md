@@ -222,11 +222,11 @@ friTap starts but doesn't detect any SSL libraries:
 ```
 
 ## Environment
-- OS: Android 11 (API 30)
-- Device: Pixel 5 (rooted)
-- friTap version: 1.3.5
-- Frida version: 16.0.19
-- frida-server: 16.0.19
+- OS: Android 13 (API 33)
+- Device: Pixel 7 (rooted)
+- friTap version: 2.0.0
+- Frida version: 17.9.6
+- frida-server: 17.9.6
 
 ## Debug output
 ```

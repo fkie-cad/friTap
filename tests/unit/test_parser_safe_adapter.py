@@ -2,8 +2,6 @@
 
 import logging
 
-import pytest
-
 from friTap.parsers.base import (
     BaseParser,
     ParseResult,
@@ -157,8 +155,6 @@ class TestSafeParserAdapterAttributePassthrough:
         assert inner.trailing_data == b"hello"
 
     def test_set_failed_does_not_leak_to_inner(self):
-        inner = _GoodParser()
-        adapter = SafeParserAdapter(inner)
         # Triggering a failure must set adapter._failed without touching
         # any same-named attribute on the inner parser.
         broken_inner = _BrokenParser()

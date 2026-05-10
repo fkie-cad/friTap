@@ -8,7 +8,6 @@ from typing import Optional, TYPE_CHECKING
 import time
 
 from friTap.flow import display as _display
-from friTap.flow.display import ParseLike
 
 if TYPE_CHECKING:
     from friTap.parsers.base import ParseResult

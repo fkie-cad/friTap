@@ -423,7 +423,6 @@ if TEXTUAL_AVAILABLE:
 
         def action_save_body(self) -> None:
             """Save the active tab's body (request or response) to a file."""
-            from friTap.flow.models import Flow
             from friTap.flow.http_utils import (
                 parse_content_disposition_filename,
                 filename_from_url,
@@ -627,7 +626,7 @@ if TEXTUAL_AVAILABLE:
                 log.write("")
                 log.write(f"[bold {c('success')}]--- Body ---[/]")
                 if req.content_encoding == "permessage-deflate":
-                    log.write(f"[dim italic]Auto-decompressed (permessage-deflate)[/]")
+                    log.write("[dim italic]Auto-decompressed (permessage-deflate)[/]")
                 self._render_body(log, body, headers)
 
             # Warn when parsed view shows much less data than raw chunks
@@ -694,7 +693,7 @@ if TEXTUAL_AVAILABLE:
                 log.write("")
                 log.write(f"[bold {c('success')}]--- Body ---[/]")
                 if resp.content_encoding == "permessage-deflate":
-                    log.write(f"[dim italic]Auto-decompressed (permessage-deflate)[/]")
+                    log.write("[dim italic]Auto-decompressed (permessage-deflate)[/]")
                 self._render_body(log, body, headers)
 
             # Warn when parsed view shows much less data than raw chunks
@@ -1068,7 +1067,7 @@ if TEXTUAL_AVAILABLE:
             log.write(f"[dim]Content-Type: message/ohttp-{ohttp_type[:3]} (Oblivious HTTP, RFC 9458)[/]")
             if has_decrypted:
                 log.write(f"[bold green]OHTTP Decrypted {label}[/]")
-                log.write(f"[dim]Decrypted inner content available in the [bold]OHTTP Inner[/bold] tab.[/]")
+                log.write("[dim]Decrypted inner content available in the [bold]OHTTP Inner[/bold] tab.[/]")
             else:
                 log.write(f"[bold yellow]OHTTP Encrypted {label}[/]")
                 log.write("[dim]Body is HPKE-encrypted (X25519 + AES-128-GCM).[/]")

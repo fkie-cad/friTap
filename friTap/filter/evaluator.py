@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import operator as _op
 from typing import Any, TYPE_CHECKING
 
 from .ast_nodes import (
@@ -9,7 +10,7 @@ from .ast_nodes import (
     AndNode, OrNode, NotNode,
 )
 from .errors import FilterSyntaxError
-from .fields import FIELD_REGISTRY, CANONICAL_FIELDS, is_canonical_only, is_field_prefix
+from .fields import FIELD_REGISTRY, is_canonical_only, is_field_prefix
 from .parser import parse_filter, collect_fields
 
 if TYPE_CHECKING:
@@ -146,8 +147,6 @@ def _eval_existence(node: ExistenceNode, obj: Any, use_canonical: bool) -> bool:
         return val != 0
     return bool(val)
 
-
-import operator as _op
 
 _OP_DISPATCH = {
     "==": _op.eq,

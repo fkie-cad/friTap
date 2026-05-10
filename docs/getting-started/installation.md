@@ -2,12 +2,14 @@
 
 This guide will help you install and set up friTap for SSL/TLS traffic analysis.
 
+> Source of truth for frida version compatibility: [compat.yml](https://github.com/fkie-cad/friTap/blob/main/compat.yml). All version statements in this document derive from it; if you spot a discrepancy, please [file an issue](https://github.com/fkie-cad/friTap/issues/new/choose).
+
 ## System Requirements
 
 ### Minimum Requirements
 
 - **Python**: 3.7 or higher
-- **Frida**: 16.0 or higher
+- **Frida**: 17.x (see [Frida compatibility](https://github.com/fkie-cad/friTap#frida-compatibility))
 - **Operating System**: Linux, Windows, macOS
 - **Memory**: 512 MB RAM (minimum)
 - **Storage**: 50 MB free disk space
@@ -15,7 +17,7 @@ This guide will help you install and set up friTap for SSL/TLS traffic analysis.
 ### Recommended Requirements
 
 - **Python**: 3.10 or higher
-- **Frida**: 17.0 or higher
+- **Frida**: 17.x (latest patch)
 - **Memory**: 2 GB RAM or more
 - **Storage**: 1 GB free disk space
 
@@ -171,7 +173,7 @@ fritap --help
 ### Expected Output
 
 ```
-friTap 1.3.4.2
+friTap 2.0.0
 Usage: fritap [OPTIONS] TARGET
 
 Options:
@@ -252,8 +254,8 @@ Once friTap is installed, you can:
 
 friTap automatically installs the following dependencies:
 
-- **frida** (>= 16.0.0): Core instrumentation framework
-- **frida-tools** (>= 11.0.0): Frida command-line tools
+- **frida** (>= 17.0.0, < 18.0.0): Core instrumentation framework
+- **frida-tools** (>= 12.0.0, < 13.0.0): Frida command-line tools
 - **scapy**: Network packet manipulation
 - **AndroidFridaManager**: Android device management
 - **rich** (>= 13.0.0): Terminal output formatting

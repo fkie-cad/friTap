@@ -221,7 +221,7 @@ def _detect_grpc(payload: bytes) -> str:
 
 
 # Trailing data detection — shared with Http1Parser via trailing.py
-from .trailing import detect_trailing_protocol, try_sub_parse
+from .trailing import detect_trailing_protocol, try_sub_parse  # noqa: E402
 
 
 class WebSocketParser(BaseParser):

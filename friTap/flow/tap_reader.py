@@ -11,7 +11,6 @@ TapReader provides:
 from __future__ import annotations
 
 import logging
-import warnings
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
@@ -19,10 +18,7 @@ from friTap.flow.tap_format import (
     FLAG_HAS_INDEX,
     FOOTER_MAGIC,
     REC_FLOW,
-    REC_FLOW_INDEX,
-    REC_KEYLOG,
     REC_META,
-    SYNC_MARKER,
     FlowSummary,
     TapHeader,
     TapMeta,

@@ -234,7 +234,7 @@ Use MkDocs admonitions for important information:
     Never run friTap on production systems without proper authorization.
 
 !!! info "Version Compatibility"
-    This feature requires friTap 1.3.5+ and Frida 16.0+.
+    This feature requires friTap 2.0.0+ and Frida 17.x.
 
 !!! example "Quick Example"
     ```bash
@@ -590,8 +590,8 @@ For Android development, install the [Android SDK](https://developer.android.com
 !!! info "Version Requirements"
     This feature requires:
     
-    - friTap 1.3.5+
-    - Frida 16.0+
+    - friTap 2.0.0+
+    - Frida 17.x
     - Python 3.7+
     
     For older versions, see [Legacy Documentation](legacy.md).
