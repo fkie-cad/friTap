@@ -15,14 +15,14 @@ Key features include seamless support for automated SSL/TLS key extraction, maki
 For more details, explore the [OSDFCon webinar slides](assets/friTapOSDFConwebinar.pdf) or check out our [blog post](https://lolcads.github.io/posts/2022/08/fritap/).
 
 
-This project was inspired by [SSL_Logger](https://github.com/google/ssl_logger ) and currently supports all major operating systems (Linux, Windows, Android). More platforms and libraries will be added in future releases.
+This project was inspired by [SSL_Logger](https://github.com/google/ssl_logger ) and currently supports all major operating systems: Linux, Windows, Android, with partial support for macOS and iOS (still under development). More platforms and libraries will be added in future releases.
 
 ## Key Features
 
 The main features of friTap are:
 
 - TLS key extraction in real time (`-k key.log`)
-- Decryption of TLS payload as PCAP in real time (`-p plaintext.pcap`)
+- Decryption of TLS payload as PCAP in real time (`-p plaintext.pcap`) — coverage varies by platform/library; see the [support table](#supported-ssltls-implementations-and-corresponding-logging-capabilities) below
 - Interactive TUI mode with guided setup wizard (just run `fritap`)
 - Store plaintext hook output in its own .tap capture format and replay it (`fritap -r  saved_capture.tap`)
 - Library scanning to discover renamed/statically linked libraries (`--library-scan`)
@@ -80,12 +80,14 @@ The TUI provides a guided setup wizard that walks you through device selection, 
 | `d` | Select device | `1` | Full capture (keys + pcap) |
 | `a` | Attach to process | `2` | Key extraction only |
 | `s` | Spawn application | `3` | Plaintext pcap |
-| `Enter` | Start/stop capture | `4` | Live Wireshark (pipe) |
-| `v` | Toggle verbose | `5` | Live Wireshark (auto-decrypt) |
+| `Enter` | Start/stop capture | `4` | Live Wireshark (pipe) † |
+| `v` | Toggle verbose | `5` | Live Wireshark (auto-decrypt) † |
 | `p` | Select protocol | `?` | Help |
 | `q` | Quit | `e` | Toggle experimental |
 
 The TUI supports device selection for local, USB (Android/iOS), and remote devices, and can automatically install and start frida-server on connected devices.
+
+† _Live Wireshark options (`4` and `5`) require Unix-style FIFOs and are currently Linux/macOS only — they are not supported on Windows._
 
 ## Hooking Libraries Without Symbols
 
@@ -217,6 +219,7 @@ mismatch fatal at startup instead of a warning.
 - `>= python3.10`
 - [frida](https://frida.re) (`>= 17, < 18`) and frida-tools (`>= 12, < 13`)
 - hexdump, scapy, watchdog, rich, textual, pydantic, psutil, platformdirs, h11, hpack
+- tlsLibHunter, pylsqpack, zstandard, brotli (HTTP/2 + HTTP/3 + compression decoding)
 - AndroidFridaManager (for Android device management)
 - for hooking on Android ensure that the `adb`-command is in your PATH
 
@@ -225,7 +228,7 @@ mismatch fatal at startup instead of a warning.
 
 - [ ] add the capability to alter the decrypted payload
   - integration with https://github.com/mitmproxy/mitmproxy
-  - integration with http://portswigger.net/burp/
+  - integration with https://portswigger.net/burp/
 - [ ] add wine support
 - [x] <strike>add Flutter support</strike>
 - [ ] add further libraries (have a look at this [Wikipedia entry](https://en.wikipedia.org/wiki/Comparison_of_TLS_implementations)):
@@ -254,9 +257,9 @@ cd friTap
 python setup_dev.py
 
 # Manual setup
-pip install -r requirements-dev.txt
-pip install -e .
-npm install  # For TypeScript agent compilation
+pip install -e ".[dev]"        # friTap + dev extras (pytest, ruff)
+npm ci --ignore-scripts        # Install Node deps without auto-compile
+./dev/compile_agent.sh         # Compile TypeScript agent to JavaScript
 ```
 
 ### Testing
@@ -265,30 +268,30 @@ friTap includes a comprehensive testing framework:
 
 ```bash
 # Run all fast tests
-python run_tests.py --fast
+python dev/run_tests.py --fast
 
 # Run specific test categories
-python run_tests.py unit           # Unit tests
-python run_tests.py agent          # Agent compilation tests  
-python run_tests.py integration    # Mock integration tests
+python dev/run_tests.py unit           # Unit tests
+python dev/run_tests.py agent          # Agent compilation tests
+python dev/run_tests.py integration    # Mock integration tests
 
 # Generate coverage report
-python run_tests.py coverage
+python dev/run_tests.py coverage
 ```
 
 ### Development Dependencies
 
-- **Python 3.10+** with development dependencies (`requirements-dev.txt`)
-- **Node.js 16+** for TypeScript agent compilation
-- **Testing framework**: pytest with comprehensive mocking
-- **Code quality**: black, flake8, mypy, pre-commit hooks
+- **Python 3.10+** with the `dev` extras (`pip install -e ".[dev]"`)
+- **Node.js 16+** for TypeScript agent compilation (`frida-compile`)
+- **Testing framework**: pytest (with `pytest-cov`, `pytest-mock`, `pytest-timeout`)
+- **Code quality**: ruff (linter, configured in `pyproject.toml`)
 
 See [DEVELOPMENT.md](./DEVELOPMENT.md) for detailed development setup and testing guide.
 
 ## Contribute
 
 Contributions are always welcome. Just fork it and open a pull request!
-More details can be found in the [CONTRIBUTION.md](./CONTRIBUTION.md).
+More details can be found in the [CONTRIBUTING.md](./CONTRIBUTING.md).
 ___
 
 ## Changelog
@@ -319,7 +322,7 @@ If you use **friTap** in your research, please cite the following paper:
 }
 ```
 
-Alternatively, you can find a citation file in `CITATION.cff` or use the “Cite this repository” button on GitHub.
+A machine-readable version of this citation lives in [`CITATION.cff`](./CITATION.cff) (as `preferred-citation`), so GitHub's "Cite this repository" button and tooling like [Zotero](https://www.zotero.org/) will surface the same paper entry.
 
 ## Support
 

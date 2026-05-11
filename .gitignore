@@ -27,6 +27,8 @@ dev/changelog_backfill.py
 # part of the maintainer toolchain (compile_agent.sh is invoked by the
 # agent-build-check CI job; entrypoint.sh is referenced by dev/Dockerfile).
 !dev/*.sh
+!CHANGELOG.md
+!README.md
 
 # Testing artifacts
 tests/coverage_html/

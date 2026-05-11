@@ -51,6 +51,23 @@ The structural fix is to make the cross-file invariant un-bypassable.
 Use `X.Y.Z-rc.1` / `X.Y.Z-alpha.1` for frida-major-transition testing. PyPI
 hides pre-releases by default; users opt in with `pip install fritap --pre`.
 
+## Third-party deprecation watchlist
+
+We don't directly depend on these, but they sit on the agent-build path
+through frida and may need attention if upstream stops maintaining them.
+
+- **`prebuild-install`** (transitive: friTap → `frida` (npm) → `prebuild-install`).
+  Marked deprecated by its author; npm warns on every `npm ci` run.
+  `prebuild-install` is what frida uses to fetch the platform-native
+  `frida_binding.node` at install time. We can't replace it ourselves.
+  - **Watch:** [frida/frida-node](https://github.com/frida/frida-node)
+    for migration to a maintained alternative
+    (`prebuildify`, `node-gyp-build`, etc.).
+  - **Trigger to act:** if `prebuild-install` ever fully breaks,
+    `npm ci` fails on macOS/Linux/Windows runners and the
+    `agent-build-check` CI job goes red. At that point either pin a
+    frida version that still works or contribute the migration upstream.
+
 ## Public API surface
 
 friTap declares two stability tiers:

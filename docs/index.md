@@ -79,7 +79,7 @@ friTap uses dynamic instrumentation to intercept SSL/TLS operations at the libra
 
 ### Prerequisites
 
-- Python 3.7+
+- Python 3.10+
 - Frida 17.x (see [Frida compatibility](https://github.com/fkie-cad/friTap#frida-compatibility))
 - Administrative privileges (for desktop applications)
 - ADB access (for Android analysis)

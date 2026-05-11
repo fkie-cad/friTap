@@ -35,7 +35,7 @@ setup(
     author_email="daniel.baier@fkie.fraunhofer.de",
     license="GPL-3.0-only", # GPLv3 or later (see LICENSE file)
 
-    packages=find_packages(exclude=("create_legacy_agent", "create_standalone_release")),
+    packages=find_packages(),
     python_requires=">=3.10",
     install_requires=install_requires,
     extras_require={

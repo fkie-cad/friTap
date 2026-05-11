@@ -198,12 +198,6 @@ class TestCompiledAgentValidation:
         fritap_root = Path(__file__).parent.parent.parent
         return fritap_root / "friTap" / "fritap_agent.js"
         
-    @pytest.fixture
-    def legacy_agent_path(self):
-        """Get path to legacy compiled agent."""
-        fritap_root = Path(__file__).parent.parent.parent
-        return fritap_root / "friTap" / "fritap_agent_legacy.js"
-        
     def test_compiled_agent_exists(self, compiled_agent_path):
         """Test that compiled agent file exists."""
         assert compiled_agent_path.exists(), \
@@ -281,13 +275,6 @@ class TestCompiledAgentValidation:
         assert len(found_indicators) > 0, \
             f"No SSL/TLS indicators found. Expected one of: {ssl_indicators}"
             
-    def test_legacy_agent_exists(self, legacy_agent_path):
-        """Test that legacy agent exists if applicable."""
-        # Legacy agent may not always exist
-        if legacy_agent_path.exists():
-            assert legacy_agent_path.stat().st_size > 0, \
-                "Legacy agent file is empty"
-                
     def test_compiled_agent_size_reasonable(self, compiled_agent_path):
         """Test that compiled agent has reasonable size."""
         if not compiled_agent_path.exists():
