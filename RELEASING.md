@@ -100,13 +100,23 @@ When promoting a symbol from internal to stable, add it to `__all__` in
 
 ## Frida compatibility (historical)
 
-| friTap range          | frida required | frida-tools required |
-|-----------------------|----------------|----------------------|
-| ≤ 1.3.3.3             | ≥ 15           | ≥ 10                 |
-| 1.3.3.4 – 1.4.3.0     | ≥ 16           | ≥ 11                 |
-| 1.4.3.1 – 1.6.3.2     | ≥ 17           | ≥ 12                 |
-| **2.0.0+**            | 17.x           | 12.x                 |
+| friTap range          | frida required | frida-tools required | Constraints file                  |
+|-----------------------|----------------|----------------------|-----------------------------------|
+| 1.3.0.0 – 1.3.3.3     | 15.x           | 10.x – 11.x          | `constraints/frida15.txt`         |
+| 1.3.4.0 – 1.4.3.0     | 16.x           | 12.x – 13.x          | `constraints/frida16.txt`         |
+| 1.4.4.0 – 1.6.3.1     | 17.x           | 14.x                 | `constraints/frida17-legacy.txt`  |
+| **2.0.0+**            | 17.x           | 14.x                 | (none — `requirements.txt`)       |
+
+frida-tools maintains its own version line: each frida-tools major is
+hard-capped to a specific frida major (10.x→14, 11.x→15.2+, 12.x→16.0.9+,
+13.x→16.2.2+, 14.x→17.x). The "frida-tools required" column above shows
+the actual compatible majors, NOT the floor pin found in legacy
+requirements.txt files. Old wheels carrying e.g. `frida-tools>=12.0.0`
+silently resolved through whichever frida-tools was newest at install
+time — today that's 14.x, which rejects frida 16 and breaks the legacy
+agent. The constraints files make the compatible range explicit.
 
 If you cannot upgrade frida-server, install a friTap version matching your
-frida major (e.g. `pip install 'fritap<2'` for frida 17.x with the legacy
-4-segment scheme).
+frida major using the constraints file from the table above. See
+`constraints/README.md` for copy-paste recipes, or run
+`python dev/install_legacy.py --frida-major {15|16|17}` from a fresh clone.

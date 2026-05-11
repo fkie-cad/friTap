@@ -3,14 +3,44 @@
 # (.github/workflows/ci.yml). When frida ships a new major: bump
 # friTap MAJOR in friTap/about.py AND add a row here in the SAME PR.
 
-- fritap_major: 1
-  frida_major_min: 15
-  frida_major_max: 17
-  status: legacy
-  notes: "4-segment scheme. 1.0.x-1.3.3.3 used frida 15; 1.3.3.4-1.4.3.0 used frida 16; 1.4.3.1-1.6.3.2 used frida 17."
+fritap_majors:
+  - fritap_major: 1
+    frida_major_min: 15
+    frida_major_max: 17
+    status: legacy
+    notes: "4-segment scheme. 1.3.0.0-1.3.3.3 used frida 15; 1.3.4.0-1.4.3.0 used frida 16; 1.4.4.0-1.6.3.1 used frida 17. See era_boundaries below for the machine-readable mapping."
 
-- fritap_major: 2
-  frida_major_min: 17
-  frida_major_max: 17
-  status: current
-  notes: "First 3-segment SemVer release. Pin: frida>=17.0.0,<18.0.0."
+  - fritap_major: 2
+    frida_major_min: 17
+    frida_major_max: 17
+    status: current
+    notes: "First 3-segment SemVer release. Pin: frida>=17.0.0,<18.0.0."
+
+# Machine-readable era boundaries for legacy installs. Consumed by
+# dev/install_legacy.py and the legacy-constraints-check CI job. Each row
+# describes one (frida-major, friTap range) pairing and points at the
+# constraints file that caps frida/frida-tools for that era. The
+# fritap_first/fritap_last values are the actual top and bottom of each
+# era on PyPI (verified — RELEASING.md previously listed 1.3.3.4 /
+# 1.4.3.1 / 1.6.3.2 which were never published).
+era_boundaries:
+  - era: frida15
+    frida_major: 15
+    fritap_first: "1.3.0.0"
+    fritap_last:  "1.3.3.3"
+    constraints_file: constraints/frida15.txt
+  - era: frida16
+    frida_major: 16
+    fritap_first: "1.3.4.0"
+    fritap_last:  "1.4.3.0"
+    constraints_file: constraints/frida16.txt
+  - era: frida17-legacy
+    frida_major: 17
+    fritap_first: "1.4.4.0"
+    fritap_last:  "1.6.3.1"
+    constraints_file: constraints/frida17-legacy.txt
+  - era: frida17-current
+    frida_major: 17
+    fritap_first: "2.0.0"
+    fritap_last:  null
+    constraints_file: null

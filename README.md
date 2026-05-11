@@ -35,6 +35,33 @@ The main features of friTap are:
 
 Installation is simply a matter of `pip3 install fritap`. This will give you the `fritap` command. You can update an existing `fritap` installation with `pip3 install --upgrade fritap`.
 
+### Legacy install (frida 15.x / 16.x / 17.x with the 4-segment scheme)
+
+If your target device runs an older `frida-server` (15.x or 16.x), or you
+need the legacy 4-segment friTap line for frida 17.x, install via a
+[constraints file](constraints/README.md):
+
+```bash
+# frida 15.x  → friTap 1.3.0.0–1.3.3.3
+pip install fritap==1.3.3.3 -c https://raw.githubusercontent.com/fkie-cad/friTap/main/constraints/frida15.txt
+
+# frida 16.x  → friTap 1.3.4.0–1.4.3.0
+pip install fritap==1.4.3.0 -c https://raw.githubusercontent.com/fkie-cad/friTap/main/constraints/frida16.txt
+
+# frida 17.x (legacy 4-segment) → friTap 1.4.4.0–1.6.3.1
+pip install fritap==1.6.3.1 -c https://raw.githubusercontent.com/fkie-cad/friTap/main/constraints/frida17-legacy.txt
+```
+
+Or from a fresh clone:
+
+```bash
+git clone https://github.com/fkie-cad/friTap && cd friTap
+python dev/install_legacy.py --frida-major 16
+```
+
+See [`constraints/README.md`](constraints/README.md) for the full table and
+caveats (notably: frida 15.x wheels target older Python versions).
+
 ## Usage
 
 On Linux/Windows/MacOS we can easily attach to a process by entering its name or its PID:
@@ -202,22 +229,23 @@ friTap targets a single frida major per friTap-major release. From 2.0.0
 onward, every frida major bump produces a friTap major bump in the same
 commit (enforced by CI; see [`RELEASING.md`](RELEASING.md)).
 
-| friTap range          | frida required | frida-tools required |
-|-----------------------|----------------|----------------------|
-| ≤ 1.3.3.3             | ≥ 15           | ≥ 10                 |
-| 1.3.3.4 – 1.4.3.0     | ≥ 16           | ≥ 11                 |
-| 1.4.3.1 – 1.6.3.2     | ≥ 17           | ≥ 12                 |
-| **2.0.0+**            | 17.x           | 12.x                 |
+| friTap range          | frida required | frida-tools required | Constraints file                  |
+|-----------------------|----------------|----------------------|-----------------------------------|
+| 1.3.0.0 – 1.3.3.3     | 15.x           | 10.x – 11.x          | `constraints/frida15.txt`         |
+| 1.3.4.0 – 1.4.3.0     | 16.x           | 12.x – 13.x          | `constraints/frida16.txt`         |
+| 1.4.4.0 – 1.6.3.1     | 17.x           | 14.x                 | `constraints/frida17-legacy.txt`  |
+| **2.0.0+**            | 17.x           | 14.x                 | (none — `requirements.txt`)       |
 
 If you cannot upgrade frida-server, install a friTap version matching your
-frida major (e.g. `pip install 'fritap<2'` for frida 17.x with the legacy
-4-segment scheme). Set `FRITAP_STRICT_FRIDA=1` to make a frida-major
-mismatch fatal at startup instead of a warning.
+frida major using the constraints file from the table above (see
+[`constraints/README.md`](constraints/README.md) for copy-paste recipes or
+the `dev/install_legacy.py` helper). Set `FRITAP_STRICT_FRIDA=1` to make a
+frida-major mismatch fatal at startup instead of a warning.
 
 ## Dependencies
 
 - `>= python3.10`
-- [frida](https://frida.re) (`>= 17, < 18`) and frida-tools (`>= 12, < 13`)
+- [frida](https://frida.re) (`>= 17, < 18`) and frida-tools (`>= 14, < 15`)
 - hexdump, scapy, watchdog, rich, textual, pydantic, psutil, platformdirs, h11, hpack
 - tlsLibHunter, pylsqpack, zstandard, brotli (HTTP/2 + HTTP/3 + compression decoding)
 - AndroidFridaManager (for Android device management)

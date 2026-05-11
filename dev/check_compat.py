@@ -94,7 +94,7 @@ def die(msg: str) -> None:
 def main() -> None:
     about_text = ABOUT.read_text()
     req_text = REQUIREMENTS.read_text()
-    compat_rows = yaml.safe_load(COMPAT.read_text()) or []
+    compat_rows = (yaml.safe_load(COMPAT.read_text()) or {}).get("fritap_majors") or []
 
     fritap_major = _major_from_about(about_text)
     lower, upper = _frida_bounds_from_requirements(req_text)

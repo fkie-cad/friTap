@@ -14,6 +14,7 @@ site/
 *.yml
 *.js
 dev/changelog_backfill.py
+research/
 
 # Project-tracked files that the broad *.md / *.yml rules above would
 # otherwise hide. Keep this list in sync with files that must ship.
