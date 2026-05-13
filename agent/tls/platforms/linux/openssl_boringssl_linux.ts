@@ -12,6 +12,10 @@ export function boring_execute_modern(moduleName: string, is_base_hook: boolean)
     // Add SSL_read_ex / SSL_write_ex as extra hooks
     def.extraHooks = createSslReadWriteExHooks();
 
+    // Tag as BoringSSL so the loader auto-installs the bssl::ssl_log_secret
+    // symbol fallback when SSL_CTX_set_keylog_callback can't be resolved.
+    def.libraryType = "boringssl";
+
     executeFromDefinition(def, moduleName, socket_library, is_base_hook, enable_default_fd);
 }
 

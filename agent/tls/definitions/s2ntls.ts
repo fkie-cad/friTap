@@ -70,6 +70,8 @@ export function createS2nTlsDefinition(): HookDefinition {
         keylog: {
             kind: "custom",
             install: (addresses, moduleName, resolvedFns, _enableDefaultFd) => {
+                let installed = false;
+
                 // Auto-inject keylog callback on new configs
                 const configNewAddr = addresses[moduleName]?.["s2n_config_new"];
                 if (configNewAddr && !configNewAddr.isNull()) {
@@ -78,6 +80,7 @@ export function createS2nTlsDefinition(): HookDefinition {
                             resolvedFns["s2n_config_set_key_log_cb"](retval, keylog_callback, ptr("0"));
                         },
                     });
+                    installed = true;
                 }
 
                 // Intercept user-set callbacks
@@ -95,7 +98,9 @@ export function createS2nTlsDefinition(): HookDefinition {
                             });
                         },
                     });
+                    installed = true;
                 }
+                return installed;
             },
         },
     };

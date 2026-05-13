@@ -1,7 +1,13 @@
 import { get_hex_string_from_byte_array, readAddresses, isSymbolAvailable } from "../../../shared/shared_functions.js";
 import { checkNumberOfExports } from "../../shared/shared_functions_legacy.js";
 import { sendKeylog } from "../../../shared/shared_structures.js";
-import { devlog } from "../../../util/log.js";
+import { devlog, devlog_debug } from "../../../util/log.js";
+import { safeKeyLenLogged } from "../../../shared/keylog_length.js";
+import { LruMap } from "../../../shared/lru.js";
+import {
+    CLIENT_RANDOM_CACHE_MAX,
+    tryReadClientRandomAt,
+} from "../../../shared/ssl_struct_walk.js";
 
 
 
@@ -17,6 +23,7 @@ export class Cronet {
     SSL_CTX_set_keylog_callback : any;
     keylog_callback: any;
     can_we_install_keylog_callback: boolean = false;
+    private clientRandomCache: LruMap<string, string> = new LruMap(CLIENT_RANDOM_CACHE_MAX);
 
 
     constructor(public moduleName:string, public socket_library:String,is_base_hook: boolean ,public passed_library_method_mapping?: { [key: string]: Array<string> } ){
@@ -69,38 +76,52 @@ export class Cronet {
     }
     
     get_client_random_from_ssl_struct(ssl_st_ptr: NativePointer): string {
-        const SSL3_RANDOM_SIZE = 32;
-        let offset_s3: number;
-    
+        if (ssl_st_ptr.isNull()) return "";
+
+        const cacheKey = ssl_st_ptr.toString();
+        const cached = this.clientRandomCache.get(cacheKey);
+        if (cached !== undefined) return cached;
+
+        let primary: number;
         switch (Process.arch) {
             case 'x64':
-                offset_s3 = 0x30;
-                break;
             case 'arm64':
-                offset_s3 = 0x30;
+                primary = 0x30;
                 break;
             case 'ia32':
-                offset_s3 = 0x2C;
-                break;
             case 'arm':
-                offset_s3 = 0x2C;
+                primary = 0x2C;
                 break;
             default:
                 devlog("[Error] Unsupported architecture");
                 return "";
         }
-    
-        const s3_ptr = ssl_st_ptr.add(offset_s3).readPointer();
-        return this.get_client_random(s3_ptr, SSL3_RANDOM_SIZE);
-    }
 
-    isReasonableLen(n: unknown): n is number {
-        return Number.isFinite(n as number) && (n as number) > 0 && (n as number) <= 64;
-    }
+        // Probe order: arch-primary first (preserves prior behaviour for
+        // stock BoringSSL), then the opposite-width primary, then two nearby
+        // slots observed in BoringSSL forks such as Cloudflare WARP's
+        // libwarp_mobile.so.
+        const alt = primary === 0x30 ? 0x2C : 0x30;
+        const candidates = [primary, alt, 0x28, 0x38];
 
-    clampTlsLen(n: number): 32 | 48 {
-        // Valid TLS secret lengths are 32 (SHA-256) or 48 (SHA-384 / TLS 1.2 master secret)
-        return n >= 40 ? 48 : 32; 
+        for (const off of candidates) {
+            const cr = tryReadClientRandomAt(ssl_st_ptr, off);
+            if (cr) {
+                if (off !== primary) {
+                    devlog_debug(
+                        `[Cronet legacy] client_random recovered via fallback s3 offset 0x${off.toString(16)}`
+                    );
+                }
+                this.clientRandomCache.set(cacheKey, cr);
+                return cr;
+            }
+        }
+
+        // Negative-cache the failure so repeated keylog calls on the same
+        // SSL* (5x per TLS 1.3 session) don't re-probe four offsets and re-log.
+        devlog_debug("[Cronet legacy] client_random not recoverable via struct walk");
+        this.clientRandomCache.set(cacheKey, "");
+        return "";
     }
 
     keyLenheuristic(label: string, keyPtr: NativePointer): number {
@@ -166,19 +187,18 @@ export class Cronet {
         }
 
         if (!keyPtr.isNull()) {
-            let KEY_LENGTH = 0;
-            if (this.isReasonableLen(keyLen)) {
-                KEY_LENGTH = this.clampTlsLen(keyLen!);
-            }else{
-                KEY_LENGTH = this.keyLenheuristic(labelStr, keyPtr);
-            }
-
+            const { len: KEY_LENGTH } = safeKeyLenLogged(
+                keyLen,
+                labelStr,
+                keyPtr,
+                (label, ptr) => this.keyLenheuristic(label, ptr),
+            );
 
             const keyData = keyPtr.readByteArray(KEY_LENGTH); // Read the key data (KEY_LENGTH bytes)
 
             // Convert the byte array to a string of  hex values
             const hexKey = get_hex_string_from_byte_array(keyData);
-    
+
             secret_key = hexKey;
         } else {
             devlog("[Error] Argument 'key' is NULL");

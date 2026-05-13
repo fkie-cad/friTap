@@ -1,10 +1,11 @@
 
 import {OpenSSL_BoringSSL } from "../../../tls/libs/openssl_boringssl.js";
-import { devlog, devlog_error } from "../../../../util/log.js";
+import { devlog, devlog_debug, devlog_error } from "../../../../util/log.js";
 import { socket_library } from "../../../../platforms/android.js";
 import { patterns, isPatternReplaced, experimental, enable_default_fd } from "../../../../fritap_agent.js";
 import { sendKeylog } from "../../../../shared/shared_structures.js";
 import { executeSSLLibrary } from "../../../shared/shared_functions_legacy.js";
+import { installBoringSSLSymbolHook, boringSslDumpKeys, isResolvedSymbol } from "../../../../shared/boringssl_symbol_hook.js";
 
 
 export class OpenSSL_BoringSSL_Android extends OpenSSL_BoringSSL {
@@ -111,4 +112,22 @@ export class OpenSSL_BoringSSL_Android extends OpenSSL_BoringSSL {
 
 export function boring_execute(moduleName:string, is_base_hook: boolean){
     executeSSLLibrary(OpenSSL_BoringSSL_Android, moduleName, socket_library, is_base_hook, { tryCatch: true });
+
+    // Universal BoringSSL fallback: if the public keylog API can't be resolved
+    // for this module, the primary install above couldn't have hooked it. Try
+    // bssl::ssl_log_secret via the shared symbol resolver instead. The check
+    // uses init_addresses (populated by executeSSLLibrary on base hooks), so
+    // it skips when the primary resolved the address successfully and only
+    // fires when there's nothing to lose.
+    if (is_base_hook) {
+        try {
+            const klc = (globalThis as any).init_addresses?.[moduleName]?.["SSL_CTX_set_keylog_callback"];
+            if (!isResolvedSymbol(klc)) {
+                devlog_debug(`[boring_execute] SSL_CTX_set_keylog_callback unresolved for ${moduleName}, trying ssl_log_secret symbol fallback`);
+                installBoringSSLSymbolHook(moduleName, boringSslDumpKeys);
+            }
+        } catch (e) {
+            devlog_debug(`[boring_execute] fallback check threw: ${e}`);
+        }
+    }
 }

@@ -1,4 +1,4 @@
-import { devlog, devlog_error, log } from "../../../../util/log.js";
+import { devlog, devlog_debug, devlog_error, log } from "../../../../util/log.js";
 import { getAndroidVersion } from "../../../../util/process_infos.js";
 import {OpenSSL_BoringSSL } from "../../../tls/libs/openssl_boringssl.js";
 import { socket_library } from "../../../../platforms/android.js";
@@ -6,6 +6,7 @@ import { isSymbolAvailable } from "../../../../shared/shared_functions.js";
 import { Java, JavaMethod, JavaWrapper } from "../../../../shared/javalib.js";
 import { patterns, isPatternReplaced, experimental } from "../../../../fritap_agent.js";
 import { sendKeylog } from "../../../../shared/shared_structures.js";
+import { installBoringSSLSymbolHook, boringSslDumpKeys, isResolvedSymbol } from "../../../../shared/boringssl_symbol_hook.js";
 
 
 export class Consycrypt_BoringSSL_Android extends OpenSSL_BoringSSL {
@@ -76,6 +77,20 @@ export function conscrypt_native_execute(moduleName:string, is_base_hook: boolea
         }
     }
 
+    // Universal BoringSSL fallback: Conscrypt's primary install path requires
+    // SSL_CTX_set_keylog_callback to be resolvable. If it isn't, fall back to
+    // the bssl::ssl_log_secret symbol hook instead.
+    if (is_base_hook) {
+        try {
+            const klc = (globalThis as any).init_addresses?.[moduleName]?.["SSL_CTX_set_keylog_callback"];
+            if (!isResolvedSymbol(klc)) {
+                devlog_debug(`[conscrypt_native_execute] SSL_CTX_set_keylog_callback unresolved for ${moduleName}, trying ssl_log_secret symbol fallback`);
+                installBoringSSLSymbolHook(moduleName, boringSslDumpKeys);
+            }
+        } catch (e) {
+            devlog_debug(`[conscrypt_native_execute] fallback check threw: ${e}`);
+        }
+    }
 }
 
 /**

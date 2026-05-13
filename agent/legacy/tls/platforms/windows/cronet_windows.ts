@@ -6,6 +6,7 @@ import { CRONET_X64_PATTERNS, CRONET_X86_PATTERNS } from "../../../../tls/shared
 import { patterns, isPatternReplaced } from "../../../../fritap_agent.js"
 import { devlog, devlog_error, devlog_info, devlog_warn, devlog_debug } from "../../../../util/log.js";
 import { sendKeylog } from "../../../../shared/shared_structures.js";
+import { scheduleBoringSSLSymbolFallback, installBoringSSLSymbolHook } from "../../../../shared/boringssl_symbol_hook.js";
 
 export type HookingResult = [success: boolean, handle: PatternBasedHooking | null];
 const EXCLUDED_MODULE_SUFFIXES = ["_backup.dll", "_old.dll"]; // extensible list for problematic modules
@@ -60,31 +61,18 @@ export class Cronet_Windows extends Cronet {
         return hooker;
     }
 
-    // Symbol-based hooking fallback for stripped libraries
+    // Symbol-based fallback for ssl_log_secret. Runs only after pattern-based
+    // hooking failed (gated on hooker.no_hooking_success). Delegates to the
+    // shared multi-strategy resolver so Windows uses the same logic and the
+    // same correct (label, ssl, data, len) interceptor signature as Android.
     execute_symbol_based_hooking(hooker: PatternBasedHooking){
-        devlog_debug("Trying symbol based hooking in "+ this.module_name);
-        // Capture the dumpKeys function with the correct 'this'
-        let dumpKeysFunc = this.dumpKeys.bind(this);
+        if (!hooker.no_hooking_success) return;
 
-        if(hooker.no_hooking_success){
-            try {
-                let symbols = Process.getModuleByName(this.module_name).enumerateSymbols().filter(exports =>
-                    exports.name.toLowerCase().includes("ssl_log")
-                );
-                if(symbols.length > 0){
-                    devlog_info("Installed ssl_log_secret() hooks using symbols for "+ this.module_name);
-                    Interceptor.attach(symbols[0].address, {
-                        onEnter: function(args) {
-                            dumpKeysFunc(args[1], args[0], args[2], Number(args[3]));
-                        }
-                    });
-                } else {
-                    devlog_debug("No ssl_log symbols found in " + this.module_name);
-                }
-            } catch(e) {
-                devlog_error("Error in execute_symbol_based_hooking: "+ e);
-            }
-        }
+        devlog_debug("Trying symbol based hooking in "+ this.module_name);
+        installBoringSSLSymbolHook(
+            this.module_name,
+            (label, ssl, data, len) => this.dumpKeys(label, ssl, data, len)
+        );
     }
 
     install_tls_keys_callback_hook(){
@@ -183,7 +171,12 @@ export class Cronet_Windows extends Cronet {
             return [false, null];
         }
 
-        return [hooker_instance.no_hooking_success, hooker_instance];
+        // PatternBasedHooking sets no_hooking_success = true on initialisation
+        // and flips it to false the moment any pattern variant matches. The
+        // outer cronet_execute() reads the first tuple element as `success`
+        // and does `if (!success)` to enter the symbol-fallback branch, so we
+        // must return `true` when patterns succeeded (i.e. !no_hooking_success).
+        return [!hooker_instance.no_hooking_success, hooker_instance];
     }
 
 }
@@ -197,41 +190,45 @@ export function cronet_execute(moduleName:string, is_base_hook: boolean){
         return;
     }
 
+    let cronet: Cronet_Windows;
     try {
-        var cronet = new Cronet_Windows(moduleName, socket_library, is_base_hook);
+        cronet = new Cronet_Windows(moduleName, socket_library, is_base_hook);
+    } catch (error_msg) {
+        devlog_error(`cronet_execute constructor error for module ${moduleName}: ${error_msg}`);
+        return;
+    }
 
-        const [success, hooker] = cronet.execute_hooks();
-
-        // Strategy 3: Delayed symbol-based hooking fallback
-        if(!success){
-            if(hooker === null){
-                devlog_warn("Hooker is null for module "+ moduleName + ", symbol-based fallback not available");
-            } else {
-                // Wait 1 sec before we continue with symbol-based fallback
-                setTimeout(function() {
-                    try{
-                        cronet.execute_symbol_based_hooking(hooker);
-                    } catch(e){
-                        devlog_error("Error in cronet.execute_symbol_based_hooking: "+ e);
-                    }
-                }, 1000);
-            }
-        }
-
-        if (is_base_hook) {
-            try {
-                const init_addresses = cronet.addresses[moduleName];
-                // ensure that we only add it to global when we are not
-                if (init_addresses && Object.keys(init_addresses).length > 0) {
-                    (globalThis as any).init_addresses[moduleName] = init_addresses;
-                } else {
-                    devlog_debug(`No addresses to store for base hook in module ${moduleName}`);
-                }
-            } catch(error_msg){
-                devlog_error(`cronet_execute base-hook error: ${error_msg}`);
-            }
-        }
-    } catch(error_msg){
+    // Capture execute_hooks result while keeping the symbol-fallback scheduling
+    // OUTSIDE the try/catch — see cronet_android.ts for the rationale (a throw
+    // in execute_hooks would otherwise bypass the fallback setTimeout).
+    let success = false;
+    let hooker: PatternBasedHooking | null = null;
+    try {
+        [success, hooker] = cronet.execute_hooks();
+    } catch (error_msg) {
         devlog_error(`cronet_execute error for module ${moduleName}: ${error_msg}`);
+    }
+
+    // Strategy 3: Delayed symbol-based hooking fallback
+    if (!success) {
+        scheduleBoringSSLSymbolFallback(
+            moduleName,
+            hooker,
+            () => cronet.execute_symbol_based_hooking(hooker!),
+            (label, ssl, data, len) => cronet.dumpKeys(label, ssl, data, len),
+        );
+    }
+
+    if (is_base_hook) {
+        try {
+            const init_addresses = cronet.addresses[moduleName];
+            if (init_addresses && Object.keys(init_addresses).length > 0) {
+                (globalThis as any).init_addresses[moduleName] = init_addresses;
+            } else {
+                devlog_debug(`No addresses to store for base hook in module ${moduleName}`);
+            }
+        } catch(error_msg){
+            devlog_error(`cronet_execute base-hook error: ${error_msg}`);
+        }
     }
 }

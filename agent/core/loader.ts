@@ -6,6 +6,8 @@ import { HookDefinition, ResolvedFunctions } from "./hook_definition.js";
 import { readAddresses, resolveOffsets } from "../shared/shared_functions.js";
 import { installReadHook, installWriteHook } from "./executors/read_write.js";
 import { installKeylogHook } from "./executors/keylog_callback.js";
+import { installBoringSSLKeylogChain } from "../shared/boringssl_hook_chain.js";
+import { patterns } from "../fritap_agent.js";
 import { devlog } from "../util/log.js";
 
 /**
@@ -74,8 +76,27 @@ export function executeFromDefinition(
     installReadHook(def, addresses, moduleName, resolvedFns, enableDefaultFd);
     installWriteHook(def, addresses, moduleName, resolvedFns, enableDefaultFd);
 
-    // 6. Install keylog hook
-    installKeylogHook(def, addresses, moduleName, resolvedFns, enableDefaultFd);
+    // 6. Install keylog hook.
+    //    BoringSSL libs run the three-tier chain in agent/shared/boringssl_hook_chain.ts:
+    //      tier 1 (default): SSL_CTX_set_keylog_callback
+    //      tier 2:           bssl::ssl_log_secret symbol
+    //      tier 3:           pattern.json byte-pattern scan
+    //    def.keylogPriority swaps tiers 1 and 2 (Cronet-derived libs set
+    //    "symbol-first" because they bypass SSL_new internally). Tier 3 is
+    //    always last. Non-BoringSSL defs use the single-shot dispatcher.
+    if (def.libraryType === "boringssl") {
+        try {
+            installBoringSSLKeylogChain(def, addresses, moduleName, resolvedFns, enableDefaultFd, patterns);
+        } catch (e) {
+            devlog(`[loader] BoringSSL chain threw for ${moduleName}: ${e}`);
+        }
+    } else {
+        try {
+            installKeylogHook(def, addresses, moduleName, resolvedFns, enableDefaultFd);
+        } catch (e) {
+            devlog(`[loader] primary keylog install threw on ${moduleName}: ${e}`);
+        }
+    }
 
     // 7. Run extra hooks
     if (def.extraHooks) {

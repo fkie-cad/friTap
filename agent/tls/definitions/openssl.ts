@@ -5,13 +5,14 @@
 // Platform-specific keylog and key extraction stays in platform execute functions.
 
 import { HookDefinition, ResolvedFunctions, KeylogApproach, ExtraHookDef } from "../../core/hook_definition.js";
-import { log, devlog_error } from "../../util/log.js";
+import { log, devlog_error, devlog_debug } from "../../util/log.js";
 import { sendKeylog, sendDatalog } from "../../shared/shared_structures.js";
 import { getPortsAndAddresses } from "../../shared/shared_functions.js";
 import { readHexFromPointer } from "../decoders/hex_utils.js";
 import { enable_default_fd } from "../../fritap_agent.js";
 import { STANDARD_SOCKET_SYMBOLS, DUMMY_SESSION_ID_OPENSSL } from "./shared_constants.js";
 import { createLifecycleHook, createBufferedClientRandomDecoder } from "./shared_factories.js";
+import { installBoringSSLSymbolHook, boringSslDumpKeys, DumpKeysCb } from "../../shared/boringssl_symbol_hook.js";
 
 export function openSslFdDecoder(ssl: NativePointer, fns: ResolvedFunctions): number {
     if (!fns["SSL_get_fd"]) return -1;
@@ -113,6 +114,12 @@ export function createBoringSSLKeylogApproach(): KeylogApproach {
     return {
         kind: "custom",
         install: (addresses, modName, resolvedFns, _enableDefaultFd) => {
+            const setKeylogAddr = addresses[modName]?.["SSL_CTX_set_keylog_callback"];
+            if (!setKeylogAddr || setKeylogAddr.isNull()) {
+                devlog_debug(`[boringssl-cb] ${modName}: SSL_CTX_set_keylog_callback unresolved, skipping callback tier`);
+                return false;
+            }
+
             const keylogCb = new NativeCallback(
                 function (_ssl: NativePointer, line: NativePointer) {
                     sendKeylog(line.readCString());
@@ -121,51 +128,70 @@ export function createBoringSSLKeylogApproach(): KeylogApproach {
                 ["pointer", "pointer"],
             );
 
-            // Hook SSL_new to set keylog callback on the SSL_CTX passed as arg[0]
-            const sslNewAddr = addresses[modName]?.["SSL_new"];
-            if (sslNewAddr && !sslNewAddr.isNull() && resolvedFns["SSL_CTX_set_keylog_callback"]) {
-                Interceptor.attach(sslNewAddr, {
-                    onEnter: function (args: any) {
-                        try {
-                            resolvedFns["SSL_CTX_set_keylog_callback"](args[0], keylogCb);
-                        } catch (e) {
-                            devlog_error(`[modern] Error in SSL_new keylog hook: ${e}`);
-                        }
-                    },
-                });
-            }
+            const setKeylogOn = resolvedFns["SSL_CTX_set_keylog_callback"];
+            const tryAttach = (sym: string, handler: InvocationListenerCallbacks): boolean => {
+                const a = addresses[modName]?.[sym];
+                if (!a || a.isNull() || !setKeylogOn) return false;
+                Interceptor.attach(a, handler);
+                return true;
+            };
 
-            // Fallback: hook SSL_CTX_new to set callback on newly created contexts
-            const ctxNewAddr = addresses[modName]?.["SSL_CTX_new"];
-            if (ctxNewAddr && !ctxNewAddr.isNull() && resolvedFns["SSL_CTX_set_keylog_callback"]) {
-                Interceptor.attach(ctxNewAddr, {
-                    onLeave: function (retval: any) {
-                        if (retval.isNull()) return;
-                        try {
-                            resolvedFns["SSL_CTX_set_keylog_callback"](retval, keylogCb);
-                        } catch (e) {
-                            devlog_error(`[modern] Error in SSL_CTX_new keylog hook: ${e}`);
-                        }
-                    },
-                });
-            }
+            // Tier 1 success requires at least one of SSL_new / SSL_CTX_new to
+            // have attached — the set_keylog_callback intercept only fires when
+            // the app installs its own callback, which isn't a reliable trigger.
+            const sslNewAttached = tryAttach("SSL_new", {
+                onEnter: function (args: any) {
+                    try {
+                        setKeylogOn(args[0], keylogCb);
+                    } catch (e) {
+                        devlog_error(`[modern] Error in SSL_new keylog hook: ${e}`);
+                    }
+                },
+            });
+            const ctxNewAttached = tryAttach("SSL_CTX_new", {
+                onLeave: function (retval: any) {
+                    if (retval.isNull()) return;
+                    try {
+                        setKeylogOn(retval, keylogCb);
+                    } catch (e) {
+                        devlog_error(`[modern] Error in SSL_CTX_new keylog hook: ${e}`);
+                    }
+                },
+            });
 
-            // Intercept application-set keylog callbacks
-            const setKeylogAddr = addresses[modName]?.["SSL_CTX_set_keylog_callback"];
-            if (setKeylogAddr && !setKeylogAddr.isNull()) {
-                Interceptor.attach(setKeylogAddr, {
-                    onEnter: function (args: any) {
-                        const userCb = args[1];
-                        if (!userCb.isNull()) {
-                            Interceptor.attach(userCb, {
-                                onEnter: function (innerArgs: any) {
-                                    sendKeylog(innerArgs[1].readCString());
-                                },
-                            });
-                        }
-                    },
-                });
-            }
+            Interceptor.attach(setKeylogAddr, {
+                onEnter: function (args: any) {
+                    const userCb = args[1];
+                    if (!userCb.isNull()) {
+                        Interceptor.attach(userCb, {
+                            onEnter: function (innerArgs: any) {
+                                sendKeylog(innerArgs[1].readCString());
+                            },
+                        });
+                    }
+                },
+            });
+
+            return sslNewAttached || ctxNewAttached;
+        },
+    };
+}
+
+/**
+ * Symbol-based fallback that hooks bssl::ssl_log_secret directly.
+ *
+ * Use as a complementary KeylogApproach when the public
+ * SSL_CTX_set_keylog_callback API can't be installed (stripped builds,
+ * customised forks, etc.). The loader auto-wires this for any HookDefinition
+ * tagged libraryType: "boringssl" — see executeFromDefinition() in
+ * agent/core/loader.ts. You can also pass it explicitly as def.keylog when
+ * the lib has no usable public keylog API at all.
+ */
+export function createBoringSSLSslLogSecretFallback(dumpKeys?: DumpKeysCb): KeylogApproach {
+    return {
+        kind: "custom",
+        install: (_addresses, modName, _resolvedFns, _enableDefaultFd) => {
+            return installBoringSSLSymbolHook(modName, dumpKeys ?? boringSslDumpKeys);
         },
     };
 }

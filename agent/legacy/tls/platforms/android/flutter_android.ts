@@ -3,8 +3,8 @@ import { Flutter } from "../../../tls/libs/flutter.js";
 import { socket_library } from "../../../../platforms/android.js";
 import {PatternBasedHooking, get_CPU_specific_pattern } from "../../../tls/shared/pattern_based_hooking.js";
 import { patterns, isPatternReplaced } from "../../../../fritap_agent.js"
-import { devlog, devlog_error } from "../../../../util/log.js";
-import { executeSSLLibrary } from "../../../shared/shared_functions_legacy.js";
+import { devlog, devlog_debug, devlog_error } from "../../../../util/log.js";
+import { installBoringSSLSymbolHook } from "../../../../shared/boringssl_symbol_hook.js";
 
 
 export class Flutter_Android extends Flutter {
@@ -36,8 +36,9 @@ export class Flutter_Android extends Flutter {
 
 
 
-    install_key_extraction_hook(){
+    install_key_extraction_hook(): PatternBasedHooking | null {
         const flutterModule = Process.findModuleByName(this.module_name);
+        if (flutterModule === null) return null;
         const hooker = new PatternBasedHooking(flutterModule);
 
         if (isPatternReplaced()){
@@ -54,16 +55,54 @@ export class Flutter_Android extends Flutter {
                 }
             );
         }
-
+        return hooker;
     }
 
-    execute_hooks(){
-        this.install_key_extraction_hook();
+    execute_hooks(): PatternBasedHooking | null {
+        return this.install_key_extraction_hook();
     }
 
 }
 
 
 export function flutter_execute(moduleName:string, is_base_hook: boolean){
-    executeSSLLibrary(Flutter_Android, moduleName, socket_library, is_base_hook, { tryCatch: true });
+    const flutter = new Flutter_Android(moduleName, socket_library, is_base_hook);
+    let hooker: PatternBasedHooking | null = null;
+    try {
+        hooker = flutter.execute_hooks();
+    } catch (e) {
+        devlog_error(`flutter_execute error: ${e}`);
+    }
+
+    // BoringSSL symbol fallback: schedule one second after pattern hooking so
+    // the matcher has settled, then install only when patterns failed (or when
+    // execute_hooks() threw before the hooker was ever assigned, hence the
+    // `hooker === null` arm). Only on the base hook to avoid one timer per
+    // dlopen of the same lib.
+    // The 4th `len` arg from the symbol hook is dropped because Flutter.dumpKeys
+    // derives length via its own heuristic and is signature-incompatible with
+    // the 4-arg form Cronet uses.
+    if (is_base_hook) {
+        setTimeout(() => {
+            try {
+                if (hooker !== null && !hooker.no_hooking_success) return;
+                devlog_debug("Trying symbol-based ssl_log_secret hook on " + moduleName);
+                installBoringSSLSymbolHook(
+                    moduleName,
+                    (label, ssl, data, _len) => flutter.dumpKeys(label, ssl, data)
+                );
+            } catch (e) {
+                devlog_error("flutter_execute symbol fallback error: " + e);
+            }
+        }, 1000);
+    }
+
+    if (is_base_hook) {
+        try {
+            const init_addresses = (flutter as any).addresses?.[moduleName];
+            if (init_addresses && Object.keys(init_addresses).length > 0) {
+                (globalThis as any).init_addresses[moduleName] = init_addresses;
+            }
+        } catch (_) { /* ignore */ }
+    }
 }

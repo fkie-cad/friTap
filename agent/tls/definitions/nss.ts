@@ -29,9 +29,9 @@ function installNssKeylog(
     moduleName: string,
     _resolvedFns: ResolvedFunctions,
     _enableDefaultFd: boolean,
-): void {
+): boolean {
     const modAddrs = addresses[moduleName];
-    if (!modAddrs) return;
+    if (!modAddrs) return false;
 
     // Initialize version-dependent offsets + experimental API
     NSS.detectVersionOffsets();
@@ -100,6 +100,7 @@ function installNssKeylog(
     NSS.installSecretCallbackInterceptor();
 
     devlog("[*] NSS modern keylog hooks installed");
+    return true;
 }
 
 // macOS variant: Firefox bundles all NSS/NSPR/SSL symbols into a single libnss3.dylib,

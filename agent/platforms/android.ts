@@ -11,6 +11,7 @@ import { mbedTLS_execute_modern } from "../tls/platforms/android/mbedTLS_android
 import { boring_execute_modern } from "../tls/platforms/android/openssl_boringssl_android.js";
 import { conscrypt_execute_modern } from "../tls/platforms/android/conscrypt.js";
 import { s2ntls_execute_modern } from "../tls/platforms/android/s2ntls_android.js";
+import { cronet_execute_modern } from "../tls/platforms/android/cronet_modern_android.js";
 // Legacy (class-based) executors
 import { boring_execute } from "../legacy/tls/platforms/android/openssl_boringssl_android.js";
 import { gnutls_execute } from "../legacy/tls/platforms/android/gnutls_android.js";
@@ -116,12 +117,12 @@ export function load_android_hooking_agent() {
         { platform: plattform_name, pattern: /libmbedtls\.so.*/, hookFn: (use_modern ? mbedTLS_execute_modern : mbedTLS_execute), library: "mbedTLS", libraryType: "mbedtls" },
         { platform: plattform_name, pattern: /.*libs2n.so/, hookFn: (use_modern ? s2ntls_execute_modern : s2ntls_execute), library: "s2n-tls", libraryType: "s2ntls" },
         { platform: plattform_name, pattern: /.*mono-btls.*\.so/, hookFn: mono_btls_execute, library: "Mono BTLS", libraryType: "boringssl" },
-        { platform: plattform_name, pattern: /.*cronet.*\.so/, excludePattern: /_(libpki|libcrypto)\.so$/, hookFn: cronet_execute, library: "Cronet", libraryType: "boringssl" },
-        { platform: plattform_name, pattern: /.*libringrtc_rffi.*\.so/, hookFn: cronet_execute, library: "Cronet (RingRTC)", libraryType: "boringssl" },
-        { platform: plattform_name, pattern: /.*libsignal_jni.*\.so/, excludePattern: /_testing\.so$/, hookFn: cronet_execute, library: "Cronet (Signal)", libraryType: "boringssl" },
-        { platform: plattform_name, pattern: /.*monochrome.*\.so/, hookFn: cronet_execute, library: "Cronet (Monochrome)", libraryType: "boringssl" },
-        { platform: plattform_name, pattern: /.*libwarp_mobile.*\.so/, hookFn: cronet_execute, library: "Cronet (Warp Mobile)", libraryType: "boringssl" },
-        { platform: plattform_name, pattern: /.*lib*quiche*.*\.so/, hookFn: cronet_execute, library: "Cronet (QUICHE)", libraryType: "boringssl" },
+        { platform: plattform_name, pattern: /.*cronet.*\.so/, excludePattern: /_(libpki|libcrypto)\.so$/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet", libraryType: "boringssl" },
+        { platform: plattform_name, pattern: /.*libringrtc_rffi.*\.so/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet (RingRTC)", libraryType: "boringssl" },
+        { platform: plattform_name, pattern: /.*libsignal_jni.*\.so/, excludePattern: /_testing\.so$/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet (Signal)", libraryType: "boringssl" },
+        { platform: plattform_name, pattern: /.*monochrome.*\.so/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet (Monochrome)", libraryType: "boringssl" },
+        { platform: plattform_name, pattern: /.*libwarp_mobile.*\.so/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet (Warp Mobile)", libraryType: "boringssl" },
+        { platform: plattform_name, pattern: /.*lib*quiche*.*\.so/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet (QUICHE)", libraryType: "boringssl" },
         { platform: plattform_name, pattern: /.*librustls.*\.so/, hookFn: rustls_execute, library: "Rustls", libraryType: "rustls" },
         { platform: plattform_name, pattern: /.*libstartup.*\.so/, hookFn: metartc_execute, library: "metaRTC" },
         { platform: plattform_name, pattern: /libgojni.*\.so/, hookFn: gotls_execute, library: "Go TLS", libraryType: "gotls" },

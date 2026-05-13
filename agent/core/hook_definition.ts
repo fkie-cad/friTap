@@ -4,6 +4,8 @@
 // A HookDefinition describes a TLS library's hooks declaratively;
 // generic executors consume these definitions to install Frida interceptors.
 
+import { LibraryType } from "../shared/shared_structures.js";
+
 export type ResolvedFunctions = Record<string, NativeFunction<any, any>>;
 
 export interface NativeFnSpec {
@@ -58,7 +60,7 @@ export type KeylogApproach =
             moduleName: string,
             resolvedFns: ResolvedFunctions,
             enableDefaultFd: boolean,
-        ) => void;
+        ) => boolean;
     }
     | { kind: "none" };
 
@@ -94,4 +96,24 @@ export interface HookDefinition {
     ) => { [key: string]: string | number } | null;
     extraHooks?: ExtraHookDef[];
     onNativeFunctionsResolved?: (fns: ResolvedFunctions) => void;
+    /**
+     * Optional library-family marker. When set to "boringssl", the loader
+     * routes through the three-tier hook chain (see
+     * agent/shared/boringssl_hook_chain.ts): tier 1 = SSL_CTX_set_keylog_callback,
+     * tier 2 = bssl::ssl_log_secret symbol, tier 3 = pattern.json byte-pattern
+     * scan. Typed as the shared LibraryType union so a typo can't silently
+     * disable the chain.
+     */
+    libraryType?: LibraryType;
+    /**
+     * BoringSSL-only tier ordering for the three-tier hook chain. Default
+     * "callback-first" tries SSL_CTX_set_keylog_callback before the
+     * bssl::ssl_log_secret symbol hook. Set "symbol-first" for Cronet-derived
+     * libs (libwarp_mobile, libcronet, libsignal_jni, libquiche_android,
+     * librustls_android_13_ex) that bypass SSL_new internally — the callback
+     * path would install cleanly there but never fire at runtime. Tier 3
+     * (pattern scan) is always last regardless of priority. Ignored when
+     * libraryType !== "boringssl".
+     */
+    keylogPriority?: "callback-first" | "symbol-first";
 }

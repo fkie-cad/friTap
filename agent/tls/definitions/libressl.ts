@@ -61,6 +61,7 @@ function createLibreSslKeylogApproach(): KeylogApproach {
                 log("[LibreSSL] SSL_CTX_set_keylog_callback not available, trying KDF hooks");
                 installKdfHooks(modName, resolvedFns);
             }
+            return keylogCallbackInstalled;
         },
     };
 }

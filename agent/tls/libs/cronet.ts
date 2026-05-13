@@ -1,6 +1,7 @@
 import { get_hex_string_from_byte_array, readAddresses, checkNumberOfExports, isSymbolAvailable } from "../../shared/shared_functions.js";
 import { sendKeylog } from "../../shared/shared_structures.js";
 import { devlog } from "../../util/log.js";
+import { safeKeyLenLogged } from "../../shared/keylog_length.js";
 
 
 
@@ -93,15 +94,6 @@ export class Cronet {
         return this.get_client_random(s3_ptr, SSL3_RANDOM_SIZE);
     }
 
-    isReasonableLen(n: unknown): n is number {
-        return Number.isFinite(n as number) && (n as number) > 0 && (n as number) <= 64;
-    }
-
-    clampTlsLen(n: number): 32 | 48 {
-        // Valid TLS secret lengths are 32 (SHA-256) or 48 (SHA-384 / TLS 1.2 master secret)
-        return n >= 40 ? 48 : 32; 
-    }
-
     keyLenheuristic(label: string, keyPtr: NativePointer): number {
         // heuristic to determine the key length based on the cipher suite
         // this is not 100% accurate but should work in most cases
@@ -165,19 +157,18 @@ export class Cronet {
         }
 
         if (!keyPtr.isNull()) {
-            let KEY_LENGTH = 0;
-            if (this.isReasonableLen(keyLen)) {
-                KEY_LENGTH = this.clampTlsLen(keyLen!);
-            }else{
-                KEY_LENGTH = this.keyLenheuristic(labelStr, keyPtr);
-            }
-
+            const { len: KEY_LENGTH } = safeKeyLenLogged(
+                keyLen,
+                labelStr,
+                keyPtr,
+                (label, ptr) => this.keyLenheuristic(label, ptr),
+            );
 
             const keyData = keyPtr.readByteArray(KEY_LENGTH); // Read the key data (KEY_LENGTH bytes)
 
             // Convert the byte array to a string of  hex values
             const hexKey = get_hex_string_from_byte_array(keyData);
-    
+
             secret_key = hexKey;
         } else {
             devlog("[Error] Argument 'key' is NULL");

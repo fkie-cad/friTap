@@ -3,8 +3,9 @@ import {Cronet } from "../../../tls/libs/cronet.js";
 import { socket_library } from "../../../../platforms/android.js";
 import {PatternBasedHooking, get_CPU_specific_pattern, hasModulePatterns } from "../../../tls/shared/pattern_based_hooking.js";
 import { patterns, isPatternReplaced } from "../../../../fritap_agent.js"
-import { devlog, devlog_debug, devlog_error, devlog_info, devlog_warn } from "../../../../util/log.js";
+import { devlog, devlog_debug, devlog_error, devlog_info } from "../../../../util/log.js";
 import { sendKeylog } from "../../../../shared/shared_structures.js";
+import { scheduleBoringSSLSymbolFallback, installBoringSSLSymbolHook } from "../../../../shared/boringssl_symbol_hook.js";
 
 export type HookingResult = [success: boolean, handle: PatternBasedHooking | null];
 const EXCLUDED_MODULE_SUFFIXES = ["_libpki.so", "_libcrypto.so", "libsignal_jni_testing.so", "_vr_partition.so"]; // extensible list
@@ -111,35 +112,20 @@ export class Cronet_Android extends Cronet {
 
     }
 
-    // instead of relying on pattern we check if the target module has a symbol of ssl_log_secret()
-    execute_symbol_based_hooking(hooker){
+    // Symbol-based fallback for ssl_log_secret. Runs only after pattern-based
+    // hooking failed (gated on hooker.no_hooking_success, set by
+    // PatternBasedHooking when no pattern variant matched). Delegates to the
+    // shared resolver chain in agent/shared/boringssl_symbol_hook.ts so every
+    // BoringSSL-tagged lib uses the same logic and the same correct
+    // (label, ssl, data, len) interceptor signature.
+    execute_symbol_based_hooking(hooker: PatternBasedHooking){
+        if (!hooker.no_hooking_success) return;
+
         devlog_debug("Trying symbol based hooking in "+ this.module_name);
-        // Capture the dumpKeys function with the correct 'this'
-        let dumpKeysFunc = this.dumpKeys.bind(this);
-
-        if(this.module_name.includes("libwarp_mobile")){
-            devlog_warn("[!] The extracted CLIENT_RANDOM from libwarp_mobile.so is currently not working correctly.");
-        }
-
-        if(hooker.no_hooking_success){
-            let symbols = Process.getModuleByName(this.module_name).enumerateSymbols().filter(exports => exports.name.toLowerCase().includes("ssl_log"));
-            if(symbols.length > 0){
-                devlog("Installed ssl_log_secret() hooks using sybmols for "+ this.module_name);
-                try{
-                    Interceptor.attach(symbols[0].address, {
-                        onEnter: function(args) {
-                            dumpKeysFunc(args[1], args[0], args[2]);
-                        }
-                    });
-
-                }catch(e){
-                    // right now we ingore error's here
-                }
-            }
-
-
-        }
-
+        installBoringSSLSymbolHook(
+            this.module_name,
+            (label, ssl, data, len) => this.dumpKeys(label, ssl, data, len)
+        );
     }
 
         install_tls_keys_callback_hook (){
@@ -213,7 +199,12 @@ export class Cronet_Android extends Cronet {
         }
 
 
-        return [hooker_instance.no_hooking_success, hooker_instance];
+        // PatternBasedHooking sets no_hooking_success = true on initialisation
+        // and flips it to false the moment any pattern variant matches. The
+        // outer cronet_execute() reads the first tuple element as `success`
+        // and does `if (!success)` to enter the symbol-fallback branch, so we
+        // must return `true` when patterns succeeded (i.e. !no_hooking_success).
+        return [!hooker_instance.no_hooking_success, hooker_instance];
     }
 
 }
@@ -229,32 +220,32 @@ export function cronet_execute(moduleName:string, is_base_hook: boolean){
     let cronet: Cronet_Android;
     if(moduleName.startsWith("stable_cronet")){
         cronet = new Cronet_Android(moduleName,socket_library,is_base_hook, STABLE_CRONET_PATTERNS);
-    }else if(moduleName.includes("libsignal_jni") || moduleName.includes("libringrtc_rffi")){
+    }else if(moduleName.includes("libsignal_jni") || moduleName.includes("libringrtc_rffi") || moduleName.includes("libwarp_mobile")){
         cronet = new Cronet_Android(moduleName,socket_library,is_base_hook, LIBSIGNAL_PATTERNS);
     }else{
         cronet = new Cronet_Android(moduleName,socket_library,is_base_hook);
     }
 
+    // Capture execute_hooks result while keeping the symbol-fallback scheduling
+    // OUTSIDE the try/catch — a throw inside execute_hooks (e.g. Frida rejecting
+    // an Interceptor.attach on a stripped pattern hit) would otherwise bypass
+    // the setTimeout, leaving the user with no keylog rescue. By treating a
+    // throw as "primary failed" we still schedule the symbol fallback.
+    let success = false;
+    let hooker: PatternBasedHooking | null = null;
     try {
-        const [success, hooker]  = cronet.execute_hooks();
+        [success, hooker] = cronet.execute_hooks();
+    } catch (error_msg) {
+        devlog_error(`cronet_execute error: ${error_msg}`);
+    }
 
-        if(!success){
-            if(hooker === null){
-                devlog_error("Error: Hooker is null for module "+ moduleName);
-                return;
-            }
-            // wait 1 sec before we continue
-            setTimeout(function() {
-                try{
-                    cronet.execute_symbol_based_hooking(hooker);
-                }catch(e){
-                    devlog_error("Error in cronet.execute_symbol_based_hooking: "+ e);
-                }
-
-            }, 1000);
-        }
-    }catch(error_msg){
-        devlog_error(`cronet_execute error: ${error_msg}`)
+    if (!success) {
+        scheduleBoringSSLSymbolFallback(
+            moduleName,
+            hooker,
+            () => cronet.execute_symbol_based_hooking(hooker!),
+            (label, ssl, data, len) => cronet.dumpKeys(label, ssl, data, len),
+        );
     }
 
     if (is_base_hook) {
