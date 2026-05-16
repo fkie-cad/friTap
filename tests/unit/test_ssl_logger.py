@@ -17,7 +17,6 @@ should target `CoreController` / `Session` directly (see `friTap/core.py`),
 not the legacy shim.
 """
 
-import pytest
 from unittest.mock import patch, mock_open
 
 from friTap.ssl_logger import SSL_Logger

@@ -53,8 +53,8 @@ def _frida_bounds_from_requirements(text: str) -> tuple[int, int]:
     m = _FRIDA_PIN_RE.search(text)
     if not m:
         die(
-            f"requirements.txt frida pin must use strict-cap shape "
-            f"`frida>=N.x.y,<(N+1).0.0`. See RELEASING.md."
+            "requirements.txt frida pin must use strict-cap shape "
+            "`frida>=N.x.y,<(N+1).0.0`. See RELEASING.md."
         )
     return int(m.group(1)), int(m.group(2))
 

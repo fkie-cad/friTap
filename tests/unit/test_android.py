@@ -11,6 +11,11 @@ from unittest.mock import patch, MagicMock
 
 from friTap.android import Android, ADB
 
+_XFAIL_START_APPLICATION = (
+    "start_application now uses Frida backend (spawn_raw); test still asserts "
+    "legacy `adb shell am start` invocation — needs rewrite against Frida mocks"
+)
+
 # Helper to set up an Android object to an expected state
 def configured_android(*,
         device_id=None,
@@ -241,7 +246,7 @@ package:com.google.android.gm"""
         
         assert pid is None
 
-    @pytest.mark.xfail(reason="no app management yet")
+    @pytest.mark.xfail(reason=_XFAIL_START_APPLICATION)
     @patch('subprocess.run')
     def test_start_application(self, mock_subprocess):
         """Test starting Android application."""
@@ -261,7 +266,7 @@ package:com.google.android.gm"""
         
         assert success
         
-    @pytest.mark.xfail(reason="no app management yet")
+    @pytest.mark.xfail(reason=_XFAIL_START_APPLICATION)
     @patch('subprocess.run')
     def test_start_application_with_activity(self, mock_subprocess):
         """Test starting Android application with specific activity."""
@@ -285,7 +290,6 @@ package:com.google.android.gm"""
 class TestSSLLibraryDetection:
     """Test Android SSL library detection."""
     
-    @pytest.mark.xfail(reason="no library management yet")
     @patch('subprocess.run')
     def test_detect_ssl_libraries(self, mock_subprocess):
         """Test detecting SSL libraries in Android app."""
@@ -304,7 +308,6 @@ class TestSSLLibraryDetection:
         assert any("libssl.so" in lib for lib in libraries)
         assert any("libboringssl.so" in lib for lib in libraries)
         
-    @pytest.mark.xfail(reason="no library management yet")
     @patch('subprocess.run')
     def test_get_library_path(self, mock_subprocess):
         """Test getting library path in Android app."""
@@ -318,7 +321,6 @@ class TestSSLLibraryDetection:
         
         assert path == "/data/app/com.example.app/lib/arm64/libssl.so"
         
-    @pytest.mark.xfail(reason="no library management yet")
     @patch('subprocess.run')
     def test_check_library_exports(self, mock_subprocess):
         """Test checking library exports."""
@@ -423,19 +425,17 @@ class TestTcpdumpIntegration:
         assert mock_subprocess.call_count >= 1
         assert success
         
-    @patch('subprocess.run')
-    def test_start_tcpdump(self, mock_subprocess):
+    @patch('subprocess.Popen')
+    def test_start_tcpdump(self, mock_popen):
         """Test starting tcpdump on Android device."""
         android = configured_android()
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_subprocess.return_value = mock_result
-        
+        mock_process = MagicMock()
+        mock_popen.return_value = mock_process
+
         process = android.start_tcpdump("/sdcard/capture.pcap")
-        
-        # Should start tcpdump in background
-        assert mock_subprocess.called
-        assert process is not None
+
+        assert mock_popen.called
+        assert process is mock_process
         
     @patch('subprocess.run')
     def test_stop_tcpdump(self, mock_subprocess):

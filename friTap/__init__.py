@@ -62,8 +62,8 @@ from .friTap import SSL_Logger
 from .api import FriTap, FriTapSession
 
 # Core API (Phase 1) — kept importable but NOT in __all__; see module docstring
-from .core import CoreController
-from .session import Session, SessionState
+from .core import CoreController  # noqa: F401
+from .session import Session, SessionState  # noqa: F401
 
 # Configuration
 from .config import FriTapConfig, DeviceConfig, OutputConfig, HookingConfig
@@ -84,7 +84,7 @@ from .events import (
 )
 
 # Pipeline — kept importable but NOT in __all__; see module docstring
-from .pipeline import MessagePipeline, create_default_pipeline
+from .pipeline import MessagePipeline, create_default_pipeline  # noqa: F401
 
 # Flow models
 from .flow import Flow, FlowChunk, FlowState, FlowEventType, FlowSummary, TapReader
