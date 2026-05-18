@@ -40,6 +40,11 @@ from .backends.base import BackendName
 from .fritap_utility import get_pid_of_lsass, are_we_running_on_windows, setup_fritap_logging, Success, Failure, FriTapExit
 
 
+# Libraries the modern agent path does not yet cover; users opting into --modern
+# (or --protocol ssh, which auto-enables it) fall back to legacy behavior for these.
+_MODERN_REGRESSIONS = "iOS/macOS Cronet, Windows LSASS, IPsec"
+
+
 class LsassHookManager:
     """
     Manager for LSASS hooking that runs in a background thread.
@@ -293,6 +298,12 @@ Examples:
                       help="Capability to alter the decrypted payload. Be careful here, because this can crash the application.")                  
     args.add_argument("-exp","--experimental", required=False, action="store_const", const=True, default=False,
                       help="Activates all existing experimental feature (see documentation for more information)")
+    args.add_argument("--modern", required=False, action="store_const", const=True, default=False,
+                      dest="use_modern",
+                      help="EXPERIMENTAL: opt into the modern (refactored) friTap agent code path. "
+                           "Unlocks the three-tier BoringSSL keylog chain and improved Cronet hooks "
+                           "on Android/Windows. Known regressions vs the legacy default: "
+                           f"{_MODERN_REGRESSIONS}. Default: legacy.")
     args.add_argument("--library-scan", "-ls", required=False, action="store_const",
                       const=True, default=False,
                       help="Pre-scan for TLS libraries using tlsLibHunter before hooking. "
@@ -448,6 +459,12 @@ Examples:
         if re.match(r"^sshd(-session)?$", target_basename) and not parsed.enable_child_gating:
             logger.info("[ssh] sshd target detected — enabling --enable_child_gating automatically")
             parsed.enable_child_gating = True
+
+    if parsed.use_modern:
+        logger.warning(
+            f"friTap modern hooks active (experimental). Known regressions vs legacy: "
+            f"{_MODERN_REGRESSIONS}. Omit --modern to use the stable legacy path."
+        )
 
     if parsed.full_capture and parsed.pcap is None:
         parser.error("--full_capture requires -p to set the pcap name")
