@@ -1,6 +1,59 @@
 import { devlog, devlog_error, devlog_debug, log, devlog_info } from "../../util/log.js";
 import { isAndroid, isiOS,isMacOS } from "../../util/process_infos.js"
 
+const IS_ARM64 = Process.arch === "arm64";
+
+/*
+ * On aarch64, accept the match only if the first 4 bytes look like a
+ * plausible function prologue. A loose-wildcard Memory.scan can otherwise
+ * land mid-function on arbitrary bytes; Interceptor.attach at a non-entry
+ * address corrupts the code region and crashes the target on execution.
+ * Returns true unconditionally on non-aarch64 (no validation done) so x86
+ * / arm32 behavior is unchanged.
+ */
+function isLikelyArm64Prologue(address: NativePointer): boolean {
+    if (!IS_ARM64) return true;
+
+    let insn: number;
+    try {
+        insn = address.readU32();
+    } catch (_) {
+        return false;
+    }
+
+    if (insn === 0x00000000 || insn === 0xFFFFFFFF) return false;
+
+    // paciasp / pacibsp — PAC landing pads, strong function-entry signal
+    if (insn === 0xD503233F) return true;
+    if (insn === 0xD503237F) return true;
+
+    // bti {c|j|jc} — branch target identification, function-entry hint
+    if ((insn & 0xFFFFFF1F) === 0xD503241F) return true;
+
+    // stp x29, x30, [sp, #imm] — frame setup, signed offset
+    if ((insn & 0xFFC07FFF) === 0xA9007BFD) return true;
+    // stp x29, x30, [sp, #-imm]! — frame setup, pre-indexed
+    if ((insn & 0xFFC07FFF) === 0xA9807BFD) return true;
+
+    // sub sp, sp, #imm — stack pointer adjustment, typical prologue start
+    if ((insn & 0xFF8003FF) === 0xD10003FF) return true;
+
+    return false;
+}
+
+/*
+ * Gate Interceptor.attach behind the prologue check. Returns false (and
+ * logs at debug level) when the match looks like data or mid-function
+ * bytes; callers early-return so the surrounding scan keeps running and
+ * the fallback pattern chain still has a chance.
+ */
+function acceptPrologueMatch(address: NativePointer, patternName: string, moduleName?: string): boolean {
+    if (isLikelyArm64Prologue(address)) return true;
+    const where = moduleName ? ` on ${moduleName}` : "";
+    devlog_debug(`Pattern match at ${address} (${patternName})${where} skipped: not a function prologue`);
+    return false;
+}
+
 type Pattern = {
     primary: string;
     fallback: string;
@@ -13,6 +66,14 @@ type ActionPatterns = {
     "SSL_Write": Pattern;
     "Install-Key-Log-Callback": Pattern;
     "KeyLogCallback-Function": Pattern;
+    // SSH action types — used by agent/ssh/* hooks (v1 ships placeholder
+    // entries in pattern.json; contributors derive real prologues per the
+    // procedure in EXTENDING.md).
+    "SSH_Packet_Send"?: Pattern;
+    "SSH_Packet_Read"?: Pattern;
+    "SSH_Cipher_Init"?: Pattern;
+    "SSH_Cipher_Crypt"?: Pattern;
+    "SSH_Kex_Derive_Keys"?: Pattern;
 };
 
 export { hasModulePatterns } from "./cronet_patterns.js";
@@ -40,6 +101,12 @@ export class PatternBasedHooking {
     module: Module;
     private patterns: any = {};
     private rescannedRanges: Set<string> = new Set(); // Set to keep track of memory ranges that have been rescanned
+    // Set when hookByPattern's onError handler runs the full primary→fallback→
+    // second_fallback cascade itself (via hookByPatternOnlyReadableParts).
+    // hookModuleByPattern then short-circuits its own outer cascade — without
+    // this flag the same three variants were retried twice, producing the
+    // noisy duplicate log lines observed against libmainlinecronet.
+    private innerCascadeRan: boolean = false;
 
     constructor(module: Module) {
         this.found_ssl_log_secret = false;
@@ -81,6 +148,7 @@ export class PatternBasedHooking {
 
         Memory.scan(moduleBase, moduleSize, pattern, {
             onMatch: (address) => {
+                if (!acceptPrologueMatch(address, pattern_name)) return;
                 this.found_ssl_log_secret = true;
                 this.no_hooking_success = false;
                 var module_by_address = Process.findModuleByAddress(address);
@@ -289,15 +357,16 @@ export class PatternBasedHooking {
 
         Memory.scan(moduleBase, moduleSize, pattern, {
             onMatch: (address) => {
+                if (!acceptPrologueMatch(address, pattern_name, moduleName)) return;
                 this.found_ssl_log_secret = true;
                 this.no_hooking_success = false;
-                
+
                 if (moduleName) {
                     devlog_info(`Pattern found at (${pattern_name}) address: ${address} for module ${moduleName}`);
                 }else{
                     devlog_info(`Pattern found at (${pattern_name}) address: ${address}`);
                 }
-                
+
                 log(`Pattern-based hooks installed.`);
 
                 // Attach the hook using the provided onMatchCallback
@@ -311,6 +380,7 @@ export class PatternBasedHooking {
                 if (!this.found_ssl_log_secret) {
                     devlog_error('There was an error scanning memory: ' + reason);
                     devlog_error(`Trying to rescan memory with permissions in mind on ${moduleName}`);
+                    this.innerCascadeRan = true;
                     this.hookByPatternOnlyReadableParts(patterns, pattern_name, onMatchCallback, (primary_success) => {
                         if (!primary_success) {
                             devlog(`Primary pattern failed, trying fallback pattern on ${moduleName}`);
@@ -403,6 +473,7 @@ export class PatternBasedHooking {
             Memory.scan(range.base, range.size, pattern, {
                 onMatch: (address: NativePointer, _size: number) => {
                 if (patternFound || callbackDone) return "stop";
+                if (!acceptPrologueMatch(address, pattern_name, moduleName)) return;
                 patternFound = true;
                 this.found_ssl_log_secret = true;
                 this.no_hooking_success = false;
@@ -534,6 +605,7 @@ export class PatternBasedHooking {
             Memory.scan(range.base, range.size, pattern, {
                 onMatch: (address: NativePointer) => {
                 if (patternFound || callbackDone) return "stop";
+                if (!acceptPrologueMatch(address, pattern_name, moduleName)) return;
                 patternFound = true;
                 this.found_ssl_log_secret = true;
                 this.no_hooking_success = false;
@@ -621,30 +693,42 @@ export class PatternBasedHooking {
         });
     }
 
+    // When hookByPattern.onError already exhausted every variant against
+    // readable ranges, the outer cascade in hookModuleByPattern would just
+    // re-scan the same memory and double every log line.
+    private innerCascadeShortCircuit(moduleName: string | undefined): boolean {
+        if (!this.innerCascadeRan) return false;
+        devlog_debug(`[pattern] ${moduleName}: inner cascade already ran, skipping outer fallbacks`);
+        return true;
+    }
+
     // Method to hook the module with patterns provided as arguments
     hookModuleByPattern(
         patterns: { primary: string; fallback: string; second_fallback?: string },
         onMatchCallback: (args: any[]) => void
     ): void {
         const moduleName = this.module?.name;
+        this.innerCascadeRan = false;
         this.hookByPattern(patterns, "primary_pattern", onMatchCallback, (primary_success) => {
-            if (!primary_success) {
-                devlog("Primary pattern failed, trying fallback pattern...");
-                this.hookByPattern(patterns, "fallback_pattern", onMatchCallback, (fallback_success) => {
-                    if (!fallback_success && patterns.second_fallback) {
-                        devlog("Fallback pattern failed, trying second fallback pattern...");
-                        this.hookByPattern(patterns, "second_fallback_pattern", onMatchCallback, (second_fallback_success) => {
-                            if (!second_fallback_success) {
-                                devlog_debug(`None of the patterns worked. You may need to adjust the patterns for ${moduleName}`);
-                                this.no_hooking_success = true;
-                            }
-                        });
-                    } else if (!fallback_success) {
-                        devlog_debug(`None of the patterns worked. You may need to adjust the patterns for ${moduleName}`);
-                        this.no_hooking_success = true;
-                    }
-                });
-            }
+            if (primary_success) return;
+            if (this.innerCascadeShortCircuit(moduleName)) return;
+            devlog("Primary pattern failed, trying fallback pattern...");
+            this.hookByPattern(patterns, "fallback_pattern", onMatchCallback, (fallback_success) => {
+                if (fallback_success) return;
+                if (this.innerCascadeShortCircuit(moduleName)) return;
+                if (patterns.second_fallback) {
+                    devlog("Fallback pattern failed, trying second fallback pattern...");
+                    this.hookByPattern(patterns, "second_fallback_pattern", onMatchCallback, (second_fallback_success) => {
+                        if (!second_fallback_success) {
+                            devlog_debug(`None of the patterns worked. You may need to adjust the patterns for ${moduleName}`);
+                            this.no_hooking_success = true;
+                        }
+                    });
+                } else {
+                    devlog_debug(`None of the patterns worked. You may need to adjust the patterns for ${moduleName}`);
+                    this.no_hooking_success = true;
+                }
+            });
         });
     }
 

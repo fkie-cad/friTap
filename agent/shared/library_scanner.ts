@@ -9,6 +9,13 @@ interface ScanResultEntry {
     library_type: string;
     matched_exports: string[];
     detected_version: string;
+    /**
+     * Annotation injected by the Python orchestrator
+     * (friTap/protocols/tls_handler.covered_by_sibling) when a module's
+     * BoringSSL surface is actually carried by another loaded library.
+     * When present, the scanner skips this entry to avoid futile work.
+     */
+    covered_by_sibling?: { sibling: string; reason: string };
 }
 
 /** Tracks modules already hooked — prevents double-hooking.
@@ -22,6 +29,17 @@ export function markModuleHooked(moduleName: string, protocol: string = "tls"): 
 
 export function isModuleHooked(moduleName: string, protocol: string = "tls"): boolean {
     return hookedModules.has(`${moduleName}:${protocol}`);
+}
+
+export function announceSiblingCoverage(
+    moduleName: string,
+    sibling: string,
+    reason: string,
+    protocol: string = "tls",
+): void {
+    log(`${moduleName}: BoringSSL appears to live in sibling '${sibling}'; skipping redundant scan`);
+    devlog(`[coverage] ${moduleName} covered by ${sibling}: ${reason}`);
+    markModuleHooked(moduleName, protocol);
 }
 
 /**
@@ -52,6 +70,16 @@ export function processScanResults(
         // Skip already-hooked modules (for this protocol)
         if (isModuleHooked(entry.name, protocol || "tls")) {
             devlog(`[Scanner] ${entry.name} already hooked for ${protocol || "tls"}, skipping`);
+            continue;
+        }
+
+        if (entry.covered_by_sibling) {
+            announceSiblingCoverage(
+                entry.name,
+                entry.covered_by_sibling.sibling,
+                entry.covered_by_sibling.reason,
+                protocol || "tls",
+            );
             continue;
         }
 

@@ -10,19 +10,52 @@ decoupling handler instantiation from SSL_Logger.
 
 
 
+def _active_keylog_formatters(protocol: str, protocol_registry):
+    """Return the list of :class:`KeylogFormatter` instances that should be wired
+    up for the current run, based on the active-protocol set.
+
+    - ``tls`` / ``ssh`` / ``ipsec``: that single protocol, if its handler exposes
+      a formatter.
+    - ``all`` / ``auto``: every registered handler's formatter (preserves
+      registration order, which is the deterministic insertion order of
+      :class:`ProtocolRegistry`).
+    - Anything else (defensive): empty list.
+    """
+    if protocol_registry is None:
+        return []
+    if protocol in ("all", "auto"):
+        handlers = protocol_registry.get_all()
+    elif protocol in ("tls", "ssh", "ipsec"):
+        h = protocol_registry.get(protocol)
+        handlers = [h] if h is not None else []
+    else:
+        handlers = []
+    formatters = []
+    for h in handlers:
+        fmt = h.keylog_formatter()
+        if fmt is not None:
+            formatters.append(fmt)
+    return formatters
+
+
 class OutputHandlerFactory:
     """Factory that creates output handler instances based on configuration."""
 
     @staticmethod
-    def create_handlers(config, pcap_obj, protocol_handler, session_data, logger) -> tuple:
+    def create_handlers(config, pcap_obj, protocol_handler, session_data, logger,
+                        protocol_registry=None) -> tuple:
         """Create output handlers based on config.
 
         Args:
             config: A FriTapConfig instance.
             pcap_obj: An existing PCAP object (or None).
-            protocol_handler: The active protocol handler for key formatting.
+            protocol_handler: The active protocol handler (used by PCAP/full-capture).
             session_data: Session data dict (used by JSON handler).
             logger: A logging.Logger instance.
+            protocol_registry: The :class:`ProtocolRegistry` for this run.
+                Required to wire keylog handlers correctly under ``--protocol
+                all|auto``; falls back to a single-protocol formatter when
+                ``None`` so callers without a registry still work.
 
         Returns:
             (handlers_list, live_info_dict) where live_info_dict has keys
@@ -32,6 +65,7 @@ class OutputHandlerFactory:
             PcapOutputHandler, KeylogOutputHandler, JsonOutputHandler,
             JsonlOutputHandler, ConsoleOutputHandler, PcapngOutputHandler, LivePcapngHandler,
         )
+        from .keylog_paths import split_keylog_path
         from ..pcap_utility import is_pcapng_filename
 
         handlers = []
@@ -61,10 +95,39 @@ class OutputHandlerFactory:
             from .key_collector_handler import KeyCollectorHandler
             handlers.append(KeyCollectorHandler(protocol_handler=protocol_handler))
 
-        # Keylog
+        # Keylog — unified across protocols. The user provides one ``-k`` path;
+        # if a single protocol is active that file is written directly, if
+        # multiple protocols emit keys (``--protocol all|auto``) the path is
+        # split per protocol so each Wireshark-loadable format gets its own
+        # file (``mykeys.log`` → ``mykeys.tls.log`` + ``mykeys.ssh.log``).
         keylog = config.output.keylog
         if keylog:
-            handlers.append(KeylogOutputHandler(keylog, protocol_handler=protocol_handler))
+            active = _active_keylog_formatters(config.protocol, protocol_registry)
+            if not active and protocol_handler is not None \
+                    and hasattr(protocol_handler, "keylog_formatter"):
+                # Fallback for callers without a registry: use the active
+                # protocol_handler's formatter if it has one.
+                fmt = protocol_handler.keylog_formatter()
+                if fmt is not None:
+                    active = [fmt]
+            if not active:
+                logger.warning(
+                    "--keylog set but no active protocol emits key material; "
+                    "-k has no effect with --protocol %s", config.protocol,
+                )
+            elif len(active) == 1:
+                handlers.append(KeylogOutputHandler(keylog, formatter=active[0]))
+            else:
+                split_paths = {f.protocol: split_keylog_path(keylog, f.protocol)
+                               for f in active}
+                logger.info(
+                    "keylog split: %s",
+                    ", ".join(f"{p} → {path}" for p, path in split_paths.items()),
+                )
+                for fmt in active:
+                    handlers.append(KeylogOutputHandler(
+                        split_paths[fmt.protocol], formatter=fmt,
+                    ))
 
         # JSON / JSONL
         json_output = config.output.json_output

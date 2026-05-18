@@ -5,7 +5,10 @@
 
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from typing import Any, List, Optional
+from typing import TYPE_CHECKING, Any, List, Optional
+
+if TYPE_CHECKING:
+    from ..output.keylog_format import KeylogFormatter
 
 
 class BackendSupport:
@@ -43,6 +46,17 @@ class ProtocolHandler(ABC):
     def format_key_for_wireshark(self, key_data: str) -> str:
         """Format key material for Wireshark. Override if needed."""
         return key_data
+
+    def keylog_formatter(self) -> "Optional[KeylogFormatter]":
+        """Return this protocol's :class:`KeylogFormatter`, or ``None``.
+
+        A non-``None`` return signals to the output factory that this
+        protocol emits keylog material that should be wired to a
+        :class:`KeylogOutputHandler` instance. Return ``None`` for
+        protocols (e.g. IPsec scaffolding) that do not currently produce
+        keylog events.
+        """
+        return None
 
     @abstractmethod
     def get_wireshark_protocol_preference(self) -> str:

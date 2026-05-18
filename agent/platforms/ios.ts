@@ -24,9 +24,10 @@ function hook_iOS_SSL_Libs(hookRegistry: HookRegistry, is_base_hook: boolean) {
 
 export function load_ios_hooking_agent() {
     hookRegistry.registerAll([
-        { platform: plattform_name, pattern: /.*libboringssl\.dylib/, hookFn: (use_modern ? boring_execute_modern : boring_execute), library: "BoringSSL", libraryType: "boringssl" },
-        { platform: plattform_name, pattern: /.*cronet.*\.dylib/, hookFn: cronet_execute, library: "Cronet", libraryType: "boringssl" },
-        { platform: plattform_name, pattern: /.*flutter.*\.dylib/, hookFn: flutter_execute, library: "Flutter BoringSSL", libraryType: "boringssl" },
+        // TLS libraries (TLS protocol family)
+        { platform: plattform_name, pattern: /.*libboringssl\.dylib/, hookFn: (use_modern ? boring_execute_modern : boring_execute), library: "BoringSSL", libraryType: "boringssl", protocol: "tls" },
+        { platform: plattform_name, pattern: /.*cronet.*\.dylib/, hookFn: cronet_execute, library: "Cronet", libraryType: "boringssl", protocol: "tls" },
+        { platform: plattform_name, pattern: /.*flutter.*\.dylib/, hookFn: flutter_execute, library: "Flutter BoringSSL", libraryType: "boringssl", protocol: "tls" },
     ]);
 
     hook_iOS_SSL_Libs(hookRegistry, true);

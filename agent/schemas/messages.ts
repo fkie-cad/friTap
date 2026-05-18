@@ -192,6 +192,20 @@ export function isSSHKeyMessage(msg: unknown): msg is SSHKeyMessage {
     return (msg as any)?.contentType === "ssh_key";
 }
 
+export interface SSHKeylogMessage {
+    contentType: "ssh_keylog";
+    protocol?: string;
+    cookie?: string;
+    peer_cookie?: string;
+    shared_secret?: string;
+    direction?: string;
+    session_tag?: string;
+}
+
+export function isSSHKeylogMessage(msg: unknown): msg is SSHKeylogMessage {
+    return (msg as any)?.contentType === "ssh_keylog";
+}
+
 export interface IPSecChildSAKeysMessage {
     contentType: "ipsec_child_sa_keys";
     protocol?: string;
@@ -238,6 +252,7 @@ export type AgentMessage = KeylogMessage
     | NetlogMessage
     | SSHNewKeysMessage
     | SSHKeyMessage
+    | SSHKeylogMessage
     | IPSecChildSAKeysMessage
     | IPSecIKEKeysMessage
     | OhttpPlaintextMessage;

@@ -43,32 +43,33 @@ function hook_Linux_SSL_Libs(hookRegistry: HookRegistry, is_base_hook: boolean) 
 
 export function load_linux_hooking_agent() {
     hookRegistry.registerAll([
-        { platform: plattform_name, pattern: /.*libssl_sb.so/, hookFn: (use_modern ? boring_execute_modern : boring_execute), library: "OpenSSL/BoringSSL", libraryType: "openssl" },
-        { platform: plattform_name, pattern: /.*libssl\.so/, hookFn: (use_modern ? boring_execute_modern : boring_execute), library: "OpenSSL/BoringSSL", libraryType: "openssl" },
-        { platform: plattform_name, pattern: /.*libssl.*\.so/, hookFn: (use_modern ? ssl_python_execute_modern : ssl_python_execute), library: "Python OpenSSL", pathFilter: "python", libraryType: "openssl" },
-        { platform: plattform_name, pattern: /.*cronet.*\.so/, excludePattern: /_(libpki|libcrypto)\.so$/, hookFn: cronet_execute, library: "Cronet", libraryType: "boringssl" },
-        { platform: plattform_name, pattern: /.*libgnutls\.so/, hookFn: (use_modern ? gnutls_execute_modern : gnutls_execute), library: "GnuTLS", libraryType: "gnutls" },
-        { platform: plattform_name, pattern: /.*libwolfssl\.so/, hookFn: (use_modern ? wolfssl_execute_modern : wolfssl_execute), library: "WolfSSL", libraryType: "wolfssl" },
-        { platform: plattform_name, pattern: /.*libnspr[0-9]?\.so/, hookFn: (use_modern ? nss_execute_modern : nss_execute), library: "NSS", libraryType: "nss" },
-        { platform: plattform_name, pattern: /libmbedtls\.so.*/, hookFn: (use_modern ? mbedTLS_execute_modern : mbedTLS_execute), library: "mbedTLS", libraryType: "mbedtls" },
-        { platform: plattform_name, pattern: /libssl_s.a/, hookFn: matrixSSL_execute, library: "MatrixSSL", libraryType: "matrixssl" },
-        { platform: plattform_name, pattern: /.*libs2n.so/, hookFn: (use_modern ? s2ntls_execute_modern : s2ntls_execute), library: "s2n-tls", libraryType: "s2ntls" },
-        { platform: plattform_name, pattern: /.*rustls.*/, hookFn: rustls_execute, library: "Rustls", libraryType: "rustls" },
-        { platform: plattform_name, pattern: /.*\.go.so$/, hookFn: gotls_execute, library: "Go TLS", libraryType: "gotls" },
-        { platform: plattform_name, pattern: /.*go[0-9.]+$/, hookFn: gotls_execute, library: "Go TLS", libraryType: "gotls" },
+        // TLS libraries (TLS protocol family — also covers QUIC and OHTTP below)
+        { platform: plattform_name, pattern: /.*libssl_sb.so/, hookFn: (use_modern ? boring_execute_modern : boring_execute), library: "OpenSSL/BoringSSL", libraryType: "openssl", protocol: "tls" },
+        { platform: plattform_name, pattern: /.*libssl\.so/, hookFn: (use_modern ? boring_execute_modern : boring_execute), library: "OpenSSL/BoringSSL", libraryType: "openssl", protocol: "tls" },
+        { platform: plattform_name, pattern: /.*libssl.*\.so/, hookFn: (use_modern ? ssl_python_execute_modern : ssl_python_execute), library: "Python OpenSSL", pathFilter: "python", libraryType: "openssl", protocol: "tls" },
+        { platform: plattform_name, pattern: /.*cronet.*\.so/, excludePattern: /_(libpki|libcrypto)\.so$/, hookFn: cronet_execute, library: "Cronet", libraryType: "boringssl", protocol: "tls" },
+        { platform: plattform_name, pattern: /.*libgnutls\.so/, hookFn: (use_modern ? gnutls_execute_modern : gnutls_execute), library: "GnuTLS", libraryType: "gnutls", protocol: "tls" },
+        { platform: plattform_name, pattern: /.*libwolfssl\.so/, hookFn: (use_modern ? wolfssl_execute_modern : wolfssl_execute), library: "WolfSSL", libraryType: "wolfssl", protocol: "tls" },
+        { platform: plattform_name, pattern: /.*libnspr[0-9]?\.so/, hookFn: (use_modern ? nss_execute_modern : nss_execute), library: "NSS", libraryType: "nss", protocol: "tls" },
+        { platform: plattform_name, pattern: /libmbedtls\.so.*/, hookFn: (use_modern ? mbedTLS_execute_modern : mbedTLS_execute), library: "mbedTLS", libraryType: "mbedtls", protocol: "tls" },
+        { platform: plattform_name, pattern: /libssl_s.a/, hookFn: matrixSSL_execute, library: "MatrixSSL", libraryType: "matrixssl", protocol: "tls" },
+        { platform: plattform_name, pattern: /.*libs2n.so/, hookFn: (use_modern ? s2ntls_execute_modern : s2ntls_execute), library: "s2n-tls", libraryType: "s2ntls", protocol: "tls" },
+        { platform: plattform_name, pattern: /.*rustls.*/, hookFn: rustls_execute, library: "Rustls", libraryType: "rustls", protocol: "tls" },
+        { platform: plattform_name, pattern: /.*\.go.so$/, hookFn: gotls_execute, library: "Go TLS", libraryType: "gotls", protocol: "tls" },
+        { platform: plattform_name, pattern: /.*go[0-9.]+$/, hookFn: gotls_execute, library: "Go TLS", libraryType: "gotls", protocol: "tls" },
         // IPSec libraries (detection stubs — key extraction in the future)
         { platform: plattform_name, pattern: /.*libcharon\.so/, hookFn: ipsec_detect_execute, library: "strongSwan (charon)", protocol: "ipsec" },
         { platform: plattform_name, pattern: /.*libstrongswan\.so/, hookFn: ipsec_detect_execute, library: "strongSwan", protocol: "ipsec" },
         { platform: plattform_name, pattern: /.*libipsec\.so/, hookFn: ipsec_detect_execute, library: "strongSwan (IPSec)", protocol: "ipsec" },
-        // SSH libraries (detection stubs — key extraction in the future)
+        // SSH binaries / libraries
         { platform: plattform_name, pattern: /.*libssh2?\.so/, hookFn: ssh_detect_execute, library: "libssh", protocol: "ssh" },
-        { platform: plattform_name, pattern: /.*sshd/, hookFn: ssh_detect_execute, library: "OpenSSH", protocol: "ssh" },
-        // OHTTP (NSS HPKE) hooks
-        { platform: plattform_name, pattern: /.*libnss3?\.so/, hookFn: nss_hpke_execute_linux, library: "NSS HPKE (OHTTP)", protocol: "ohttp", libraryType: "nss_hpke" },
-        // QUIC libraries
-        { platform: plattform_name, pattern: /.*libquiche\.so/, hookFn: quiche_execute, library: "Cloudflare QUICHE", libraryType: "quiche" },
-        { platform: plattform_name, pattern: /.*libcronet.*\.so/, hookFn: google_quiche_execute, library: "Google QUICHE (Cronet)", libraryType: "google_quiche" },
-        { platform: plattform_name, pattern: /.*libxul\.so/, hookFn: neqo_execute, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo" },
+        { platform: plattform_name, pattern: /^(\/.+\/)?(ssh|sshd|sshd-session|scp|sftp-server)$/, hookFn: ssh_detect_execute, library: "OpenSSH", protocol: "ssh" },
+        // OHTTP (NSS HPKE) — gated under the TLS family for `--protocol tls`
+        { platform: plattform_name, pattern: /.*libnss3?\.so/, hookFn: nss_hpke_execute_linux, library: "NSS HPKE (OHTTP)", protocol: "tls", libraryType: "nss_hpke" },
+        // QUIC libraries — gated under the TLS family for `--protocol tls`
+        { platform: plattform_name, pattern: /.*libquiche\.so/, hookFn: quiche_execute, library: "Cloudflare QUICHE", libraryType: "quiche", protocol: "tls" },
+        { platform: plattform_name, pattern: /.*libcronet.*\.so/, hookFn: google_quiche_execute, library: "Google QUICHE (Cronet)", libraryType: "google_quiche", protocol: "tls" },
+        { platform: plattform_name, pattern: /.*libxul\.so/, hookFn: neqo_execute, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo", protocol: "tls" },
     ]);
 
     hook_Linux_SSL_Libs(hookRegistry, true);

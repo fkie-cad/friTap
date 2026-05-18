@@ -164,7 +164,14 @@ class FriTap:
         return self
 
     def keylog(self, path: str) -> "FriTap":
-        """Write TLS keys to an SSLKEYLOGFILE."""
+        """Write key material in the Wireshark-loadable format for the active protocol.
+
+        The exact format follows the protocol selected via :meth:`protocol`:
+        NSS SSLKEYLOGFILE for TLS, ``<cookie> SHARED_SECRET <hex>`` for SSH.
+        With ``--protocol all|auto`` and multiple protocols emitting keys,
+        ``path`` is split per protocol as ``<stem>.<proto><ext>`` (for example,
+        ``keys.log`` → ``keys.tls.log`` and ``keys.ssh.log``).
+        """
         self._output.keylog = path
         return self
 
@@ -215,6 +222,18 @@ class FriTap:
     def payload_modification(self, enable: bool = True) -> "FriTap":
         """Enable payload modification capability."""
         self._hooking.payload_modification = enable
+        return self
+
+    def force_scan(self, name: str) -> "FriTap":
+        """Force-scan a specific module even when friTap would otherwise skip
+        it due to Cronet-split-topology suppression.
+
+        ``name`` may be a literal module name, a stem prefix (suffix with
+        ``*``) or a regex prefixed with ``re:``.  May be called multiple
+        times.
+        """
+        if name and name not in self._hooking.force_scan_modules:
+            self._hooking.force_scan_modules.append(name)
         return self
 
     # ------------------------------------------------------------------

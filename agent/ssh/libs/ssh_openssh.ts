@@ -18,14 +18,39 @@ export class SSH_OpenSSH {
     }
 
     /**
-     * Resolve addresses for SSH key derivation functions.
-     * Uses symbol-based lookup; pattern infrastructure wired but empty.
+     * Resolve addresses for SSH hooks.
+     *
+     * Covers:
+     *  - Key extraction:   cipher_init (preferred, version-stable args),
+     *                      kex_derive_keys / kex_derive_keys_bn (shared secret),
+     *                      kex_send_kexinit / kex_input_kexinit (cookies),
+     *                      ssh_set_newkeys (status).
+     *  - Plaintext hooks:  ssh_packet_send2_wrapped / ssh_packet_read_poll2,
+     *                      cipher_crypt (fallback when wrappers are stripped).
+     *  - Accessors:        sshbuf_ptr / sshbuf_len (buffer reads),
+     *                      ssh_packet_get_connection_in / _out (fd discovery).
+     *
+     * Returns true when at least one key-extraction or plaintext entry point
+     * resolved — callers can still install partial hooks.
      */
     resolveAddresses(): boolean {
         const targetFunctions = [
+            // key extraction
             "kex_derive_keys",
-            "ssh_set_newkeys",
             "kex_derive_keys_bn",
+            "kex_send_kexinit",
+            "kex_input_kexinit",
+            "ssh_set_newkeys",
+            "cipher_init",
+            // plaintext
+            "ssh_packet_send2_wrapped",
+            "ssh_packet_read_poll2",
+            "cipher_crypt",
+            // helpers
+            "sshbuf_ptr",
+            "sshbuf_len",
+            "ssh_packet_get_connection_in",
+            "ssh_packet_get_connection_out",
         ];
 
         let resolved = 0;
@@ -77,7 +102,11 @@ export class SSH_OpenSSH {
                 this.mode = args[1].toInt32();
             },
             onLeave: function (retval) {
-                const direction = this.mode === 0 ? "client" : "server";
+                // mode is MODE_IN(0) / MODE_OUT(1) — a direction relative to
+                // the local process, not an endpoint role. The active hook
+                // path in ssh_linux.ts resolves this to C2S/S2C using the
+                // process role; here we only have packet-layer direction.
+                const direction = this.mode === 0 ? "in" : "out";
                 sendWithProtocol({
                     contentType: "ssh_newkeys",
                     direction: direction,

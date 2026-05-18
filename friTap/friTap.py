@@ -2,6 +2,8 @@
 # -*- coding: utf-8 -*-
 
 import argparse
+import os
+import re
 import sys
 from .backends import (
     BackendTransportError,
@@ -255,7 +257,11 @@ Examples:
     args.add_argument("-f", "--full_capture", required=False, action="store_const", const=True, default=False,
                       help="Do a full packet capture instead of logging only the decrypted TLS payload. Set pcap name with -p <PCAP name>")
     args.add_argument("-k", "--keylog", metavar="<path>", required=False,
-                      help="Log the keys used for tls traffic")
+                      help="Log key material in the Wireshark-loadable format for the "
+                           "active protocol (NSS SSLKEYLOGFILE for TLS, SHARED_SECRET "
+                           "for SSH). With --protocol all/auto and multiple protocols "
+                           "emitting keys, the file is split per protocol as "
+                           "<stem>.<proto><ext> (e.g. keys.tls.log, keys.ssh.log).")
     args.add_argument("-l", "--live", required=False, action="store_const", const=True,
                       help="Creates a named pipe /tmp/sharkfin which can be read by Wireshark during the capturing process")
     args.add_argument("-p", "--pcap", metavar="<path>", required=False,
@@ -292,6 +298,14 @@ Examples:
                       help="Pre-scan for TLS libraries using tlsLibHunter before hooking. "
                            "Discovers renamed or statically linked libraries.",
                       dest="library_scan")
+    args.add_argument("--force-scan", required=False, metavar="<module>",
+                      action="append", default=[], dest="force_scan_modules",
+                      help="Force the BoringSSL pattern scan to run on the given module even "
+                           "if friTap detects it is covered by a sibling library (Cronet "
+                           "APEX split). Repeatable. Example: "
+                           "--force-scan libmainlinecronet.141.0.7340.3.so. Accepts a regex "
+                           "when prefixed with 're:' or a trailing '*' for prefix matching. "
+                           "Also honored via the FRITAP_FORCE_SCAN env var (comma-separated).")
     args.add_argument("-j", "--json", metavar="<path>", required=False,
                       help="Save session metadata and analysis results in JSON format")
     args.add_argument("-ll", "--list-libraries", required=False, action="store_const", const=True,
@@ -305,8 +319,15 @@ Examples:
     args.add_argument("--backend", choices=[b.value for b in BackendName], default=BackendName.FRIDA,
                       help="Instrumentation backend to use (default: frida)")
     args.add_argument("--protocol", type=str, default="tls",
-                      choices=["tls", "ipsec", "ssh", "auto"],
-                      help="Protocol to intercept (default: tls)")
+                      choices=["tls", "ipsec", "ssh", "all", "auto"],
+                      help="Protocol to intercept (default: tls). "
+                           "'tls' covers the TLS family — TLS, QUIC, and OHTTP. "
+                           "'ssh' and 'ipsec' are exclusive (only their hooks install). "
+                           "'all' hooks every supported protocol and asks for confirmation "
+                           "(skip with -y/--yes). 'auto' is a script-friendly alias for 'all' "
+                           "that does NOT prompt.")
+    args.add_argument("-y", "--yes", required=False, action="store_true", default=False,
+                      help="Auto-confirm interactive prompts (e.g. --protocol all warning).")
     args.add_argument("--proxy", metavar="<host:port>", required=False, default=None,
                       help="Redirect connections to a proxy (e.g., mitmproxy) and bypass cert pinning. Requires fritap-proxy package.")
     args.add_argument("--filter", metavar="<expression>", required=False, default=None,
@@ -391,6 +412,43 @@ Examples:
             lambda: ssl_log.extract_libraries(parsed.extract_libraries),
             logger, special_logger)
 
+    # --protocol all: install every protocol's hooks, but make the user confirm.
+    # auto is the script-friendly alias (same hooks, no prompt) for unattended runs.
+    if parsed.protocol == "all" and not parsed.yes:
+        if not sys.stdin.isatty():
+            parser.error(
+                "--protocol all requires interactive confirmation. Pass -y/--yes "
+                "to skip the prompt, or use --protocol auto for the same effect."
+            )
+            raise Failure
+        sys.stderr.write(
+            "--protocol all will hook TLS, QUIC, OHTTP, SSH, and IPsec libraries\n"
+            "simultaneously. This may slow the target process, increase capture\n"
+            "volume, and produce a mixed keylog and PCAPNG. Consider --protocol\n"
+            "<one> for a focused capture. Continue? [y/N] "
+        )
+        sys.stderr.flush()
+        answer = sys.stdin.readline().strip().lower()
+        if answer not in ("y", "yes"):
+            logger.info("Aborted by user.")
+            raise Failure
+
+    # --protocol ssh: the SSH agent lives only in the modern path. Force
+    # use_modern=true so the user doesn't silently fall back to the legacy
+    # TLS-only agent (which has no SSH support and would no-op SSH targets).
+    if parsed.protocol == "ssh":
+        if not getattr(parsed, "use_modern", False):
+            logger.info("[ssh] --protocol ssh auto-enables use_modern=true (legacy path has no SSH support)")
+            parsed.use_modern = True
+        # sshd forks a pre-auth child for KEX and re-execs into sshd-session post-auth.
+        # Frida hooks only follow forks when child-gating is on. Auto-enable when the
+        # target name looks like an sshd binary.
+        target = (getattr(parsed, "exec", "") or "")
+        target_basename = target.rsplit("/", 1)[-1]
+        if re.match(r"^sshd(-session)?$", target_basename) and not parsed.enable_child_gating:
+            logger.info("[ssh] sshd target detected — enabling --enable_child_gating automatically")
+            parsed.enable_child_gating = True
+
     if parsed.full_capture and parsed.pcap is None:
         parser.error("--full_capture requires -p to set the pcap name")
         raise Failure
@@ -437,6 +495,7 @@ Examples:
             filter_expression=getattr(parsed, 'filter', None),
             filter_infrastructure=getattr(parsed, 'filter_infrastructure', True),
             include_loopback=getattr(parsed, 'include_loopback', False),
+            force_scan_modules=getattr(parsed, 'force_scan_modules', None),
         )
 
         # Validate filter expression early (before session starts)
@@ -449,8 +508,14 @@ Examples:
 
         ssl_log = SSL_Logger(config=config)
 
-        ssl_log.install_signal_handler()        
-        ssl_log.start_fritap_session()  
+        # Propagate --protocol ssh's auto-enabled use_modern onto the logger so
+        # the agent config_batch sees use_modern=true (legacy/ssl_logger_core.py
+        # reads via getattr(self, 'use_modern', False)).
+        if getattr(parsed, "use_modern", False):
+            ssl_log.use_modern = True
+
+        ssl_log.install_signal_handler()
+        ssl_log.start_fritap_session()
         
         # Wait for user input or interrupt
         ssl_log.wait_for_completion()

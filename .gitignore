@@ -30,6 +30,7 @@ research/
 !dev/*.sh
 !CHANGELOG.md
 !README.md
+test.json
 
 # Testing artifacts
 tests/coverage_html/

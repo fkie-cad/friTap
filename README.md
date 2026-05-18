@@ -25,42 +25,14 @@ The main features of friTap are:
 - Decryption of TLS payload as PCAP in real time (`-p plaintext.pcap`) — coverage varies by platform/library; see the [support table](#supported-ssltls-implementations-and-corresponding-logging-capabilities) below
 - Interactive TUI mode with guided setup wizard (just run `fritap`)
 - Store plaintext hook output in its own .tap capture format and replay it (`fritap -r  saved_capture.tap`)
-- Library scanning to discover renamed/statically linked libraries (`--library-scan`)
-- Library analysis and debugging (`--list-libraries`)
 - Integration with Python. [Learn more](https://github.com/fkie-cad/friTap/blob/main/INTEGRATION.md)
 - Support for custom Frida scripts. [Details](https://github.com/fkie-cad/friTap/blob/main/USAGE.md#custom-script-example)
 - Support of most common SSL libraries (OpenSSL, BoringSSL, NSS, GnuTLS, etc.)
+- Library scanning to discover renamed/statically linked libraries (`--library-scan`)
 
 ## Installation
 
 Installation is simply a matter of `pip3 install fritap`. This will give you the `fritap` command. You can update an existing `fritap` installation with `pip3 install --upgrade fritap`.
-
-### Legacy install (frida 15.x / 16.x / 17.x with the 4-segment scheme)
-
-If your target device runs an older `frida-server` (15.x or 16.x), or you
-need the legacy 4-segment friTap line for frida 17.x, install via a
-[constraints file](constraints/README.md):
-
-```bash
-# frida 15.x  → friTap 1.3.0.0–1.3.3.3
-pip install fritap==1.3.3.3 -c https://raw.githubusercontent.com/fkie-cad/friTap/main/constraints/frida15.txt
-
-# frida 16.x  → friTap 1.3.4.0–1.4.3.0
-pip install fritap==1.4.3.0 -c https://raw.githubusercontent.com/fkie-cad/friTap/main/constraints/frida16.txt
-
-# frida 17.x (legacy 4-segment) → friTap 1.4.4.0–1.6.3.1
-pip install fritap==1.6.3.1 -c https://raw.githubusercontent.com/fkie-cad/friTap/main/constraints/frida17-legacy.txt
-```
-
-Or from a fresh clone:
-
-```bash
-git clone https://github.com/fkie-cad/friTap && cd friTap
-python dev/install_legacy.py --frida-major 16
-```
-
-See [`constraints/README.md`](constraints/README.md) for the full table and
-caveats (notably: frida 15.x wheels target older Python versions).
 
 ## Usage
 
@@ -241,6 +213,34 @@ frida major using the constraints file from the table above (see
 [`constraints/README.md`](constraints/README.md) for copy-paste recipes or
 the `dev/install_legacy.py` helper). Set `FRITAP_STRICT_FRIDA=1` to make a
 frida-major mismatch fatal at startup instead of a warning.
+
+### Legacy install (frida 15.x / 16.x / 17.x with the 4-segment scheme)
+
+If your target device runs an older `frida-server` (15.x or 16.x), or you
+need the legacy 4-segment friTap line for frida 17.x, install via a
+[constraints file](constraints/README.md):
+
+```bash
+# frida 15.x  → friTap 1.3.0.0–1.3.3.3
+pip install fritap==1.3.3.3 -c https://raw.githubusercontent.com/fkie-cad/friTap/main/constraints/frida15.txt
+
+# frida 16.x  → friTap 1.3.4.0–1.4.3.0
+pip install fritap==1.4.3.0 -c https://raw.githubusercontent.com/fkie-cad/friTap/main/constraints/frida16.txt
+
+# frida 17.x (legacy 4-segment) → friTap 1.4.4.0–1.6.3.1
+pip install fritap==1.6.3.1 -c https://raw.githubusercontent.com/fkie-cad/friTap/main/constraints/frida17-legacy.txt
+```
+
+Or from a fresh clone:
+
+```bash
+git clone https://github.com/fkie-cad/friTap && cd friTap
+python dev/install_legacy.py --frida-major 16
+```
+
+See [`constraints/README.md`](constraints/README.md) for the full table and
+caveats (notably: frida 15.x wheels target older Python versions).
+
 
 ## Dependencies
 

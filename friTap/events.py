@@ -50,8 +50,19 @@ class FriTapEvent:
 
 @dataclass
 class KeylogEvent(FriTapEvent):
-    """Emitted when TLS/SSL key material is extracted."""
+    """Emitted when key material is extracted for any supported protocol.
+
+    Carries either a pre-formatted keylog line (``key_data``) or a structured
+    payload (``payload``) — protocol-specific :class:`KeylogFormatter`
+    instances translate it to Wireshark-loadable lines.
+
+    Examples:
+      - TLS (NSS): ``key_data = "CLIENT_RANDOM <hex> <hex>"``
+      - SSH per-direction (informational): ``key_data = "SSH_ENC_KEY_C2S <hex>"``
+      - SSH KEX shared secret: ``payload = {"cookie": ..., "shared_secret": ...}``
+    """
     key_data: str = ""
+    payload: Optional[Dict[str, Any]] = None
 
 
 @dataclass

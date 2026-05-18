@@ -163,14 +163,36 @@ export function attachSslLogSecretHook(addr: NativePointer, cb: DumpKeysCb): boo
  */
 export const PATTERN_HOOKING_SETTLE_MS = 1000;
 
+export const KEYLOG_NOT_INSTALLED_MSG = (moduleName: string) =>
+    `[!] No keylog hook installed for ${moduleName} (symbol absent, patterns no-match)`;
+
 /**
- * Schedules the BoringSSL symbol-hook rescue path for legacy pattern-based
- * Cronet wrappers. Centralises the load-bearing invariant that the rescue
- * MUST still fire when execute_hooks() threw before producing a hooker (the
- * `hooker === null` arm). Each platform supplies its own hooker-fallback
- * (typically `() => instance.execute_symbol_based_hooking(hooker)`) and its
- * own dumpKeys forwarder so 3-arg vs 4-arg dumpKeys signatures stay opaque
- * to the helper.
+ * Shared body for "patterns failed → try symbol resolver". Used by both the
+ * modern hook chain and the legacy `scheduleBoringSSLSymbolFallback` so the
+ * user-facing log strings live in one place.
+ */
+export function attemptSymbolFallback(
+    moduleName: string,
+    dumpKeys: DumpKeysCb,
+    ctx: string = "bssl-symbol-fb",
+): boolean {
+    devlog(`[!] Patterns failed for ${moduleName}; attempting symbol-based fallback…`);
+    try {
+        const ok = installBoringSSLSymbolHook(moduleName, dumpKeys);
+        if (!ok) devlog(KEYLOG_NOT_INSTALLED_MSG(moduleName));
+        return ok;
+    } catch (e) {
+        devlog_error(`[${ctx}] ${moduleName}: symbol-based fallback threw: ${e}`);
+        devlog(KEYLOG_NOT_INSTALLED_MSG(moduleName));
+        return false;
+    }
+}
+
+/**
+ * Legacy pattern-based Cronet wrappers schedule this after a 1-second settle
+ * window. The hooker-absent arm fires when execute_hooks() threw before
+ * producing a hooker; the with-hooker arm checks `no_hooking_success` (set on
+ * cascade exhaustion) before running the platform-specific fallback.
  */
 export function scheduleBoringSSLSymbolFallback(
     moduleName: string,
@@ -182,10 +204,11 @@ export function scheduleBoringSSLSymbolFallback(
     setTimeout(() => {
         try {
             if (hooker !== null) {
+                if (!hooker.no_hooking_success) return;
+                devlog(`[!] Patterns failed for ${moduleName}; attempting symbol-based fallback…`);
                 runHookerFallback();
             } else {
-                devlog_debug(`Trying symbol-based ssl_log_secret hook on ${moduleName} (no hooker available)`);
-                installBoringSSLSymbolHook(moduleName, dumpKeys);
+                attemptSymbolFallback(moduleName, dumpKeys);
             }
         } catch (e) {
             devlog_error(`Error in BoringSSL symbol fallback for ${moduleName}: ${e}`);
@@ -210,7 +233,7 @@ export function installBoringSSLSymbolHook(moduleName: string, dumpKeys: DumpKey
     const ok = attachSslLogSecretHook(r.address, dumpKeys);
     if (ok) {
         devlog(
-            `Installed ssl_log_secret() hook on ${moduleName} via symbol (${r.via}).`
+            `[*] ssl_log_secret hooked via symbol-based fallback on ${moduleName} (via ${r.via}).`
         );
     }
     return ok;

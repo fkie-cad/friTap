@@ -6,6 +6,7 @@
 from .base import OutputHandler
 from .pcap_handler import PcapOutputHandler
 from .keylog_handler import KeylogOutputHandler
+from .keylog_format import KeylogFormatter
 from .json_handler import JsonOutputHandler
 from .jsonl_handler import JsonlOutputHandler
 from .console_handler import ConsoleOutputHandler
@@ -20,6 +21,7 @@ __all__ = [
     "OutputHandler",
     "PcapOutputHandler",
     "KeylogOutputHandler",
+    "KeylogFormatter",
     "JsonOutputHandler",
     "JsonlOutputHandler",
     "ConsoleOutputHandler",

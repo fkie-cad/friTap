@@ -12,6 +12,8 @@ SSL_READ = frozenset({
     "QuicSpdyStream_Readv",
     # Neqo (Firefox HTTP/3) stream receive
     "neqo_read_response_data",
+    # SSH plaintext receive (OpenSSH packet layer)
+    "ssh_packet_read_poll2",
 })
 
 SSL_WRITE = frozenset({
@@ -23,6 +25,8 @@ SSL_WRITE = frozenset({
     "QuicSpdyStream_WriteOrBufferBody",
     # Neqo (Firefox HTTP/3) stream send
     "neqo_send_request_body",
+    # SSH plaintext send (OpenSSH packet layer)
+    "ssh_packet_send2",
 })
 
 
@@ -49,6 +53,8 @@ class ContentType:
     LIBRARY_DETECTED = "library_detected"
     SOCKET_TRACE = "socket_trace"
     SSH_KEY = "ssh_key"
+    SSH_KEYLOG = "ssh_keylog"
+    SSH_NEWKEYS = "ssh_newkeys"
     IPSEC_CHILD_SA = "ipsec_child_sa_keys"
     NETLOG = "netlog"
     ERROR = "error"

@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 
 from .events import EventBus, KeylogEvent, DatalogEvent, LibraryDetectedEvent, ConsoleEvent, SessionEvent, OhttpEvent
-from .constants import SSL_READ
+from .constants import SSL_READ, ContentType
 from .ssl_logger import get_addr_string
 
 
@@ -57,6 +57,12 @@ class MessageRouter:
             self._emit_lifecycle(payload)
         elif content_type == "ohttp_plaintext":
             self._emit_ohttp(payload, data)
+        elif content_type == ContentType.SSH_KEY:
+            self._emit_ssh_key(payload)
+        elif content_type == ContentType.SSH_KEYLOG:
+            self._emit_ssh_keylog(payload)
+        elif content_type == ContentType.SSH_NEWKEYS:
+            self._emit_ssh_newkeys(payload)
         elif content_type == "console":
             self._emit_console(payload, level="info")
         elif content_type == "console_dev":
@@ -129,6 +135,51 @@ class MessageRouter:
             message=payload.get("console_dev", ""),
             level="debug",
         ))
+
+    def _emit_ssh_key(self, payload: dict) -> None:
+        """Format an SSH per-direction key/IV record as one line and emit a KeylogEvent.
+
+        Lines use the labels OpenSSH writes via friTap's cipher_init hook
+        (`SSH_ENC_KEY_C2S`, `SSH_ENC_KEY_S2C`, `SSH_IV_C2S`, `SSH_IV_S2C`).
+        These are NOT the Wireshark SSH dissector's wire format — they land in
+        the regular keys.log for users who want raw derived key material.
+        Wireshark consumption uses the side-car file produced from
+        :meth:`_emit_ssh_keylog`.
+        """
+        key_type = payload.get("key_type", "")
+        key_data = payload.get("key_data", "")
+        if not key_type or not key_data:
+            return
+        line = f"{key_type} {key_data}"
+        self._event_bus.emit(KeylogEvent(
+            key_data=line,
+            protocol=payload.get("protocol", "ssh"),
+        ))
+
+    def _emit_ssh_keylog(self, payload: dict) -> None:
+        """Emit a SHARED_SECRET KeylogEvent for the Wireshark SSH dissector.
+
+        Routed to the unified :class:`KeylogOutputHandler` bound to the SSH
+        :class:`SshKeylogFormatter`. The structured ``payload`` carries the
+        fields that the formatter turns into ``<cookie> SHARED_SECRET <hex>``
+        lines; Wireshark performs the RFC 4253 §7.2 KDF internally.
+        """
+        self._event_bus.emit(KeylogEvent(
+            protocol="ssh",
+            payload={
+                "cookie": str(payload.get("cookie", "")),
+                "peer_cookie": str(payload.get("peer_cookie", "")),
+                "shared_secret": str(payload.get("shared_secret", "")),
+                "direction": str(payload.get("direction", "")),
+                "session_tag": str(payload.get("session_tag", "")),
+            },
+        ))
+
+    def _emit_ssh_newkeys(self, payload: dict) -> None:
+        """Forward SSH newkeys activation notifications to the console handler."""
+        direction = payload.get("direction", "")
+        msg = payload.get("message") or f"SSH newkeys activated ({direction})"
+        self._event_bus.emit(ConsoleEvent(message=msg, level="info"))
 
     def _emit_ohttp(self, payload: dict, data: bytes) -> None:
         self._event_bus.emit(OhttpEvent(

@@ -138,7 +138,10 @@ class SSL_Logger():
         # explicit selection narrows the registry to just that handler so
         # we don't load hooks the user didn't ask for.
         from ..protocols.registry import create_default_registry
-        if self._config.protocol == "auto":
+        # "all" and "auto" are UX twins per the CLI: same hooks installed,
+        # only the user-confirmation differs. Both build the full registry
+        # so any subsequent LibraryDetectedEvent can swap the active handler.
+        if self._config.protocol in ("auto", "all"):
             self._protocol_registry = create_default_registry()
             self._detected_libraries = set()  # tracks libraries detected by agent
             # Start with TLS as default; will be refined via LibraryDetectedEvent
@@ -341,8 +344,8 @@ class SSL_Logger():
             self._detected_libraries.add(lib_name)
             self.logger.debug("Library detected — %s (protocol=%s)", lib_name, event.protocol)
 
-            # Only switch protocol handler when in auto-detect mode
-            if self._config.protocol == "auto":
+            # Only switch protocol handler when in auto-detect / install-everything mode
+            if self._config.protocol in ("auto", "all"):
                 matched = self._protocol_registry.auto_detect(list(self._detected_libraries))
                 if matched and matched[0].name != self._protocol_handler.name:
                     self._protocol_handler = matched[0]
@@ -376,6 +379,7 @@ class SSL_Logger():
                 from ..inspector import LibraryInspector
                 scan_results = LibraryInspector.scan_to_dicts(self._config, self.logger)
                 if scan_results:
+                    self._apply_sibling_coverage_suppression(scan_results)
                     self.scan_results_data = json.dumps(scan_results)
                     self.logger.info("Library scanner found %d TLS libraries", len(scan_results))
                     for lib in scan_results:
@@ -402,7 +406,8 @@ class SSL_Logger():
         from ..output.factory import OutputHandlerFactory
         self._output_handlers, live_info = OutputHandlerFactory.create_handlers(
             self._config, self.pcap_obj, self._protocol_handler,
-            self.session_data, self.logger
+            self.session_data, self.logger,
+            protocol_registry=self._protocol_registry,
         )
         if live_info:
             self.tmpdir = live_info.get('tmpdir')
@@ -768,6 +773,41 @@ class SSL_Logger():
         from ..patterns.loader import PatternLoader
         self.pattern_data = PatternLoader.load(self.patterns, self.logger)
 
+    def _apply_sibling_coverage_suppression(self, scan_results: list[dict]) -> None:
+        """Detect Cronet-split-topology and suppress redundant pattern scans.
+
+        When ``--library-scan`` is on, lsLibHunter reports every loaded TLS
+        library.  Some Cronet builds ship BoringSSL in a sibling module
+        (e.g. ``stable_cronet_libssl.so``) while the higher-level runtime
+        (``libmainlinecronet.<ver>.so``) merely imports it.  Pattern-scanning
+        the runtime module is futile by construction.  This helper annotates
+        such modules with ``covered_by_sibling`` (consumed by the agent's
+        library_scanner) and strips matching entries from ``self.pattern_data``
+        so the agent's auto-registered pattern hooks never schedule.
+
+        Users can opt back in to scanning via ``--force-scan <name>`` (or the
+        ``FRITAP_FORCE_SCAN`` env var, comma-separated).
+        """
+        from ..protocols.tls_handler import covered_by_sibling, strip_covered_modules
+
+        force_set = self._config.hooking.force_scan_modules or ()
+        covered = covered_by_sibling(scan_results, force_scan_modules=force_set)
+        if not covered:
+            return
+
+        for entry in scan_results:
+            name = entry.get("name")
+            if name in covered:
+                entry["covered_by_sibling"] = covered[name]
+
+        self.logger.info(
+            "Cronet split topology detected; skipping %d redundant scan(s): %s",
+            len(covered), ", ".join(covered.keys()),
+        )
+        self.pattern_data = strip_covered_modules(
+            self.pattern_data, covered, force_scan_modules=force_set
+        )
+
     def _deep_merge(self, base: dict, override: dict) -> dict:
         """Deep merge two dicts. Override values win on conflict.
 
@@ -1108,7 +1148,7 @@ class SSL_Logger():
         if self.process:
             self.detach_with_timeout()  # Detach instrumented process if applicable
         if not self._detected_libraries and not self._config.hooking.library_scan:
-            if self._config.protocol in ("tls", "auto"):
+            if self._config.protocol in ("tls", "auto", "all"):
                 self.special_logger.info(
                     "\n[Hint] No TLS libraries were detected. Consider using "
                     "--library-scan (-ls) to discover renamed or statically linked libraries."

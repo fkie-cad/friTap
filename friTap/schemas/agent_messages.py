@@ -230,12 +230,34 @@ class SSHKeyMessage(BaseAgentMessage):
 
     contentType: Literal["ssh_key"] = "ssh_key"
     direction: str = ""  # "client" or "server"
-    key_type: str = ""  # e.g. "SSH_ENC_KEY_CLIENT", "SSH_IV_SERVER"
+    key_type: str = ""  # e.g. "SSH_ENC_KEY_C2S", "SSH_IV_S2C"
     cipher: str = ""
     key_data: str = ""
     key_len: Optional[int] = None
     iv_len: Optional[int] = None
     message: str = ""
+    protocol: str = "ssh"
+
+
+class SSHKeylogMessage(BaseAgentMessage):
+    """Wireshark-compatible SSH keylog entry.
+
+    Encodes the inputs to the Wireshark SSH dissector's keylog format:
+    ``<32-hex-cookie> SHARED_SECRET <K-hex>``.  Wireshark performs the
+    RFC 4253 §7.2 key-derivation internally — friTap must not pre-derive
+    per-direction keys here.
+
+    Emitted once per (re)keying when ``kex_derive_keys`` returns and
+    both cookies (local + peer) are known.  The Python side correlates
+    the pair by ``session_tag`` (the ``struct ssh*`` pointer hex).
+    """
+
+    contentType: Literal["ssh_keylog"] = "ssh_keylog"
+    cookie: str = ""            # 32 hex chars (local SSH_MSG_KEXINIT cookie)
+    peer_cookie: str = ""       # 32 hex chars (peer SSH_MSG_KEXINIT cookie)
+    shared_secret: str = ""     # 2 * |K| hex chars
+    direction: str = ""         # "client" | "server" (local process role)
+    session_tag: str = ""       # `struct ssh*` pointer hex, re-key correlation
     protocol: str = "ssh"
 
 
@@ -302,6 +324,7 @@ AgentMessage = Annotated[
         NetlogMessage,
         SSHNewKeysMessage,
         SSHKeyMessage,
+        SSHKeylogMessage,
         IPSecChildSAKeysMessage,
         IPSecIKEKeysMessage,
         OhttpPlaintextMessage,

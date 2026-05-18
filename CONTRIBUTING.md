@@ -47,8 +47,18 @@ For protocols other than TLS:
   `quiche.ts`, `neqo.ts`, `bhttp.ts`, `nss_hpke.ts`) plus
   `platforms/<os>/`. There is no `libs/` directory in these trees.
 
-When in doubt, look at how the existing implementation closest to your
-target is wired into `agent/platforms/<os>.ts`.
+When adding support for a new protocol, please prefer the standard protocol
+layout used by TLS, SSH, and IPsec unless there is a strong reason to do
+otherwise. In practice, this means adding a dedicated `agent/<protocol>/`
+directory with implementation-specific logic under `libs/`, platform-specific
+logic under `platforms/<os>/`, and a top-level platform orchestrator that wires
+the protocol into friTap.
+
+When in doubt, look at how the existing implementation closest to your target
+is wired into `agent/platforms/<os>.ts`. If you are unsure which structure fits
+best for a new protocol, please open an issue first so we can discuss the
+expected layout before you start implementing it.
+
 
 ## Ground truth
 

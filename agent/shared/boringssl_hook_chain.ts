@@ -12,7 +12,7 @@
 
 import { HookDefinition, ResolvedFunctions } from "../core/hook_definition.js";
 import { installKeylogHook } from "../core/executors/keylog_callback.js";
-import { installBoringSSLSymbolHook, boringSslDumpKeys } from "./boringssl_symbol_hook.js";
+import { installBoringSSLSymbolHook, boringSslDumpKeys, attemptSymbolFallback, KEYLOG_NOT_INSTALLED_MSG } from "./boringssl_symbol_hook.js";
 import { installBoringSSLPatternHook } from "./boringssl_pattern_hook.js";
 import { devlog, devlog_debug, devlog_error } from "../util/log.js";
 
@@ -55,15 +55,25 @@ export function installBoringSSLKeylogChain(
         if (ok) return tier;
     }
 
-    const patternOk = runTier("pattern", moduleName, () => {
-        const r = installBoringSSLPatternHook(moduleName, patternsJson, boringSslDumpKeys);
-        if (!r.scheduled) {
-            devlog_debug(`[bssl-chain] ${moduleName}: tier=pattern reason=${r.reason}`);
-        }
-        return r.scheduled;
-    });
-    if (patternOk) return "pattern";
+    // Tier 3: pattern.json byte-pattern scan. The async settled promise lets us
+    // retry via the symbol resolver if every pattern variant exhausts — the
+    // counterpart of scheduleBoringSSLSymbolFallback in the legacy executor.
+    const patternResult = installBoringSSLPatternHook(moduleName, patternsJson, boringSslDumpKeys);
+    if (!patternResult.scheduled) {
+        devlog_debug(`[bssl-chain] ${moduleName}: tier=pattern reason=${patternResult.reason}`);
+        devlog(KEYLOG_NOT_INSTALLED_MSG(moduleName));
+        return "none";
+    }
 
-    devlog(`[bssl-chain] ${moduleName}: all tiers failed — no keylog installed`);
-    return "none";
+    patternResult.settled.then((matched) => {
+        if (matched) {
+            devlog_debug(`[bssl-chain] ${moduleName}: pattern tier matched`);
+            return;
+        }
+        attemptSymbolFallback(moduleName, boringSslDumpKeys, "bssl-chain");
+    }).catch((e) => {
+        devlog_error(`[bssl-chain] ${moduleName}: settled-promise rejected: ${e}`);
+    });
+
+    return "pattern";
 }

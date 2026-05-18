@@ -3,19 +3,41 @@ import { AF_INET, AF_INET6, AddressFamilyMapping, unwantedFDs, Platform } from "
 import { HookRegistration, HookRegistry } from "./registry.js";
 import { Java, JavaWrapper } from "./javalib.js";
 import { offsets, ohttp_enabled, selected_protocol } from "../fritap_agent.js";
-import { isModuleHooked, markModuleHooked } from "./library_scanner.js";
+import { announceSiblingCoverage, isModuleHooked, markModuleHooked } from "./library_scanner.js";
+
+/*
+ * Tracks which (platform, loader-function, protocol) triples already have a
+ * dlopen / android_dlopen_ext interceptor installed. The dynamic-loader hook
+ * is installed once per protocol on purpose — installOhttpHooks() and
+ * android.ts each install one for the active protocol selection. The
+ * library_scan_enabled branch in android.ts:182-188 used to install a
+ * redundant *second* TLS-protocol hook on the same loader; this Set
+ * suppresses that one.
+ */
+const _installedDynamicLoaders = new Set<string>();
 
 /**
  * Check whether OHTTP hooks should be installed for the current configuration.
- * Centralizes the protocol guard used across all platform files.
+ *
+ * OHTTP is part of the TLS protocol family in the registry (entries are
+ * tagged `protocol: "tls"`), so it activates whenever the TLS family is
+ * being installed — that is, on the default `--protocol tls` and on the
+ * install-everything modes (`--protocol auto` and `--protocol all`).
  */
 export function shouldInstallOhttpHooks(): boolean {
-    return ohttp_enabled && (selected_protocol === "tls" || selected_protocol === "auto");
+    return ohttp_enabled && (
+        selected_protocol === "tls" ||
+        selected_protocol === "auto" ||
+        selected_protocol === "all"
+    );
 }
 
 /**
  * Install OHTTP hooks via ssl_library_loader and hookDynamicLoader if enabled.
  * Eliminates repeated guard + call patterns in platform files.
+ *
+ * Passes the TLS protocol filter because OHTTP entries live under the TLS
+ * family in the registry (`protocol: "tls"` with `libraryType: "nss_hpke"`).
  */
 export function installOhttpHooks(
     platform: Platform,
@@ -25,8 +47,8 @@ export function installOhttpHooks(
     loaderConfig: DynamicLoaderConfig,
 ): void {
     if (!shouldInstallOhttpHooks()) return;
-    ssl_library_loader(platform, hookRegistry, moduleNames, platformLabel, true, "ohttp");
-    hookDynamicLoader(loaderConfig, hookRegistry, moduleNames, false, "ohttp");
+    ssl_library_loader(platform, hookRegistry, moduleNames, platformLabel, true, "tls");
+    hookDynamicLoader(loaderConfig, hookRegistry, moduleNames, false, "tls");
 }
 
 function wait_for_library_loaded(module_name: string){
@@ -71,8 +93,12 @@ export function ssl_library_loader(platform: Platform, hookRegistry: HookRegistr
             continue;
         }
 
-        // Find all hooks matching this module name (filtered by protocol if provided)
-        const matches = hookRegistry.findAllMatches(platform, module_name, modulePath, protocol);
+        const { matches, suppressed } = hookRegistry.findAllMatchesWithCoverage(
+            platform, module_name, modulePath, moduleNames, protocol,
+        );
+        for (const drop of suppressed) {
+            announceSiblingCoverage(drop.moduleName, drop.siblingName, drop.reason, protocol || "tls");
+        }
 
         for (let match of matches) {
             try {
@@ -147,6 +173,11 @@ export function hookDynamicLoader(
     is_base_hook: boolean,
     protocol?: string
 ): void {
+    const dedupKey = `${config.platform}:${config.functionName}:${config.preferFunction ?? ""}:${protocol ?? "tls"}`;
+    if (_installedDynamicLoaders.has(dedupKey)) {
+        devlog(`${config.platformLabel} dynamic loader already hooked for protocol=${protocol ?? "tls"}; skipping duplicate Interceptor.attach.`);
+        return;
+    }
     try {
         let hookAddress: NativePointer;
 
@@ -219,7 +250,15 @@ export function hookDynamicLoader(
                         return;
                     }
 
-                    const matches = hookRegistry.findAllMatches(config.platform, moduleName, modulePath, protocol);
+                    // Lazy thunk: only enumerate modules when a candidate hook
+                    // declares coveredBySibling — saves the per-dlopen cost on
+                    // the common path where no coverage check applies.
+                    const { matches, suppressed } = hookRegistry.findAllMatchesWithCoverage(
+                        config.platform, moduleName, modulePath, getModuleNames, protocol,
+                    );
+                    for (const drop of suppressed) {
+                        announceSiblingCoverage(drop.moduleName, drop.siblingName, drop.reason, protocol || "tls");
+                    }
                     for (let match of matches) {
                         log(`${moduleName} was loaded & will be hooked on ${config.platformLabel}!`);
                         try {
@@ -239,6 +278,7 @@ export function hookDynamicLoader(
             }
         });
 
+        _installedDynamicLoaders.add(dedupKey);
         log(`[*] ${config.platformLabel} dynamic loader hooked.`);
     } catch (error) {
         devlog("Dynamic loader error: " + error);

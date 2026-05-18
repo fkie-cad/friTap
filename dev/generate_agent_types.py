@@ -41,6 +41,7 @@ from friTap.schemas.agent_messages import (  # noqa: E402
     OhttpPlaintextMessage,
     SSHNewKeysMessage,
     SSHKeyMessage,
+    SSHKeylogMessage,
 )
 
 OUTPUT_PATH = PROJECT_ROOT / "agent" / "schemas" / "messages.ts"
@@ -185,6 +186,7 @@ def generate_all() -> str:
         NetlogMessage,
         SSHNewKeysMessage,
         SSHKeyMessage,
+        SSHKeylogMessage,
         IPSecChildSAKeysMessage,
         IPSecIKEKeysMessage,
         OhttpPlaintextMessage,

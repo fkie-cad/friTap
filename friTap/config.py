@@ -9,8 +9,9 @@ validated configuration objects.
 """
 
 from __future__ import annotations
+import os
 from dataclasses import dataclass, field
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from .backends.base import BackendName
 
@@ -65,10 +66,23 @@ class HookingConfig:
     encapsulated_protocols: Dict[str, bool] = field(
         default_factory=lambda: {"ohttp": True}
     )
+    # Module names that should bypass the Cronet-split-topology suppression
+    # check, even when friTap would otherwise treat them as covered by a
+    # sibling library. Accepts literal names, prefixes (a value ending in '*'
+    # is treated as a stem prefix), or regexes prefixed with "re:".
+    force_scan_modules: List[str] = field(default_factory=list)
 
     @property
     def ohttp_enabled(self) -> bool:
         return self.encapsulated_protocols.get("ohttp", True)
+
+    def __post_init__(self) -> None:
+        env_value = os.environ.get("FRITAP_FORCE_SCAN")
+        if env_value:
+            extra = [item.strip() for item in env_value.split(",") if item.strip()]
+            for item in extra:
+                if item not in self.force_scan_modules:
+                    self.force_scan_modules.append(item)
 
 
 @dataclass
@@ -166,6 +180,7 @@ class FriTapConfig:
         filter_expression: Optional[str] = None,
         filter_infrastructure: bool = True,
         include_loopback: bool = False,
+        force_scan_modules: Optional[List[str]] = None,
     ) -> "FriTapConfig":
         """
         Build a FriTapConfig from the legacy SSL_Logger constructor parameters.
@@ -202,6 +217,7 @@ class FriTapConfig:
                 anti_root=anti_root,
                 payload_modification=payload_modification,
                 library_scan=library_scan,
+                force_scan_modules=list(force_scan_modules or []),
             ),
             protocol=protocol,
             backend=backend,
