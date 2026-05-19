@@ -40,6 +40,22 @@ export function executeFromDefinition(
     const addresses = readAddresses(moduleName, mapping);
     resolveOffsets(addresses, moduleName, socketLibrary, def.offsetKey);
 
+    // 2b. Pre-resolution hook for non-standard symbols (e.g. Go embedded
+    //     package paths). Merges resolved pointers into addresses[moduleName]
+    //     before NativeFunction wrapping. No-op when symbolResolver is unset.
+    if (def.symbolResolver) {
+        const preResolved = def.symbolResolver(moduleName);
+        for (const sym of Object.keys(preResolved)) {
+            const addr = preResolved[sym];
+            if (addr && !addr.isNull()) {
+                addresses[moduleName] = addresses[moduleName] || {};
+                if (!addresses[moduleName][sym] || addresses[moduleName][sym].isNull()) {
+                    addresses[moduleName][sym] = addr;
+                }
+            }
+        }
+    }
+
     // 3. Create NativeFunction wrappers
     const resolvedFns: ResolvedFunctions = {};
     for (const spec of def.nativeFunctions) {

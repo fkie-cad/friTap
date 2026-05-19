@@ -9,9 +9,12 @@ import { boring_execute_modern, ssl_python_execute_modern } from "../tls/platfor
 import { libressl_execute } from "../legacy/tls/platforms/macos/libressl_macos.js";
 import { libressl_execute_modern } from "../tls/platforms/macos/libressl_macos.js";
 import { cronet_execute } from "../legacy/tls/platforms/macos/cronet_macos.js";
+import { cronet_execute_modern } from "../tls/platforms/macos/cronet_macos.js";
 import { nss_execute } from "../legacy/tls/platforms/macos/nss_macos.js";
 import { nss_execute_modern } from "../tls/platforms/macos/nss_macos.js";
 import { ssh_detect_execute } from "../ssh/platforms/linux/ssh_linux.js";
+import { openssh_execute_modern } from "../ssh/platforms/macos/openssh_macos.js";
+import { libssh_execute_modern } from "../ssh/platforms/macos/libssh_macos.js";
 import { nss_hpke_execute_macos } from "../ohttp/platforms/macos/nss_hpke_macos.js";
 import { quiche_execute } from "../quic/platforms/macos/quiche_macos.js";
 import { google_quiche_execute } from "../quic/platforms/macos/google_quiche_macos.js";
@@ -38,11 +41,11 @@ export function load_macos_hooking_agent() {
         { platform: plattform_name, pattern: /libssl\.\d+\.dylib/, hookFn: (use_modern ? libressl_execute_modern : libressl_execute), library: "LibreSSL", pathFilter: "/usr/lib/", priority: 150, libraryType: "libressl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libssl.*\.dylib/, hookFn: (use_modern ? ssl_python_execute_modern : ssl_python_execute), library: "Python OpenSSL", pathFilter: "python", libraryType: "openssl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libssl.*\.dylib/, hookFn: (use_modern ? boring_execute_modern : boring_execute), library: "OpenSSL/BoringSSL", excludePattern: /^libssl\.\d+\.dylib$/, libraryType: "openssl", protocol: "tls" },
-        { platform: plattform_name, pattern: /.*cronet.*\.dylib/, hookFn: cronet_execute, library: "Cronet", libraryType: "boringssl", protocol: "tls" },
+        { platform: plattform_name, pattern: /.*cronet.*\.dylib/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet", libraryType: "boringssl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libnss[0-9]*\.dylib/, hookFn: (use_modern ? nss_execute_modern : nss_execute), library: "NSS", libraryType: "nss", protocol: "tls" },
         // SSH binaries / libraries
-        { platform: plattform_name, pattern: /.*libssh2?\.dylib/, hookFn: ssh_detect_execute, library: "libssh", protocol: "ssh" },
-        { platform: plattform_name, pattern: /^(\/.+\/)?(ssh|sshd|sshd-session|scp|sftp-server)$/, hookFn: ssh_detect_execute, library: "OpenSSH", protocol: "ssh" },
+        { platform: plattform_name, pattern: /.*libssh2?\.dylib/, hookFn: (use_modern ? libssh_execute_modern : ssh_detect_execute), library: "libssh", protocol: "ssh" },
+        { platform: plattform_name, pattern: /^(\/.+\/)?(ssh|sshd|sshd-session|scp|sftp-server)$/, hookFn: (use_modern ? openssh_execute_modern : ssh_detect_execute), library: "OpenSSH", protocol: "ssh" },
         // OHTTP (NSS HPKE) — gated under the TLS family for `--protocol tls`
         { platform: plattform_name, pattern: /.*libnss[0-9]*\.dylib/, hookFn: nss_hpke_execute_macos, library: "NSS HPKE (OHTTP)", protocol: "tls", libraryType: "nss_hpke" },
         // QUIC libraries — gated under the TLS family for `--protocol tls`

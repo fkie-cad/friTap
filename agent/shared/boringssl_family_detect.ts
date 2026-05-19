@@ -41,6 +41,16 @@ const FAMILY_RULES: FamilyRule[] = [
     // Conscrypt — both the standard JNI lib and statically-embedded variants
     // present in some apps.
     { family: "conscrypt",       match: (m) => /libconscrypt/.test(m) },
+    // Flutter Engine — statically links BoringSSL. Android: libflutter.so.
+    // iOS: framework basename "Flutter" (no extension) or "FlutterEngine".
+    { family: "flutter",         match: (m) => /^libflutter\.so$/.test(m)
+                                              || /(^|\/)Flutter(\.framework)?$/.test(m)
+                                              || /FlutterEngine/.test(m) },
+    // Mono BTLS — Xamarin / .NET MAUI runtime statically links BoringSSL.
+    // Anchored to disambiguate from monochrome (Cronet) and from non-BTLS
+    // Mono libraries (libmonosgen-2.0.so, libmono-native.so).
+    { family: "monobtls",        match: (m) => /libmono-btls/.test(m)
+                                              || /\bmono[._-]btls\b/.test(m) },
 ];
 
 export function detectBoringSSLFamily(moduleName: string): FamilyKey {
@@ -80,6 +90,10 @@ export function familyAliases(family: FamilyKey): string[] {
             return ["librustls_android_13_ex.so"];
         case "conscrypt":
             return ["libconscrypt.so", "libcronet.so"];
+        case "flutter":
+            return ["libflutter.so", "Flutter"];
+        case "monobtls":
+            return ["libmono-btls-shared.so", "libcronet.so"];
         case "generic_boringssl":
             return ["libcronet.so"];
     }

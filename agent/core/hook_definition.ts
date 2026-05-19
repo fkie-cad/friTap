@@ -26,6 +26,10 @@ export type FdDecoder = (sslCtx: NativePointer, resolvedFns: ResolvedFunctions) 
 export type SessionIdDecoder = (sslCtx: NativePointer, resolvedFns: ResolvedFunctions) => string;
 export type ClientRandomDecoder = (sslCtx: NativePointer, resolvedFns: ResolvedFunctions) => string;
 
+export type SymbolResolver = (
+    moduleName: string,
+) => { [symbol: string]: NativePointer };
+
 export interface ReadHookDef {
     symbol: string;
     args: ReadWriteArgLayout;
@@ -97,6 +101,13 @@ export interface HookDefinition {
     ) => { [key: string]: string | number } | null;
     extraHooks?: ExtraHookDef[];
     onNativeFunctionsResolved?: (fns: ResolvedFunctions) => void;
+    /** Optional pre-resolution hook for libraries with non-standard symbol
+     * names (e.g. Go embedded package paths). When set, the loader invokes
+     * it BEFORE readAddresses() and merges results into addresses[moduleName]
+     * before NativeFunction wrapping. Every existing definition leaves this
+     * undefined — zero behavioural change.
+     */
+    symbolResolver?: SymbolResolver;
     /**
      * Optional library-family marker. When set to "boringssl", the loader
      * routes through the three-tier hook chain (see

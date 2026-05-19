@@ -459,6 +459,14 @@ Examples:
             logger.info("[ssh] sshd target detected — enabling --enable_child_gating automatically")
             parsed.enable_child_gating = True
 
+    # --protocol ipsec: the IPSec strongSwan executor is registered only on the
+    # modern path. Force use_modern=true so the user doesn't silently fall back
+    # to the legacy TLS-only agent (which would no-op strongSwan targets).
+    if parsed.protocol == "ipsec":
+        if not getattr(parsed, "use_modern", False):
+            logger.info("[ipsec] --protocol ipsec auto-enables use_modern=true (legacy path has no IPSec support)")
+            parsed.use_modern = True
+
     if parsed.use_modern:
         logger.warning(
             f"friTap modern hooks active (experimental). Known regressions vs legacy: "

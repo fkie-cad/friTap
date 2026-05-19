@@ -19,12 +19,16 @@ import { nss_execute } from "../legacy/tls/platforms/linux/nss_linux.js";
 import { mbedTLS_execute } from "../legacy/tls/platforms/linux/mbedTLS_linux.js";
 import { s2ntls_execute } from "../legacy/tls/platforms/linux/s2ntls_linux.js";
 import { cronet_execute } from "../legacy/tls/platforms/linux/cronet_linux.js";
+import { cronet_execute_modern } from "../tls/platforms/linux/cronet_linux.js";
 // V1-only (re-exported from legacy)
-import { matrixSSL_execute } from "../tls/platforms/linux/matrixssl_linux.js";
-import { rustls_execute } from "../tls/platforms/linux/rustls_linux.js";
-import { gotls_execute } from "../tls/platforms/linux/gotls_linux.js";
+import { matrixSSL_execute, matrixSSL_execute_modern } from "../tls/platforms/linux/matrixssl_linux.js";
+import { rustls_execute, rustls_execute_modern } from "../tls/platforms/linux/rustls_linux.js";
+import { gotls_execute, gotls_execute_modern } from "../tls/platforms/linux/gotls_linux.js";
 import { ipsec_detect_execute } from "../ipsec/platforms/linux/ipsec_linux.js";
+import { strongswan_execute_modern } from "../ipsec/platforms/linux/strongswan_linux.js";
 import { ssh_detect_execute } from "../ssh/platforms/linux/ssh_linux.js";
+import { openssh_execute_modern } from "../ssh/platforms/linux/openssh_linux.js";
+import { libssh_execute_modern } from "../ssh/platforms/linux/libssh_linux.js";
 import { nss_hpke_execute_linux } from "../ohttp/platforms/linux/nss_hpke_linux.js";
 // QUIC
 import { quiche_execute } from "../quic/platforms/linux/quiche_linux.js";
@@ -47,23 +51,23 @@ export function load_linux_hooking_agent() {
         { platform: plattform_name, pattern: /.*libssl_sb.so/, hookFn: (use_modern ? boring_execute_modern : boring_execute), library: "OpenSSL/BoringSSL", libraryType: "openssl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libssl\.so/, hookFn: (use_modern ? boring_execute_modern : boring_execute), library: "OpenSSL/BoringSSL", libraryType: "openssl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libssl.*\.so/, hookFn: (use_modern ? ssl_python_execute_modern : ssl_python_execute), library: "Python OpenSSL", pathFilter: "python", libraryType: "openssl", protocol: "tls" },
-        { platform: plattform_name, pattern: /.*cronet.*\.so/, excludePattern: /_(libpki|libcrypto)\.so$/, hookFn: cronet_execute, library: "Cronet", libraryType: "boringssl", protocol: "tls" },
+        { platform: plattform_name, pattern: /.*cronet.*\.so/, excludePattern: /_(libpki|libcrypto)\.so$/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet", libraryType: "boringssl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libgnutls\.so/, hookFn: (use_modern ? gnutls_execute_modern : gnutls_execute), library: "GnuTLS", libraryType: "gnutls", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libwolfssl\.so/, hookFn: (use_modern ? wolfssl_execute_modern : wolfssl_execute), library: "WolfSSL", libraryType: "wolfssl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libnspr[0-9]?\.so/, hookFn: (use_modern ? nss_execute_modern : nss_execute), library: "NSS", libraryType: "nss", protocol: "tls" },
         { platform: plattform_name, pattern: /libmbedtls\.so.*/, hookFn: (use_modern ? mbedTLS_execute_modern : mbedTLS_execute), library: "mbedTLS", libraryType: "mbedtls", protocol: "tls" },
-        { platform: plattform_name, pattern: /libssl_s.a/, hookFn: matrixSSL_execute, library: "MatrixSSL", libraryType: "matrixssl", protocol: "tls" },
+        { platform: plattform_name, pattern: /libssl_s.a/, hookFn: (use_modern ? matrixSSL_execute_modern : matrixSSL_execute), library: "MatrixSSL", libraryType: "matrixssl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libs2n.so/, hookFn: (use_modern ? s2ntls_execute_modern : s2ntls_execute), library: "s2n-tls", libraryType: "s2ntls", protocol: "tls" },
-        { platform: plattform_name, pattern: /.*rustls.*/, hookFn: rustls_execute, library: "Rustls", libraryType: "rustls", protocol: "tls" },
-        { platform: plattform_name, pattern: /.*\.go.so$/, hookFn: gotls_execute, library: "Go TLS", libraryType: "gotls", protocol: "tls" },
-        { platform: plattform_name, pattern: /.*go[0-9.]+$/, hookFn: gotls_execute, library: "Go TLS", libraryType: "gotls", protocol: "tls" },
+        { platform: plattform_name, pattern: /.*rustls.*/, hookFn: (use_modern ? rustls_execute_modern : rustls_execute), library: "Rustls", libraryType: "rustls", protocol: "tls" },
+        { platform: plattform_name, pattern: /.*\.go.so$/, hookFn: (use_modern ? gotls_execute_modern : gotls_execute), library: "Go TLS", libraryType: "gotls", protocol: "tls" },
+        { platform: plattform_name, pattern: /.*go[0-9.]+$/, hookFn: (use_modern ? gotls_execute_modern : gotls_execute), library: "Go TLS", libraryType: "gotls", protocol: "tls" },
         // IPSec libraries (detection stubs — key extraction in the future)
-        { platform: plattform_name, pattern: /.*libcharon\.so/, hookFn: ipsec_detect_execute, library: "strongSwan (charon)", protocol: "ipsec" },
-        { platform: plattform_name, pattern: /.*libstrongswan\.so/, hookFn: ipsec_detect_execute, library: "strongSwan", protocol: "ipsec" },
-        { platform: plattform_name, pattern: /.*libipsec\.so/, hookFn: ipsec_detect_execute, library: "strongSwan (IPSec)", protocol: "ipsec" },
+        { platform: plattform_name, pattern: /.*libcharon\.so/, hookFn: (use_modern ? strongswan_execute_modern : ipsec_detect_execute), library: "strongSwan (charon)", libraryType: "ipsec_strongswan", protocol: "ipsec" },
+        { platform: plattform_name, pattern: /.*libstrongswan\.so/, hookFn: (use_modern ? strongswan_execute_modern : ipsec_detect_execute), library: "strongSwan", libraryType: "ipsec_strongswan", protocol: "ipsec" },
+        { platform: plattform_name, pattern: /.*libipsec\.so/, hookFn: (use_modern ? strongswan_execute_modern : ipsec_detect_execute), library: "strongSwan (IPSec)", libraryType: "ipsec_strongswan", protocol: "ipsec" },
         // SSH binaries / libraries
-        { platform: plattform_name, pattern: /.*libssh2?\.so/, hookFn: ssh_detect_execute, library: "libssh", protocol: "ssh" },
-        { platform: plattform_name, pattern: /^(\/.+\/)?(ssh|sshd|sshd-session|scp|sftp-server)$/, hookFn: ssh_detect_execute, library: "OpenSSH", protocol: "ssh" },
+        { platform: plattform_name, pattern: /.*libssh2?\.so/, hookFn: (use_modern ? libssh_execute_modern : ssh_detect_execute), library: "libssh", protocol: "ssh" },
+        { platform: plattform_name, pattern: /^(\/.+\/)?(ssh|sshd|sshd-session|scp|sftp-server)$/, hookFn: (use_modern ? openssh_execute_modern : ssh_detect_execute), library: "OpenSSH", protocol: "ssh" },
         // OHTTP (NSS HPKE) — gated under the TLS family for `--protocol tls`
         { platform: plattform_name, pattern: /.*libnss3?\.so/, hookFn: nss_hpke_execute_linux, library: "NSS HPKE (OHTTP)", protocol: "tls", libraryType: "nss_hpke" },
         // QUIC libraries — gated under the TLS family for `--protocol tls`

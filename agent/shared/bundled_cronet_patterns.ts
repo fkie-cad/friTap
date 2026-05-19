@@ -25,6 +25,8 @@ export type FamilyKey =
     | "quiche"              // libquiche_android.so (Google QUIC implementation)
     | "rustls_android"      // librustls_android_*.so
     | "conscrypt"           // libconscrypt_jni*.so / statically embedded Conscrypt
+    | "flutter"             // libflutter.so / Flutter.framework — Flutter Engine statically links BoringSSL
+    | "monobtls"            // libmono-btls-shared.so — Xamarin / .NET MAUI runtime BTLS
     | "generic_boringssl";  // floor — covers unrecognised BoringSSL forks
 
 export interface ArchPatterns {
@@ -82,6 +84,56 @@ const SIGNAL: ArchPatternMap = {
     },
 };
 
+// Patterns lifted verbatim from
+//   agent/legacy/tls/platforms/android/flutter_android.ts:16-33
+//   agent/legacy/tls/platforms/ios/flutter_ios.ts:16-22
+// Covers libflutter.so (Android) and Flutter.framework / FlutterEngine (iOS).
+// arm64 slot unions both OS variants because Frida's Process.arch cannot
+// distinguish Android-arm64 from iOS-arm64 at scan time; second_fallback
+// holds the iOS-arm64 primary. The iOS-arm64 fallback prologue shape is
+// already covered by BUNDLED_OPENSSL_SSL_LOG_SECRET.arm64 (tier 3d).
+const FLUTTER: ArchPatternMap = {
+    x64: {
+        primary:  "55 41 57 41 56 41 55 41 54 53 48 83 EC 48 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84 FE 00 00 00",
+        fallback: "55 41 57 41 56 41 55 41 54 53 48 83 EC 38 48 8B 47 68 48 83 B8 10 02 00 00 00 0F 84 19 01 00 00",
+    },
+    x86: {
+        primary:  "55 53 57 56 83 EC 4C E8 00 00 00 00 5B 81 C3 A9 CB 13 00 8B 44 24 60 8B 40 34",
+        fallback: "55 89 E5 53 57 56 83 E4 F0 83 EC 50 E8 00 00 00 00",
+    },
+    arm64: {
+        primary:         "E0 03 13 AA E2 03 16 AA 6D 62 FA 17",
+        fallback:        "FF 83 01 D1 F6 1B 00 F9 F5 53 04 A9 F3 7B 05 A9 08 34 40 F9 08 09 41 F9 68 07 00 B4",
+        second_fallback: "FF 83 01 D1 F6 57 03 A9 F4 4F 04 A9 FD 7B 05 A9 FD 43 01 91 08 34 40 F9 08 51 41 F9 48 08 00 B4",
+    },
+    arm: {
+        primary:  "2D E9 F0 43 89 B0 04 46 40 6B D0 F8 2C 01 00 28 49 D0",
+        fallback: "2D E9 F0 41 86 B0 04 46 40 6B D0 F8 30 01 00 28 53 D0",
+    },
+};
+
+// Patterns lifted verbatim from
+//   agent/legacy/tls/platforms/android/mono_btls_android.ts:16-33
+// Covers libmono-btls-shared.so as shipped by Xamarin / .NET MAUI Android.
+const MONO_BTLS: ArchPatternMap = {
+    x64: {
+        primary:  "55 41 57 41 56 41 54 53 49 89 D4 49 89 F6 48 89 FB E8 5A F8 FF FF",
+        fallback: "55 41 57 41 56 41 55 41 54 53 48 83 EC 38 48 8B 47 68 48 83 B8 10 02 00 00 00 0F 84 19 01 00 00",
+    },
+    x86: {
+        primary:  "55 89 E5 53 57 56 83 E4 F0 83 EC 10 E8 00 00 00 00",
+        fallback: "55 53 57 56 83 EC 4C E8 00 00 00 00 5B 81 C3 A9 CB 13 00 8B 44 24 60 8B 40 34",
+    },
+    arm64: {
+        primary:  "F6 57 BD A9 F4 4F 01 A9 FD 7B 02 A9 FD 83 00 91 F3 03 02 AA F4 03 01 AA F5 03 00 AA 1F FE FF 97",
+        fallback: "FF 83 01 D1 F6 1B 00 F9 F5 53 04 A9 F3 7B 05 A9 08 34 40 F9 08 09 41 F9 68 07 00 B4",
+    },
+    arm: {
+        primary:  "F0 B5 03 AF 4D F8 04 8D 14 46 0D 46 06 46 FF F7 5F FD",
+        fallback: "2D E9 F0 41 86 B0 04 46 40 6B D0 F8 30 01 00 28 53 D0",
+    },
+};
+
 export const BUNDLED_BSSL_PATTERNS: Record<FamilyKey, ArchPatternMap> = {
     // Monochrome is the same BoringSSL fork shipped inside Chrome's mainline
     // monolith; reuse the generic Cronet patterns until we collect a
@@ -97,6 +149,8 @@ export const BUNDLED_BSSL_PATTERNS: Record<FamilyKey, ArchPatternMap> = {
     quiche:            GENERIC_BORINGSSL,
     rustls_android:    GENERIC_BORINGSSL,
     conscrypt:         GENERIC_BORINGSSL,
+    flutter:           FLUTTER,
+    monobtls:          MONO_BTLS,
     generic_boringssl: GENERIC_BORINGSSL,
 };
 

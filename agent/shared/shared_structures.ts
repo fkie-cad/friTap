@@ -7,8 +7,10 @@ export type Platform = "linux" | "darwin" | "windows" | "wine";
 export type LibraryType =
     | "openssl" | "boringssl" | "libressl" | "gnutls" | "wolfssl"
     | "nss" | "mbedtls" | "s2ntls" | "rustls"
-    | "gotls" | "matrixssl" | "sspi" | "nss_hpke"
-    | "quiche" | "msquic" | "google_quiche" | "neqo";
+    | "gotls" | "matrixssl" | "sspi" | "lsass" | "nss_hpke"
+    | "quiche" | "msquic" | "google_quiche" | "neqo"
+    | "ssh_openssh" | "ssh_libssh"
+    | "ipsec_strongswan";
 export const PLATFORM_LINUX: Platform = "linux";
 export const PLATFORM_DARWIN: Platform = "darwin";
 export const PLATFORM_WINDOWS: Platform = "windows";

@@ -23,16 +23,19 @@ import { conscrypt_native_execute } from "../legacy/tls/platforms/android/conscr
 import { s2ntls_execute } from "../legacy/tls/platforms/android/s2ntls_android.js";
 // V1-only (re-exported from legacy)
 import { java_execute } from "../tls/platforms/android/android_java_tls_libs.js";
-import { flutter_execute } from "../tls/platforms/android/flutter_android.js";
-import { mono_btls_execute } from "../tls/platforms/android/mono_btls_android.js";
+import { flutter_execute, flutter_execute_modern } from "../tls/platforms/android/flutter_android.js";
+import { mono_btls_execute, mono_btls_execute_modern } from "../tls/platforms/android/mono_btls_android.js";
 import { patterns, isPatternReplaced, selected_protocol, use_modern, scan_results, library_scan_enabled } from "../fritap_agent.js"
 import { processScanResults, isModuleHooked, markModuleHooked } from "../shared/library_scanner.js";
 import { pattern_execute } from "../tls/platforms/android/pattern_android.js"
-import { rustls_execute } from "../tls/platforms/android/rustls_android.js";
-import { gotls_execute } from "../tls/platforms/android/gotls_android.js";
+import { rustls_execute, rustls_execute_modern } from "../tls/platforms/android/rustls_android.js";
+import { gotls_execute, gotls_execute_modern } from "../tls/platforms/android/gotls_android.js";
 import { metartc_execute } from "../tls/platforms/android/metartc.js";
 import { ipsec_detect_execute } from "../ipsec/platforms/linux/ipsec_linux.js";
+import { strongswan_execute_modern } from "../ipsec/platforms/android/strongswan_android.js";
 import { ssh_detect_execute } from "../ssh/platforms/linux/ssh_linux.js";
+import { openssh_execute_modern } from "../ssh/platforms/android/openssh_android.js";
+import { libssh_execute_modern } from "../ssh/platforms/android/libssh_android.js";
 import { nss_hpke_execute_android } from "../ohttp/platforms/android/nss_hpke_android.js";
 import { quiche_execute } from "../quic/platforms/android/quiche_android.js";
 import { google_quiche_execute } from "../quic/platforms/android/google_quiche_android.js";
@@ -130,13 +133,13 @@ export function load_android_hooking_agent() {
         { platform: plattform_name, pattern: /.*libssl\.so/, hookFn: (use_modern ? boring_execute_modern : boring_execute), library: "OpenSSL/BoringSSL", libraryType: "openssl", protocol: "tls" },
         { platform: plattform_name, pattern: /libconscrypt_gmscore_jni.so/, hookFn: (use_modern ? conscrypt_execute_modern : conscrypt_native_execute), library: "Conscrypt", libraryType: "boringssl", protocol: "tls" },
         { platform: plattform_name, pattern: /libconscrypt_jni.so/, hookFn: (use_modern ? conscrypt_execute_modern : conscrypt_native_execute), library: "Conscrypt", libraryType: "boringssl", protocol: "tls" },
-        { platform: plattform_name, pattern: /.*flutter.*\.so/, hookFn: flutter_execute, library: "Flutter BoringSSL", libraryType: "boringssl", protocol: "tls" },
+        { platform: plattform_name, pattern: /.*flutter.*\.so/, hookFn: (use_modern ? flutter_execute_modern : flutter_execute), library: "Flutter BoringSSL", libraryType: "boringssl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libgnutls\.so/, hookFn: (use_modern ? gnutls_execute_modern : gnutls_execute), library: "GnuTLS", libraryType: "gnutls", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libwolfssl\.so/, hookFn: (use_modern ? wolfssl_execute_modern : wolfssl_execute), library: "WolfSSL", libraryType: "wolfssl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libnss[3-4]\.so/, hookFn: (use_modern ? nss_execute_modern : nss_execute), library: "NSS", libraryType: "nss", protocol: "tls" },
         { platform: plattform_name, pattern: /libmbedtls\.so.*/, hookFn: (use_modern ? mbedTLS_execute_modern : mbedTLS_execute), library: "mbedTLS", libraryType: "mbedtls", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libs2n.so/, hookFn: (use_modern ? s2ntls_execute_modern : s2ntls_execute), library: "s2n-tls", libraryType: "s2ntls", protocol: "tls" },
-        { platform: plattform_name, pattern: /.*mono-btls.*\.so/, hookFn: mono_btls_execute, library: "Mono BTLS", libraryType: "boringssl", protocol: "tls" },
+        { platform: plattform_name, pattern: /.*mono-btls.*\.so/, hookFn: (use_modern ? mono_btls_execute_modern : mono_btls_execute), library: "Mono BTLS", libraryType: "boringssl", protocol: "tls" },
         // Cronet APEX split (modern Chrome on Android): libmainlinecronet.<ver>.so
         // is the higher-level runtime that imports BoringSSL from a sibling
         // (stable_cronet_libssl.so). It has no ssl_log_secret of its own, so
@@ -163,15 +166,17 @@ export function load_android_hooking_agent() {
         { platform: plattform_name, pattern: /.*monochrome.*\.so/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet (Monochrome)", libraryType: "boringssl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libwarp_mobile.*\.so/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet (Warp Mobile)", libraryType: "boringssl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*lib*quiche*.*\.so/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet (QUICHE)", libraryType: "boringssl", protocol: "tls" },
-        { platform: plattform_name, pattern: /.*librustls.*\.so/, hookFn: rustls_execute, library: "Rustls", libraryType: "rustls", protocol: "tls" },
+        { platform: plattform_name, pattern: /.*librustls.*\.so/, hookFn: (use_modern ? rustls_execute_modern : rustls_execute), library: "Rustls", libraryType: "rustls", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libstartup.*\.so/, hookFn: metartc_execute, library: "metaRTC", protocol: "tls" },
-        { platform: plattform_name, pattern: /libgojni.*\.so/, hookFn: gotls_execute, library: "Go TLS", libraryType: "gotls", protocol: "tls" },
+        { platform: plattform_name, pattern: /libgojni.*\.so/, hookFn: (use_modern ? gotls_execute_modern : gotls_execute), library: "Go TLS", libraryType: "gotls", protocol: "tls" },
         // IPSec libraries — strongSwan VPN is common on Android (detection stub, key extraction still needs to be done)
-        { platform: plattform_name, pattern: /.*libcharon\.so/, hookFn: ipsec_detect_execute, library: "strongSwan (charon)", protocol: "ipsec" },
-        { platform: plattform_name, pattern: /.*libstrongswan\.so/, hookFn: ipsec_detect_execute, library: "strongSwan", protocol: "ipsec" },
+        { platform: plattform_name, pattern: /.*libcharon\.so/, hookFn: (use_modern ? strongswan_execute_modern : ipsec_detect_execute), library: "strongSwan (charon)", libraryType: "ipsec_strongswan", protocol: "ipsec" },
+        { platform: plattform_name, pattern: /.*libstrongswan\.so/, hookFn: (use_modern ? strongswan_execute_modern : ipsec_detect_execute), library: "strongSwan", libraryType: "ipsec_strongswan", protocol: "ipsec" },
         // SSH binaries / libraries (Termux ships OpenSSH at $PREFIX/bin/ssh, sshd)
-        { platform: plattform_name, pattern: /.*libssh2?\.so/, hookFn: ssh_detect_execute, library: "libssh", protocol: "ssh" },
-        { platform: plattform_name, pattern: /^(\/.+\/)?(ssh|sshd|sshd-session|scp|sftp-server|dropbear)$/, hookFn: ssh_detect_execute, library: "OpenSSH/Dropbear", protocol: "ssh" },
+        { platform: plattform_name, pattern: /.*libssh2?\.so/, hookFn: (use_modern ? libssh_execute_modern : ssh_detect_execute), library: "libssh", protocol: "ssh" },
+        { platform: plattform_name, pattern: /^(\/.+\/)?(ssh|sshd|sshd-session|scp|sftp-server)$/, hookFn: (use_modern ? openssh_execute_modern : ssh_detect_execute), library: "OpenSSH", protocol: "ssh" },
+        // Dropbear stays on the legacy executor; no modern-path wrapper exists yet
+        { platform: plattform_name, pattern: /^(\/.+\/)?dropbear$/, hookFn: ssh_detect_execute, library: "Dropbear", protocol: "ssh" },
         // OHTTP (NSS HPKE) — gated under the TLS family for `--protocol tls`
         { platform: plattform_name, pattern: /.*libnss3?\.so/, hookFn: nss_hpke_execute_android, library: "NSS HPKE (OHTTP)", protocol: "tls", libraryType: "nss_hpke" },
         // QUIC libraries — gated under the TLS family for `--protocol tls`

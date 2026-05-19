@@ -7,7 +7,8 @@ import { Platform, PLATFORM_DARWIN } from "../shared/shared_structures.js";
 import { boring_execute } from "../legacy/tls/platforms/ios/openssl_boringssl_ios.js";
 import { boring_execute_modern } from "../tls/platforms/ios/openssl_boringssl_ios.js";
 import { cronet_execute } from "../legacy/tls/platforms/ios/cronet_ios.js";
-import { flutter_execute } from "../tls/platforms/ios/flutter_ios.js"
+import { cronet_execute_modern } from "../tls/platforms/ios/cronet_ios.js";
+import { flutter_execute, flutter_execute_modern } from "../tls/platforms/ios/flutter_ios.js"
 
 
 var plattform_name: Platform = PLATFORM_DARWIN;
@@ -26,8 +27,8 @@ export function load_ios_hooking_agent() {
     hookRegistry.registerAll([
         // TLS libraries (TLS protocol family)
         { platform: plattform_name, pattern: /.*libboringssl\.dylib/, hookFn: (use_modern ? boring_execute_modern : boring_execute), library: "BoringSSL", libraryType: "boringssl", protocol: "tls" },
-        { platform: plattform_name, pattern: /.*cronet.*\.dylib/, hookFn: cronet_execute, library: "Cronet", libraryType: "boringssl", protocol: "tls" },
-        { platform: plattform_name, pattern: /.*flutter.*\.dylib/, hookFn: flutter_execute, library: "Flutter BoringSSL", libraryType: "boringssl", protocol: "tls" },
+        { platform: plattform_name, pattern: /.*cronet.*\.dylib/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet", libraryType: "boringssl", protocol: "tls" },
+        { platform: plattform_name, pattern: /.*flutter.*\.dylib/, hookFn: (use_modern ? flutter_execute_modern : flutter_execute), library: "Flutter BoringSSL", libraryType: "boringssl", protocol: "tls" },
     ]);
 
     hook_iOS_SSL_Libs(hookRegistry, true);
