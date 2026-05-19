@@ -730,6 +730,7 @@ export class NSS {
             var ssl3 = NSS.parse_struct_ssl3Str(sslSocketStr.ssl3);
             var client_random = NSS.getClientRandom(ssl3);
 
+            devlog("invoking keylog from NSS (SSL_LOG_SECRETS)");
             sendKeylog(NSS.get_Keylog_Dump(label, client_random, secretHex));
 
             // Call through to original callback if one was saved
@@ -1435,6 +1436,7 @@ typedef union PRNetAddr PRNetAddr;
 
     static getTLS_Keys(pRFileDesc: NativePointer, dumping_handshake_secrets: number) {
         devlog("trying to log some keying materials ...");
+        devlog(`entering NSS handshake-derivation keylog dump (mode=${dumping_handshake_secrets})`);
 
         // When secret_callback API is active, handshake secrets (epochs 1 & 2) are already
         // delivered with authoritative values — skip expensive struct parsing entirely

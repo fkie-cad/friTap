@@ -7,7 +7,7 @@ import { HookDefinition, ClientRandomDecoder, ResolvedFunctions } from "../../co
 import { STANDARD_SOCKET_SYMBOLS } from "./shared_constants.js";
 import { readHexFromPointer } from "../decoders/hex_utils.js";
 import { NSS } from "../libs/nss.js";
-import { devlog } from "../../util/log.js";
+import { devlog, log } from "../../util/log.js";
 
 /** Delegates to ``NSS.extractClientRandom()`` which caches results. */
 function createNssClientRandomDecoder(): ClientRandomDecoder {
@@ -100,6 +100,7 @@ function installNssKeylog(
     NSS.installSecretCallbackInterceptor();
 
     devlog("[*] NSS modern keylog hooks installed");
+    log(`[*] ${moduleName}: keylog hooks installed via NSS SSL_HandshakeCallback + SSL_SecretCallback`);
     return true;
 }
 

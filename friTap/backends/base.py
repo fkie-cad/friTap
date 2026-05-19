@@ -143,6 +143,10 @@ class BackendProcessNotFoundError(BackendError):
     """The target process was not found."""
 
 
+class BackendProcessNotRespondingError(BackendError):
+    """The target process did not complete the Frida injection handshake in time."""
+
+
 class BackendPermissionDeniedError(BackendError):
     """Permission denied for the requested operation."""
 

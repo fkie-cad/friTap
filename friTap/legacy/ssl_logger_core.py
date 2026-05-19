@@ -1148,7 +1148,7 @@ class SSL_Logger():
         self._done_event.set()
         if self.process:
             self.detach_with_timeout()  # Detach instrumented process if applicable
-        if not self._detected_libraries and not self._config.hooking.library_scan:
+        if self.process is not None and not self._detected_libraries and not self._config.hooking.library_scan:
             if self._config.protocol in ("tls", "auto", "all"):
                 self.special_logger.info(
                     "\n[Hint] No TLS libraries were detected. Consider using "

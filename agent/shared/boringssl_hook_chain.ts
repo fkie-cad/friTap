@@ -12,7 +12,7 @@
 
 import { HookDefinition, ResolvedFunctions } from "../core/hook_definition.js";
 import { installKeylogHook } from "../core/executors/keylog_callback.js";
-import { installBoringSSLSymbolHook, boringSslDumpKeys, attemptSymbolFallback, KEYLOG_NOT_INSTALLED_MSG } from "./boringssl_symbol_hook.js";
+import { installBoringSSLSymbolHook, makeBoringSslDumpKeys, attemptSymbolFallback, KEYLOG_NOT_INSTALLED_MSG } from "./boringssl_symbol_hook.js";
 import { installBoringSSLPatternHook } from "./boringssl_pattern_hook.js";
 import { detectBoringSSLFamily } from "./boringssl_family_detect.js";
 import { devlog, devlog_debug, devlog_error, log } from "../util/log.js";
@@ -47,12 +47,14 @@ export function installBoringSSLKeylogChain(
 
     devlog_debug(`[bssl-chain] ${moduleName}: priority=${priority} order=${order.join(",")}`);
 
+    const dumpKeysCb = makeBoringSslDumpKeys(moduleName);
+
     for (const tier of order) {
         const ok = tier === "callback"
             ? runTier("callback", moduleName,
                 () => installKeylogHook(def, addresses, moduleName, resolvedFns, enableDefaultFd))
             : runTier("symbol", moduleName,
-                () => installBoringSSLSymbolHook(moduleName, boringSslDumpKeys));
+                () => installBoringSSLSymbolHook(moduleName, dumpKeysCb));
         if (ok) {
             // The symbol tier self-announces in installBoringSSLSymbolHook; the
             // callback sub-installers (agent/core/executors/keylog_callback.ts)
@@ -80,7 +82,7 @@ export function installBoringSSLKeylogChain(
     const patternResult = installBoringSSLPatternHook(
         moduleName,
         patternsJson,
-        boringSslDumpKeys,
+        dumpKeysCb,
         "libcronet.so",
         { family, libraryType },
     );
@@ -98,7 +100,7 @@ export function installBoringSSLKeylogChain(
         devlog(
             `[bssl-chain] ${moduleName}: tier 3 exhausted (family=${family}); falling back to symbol re-scan`,
         );
-        attemptSymbolFallback(moduleName, boringSslDumpKeys, "bssl-chain");
+        attemptSymbolFallback(moduleName, dumpKeysCb, "bssl-chain");
     }).catch((e) => {
         devlog_error(`[bssl-chain] ${moduleName}: settled-promise rejected: ${e}`);
     });

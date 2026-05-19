@@ -63,6 +63,14 @@ sudo fritap -v -k chrome_keys.log --pcap chrome_traffic.pcap google-chrome
 # [*] Logging TLS keys to chrome_keys.log
 ```
 
+**Modern Mode (experimental):**
+
+For Chrome and Cronet-based applications, the experimental `--modern` flag enables the refactored agent path with improved Cronet hooks and the BoringSSL `SSL_CTX_set_keylog_callback` modern integration. The default behaviour remains the legacy path, which is the more battle-tested route. Use modern mode if you need the newer keylog wiring for Chrome:
+
+```bash
+sudo fritap --modern -k chrome_keys.log google-chrome
+```
+
 ### Safari Analysis (macOS)
 
 Safari analysis requires special considerations due to macOS security features.

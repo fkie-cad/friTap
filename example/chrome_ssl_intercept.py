@@ -20,11 +20,16 @@ Examples:
     python chrome_ssl_intercept.py com.android.chrome
     python chrome_ssl_intercept.py --spawn com.android.chrome
     python chrome_ssl_intercept.py -D emulator-5554 com.android.chrome
+    python chrome_ssl_intercept.py --modern com.android.chrome    # opt into the modern agent path (EXPERIMENTAL)
+    python chrome_ssl_intercept.py -p ssh --spawn com.termux      # SSH (auto-enables --modern)
 
 Requirements:
     - frida-server running on the Android device
     - frida Python package installed
     - USB debugging enabled and device connected
+
+Notes:
+    - Modern mode (--modern) is EXPERIMENTAL. The legacy path is the default and is more stable.
 """
 
 import frida
@@ -101,11 +106,14 @@ def on_message(message, data):
                 "patterns": PATTERNS,
                 "socket_tracing": SOCKET_TRACING,
                 "defaultFD": DEFAULT_FD,
+                "pcap_enabled": False,
                 "experimental": EXPERIMENTAL,
                 "protocol_select": PROTOCOL,
                 "install_lsass_hook": INSTALL_LSASS_HOOK,
                 "use_modern": USE_MODERN,
                 "library_scan": None,
+                "library_scan_enabled": False,
+                "ohttp_enabled": True,
             }})
             return
 
@@ -212,6 +220,8 @@ Examples:
   %(prog)s --spawn com.android.chrome     # Spawn the app
   %(prog)s -D emulator-5554 27913         # Attach on specific device
   %(prog)s -D emulator-5554 --spawn com.android.chrome
+  %(prog)s --modern com.android.chrome    # opt into the modern agent path (EXPERIMENTAL)
+  %(prog)s -p ssh --spawn com.termux      # SSH (auto-enables --modern)
         """
     )
     parser.add_argument("target", nargs="?", default=DEFAULT_TARGET,
@@ -222,11 +232,37 @@ Examples:
                         help="Spawn the app instead of attaching to running process")
     parser.add_argument("--retries", "-r", type=int, default=MAX_RETRIES,
                         help=f"Number of attach retries (default: {MAX_RETRIES})")
+    parser.add_argument("--modern", action="store_true", default=False,
+                        help="EXPERIMENTAL: opt into the modern (refactored) agent path. Default: legacy.")
+    parser.add_argument("-p", "--protocol", choices=["tls", "ssh", "ipsec"], default="tls",
+                        help="Protocol to hook. ssh/ipsec auto-enable --modern.")
+    parser.add_argument("--socket-tracing", action="store_true", default=False,
+                        help="Log socket addresses for captured traffic.")
+    parser.add_argument("--default-fd", action="store_true", default=False,
+                        help="Use fallback file-descriptor extraction.")
+    parser.add_argument("--experimental", action="store_true", default=False,
+                        help="Enable experimental hooking strategies.")
+    parser.add_argument("--install-lsass-hook", action="store_true", default=False,
+                        help="Hook LSASS (Windows only).")
 
     args = parser.parse_args()
     target = args.target
     spawn_mode = args.spawn
     device_id = args.device
+
+    # Mirror friTap CLI: ssh/ipsec require modern mode
+    global USE_MODERN, PROTOCOL, DEFAULT_FD, SOCKET_TRACING, EXPERIMENTAL, INSTALL_LSASS_HOOK
+    if args.protocol in ("ssh", "ipsec") and not args.modern:
+        print(f"[*] --protocol {args.protocol} auto-enables --modern (legacy has no {args.protocol.upper()} support)")
+        args.modern = True
+    USE_MODERN = args.modern
+    PROTOCOL = args.protocol
+    DEFAULT_FD = args.default_fd
+    SOCKET_TRACING = args.socket_tracing
+    EXPERIMENTAL = args.experimental
+    INSTALL_LSASS_HOOK = args.install_lsass_hook
+    if USE_MODERN:
+        print("[!] Modern mode active (EXPERIMENTAL).")
 
     # Determine if target is a PID or package name
     is_pid = target.isdigit()

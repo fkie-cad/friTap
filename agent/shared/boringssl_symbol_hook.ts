@@ -368,3 +368,22 @@ export function boringSslDumpKeys(
 
     sendKeylog(`${labelStr} ${clientRandom} ${secretHex}`);
 }
+
+/**
+ * Module-aware factory around `boringSslDumpKeys`. Returns a `DumpKeysCb` that
+ * emits a per-key breadcrumb (`devlog`) identifying the originating module
+ * before delegating to the shared dump implementation. Use this from call
+ * sites that have `moduleName` in scope (e.g. the modern hook chain) so users
+ * with `-do` enabled can see attribution like the legacy path provides.
+ */
+export function makeBoringSslDumpKeys(moduleName: string): DumpKeysCb {
+    return function dumpKeysWithModuleContext(
+        labelPtr: NativePointer,
+        sslStructPtr: NativePointer,
+        keyPtr: NativePointer,
+        keyLen: number,
+    ): void {
+        devlog(`invoking ssl_log_secret hook for module ${moduleName}`);
+        return boringSslDumpKeys(labelPtr, sslStructPtr, keyPtr, keyLen);
+    };
+}

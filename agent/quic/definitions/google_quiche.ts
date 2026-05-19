@@ -14,6 +14,7 @@ import { log, devlog, devlog_error } from "../../util/log.js";
 import { pcap_enabled } from "../../fritap_agent.js";
 import { MANGLED_SYMBOLS } from "../shared/google_quiche_offsets.js";
 import { quicConnectionTracker, buildQuicMessage, QuicConnectionInfo } from "../shared/quic_connection_tracker.js";
+import { findNonExportedSymbols, underscoreVariants } from "../../shared/shared_functions.js";
 
 /**
  * Read data from an iovec scatter-gather list.
@@ -69,27 +70,71 @@ function getMangledSymbol(key: keyof typeof MANGLED_SYMBOLS): string {
 }
 
 /**
- * Try to resolve a symbol address by mangled name lookup, then pattern scan fallback.
+ * Batch-resolve all QUICHE mangled symbols in a single pass using the same
+ * multi-strategy approach as Neqo. Returns a map of key → NativePointer.
+ *
+ * Strategies tried in order:
+ * 1. Export table (works in unstripped builds; rare for release Chrome/Cronet)
+ * 2. Symbol table via single enumerateSymbols() pass (works on Mainline Cronet
+ *    APEX builds where the QUICHE C++ symbols are imported into the dynsym
+ *    table but not exported — confirmed via runtime inspection of
+ *    libmainlinecronet.<ver>.so on Pixel 5 / Cronet 141)
+ * 3. DebugSymbol (if debug info is available)
  */
-function resolveQuicheSymbol(moduleName: string, key: keyof typeof MANGLED_SYMBOLS): NativePointer | null {
-    const mangledName = getMangledSymbol(key);
+function resolveQuicheSymbols(moduleName: string): Map<keyof typeof MANGLED_SYMBOLS, NativePointer> {
+    const resolved = new Map<keyof typeof MANGLED_SYMBOLS, NativePointer>();
+    const keys = Object.keys(MANGLED_SYMBOLS) as Array<keyof typeof MANGLED_SYMBOLS>;
+    const remaining: Array<keyof typeof MANGLED_SYMBOLS> = [];
 
-    // Try direct symbol lookup first (debug builds, some Android builds)
+    // Strategy 1: export table
+    let mod: Module | null = null;
     try {
-        const mod = Process.findModuleByName(moduleName);
-        if (mod) {
-            const addr = mod.findExportByName(mangledName);
-            if (addr && !addr.isNull()) {
-                devlog("[Google QUICHE] found " + key + " via symbol export in " + moduleName);
-                return addr;
-            }
-        }
-    } catch (_e) { /* continue to fallback */ }
+        mod = Process.findModuleByName(moduleName);
+    } catch (_e) { /* ignore */ }
 
-    // Try pattern scan from default_patterns.json (populated by pattern pipeline)
-    // The pipeline will try patterns registered under "google_quiche" key
-    devlog("[Google QUICHE] " + key + " not found via export in " + moduleName + ", will try pattern scan");
-    return null;
+    for (const key of keys) {
+        const mangledName = getMangledSymbol(key);
+        if (mod) {
+            try {
+                const addr = mod.findExportByName(mangledName);
+                if (addr && !addr.isNull()) {
+                    devlog("[Google QUICHE] found " + key + " via symbol export in " + moduleName);
+                    resolved.set(key, addr);
+                    continue;
+                }
+            } catch (_e) { /* fall through */ }
+        }
+        remaining.push(key);
+    }
+    if (remaining.length === 0) return resolved;
+
+    // Strategy 2: single batch symbol table enumeration. Underscore-tolerant
+    // matching is handled inside findNonExportedSymbols.
+    const symResults = findNonExportedSymbols(moduleName, remaining.map(getMangledSymbol));
+    for (const key of remaining) {
+        const addr = symResults.get(getMangledSymbol(key));
+        if (addr && !addr.isNull()) {
+            devlog("[Google QUICHE] found " + key + " via symbol table in " + moduleName);
+            resolved.set(key, addr);
+        }
+    }
+
+    // Strategy 3: DebugSymbol for any still-unresolved (try underscore variants).
+    for (const key of remaining) {
+        if (resolved.has(key)) continue;
+        for (const variant of underscoreVariants(getMangledSymbol(key))) {
+            try {
+                const matches = DebugSymbol.findFunctionsNamed(variant);
+                if (matches.length > 0) {
+                    devlog("[Google QUICHE] found " + key + " via DebugSymbol in " + moduleName);
+                    resolved.set(key, matches[0]);
+                    break;
+                }
+            } catch (_e) { /* DebugSymbol may be unavailable */ }
+        }
+    }
+
+    return resolved;
 }
 
 // String xref scanning for WriteOrBufferBody is not yet implemented.
@@ -107,10 +152,10 @@ export function installGoogleQuicheHooks(moduleName: string): void {
     if (!pcap_enabled) return;
     log("[*] Google QUICHE: attempting to hook QuicSpdyStream in " + moduleName);
 
-    // Resolve Readv
-    const readvAddr = resolveQuicheSymbol(moduleName, "readv");
-    // Resolve WriteOrBufferBody
-    const writeAddr = resolveQuicheSymbol(moduleName, "writeOrBufferBody");
+    // Batched resolution: single enumerateSymbols() pass for all QUICHE symbols.
+    const resolved = resolveQuicheSymbols(moduleName);
+    const readvAddr = resolved.get("readv") || null;
+    const writeAddr = resolved.get("writeOrBufferBody") || null;
 
     if (!readvAddr && !writeAddr) {
         devlog("[Google QUICHE] could not resolve any stream functions in " + moduleName);

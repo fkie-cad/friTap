@@ -177,6 +177,7 @@ export class Cronet {
         }
 
         //devlog("invoking ssl_log_secret() from BoringSSL statically linked into Cronet");
+        devlog("invoking shadow keylog_callback from Cronet (" + this.module_name + ")");
         sendKeylog(labelStr+" "+client_random+" "+secret_key);
     }
 

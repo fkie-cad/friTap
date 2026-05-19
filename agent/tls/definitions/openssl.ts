@@ -5,14 +5,14 @@
 // Platform-specific keylog and key extraction stays in platform execute functions.
 
 import { HookDefinition, ResolvedFunctions, KeylogApproach, ExtraHookDef } from "../../core/hook_definition.js";
-import { log, devlog_error, devlog_debug } from "../../util/log.js";
+import { log, devlog, devlog_error, devlog_debug } from "../../util/log.js";
 import { sendKeylog, sendDatalog } from "../../shared/shared_structures.js";
 import { getPortsAndAddresses } from "../../shared/shared_functions.js";
 import { readHexFromPointer } from "../decoders/hex_utils.js";
 import { enable_default_fd, pcap_enabled } from "../../fritap_agent.js";
 import { STANDARD_SOCKET_SYMBOLS, DUMMY_SESSION_ID_OPENSSL } from "./shared_constants.js";
 import { createLifecycleHook, createBufferedClientRandomDecoder } from "./shared_factories.js";
-import { installBoringSSLSymbolHook, boringSslDumpKeys, DumpKeysCb } from "../../shared/boringssl_symbol_hook.js";
+import { installBoringSSLSymbolHook, makeBoringSslDumpKeys, DumpKeysCb } from "../../shared/boringssl_symbol_hook.js";
 
 export function openSslFdDecoder(ssl: NativePointer, fns: ResolvedFunctions): number {
     if (!fns["SSL_get_fd"]) return -1;
@@ -122,6 +122,7 @@ export function createBoringSSLKeylogApproach(): KeylogApproach {
 
             const keylogCb = new NativeCallback(
                 function (_ssl: NativePointer, line: NativePointer) {
+                    devlog(`invoking keylog_callback from OpenSSL_BoringSSL (${modName})`);
                     sendKeylog(line.readCString());
                 },
                 "void",
@@ -165,12 +166,17 @@ export function createBoringSSLKeylogApproach(): KeylogApproach {
                     if (!userCb.isNull()) {
                         Interceptor.attach(userCb, {
                             onEnter: function (innerArgs: any) {
+                                devlog(`invoking user-installed keylog_callback from OpenSSL_BoringSSL (${modName})`);
                                 sendKeylog(innerArgs[1].readCString());
                             },
                         });
                     }
                 },
             });
+
+            if (sslNewAttached || ctxNewAttached) {
+                log(`[*] ${modName}: keylog hooks installed via SSL_CTX_set_keylog_callback (SSL_new=${sslNewAttached}, SSL_CTX_new=${ctxNewAttached})`);
+            }
 
             return sslNewAttached || ctxNewAttached;
         },
@@ -191,7 +197,7 @@ export function createBoringSSLSslLogSecretFallback(dumpKeys?: DumpKeysCb): Keyl
     return {
         kind: "custom",
         install: (_addresses, modName, _resolvedFns, _enableDefaultFd) => {
-            return installBoringSSLSymbolHook(modName, dumpKeys ?? boringSslDumpKeys);
+            return installBoringSSLSymbolHook(modName, dumpKeys ?? makeBoringSslDumpKeys(modName));
         },
     };
 }

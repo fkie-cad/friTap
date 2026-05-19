@@ -10,7 +10,7 @@ import {
 } from "../../core/hook_definition.js";
 import { sendKeylog } from "../../shared/shared_structures.js";
 import { toHexString } from "../../shared/shared_functions.js";
-import { devlog, devlog_error } from "../../util/log.js";
+import { devlog, devlog_error, log } from "../../util/log.js";
 import { STANDARD_SOCKET_SYMBOLS } from "./shared_constants.js";
 import { noOpClientRandomDecoder } from "./shared_factories.js";
 
@@ -36,6 +36,7 @@ function getRustlsKeylogCb(): typeof rustlsKeylogCb {
                     : (label.readUtf8String(labelLen.toNumber()) ?? "CLIENT_RANDOM");
                 const crHex = toHexString(clientRandom.readByteArray(crLen.toNumber()));
                 const secretHex = toHexString(secret.readByteArray(secretLen.toNumber()));
+                devlog("invoking rustls keylog callback");
                 sendKeylog(`${labelStr} ${crHex} ${secretHex}`);
             } catch (e) {
                 devlog_error(`[rustls keylog cb] ${e}`);
@@ -83,6 +84,7 @@ function attachUserKeylogShadow(addr: NativePointer): void {
                             const labelStr = labelPtr.readUtf8String(labelLen);
                             const crHex = toHexString(cr.readByteArray(crLen));
                             const secretHex = toHexString(secret.readByteArray(secretLen));
+                            devlog("invoking user-installed rustls keylog callback");
                             sendKeylog(`${labelStr} ${crHex} ${secretHex}`);
                         } catch (e) {
                             devlog_error(`[rustls user-cb shadow] ${e}`);
@@ -161,6 +163,10 @@ export function createRustlsDefinition(): HookDefinition {
                 if (setKeyLogAddr && !setKeyLogAddr.isNull()) {
                     attachUserKeylogShadow(setKeyLogAddr);
                     installed = true;
+                }
+
+                if (installed) {
+                    log(`[*] ${modName}: keylog hooks installed via rustls_client_config_builder_set_key_log`);
                 }
                 return installed;
             },

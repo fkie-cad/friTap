@@ -5,7 +5,7 @@
 import { HookDefinition, ResolvedFunctions } from "../../core/hook_definition.js";
 import { sendKeylog } from "../../shared/shared_structures.js";
 import { toHexString } from "../../shared/shared_functions.js";
-import { log } from "../../util/log.js";
+import { log, devlog } from "../../util/log.js";
 import { readHexFromPointer } from "../decoders/hex_utils.js";
 import { enable_default_fd } from "../../fritap_agent.js";
 import { STANDARD_SOCKET_SYMBOLS, DUMMY_SESSION_ID_WOLFSSL } from "./shared_constants.js";
@@ -48,6 +48,7 @@ function wolfSslExtractKeys(ssl: NativePointer, fns: ResolvedFunctions): void {
     const masterBytes = masterBuffer.readByteArray(requiredMasterKeyLength);
     keysString = `${keysString}MASTER_KEY: ${toHexString(masterBytes)}\n`;
 
+    devlog("invoking keylog dump from wolfSSL");
     sendKeylog(keysString);
 }
 

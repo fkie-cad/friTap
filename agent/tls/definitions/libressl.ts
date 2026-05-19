@@ -34,6 +34,7 @@ function createLibreSslKeylogApproach(): KeylogApproach {
             if (resolvedFns["SSL_CTX_set_keylog_callback"]) {
                 const keylogCb = new NativeCallback(
                     function (_ssl: NativePointer, line: NativePointer) {
+                        devlog(`invoking keylog_callback from LibreSSL (${modName})`);
                         sendKeylog(line.readCString());
                     },
                     "void",
@@ -60,6 +61,9 @@ function createLibreSslKeylogApproach(): KeylogApproach {
             if (!keylogCallbackInstalled) {
                 log("[LibreSSL] SSL_CTX_set_keylog_callback not available, trying KDF hooks");
                 installKdfHooks(modName, resolvedFns);
+                log(`[*] ${modName}: keylog hooks installed via KDF function hooks (tls1_PRF / tls13_hkdf_expand_label)`);
+            } else {
+                log(`[*] ${modName}: keylog hooks installed via SSL_CTX_set_keylog_callback`);
             }
             return keylogCallbackInstalled;
         },
@@ -118,6 +122,7 @@ function installKdfHooks(modName: string, resolvedFns: ResolvedFunctions): void 
                     const masterKey = extractMasterKey(this.sslPtr, resolvedFns);
                     if (!masterKey) return;
 
+                    devlog("invoking tls1_PRF keylog hook from LibreSSL");
                     sendKeylog(`CLIENT_RANDOM ${clientRandom} ${masterKey}`);
                 } catch (e) {
                     devlog_error(`[LibreSSL] tls1_PRF onLeave error: ${e}`);
@@ -168,6 +173,7 @@ function attachHkdfHook(
                     return;
                 }
 
+                devlog(`invoking ${funcName} keylog hook from LibreSSL`);
                 sendKeylog(`${sslkeylogLabel} ${clientRandom} ${secretHex}`);
             } catch (e) {
                 devlog_error(`[LibreSSL] ${funcName} onLeave error: ${e}`);

@@ -4,7 +4,7 @@
 
 import { HookDefinition, ResolvedFunctions } from "../../core/hook_definition.js";
 import { sendKeylog } from "../../shared/shared_structures.js";
-import { log, devlog_error } from "../../util/log.js";
+import { log, devlog, devlog_error } from "../../util/log.js";
 import { readHexFromPointer } from "../decoders/hex_utils.js";
 import { enable_default_fd } from "../../fritap_agent.js";
 import { STANDARD_SOCKET_SYMBOLS, DUMMY_SESSION_ID_GNUTLS } from "./shared_constants.js";
@@ -75,6 +75,7 @@ export function createGnuTlsDefinition(): HookDefinition {
             const clientRandomP = _clientRandomPtr.readPointer();
             const clientRandomStr = readHexFromPointer(clientRandomP, clientRandomLen);
 
+            devlog("invoking keylog_callback from GnuTLS");
             sendKeylog(label.readCString() + " " + clientRandomStr + " " + secretStr);
             return 0;
         },

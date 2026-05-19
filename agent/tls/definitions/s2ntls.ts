@@ -4,7 +4,7 @@
 
 import { HookDefinition, ResolvedFunctions } from "../../core/hook_definition.js";
 import { sendKeylog } from "../../shared/shared_structures.js";
-import { devlog } from "../../util/log.js";
+import { devlog, log } from "../../util/log.js";
 import { STANDARD_SOCKET_SYMBOLS } from "./shared_constants.js";
 import { noOpClientRandomDecoder } from "./shared_factories.js";
 
@@ -93,12 +93,16 @@ export function createS2nTlsDefinition(): HookDefinition {
                                 onEnter: function (args: any) {
                                     const logline = args[2];
                                     const len = args[3];
+                                    devlog("invoking user-installed keylog_callback from s2ntls");
                                     sendKeylog(logline.readCString(len.toInt32()));
                                 },
                             });
                         },
                     });
                     installed = true;
+                }
+                if (installed) {
+                    log(`[*] ${moduleName}: keylog hooks installed via s2n_config_set_key_log_cb`);
                 }
                 return installed;
             },

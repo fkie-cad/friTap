@@ -106,6 +106,7 @@ export class Mono_BTLS {
         }
 
         //devlog("invoking ssl_log_secret() from BoringSSL statically linked into Mono BTLS");
+        devlog("invoking keylog dump from MonoBtls");
         sendKeylog(labelStr+" "+client_random+" "+secret_key);
     }
 

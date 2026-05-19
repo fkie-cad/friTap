@@ -140,16 +140,15 @@ export function load_android_hooking_agent() {
         { platform: plattform_name, pattern: /libmbedtls\.so.*/, hookFn: (use_modern ? mbedTLS_execute_modern : mbedTLS_execute), library: "mbedTLS", libraryType: "mbedtls", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libs2n.so/, hookFn: (use_modern ? s2ntls_execute_modern : s2ntls_execute), library: "s2n-tls", libraryType: "s2ntls", protocol: "tls" },
         { platform: plattform_name, pattern: /.*mono-btls.*\.so/, hookFn: (use_modern ? mono_btls_execute_modern : mono_btls_execute), library: "Mono BTLS", libraryType: "boringssl", protocol: "tls" },
-        // Cronet APEX split (modern Chrome on Android): libmainlinecronet.<ver>.so
-        // is the higher-level runtime that imports BoringSSL from a sibling
-        // (stable_cronet_libssl.so). It has no ssl_log_secret of its own, so
-        // pattern-scanning it is futile when the sibling is present.
+        // Cronet APEX split: libmainlinecronet's BoringSSL surface lives in the
+        // stable_cronet_libssl.so sibling. libraryType must match the sibling's
+        // entry above ("openssl") for coveredBySibling suppression to fire.
         {
             platform: plattform_name,
             pattern: /^libmainlinecronet\.[\d.]+\.so$/,
             hookFn: (use_modern ? cronet_execute_modern : cronet_execute),
             library: "Cronet (mainline runtime)",
-            libraryType: "boringssl",
+            libraryType: "openssl",
             protocol: "tls",
             coveredBySibling: {
                 siblingPattern: /^stable_cronet_libssl\.so$/,
@@ -183,6 +182,10 @@ export function load_android_hooking_agent() {
         { platform: plattform_name, pattern: /.*libquiche\.so/, hookFn: quiche_execute, library: "Cloudflare QUICHE", libraryType: "quiche", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libchrome\.so/, hookFn: google_quiche_execute, library: "Google QUICHE (Chrome)", libraryType: "google_quiche", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libcronet.*\.so/, hookFn: google_quiche_execute, library: "Google QUICHE (Cronet)", libraryType: "google_quiche", protocol: "tls" },
+        // libmainlinecronet does not match /.*libcronet.*\.so/ — "libcronet" is
+        // not a substring of "libmainlinecronet". Needs its own entry.
+        { platform: plattform_name, pattern: /^libmainlinecronet\.[\d.]+\.so$/, hookFn: google_quiche_execute, library: "Google QUICHE (Mainline Cronet APEX)", libraryType: "google_quiche", protocol: "tls" },
+        { platform: plattform_name, pattern: /.*monochrome.*\.so/, hookFn: google_quiche_execute, library: "Google QUICHE (Monochrome)", libraryType: "google_quiche", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libxul\.so/, hookFn: neqo_execute, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo", protocol: "tls" },
     ]);
 

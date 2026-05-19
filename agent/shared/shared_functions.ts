@@ -675,8 +675,26 @@ export function findNonExportedSymbol(moduleName: string, symbolName: string): N
 }
 
 /**
+ * Symbol-name variants to try when matching against enumerateSymbols /
+ * DebugSymbol results across platforms. Linux Itanium ABI mangling starts
+ * with a single leading underscore (`_ZN...`); Mach-O prepends an extra one
+ * (`__ZN...`). Frida normalizes these inconsistently across versions, so
+ * lookups try [as-given, with-extra-underscore, without-leading-underscore].
+ */
+export function underscoreVariants(name: string): string[] {
+    const variants = [name, "_" + name];
+    if (name.length > 1 && name.startsWith("_")) variants.push(name.slice(1));
+    return variants;
+}
+
+/**
  * Batch-find multiple non-exported symbols in a single Module.enumerateSymbols() pass.
  * Much more efficient than calling findNonExportedSymbol() repeatedly for the same module.
+ *
+ * Matching is underscore-tolerant via {@link underscoreVariants}: callers pass the
+ * base symbol name (e.g. linux mangling `_ZN...`) and the function also matches
+ * Mach-O-style `__ZN...` and the bare `ZN...` form. The result map is keyed by the
+ * ORIGINAL input name regardless of which variant matched.
  *
  * @param moduleName Name of the module to search
  * @param symbolNames Array of exact symbol names to find
@@ -684,13 +702,20 @@ export function findNonExportedSymbol(moduleName: string, symbolName: string): N
  */
 export function findNonExportedSymbols(moduleName: string, symbolNames: string[]): Map<string, NativePointer> {
     const result = new Map<string, NativePointer>();
+    const variantToInput = new Map<string, string>();
+    for (const name of symbolNames) {
+        for (const variant of underscoreVariants(name)) {
+            if (!variantToInput.has(variant)) variantToInput.set(variant, name);
+        }
+    }
     try {
         const wanted = new Set(symbolNames);
         const mod = Process.getModuleByName(moduleName);
         for (const sym of mod.enumerateSymbols()) {
-            if (wanted.has(sym.name)) {
-                result.set(sym.name, sym.address);
-                wanted.delete(sym.name);
+            const input = variantToInput.get(sym.name);
+            if (input && wanted.has(input)) {
+                result.set(input, sym.address);
+                wanted.delete(input);
                 if (wanted.size === 0) break;
             }
         }

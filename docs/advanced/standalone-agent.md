@@ -31,17 +31,20 @@ The friTap agent uses a **blocking initialization protocol**. When loaded, it se
 
 ### Required Initialization Messages
 
-The agent sends these messages (in order) and blocks waiting for each response:
+Modern friTap agents consolidate all per-feature handshakes into a single
+`config_batch` message. The agent sends these messages (in order) and blocks
+waiting for each response:
 
 | Message | Expected Response Type | Purpose |
 |---------|----------------------|---------|
-| `"offset_hooking"` | `{"type": "offset_hooking", "payload": <JSON or null>}` | Custom function offsets |
-| `"pattern_hooking"` | `{"type": "pattern_hooking", "payload": <JSON or null>}` | Byte patterns for hooking |
-| `"socket_tracing"` | `{"type": "socket_tracing", "payload": <bool>}` | Enable socket tracing |
-| `"defaultFD"` | `{"type": "defaultFD", "payload": <bool>}` | Use default file descriptors |
-| `"experimental"` | `{"type": "experimental", "payload": <bool>}` | Enable experimental features |
-| `"anti"` | `{"type": "antiroot", "payload": <bool>}` | Enable anti-root bypass (Android) |
-| `"install_lsass_hook"` | `{"type": "install_lsass_hook", "payload": <bool>}` | Hook LSASS (Windows) |
+| `"config_batch"` | `{"type": "config_batch", "payload": <dict with 12 fields>}` | Single consolidated handshake carrying every configuration value (see [field reference](#config_batch-field-reference) below) |
+| `"anti"` | `{"type": "antiroot", "payload": <bool>}` | Enable anti-root bypass (Android); sent once after `config_batch` |
+
+> **Note:** Older agent builds shipped individual per-feature handshakes
+> (`offset_hooking`, `pattern_hooking`, `socket_tracing`, `defaultFD`,
+> `experimental`, `install_lsass_hook`). These have been removed in favor of the
+> single `config_batch` round-trip — keep this in mind when porting integrations
+> written against older docs.
 
 ### Minimal Message Handler
 
@@ -49,50 +52,71 @@ Here's the minimal message handler that responds to all initialization messages:
 
 ```python
 def on_message(message, data):
-    """Handle messages from the friTap agent."""
-    global script
+    if message["type"] != "send":
+        return
+    payload = message.get("payload", {})
 
-    if message["type"] == "error":
-        print(f"[ERROR] {message.get('description', message)}")
+    # Single consolidated handshake: agent sends "config_batch" once and
+    # blocks until we reply with a dict containing every config value.
+    if payload == "config_batch":
+        script.post({"type": "config_batch", "payload": {
+            "offsets":              None,    # JSON string or None
+            "patterns":             None,    # JSON string or None
+            "socket_tracing":       False,
+            "defaultFD":            False,
+            "pcap_enabled":         False,
+            "experimental":         False,
+            "protocol_select":      "tls",   # "tls" | "ssh" | "ipsec"
+            "install_lsass_hook":   False,   # Windows only
+            "use_modern":           False,   # experimental modern path
+            "library_scan":         None,
+            "library_scan_enabled": False,
+            "ohttp_enabled":        True,
+        }})
         return
 
-    if message["type"] == "send":
-        payload = message.get("payload", {})
+    # Anti-root probe is the last handshake message (separate from config_batch).
+    if payload == "anti":
+        script.post({"type": "antiroot", "payload": False})
+        return
 
-        # CRITICAL: Respond to initialization messages
-        # The agent BLOCKS waiting for these responses!
-
-        if payload == "offset_hooking":
-            script.post({"type": "offset_hooking", "payload": None})
-            return
-
-        if payload == "pattern_hooking":
-            script.post({"type": "pattern_hooking", "payload": None})
-            return
-
-        if payload == "socket_tracing":
-            script.post({"type": "socket_tracing", "payload": False})
-            return
-
-        if payload == "defaultFD":
-            script.post({"type": "defaultFD", "payload": False})
-            return
-
-        if payload == "experimental":
-            script.post({"type": "experimental", "payload": False})
-            return
-
-        if payload == "anti":
-            script.post({"type": "antiroot", "payload": False})
-            return
-
-        if payload == "install_lsass_hook":
-            script.post({"type": "install_lsass_hook", "payload": False})
-            return
-
-        # Handle regular messages (see below)
-        # ...
+    # ... handle agent telemetry (console, keylog, datalog, etc.) ...
 ```
+
+## Switching between Legacy and Modern paths
+
+friTap ships two agent code paths today:
+
+- **Legacy** (default, `use_modern: false`) — the original platform-specific
+  hook tree under `agent/legacy/`. Battle-tested across all supported
+  libraries and protocols.
+- **Modern** (experimental, `use_modern: true`) — the refactored
+  definition-based path under `agent/tls/`, `agent/quic/`, etc. Required for
+  the `ssh` and `ipsec` protocol selectors, and enables improved Cronet /
+  BoringSSL `SSL_CTX_set_keylog_callback` hooks for Chrome. Has known
+  regressions on iOS/macOS Cronet, Windows LSASS, and IPsec.
+
+Toggle by setting `use_modern: true` in your `config_batch` reply.
+
+## config_batch field reference
+
+The dict sent in reply to `config_batch` must include every field below. Values
+not relevant to your run can be left at their defaults.
+
+| Field | Type | Default | Purpose |
+|---|---|---|---|
+| `offsets` | JSON string or `None` | `None` | Custom hook offsets (advanced) |
+| `patterns` | JSON string or `None` | `None` | Custom byte-pattern definitions |
+| `socket_tracing` | bool | `False` | Log socket address metadata for captured TLS sessions |
+| `defaultFD` | bool | `False` | Fall back to file-descriptor extraction when SSL_get_fd is unavailable |
+| `pcap_enabled` | bool | `False` | Required `True` if you process pcap-format datalogs |
+| `experimental` | bool | `False` | Enable experimental hooking strategies |
+| `protocol_select` | `"tls"` \| `"ssh"` \| `"ipsec"` | `"tls"` | Which protocol's hooks to install. `ssh`/`ipsec` require `use_modern: true` |
+| `install_lsass_hook` | bool | `False` | Hook LSASS (Windows only) |
+| `use_modern` | bool | `False` | Opt into the experimental modern agent path |
+| `library_scan` | object or `None` | `None` | Library-scan configuration |
+| `library_scan_enabled` | bool | `False` | Enable the lsLibHunter library scan |
+| `ohttp_enabled` | bool | `True` | Enable OHTTP keylog hooks |
 
 ## Message Types from Agent
 
@@ -193,19 +217,27 @@ def on_message(message, data):
     if message["type"] == "send":
         payload = message.get("payload", {})
 
-        # Respond to initialization messages
-        init_responses = {
-            "offset_hooking": {"type": "offset_hooking", "payload": None},
-            "pattern_hooking": {"type": "pattern_hooking", "payload": None},
-            "socket_tracing": {"type": "socket_tracing", "payload": False},
-            "defaultFD": {"type": "defaultFD", "payload": False},
-            "experimental": {"type": "experimental", "payload": False},
-            "anti": {"type": "antiroot", "payload": False},
-            "install_lsass_hook": {"type": "install_lsass_hook", "payload": False},
-        }
+        # Consolidated initialization handshake (see "Minimal Message Handler"
+        # above for the full field reference).
+        if payload == "config_batch":
+            script.post({"type": "config_batch", "payload": {
+                "offsets":              None,
+                "patterns":             None,
+                "socket_tracing":       False,
+                "defaultFD":            False,
+                "pcap_enabled":         False,
+                "experimental":         False,
+                "protocol_select":      "tls",
+                "install_lsass_hook":   False,
+                "use_modern":           False,
+                "library_scan":         None,
+                "library_scan_enabled": False,
+                "ohttp_enabled":        True,
+            }})
+            return
 
-        if payload in init_responses:
-            script.post(init_responses[payload])
+        if payload == "anti":
+            script.post({"type": "antiroot", "payload": False})
             return
 
         # Handle regular messages
@@ -267,11 +299,15 @@ if __name__ == "__main__":
 
 ### Enabling Features via Initialization
 
-To enable specific features, modify the initialization responses:
+All feature toggles live inside the single `config_batch` reply — flip any
+field from its default to enable the corresponding behaviour. The example
+below enables pattern-based hooking with custom byte patterns, socket
+tracing, and the default-FD fallback in one shot:
 
 ```python
-# Enable pattern-based hooking with custom patterns
-if payload == "pattern_hooking":
+import json
+
+if payload == "config_batch":
     patterns = {
         "modules": {
             "libsignal_jni.so": {
@@ -286,38 +322,57 @@ if payload == "pattern_hooking":
             }
         }
     }
-    script.post({"type": "pattern_hooking", "payload": patterns})
+    script.post({"type": "config_batch", "payload": {
+        "offsets":              None,
+        "patterns":             json.dumps(patterns),
+        "socket_tracing":       True,
+        "defaultFD":            True,
+        "pcap_enabled":         False,
+        "experimental":         False,
+        "protocol_select":      "tls",
+        "install_lsass_hook":   False,
+        "use_modern":           False,
+        "library_scan":         None,
+        "library_scan_enabled": False,
+        "ohttp_enabled":        True,
+    }})
     return
 
-# Enable socket tracing
-if payload == "socket_tracing":
-    script.post({"type": "socket_tracing", "payload": True})
-    return
-
-# Enable anti-root bypass (Android)
+# The anti-root probe remains a separate handshake.
 if payload == "anti":
     script.post({"type": "antiroot", "payload": True})
-    return
-
-# Enable default FD fallback
-if payload == "defaultFD":
-    script.post({"type": "defaultFD", "payload": True})
     return
 ```
 
 ### Custom Function Offsets
 
-For libraries without symbols, provide custom offsets:
+For libraries without symbols, provide custom offsets via the `offsets` field
+of `config_batch` (it expects a JSON-encoded string):
 
 ```python
-if payload == "offset_hooking":
+import json
+
+if payload == "config_batch":
     offsets = {
         "libcustom.so": {
             "SSL_read": "0x1234",
             "SSL_write": "0x5678"
         }
     }
-    script.post({"type": "offset_hooking", "payload": offsets})
+    script.post({"type": "config_batch", "payload": {
+        "offsets":              json.dumps(offsets),
+        "patterns":             None,
+        "socket_tracing":       False,
+        "defaultFD":            False,
+        "pcap_enabled":         False,
+        "experimental":         False,
+        "protocol_select":      "tls",
+        "install_lsass_hook":   False,
+        "use_modern":           False,
+        "library_scan":         None,
+        "library_scan_enabled": False,
+        "ohttp_enabled":        True,
+    }})
     return
 ```
 
@@ -356,7 +411,14 @@ device.resume(pid)
 
 **Cause:** Missing initialization message responses.
 
-**Solution:** Ensure your message handler responds to ALL initialization messages (`offset_hooking`, `pattern_hooking`, `socket_tracing`, `defaultFD`, `experimental`, `anti`, `install_lsass_hook`).
+**Solution:** Ensure your message handler responds to BOTH initialization
+messages — `config_batch` (with a dict containing all 12 fields) and `anti`
+(with `{"type": "antiroot", "payload": <bool>}`). If you are porting code
+from an older agent build that listened for individual handshakes
+(`offset_hooking`, `pattern_hooking`, `socket_tracing`, `defaultFD`,
+`experimental`, `install_lsass_hook`), collapse them into a single
+`config_batch` reply instead — those per-message handshakes are deprecated and
+no longer sent by the agent.
 
 ### No Data Captured
 

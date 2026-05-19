@@ -21,7 +21,7 @@
 import { HookDefinition, ResolvedFunctions } from "../../core/hook_definition.js";
 import { sendKeylog } from "../../shared/shared_structures.js";
 import { getPortsAndAddresses } from "../../shared/shared_functions.js";
-import { devlog, devlog_error } from "../../util/log.js";
+import { devlog, devlog_error, log } from "../../util/log.js";
 import { STANDARD_SOCKET_SYMBOLS } from "./shared_constants.js";
 import { noOpClientRandomDecoder } from "./shared_factories.js";
 import {
@@ -66,6 +66,7 @@ function installGoKeylogHook(
         Interceptor.attach(addr, {
             onEnter: function (_args: any) {
                 try {
+                    devlog(`invoking writeKeyLog from Go crypto/tls (${moduleName})`);
                     const line = extractKeylogFromRegisters(this.context);
                     if (line !== null) sendKeylog(line);
                 } catch (e) {
@@ -73,6 +74,7 @@ function installGoKeylogHook(
                 }
             },
         });
+        log(`[*] ${moduleName}: keylog hooks installed via Go writeKeyLog`);
         return true;
     } catch (e) {
         devlog_error(`[gotls] Interceptor.attach(writeKeyLog) threw: ${e}`);

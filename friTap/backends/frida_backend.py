@@ -14,6 +14,7 @@ import logging
 import os
 import subprocess
 import sys
+import time
 from typing import Any, Callable, Optional
 
 import frida
@@ -27,6 +28,7 @@ from .base import (
     BackendNotRunningError,
     BackendPermissionDeniedError,
     BackendProcessNotFoundError,
+    BackendProcessNotRespondingError,
     BackendTimedOutError,
     BackendTransportError,
     ProcessInfo,
@@ -41,6 +43,7 @@ _EXCEPTION_MAP = {
     frida.TransportError: BackendTransportError,
     frida.TimedOutError: BackendTimedOutError,
     frida.ProcessNotFoundError: BackendProcessNotFoundError,
+    frida.ProcessNotRespondingError: BackendProcessNotRespondingError,
     frida.PermissionDeniedError: BackendPermissionDeniedError,
     frida.InvalidOperationError: BackendInvalidOperationError,
 }
@@ -56,6 +59,7 @@ _FRIDA_CATEGORY = {
     frida.TransportError:           "frida_transport",
     frida.TimedOutError:            "frida_timeout",
     frida.ProcessNotFoundError:     "frida_not_found",
+    frida.ProcessNotRespondingError: "frida_not_responding",
     frida.PermissionDeniedError:    "frida_denied",
     frida.InvalidOperationError:    "frida_invalid_op",
 }
@@ -207,6 +211,21 @@ def _wrap_frida_errors(func):
     return wrapper
 
 
+def _is_transient_attach_error(exc: BaseException) -> bool:
+    """Return True if ``exc`` is a transient Frida attach failure worth retrying.
+
+    Covers two observed races: the agent-injection handshake stalling on a
+    freshly-launched / multi-process target (ProcessNotRespondingError) and
+    the transport closing mid-handshake (TransportError with an
+    "unexpected early end-of-stream" message).
+    """
+    if isinstance(exc, frida.ProcessNotRespondingError):
+        return True
+    if isinstance(exc, frida.TransportError) and "unexpected early end-of-stream" in str(exc):
+        return True
+    return False
+
+
 class FridaBackend(Backend):
     """Concrete backend using Frida for dynamic instrumentation."""
 
@@ -266,11 +285,31 @@ class FridaBackend(Backend):
     # Process attach / spawn
     # ------------------------------------------------------------------
 
+    def _attach_with_retry(self, device: Any, target: Any) -> Any:
+        """Call ``device.attach(target)`` with up to 3 attempts on transient frida errors.
+
+        Backoff is 0.5s then 1.0s. Non-transient frida exceptions propagate
+        immediately so the caller's wrapper can translate them.
+        """
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return device.attach(target)
+            except (frida.ProcessNotRespondingError, frida.TransportError) as exc:
+                if not _is_transient_attach_error(exc) or attempt == max_attempts:
+                    raise
+                delay = 0.5 * attempt  # 0.5s, then 1.0s
+                self._logger.warning(
+                    "Frida attach transient failure (attempt %d/%d): %s — retrying in %.1fs",
+                    attempt, max_attempts, exc, delay,
+                )
+                time.sleep(delay)
+
     @_wrap_frida_errors
     def attach(self, device: Any, target: str) -> Any:
         if target.isnumeric():
-            return device.attach(int(target))
-        return device.attach(target)
+            return self._attach_with_retry(device, int(target))
+        return self._attach_with_retry(device, target)
 
     @_wrap_frida_errors
     def spawn(self, device: Any, target: str, env: dict | None = None) -> tuple[Any, int]:
@@ -285,7 +324,7 @@ class FridaBackend(Backend):
                 pid = device.spawn(target.split(" "), env=env)
             except Exception as retry_exc:
                 raise retry_exc from inner_exc
-        process = device.attach(pid)
+        process = self._attach_with_retry(device, pid)
         return process, pid
 
     def resume(self, device: Any, pid: int) -> None:

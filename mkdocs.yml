@@ -99,6 +99,7 @@ nav:
   - SSL/TLS Libraries:
     - Overview: libraries/index.md
     - BoringSSL: libraries/boringssl.md
+    - Cronet & Mainline Cronet: libraries/cronet.md
     - Other Libraries: libraries/others.md
   - API Reference:
     - Python API: api/python.md

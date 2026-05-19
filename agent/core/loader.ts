@@ -8,7 +8,7 @@ import { installReadHook, installWriteHook } from "./executors/read_write.js";
 import { installKeylogHook } from "./executors/keylog_callback.js";
 import { installBoringSSLKeylogChain } from "../shared/boringssl_hook_chain.js";
 import { patterns } from "../fritap_agent.js";
-import { devlog } from "../util/log.js";
+import { devlog, log } from "../util/log.js";
 
 /**
  * Execute a data-driven hook definition:
@@ -108,7 +108,16 @@ export function executeFromDefinition(
         }
     } else {
         try {
-            installKeylogHook(def, addresses, moduleName, resolvedFns, enableDefaultFd);
+            const installed = installKeylogHook(def, addresses, moduleName, resolvedFns, enableDefaultFd);
+            // Per-library install banner for non-BoringSSL paths. The "custom"
+            // kind (rustls, s2ntls, libressl, NSS, gotls) emits its own banner
+            // inside the install closure where it has richer context — skip
+            // here to avoid duplicates. The keylog dispatcher itself returns
+            // true/false based on whether at least one Interceptor.attach
+            // reached, which is the right signal for the banner.
+            if (installed && def.keylog.kind !== "custom" && def.keylog.kind !== "none") {
+                log(`[*] ${moduleName}: keylog hooks installed via callback (${def.keylog.kind})`);
+            }
         } catch (e) {
             devlog(`[loader] primary keylog install threw on ${moduleName}: ${e}`);
         }

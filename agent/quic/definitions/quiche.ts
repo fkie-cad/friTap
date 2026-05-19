@@ -402,12 +402,14 @@ function startKeylogPipeReader(readFd: number): void {
                 for (const line of lines) {
                     const trimmed = line.trim();
                     if (trimmed.length > 0) {
+                        devlog("invoking keylog from Quiche keylog pipe");
                         sendQuicKeylog(trimmed);
                     }
                 }
             }
             // Flush any remaining partial line
             if (partial.trim().length > 0) {
+                devlog("invoking keylog from Quiche keylog pipe (flush)");
                 sendQuicKeylog(partial.trim());
             }
             return NULL;
