@@ -43,7 +43,7 @@
 import { devlog, devlog_error, log } from "../../../util/log.js";
 import { sendDatalog } from "../../../shared/shared_structures.js";
 import { getPortsAndAddresses } from "../../../shared/shared_functions.js";
-import { enable_default_fd } from "../../../fritap_agent.js";
+import { enable_default_fd, pcap_enabled } from "../../../fritap_agent.js";
 
 const ptrSize = Process.pointerSize;
 const MAX_SSH_PACKET = 65535;
@@ -307,6 +307,7 @@ export function installSshPacketHooks(
     moduleName: string,
     methodAddresses: { [lib: string]: { [fn: string]: NativePointer } }
 ): void {
+    if (!pcap_enabled) return;
     if (installedModules.has(moduleName)) return;
     installedModules.add(moduleName);
 

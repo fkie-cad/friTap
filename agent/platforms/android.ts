@@ -26,7 +26,7 @@ import { java_execute } from "../tls/platforms/android/android_java_tls_libs.js"
 import { flutter_execute } from "../tls/platforms/android/flutter_android.js";
 import { mono_btls_execute } from "../tls/platforms/android/mono_btls_android.js";
 import { patterns, isPatternReplaced, selected_protocol, use_modern, scan_results, library_scan_enabled } from "../fritap_agent.js"
-import { processScanResults } from "../shared/library_scanner.js";
+import { processScanResults, isModuleHooked, markModuleHooked } from "../shared/library_scanner.js";
 import { pattern_execute } from "../tls/platforms/android/pattern_android.js"
 import { rustls_execute } from "../tls/platforms/android/rustls_android.js";
 import { gotls_execute } from "../tls/platforms/android/gotls_android.js";
@@ -66,22 +66,41 @@ function loadPatternsFromJSON(jsonContent: string): any {
 function install_pattern_based_hooks(){
     try{
         let data = loadPatternsFromJSON(patterns);
-        if (data !== null && data.modules) {
-            for (const moduleName in data.modules) {
-                if (Object.prototype.hasOwnProperty.call(data.modules, moduleName)) {
-                    devlog("[*] Module name: " + moduleName);
-                    hookRegistry.register({
-                        platform: plattform_name,
-                        pattern: new RegExp(moduleName),
-                        hookFn: pattern_execute,
-                        library: "Pattern: " + moduleName,
-                    });
+        if (data === null || !data.modules) return;
+
+        for (const patternKey of Object.keys(data.modules)) {
+            devlog("[*] Module name: " + patternKey);
+            hookRegistry.register({
+                platform: plattform_name,
+                pattern: new RegExp(patternKey),
+                hookFn: pattern_execute,
+                library: "Pattern: " + patternKey,
+            });
+
+            // Targeted dispatch: walk only currently-loaded modules matching
+            // this new pattern, skipping ones an earlier registry entry
+            // already hooked. Avoids re-walking moduleNames globally and the
+            // resulting "already hooked, skipping" noise. Future dlopen events
+            // are still picked up by the dynamic-loader hook installed earlier.
+            const matcher = new RegExp(patternKey);
+            for (const candidate of moduleNames) {
+                if (!matcher.test(candidate)) continue;
+                if (isModuleHooked(candidate, "tls")) continue;
+                try {
+                    Process.getModuleByName(candidate).ensureInitialized();
+                } catch {
+                    continue;
+                }
+                log(`${candidate} found & will be hooked on Android!`);
+                try {
+                    pattern_execute(candidate, true);
+                    markModuleHooked(candidate, "tls");
+                    send({ contentType: "library_detected", library: candidate, path: "", protocol: "tls" });
+                } catch (e) {
+                    devlog(`pattern_execute(${candidate}) threw: ${e}`);
                 }
             }
-            // Re-run the loaders with updated registry
-            hook_native_Android_SSL_Libs(hookRegistry, true);
         }
-
     }catch(e){
 
     }
@@ -134,7 +153,11 @@ export function load_android_hooking_agent() {
                 reason: "BoringSSL handshake state machine lives in sibling stable_cronet_libssl.so",
             },
         },
-        { platform: plattform_name, pattern: /.*cronet.*\.so/, excludePattern: /_(libpki|libcrypto)\.so$|^libmainlinecronet\.[\d.]+\.so$/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet", libraryType: "boringssl", protocol: "tls" },
+        // Generic Cronet host — modules named after Cronet itself with BoringSSL
+        // statically linked in. `boring_execute` (libssl entry above) owns standalone
+        // BoringSSL .so files that export SSL_* (e.g. stable_cronet_libssl.so).
+        // Cronet-derived hosts are claimed by the named-out entries below.
+        { platform: plattform_name, pattern: /^libcronet([_.]|\.\d).*\.so$/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet", libraryType: "boringssl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libringrtc_rffi.*\.so/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet (RingRTC)", libraryType: "boringssl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libsignal_jni.*\.so/, excludePattern: /_testing\.so$/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet (Signal)", libraryType: "boringssl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*monochrome.*\.so/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet (Monochrome)", libraryType: "boringssl", protocol: "tls" },

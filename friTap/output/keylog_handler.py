@@ -38,7 +38,12 @@ class KeylogOutputHandler(OutputHandler):
     def setup(self, event_bus: "EventBus") -> None:
         from ..events import KeylogEvent
         # Lazy open — file is created on first matching event in on_keylog().
-        event_bus.subscribe(KeylogEvent, self.on_keylog)
+        # priority=10 (vs. ConsoleOutputHandler's default 0) ensures the file
+        # is opened — and "keylog: opened …" is logged — BEFORE the verbose
+        # console echo prints the first key. EventBus dispatches in
+        # descending-priority order (see friTap/events.py:260, 302), so a
+        # higher numeric priority runs first.
+        event_bus.subscribe(KeylogEvent, self.on_keylog, priority=10)
 
     def _open_lazy(self) -> bool:
         if self._file is not None:

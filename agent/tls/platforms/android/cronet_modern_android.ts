@@ -5,6 +5,7 @@ import {
     createOpenSslDefinition,
     createBoringSSLKeylogApproach,
 } from "../../definitions/openssl.js";
+import { detectBoringSSLFamily } from "../../../shared/boringssl_family_detect.js";
 
 /**
  * Modern (definition-based) entry point for Cronet and Cronet-derived
@@ -32,6 +33,11 @@ export function cronet_execute_modern(moduleName: string, is_base_hook: boolean)
     def.keylog = createBoringSSLKeylogApproach();
     def.libraryType = "boringssl";
     def.keylogPriority = "symbol-first";  // Cronet variants bypass SSL_new internally
+    // Family marker drives tier 3 (pattern scan) in the modern hook chain so
+    // stripped Cronet monoliths (libmonochrome_64.so etc.) get the bundled
+    // hardcoded patterns scanned when both pattern.json and symbol resolution
+    // miss — restoring parity with the legacy cronet_execute path.
+    def.family = detectBoringSSLFamily(moduleName);
 
     executeFromDefinition(def, moduleName, socket_library, is_base_hook, enable_default_fd);
 }

@@ -125,6 +125,8 @@ export let anti_root: boolean = false;
 //@ts-ignore
 export let enable_default_fd: boolean = false;
 //@ts-ignore
+export let pcap_enabled: boolean = false;
+//@ts-ignore
 export let use_modern: boolean = false;
 //@ts-ignore
 export let install_lsass_hook: boolean = true;
@@ -180,6 +182,7 @@ if (typeof config_batch.patterns === "string"
 }
 enable_socket_tracing = config_batch.socket_tracing ?? enable_socket_tracing;
 enable_default_fd = config_batch.defaultFD ?? enable_default_fd;
+pcap_enabled = config_batch.pcap_enabled ?? pcap_enabled;
 experimental = config_batch.experimental ?? experimental;
 selected_protocol = config_batch.protocol_select ?? selected_protocol;
 setSelectedProtocol(selected_protocol);

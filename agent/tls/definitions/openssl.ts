@@ -9,7 +9,7 @@ import { log, devlog_error, devlog_debug } from "../../util/log.js";
 import { sendKeylog, sendDatalog } from "../../shared/shared_structures.js";
 import { getPortsAndAddresses } from "../../shared/shared_functions.js";
 import { readHexFromPointer } from "../decoders/hex_utils.js";
-import { enable_default_fd } from "../../fritap_agent.js";
+import { enable_default_fd, pcap_enabled } from "../../fritap_agent.js";
 import { STANDARD_SOCKET_SYMBOLS, DUMMY_SESSION_ID_OPENSSL } from "./shared_constants.js";
 import { createLifecycleHook, createBufferedClientRandomDecoder } from "./shared_factories.js";
 import { installBoringSSLSymbolHook, boringSslDumpKeys, DumpKeysCb } from "../../shared/boringssl_symbol_hook.js";
@@ -200,6 +200,7 @@ export function createSslReadWriteExHooks(): ExtraHookDef[] {
     return [
         {
             install: (addresses, modName, resolvedFns, enableDefaultFd) => {
+                if (!pcap_enabled) return;
                 // SSL_read_ex
                 const readExAddr = addresses[modName]?.["SSL_read_ex"];
                 if (readExAddr && !readExAddr.isNull()) {

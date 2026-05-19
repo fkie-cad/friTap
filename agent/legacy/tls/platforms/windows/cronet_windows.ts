@@ -4,7 +4,7 @@ import { socket_library } from "../../../../platforms/windows.js";
 import {PatternBasedHooking, get_CPU_specific_pattern, hasModulePatterns } from "../../../../tls/shared/pattern_based_hooking.js";
 import { CRONET_X64_PATTERNS, CRONET_X86_PATTERNS } from "../../../../tls/shared/cronet_patterns.js";
 import { patterns, isPatternReplaced } from "../../../../fritap_agent.js"
-import { devlog, devlog_error, devlog_info, devlog_warn, devlog_debug } from "../../../../util/log.js";
+import { devlog, devlog_error, devlog_info, devlog_warn, devlog_debug, log } from "../../../../util/log.js";
 import { sendKeylog } from "../../../../shared/shared_structures.js";
 import { scheduleBoringSSLSymbolFallback, installBoringSSLSymbolHook } from "../../../../shared/boringssl_symbol_hook.js";
 
@@ -150,7 +150,8 @@ export class Cronet_Windows extends Cronet {
         if(this.are_callbacks_symbols_available()){
             try {
                 this.install_tls_keys_callback_hook();
-                devlog_info("Installed SSL_CTX_set_keylog_callback hooks using symbols for "+ this.module_name);
+                // Unified install banner — `log()` so default-verbosity stdout shows it.
+                log(`[*] ${this.module_name}: keylog hooks installed via callback (SSL_CTX_set_keylog_callback)`);
                 return [true, null];
             } catch(e) {
                 devlog_warn(`SSL_CTX_set_keylog_callback hooking failed, falling back to pattern-based: ${e}`);

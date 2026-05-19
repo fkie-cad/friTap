@@ -5,6 +5,7 @@
 // generic executors consume these definitions to install Frida interceptors.
 
 import { LibraryType } from "../shared/shared_structures.js";
+import type { FamilyKey } from "../shared/bundled_cronet_patterns.js";
 
 export type ResolvedFunctions = Record<string, NativeFunction<any, any>>;
 
@@ -116,4 +117,14 @@ export interface HookDefinition {
      * libraryType !== "boringssl".
      */
     keylogPriority?: "callback-first" | "symbol-first";
+    /**
+     * BoringSSL-only library-family marker consumed by the modern hook chain's
+     * tier-3 fallback. When set (typically by cronet_execute_modern), the
+     * pattern tier consults the bundled per-family byte patterns in
+     * agent/shared/bundled_cronet_patterns.ts as part of its 3a→3d sub-cascade.
+     * Leaving it unset is safe — the chain falls back to "generic_boringssl"
+     * by classifying the module name itself. Ignored when libraryType !==
+     * "boringssl".
+     */
+    family?: FamilyKey;
 }

@@ -1,7 +1,9 @@
 import { get_hex_string_from_byte_array, readAddresses, checkNumberOfExports, isSymbolAvailable } from "../../shared/shared_functions.js";
 import { sendKeylog } from "../../shared/shared_structures.js";
-import { devlog } from "../../util/log.js";
+import { devlog, log } from "../../util/log.js";
 import { safeKeyLenLogged } from "../../shared/keylog_length.js";
+import { pcap_enabled, patterns as patternsJson, isPatternReplaced } from "../../fritap_agent.js";
+import { hasModulePatterns } from "../shared/cronet_patterns.js";
 
 
 
@@ -178,12 +180,42 @@ export class Cronet {
         sendKeylog(labelStr+" "+client_random+" "+secret_key);
     }
 
+    // Cronet plaintext hooks ride on byte patterns (SSL_Read / SSL_Write
+    // entries in pattern.json) because Cronet statically links BoringSSL and
+    // strips the SSL_read / SSL_write exports symbol-based capture would need.
+    // Pattern scanning is expensive, so callers only attempt this when the
+    // user actually requested a plaintext PCAP (pcap_enabled flag plumbed from
+    // --pcap). When patterns are not provided, emit a single per-(module,action)
+    // notice so the user knows why plaintext is missing.
+    private static plaintextNoticeShown = new Set<string>();
+
+    private noticePlaintextMissing(action: "SSL_Read" | "SSL_Write"): void {
+        const key = `${this.module_name}:${action}`;
+        if (Cronet.plaintextNoticeShown.has(key)) return;
+        Cronet.plaintextNoticeShown.add(key);
+        log(`[!] ${this.module_name}: plaintext PCAP requested but no ${action} byte-pattern provided for this module; plaintext capture will be unavailable for it.`);
+    }
+
     install_plaintext_read_hook(){
-        // TBD
+        if (!pcap_enabled) return;
+        if (!isPatternReplaced() || !hasModulePatterns(patternsJson, this.module_name, "libcronet.so", "SSL_Read")) {
+            this.noticePlaintextMissing("SSL_Read");
+            return;
+        }
+        // TODO: Cronet plaintext data plumbing — pattern is present but the
+        // sendDatalog callback (SSL_get_fd / port-address extraction without
+        // exported symbols) is not yet implemented for Cronet. Surface that to
+        // the user explicitly so they're not surprised by an empty PCAP.
+        log(`[!] ${this.module_name}: SSL_Read pattern detected but Cronet plaintext capture pipeline is not yet implemented; only keylog will be emitted for this module.`);
     }
 
     install_plaintext_write_hook(){
-        // TBD
+        if (!pcap_enabled) return;
+        if (!isPatternReplaced() || !hasModulePatterns(patternsJson, this.module_name, "libcronet.so", "SSL_Write")) {
+            this.noticePlaintextMissing("SSL_Write");
+            return;
+        }
+        log(`[!] ${this.module_name}: SSL_Write pattern detected but Cronet plaintext capture pipeline is not yet implemented; only keylog will be emitted for this module.`);
     }
 
     install_key_extraction_pattern_hook(){

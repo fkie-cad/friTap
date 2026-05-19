@@ -1,6 +1,6 @@
 import { readAddresses, getPortsAndAddresses, resolveOffsets, isSymbolAvailable, calculateZeroBytePercentage } from "../../../shared/shared_functions.js";
 import { checkNumberOfExports } from "../../shared/shared_functions_legacy.js";
-import { enable_default_fd } from "../../../fritap_agent.js";
+import { enable_default_fd, pcap_enabled } from "../../../fritap_agent.js";
 import { devlog, devlog_error, log, devlog_info } from "../../../util/log.js";
 import { initializePipeline as sharedInitializePipeline, resolveWithPipeline as sharedResolveWithPipeline } from "../../../shared/pipeline_utils.js";
 import { ObjC } from "../../../shared/objclib.js";
@@ -186,6 +186,7 @@ export class OpenSSL_BoringSSL {
 
 
     install_plaintext_read_hook(){
+        if (!pcap_enabled) return;
         if(this.do_read_write_hooks){
             function ab2str(buf: ArrayBuffer) {
                 //@ts-ignore
@@ -255,6 +256,7 @@ export class OpenSSL_BoringSSL {
 
 
     install_plaintext_write_hook(){
+        if (!pcap_enabled) return;
         if(this.do_read_write_hooks){
             function str2ab(str: string ) {
                 var buf = new ArrayBuffer(str.length + 1); // 2 bytes for each char
@@ -436,6 +438,7 @@ export class OpenSSL_BoringSSL {
 
 
     install_extended_hooks(){
+        if (!pcap_enabled) return;
         // these functions (and its symbols) only available on OpenSSL
         if (this.is_openssl){
 

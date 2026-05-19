@@ -14,8 +14,6 @@ over-broaden the suppression to libraries we DO want to hook (legacy
 
 from __future__ import annotations
 
-import pytest
-
 from friTap.protocols.tls_handler import (
     covered_by_sibling,
     strip_covered_modules,

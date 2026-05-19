@@ -1,6 +1,7 @@
 import { looksLikeBhttp, sendOhttpPlaintext } from "./bhttp.js";
 import { devlog } from "../../util/log.js";
 import type { HookDefinition } from "../../core/hook_definition.js";
+import { pcap_enabled } from "../../fritap_agent.js";
 
 function readSECItem(ptr: NativePointer): { data: NativePointer; len: number } | null {
     if (ptr.isNull()) return null;
@@ -14,6 +15,7 @@ function installNssHpkeOhttp(
     addresses: { [key: string]: { [fn: string]: NativePointer } },
     moduleName: string,
 ): void {
+    if (!pcap_enabled) return;
     const addrs = addresses[moduleName] ?? {};
 
     const sealAddr = addrs["PK11_HPKE_Seal"];

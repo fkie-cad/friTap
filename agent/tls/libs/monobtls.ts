@@ -1,6 +1,7 @@
 import { get_hex_string_from_byte_array, readAddresses } from "../../shared/shared_functions.js";
 import { sendKeylog } from "../../shared/shared_structures.js";
 import { devlog } from "../../util/log.js";
+import { pcap_enabled } from "../../fritap_agent.js";
 
 
 
@@ -109,10 +110,12 @@ export class Mono_BTLS {
     }
 
     install_plaintext_read_hook(){
+        if (!pcap_enabled) return;
         // TBD
     }
 
     install_plaintext_write_hook(){
+        if (!pcap_enabled) return;
         // TBD
     }
 

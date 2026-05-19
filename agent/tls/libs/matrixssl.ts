@@ -1,6 +1,6 @@
 import { readAddresses, getPortsAndAddresses, resolveOffsets } from "../../shared/shared_functions.js";
 import { sendDatalog } from "../../shared/shared_structures.js";
-import { enable_default_fd } from "../../fritap_agent.js";
+import { enable_default_fd, pcap_enabled } from "../../fritap_agent.js";
 import { log } from "../../util/log.js";
 
 
@@ -43,10 +43,11 @@ export class matrix_SSL {
 
 
     install_plaintext_read_hook() {
+        if (!pcap_enabled) return;
         var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
-        
-    
+
+
         Interceptor.attach(this.addresses[this.moduleName]["matrixSslReceivedData"], {
             onEnter: function (args) {
                 this.buffer = args[2];
@@ -76,6 +77,7 @@ export class matrix_SSL {
 
 
     install_plaintext_write_hook() {
+        if (!pcap_enabled) return;
         var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
         //This function is needed to extract the buffer address in which the plaintext will be stored before registring this buffer as the "sent data" buffer.

@@ -1,7 +1,7 @@
 import { readAddresses, getPortsAndAddresses, resolveOffsets } from "../../shared/shared_functions.js";
 import { sendKeylog, sendDatalog } from "../../shared/shared_structures.js";
 import { log, devlog_error } from "../../util/log.js";
-import { enable_default_fd } from "../../fritap_agent.js";
+import { enable_default_fd, pcap_enabled } from "../../fritap_agent.js";
 import { resolveWithPipeline } from "../../shared/pipeline_utils.js";
 
 export class GnuTLS {
@@ -126,6 +126,7 @@ export class GnuTLS {
     }
 
     install_plaintext_read_hook(){
+        if (!pcap_enabled) return;
         var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
         Interceptor.attach(this.addresses[this.moduleName]["gnutls_record_recv"],
@@ -149,6 +150,7 @@ export class GnuTLS {
     }
     
     install_plaintext_write_hook(){
+        if (!pcap_enabled) return;
         var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
         Interceptor.attach(this.addresses[this.moduleName]["gnutls_record_send"],

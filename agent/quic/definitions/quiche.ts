@@ -6,6 +6,7 @@
 import { HookDefinition, ExtraHookDef, ResolvedFunctions } from "../../core/hook_definition.js";
 import { sendQuicDatalog, sendQuicKeylog, sendConnectionLifecycle } from "../../shared/shared_structures.js";
 import { log, devlog, devlog_error } from "../../util/log.js";
+import { pcap_enabled } from "../../fritap_agent.js";
 import { quicConnectionTracker, buildQuicMessage, QuicConnectionInfo } from "../shared/quic_connection_tracker.js";
 import { readHexFromPointer } from "../../tls/decoders/hex_utils.js";
 
@@ -192,6 +193,7 @@ function createAcceptTracker(ref: ResolvedRef,
 function createStreamRecvHook(): ExtraHookDef {
     return {
         install(addresses, moduleName, _resolvedFns, _enableDefaultFd) {
+            if (!pcap_enabled) return;
             const addr = addresses[moduleName]?.["quiche_conn_stream_recv"];
             if (!addr || addr.isNull()) return;
 
@@ -238,6 +240,7 @@ function createStreamRecvHook(): ExtraHookDef {
 function createStreamSendHook(): ExtraHookDef {
     return {
         install(addresses, moduleName, _resolvedFns, _enableDefaultFd) {
+            if (!pcap_enabled) return;
             const addr = addresses[moduleName]?.["quiche_conn_stream_send"];
             if (!addr || addr.isNull()) return;
 

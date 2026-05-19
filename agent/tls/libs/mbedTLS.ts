@@ -1,6 +1,6 @@
 import { readAddresses, getPortsAndAddresses, resolveOffsets} from "../../shared/shared_functions.js";
 import { sendDatalog } from "../../shared/shared_structures.js";
-import { enable_default_fd } from "../../fritap_agent.js";
+import { enable_default_fd, pcap_enabled } from "../../fritap_agent.js";
 import { log } from "../../util/log.js";
 import { resolveWithPipeline } from "../../shared/pipeline_utils.js";
 
@@ -169,6 +169,7 @@ export class mbed_TLS {
 
 
     install_plaintext_read_hook() {
+        if (!pcap_enabled) return;
         var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
         //https://tls.mbed.org/api/ssl_8h.html#aa2c29eeb1deaf5ad9f01a7515006ede5
@@ -201,6 +202,7 @@ export class mbed_TLS {
 
 
     install_plaintext_write_hook() {
+        if (!pcap_enabled) return;
         var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
         //https://tls.mbed.org/api/ssl_8h.html#a5bbda87d484de82df730758b475f32e5

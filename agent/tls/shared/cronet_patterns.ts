@@ -13,15 +13,45 @@ export const CRONET_X86_PATTERNS = {
     fallback: "55 53 57 56 83 EC 4C E8 00 00 00 00 5B 81 C3 A9 CB 13 00 8B 44 24 60"
 };
 
-/**
- * Check whether a JSON pattern string contains module-specific patterns.
- * Returns true only when `parsed.modules[moduleName]` or `parsed.modules[fallbackName]` exists.
- */
-export function hasModulePatterns(jsonString: string, moduleName: string, fallbackName: string): boolean {
+// Memoizes the parsed JSON keyed by source-string identity. `patterns` is set
+// once during the agent handshake and reused for the session, so identity is
+// stable and a Cronet module that probes both SSL_Read and SSL_Write pays for
+// JSON.parse once instead of twice per module.
+let cachedParse: { source: string; parsed: any } | null = null;
+
+function parsePatterns(jsonString: string): any {
+    if (cachedParse && cachedParse.source === jsonString) return cachedParse.parsed;
     try {
         const parsed = JSON.parse(jsonString);
-        return !!(parsed.modules && (parsed.modules[moduleName] || parsed.modules[fallbackName]));
+        cachedParse = { source: jsonString, parsed };
+        return parsed;
     } catch {
-        return false;
+        cachedParse = { source: jsonString, parsed: null };
+        return null;
     }
+}
+
+/**
+ * Check whether a JSON pattern string contains module-specific patterns.
+ * Returns true when `parsed.modules[moduleName]` or `parsed.modules[fallbackName]` exists.
+ * When `actionType` is supplied (e.g. "SSL_Read", "SSL_Write"), the check is stricter:
+ * the module entry must have at least one platform/arch combination with the action
+ * present. Used to gate Cronet plaintext hook installation on whether the user
+ * has actually shipped byte patterns for the requested capture.
+ */
+export function hasModulePatterns(jsonString: string, moduleName: string, fallbackName: string, actionType?: string): boolean {
+    const parsed = parsePatterns(jsonString);
+    if (!parsed || !parsed.modules) return false;
+    const moduleEntry = parsed.modules[moduleName] || parsed.modules[fallbackName];
+    if (!moduleEntry) return false;
+    if (!actionType) return true;
+    for (const platformKey of Object.keys(moduleEntry)) {
+        const archEntries = moduleEntry[platformKey];
+        if (!archEntries || typeof archEntries !== "object") continue;
+        for (const archKey of Object.keys(archEntries)) {
+            const archPatterns = archEntries[archKey];
+            if (archPatterns && archPatterns[actionType]) return true;
+        }
+    }
+    return false;
 }

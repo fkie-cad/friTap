@@ -560,6 +560,7 @@ class SSL_Logger():
                     'library_scan': self.scan_results_data,
                     'library_scan_enabled': self._config.hooking.library_scan,
                     'ohttp_enabled': getattr(self._config.hooking, 'ohttp_enabled', True),
+                    'pcap_enabled': bool(self.pcap_name),
                 }
                 self._backend.post_message(self.script, 'config_batch', batch)
                 return

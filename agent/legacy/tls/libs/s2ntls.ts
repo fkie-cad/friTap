@@ -1,6 +1,6 @@
 import { readAddresses, getPortsAndAddresses, resolveOffsets} from "../../../shared/shared_functions.js"
 import { sendKeylog, sendDatalog } from "../../../shared/shared_structures.js"
-import { enable_default_fd } from "../../../fritap_agent.js"
+import { enable_default_fd, pcap_enabled } from "../../../fritap_agent.js"
 import { log, devlog } from "../../../util/log.js"
 import { resolveWithPipeline } from "../../../shared/pipeline_utils.js"
 
@@ -52,6 +52,7 @@ export class S2nTLS {
     //Hooks the s2n_send function
     //Get the buffer on enter and read the data from it
     install_plaintext_read_hook(){
+        if (!pcap_enabled) return;
         var current_module_name = this.module_name;
         var lib_addresses = this.addresses;
 
@@ -93,6 +94,7 @@ export class S2nTLS {
     //Hooks the s2n_recv function
     //Get the buffer on enter and read the retval bytes from it on leave
     install_plaintext_write_hook(){
+        if (!pcap_enabled) return;
         var current_module_name = this.module_name;
         var lib_addresses = this.addresses;
 

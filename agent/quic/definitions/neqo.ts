@@ -15,6 +15,7 @@
 import { HookDefinition, ExtraHookDef } from "../../core/hook_definition.js";
 import { sendQuicDatalog, sendConnectionLifecycle } from "../../shared/shared_structures.js";
 import { log, devlog } from "../../util/log.js";
+import { pcap_enabled } from "../../fritap_agent.js";
 import { quicConnectionTracker, buildQuicMessage, QuicConnectionInfo } from "../shared/quic_connection_tracker.js";
 import { findNonExportedSymbols } from "../../shared/shared_functions.js";
 
@@ -235,6 +236,7 @@ function createNeqoConnNewHook(): ExtraHookDef {
 function createNeqoReadResponseHook(): ExtraHookDef {
     return {
         install(addresses, moduleName, _resolvedFns, _enableDefaultFd) {
+            if (!pcap_enabled) return;
             let addr = addresses[moduleName]?.["neqo_http3conn_read_response_data"];
             if (!addr || addr.isNull()) {
                 addr = resolveNeqoSymbol(moduleName, "neqo_http3conn_read_response_data");
@@ -307,6 +309,7 @@ function createNeqoSendRequestBodyHook(): ExtraHookDef {
 
     return {
         install(addresses, moduleName, _resolvedFns, _enableDefaultFd) {
+            if (!pcap_enabled) return;
             let addr: NativePointer | null = null;
             let resolvedName = "";
 

@@ -14,7 +14,8 @@ import { HookDefinition, ResolvedFunctions } from "../core/hook_definition.js";
 import { installKeylogHook } from "../core/executors/keylog_callback.js";
 import { installBoringSSLSymbolHook, boringSslDumpKeys, attemptSymbolFallback, KEYLOG_NOT_INSTALLED_MSG } from "./boringssl_symbol_hook.js";
 import { installBoringSSLPatternHook } from "./boringssl_pattern_hook.js";
-import { devlog, devlog_debug, devlog_error } from "../util/log.js";
+import { detectBoringSSLFamily } from "./boringssl_family_detect.js";
+import { devlog, devlog_debug, devlog_error, log } from "../util/log.js";
 
 export type BoringSSLHookOutcome = "callback" | "symbol" | "pattern" | "none";
 
@@ -52,24 +53,51 @@ export function installBoringSSLKeylogChain(
                 () => installKeylogHook(def, addresses, moduleName, resolvedFns, enableDefaultFd))
             : runTier("symbol", moduleName,
                 () => installBoringSSLSymbolHook(moduleName, boringSslDumpKeys));
-        if (ok) return tier;
+        if (ok) {
+            // The symbol tier self-announces in installBoringSSLSymbolHook; the
+            // callback sub-installers (agent/core/executors/keylog_callback.ts)
+            // do not, so emit a chain-level banner here for callback success.
+            // `def.keylog.kind` is callback_on_init / callback_on_ssl_new /
+            // manual_on_connect / custom / none — enough to tell the user
+            // which strategy actually ran.
+            if (tier === "callback") {
+                log(`[*] ${moduleName}: keylog hooks installed via callback (${def.keylog.kind})`);
+            }
+            return tier;
+        }
     }
 
-    // Tier 3: pattern.json byte-pattern scan. The async settled promise lets us
-    // retry via the symbol resolver if every pattern variant exhausts — the
-    // counterpart of scheduleBoringSSLSymbolFallback in the legacy executor.
-    const patternResult = installBoringSSLPatternHook(moduleName, patternsJson, boringSslDumpKeys);
+    // Tier 3: byte-pattern scan with a 4-sub-tier cascade
+    //   3a — pattern.json exact module key
+    //   3b — pattern.json family alias keys
+    //   3c — bundled per-family patterns (agent/shared/bundled_cronet_patterns.ts)
+    //   3d — bundled openssl.<arch>.ssl_log_secret[] floor
+    // The async settled promise lets us retry via the symbol resolver if every
+    // sub-tier exhausts — the counterpart of scheduleBoringSSLSymbolFallback
+    // in the legacy executor.
+    const family = def.family ?? detectBoringSSLFamily(moduleName);
+    const libraryType = def.libraryType ?? "boringssl";
+    const patternResult = installBoringSSLPatternHook(
+        moduleName,
+        patternsJson,
+        boringSslDumpKeys,
+        "libcronet.so",
+        { family, libraryType },
+    );
     if (!patternResult.scheduled) {
         devlog_debug(`[bssl-chain] ${moduleName}: tier=pattern reason=${patternResult.reason}`);
-        devlog(KEYLOG_NOT_INSTALLED_MSG(moduleName));
+        devlog(KEYLOG_NOT_INSTALLED_MSG(moduleName, `tier 3 not scheduled (${patternResult.reason})`));
         return "none";
     }
 
     patternResult.settled.then((matched) => {
         if (matched) {
-            devlog_debug(`[bssl-chain] ${moduleName}: pattern tier matched`);
+            devlog_debug(`[bssl-chain] ${moduleName}: pattern tier matched (family=${family})`);
             return;
         }
+        devlog(
+            `[bssl-chain] ${moduleName}: tier 3 exhausted (family=${family}); falling back to symbol re-scan`,
+        );
         attemptSymbolFallback(moduleName, boringSslDumpKeys, "bssl-chain");
     }).catch((e) => {
         devlog_error(`[bssl-chain] ${moduleName}: settled-promise rejected: ${e}`);

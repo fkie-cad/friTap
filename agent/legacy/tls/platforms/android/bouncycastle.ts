@@ -2,10 +2,15 @@ import { log } from "../../../../util/log.js";
 import { Java } from "../../../../shared/javalib.js";
 import { byteArrayToString, byteArrayToNumber, getAttribute, reflectionByteArrayToString } from "../../../../shared/shared_functions.js";
 import { sendKeylog, sendDatalog } from "../../../../shared/shared_structures.js";
+import { pcap_enabled } from "../../../../fritap_agent.js";
 export function execute() {
     setTimeout(function () {
         Java.perform(function () {
 
+          // Plaintext capture (AppDataOutput.write / AppDataInput.read) is
+          // skipped entirely when the user did not request --pcap; keylog
+          // capture in notifyHandshakeComplete (below) is unconditional.
+          if (pcap_enabled) {
             //Hook the inner class "AppDataOutput/input" of ProvSSLSocketDirect, so we can access the
             //socket information in its outer class by accessing this.this$0
             var appDataOutput = Java.use("org.spongycastle.jsse.provider.ProvSSLSocketDirect$AppDataOutput")
@@ -65,6 +70,7 @@ export function execute() {
 
                 return bytesRead
             }
+          }
             //Hook the handshake to read the client random and the master key
             var ProvSSLSocketDirect = Java.use("org.spongycastle.jsse.provider.ProvSSLSocketDirect")
             ProvSSLSocketDirect.notifyHandshakeComplete.implementation = function (x: any) {

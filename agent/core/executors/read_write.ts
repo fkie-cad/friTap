@@ -5,6 +5,7 @@
 import { HookDefinition, ResolvedFunctions } from "../hook_definition.js";
 import { getPortsAndAddresses } from "../../shared/shared_functions.js";
 import { sendDatalog } from "../../shared/shared_structures.js";
+import { pcap_enabled } from "../../fritap_agent.js";
 
 function buildMessage(
     sslCtx: NativePointer,
@@ -35,6 +36,7 @@ export function installReadHook(
     resolvedFns: ResolvedFunctions,
     enableDefaultFd: boolean,
 ): void {
+    if (!pcap_enabled) return;
     if (!def.readHook) return;
     const hook = def.readHook;
     const label = hook.functionLabel || "SSL_read";
@@ -67,6 +69,7 @@ export function installWriteHook(
     resolvedFns: ResolvedFunctions,
     enableDefaultFd: boolean,
 ): void {
+    if (!pcap_enabled) return;
     if (!def.writeHook) return;
     const hook = def.writeHook;
     const label = hook.functionLabel || "SSL_write";

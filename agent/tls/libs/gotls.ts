@@ -2,6 +2,7 @@ import { readAddresses, get_hex_string_from_byte_array, getBaseAddress, isSymbol
 import { sendKeylog, sendDatalog } from "../../shared/shared_structures.js";
 import { devlog, devlog_error, log } from "../../util/log.js";
 import { GoRuntimeParser } from "../../util/go_runtime_parser.js";
+import { pcap_enabled } from "../../fritap_agent.js";
 
 
 interface KeyLogEntry {
@@ -487,6 +488,7 @@ export class GoTLS {
     }
 
     install_plaintext_write_hook(): void {
+        if (!pcap_enabled) return;
         const symbol = "crypto_tls.(*Conn).writeRecordLocked";
         try {
             const address = this.resolve_symbol_with_fallback(symbol);
@@ -521,6 +523,7 @@ export class GoTLS {
     }
 
     install_plaintext_read_hook(): void {
+        if (!pcap_enabled) return;
         const symbol = "crypto_tls.(*Conn).Read";
         try {
             const address = this.resolve_symbol_with_fallback(symbol);

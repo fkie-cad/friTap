@@ -1,7 +1,7 @@
 import { readAddresses, resolveOffsets, dumpMemory } from "../../shared/shared_functions.js";
 import { pointerSize, AF_INET, AF_INET6, sendKeylog, sendDatalog } from "../../shared/shared_structures.js";
 import { log, devlog, devlog_debug, devlog_error } from "../../util/log.js";
-import { enable_default_fd } from "../../fritap_agent.js";
+import { enable_default_fd, pcap_enabled } from "../../fritap_agent.js";
 import { Java } from "../../shared/javalib.js";
 import { resolveWithPipeline } from "../../shared/pipeline_utils.js";
 import { DUMMY_SESSION_ID_NSS } from "../definitions/shared_constants.js";
@@ -1568,6 +1568,7 @@ typedef union PRNetAddr PRNetAddr;
     /***** Installing the hooks *****/
 
     install_plaintext_read_hook() {
+        if (!pcap_enabled) return;
         var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
 
@@ -1617,6 +1618,7 @@ typedef union PRNetAddr PRNetAddr;
 
 
     install_plaintext_write_hook() {
+        if (!pcap_enabled) return;
         var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
 

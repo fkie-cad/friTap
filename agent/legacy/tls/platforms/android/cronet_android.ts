@@ -3,7 +3,7 @@ import {Cronet } from "../../../tls/libs/cronet.js";
 import { socket_library } from "../../../../platforms/android.js";
 import {PatternBasedHooking, get_CPU_specific_pattern, hasModulePatterns } from "../../../tls/shared/pattern_based_hooking.js";
 import { patterns, isPatternReplaced } from "../../../../fritap_agent.js"
-import { devlog, devlog_debug, devlog_error, devlog_info } from "../../../../util/log.js";
+import { devlog, devlog_debug, devlog_error, devlog_info, log } from "../../../../util/log.js";
 import { sendKeylog } from "../../../../shared/shared_structures.js";
 import { scheduleBoringSSLSymbolFallback, installBoringSSLSymbolHook } from "../../../../shared/boringssl_symbol_hook.js";
 
@@ -185,7 +185,10 @@ export class Cronet_Android extends Cronet {
         let hooker_instance = null;
         if(this.are_callbacks_symbols_available()){
             this.install_tls_keys_callback_hook();
-            devlog_info("Installed SSL_CTX_set_keylog_callback hooks using symbols for "+ this.module_name);
+            // Unified install banner — `log()` so default-verbosity stdout shows it.
+            log(`[*] ${this.module_name}: keylog hooks installed via callback (SSL_CTX_set_keylog_callback)`);
+            this.install_plaintext_read_hook();
+            this.install_plaintext_write_hook();
             return [true, null];
         }else{
             //devlog_debug("SSL_CTX_set_keylog_callback not available in "+ this.module_name);
@@ -194,6 +197,8 @@ export class Cronet_Android extends Cronet {
             if(hooker_instance === undefined || hooker_instance === null){
                 return [false, null];
             }
+            this.install_plaintext_read_hook();
+            this.install_plaintext_write_hook();
 
 
         }

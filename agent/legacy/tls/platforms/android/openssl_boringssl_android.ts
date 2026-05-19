@@ -1,6 +1,6 @@
 
 import {OpenSSL_BoringSSL } from "../../../tls/libs/openssl_boringssl.js";
-import { devlog, devlog_debug, devlog_error } from "../../../../util/log.js";
+import { devlog, devlog_debug, devlog_error, log } from "../../../../util/log.js";
 import { socket_library } from "../../../../platforms/android.js";
 import { patterns, isPatternReplaced, experimental, enable_default_fd } from "../../../../fritap_agent.js";
 import { sendKeylog } from "../../../../shared/shared_structures.js";
@@ -99,6 +99,12 @@ export class OpenSSL_BoringSSL_Android extends OpenSSL_BoringSSL {
         this.install_plaintext_read_hook();
         this.install_plaintext_write_hook();
         this.install_tls_keys_callback_hook();
+        // Unified install banner — `log()` so default-verbosity stdout shows it.
+        // `install_tls_keys_callback_hook` swallows exceptions silently, so a
+        // positive return value isn't available here; the banner reflects that
+        // the install attempt completed, matching the legacy code's existing
+        // "success == no exception" semantics.
+        log(`[*] ${this.module_name}: keylog hooks installed via callback (SSL_CTX_set_keylog_callback)`);
         this.install_conscrypt_tls_keys_callback_hook();
         this.install_extended_hooks();
     }

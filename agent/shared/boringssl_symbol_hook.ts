@@ -1,6 +1,6 @@
 import { get_hex_string_from_byte_array } from "./shared_functions.js";
 import { sendKeylog } from "./shared_structures.js";
-import { devlog, devlog_debug, devlog_error } from "../util/log.js";
+import { devlog, devlog_debug, devlog_error, log } from "../util/log.js";
 import { safeKeyLenLogged } from "./keylog_length.js";
 import { LruMap } from "./lru.js";
 import {
@@ -163,8 +163,16 @@ export function attachSslLogSecretHook(addr: NativePointer, cb: DumpKeysCb): boo
  */
 export const PATTERN_HOOKING_SETTLE_MS = 1000;
 
-export const KEYLOG_NOT_INSTALLED_MSG = (moduleName: string) =>
-    `[!] No keylog hook installed for ${moduleName} (symbol absent, patterns no-match)`;
+/**
+ * Default reason preserves the historical log string for callers that pass no
+ * argument. Tier-3 sub-cascade emits a more specific reason (e.g.
+ * "tier 3 exhausted (3a:miss 3b:miss 3c:miss 3d:miss)") via the optional
+ * `reason` parameter.
+ */
+export const KEYLOG_NOT_INSTALLED_MSG = (
+    moduleName: string,
+    reason: string = "symbol absent, patterns no-match",
+) => `[!] No keylog hook installed for ${moduleName} (${reason})`;
 
 /**
  * Shared body for "patterns failed → try symbol resolver". Used by both the
@@ -176,14 +184,29 @@ export function attemptSymbolFallback(
     dumpKeys: DumpKeysCb,
     ctx: string = "bssl-symbol-fb",
 ): boolean {
-    devlog(`[!] Patterns failed for ${moduleName}; attempting symbol-based fallback…`);
+    // Honest framing (plan Iteration 3): the pattern scan may still be running
+    // asynchronously in the background; an earlier "Patterns failed" wording
+    // misled users into thinking the hook hadn't installed when in fact it had.
+    devlog(`[!] Pattern scan not yet successful on ${moduleName}; running symbol-based fallback in parallel…`);
     try {
         const ok = installBoringSSLSymbolHook(moduleName, dumpKeys);
-        if (!ok) devlog(KEYLOG_NOT_INSTALLED_MSG(moduleName));
+        if (!ok) {
+            devlog(
+                KEYLOG_NOT_INSTALLED_MSG(
+                    moduleName,
+                    "symbol unresolved; pattern scan may still match in background",
+                ),
+            );
+        }
         return ok;
     } catch (e) {
         devlog_error(`[${ctx}] ${moduleName}: symbol-based fallback threw: ${e}`);
-        devlog(KEYLOG_NOT_INSTALLED_MSG(moduleName));
+        devlog(
+            KEYLOG_NOT_INSTALLED_MSG(
+                moduleName,
+                "symbol fallback threw; pattern scan may still match in background",
+            ),
+        );
         return false;
     }
 }
@@ -204,8 +227,16 @@ export function scheduleBoringSSLSymbolFallback(
     setTimeout(() => {
         try {
             if (hooker !== null) {
+                // With the race guards in pattern_based_hooking.ts (plan
+                // Iteration 3), no_hooking_success now stays `false` once any
+                // cascade has installed a hook. The early-return therefore
+                // silently skips the fallback in the happy path. The reworded
+                // log only fires when patterns are genuinely still scanning at
+                // the delayMs deadline — no more false "Patterns failed".
                 if (!hooker.no_hooking_success) return;
-                devlog(`[!] Patterns failed for ${moduleName}; attempting symbol-based fallback…`);
+                devlog(
+                    `[!] Pattern scan still in progress on ${moduleName} after ${delayMs}ms; running symbol-based fallback in parallel…`,
+                );
                 runHookerFallback();
             } else {
                 attemptSymbolFallback(moduleName, dumpKeys);
@@ -232,9 +263,11 @@ export function installBoringSSLSymbolHook(moduleName: string, dumpKeys: DumpKey
     if (!r) return false;
     const ok = attachSslLogSecretHook(r.address, dumpKeys);
     if (ok) {
-        devlog(
-            `[*] ssl_log_secret hooked via symbol-based fallback on ${moduleName} (via ${r.via}).`
-        );
+        // Use `log` (level=info) so the success banner reaches stdout under
+        // default verbosity — `devlog` (level=debug) was only visible with
+        // -do/-d. Format unified with pattern-tier banners:
+        //   [*] <module>: keylog hooks installed via <approach> (<detail>)
+        log(`[*] ${moduleName}: keylog hooks installed via symbol (${r.via}: ${r.symbolName} @ ${r.address})`);
     }
     return ok;
 }

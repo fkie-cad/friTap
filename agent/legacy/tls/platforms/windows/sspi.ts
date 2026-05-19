@@ -3,7 +3,7 @@ import { executeSSLLibrary } from "../../../shared/shared_functions_legacy.js";
 import { sendKeylog, sendDatalog } from "../../../../shared/shared_structures.js";
 import { socket_library } from "../../../../platforms/windows.js";
 import { devlog, log } from "../../../../util/log.js";
-import { experimental } from "../../../../fritap_agent.js";
+import { experimental, pcap_enabled } from "../../../../fritap_agent.js";
 
 /*
 ToDo:
@@ -51,6 +51,7 @@ export class SSPI_Windows {
 
 
     install_plaintext_read_hook(){
+        if (!pcap_enabled) return;
         Interceptor.attach(this.addresses[this.module_name]["DecryptMessage"], {
             onEnter: function(args){
                 this.pMessage = args[1];
@@ -94,6 +95,7 @@ export class SSPI_Windows {
     }
 
     install_plaintext_write_hook(){
+        if (!pcap_enabled) return;
         Interceptor.attach(this.addresses[this.module_name]["EncryptMessage"], {
 
             onEnter: function(args){

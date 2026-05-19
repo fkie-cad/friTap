@@ -11,6 +11,7 @@
 
 import { sendQuicDatalog } from "../../shared/shared_structures.js";
 import { log, devlog, devlog_error } from "../../util/log.js";
+import { pcap_enabled } from "../../fritap_agent.js";
 import { MANGLED_SYMBOLS } from "../shared/google_quiche_offsets.js";
 import { quicConnectionTracker, buildQuicMessage, QuicConnectionInfo } from "../shared/quic_connection_tracker.js";
 
@@ -103,6 +104,7 @@ function resolveQuicheSymbol(moduleName: string, key: keyof typeof MANGLED_SYMBO
  * that don't fit the standard symbol resolution pipeline.
  */
 export function installGoogleQuicheHooks(moduleName: string): void {
+    if (!pcap_enabled) return;
     log("[*] Google QUICHE: attempting to hook QuicSpdyStream in " + moduleName);
 
     // Resolve Readv

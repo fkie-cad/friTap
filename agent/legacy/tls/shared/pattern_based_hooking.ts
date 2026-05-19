@@ -86,7 +86,7 @@ export class PatternBasedHooking {
                 var module_by_address = Process.findModuleByAddress(address);
 
                 devlog_info(`Pattern found at (${pattern_name}) address: ${address} in module ${module_by_address.name}`);
-                log(`Pattern-based hooks installed (onReturn).`);
+                log(`[*] ${module_by_address?.name ?? "<unknown>"}: keylog hooks installed via pattern (${pattern_name}, onReturn @ ${address})`);
 
                 Interceptor.attach(address, {
                     onEnter: function (args) {
@@ -297,8 +297,8 @@ export class PatternBasedHooking {
                 }else{
                     devlog_info(`Pattern found at (${pattern_name}) address: ${address}`);
                 }
-                
-                log(`Pattern-based hooks installed.`);
+
+                log(`[*] ${moduleName ?? "<unknown>"}: keylog hooks installed via pattern (${pattern_name} @ ${address})`);
 
                 // Attach the hook using the provided onMatchCallback
                 Interceptor.attach(address, {
@@ -308,28 +308,29 @@ export class PatternBasedHooking {
                 });
             },
             onError: (reason) => {
-                if (!this.found_ssl_log_secret) {
-                    devlog_error('There was an error scanning memory: ' + reason);
-                    devlog_error(`Trying to rescan memory with permissions in mind on ${moduleName}`);
-                    this.hookByPatternOnlyReadableParts(patterns, pattern_name, onMatchCallback, (primary_success) => {
-                        if (!primary_success) {
-                            devlog(`Primary pattern failed, trying fallback pattern on ${moduleName}`);
-                            this.hookByPatternOnlyReadableParts(patterns, "fallback_pattern", onMatchCallback, (fallback_success) => {
-                                if (!fallback_success) {
-                                    devlog(`Fallback pattern failed, trying second fallback pattern on ${moduleName}`);
-                                    this.hookByPatternOnlyReadableParts(patterns, "second_fallback_pattern", onMatchCallback, (second_fallback_success) => {
-                                        if (!second_fallback_success) {
-                                            //devlog_debug(`None of the patterns worked. You may need to adjust the patterns for ${moduleName}`);
-                                            this.no_hooking_success = true;
-                                        }else{
-                                            this.no_hooking_success = false;
-                                        }
-                                    });
-                                }
-                            });
-                        }
-                    });
-                }
+                if (this.found_ssl_log_secret) return;
+                devlog_error('There was an error scanning memory: ' + reason);
+                devlog_error(`Trying to rescan memory with permissions in mind on ${moduleName}`);
+                this.hookByPatternOnlyReadableParts(patterns, pattern_name, onMatchCallback, (primary_success) => {
+                    if (this.found_ssl_log_secret) return;
+                    if (!primary_success) {
+                        devlog(`Primary pattern failed, trying fallback pattern on ${moduleName}`);
+                        this.hookByPatternOnlyReadableParts(patterns, "fallback_pattern", onMatchCallback, (fallback_success) => {
+                            if (this.found_ssl_log_secret) return;
+                            if (!fallback_success) {
+                                devlog(`Fallback pattern failed, trying second fallback pattern on ${moduleName}`);
+                                this.hookByPatternOnlyReadableParts(patterns, "second_fallback_pattern", onMatchCallback, (second_fallback_success) => {
+                                    if (this.found_ssl_log_secret) return;
+                                    if (!second_fallback_success) {
+                                        this.no_hooking_success = true;
+                                    } else {
+                                        this.no_hooking_success = false;
+                                    }
+                                });
+                            }
+                        });
+                    }
+                });
             },
             onComplete: () => {
                 onCompleteCallback(this.found_ssl_log_secret);
@@ -344,6 +345,10 @@ export class PatternBasedHooking {
         onMatchCallback: (args: any[]) => void,
         onCompleteCallback: (found: boolean) => void
         ): void {
+        if (this.found_ssl_log_secret) {
+            onCompleteCallback(true);
+            return;
+        }
         const mod = this.module;
         const moduleName = mod?.name;
         const protSets = ["r-x", "r--", "rw-", "rwx"] as const;
@@ -391,13 +396,14 @@ export class PatternBasedHooking {
             for (const range of ranges) {
             if (patternFound || callbackDone) break;
 
-            const rangeKey = `${range.base}-${range.size}`;
+            const rangeKey = `${range.base}-${range.size}|${pattern_name}`;
             if (this.rescannedRanges && this.rescannedRanges.has(rangeKey)) {
                 completed++;
                 if (completed === ranges.length && !patternFound) done();
                 continue;
             }
-            // remember we touched this range
+            // remember we touched this range — keyed per pattern so fallback /
+            // second_fallback passes still get to scan ranges the primary touched.
             try { this.rescannedRanges?.add(rangeKey); } catch { /* noop */ }
 
             Memory.scan(range.base, range.size, pattern, {
@@ -408,7 +414,7 @@ export class PatternBasedHooking {
                 this.no_hooking_success = false;
 
                 devlog_info(`Pattern found at (${pattern_name}) address: ${address} on ${moduleName}`);
-                log("Pattern based hooks installed.");
+                log(`[*] ${moduleName ?? "<unknown>"}: keylog hooks installed via pattern (${pattern_name}, readable-ranges @ ${address})`);
 
                 try {
                     Interceptor.attach(address, {
@@ -523,7 +529,7 @@ export class PatternBasedHooking {
             for (const range of ranges) {
             if (patternFound || callbackDone) break;
 
-            const rangeKey = `${range.base}-${range.size}`;
+            const rangeKey = `${range.base}-${range.size}|${pattern_name}`;
             if (this.rescannedRanges?.has(rangeKey)) {
                 completed++;
                 if (completed === ranges.length && !patternFound && !callbackDone) done();
@@ -548,7 +554,7 @@ export class PatternBasedHooking {
                     log(`Could not get Ghidra offset`);
                 }
                 devlog_info(`Pattern found for module ${moduleName}`);
-                log(`Pattern-based hooks installed (onReturn).`);
+                log(`[*] ${moduleName ?? "<unknown>"}: keylog hooks installed via pattern (${pattern_name}, readable-ranges, onReturn @ ${address})`);
 
                 try {
                     Interceptor.attach(address, {

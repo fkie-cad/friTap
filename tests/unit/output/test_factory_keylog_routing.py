@@ -4,7 +4,6 @@
 """Tests for the keylog routing branch of :class:`OutputHandlerFactory`."""
 
 import logging
-import os
 
 import pytest
 

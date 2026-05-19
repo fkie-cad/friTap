@@ -1,7 +1,7 @@
 import { readAddresses, getPortsAndAddresses, resolveOffsets } from "../../shared/shared_functions.js";
 import { sendDatalog } from "../../shared/shared_structures.js";
 import { log } from "../../util/log.js";
-import { enable_default_fd } from "../../fritap_agent.js";
+import { enable_default_fd, pcap_enabled } from "../../fritap_agent.js";
 import { resolveWithPipeline } from "../../shared/pipeline_utils.js";
 
 export class WolfSSL {
@@ -80,6 +80,7 @@ export class WolfSSL {
 
 
     install_plaintext_read_hook(){
+        if (!pcap_enabled) return;
         var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
         Interceptor.attach(this.addresses[this.moduleName]["wolfSSL_read"],
@@ -106,6 +107,7 @@ export class WolfSSL {
 
 
     install_plaintext_write_hook(){
+        if (!pcap_enabled) return;
         var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
         Interceptor.attach(this.addresses[this.moduleName]["wolfSSL_write"],
