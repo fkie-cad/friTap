@@ -562,7 +562,21 @@ Examples:
         cleanup_lsass_hook()
         raise
     except BackendTransportError as fe:
-        logger.error(f"Backend transport error: {fe}")
+        # A transport error mid-session almost always means the target process
+        # died (often a native crash inside a hook). If on_detach already
+        # attributed it (process-terminated → clear crash message), don't repeat
+        # the cryptic line; otherwise add a hint so the user isn't left guessing.
+        _ssl_log = locals().get("ssl_log")
+        if getattr(_ssl_log, "_crash_reported", False):
+            pass  # already reported clearly by on_detach
+        else:
+            logger.error(f"Backend transport error: {fe}")
+            crumb = getattr(_ssl_log, "_last_hook_breadcrumb", "")
+            hint = "The target process appears to have terminated unexpectedly"
+            if crumb:
+                hint += f" (last hook entered: {crumb})"
+            hint += " — it may have crashed inside an instrumented hook. Check the debug log."
+            logger.error(hint)
     except FridaBasedException as e:
         logger.error(f"Backend error: {e}")
     except BackendTimedOutError as te:

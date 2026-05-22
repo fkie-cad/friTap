@@ -24,6 +24,7 @@ from ..events import (
     LibraryDetectedEvent,
     InstrumentEvent,
     ScriptLoadedEvent,
+    HookBreadcrumbEvent,
 )
 from ..config import FriTapConfig
 from ..constants import SSL_READ, SSL_WRITE
@@ -184,6 +185,13 @@ class SSL_Logger():
 
         # Always track detected libraries (needed for exit hint message)
         self._event_bus.subscribe(LibraryDetectedEvent, self._on_library_detected)
+
+        # Crash attribution: remember the last hook the agent reported entering,
+        # so on_detach can name it if the target dies inside a hook. Stored in
+        # memory only — never printed (works regardless of -v).
+        self._last_hook_breadcrumb = ""
+        self._crash_reported = False
+        self._event_bus.subscribe(HookBreadcrumbEvent, self._on_hook_breadcrumb)
 
         # FlowCollector created lazily — only when a plugin or TUI accesses it.
         # The TUI creates its own FlowCollector in capture_controller.py.
@@ -438,12 +446,56 @@ class SSL_Logger():
             self._plugin_loader.register_builtin(legacy_plugin, self._plugin_shim)
 
 
+    def _on_hook_breadcrumb(self, event: "HookBreadcrumbEvent") -> None:
+        """Remember the last hook the agent reported entering (crash attribution)."""
+        if event.marker:
+            self._last_hook_breadcrumb = event.marker
+
+    def _report_target_crash(self, reason: str) -> None:
+        """Surface an unexpected target-process death clearly to the user.
+
+        A crash inside an instrumented hook (native SIGSEGV) reaches us as a
+        detach with reason ``process-terminated`` and otherwise only as a
+        cryptic "Backend transport error: the connection is closed". Make it
+        explicit, attribute it to the last hook breadcrumb when known, and point
+        at the debug log. Sets a flag so the synchronous transport-error handler
+        does not also print the cryptic line.
+        """
+        self._crash_reported = True
+        crumb = self._last_hook_breadcrumb
+        msg = "Target process terminated unexpectedly — it most likely crashed " \
+              "inside an instrumented hook"
+        if crumb:
+            msg += f" (last hook entered: {crumb})"
+        self.logger.error(msg)
+        try:
+            from ..fritap_utility import get_debug_log_path
+            log_path = get_debug_log_path()
+            if log_path:
+                self.logger.error(f"See the debug log for the last hook activity: {log_path}")
+        except Exception:
+            pass
+        try:
+            from ..events import ErrorEvent, ERROR_SEVERITY_FATAL
+            self._event_bus.emit(ErrorEvent(
+                error="Target process crashed",
+                description=msg,
+                severity=ERROR_SEVERITY_FATAL,
+            ))
+        except Exception:
+            pass
+
     def on_detach(self, reason):
         if not self.running:
             return
 
         if reason == "application-requested":
             return
+
+        # A native crash inside a hook arrives as 'process-terminated'. Make it
+        # explicit instead of letting it surface only as a transport error.
+        if reason == "process-terminated":
+            self._report_target_crash(reason)
 
         self._event_bus.emit(DetachEvent(reason=reason))
 

@@ -10,12 +10,13 @@
 // These are virtual methods on QuicSpdyStream, which inherits from QuicStream.
 
 import { sendQuicDatalog } from "../../shared/shared_structures.js";
-import { log, devlog, devlog_debug, devlog_error } from "../../util/log.js";
+import { log, devlog, devlog_debug, devlog_error, hookBreadcrumb } from "../../util/log.js";
 import { pcap_enabled, getParsedPatterns, offsets, quic_capture_mode } from "../../fritap_agent.js";
 import { MANGLED_SYMBOLS, LABEL_TO_KEY, KEY_TO_LABEL } from "../shared/google_quiche_offsets.js";
 import { quicConnectionTracker, buildQuicMessage, QuicConnectionInfo, ObservedPeer } from "../shared/quic_connection_tracker.js";
-import { findNonExportedSymbols, underscoreVariants, getBaseAddress, decodeSockaddr } from "../../shared/shared_functions.js";
+import { findNonExportedSymbols, getBaseAddress, decodeSockaddr } from "../../shared/shared_functions.js";
 import { PatternStrategy } from "../../shared/strategies/pattern_strategy.js";
+import { isReadable, safeReadPointer, safeReadU8, safeReadULong, safeReadUtf8, resetReadableCache } from "../../util/safe_memory.js";
 
 /**
  * Build the datalog message for a stream-level QUIC hook. Resolves the stream
@@ -99,16 +100,20 @@ function readIovec(iovPtr: NativePointer, iovLen: number, maxBytes: number): Arr
     const iovecSize = ptrSize * 2;  // iov_base (pointer) + iov_len (size_t)
     let remaining = maxBytes;
     const parts: ArrayBuffer[] = [];
+    resetReadableCache();
 
     for (let i = 0; i < iovLen && remaining > 0; i++) {
-        // Per-entry try: a single unmapped iov_base must not abort the whole read
-        // (an uncaught throw in onLeave is swallowed by Frida → silent no-data).
+        // Per-entry guard: a single unmapped iov_base/garbage entry must not
+        // SIGSEGV the target (JS try/catch won't catch a native fault) nor abort
+        // the whole read. isReadable validates before each dereference.
         try {
             const entry = iovPtr.add(i * iovecSize);
+            if (!isReadable(entry, iovecSize)) continue;
             const base = entry.readPointer();
             const len = (entry.add(ptrSize).readULong() as unknown) as number;
             if (base.isNull() || len === 0) continue;
             const toRead = Math.min(len, remaining);
+            if (!isReadable(base, toRead)) continue;
             const chunk = base.readByteArray(toRead);
             if (chunk) {
                 parts.push(chunk);
@@ -143,18 +148,32 @@ function readIovec(iovPtr: NativePointer, iovLen: number, maxBytes: number): Arr
  * Bounds-checked so an implausible layout yields "" rather than a wild read
  * (an uncaught throw in a Frida callback is silently swallowed → no data).
  */
+/** Diagnostic: hex of the first N bytes at p, or a sentinel on fault/null. */
+function _hexHead(p: NativePointer, n = 32): string {
+    try {
+        if (!p || p.isNull()) return "<null>";
+        // hexdump dereferences p natively; guard readability first so a bad
+        // diagnostic pointer cannot SIGSEGV the target (try/catch won't save us).
+        if (!isReadable(p, n)) return "<unreadable>";
+        return hexdump(p, { length: n, header: false, ansi: false }).replace(/\n/g, " | ");
+    } catch (e) {
+        return "<unreadable>";
+    }
+}
+
 function readLibcxxString(p: NativePointer): string {
     try {
-        const first = p.readU8();
+        const first = safeReadU8(p);
+        if (first === null) return "";
         if (first & 1) {                                 // long form
-            const size = (p.add(8).readULong() as unknown) as number;
-            const dataPtr = p.add(16).readPointer();
-            if (dataPtr.isNull() || size <= 0 || size > (1 << 20)) return "";
-            return dataPtr.readUtf8String(size) ?? "";
+            const size = safeReadULong(p.add(8));
+            const dataPtr = safeReadPointer(p.add(16));
+            if (size === null || dataPtr === null || dataPtr.isNull() || size <= 0 || size > (1 << 20)) return "";
+            return safeReadUtf8(dataPtr, size);
         }
         const size = first >> 1;                          // short / SSO
         if (size <= 0 || size > 22) return "";
-        return p.add(1).readUtf8String(size) ?? "";
+        return safeReadUtf8(p.add(1), size);
     } catch (e) {
         return "";
     }
@@ -172,12 +191,14 @@ function readLibcxxString(p: NativePointer): string {
  */
 function readQuicHeaderList(hl: NativePointer, maxPairs = 256): [string, string][] {
     const out: [string, string][] = [];
+    resetReadableCache();
     try {
-        const begin = (hl.readULong() as unknown) as number;
-        const end   = (hl.add(8).readULong() as unknown) as number;
-        const data  = hl.add(16).readPointer();
-        const cap   = (hl.add(24).readULong() as unknown) as number;
-        if (data.isNull() || cap <= 0 || cap > 65536) return out;
+        const begin = safeReadULong(hl);
+        const end   = safeReadULong(hl.add(8));
+        const data  = safeReadPointer(hl.add(16));
+        const cap   = safeReadULong(hl.add(24));
+        if (begin === null || end === null || cap === null) return out;
+        if (data === null || data.isNull() || cap <= 0 || cap > 65536) return out;
         const n = Math.min(end - begin, maxPairs);
         if (n <= 0) return out;
         for (let i = 0; i < n; i++) {
@@ -193,10 +214,10 @@ function readQuicHeaderList(hl: NativePointer, maxPairs = 256): [string, string]
 /** Read an absl::string_view {const char* ptr; size_t len}. Bounds-checked. */
 function readStringView(p: NativePointer): string {
     try {
-        const ptr = p.readPointer();
-        const len = (p.add(8).readULong() as unknown) as number;
-        if (ptr.isNull() || len <= 0 || len > (1 << 20)) return "";
-        return ptr.readUtf8String(len) ?? "";
+        const ptr = safeReadPointer(p);
+        const len = safeReadULong(p.add(8));
+        if (ptr === null || len === null || ptr.isNull() || len <= 0 || len > (1 << 20)) return "";
+        return safeReadUtf8(ptr, len);
     } catch (e) {
         return "";
     }
@@ -214,7 +235,8 @@ function readStringView(p: NativePointer): string {
  */
 function readHeaderValue(hv: NativePointer): string {
     try {
-        const meta = (hv.add(8).readULong() as unknown) as number;   // fragments_ metadata
+        const meta = safeReadULong(hv.add(8));   // fragments_ metadata
+        if (meta === null) return "";
         const allocated = meta & 1;
         const count = meta >> 1;
         if (count <= 0) return "";
@@ -222,8 +244,9 @@ function readHeaderValue(hv: NativePointer): string {
         if (!allocated) {
             svPtr = hv.add(16);                      // inline string_view[0]
         } else {
-            svPtr = hv.add(16).readPointer();        // heap array of string_view
-            if (svPtr.isNull()) return "";
+            const heap = safeReadPointer(hv.add(16));        // heap array of string_view
+            if (heap === null || heap.isNull()) return "";
+            svPtr = heap;
         }
         return readStringView(svPtr);
     } catch (e) {
@@ -234,13 +257,16 @@ function readHeaderValue(hv: NativePointer): string {
 /** True if `listObj` looks like a well-formed libc++ std::list object. */
 function _looksLikeStdList(listObj: NativePointer): boolean {
     try {
-        const size = (listObj.add(16).readULong() as unknown) as number;
-        if (size <= 0 || size > 1000) return false;
+        const size = safeReadULong(listObj.add(16));
+        if (size === null || size <= 0 || size > 1000) return false;
         const sentinel = listObj;                     // address of __end_
-        const first = listObj.add(8).readPointer();   // __end_.__next_ (first node)
-        if (first.isNull() || first.equals(sentinel)) return false;
-        // first node's __prev_ (at +0) must point back to the sentinel node
-        return first.readPointer().equals(sentinel);
+        const first = safeReadPointer(listObj.add(8));   // __end_.__next_ (first node)
+        if (first === null || first.isNull() || first.equals(sentinel)) return false;
+        // first node's __prev_ (at +0) must point back to the sentinel node.
+        // first is a GUESSED offset here (7-probe self-location) — safeReadPointer
+        // prevents a SIGSEGV when the guess lands on unmapped memory.
+        const prev = safeReadPointer(first);
+        return prev !== null && prev.equals(sentinel);
     } catch (e) {
         return false;
     }
@@ -262,19 +288,23 @@ function _looksLikeStdList(listObj: NativePointer): boolean {
  */
 function readHttpHeaderBlock(hhb: NativePointer, maxPairs = 256): [string, string][] {
     const out: [string, string][] = [];
+    resetReadableCache();
     try {
         for (const off of [16, 24, 32, 40, 48, 56, 64]) {
             const listObj = hhb.add(off);
             if (!_looksLikeStdList(listObj)) continue;
             const sentinel = listObj;
-            let node = listObj.add(8).readPointer();   // first real node
+            let node = safeReadPointer(listObj.add(8));   // first real node
+            if (node === null) continue;
             let guard = 0;
             while (!node.isNull() && !node.equals(sentinel) && guard < maxPairs) {
                 const pair = node.add(16);             // __value_ = pair<string_view, HeaderValue>
                 const key = readStringView(pair);      // key absl::string_view @ +0
                 const val = readHeaderValue(pair.add(16)); // HeaderValue @ +16
                 if (key.length > 0) out.push([key, val]);
-                node = node.add(8).readPointer();      // __next_
+                const next = safeReadPointer(node.add(8));      // __next_
+                if (next === null) break;
+                node = next;
                 guard++;
             }
             if (out.length > 0) return out;
@@ -351,7 +381,12 @@ function getMangledSymbol(key: keyof typeof MANGLED_SYMBOLS): string {
  *    APEX builds where the QUICHE C++ symbols are imported into the dynsym
  *    table but not exported — confirmed via runtime inspection of
  *    libmainlinecronet.<ver>.so on Pixel 5 / Cronet 141)
- * 3. DebugSymbol (if debug info is available)
+ * 3. Byte-pattern scan (stripped libs, e.g. libmonochrome / libcronet)
+ *
+ * NOTE: a DebugSymbol.findFunctionsNamed() strategy was intentionally removed —
+ * on Android/Cronet it triggers cross-module debug-info parsing that SIGSEGVs the
+ * target process (uncatchable native fault; reproduced on YouTube/libmainlinecronet
+ * via research/quiche_repro/). Symbol-table + byte-pattern cover resolution without it.
  */
 function resolveQuicheSymbols(moduleName: string): Map<keyof typeof MANGLED_SYMBOLS, NativePointer> {
     const resolved = new Map<keyof typeof MANGLED_SYMBOLS, NativePointer>();
@@ -391,38 +426,12 @@ function resolveQuicheSymbols(moduleName: string): Map<keyof typeof MANGLED_SYMB
         }
     }
 
-    // Strategy 3: DebugSymbol for any still-unresolved (try underscore variants).
-    // DebugSymbol.findFunctionsNamed searches ALL loaded modules, so a match can
-    // belong to a *different* module that happens to export the same C++ symbol
-    // (e.g. libmonochrome_64.so has no QUICHE symbols of its own, but the symbol
-    // name resolves to libmainlinecronet's address). Constrain matches to the
-    // target module's [base, base+size) range, otherwise we'd hook the wrong
-    // library at an address its own code never executes.
-    const modBase = mod ? mod.base : null;
-    const modEnd = mod ? mod.base.add(mod.size) : null;
-    for (const key of remaining) {
-        if (resolved.has(key)) continue;
-        for (const variant of underscoreVariants(getMangledSymbol(key))) {
-            try {
-                const matches = DebugSymbol.findFunctionsNamed(variant);
-                const inModule = (modBase && modEnd)
-                    ? matches.find(a => a.compare(modBase) >= 0 && a.compare(modEnd) < 0)
-                    : matches[0];
-                if (inModule) {
-                    devlog("[Google QUICHE] found " + key + " via DebugSymbol in " + moduleName);
-                    resolved.set(key, inModule);
-                    break;
-                }
-                if (matches.length > 0) {
-                    devlog("[Google QUICHE] DebugSymbol match for " + key +
-                           " is outside " + moduleName + " (belongs to another module); ignoring");
-                }
-            } catch (_e) { /* DebugSymbol may be unavailable */ }
-        }
-    }
+    // (Former Strategy 3 — DebugSymbol.findFunctionsNamed — removed: it SIGSEGVs the
+    // Cronet target on Android. Resolution now relies on the symbol table above and
+    // the byte-pattern scan below.)
 
-    // --- Strategy 4: byte-pattern scan (stripped libs, e.g. libmonochrome) ---
-    // Symbols (1-3) always win; patterns only fill still-missing keys. Reuses the
+    // --- Strategy 3: byte-pattern scan (stripped libs, e.g. libmonochrome/libcronet) ---
+    // Symbols (1-2) always win; patterns only fill still-missing keys. Reuses the
     // PatternStrategy libtype lookup + Memory.scanSync + `?` wildcards verbatim.
     let missing = (Object.keys(MANGLED_SYMBOLS) as (keyof typeof MANGLED_SYMBOLS)[])
         .filter(k => !resolved.has(k));
@@ -446,7 +455,7 @@ function resolveQuicheSymbols(moduleName: string): Map<keyof typeof MANGLED_SYMB
         }
     }
 
-    // --- Strategy 5: static offsets (manual override / fallback) ---
+    // --- Strategy 4: static offsets (manual override / fallback) ---
     // Mirrors resolveOffsets() inline (our `resolved` is a Map, not the
     // object-of-objects resolveOffsets expects). Fills only still-missing keys.
     missing = (Object.keys(MANGLED_SYMBOLS) as (keyof typeof MANGLED_SYMBOLS)[])
@@ -544,6 +553,14 @@ export function installGoogleQuicheHooks(moduleName: string): void {
                             devlog_debug(`[OnDataFramePayload] call #${odfpCount} in ${moduleName}: len=${dataLen} ptr=${dataPtr}`);
                         }
                         if (dataLen === 0 || dataPtr.isNull()) return;
+                        // Symbol-resolved Cronet addresses can yield garbage
+                        // args; guard the read so a bad ptr/len skips instead of
+                        // SIGSEGV-ing the target (JS try/catch won't catch that).
+                        resetReadableCache();
+                        if (dataLen > (16 << 20) || !isReadable(dataPtr, dataLen)) {
+                            devlog_debug(`[OnDataFramePayload] unreadable data ptr=${dataPtr} len=${dataLen} -> skip`);
+                            return;
+                        }
                         const data = dataPtr.readByteArray(dataLen);
                         if (!data) return;
                         const message = resolveQuicMessage(args[0].toString(), "QuicSpdyStream_OnDataFramePayload");
@@ -604,15 +621,36 @@ export function installGoogleQuicheHooks(moduleName: string): void {
                     try {
                         this.streamObj = args[0];          // QuicSpdyStream* this
                         this.headerList = args[1];          // pointer to by-value QuicHeaderList temp
+                        // FIRED log makes "never-fired" distinguishable from
+                        // "fired-but-read-0-headers" (which was previously silent).
+                        devlog_debug(`[OnHeadersDecoded] FIRED this=${this.streamObj} headerList=${this.headerList}`);
                     } catch (e) {
                         devlog_error("[QuicSpdyStream_OnHeadersDecoded] onEnter threw: " + e);
                     }
                 },
                 onLeave(_retval) {
                     try {
-                        if (!this.headerList || this.headerList.isNull()) return;
+                        if (!this.headerList || this.headerList.isNull()) {
+                            devlog_debug("[OnHeadersDecoded] headerList null -> skip");
+                            return;
+                        }
+                        hookBreadcrumb(`QuicSpdyStream::OnHeadersDecoded reading QuicHeaderList this=${this.streamObj} headerList=${this.headerList}`);
                         const headers = readQuicHeaderList(this.headerList);
-                        if (headers.length === 0) return;
+                        if (headers.length === 0) {
+                            // Dump the raw struct + computed deque fields so the
+                            // QuicHeaderList offsets can be validated on-device.
+                            const hl = this.headerList;
+                            let begin = -1, end = -1, cap = -1, data = "<?>";
+                            try {
+                                resetReadableCache();
+                                const b = safeReadULong(hl);              if (b !== null) begin = b;
+                                const e2 = safeReadULong(hl.add(8));      if (e2 !== null) end = e2;
+                                const d = safeReadPointer(hl.add(16));    if (d !== null) data = d.toString();
+                                const c = safeReadULong(hl.add(24));      if (c !== null) cap = c;
+                            } catch (e) { /* keep sentinels */ }
+                            devlog_debug(`[OnHeadersDecoded] read 0 headers; raw=${_hexHead(hl)} begin=${begin} end=${end} data=${data} cap=${cap} size=${end - begin}`);
+                            return;
+                        }
                         if (ohdCount < 8) {
                             ohdCount++;
                             devlog_debug(`[OnHeadersDecoded] call #${ohdCount} in ${moduleName}: ${headers.length} header(s)`);
@@ -660,9 +698,18 @@ export function installGoogleQuicheHooks(moduleName: string): void {
                     try {
                         const streamObj = args[0];          // QuicSpdyStream* this
                         const headerBlock = args[1];        // pointer to by-value HttpHeaderBlock temp
+                        devlog_debug(`[WriteHeaders] FIRED this=${streamObj} headerBlock=${headerBlock}`);
                         if (!headerBlock || headerBlock.isNull()) return;
+                        hookBreadcrumb(`QuicSpdyStream::WriteHeaders reading HttpHeaderBlock this=${streamObj} headerBlock=${headerBlock}`);
                         const headers = readHttpHeaderBlock(headerBlock);
-                        if (headers.length === 0) return;
+                        if (headers.length === 0) {
+                            // Show which probe offsets looked like a std::list so
+                            // the HttpHeaderBlock layout can be validated on-device.
+                            const probes = [16, 24, 32, 40, 48, 56, 64]
+                                .map(o => `${o}:${_looksLikeStdList(headerBlock.add(o)) ? "list" : "-"}`).join(" ");
+                            devlog_debug(`[WriteHeaders] read 0 headers; raw=${_hexHead(headerBlock)} probes=[${probes}]`);
+                            return;
+                        }
                         if (whCount < 8) {
                             whCount++;
                             devlog_debug(`[WriteHeaders] call #${whCount} in ${moduleName}: ${headers.length} header(s)`);
@@ -701,6 +748,14 @@ export function installGoogleQuicheHooks(moduleName: string): void {
                         return;
                     }
 
+                    // Guard against garbage args from a symbol-resolved Cronet
+                    // address: a bad ptr/len must skip, not SIGSEGV the target.
+                    resetReadableCache();
+                    if (dataLen > (16 << 20) || !isReadable(dataPtr, dataLen)) {
+                        devlog_debug(`[WriteOrBufferBody] unreadable data ptr=${dataPtr} len=${dataLen} -> skip`);
+                        this.data = null;
+                        return;
+                    }
                     // Read the data NOW (before the function potentially modifies it)
                     this.data = dataPtr.readByteArray(dataLen);
                 },

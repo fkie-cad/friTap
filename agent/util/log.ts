@@ -13,6 +13,17 @@ export function devlog(str: string) {
     send(message)
 }
 
+// Crash-attribution breadcrumb. Emitted on entry of a crash-prone hook walk so
+// that, if the target dies inside it, Python's on_detach can name the last hook.
+// Stored in memory only on the Python side (never printed), so it works
+// regardless of -v/debug. Use sparingly — only on low-frequency hooks.
+export function hookBreadcrumb(str: string) {
+    var message: { [key: string]: string } = {}
+    message["contentType"] = "hook_breadcrumb"
+    message["hook_breadcrumb"] = str
+    send(message)
+}
+
 /*
 old way of logging, kept for reference and will be removed in future versions
 

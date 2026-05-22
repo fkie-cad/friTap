@@ -127,6 +127,17 @@ class ConsoleEvent(FriTapEvent):
     level: str = "info"
 
 
+@dataclass
+class HookBreadcrumbEvent(FriTapEvent):
+    """Emitted by the agent on entry of a crash-prone hook walk.
+
+    Stored in memory only (never printed) so that, if the target process dies
+    inside a hook, ``on_detach`` can name the last hook that was executing.
+    Best-effort: an in-flight breadcrumb may be lost on a hard crash.
+    """
+    marker: str = ""
+
+
 # ErrorEvent severity values — controls TUI modal vs activity-log routing.
 ERROR_SEVERITY_INFO = "info"
 ERROR_SEVERITY_WARNING = "warning"

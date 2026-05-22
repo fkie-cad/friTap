@@ -11,7 +11,7 @@ Routes agent message payloads to the EventBus as typed events.
 from __future__ import annotations
 import logging
 
-from .events import EventBus, KeylogEvent, DatalogEvent, LibraryDetectedEvent, ConsoleEvent, SessionEvent, OhttpEvent
+from .events import EventBus, KeylogEvent, DatalogEvent, LibraryDetectedEvent, ConsoleEvent, SessionEvent, OhttpEvent, HookBreadcrumbEvent
 from .constants import SSL_READ, ContentType
 from .ssl_logger import get_addr_string
 
@@ -67,6 +67,8 @@ class MessageRouter:
             self._emit_console(payload, level="info")
         elif content_type == "console_dev":
             self._emit_console_dev(payload)
+        elif content_type == "hook_breadcrumb":
+            self._emit_hook_breadcrumb(payload)
 
     def _emit_keylog(self, payload: dict) -> None:
         self._event_bus.emit(KeylogEvent(
@@ -140,6 +142,14 @@ class MessageRouter:
         self._event_bus.emit(ConsoleEvent(
             message=payload.get("console_dev", ""),
             level="debug",
+        ))
+
+    def _emit_hook_breadcrumb(self, payload: dict) -> None:
+        # In-memory crash-attribution marker (never printed). SSL_Logger stores
+        # the last one so on_detach can name the hook that was executing if the
+        # target dies inside it.
+        self._event_bus.emit(HookBreadcrumbEvent(
+            marker=payload.get("hook_breadcrumb", ""),
         ))
 
     def _emit_ssh_key(self, payload: dict) -> None:
