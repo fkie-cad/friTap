@@ -4,6 +4,39 @@ All notable changes to friTap will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- `keylog_enabled` `config_batch` field — gates key extraction symmetrically
+  with the existing `pcap_enabled` flag. When `friTap.py` is invoked with
+  `-p <pcap>` but no `-k <keylog>`, the Python host sets `keylog_enabled=False`
+  and the agent installs **no** key-extraction hooks. Standalone-agent
+  integrators: add the field to your `config_batch` reply — defaults to `True`
+  for backward compatibility (see `docs/advanced/standalone-agent.md`).
+- The gate now applies to **every protocol, platform and library**, not just the
+  modern BoringSSL path:
+  - A single install-time gate in the modern loader skips the entire keylog
+    install (callback / symbol / pattern-scan) for all data-driven libraries;
+    every legacy TLS library installer (`openssl/boringssl`, `gnutls`, `gotls`,
+    `wolfssl`, `nss`, `rustls`, `s2ntls`, `flutter`, `monobtls`, `cronet`) and
+    the QUIC quiche keylog pipe/config hooks are gated the same way — saving CPU
+    and pattern-scan budget on long-running plaintext-only captures.
+  - New `sendKeyMaterial()` choke point in the agent gates protocol key material
+    that is emitted outside the `keylog` content type. **Fixes a leak**: IPSec
+    (strongSwan) `ipsec_child_sa_keys` / `ipsec_ike_keys` were previously emitted
+    even in plaintext-only mode; SSH `ssh_key` / `ssh_keylog` now route through
+    the same single gate.
+
+### Changed
+- Plaintext-only pcaps (`-p` without `-k`) no longer embed Decryption Secrets
+  Blocks (DSBs) in the resulting pcap-ng, because key extraction now runs only
+  when explicitly requested. Pass `-k <keylog>` to restore the prior behaviour
+  of self-decrypting pcaps.
+- Full-capture mode (`-f`) now sets `pcap_enabled=False`, so only key-extraction
+  hooks are installed in-agent — the raw packets come from the external
+  tcpdump/scapy capture, and the previously-installed in-agent plaintext hooks
+  (whose output was discarded anyway) no longer run.
+
 ## [2.0.0] - 2026-05-09
 
 ### Breaking

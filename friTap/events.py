@@ -80,6 +80,13 @@ class DatalogEvent(FriTapEvent):
     ss_family: str = "AF_INET"
     ssl_session_id: str = ""
     client_random: str = ""
+    transport: str = "tcp"  # "tcp" or "udp" — controls pcap framing (QUIC=udp)
+    # HTTP/3 / QUIC fields (optional, additive, backward compatible)
+    http3_headers: Optional[list] = None  # decoded [[name, value], ...] (Boundary-4)
+    stream_id: Optional[int] = None
+    quic_scid: str = ""
+    quic_dcid: str = ""
+    quic_stream_type: str = ""
 
 
 @dataclass

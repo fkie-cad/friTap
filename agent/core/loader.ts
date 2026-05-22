@@ -7,7 +7,7 @@ import { readAddresses, resolveOffsets } from "../shared/shared_functions.js";
 import { installReadHook, installWriteHook } from "./executors/read_write.js";
 import { installKeylogHook } from "./executors/keylog_callback.js";
 import { installBoringSSLKeylogChain } from "../shared/boringssl_hook_chain.js";
-import { patterns } from "../fritap_agent.js";
+import { patterns, keylog_enabled } from "../fritap_agent.js";
 import { devlog, log } from "../util/log.js";
 
 /**
@@ -100,7 +100,13 @@ export function executeFromDefinition(
     //    def.keylogPriority swaps tiers 1 and 2 (Cronet-derived libs set
     //    "symbol-first" because they bypass SSL_new internally). Tier 3 is
     //    always last. Non-BoringSSL defs use the single-shot dispatcher.
-    if (def.libraryType === "boringssl") {
+    //
+    //    Symmetric counterpart to the pcap_enabled gate: this single install-time
+    //    gate skips the whole keylog install (callback/symbol/pattern) for every
+    //    data-driven lib when keys aren't wanted (BoringSSL self-gates too).
+    if (!keylog_enabled) {
+        devlog(`[loader] ${moduleName}: keylog install skipped (keylog_enabled=false)`);
+    } else if (def.libraryType === "boringssl") {
         try {
             installBoringSSLKeylogChain(def, addresses, moduleName, resolvedFns, enableDefaultFd, patterns);
         } catch (e) {

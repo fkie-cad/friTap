@@ -49,7 +49,7 @@ class MessageRouter:
 
         if content_type == "keylog" and payload.get("keylog"):
             self._emit_keylog(payload)
-        elif content_type == "datalog" and data:
+        elif content_type == "datalog" and (data or payload.get("http3_headers")):
             self._emit_datalog(payload, data)
         elif content_type == "library_detected":
             self._emit_library_detected(payload)
@@ -114,6 +114,12 @@ class MessageRouter:
             ss_family=ss_family,
             ssl_session_id=str(payload.get("ssl_session_id", "")),
             client_random=str(payload.get("client_random", "")),
+            transport=payload.get("transport", "tcp"),
+            http3_headers=payload.get("http3_headers"),
+            stream_id=payload.get("stream_id"),
+            quic_scid=str(payload.get("quic_scid", "")),
+            quic_dcid=str(payload.get("quic_dcid", "")),
+            quic_stream_type=str(payload.get("quic_stream_type", "")),
             protocol=payload.get("protocol", "tls"),
         ))
 

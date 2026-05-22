@@ -63,6 +63,10 @@ class HookingConfig:
     anti_root: bool = False
     payload_modification: bool = False
     library_scan: bool = False
+    # QUIC plaintext capture boundary: "stream" (default lower-boundary
+    # stream-level Readv hooks) or "app-api" (Boundary-4 decoded HTTP/3
+    # headers; Chrome/Android Google QUICHE only).
+    quic_capture_mode: str = "stream"
     encapsulated_protocols: Dict[str, bool] = field(
         default_factory=lambda: {"ohttp": True}
     )
@@ -181,6 +185,7 @@ class FriTapConfig:
         filter_infrastructure: bool = True,
         include_loopback: bool = False,
         force_scan_modules: Optional[List[str]] = None,
+        quic_capture_mode: str = "stream",
     ) -> "FriTapConfig":
         """
         Build a FriTapConfig from the legacy SSL_Logger constructor parameters.
@@ -218,6 +223,7 @@ class FriTapConfig:
                 payload_modification=payload_modification,
                 library_scan=library_scan,
                 force_scan_modules=list(force_scan_modules or []),
+                quic_capture_mode=quic_capture_mode,
             ),
             protocol=protocol,
             backend=backend,

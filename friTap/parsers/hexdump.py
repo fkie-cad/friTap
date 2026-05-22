@@ -51,7 +51,8 @@ class HexdumpParser(BaseParser):
         """Always returns True - this is the last-resort fallback."""
         return True
 
-    def feed(self, data: bytes, direction: str) -> list[ParseResult]:
+    def feed(self, data: bytes, direction: str,
+             stream_id: int | None = None) -> list[ParseResult]:
         """Wrap raw bytes into a ParseResult."""
         protocol = "unknown"
         if _detect_quic_pattern(data):

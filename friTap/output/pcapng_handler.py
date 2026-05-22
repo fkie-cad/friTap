@@ -93,6 +93,7 @@ class PcapngOutputHandler(OutputHandler):
             is_read=event.function in SSL_READ,
             data=event.data,
             tracker=self._tracker,
+            transport=event.transport,
         )
 
         t_us = int(time.time() * 1_000_000)

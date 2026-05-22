@@ -10,6 +10,10 @@ SSL_READ = frozenset({
     "quiche_stream_recv", "quiche_dgram_recv",
     "msquic_stream_recv",
     "QuicSpdyStream_Readv",
+    # Google QUICHE (Chrome/Cronet) HTTP/3 incoming body: the HttpDecoder visitor
+    # callback (clean de-framed body) and the raw-cleartext sequencer fallback.
+    "QuicSpdyStream_OnDataFramePayload",
+    "QuicStreamSequencer_OnStreamFrame",
     # Neqo (Firefox HTTP/3) stream receive
     "neqo_read_response_data",
     # SSH plaintext receive (OpenSSH packet layer)

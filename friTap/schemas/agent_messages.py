@@ -77,6 +77,9 @@ class DatalogMessage(BaseAgentMessage):
     stream_id: Optional[int] = None
     quic_scid: str = ""
     quic_dcid: str = ""
+    # HTTP/3 pre-decoded headers (Boundary-4 app-api mode, optional)
+    http3_headers: Optional[list[list[str]]] = None  # decoded [[name, value], ...]
+    quic_stream_type: Optional[str] = None
 
 
 class ConnectionLifecycleMessage(BaseAgentMessage):

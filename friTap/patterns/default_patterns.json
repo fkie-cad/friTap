@@ -246,22 +246,46 @@
         "x86": {}
     },
     "google_quiche": {
-        "_comment": "Patterns for Google QUICHE (Chrome/Cronet). Mangled C++ symbols, pattern scanning for stripped binaries.",
+        "_comment": "Patterns for Google QUICHE (Chrome/Cronet). Mangled C++ symbols, pattern scanning for stripped binaries (e.g. libmonochrome_64.so). Labels match LABEL_TO_KEY in agent/quic/shared/google_quiche_offsets.ts. Filled per-build by BoringSecretHunter.",
         "x64": {
             "QuicSpdyStream_Readv": [],
-            "QuicSpdyStream_WriteOrBufferBody": []
+            "QuicStream_Readv": [],
+            "QuicStreamSequencer_Readv": [],
+            "QuicSpdyStream_OnDataFramePayload": [],
+            "QuicSpdyStream_WriteOrBufferBody": [],
+            "QuicStream_WriteOrBufferData": [],
+            "QuicStreamSequencer_OnStreamFrame": [],
+            "QuicSpdyStream_OnBodyAvailable": []
         },
         "arm64": {
             "QuicSpdyStream_Readv": [],
-            "QuicSpdyStream_WriteOrBufferBody": []
+            "QuicStream_Readv": [],
+            "QuicStreamSequencer_Readv": [],
+            "QuicSpdyStream_OnDataFramePayload": [],
+            "QuicSpdyStream_WriteOrBufferBody": [],
+            "QuicStream_WriteOrBufferData": [],
+            "QuicStreamSequencer_OnStreamFrame": [],
+            "QuicSpdyStream_OnBodyAvailable": []
         },
         "arm": {
             "QuicSpdyStream_Readv": [],
-            "QuicSpdyStream_WriteOrBufferBody": []
+            "QuicStream_Readv": [],
+            "QuicStreamSequencer_Readv": [],
+            "QuicSpdyStream_OnDataFramePayload": [],
+            "QuicSpdyStream_WriteOrBufferBody": [],
+            "QuicStream_WriteOrBufferData": [],
+            "QuicStreamSequencer_OnStreamFrame": [],
+            "QuicSpdyStream_OnBodyAvailable": []
         },
         "x86": {
             "QuicSpdyStream_Readv": [],
-            "QuicSpdyStream_WriteOrBufferBody": []
+            "QuicStream_Readv": [],
+            "QuicStreamSequencer_Readv": [],
+            "QuicSpdyStream_OnDataFramePayload": [],
+            "QuicSpdyStream_WriteOrBufferBody": [],
+            "QuicStream_WriteOrBufferData": [],
+            "QuicStreamSequencer_OnStreamFrame": [],
+            "QuicSpdyStream_OnBodyAvailable": []
         }
     }
 }

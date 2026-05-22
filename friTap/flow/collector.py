@@ -27,6 +27,7 @@ from friTap.parsers.base import (
 from friTap.parsers.bhttp import parse_bhttp
 from friTap.parsers.hexdump import HexdumpParser
 from friTap.parsers.http2 import Http2Parser, is_h2_control_frame_data
+from friTap.parsers.http3 import build_h3_result_from_headers
 from friTap.parsers.registry import get_default_registry
 
 from .models import Flow, FlowEventType, FlowState, FlowChunk
@@ -187,8 +188,20 @@ class FlowCollector:
                 function=event.function
             )
 
+            # Boundary-4 (app-api) mode: the agent forwarded already-decoded
+            # HTTP/3 headers. Build a ParseResult directly — no QPACK, no frame
+            # parsing — and correlate it into a flow by (synthetic) stream id.
+            h3_headers = getattr(event, 'http3_headers', None)
+            if h3_headers is not None:
+                real_qsid = getattr(event, 'stream_id', None)
+                synthetic_id = (conn.map_qsid(real_qsid)
+                                if isinstance(real_qsid, int) and real_qsid >= 0
+                                else 0)
+                result = build_h3_result_from_headers(h3_headers, synthetic_id, direction)
+                flow = self._create_or_update_flow(conn, chunk, result, event, pending)
+                pending.append((FlowEventType.UPDATED, flow))
             # Parser detection with buffering retry
-            if conn.parser is None:
+            elif conn.parser is None:
                 # Buffer chunks until we have enough data for reliable detection
                 conn.pending_chunks.append(chunk)
                 conn.pending_bytes += len(event.data)
@@ -242,8 +255,13 @@ class FlowCollector:
                 if isinstance(unwrap_parser(conn.parser), HexdumpParser):
                     self._try_parser_upgrade(conn, event.data)
 
-                # Feed directly
-                results = conn.parser.feed(event.data, direction)
+                # Feed directly. For QUIC the agent supplies a real stream id;
+                # remap it onto a dense positive id so HTTP/3 multiplexing works
+                # (and never collides with the stream_id == 0 "ghost" sentinel).
+                qsid = getattr(event, 'stream_id', None)
+                feed_sid = (conn.map_qsid(qsid)
+                            if isinstance(qsid, int) and qsid >= 0 else None)
+                results = conn.parser.feed(event.data, direction, stream_id=feed_sid)
 
                 if results:
                     results = self._filter_control_frames(results)
@@ -825,6 +843,22 @@ class _ConnectionState:
         self.last_activity: float = 0.0
         self.pending_chunks: list[FlowChunk] = []  # buffered before parser committed
         self.pending_bytes: int = 0  # total bytes in pending_chunks
+        # Map a real (QUIC) stream id -> a dense, strictly-positive synthetic
+        # id. The collector treats stream_id == 0 as "no stream / ghost", but
+        # QUIC's first client bidi stream is legitimately 0, so we remap real
+        # stream ids onto 1, 2, 3, ... Request and response for the same QUIC
+        # stream share one synthetic id (and therefore one flow).
+        self._qsid_map: dict[int, int] = {}
+        self._qsid_next: int = 1
+
+    def map_qsid(self, real_qsid: int) -> int:
+        """Return the dense positive synthetic id for a real QUIC stream id."""
+        sid = self._qsid_map.get(real_qsid)
+        if sid is None:
+            sid = self._qsid_next
+            self._qsid_next += 1
+            self._qsid_map[real_qsid] = sid
+        return sid
 
 
 

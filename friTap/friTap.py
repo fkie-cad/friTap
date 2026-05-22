@@ -303,6 +303,15 @@ Examples:
                            "Unlocks the three-tier BoringSSL keylog chain and improved Cronet hooks "
                            "on Android/Windows. Known regressions vs the legacy default: "
                            f"{_MODERN_REGRESSIONS}. Default: legacy.")
+    args.add_argument("--quic-capture-mode", required=False,
+                      choices=["stream", "app-api"], default="stream",
+                      dest="quic_capture_mode",
+                      help="Select the QUIC plaintext capture boundary. "
+                           "'stream' (default) uses the current lower-boundary "
+                           "stream-level hooks (QuicStream/QuicStreamSequencer "
+                           "Readv). 'app-api' captures at the application-API "
+                           "Boundary-4 with decoded HTTP/3 headers "
+                           "(Chrome/Android Google QUICHE only).")
     args.add_argument("--library-scan", "-ls", required=False, action="store_const",
                       const=True, default=False,
                       help="Pre-scan for TLS libraries using tlsLibHunter before hooking. "
@@ -520,6 +529,7 @@ Examples:
             filter_infrastructure=getattr(parsed, 'filter_infrastructure', True),
             include_loopback=getattr(parsed, 'include_loopback', False),
             force_scan_modules=getattr(parsed, 'force_scan_modules', None),
+            quic_capture_mode=getattr(parsed, 'quic_capture_mode', 'stream'),
         )
 
         # Validate filter expression early (before session starts)

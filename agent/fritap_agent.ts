@@ -106,6 +106,19 @@ interface IOffsets {
         "runtime.buildVersion": IAddress;
     }
 
+    google_quiche?:{
+        QuicSpdyStream_Readv?: IAddress,
+        QuicStream_Readv?: IAddress,
+        QuicStreamSequencer_Readv?: IAddress,
+        QuicSpdyStream_OnDataFramePayload?: IAddress,
+        QuicSpdyStream_WriteOrBufferBody?: IAddress,
+        QuicStream_WriteOrBufferData?: IAddress,
+        QuicStreamSequencer_OnStreamFrame?: IAddress,
+        QuicSpdyStream_OnBodyAvailable?: IAddress,
+        QuicSpdyStream_OnHeadersDecoded?: IAddress,
+        QuicSpdyStream_WriteHeaders?: IAddress
+    }
+
     sockets?:{
         getpeername?: IAddress,
         getsockname?: IAddress,
@@ -126,6 +139,12 @@ export let anti_root: boolean = false;
 export let enable_default_fd: boolean = false;
 //@ts-ignore
 export let pcap_enabled: boolean = false;
+// Default true so a config_batch from an older host (one that doesn't yet ship the
+// keylog_enabled field) keeps producing keys — current friTap.py always sets this
+// flag explicitly from bool(parsed.keylog), so the default only ever matters for
+// standalone Frida integrations that haven't been updated for the new field.
+//@ts-ignore
+export let keylog_enabled: boolean = true;
 //@ts-ignore
 export let use_modern: boolean = false;
 //@ts-ignore
@@ -145,6 +164,8 @@ export let scan_results: string = "{SCAN_RESULTS}";
 export let library_scan_enabled: boolean = false;
 //@ts-ignore
 export let ohttp_enabled: boolean = true;
+//@ts-ignore
+export let quic_capture_mode: string = "stream";
 
 /**
  * Perform a send/recv handshake with the Python host to receive a configuration value.
@@ -183,6 +204,7 @@ if (typeof config_batch.patterns === "string"
 enable_socket_tracing = config_batch.socket_tracing ?? enable_socket_tracing;
 enable_default_fd = config_batch.defaultFD ?? enable_default_fd;
 pcap_enabled = config_batch.pcap_enabled ?? pcap_enabled;
+keylog_enabled = config_batch.keylog_enabled ?? keylog_enabled;
 experimental = config_batch.experimental ?? experimental;
 selected_protocol = config_batch.protocol_select ?? selected_protocol;
 setSelectedProtocol(selected_protocol);
@@ -191,6 +213,7 @@ use_modern = config_batch.use_modern ?? use_modern;
 scan_results = config_batch.library_scan ?? scan_results;
 library_scan_enabled = config_batch.library_scan_enabled ?? library_scan_enabled;
 ohttp_enabled = config_batch.ohttp_enabled ?? ohttp_enabled;
+quic_capture_mode = config_batch.quic_capture_mode ?? quic_capture_mode;
 
 // "anti" handshake must be LAST in the startup sequence to prevent deadlock
 anti_root = recvHandshake("anti", anti_root, "antiroot");
@@ -216,6 +239,10 @@ export function getOffsets(){
 
 export function isPatternReplaced(): boolean {
     return parsedPatterns !== null;
+}
+
+export function getParsedPatterns(): any {
+    return parsedPatterns;
 }
 
 

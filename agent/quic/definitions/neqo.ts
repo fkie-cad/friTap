@@ -104,8 +104,12 @@ function resolveNeqoSymbol(moduleName: string, symbolName: string): NativePointe
  *   AF_INET:  offset 4: u32 IPv4 address (network byte order)
  *   AF_INET6: offset 4: u32 flowinfo, offset 8: u8[16] IPv6 address
  */
-function parseNetAddr(ptr: NativePointer): { addr: string; port: number; family: string } {
-    const sentinel = { addr: "0.0.0.0", port: 0, family: "AF_INET" };
+function parseNetAddr(ptr: NativePointer): { addr: string | number; port: number; family: string } {
+    // Address encoding matches the pcap writer contract (see
+    // shared_functions.ts getPortsAndAddresses): AF_INET addresses are a
+    // host-order 32-bit integer (number); AF_INET6 addresses are a 32-char
+    // uppercase hex string with no separators.
+    const sentinel = { addr: 0, port: 0, family: "AF_INET" };
     if (ptr.isNull()) return sentinel;
 
     try {
@@ -122,26 +126,34 @@ function parseNetAddr(ptr: NativePointer): { addr: string; port: number; family:
         const port = ((portRaw & 0xFF) << 8) | ((portRaw >> 8) & 0xFF);
 
         if (family === 2) {
-            // AF_INET: IPv4 address at offset 4
+            // AF_INET: IPv4 address at offset 4 (network order)
             const a = ptr.add(4).readU8();
             const b = ptr.add(5).readU8();
             const c = ptr.add(6).readU8();
             const d = ptr.add(7).readU8();
-            return { addr: a + "." + b + "." + c + "." + d, port, family: "AF_INET" };
+            // Host-order integer, equivalent to ntohl of the network-order u32.
+            const addrInt = ((a << 24) | (b << 16) | (c << 8) | d) >>> 0;
+            return { addr: addrInt, port, family: "AF_INET" };
         }
 
         // AF_INET6 (family 10 on Linux, 30 on macOS): IPv6 address at offset 8
-        const addrBytes = ptr.add(8).readByteArray(16);
-        if (addrBytes) {
-            const hex = Array.from(new Uint8Array(addrBytes))
-                .map(b => b.toString(16).padStart(2, "0"))
-                .join("");
-            const groups: string[] = [];
-            for (let i = 0; i < 32; i += 4) {
-                groups.push(hex.substring(i, i + 4));
-            }
-            return { addr: groups.join(":"), port, family: "AF_INET6" };
+        const ipv6_addr = ptr.add(8);
+        let hex = "";
+        for (let offset = 0; offset < 16; offset += 1) {
+            hex += ("0" + ipv6_addr.add(offset).readU8().toString(16).toUpperCase()).substr(-2);
         }
+        // IPv4-mapped IPv6 (::ffff:a.b.c.d) → downgrade to AF_INET integer.
+        if (hex.indexOf("00000000000000000000FFFF") === 0) {
+            // Last 4 bytes (offset 12-15) hold the IPv4 address in network
+            // order; combine into a host-order integer (ntohl equivalent).
+            const a = ipv6_addr.add(12).readU8();
+            const b = ipv6_addr.add(13).readU8();
+            const c = ipv6_addr.add(14).readU8();
+            const d = ipv6_addr.add(15).readU8();
+            const hostInt = ((a << 24) | (b << 16) | (c << 8) | d) >>> 0;
+            return { addr: hostInt, port, family: "AF_INET" };
+        }
+        return { addr: hex, port, family: "AF_INET6" };
     } catch (e) {
         devlog("[neqo] failed to parse NetAddr: " + e);
     }

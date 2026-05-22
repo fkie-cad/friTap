@@ -7,6 +7,7 @@ import {
     CLIENT_RANDOM_CACHE_MAX,
     tryReadClientRandomAt,
 } from "./ssl_struct_walk.js";
+import { keylog_enabled } from "../fritap_agent.js";
 
 /*
  * Shared BoringSSL ssl_log_secret hook.
@@ -184,6 +185,9 @@ export function attemptSymbolFallback(
     dumpKeys: DumpKeysCb,
     ctx: string = "bssl-symbol-fb",
 ): boolean {
+    // Plaintext-only mode opted out of key extraction — don't run the symbol
+    // resolver, don't emit the fallback banner.
+    if (!keylog_enabled) return false;
     // Honest framing (plan Iteration 3): the pattern scan may still be running
     // asynchronously in the background; an earlier "Patterns failed" wording
     // misled users into thinking the hook hadn't installed when in fact it had.
@@ -224,6 +228,8 @@ export function scheduleBoringSSLSymbolFallback(
     dumpKeys: DumpKeysCb,
     delayMs: number = PATTERN_HOOKING_SETTLE_MS,
 ): void {
+    // Avoid scheduling the deferred fallback at all when key extraction is off.
+    if (!keylog_enabled) return;
     setTimeout(() => {
         try {
             if (hooker !== null) {
@@ -252,6 +258,9 @@ export function scheduleBoringSSLSymbolFallback(
  * interceptor. Returns true iff both steps succeed.
  */
 export function installBoringSSLSymbolHook(moduleName: string, dumpKeys: DumpKeysCb): boolean {
+    // Plaintext-only mode: skip the (expensive) symbol enumeration up front
+    // rather than rely on sendKeylog dropping the eventual events.
+    if (!keylog_enabled) return false;
     let mod: Module;
     try {
         mod = Process.getModuleByName(moduleName);

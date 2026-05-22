@@ -2,7 +2,7 @@ import { readAddresses, resolveOffsets, toHexString } from "../../../shared/shar
 import { checkNumberOfExports } from "../../shared/shared_functions_legacy.js";
 import { sendKeylog } from "../../../shared/shared_structures.js";
 import { devlog, log } from "../../../util/log.js";
-import { pcap_enabled } from "../../../fritap_agent.js";
+import { pcap_enabled, keylog_enabled } from "../../../fritap_agent.js";
 
 
 
@@ -272,6 +272,7 @@ export class RusTLS {
     }
 
     install_key_extraction_hook(){
+        if (!keylog_enabled) return;
         // needs to be setup for the specific plattform
     }
 

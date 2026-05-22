@@ -82,8 +82,15 @@ class BaseParser(ABC):
     PROTOCOL: str = "unknown"
 
     @abstractmethod
-    def feed(self, data: bytes, direction: str) -> list[ParseResult]:
-        """Feed data to parser, return any completed results."""
+    def feed(self, data: bytes, direction: str,
+             stream_id: int | None = None) -> list[ParseResult]:
+        """Feed data to parser, return any completed results.
+
+        ``stream_id`` is the transport-level stream identifier (e.g. a QUIC
+        stream id) when the caller knows it. Parsers that derive their own
+        stream id from the wire (HTTP/2) or do not multiplex (HTTP/1,
+        websocket, hexdump) ignore it; HTTP/3 uses it for multiplexing.
+        """
         ...
 
     @abstractmethod
@@ -162,11 +169,16 @@ class SafeParserAdapter(BaseParser):
     def failed(self) -> bool:
         return self._failed
 
-    def feed(self, data: bytes, direction: str) -> list[ParseResult]:
+    def feed(self, data: bytes, direction: str,
+             stream_id: int | None = None) -> list[ParseResult]:
         if self._failed:
             return []
         try:
-            return self._inner.feed(data, direction)
+            # Forward stream_id only when set, so parsers that keep the legacy
+            # two-argument feed(data, direction) signature still work.
+            if stream_id is None:
+                return self._inner.feed(data, direction)
+            return self._inner.feed(data, direction, stream_id=stream_id)
         except Exception as exc:
             self._record_failure(exc, direction)
             return []

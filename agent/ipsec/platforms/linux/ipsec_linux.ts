@@ -9,7 +9,7 @@
  */
 
 import { log, devlog } from "../../../util/log.js";
-import { sendWithProtocol } from "../../../shared/shared_structures.js";
+import { sendWithProtocol, sendKeyMaterial } from "../../../shared/shared_structures.js";
 import { toHexString } from "../../../shared/shared_functions.js";
 
 function readKeyMaterial(ptr: NativePointer, label: string): string | null {
@@ -71,7 +71,7 @@ export function ipsec_execute(moduleName: string, is_base_hook: boolean): void {
                     }
 
                     if (Object.keys(keys).length > 0) {
-                        sendWithProtocol({
+                        sendKeyMaterial({
                             contentType: "ipsec_child_sa_keys",
                             keys: keys,
                             message: "ESP Child SA keys extracted",
@@ -112,7 +112,7 @@ export function ipsec_execute(moduleName: string, is_base_hook: boolean): void {
                     }
 
                     if (Object.keys(keys).length > 0) {
-                        sendWithProtocol({
+                        sendKeyMaterial({
                             contentType: "ipsec_ike_keys",
                             keys: keys,
                             message: "IKE SA keys extracted",

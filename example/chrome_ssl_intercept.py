@@ -30,6 +30,8 @@ Requirements:
 
 Notes:
     - Modern mode (--modern) is EXPERIMENTAL. The legacy path is the default and is more stable.
+    - Set KEYLOG_ENABLED = True below to also extract TLS key material (NSS SSLKEYLOGFILE
+      format). Default is False so this script behaves as plaintext-only out of the box.
 """
 
 import frida
@@ -58,6 +60,7 @@ DEFAULT_FD = False            # Use fallback file-descriptor extraction
 SOCKET_TRACING = False        # Log socket addresses
 INSTALL_LSASS_HOOK = False    # Hook LSASS (Windows only)
 USE_MODERN = False            # Use modern definition-based hooking
+KEYLOG_ENABLED = False        # Extract TLS keylog material (set True to also write SSLKEYLOGFILE)
 PROTOCOL = "tls"              # Protocol: "tls", "ssh", or "ipsec"
 PATTERNS = None               # JSON string of custom patterns, or None for defaults
 OFFSETS = None                # JSON string of custom offsets, or None
@@ -107,6 +110,7 @@ def on_message(message, data):
                 "socket_tracing": SOCKET_TRACING,
                 "defaultFD": DEFAULT_FD,
                 "pcap_enabled": False,
+                "keylog_enabled": KEYLOG_ENABLED,
                 "experimental": EXPERIMENTAL,
                 "protocol_select": PROTOCOL,
                 "install_lsass_hook": INSTALL_LSASS_HOOK,

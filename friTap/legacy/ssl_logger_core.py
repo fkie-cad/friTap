@@ -560,7 +560,18 @@ class SSL_Logger():
                     'library_scan': self.scan_results_data,
                     'library_scan_enabled': self._config.hooking.library_scan,
                     'ohttp_enabled': getattr(self._config.hooking, 'ohttp_enabled', True),
-                    'pcap_enabled': bool(self.pcap_name),
+                    'quic_capture_mode': getattr(self._config.hooking, 'quic_capture_mode', 'stream'),
+                    # In full-capture (-f) mode the raw packets are taken by the external
+                    # tcpdump/scapy thread and the in-agent plaintext datalog is discarded
+                    # by message_handler (`... and not full_capture`), so don't install the
+                    # plaintext read/write hooks at all — only the key-extraction hooks run.
+                    'pcap_enabled': bool(self.pcap_name) and not self.full_capture,
+                    # Symmetric counterpart to pcap_enabled. When the user requested only -p
+                    # (plaintext pcap) without -k, the agent must skip every key-extraction
+                    # path — otherwise it floods the channel with KeylogEvents and burns
+                    # the pattern-scan budget on connections we don't care about. In -f mode
+                    # this stays driven by -k: keys are needed to decrypt the full capture.
+                    'keylog_enabled': bool(self.keylog),
                 }
                 self._backend.post_message(self.script, 'config_batch', batch)
                 return

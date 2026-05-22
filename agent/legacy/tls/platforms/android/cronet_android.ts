@@ -2,7 +2,7 @@
 import {Cronet } from "../../../tls/libs/cronet.js";
 import { socket_library } from "../../../../platforms/android.js";
 import {PatternBasedHooking, get_CPU_specific_pattern, hasModulePatterns } from "../../../tls/shared/pattern_based_hooking.js";
-import { patterns, isPatternReplaced } from "../../../../fritap_agent.js"
+import { patterns, isPatternReplaced, keylog_enabled } from "../../../../fritap_agent.js"
 import { devlog, devlog_debug, devlog_error, devlog_info, log } from "../../../../util/log.js";
 import { sendKeylog } from "../../../../shared/shared_structures.js";
 import { scheduleBoringSSLSymbolFallback, installBoringSSLSymbolHook } from "../../../../shared/boringssl_symbol_hook.js";
@@ -183,6 +183,14 @@ export class Cronet_Android extends Cronet {
 
     execute_hooks(): HookingResult{
         let hooker_instance = null;
+        // [true, null] matches the "callback succeeded, no hooker" shape so the
+        // outer cronet_execute() skips the symbol-fallback scheduler.
+        if (!keylog_enabled) {
+            devlog_debug(`[cronet_android] ${this.module_name}: keylog skipped (keylog_enabled=false)`);
+            this.install_plaintext_read_hook();
+            this.install_plaintext_write_hook();
+            return [true, null];
+        }
         if(this.are_callbacks_symbols_available()){
             this.install_tls_keys_callback_hook();
             // Unified install banner — `log()` so default-verbosity stdout shows it.

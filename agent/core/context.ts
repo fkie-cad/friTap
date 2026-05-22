@@ -5,6 +5,7 @@
 
 import { HookingPipeline } from "../shared/hooking_pipeline";
 import { HookRegistry } from "../shared/registry";
+import { sendKeylog as sharedSendKeylog } from "../shared/shared_structures.js";
 
 export interface AgentConfig {
     readonly experimental: boolean;
@@ -76,9 +77,7 @@ export function createAgentContext(
             }
         },
 
-        sendKeylog(line: string): void {
-            send({ contentType: "keylog", keylog: line, protocol: config.protocol });
-        },
+        sendKeylog: sharedSendKeylog,
 
         sendDatalog(meta: object, data: ArrayBuffer): void {
             send({ contentType: "datalog", ...meta, protocol: config.protocol }, data);

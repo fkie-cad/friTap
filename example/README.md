@@ -89,6 +89,8 @@ python library_attribution_report.py capture.tap
 ### `chrome_ssl_intercept.py` — Chrome Android SSL interception
 
 Standalone Frida script for intercepting Chrome's SSL/TLS traffic on Android.
+Set `KEYLOG_ENABLED = True` near the top of the script to additionally extract
+NSS-format key material; default is plaintext-only.
 
 ```bash
 python chrome_ssl_intercept.py

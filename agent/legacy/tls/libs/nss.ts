@@ -1,7 +1,7 @@
-import { readAddresses, resolveOffsets, dumpMemory } from "../../../shared/shared_functions.js";
-import { pointerSize, AF_INET, AF_INET6, sendKeylog, sendDatalog } from "../../../shared/shared_structures.js";
+import { readAddresses, resolveOffsets, dumpMemory, decodeSockaddr } from "../../../shared/shared_functions.js";
+import { pointerSize, sendKeylog, sendDatalog } from "../../../shared/shared_structures.js";
 import { log, devlog, devlog_error } from "../../../util/log.js";
-import { enable_default_fd, pcap_enabled } from "../../../fritap_agent.js";
+import { enable_default_fd, pcap_enabled, keylog_enabled } from "../../../fritap_agent.js";
 import { Java } from "../../../shared/javalib.js";
 import { resolveWithPipeline } from "../../../shared/pipeline_utils.js";
 
@@ -244,6 +244,13 @@ export class NSS {
     // SSL_SecretCallback support (resolved via SSL_GetExperimentalAPI)
     static SSL_SecretCallback_fn: NativeFunction<number, [NativePointer, NativePointer, NativePointer]> | null = null;
     static SSL_SecretCallback_ptr: NativePointer | null = null;
+    // Cached NSPR/libc wrappers for getPortsAndAddressesFromNSS (built once, reused per packet).
+    private static _cachedSocketFns: {
+        getpeername: NativeFunction<number, [NativePointer, NativePointer]>;
+        getsockname: NativeFunction<number, [NativePointer, NativePointer]>;
+        ntohs: NativeFunction<number, [number]>;
+        ntohl: NativeFunction<number, [number]>;
+    } | null = null;
     static secretCallbackReentryGuard: boolean = false;
     static originalSecretCallbacks: { [key: string]: { cb: NativePointer, arg: NativePointer, fn: NativeFunction<void, [NativePointer, number, number, NativePointer, NativePointer]> } } = {};
 
@@ -809,10 +816,18 @@ typedef union PRNetAddr PRNetAddr;
     
             return message
         }    
-        var getpeername = new NativeFunction(methodAddresses["PR_GetPeerName"], "int", ["pointer", "pointer"])
-        var getsockname = new NativeFunction(methodAddresses["PR_GetSockName"], "int", ["pointer", "pointer"])
-        var ntohs = new NativeFunction(methodAddresses["ntohs"], "uint16", ["uint16"])
-        var ntohl = new NativeFunction(methodAddresses["ntohl"], "uint32", ["uint32"])
+        if (!NSS._cachedSocketFns) {
+            NSS._cachedSocketFns = {
+                getpeername: new NativeFunction(methodAddresses["PR_GetPeerName"], "int", ["pointer", "pointer"]),
+                getsockname: new NativeFunction(methodAddresses["PR_GetSockName"], "int", ["pointer", "pointer"]),
+                ntohs: new NativeFunction(methodAddresses["ntohs"], "uint16", ["uint16"]),
+                ntohl: new NativeFunction(methodAddresses["ntohl"], "uint32", ["uint32"]),
+            }
+        }
+        var getpeername = NSS._cachedSocketFns.getpeername
+        var getsockname = NSS._cachedSocketFns.getsockname
+        var ntohs = NSS._cachedSocketFns.ntohs
+        var ntohl = NSS._cachedSocketFns.ntohl
 
         var addrType = Memory.alloc(2) // PRUint16 is a 2 byte (16 bit) value on all plattforms
 
@@ -830,29 +845,16 @@ typedef union PRNetAddr PRNetAddr;
                 getpeername(sockfd as NativePointer, addr)
             }
 
-            if (addr.readU16() == AF_INET) {
-                message[src_dst[i] + "_port"] = ntohs(addr.add(2).readU16()) as number
-                message[src_dst[i] + "_addr"] = ntohl(addr.add(4).readU32()) as number
-                message["ss_family"] = "AF_INET"
-            } else if (addr.readU16() == AF_INET6) {
-                message[src_dst[i] + "_port"] = ntohs(addr.add(2).readU16()) as number
-                message[src_dst[i] + "_addr"] = ""
-                var ipv6_addr = addr.add(8)
-                for (var offset = 0; offset < 16; offset += 1) {
-                    message[src_dst[i] + "_addr"] += ("0" + ipv6_addr.add(offset).readU8().toString(16).toUpperCase()).substr(-2)
-                }
-                if (message[src_dst[i] + "_addr"].toString().indexOf("00000000000000000000FFFF") === 0) {
-                    message[src_dst[i] + "_addr"] = ntohl(ipv6_addr.add(12).readU32()) as number
-                    message["ss_family"] = "AF_INET"
-                }
-                else {
-                    message["ss_family"] = "AF_INET6"
-                }
-            } else {
+            // PRNetAddr shares the sockaddr field layout, so the shared decoder applies.
+            const decoded = decodeSockaddr(addr, false, { ntohs, ntohl });
+            if (!decoded) {
                 devlog("[-] PIPE descriptor error: Only supporting IPv4/6: "+addr.readU16());
                 //FIXME: Sometimes addr.readU16() will be 0 when a PIPE Read oder Write gets interpcepted, thus this error will be thrown.
                 throw "Only supporting IPv4/6";
             }
+            message[src_dst[i] + "_port"] = decoded.port;
+            message[src_dst[i] + "_addr"] = decoded.addr;
+            message["ss_family"] = decoded.family;
 
         }
         return message
@@ -1762,6 +1764,7 @@ function tls13_RecordKeyLog(pRFileDesc, secret_label, secret){
 
 
     install_tls_keys_callback_hook() {
+        if (!keylog_enabled) return;
 
     }
 }

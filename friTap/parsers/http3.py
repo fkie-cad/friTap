@@ -104,11 +104,19 @@ class Http3Parser(BaseParser):
             pass
         return False
 
-    def feed(self, data: bytes, direction: str) -> list[ParseResult]:
-        """Parse HTTP/3 frames and return completed results."""
-        if direction not in self._buffers:
-            self._buffers[direction] = bytearray()
-        buf = self._buffers[direction]
+    def feed(self, data: bytes, direction: str,
+             stream_id: int | None = None) -> list[ParseResult]:
+        """Parse HTTP/3 frames and return completed results.
+
+        When ``stream_id`` is provided (QUIC stream multiplexing), frames are
+        reassembled and bucketed per stream so interleaved streams do not get
+        concatenated. When it is ``None`` the parser keeps its legacy
+        non-muxed behavior (a single current stream per direction).
+        """
+        buf_key = direction if stream_id is None else f"{direction}:{stream_id}"
+        if buf_key not in self._buffers:
+            self._buffers[buf_key] = bytearray()
+        buf = self._buffers[buf_key]
         buf.extend(data)
         results: list[ParseResult] = []
 
@@ -127,7 +135,7 @@ class Http3Parser(BaseParser):
             payload = bytes(buf[type_len + len_len:total])
             del buf[:total]
 
-            self._process_frame(frame_type, payload, direction, results)
+            self._process_frame(frame_type, payload, direction, results, stream_id)
 
         return results
 
@@ -172,12 +180,16 @@ class Http3Parser(BaseParser):
         return streams[sid]
 
     def _process_frame(self, frame_type: int, payload: bytes,
-                       direction: str, results: list[ParseResult]) -> None:
+                       direction: str, results: list[ParseResult],
+                       stream_id: int | None = None) -> None:
         """Process a single HTTP/3 frame."""
         if frame_type == _FRAME_HEADERS:
-            stream = self._get_stream(direction)
-            # If we already have headers, this is a new message — emit and start fresh
-            if stream.headers_received and (stream.method or stream.status_code):
+            stream = self._get_stream(direction, stream_id)
+            # Non-muxed mode: a second HEADERS frame means a new message —
+            # emit the previous one and start fresh on a new synthetic stream.
+            if (stream_id is None
+                    and stream.headers_received
+                    and (stream.method or stream.status_code)):
                 result = self._build_result(stream)
                 results.append(result)
                 # Remove old stream, create new
@@ -193,9 +205,13 @@ class Http3Parser(BaseParser):
 
             self._decode_headers(stream, payload, direction)
             stream.headers_received = True
+            # Muxed mode: the collector correlates by stream_id, so emit the
+            # result as soon as headers are known for this stream.
+            if stream_id is not None:
+                results.append(self._build_result(stream))
 
         elif frame_type == _FRAME_DATA:
-            stream = self._get_stream(direction)
+            stream = self._get_stream(direction, stream_id)
             stream.body_size += len(payload)
 
         elif frame_type == _FRAME_GOAWAY:
@@ -268,4 +284,29 @@ class Http3Parser(BaseParser):
             is_request=stream.is_request,
             content_encoding=stream.content_encoding,
             content_type=stream.content_type,
+            stream_id=stream.stream_id,
         )
+
+
+def build_h3_result_from_headers(
+    headers: list,
+    stream_id: int,
+    direction: str,
+    body_size: int = 0,
+) -> ParseResult:
+    """Build a ParseResult from already-decoded HTTP/3 headers.
+
+    Used by the "app-api" (Boundary 4) capture mode where the application's
+    own QPACK decoder already produced the header name/value pairs, so no
+    QPACK decoding or frame parsing is needed. ``headers`` is an iterable of
+    ``(name, value)`` pairs (or ``[name, value]`` lists). ``stream_id`` is the
+    (synthetic, positive) stream identifier used for flow multiplexing.
+    """
+    stream = _H3StreamState(stream_id)
+    stream.body_size = body_size
+    apply_http2_headers(stream, [(n, v) for n, v in headers])
+    if not stream.method and not stream.status_code:
+        # No pseudo-headers present — infer direction ("write" == request).
+        stream.is_request = (direction == "write")
+    stream.headers_received = True
+    return Http3Parser._build_result(stream)

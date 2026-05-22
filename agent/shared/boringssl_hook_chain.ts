@@ -16,6 +16,7 @@ import { installBoringSSLSymbolHook, makeBoringSslDumpKeys, attemptSymbolFallbac
 import { installBoringSSLPatternHook } from "./boringssl_pattern_hook.js";
 import { detectBoringSSLFamily } from "./boringssl_family_detect.js";
 import { devlog, devlog_debug, devlog_error, log } from "../util/log.js";
+import { keylog_enabled } from "../fritap_agent.js";
 
 export type BoringSSLHookOutcome = "callback" | "symbol" | "pattern" | "none";
 
@@ -40,6 +41,12 @@ export function installBoringSSLKeylogChain(
     enableDefaultFd: boolean,
     patternsJson?: string,
 ): BoringSSLHookOutcome {
+    // Skip key extraction entirely in plaintext-only mode — saves the pattern-scan cost.
+    if (!keylog_enabled) {
+        devlog_debug(`[bssl-chain] ${moduleName}: skipped (keylog_enabled=false)`);
+        return "none";
+    }
+
     const priority = def.keylogPriority ?? "callback-first";
     const order: Tier12[] = priority === "symbol-first"
         ? ["symbol", "callback"]

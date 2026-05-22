@@ -258,7 +258,8 @@ class WebSocketParser(BaseParser):
     def can_parse(self, data: bytes) -> bool:
         return _is_websocket_data(data)
 
-    def feed(self, data: bytes, direction: str) -> list[ParseResult]:
+    def feed(self, data: bytes, direction: str,
+             stream_id: int | None = None) -> list[ParseResult]:
         """Parse WebSocket frame header, return one ParseResult per frame.
 
         After parsing, check ``self.trailing_data`` for any unconsumed bytes.

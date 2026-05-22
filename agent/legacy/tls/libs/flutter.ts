@@ -1,7 +1,7 @@
 import { get_hex_string_from_byte_array, readAddresses } from "../../../shared/shared_functions.js";
 import { sendKeylog } from "../../../shared/shared_structures.js";
 import { devlog } from "../../../util/log.js";
-import { pcap_enabled } from "../../../fritap_agent.js";
+import { pcap_enabled, keylog_enabled } from "../../../fritap_agent.js";
 
 
 
@@ -120,6 +120,7 @@ export class Flutter {
     }
 
     install_key_extraction_hook(){
+        if (!keylog_enabled) return;
         // needs to be setup for the specific plattform
     }
 }

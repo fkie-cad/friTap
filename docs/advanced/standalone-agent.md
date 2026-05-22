@@ -37,7 +37,7 @@ waiting for each response:
 
 | Message | Expected Response Type | Purpose |
 |---------|----------------------|---------|
-| `"config_batch"` | `{"type": "config_batch", "payload": <dict with 12 fields>}` | Single consolidated handshake carrying every configuration value (see [field reference](#config_batch-field-reference) below) |
+| `"config_batch"` | `{"type": "config_batch", "payload": <dict with 13 fields>}` | Single consolidated handshake carrying every configuration value (see [field reference](#config_batch-field-reference) below) |
 | `"anti"` | `{"type": "antiroot", "payload": <bool>}` | Enable anti-root bypass (Android); sent once after `config_batch` |
 
 > **Note:** Older agent builds shipped individual per-feature handshakes
@@ -65,6 +65,7 @@ def on_message(message, data):
             "socket_tracing":       False,
             "defaultFD":            False,
             "pcap_enabled":         False,
+            "keylog_enabled":       False,   # set True to also extract TLS keys
             "experimental":         False,
             "protocol_select":      "tls",   # "tls" | "ssh" | "ipsec"
             "install_lsass_hook":   False,   # Windows only
@@ -109,7 +110,8 @@ not relevant to your run can be left at their defaults.
 | `patterns` | JSON string or `None` | `None` | Custom byte-pattern definitions |
 | `socket_tracing` | bool | `False` | Log socket address metadata for captured TLS sessions |
 | `defaultFD` | bool | `False` | Fall back to file-descriptor extraction when SSL_get_fd is unavailable |
-| `pcap_enabled` | bool | `False` | Required `True` if you process pcap-format datalogs |
+| `pcap_enabled` | bool | `False` | Required `True` if you process pcap-format datalogs. Set `False` if you do your own raw packet capture and only want keys (mirrors friTap's own `-f`/full-capture mode) |
+| `keylog_enabled` | bool | `True` | Set `False` to skip key extraction entirely. When `False`, the agent installs **no** key-extraction hooks (callback / symbol / pattern-scan) for any library on any platform, and emits no key material of any protocol — TLS/QUIC `keylog`, SSH `ssh_key`/`ssh_keylog`, and IPSec `ipsec_child_sa_keys`/`ipsec_ike_keys` are all gated by this one flag. Useful when you only want decrypted plaintext. Default `True` preserves prior behaviour for handlers that omit the field |
 | `experimental` | bool | `False` | Enable experimental hooking strategies |
 | `protocol_select` | `"tls"` \| `"ssh"` \| `"ipsec"` | `"tls"` | Which protocol's hooks to install. `ssh`/`ipsec` require `use_modern: true` |
 | `install_lsass_hook` | bool | `False` | Hook LSASS (Windows only) |
@@ -176,6 +178,16 @@ if content_type == "datalog" and data:
 
 TLS key material in NSS SSLKEYLOGFILE format (compatible with Wireshark).
 
+> This contentType only fires when `keylog_enabled: true` was sent in
+> `config_batch` (see the [field reference](#config_batch-field-reference)).
+> The same gate governs **all** key material, not just TLS/QUIC `keylog`: the
+> SSH `ssh_key` / `ssh_keylog` and IPSec `ipsec_child_sa_keys` /
+> `ipsec_ike_keys` content types are routed through the same choke point, so
+> integrators that consume those must set `keylog_enabled: true`.
+> Plaintext-only integrations should set `keylog_enabled: false` so the agent
+> skips key-extraction hooks entirely instead of relying on the host to
+> discard incoming events.
+
 ```python
 if content_type == "keylog":
     keylog = payload.get("keylog", "")
@@ -226,6 +238,7 @@ def on_message(message, data):
                 "socket_tracing":       False,
                 "defaultFD":            False,
                 "pcap_enabled":         False,
+                "keylog_enabled":       False,
                 "experimental":         False,
                 "protocol_select":      "tls",
                 "install_lsass_hook":   False,
@@ -328,6 +341,7 @@ if payload == "config_batch":
         "socket_tracing":       True,
         "defaultFD":            True,
         "pcap_enabled":         False,
+        "keylog_enabled":       False,
         "experimental":         False,
         "protocol_select":      "tls",
         "install_lsass_hook":   False,
@@ -365,6 +379,7 @@ if payload == "config_batch":
         "socket_tracing":       False,
         "defaultFD":            False,
         "pcap_enabled":         False,
+        "keylog_enabled":       False,
         "experimental":         False,
         "protocol_select":      "tls",
         "install_lsass_hook":   False,
@@ -412,7 +427,7 @@ device.resume(pid)
 **Cause:** Missing initialization message responses.
 
 **Solution:** Ensure your message handler responds to BOTH initialization
-messages — `config_batch` (with a dict containing all 12 fields) and `anti`
+messages — `config_batch` (with a dict containing all 13 fields) and `anti`
 (with `{"type": "antiroot", "payload": <bool>}`). If you are porting code
 from an older agent build that listened for individual handshakes
 (`offset_hooking`, `pattern_hooking`, `socket_tracing`, `defaultFD`,

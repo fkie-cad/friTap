@@ -1,5 +1,7 @@
 /* In this file we store global variables and structures */
 
+import { keylog_enabled } from "../fritap_agent.js";
+
 export type ModuleHookingType = (moduleName: string, is_base_hook: boolean) => void;
 
 export type Platform = "linux" | "darwin" | "windows" | "wine";
@@ -60,7 +62,27 @@ export function sendWithProtocol(message: { [key: string]: any }, data?: ArrayBu
 }
 
 export function sendKeylog(keylogLine: string): void {
+    // Defensive choke point: even if a hook site forgot to honor the
+    // keylog_enabled gate at install time, no KeylogEvent leaves the agent
+    // when the user requested plaintext-only mode.
+    if (!keylog_enabled) return;
     sendWithProtocol({ contentType: "keylog", keylog: keylogLine });
+}
+
+/**
+ * Gated emitter for protocol key material that does NOT flow through
+ * sendKeylog() — i.e. keys sent under custom contentTypes such as ssh_key,
+ * ssh_keylog, ipsec_child_sa_keys and ipsec_ike_keys (and any future protocol).
+ *
+ * This mirrors the keylog_enabled choke point in sendKeylog() so that no key
+ * material leaves the agent in plaintext-only mode (-p without -k), regardless
+ * of which protocol emits it. Without this, every sendWithProtocol() key
+ * emission would have to remember to gate itself by hand — exactly the trap
+ * that let IPSec keys leak. Route all direct key emissions through here.
+ */
+export function sendKeyMaterial(message: { [key: string]: any }, data?: ArrayBuffer | number[] | null): void {
+    if (!keylog_enabled) return;
+    sendWithProtocol(message, data);
 }
 
 export function sendDatalog(message: { [key: string]: any }, data: ArrayBuffer | number[] | null): void {
@@ -104,6 +126,11 @@ export function sendQuicKeylog(keylogLine: string): void {
  * @param streamId QUIC stream ID (-1 for datagrams)
  * @param scid     Source Connection ID hex (optional)
  * @param dcid     Destination Connection ID hex (optional)
+ * @param transport Transport for pcap framing — QUIC is always "udp" (default)
+ * @param http3Headers Decoded HTTP/3 header list [[name, value], ...] (optional).
+ *                     Used by the app-API capture path (OnHeadersDecoded). When
+ *                     present and non-empty it is attached as message["http3_headers"];
+ *                     header-only sends pass data = null.
  */
 export function sendQuicDatalog(
     message: { [key: string]: any },
@@ -111,9 +138,13 @@ export function sendQuicDatalog(
     streamId: number,
     scid?: string,
     dcid?: string,
+    transport: "udp" | "tcp" = "udp",
+    http3Headers?: [string, string][],
 ): void {
     message["stream_id"] = streamId;
     if (scid) message["quic_scid"] = scid;
     if (dcid) message["quic_dcid"] = dcid;
+    message["transport"] = transport;
+    if (http3Headers && http3Headers.length > 0) message["http3_headers"] = http3Headers;
     sendDatalog(message, data);
 }

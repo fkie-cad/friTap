@@ -144,6 +144,57 @@ def build_ipv6_tcp_packet(
     return header + payload
 
 
+def build_ipv4_udp_packet(
+    src_addr: int,
+    src_port: int,
+    dst_addr: int,
+    dst_port: int,
+    payload: bytes,
+) -> bytes:
+    """Return 20-byte IPv4 + 8-byte UDP header + payload.
+
+    Protocol is 17 (UDP), used for QUIC plaintext. Checksums are zero
+    (valid for synthetic pcap data). UDP is connectionless, so there is
+    no seq/ack bookkeeping.
+    """
+    total_len = 28 + len(payload)
+    header = struct.pack(
+        ">BBHHHBBHIIHHHH",
+        0x45, 0, total_len,         # Version/IHL, ToS, Total Length
+        0, 0x4000, 0xFF, 17, 0,     # ID, Flags/FragOff, TTL, Protocol, IP checksum
+        src_addr, dst_addr,
+        src_port, dst_port,
+        8 + len(payload), 0,        # UDP Length, UDP checksum
+    )
+    return header + payload
+
+
+def build_ipv6_udp_packet(
+    src_addr_hex: str,
+    src_port: int,
+    dst_addr_hex: str,
+    dst_port: int,
+    payload: bytes,
+) -> bytes:
+    """Return 40-byte IPv6 + 8-byte UDP header + payload.
+
+    Next-header is 17 (UDP), used for QUIC plaintext. Addresses are
+    32-character hex strings. UDP is connectionless, so there is no
+    seq/ack bookkeeping.
+    """
+    udp_payload_len = 8 + len(payload)
+    header = struct.pack(
+        ">IHBB16s16sHHHH",
+        0x60000000,                    # Version/Traffic Class/Flow Label
+        udp_payload_len, 17, 0xFF,     # Payload Length, Next Header, Hop Limit
+        bytes.fromhex(src_addr_hex),
+        bytes.fromhex(dst_addr_hex),
+        src_port, dst_port,
+        udp_payload_len, 0,            # UDP Length, UDP checksum
+    )
+    return header + payload
+
+
 def _as_ipv6_hex(addr: int | str) -> str:
     return addr if isinstance(addr, str) else format(addr, '032x')
 
@@ -161,12 +212,17 @@ def build_framed_packet_from_fields(
     is_read: bool,
     data: bytes,
     tracker: TcpSessionTracker,
+    transport: str = "tcp",
 ) -> bytes:
-    """Build a framed IP+TCP packet from raw connection fields.
+    """Build a framed IP+TCP or IP+UDP packet from raw connection fields.
 
     This is the low-level entry point shared by both the modern
     ``DataCanonical``-based sink and the legacy ``DatalogEvent``-based
     handler. Dispatches to IPv4 or IPv6 based on ``ss_family``.
+
+    When ``transport == "udp"`` (QUIC plaintext) the packet is framed as
+    IP+UDP (protocol 17) and the seq/ack tracker is skipped — UDP is
+    connectionless. Otherwise the default TCP framing is used.
 
     Accepts both :class:`~friTap.schemas.canonical.AddressFamily` enum
     values and raw strings for backward compatibility with legacy events.
@@ -174,6 +230,20 @@ def build_framed_packet_from_fields(
     from ..schemas.canonical import AddressFamily
 
     family_str = ss_family.value if isinstance(ss_family, AddressFamily) else ss_family
+
+    if transport == "udp":
+        if family_str == AddressFamily.AF_INET6.value:
+            return build_ipv6_udp_packet(
+                _as_ipv6_hex(src_addr), src_port,
+                _as_ipv6_hex(dst_addr), dst_port,
+                data,
+            )
+        return build_ipv4_udp_packet(
+            _as_ipv4_int(src_addr), src_port,
+            _as_ipv4_int(dst_addr), dst_port,
+            data,
+        )
+
     key = make_session_key(src_addr, src_port, dst_addr, dst_port, is_read)
     seq, ack = tracker.get_seq_ack(key, is_read, len(data))
 

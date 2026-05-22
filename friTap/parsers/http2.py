@@ -221,8 +221,13 @@ class Http2Parser(BaseParser):
                 return False
         return True
 
-    def feed(self, data: bytes, direction: str) -> list[ParseResult]:
-        """Parse HTTP/2 frames and return completed stream results."""
+    def feed(self, data: bytes, direction: str,
+             stream_id: int | None = None) -> list[ParseResult]:
+        """Parse HTTP/2 frames and return completed stream results.
+
+        ``stream_id`` is ignored: HTTP/2 derives the stream id from the
+        frame header on the wire.
+        """
         self._ensure_direction(direction)
         buf = self._buffers[direction]
         buf += data

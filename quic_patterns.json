@@ -1,0 +1,22 @@
+{
+    "_meta": {
+        "description": "Hand-derived verification pattern for friTap Phase 1 consumption-path test. QuicSpdyStream::WriteOrBufferBody located in Chrome 148 libmonochrome_64.so (BuildID 5a4cc5503159c7f024daa1b1dddd3f63af34df97) via the unique '.rodata' string 'writing body data'. Entry vaddr 0x4aec4d8; pattern matches exactly once.",
+        "version": "1.0"
+    },
+    "google_quiche": {
+        "arm64": {
+            "QuicSpdyStream_WriteOrBufferBody": [
+                "3F 23 03 D5 FF 43 01 D1 FD 7B 02 A9 F6 57 03 A9 F4 4F 04 A9 FD 83 00 91 F3 03 02 AA F4 03 01 AA ?? ?? ?? ?? ?? ?? ?? ?? 22 02 80 52 F6 03 03 2A F5 03 00 AA"
+            ],
+            "QuicSpdyStream_OnDataFramePayload": [
+                "3F 23 03 D5 FD 7B BF A9 FD 03 00 91 08 04 40 F9 00 ?? ?? 91 ?? ?? ?? ?? 20 00 80 52 FD 7B C1 A8 BF 23 03 D5 C0 03 5F D6"
+            ],
+            "QuicStreamSequencer_OnStreamFrame": [
+                "3F 23 03 D5 FF C3 05 D1 FD 7B 12 A9 FC 67 13 A9 F8 5F 14 A9 F6 57 15 A9 F4 4F 16 A9 FD 83 04 91 58 D0 3B D5 F4 03 01 AA F3 03 00 AA 08 17 40 F9 A8 83 1F F8 08 6C 40 B9 08 05 00 11 08 6C 00 B9 28 04 40 39 37 08 40 F9 36 04 40 79 1F 05 00 71 ?? ?? ?? ?? 68 2E 40 F9"
+            ],
+            "QuicStreamSequencer_Readv": [
+                "3F 23 03 D5 FF 03 05 D1 FD 7B 10 A9 FC 8B 00 F9 F6 57 12 A9 F4 4F 13 A9 FD 03 04 91 56 D0 3B D5 F3 03 00 AA 00 20 00 91 C8 16 40 F9 E3 63 00 91 E4 83 00 91 A8 83 1F F8 FF 7F 02 A9 FF 1B 00 F9 ?? ?? ?? ?? ?? ?? ?? ?? F4 03 00 2A"
+            ]
+        }
+    }
+}

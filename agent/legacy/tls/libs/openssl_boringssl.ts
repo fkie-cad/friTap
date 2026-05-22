@@ -1,6 +1,6 @@
 import { readAddresses, getPortsAndAddresses, resolveOffsets, isSymbolAvailable, calculateZeroBytePercentage } from "../../../shared/shared_functions.js";
 import { checkNumberOfExports } from "../../shared/shared_functions_legacy.js";
-import { enable_default_fd, pcap_enabled } from "../../../fritap_agent.js";
+import { enable_default_fd, pcap_enabled, keylog_enabled } from "../../../fritap_agent.js";
 import { devlog, devlog_error, log, devlog_info } from "../../../util/log.js";
 import { initializePipeline as sharedInitializePipeline, resolveWithPipeline as sharedResolveWithPipeline } from "../../../shared/pipeline_utils.js";
 import { ObjC } from "../../../shared/objclib.js";
@@ -325,6 +325,7 @@ export class OpenSSL_BoringSSL {
     }
 
     install_tls_keys_callback_hook(){
+        if (!keylog_enabled) return;
         log("Error: TLS key extraction not implemented yet.");
     }
 
@@ -333,6 +334,7 @@ export class OpenSSL_BoringSSL {
      */ 
 
     install_openssl_key_extraction_hook(){
+        if (!keylog_enabled) return;
         log("Error: TLS key extraction not implemented yet.");
     }
 
@@ -433,6 +435,7 @@ export class OpenSSL_BoringSSL {
     }
 
     install_boringssl_key_extraction_hook(){
+        if (!keylog_enabled) return;
         log("Error: TLS key extraction not implemented yet.")
     }
 

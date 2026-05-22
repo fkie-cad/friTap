@@ -61,10 +61,10 @@ export class PatternStrategy implements HookingStrategy {
 
                 for (const pattern of patterns) {
                     try {
-                        const matches = Memory.scanSync(mod.base, mod.size, pattern);
-                        if (matches.length > 0) {
+                        const match = this.scanFirstMatch(mod, pattern);
+                        if (match !== null) {
                             hooked.push(funcName);
-                            resolved.set(funcName, matches[0].address);
+                            resolved.set(funcName, match);
                             found = true;
                             break;
                         }
@@ -88,6 +88,43 @@ export class PatternStrategy implements HookingStrategy {
             errors,
             resolvedAddresses: resolved,
         };
+    }
+
+    /**
+     * Scan a module for a byte pattern and return the first match, or null.
+     *
+     * Scans only the module's executable (r-x) ranges. A single scan over the
+     * whole [base, base+size] span throws an "access violation" on large modules
+     * whose span includes unreadable pages (e.g. Chrome's ~193 MB
+     * libmonochrome_64.so). Byte patterns target function prologues, which always
+     * live in executable memory, so r-x scanning is both correct and faster.
+     * Falls back to the original whole-module scan if range enumeration yields
+     * nothing, preserving prior behavior for normal modules.
+     */
+    private scanFirstMatch(mod: Module, pattern: string): NativePointer | null {
+        let ranges: RangeDetails[] = [];
+        try {
+            ranges = mod.enumerateRanges("r-x");
+        } catch (_e) {
+            // fall through to whole-module scan
+        }
+
+        if (!ranges || ranges.length === 0) {
+            const matches = Memory.scanSync(mod.base, mod.size, pattern);
+            return matches.length > 0 ? matches[0].address : null;
+        }
+
+        for (const range of ranges) {
+            try {
+                const matches = Memory.scanSync(range.base, range.size, pattern);
+                if (matches.length > 0) {
+                    return matches[0].address;
+                }
+            } catch (_e) {
+                // Skip unreadable range and continue.
+            }
+        }
+        return null;
     }
 
     isAvailable(): boolean {

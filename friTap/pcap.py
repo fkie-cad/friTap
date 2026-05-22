@@ -272,7 +272,7 @@ class PCAP:
         return pcap_file
     
     def log_plaintext_payload(self, ss_family, function, src_addr, src_port,
-                 dst_addr, dst_port, data):
+                 dst_addr, dst_port, data, transport="tcp"):
         """Writes the captured data to a pcap file.
         Args:
         pcap_file: The opened pcap file.
@@ -283,9 +283,16 @@ class PCAP:
         dst_addr: The destination address of the logged packet.
         dst_port: The destination port of the logged packet.
         data: The decrypted packet data.
+        transport: "tcp" (default) or "udp". QUIC plaintext rides on UDP and
+                   must be framed as IP+UDP (protocol 17) rather than IP+TCP.
         """
-        
+
         t = time.time()
+
+        if transport == "udp":
+            self._log_plaintext_payload_udp(
+                ss_family, src_addr, src_port, dst_addr, dst_port, data, t)
+            return
 
         if function in self.SSL_READ:
             session_unique_key = str(src_addr) + str(src_port) + \
@@ -392,9 +399,93 @@ class PCAP:
         else:
             client_sent += len(data)
         self.ssl_sessions[session_unique_key] = (client_sent, server_sent)
-        
-    
-    # creating a filter for scapy or wiresharks display filter depending on the provided socket_trace_set which looks like 
+
+
+    def _log_plaintext_payload_udp(self, ss_family, src_addr, src_port,
+                 dst_addr, dst_port, data, t):
+        """Writes the captured data to the pcap file framed as IP+UDP.
+
+        Used for QUIC plaintext, which rides on UDP (protocol 17). Unlike the
+        TCP path there is no seq/ack and no ssl_sessions bookkeeping — UDP is
+        connectionless, so each datagram stands alone.
+        """
+        if ss_family == "AF_INET":
+            for writes in (
+                # PCAP record (packet) header
+                # Timestamp seconds
+                ("=I", int(t)),
+                # Timestamp microseconds
+                ("=I", int(t * 1000000) % 1000000),
+                # Number of octets saved
+                ("=I", 28 + len(data)),
+                # Actual length of packet
+                ("=i", 28 + len(data)),
+                # IPv4 header
+                # Version and Header Length
+                (">B", 0x45),
+                # Type of Service
+                (">B", 0),
+                # Total Length
+                (">H", 28 + len(data)),
+                # Identification
+                (">H", 0),
+                # Flags and Fragment Offset
+                (">H", 0x4000),
+                # Time to Live
+                (">B", 0xFF),
+                # Protocol
+                (">B", 17),
+                # Header Checksum
+                (">H", 0),
+                (">I", src_addr),                 # Source Address
+                (">I", dst_addr),                 # Destination Address
+                # UDP header
+                (">H", src_port),                 # Source Port
+                (">H", dst_port),                 # Destination Port
+                (">H", 8 + len(data)),            # UDP Length
+                    (">H", 0)):                       # Checksum
+                self.pcap_file.write(struct.pack(writes[0], writes[1]))
+
+            self.pcap_file.write(data)
+
+        elif ss_family == "AF_INET6":
+            for writes in (
+                # PCAP record (packet) header
+                # Timestamp seconds
+                ("=I", int(t)),
+                # Timestamp microseconds
+                ("=I", int(t * 1000000) % 1000000),
+                # Number of octets saved
+                ("=I", 48 + len(data)),
+                # Actual length of packet
+                ("=i", 48 + len(data)),
+                # IPv6 header
+                # Version, traffic class and Flow label
+                (">I", 0x60000000),
+                # Payload length
+                (">H", 8 + len(data)),
+                # Next Header
+                (">B", 17),
+                # Hop limit
+                (">B", 0xFF),
+                # Source Address
+                (">16s", bytes.fromhex(src_addr)),
+                # Destination Address
+                (">16s", bytes.fromhex(dst_addr)),
+                # UDP header
+                (">H", src_port),                 # Source Port
+                (">H", dst_port),                 # Destination Port
+                (">H", 8 + len(data)),            # UDP Length
+                    (">H", 0)):                       # Checksum
+                self.pcap_file.write(struct.pack(writes[0], writes[1]))
+
+            self.pcap_file.write(data)
+
+        else:
+            self.logger.warning("Packet has unknown/unsupported family!")
+
+
+    # creating a filter for scapy or wiresharks display filter depending on the provided socket_trace_set which looks like
     @staticmethod
     def get_filter_from_traced_sockets(traced_Socket_Set, filter_type="bpf"):
         """

@@ -106,7 +106,8 @@ class Http1Parser(BaseParser):
                 return True
         return data.startswith(b"HTTP/1.")
 
-    def feed(self, data: bytes, direction: str) -> list[ParseResult]:
+    def feed(self, data: bytes, direction: str,
+             stream_id: int | None = None) -> list[ParseResult]:
         """Feed data and return any completed HTTP messages."""
         conn = self._get_conn(direction)
         state = self._get_state(direction)

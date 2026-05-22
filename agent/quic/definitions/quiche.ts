@@ -6,7 +6,7 @@
 import { HookDefinition, ExtraHookDef, ResolvedFunctions } from "../../core/hook_definition.js";
 import { sendQuicDatalog, sendQuicKeylog, sendConnectionLifecycle } from "../../shared/shared_structures.js";
 import { log, devlog, devlog_error } from "../../util/log.js";
-import { pcap_enabled } from "../../fritap_agent.js";
+import { pcap_enabled, keylog_enabled } from "../../fritap_agent.js";
 import { quicConnectionTracker, buildQuicMessage, QuicConnectionInfo } from "../shared/quic_connection_tracker.js";
 import { readHexFromPointer } from "../../tls/decoders/hex_utils.js";
 
@@ -19,16 +19,20 @@ interface ResolvedRef {
 // --- Helpers for parsing sockaddr from quiche_connect/accept args ---
 
 /**
- * Parse a struct sockaddr into IP:port.
+ * Parse a struct sockaddr into the raw address encoding expected by friTap's
+ * pcap writers (see shared_functions.ts getPortsAndAddresses):
+ *   - AF_INET:  addr is a host-order 32-bit integer (number).
+ *   - AF_INET6: addr is a 32-char uppercase hex string with no separators.
+ *               IPv4-mapped (::ffff:) addresses are downgraded to AF_INET.
  * Supports AF_INET (family=2) and AF_INET6 (family=10/30).
  */
-function parseSockaddr(ptr: NativePointer, len: number): { addr: string; port: number; family: string } {
+function parseSockaddr(ptr: NativePointer, len: number): { addr: string | number; port: number; family: string } {
     if (ptr.isNull() || len < 4) {
-        return { addr: "0.0.0.0", port: 0, family: "AF_INET" };
+        return { addr: 0, port: 0, family: "AF_INET" };
     }
     const family = ptr.readU16();
     if (family === 2 && len >= 16) {
-        // AF_INET: { u16 family, u16 port(network), u8[4] addr }
+        // AF_INET: { u16 family, u16 port(network), u8[4] addr(network) }
         const port = ptr.add(2).readU16();
         // Port is in network byte order (big endian)
         const portHost = ((port & 0xFF) << 8) | ((port >> 8) & 0xFF);
@@ -36,26 +40,33 @@ function parseSockaddr(ptr: NativePointer, len: number): { addr: string; port: n
         const b = ptr.add(5).readU8();
         const c = ptr.add(6).readU8();
         const d = ptr.add(7).readU8();
-        return { addr: a + "." + b + "." + c + "." + d, port: portHost, family: "AF_INET" };
+        // Host-order integer, equivalent to ntohl of the network-order u32.
+        const addrInt = ((a << 24) | (b << 16) | (c << 8) | d) >>> 0;
+        return { addr: addrInt, port: portHost, family: "AF_INET" };
     }
     if ((family === 10 || family === 30) && len >= 28) {
         // AF_INET6: { u16 family, u16 port(network), u32 flowinfo, u8[16] addr }
         const port = ptr.add(2).readU16();
         const portHost = ((port & 0xFF) << 8) | ((port >> 8) & 0xFF);
-        const addrBytes = ptr.add(8).readByteArray(16);
-        if (addrBytes) {
-            const hex = Array.from(new Uint8Array(addrBytes))
-                .map(b => b.toString(16).padStart(2, "0"))
-                .join("");
-            // Group into IPv6 notation
-            const groups: string[] = [];
-            for (let i = 0; i < 32; i += 4) {
-                groups.push(hex.substring(i, i + 4));
-            }
-            return { addr: groups.join(":"), port: portHost, family: "AF_INET6" };
+        const ipv6_addr = ptr.add(8);
+        let hex = "";
+        for (let offset = 0; offset < 16; offset += 1) {
+            hex += ("0" + ipv6_addr.add(offset).readU8().toString(16).toUpperCase()).substr(-2);
         }
+        // IPv4-mapped IPv6 (::ffff:a.b.c.d) → downgrade to AF_INET integer.
+        if (hex.indexOf("00000000000000000000FFFF") === 0) {
+            // Last 4 bytes (offset 12-15) hold the IPv4 address in network
+            // order; combine into a host-order integer (ntohl equivalent).
+            const a = ipv6_addr.add(12).readU8();
+            const b = ipv6_addr.add(13).readU8();
+            const c = ipv6_addr.add(14).readU8();
+            const d = ipv6_addr.add(15).readU8();
+            const hostInt = ((a << 24) | (b << 16) | (c << 8) | d) >>> 0;
+            return { addr: hostInt, port: portHost, family: "AF_INET" };
+        }
+        return { addr: hex, port: portHost, family: "AF_INET6" };
     }
-    return { addr: "0.0.0.0", port: 0, family: "AF_INET" };
+    return { addr: 0, port: 0, family: "AF_INET" };
 }
 
 /**
@@ -104,7 +115,7 @@ function createConnectTracker(ref: ResolvedRef,
                     };
                     quicConnectionTracker.register(connKey, info);
 
-                    if (ref.configLogKeys && !this.config.isNull()) {
+                    if (keylog_enabled && ref.configLogKeys && !this.config.isNull()) {
                         try { ref.configLogKeys(this.config); }
                         catch (e) { devlog("[quiche] failed to enable config keylog: " + e); }
                     }
@@ -169,7 +180,7 @@ function createAcceptTracker(ref: ResolvedRef,
                     };
                     quicConnectionTracker.register(connKey, info);
 
-                    if (ref.configLogKeys && !this.config.isNull()) {
+                    if (keylog_enabled && ref.configLogKeys && !this.config.isNull()) {
                         try { ref.configLogKeys(this.config); }
                         catch (e) { devlog("[quiche] failed to enable config keylog: " + e); }
                     }
@@ -435,12 +446,18 @@ function startKeylogPipeReader(readFd: number): void {
 
 
 export function createQuicheDefinition(): HookDefinition {
-    // Create pipe for keylog fd injection
-    const [pipeReadFd, pipeWriteFd] = createKeylogPipe();
-
-    // Start the background reader if pipe was created
-    if (pipeReadFd >= 0) {
-        startKeylogPipeReader(pipeReadFd);
+    // Create the keylog fd-injection pipe only when key extraction is wanted
+    // (-k). In plaintext-only mode (-p without -k) we skip the pipe, the
+    // background reader thread, and the keylog config force-enable below —
+    // quiche still gets its connection-tracking and stream hooks, just none of
+    // the keylog machinery. Symmetric with the pcap_enabled gate on streams.
+    let pipeWriteFd = -1;
+    if (keylog_enabled) {
+        const [pipeReadFd, writeFd] = createKeylogPipe();
+        pipeWriteFd = writeFd;
+        if (pipeReadFd >= 0) {
+            startKeylogPipeReader(pipeReadFd);
+        }
     }
 
     // Mutable container so closures in ExtraHookDefs see resolved functions.
@@ -481,7 +498,9 @@ export function createQuicheDefinition(): HookDefinition {
             createStreamRecvHook(),
             createStreamSendHook(),
             createConnFreeHook(),
-            createKeylogConfigHook(),
+            // Keylog config force-enable + set_keylog_path interception is pure
+            // key-extraction machinery — only install it when keylog is wanted.
+            ...(keylog_enabled ? [createKeylogConfigHook()] : []),
         ],
         onNativeFunctionsResolved: (fns) => {
             if (fns["quiche_config_log_keys"]) {

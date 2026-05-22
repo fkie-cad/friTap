@@ -28,9 +28,10 @@
  */
 
 import { log, devlog, devlog_error } from "../../../util/log.js";
-import { sendWithProtocol } from "../../../shared/shared_structures.js";
+import { sendWithProtocol, sendKeyMaterial } from "../../../shared/shared_structures.js";
 import { toHexString, readAddresses } from "../../../shared/shared_functions.js";
 import { installSshPacketHooks } from "./ssh_packet_hooks.js";
+import { keylog_enabled } from "../../../fritap_agent.js";
 
 // ---------------------------------------------------------------------------
 // sshenc struct offsets (OpenSSH 7.6+ on 64-bit LP64) — used only by the
@@ -96,8 +97,15 @@ function emitSshKey(
     ivData: ArrayBuffer | null,
     ivLen: number,
 ): void {
+    // SSH session keys are keylog material — gate on keylog_enabled so
+    // plaintext-only captures (-p without -k) don't leak them. We emit via
+    // sendKeyMaterial(), the shared choke point for key material that doesn't
+    // flow through sendKeylog(), so the gate is enforced in one place. This
+    // early return is the performance optimization on top of that: it skips
+    // the toHexString() work below when keys aren't wanted.
+    if (!keylog_enabled) return;
     if (keyData && keyLen > 0) {
-        sendWithProtocol({
+        sendKeyMaterial({
             contentType: "ssh_key",
             direction: dir,
             key_type: `SSH_ENC_KEY_${dir}`,
@@ -107,7 +115,7 @@ function emitSshKey(
         });
     }
     if (ivData && ivLen > 0) {
-        sendWithProtocol({
+        sendKeyMaterial({
             contentType: "ssh_key",
             direction: dir,
             key_type: `SSH_IV_${dir}`,
@@ -475,6 +483,10 @@ function hookKexDeriveKeys(moduleName: string): boolean {
             }
         },
         onLeave(_retval) {
+            // SSH shared-secret is keylog material — same gate as emitSshKey().
+            // Returning here also skips the secret-buffer reads below, so we
+            // don't pay the cost when keys aren't wanted.
+            if (!keylog_enabled) return;
             try {
                 const sshPtr = this.sshPtr as NativePointer;
                 const secretBuf = this.secretBuf as NativePointer;
@@ -487,7 +499,7 @@ function hookKexDeriveKeys(moduleName: string): boolean {
                 if (data.isNull()) return;
                 const sharedSecretHex = toHexString(data.readByteArray(len));
                 const cookies = consumeCookies(sshPtr);
-                sendWithProtocol({
+                sendKeyMaterial({
                     contentType: "ssh_keylog",
                     cookie: cookies.local || "",
                     peer_cookie: cookies.peer || "",

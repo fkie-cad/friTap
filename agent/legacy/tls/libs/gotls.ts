@@ -2,7 +2,7 @@ import { readAddresses, get_hex_string_from_byte_array, getBaseAddress, isSymbol
 import { sendKeylog, sendDatalog } from "../../../shared/shared_structures.js";
 import { devlog, devlog_error, log } from "../../../util/log.js";
 import { GoRuntimeParser } from "../../../util/go_runtime_parser.js";
-import { pcap_enabled } from "../../../fritap_agent.js";
+import { pcap_enabled, keylog_enabled } from "../../../fritap_agent.js";
 
 
 interface KeyLogEntry {
@@ -307,6 +307,7 @@ export class GoTLS {
     
     
         install_key_extraction_hook(){
+            if (!keylog_enabled) return;
             // needs to be setup for the specific plattform
         }
     
@@ -380,6 +381,7 @@ export class GoTLS {
     }
 
     install_tls_keys_callback_hook(): boolean {
+        if (!keylog_enabled) return false;
         Interceptor.attach(this.addresses[this.module_name][symbol_writeKeyLog],
             {
                 onEnter: function (args: any) {

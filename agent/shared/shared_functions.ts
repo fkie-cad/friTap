@@ -406,6 +406,73 @@ export function readAddresses(moduleName: string, library_method_mapping: { [key
 }
 
 
+/** Decoded sockaddr/PRNetAddr tuple in the pcap-writer address encoding. */
+export interface DecodedSockaddr {
+    family: "AF_INET" | "AF_INET6";
+    port: number;            // host-order
+    addr: number | string;   // AF_INET -> host-order int; AF_INET6 -> 32-char uppercase hex
+}
+
+/** libc byte-order conversion functions, used only when the native path is requested. */
+export interface ByteOrderFns {
+    ntohs: NativeFunction<number, [number]>;
+    ntohl: NativeFunction<number, [number]>;
+}
+
+/**
+ * Decode a sockaddr (or NSS PRNetAddr, which shares the field layout) at `sa`
+ * into { family, port, addr }. Layout: family@0, port@2, IPv4@4, IPv6@8.
+ * Folds IPv4-mapped IPv6 (::ffff:a.b.c.d) down to AF_INET. Returns null for
+ * unsupported families. Does NOT filter loopback / port 0 — callers decide.
+ *
+ * By default uses platform-independent manual byte math, which is numerically
+ * identical to libc ntohs/ntohl on both little- and big-endian hosts and needs
+ * no native functions. Set `useNativeByteOrder = true` (and pass `fns`) to route
+ * port/address conversion through libc ntohs/ntohl instead.
+ *
+ * @param sa Pointer to the sockaddr structure.
+ * @param useNativeByteOrder When true, use `fns.ntohs`/`fns.ntohl` instead of byte math.
+ * @param fns The ntohs/ntohl wrappers (required when `useNativeByteOrder` is true).
+ */
+export function decodeSockaddr(sa: NativePointer, useNativeByteOrder?: false, fns?: ByteOrderFns): DecodedSockaddr | null;
+export function decodeSockaddr(sa: NativePointer, useNativeByteOrder: true, fns: ByteOrderFns): DecodedSockaddr | null;
+export function decodeSockaddr(
+    sa: NativePointer,
+    useNativeByteOrder: boolean = false,
+    fns?: ByteOrderFns,
+): DecodedSockaddr | null {
+    if (sa.isNull()) return null;
+    const family = sa.readU16();
+
+    const readPort = (): number =>
+        (useNativeByteOrder && fns)
+            ? (fns.ntohs(sa.add(2).readU16()) as number)
+            : (((sa.add(2).readU8() << 8) | sa.add(3).readU8()) >>> 0);
+
+    const readV4 = (p: NativePointer): number =>
+        (useNativeByteOrder && fns)
+            ? (fns.ntohl(p.readU32()) as number)
+            : (((p.readU8() << 24) | (p.add(1).readU8() << 16) |
+                (p.add(2).readU8() << 8) | p.add(3).readU8()) >>> 0);
+
+    if (family === AF_INET) {
+        return { family: "AF_INET", port: readPort(), addr: readV4(sa.add(4)) };
+    }
+    if (family === AF_INET6) {
+        const base = sa.add(8); // sin6_addr
+        let hex = "";
+        for (let i = 0; i < 16; i++) {
+            hex += ("0" + base.add(i).readU8().toString(16).toUpperCase()).slice(-2);
+        }
+        if (hex.indexOf("00000000000000000000FFFF") === 0) { // v4-mapped -> AF_INET
+            return { family: "AF_INET", port: readPort(), addr: readV4(base.add(12)) };
+        }
+        return { family: "AF_INET6", port: readPort(), addr: hex };
+    }
+    return null;
+}
+
+
 // Cache for NativeFunction wrappers (created once, reused per call)
 let _cachedSocketFns: {
     getpeername: NativeFunction<number, [number, NativePointer, NativePointer]>;
@@ -457,8 +524,6 @@ export function getPortsAndAddresses(sockfd: number, isRead: boolean, methodAddr
     }
     var getpeername = _cachedSocketFns.getpeername;
     var getsockname = _cachedSocketFns.getsockname;
-    var ntohs = _cachedSocketFns.ntohs;
-    var ntohl = _cachedSocketFns.ntohl;
     var addrlen = _cachedAddrLenBuf;
     var addr = _cachedAddrBuf;
     var src_dst = ["src", "dst"]
@@ -473,40 +538,19 @@ export function getPortsAndAddresses(sockfd: number, isRead: boolean, methodAddr
             getpeername(sockfd, addr, addrlen)
         }
 
-        var family = addr.readU16();
-        const familyName = AddressFamilyMapping[family] || `UNKNOWN`;
-
-
-        if (family == AF_INET) {
-            message[src_dst[i] + "_port"] = ntohs(addr.add(2).readU16()) as number
-            message[src_dst[i] + "_addr"] = ntohl(addr.add(4).readU32()) as number
-            message["ss_family"] = "AF_INET"
-        } else if (family == AF_INET6) {
-            message[src_dst[i] + "_port"] = ntohs(addr.add(2).readU16()) as number
-            message[src_dst[i] + "_addr"] = ""
-            var ipv6_addr = addr.add(8)
-            for (var offset = 0; offset < 16; offset += 1) {
-                message[src_dst[i] + "_addr"] += ("0" + ipv6_addr.add(offset).readU8().toString(16).toUpperCase()).substr(-2)
-            }
-            if (message[src_dst[i] + "_addr"].toString().indexOf("00000000000000000000FFFF") === 0) {
-                message[src_dst[i] + "_addr"] = ntohl(ipv6_addr.add(12).readU32()) as number
-                message["ss_family"] = "AF_INET"
-            }
-            else {
-                message["ss_family"] = "AF_INET6"
-            }
-        } else {
+        // Byte math by default; flip to `true` to route through the cached ntohs/ntohl.
+        const decoded = decodeSockaddr(addr, false, _cachedSocketFns);
+        if (!decoded) {
             // only uncomment this if you really need to debug this
+            //const familyName = AddressFamilyMapping[addr.readU16()] || `UNKNOWN`;
             //devlog("[-] getPortsAndAddresses resolving error: Only supporting IPv4/6");
-            //devlog(`[-] Inspecting fd: ${sockfd}, Address family: ${family} (${familyName})`);
-            //throw "Only supporting IPv4/6"
-            
-            if (!unwantedFDs.has(sockfd)) {
-                //devlog(`Skipping unsupported address family: ${family}:${familyName} (fd: ${sockfd})`);
-            }
+            //devlog(`[-] Inspecting fd: ${sockfd}, Address family: ${addr.readU16()} (${familyName})`);
             unwantedFDs.add(sockfd); // Mark this fd as unwanted
             return null;
         }
+        message[src_dst[i] + "_port"] = decoded.port;
+        message[src_dst[i] + "_addr"] = decoded.addr;
+        message["ss_family"] = decoded.family;
     }
 
     return message

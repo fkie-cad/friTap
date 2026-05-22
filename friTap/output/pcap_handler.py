@@ -36,6 +36,7 @@ class PcapOutputHandler(OutputHandler):
                     event.dst_addr_raw,
                     event.dst_port,
                     event.data,
+                    transport=event.transport,
                 )
             except OSError as e:
                 self._logger.error("PCAP write error: %s", e)
