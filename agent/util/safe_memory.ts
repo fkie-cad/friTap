@@ -22,6 +22,19 @@ interface ReadableRange { base: NativePointer; end: NativePointer; }
 
 let readableCache: ReadableRange[] = [];
 
+// Android arm64 uses top-byte pointer tagging (Scudo heap tags / MTE, relying on
+// the CPU's Top-Byte-Ignore feature): heap data pointers carry a non-zero tag in
+// the top byte (e.g. 0xb4..). The hardware masks the tag on load/store, but
+// Process.findRangeByAddress expects the canonical (untagged) virtual address — so
+// a tagged pointer matches no range and a perfectly VALID read gets rejected. Clear
+// the top byte before any range lookup. Userspace VAs on these targets are <= 56
+// bits, so this is a no-op for already-canonical pointers. 64-bit only (32-bit
+// platforms don't tag).
+const TBI_MASK: NativePointer | null = Process.pointerSize === 8 ? ptr("0x00ffffffffffffff") : null;
+function untag(p: NativePointer): NativePointer {
+    return TBI_MASK !== null ? p.and(TBI_MASK) : p;
+}
+
 /** Drop the cached readable ranges. Call once at the start of each walk. */
 export function resetReadableCache(): void {
     readableCache = [];
@@ -36,11 +49,12 @@ export function resetReadableCache(): void {
 export function isReadable(ptr: NativePointer, size = 1): boolean {
     if (ptr === null || ptr.isNull()) return false;
     try {
-        const endNeeded = ptr.add(size);
+        const a = untag(ptr); // canonicalise Android tagged pointers before range lookup
+        const endNeeded = a.add(size);
         for (const r of readableCache) {
-            if (ptr.compare(r.base) >= 0 && endNeeded.compare(r.end) <= 0) return true;
+            if (a.compare(r.base) >= 0 && endNeeded.compare(r.end) <= 0) return true;
         }
-        const range = Process.findRangeByAddress(ptr);
+        const range = Process.findRangeByAddress(a);
         if (!range || range.protection[0] !== "r") return false;
         const base = range.base;
         const end = base.add(range.size);

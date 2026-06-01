@@ -34,7 +34,7 @@ import {
     getBundledPatterns,
 } from "./bundled_cronet_patterns.js";
 import { detectBoringSSLFamily, familyAliases } from "./boringssl_family_detect.js";
-import { devlog, devlog_debug, devlog_error } from "../util/log.js";
+import { devlog, devlog_debug, devlog_error, _isShuttingDownNow } from "../util/log.js";
 
 export interface PatternHookResult {
     scheduled: boolean;
@@ -125,8 +125,17 @@ export function installBoringSSLPatternHook(
     // `devlog` (debug-level) to keep default-verbosity stdout clean — the
     // one-time install banner emitted by the chain / pattern_based_hooking
     // covers users who haven't enabled debug output.
+    // The install banner is emitted ONCE on the first secret, not per secret.
+    // It previously logged inside this hot callback, which fires on every
+    // ssl_log_secret() call — flooding the JS→Python channel during active QUIC
+    // key derivation and stalling detach. dumpKeys still runs per call (that is
+    // the actual keylog work); only the diagnostic is throttled.
+    let installLogged = false;
     const onMatch = (args: any[]): void => {
-        devlog(`Installed ssl_log_secret() hooks using byte patterns for module ${moduleName}.`);
+        if (!installLogged) {
+            installLogged = true;
+            devlog(`Installed ssl_log_secret() hooks using byte patterns for module ${moduleName}.`);
+        }
         dumpKeys(args[1], args[0], args[2], lenArg(args[3]) ?? 0);
     };
 
@@ -249,6 +258,14 @@ function pollPatternOutcome(hooker: PatternBasedHooking, moduleName: string): Pr
 
         const tick = (): void => {
             if (done) return;
+
+            // Stop rescheduling once teardown begins — this recurring setTimeout
+            // would otherwise keep the JS message loop alive across script.unload(),
+            // contributing to the detach hang.
+            if (_isShuttingDownNow()) {
+                finish(false);
+                return;
+            }
 
             if (hooker.found_ssl_log_secret) {
                 devlog_debug(`[bssl-pattern] ${moduleName}: pattern match detected`);

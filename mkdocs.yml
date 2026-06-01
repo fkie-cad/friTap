@@ -96,6 +96,9 @@ nav:
   - Advanced Features:
     - Pattern-based Hooking: advanced/patterns.md
     - Standalone Agent Usage: advanced/standalone-agent.md
+  - Protocols:
+    - QUIC & HTTP/3: protocols/quic.md
+    - SSH (OpenSSH): protocols/ssh.md
   - SSL/TLS Libraries:
     - Overview: libraries/index.md
     - BoringSSL: libraries/boringssl.md

@@ -91,6 +91,22 @@ rpc.exports = {
     //@ts-ignore
     inspectssl(): string {
         return inspector.inspect();
+    },
+    //@ts-ignore
+    // Note: this file is not currently imported by the agent entry point
+    // (kept for the inspectssl RPC that other tooling may import directly).
+    // The actively-shipped gracefulDetach RPC lives in agent/fritap_agent.ts
+    // so that it ends up in the compiled bundle. Frida 17+ maps Python
+    // `graceful_detach` to JS `gracefulDetach` — keep the camelCase form
+    // here for consistency if this file ever becomes part of the bundle.
+    gracefulDetach(): void {
+        try {
+            Interceptor.detachAll();
+        } catch (e) {
+            try {
+                console.log(`[gracefulDetach] Interceptor.detachAll threw: ${e}`);
+            } catch (_e2) { /* host already gone */ }
+        }
     }
 };
 

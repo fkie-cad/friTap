@@ -225,12 +225,12 @@ export class LibreSSL_MacOS extends OpenSSL_BoringSSL {
         return null;
     }
 
-    execute_hooks() {
+    async execute_hooks() {
         OpenSSL_BoringSSL.initializePipeline(
             isPatternReplaced() ? patterns : undefined,
             experimental,
         );
-        this.resolveWithPipeline([
+        await this.resolveWithPipelineAsync([
             "SSL_read", "SSL_write", "SSL_get_fd",
             "SSL_get_session", "SSL_SESSION_get_id",
             "SSL_new", "SSL_CTX_set_keylog_callback",

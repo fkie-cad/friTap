@@ -133,6 +133,41 @@ export const MANGLED_SYMBOLS = {
         macos: "__ZN4quic14QuicSpdyStream12WriteHeadersEN6quiche15HttpHeaderBlockEbNS1_29QuicheReferenceCountedPointerINS_24QuicAckListenerInterfaceEEE",
         windows: "",
     },
+    // PHASE-2 CHAIN-FALLBACK #1:
+    // net::QuicChromiumClientStream::WriteHeaders(quiche::HttpHeaderBlock /*BY VALUE*/,
+    //   bool fin, quiche::QuicheReferenceCountedPointer<quic::QuicAckListenerInterface>)
+    // CHROME-SHIM above the quiche stream. Lives in //net/quic and wraps a
+    // quic::QuicSpdyStream (the "inner" stream). args[0] is the
+    // QuicChromiumClientStream* WRAPPER, NOT a QuicSpdyStream. The wrapper holds
+    // the inner QuicSpdyStream* at a build-specific small offset; recover it via
+    // unwrapChromiumClientStream() in google_quiche.ts so the surrogate streamId
+    // matches OnHeadersDecoded (which fires on the inner pointer). Stripped on
+    // every Cronet release build — resolution goes through the pattern path in
+    // quic_patterns.json. The mangled strings here are best-effort and only
+    // matter on a hypothetical unstripped/debug build.
+    quicChromiumClientStreamWriteHeaders: {
+        linux: "_ZN3net25QuicChromiumClientStream12WriteHeadersEN6quiche15HttpHeaderBlockEbN6quiche29QuicheReferenceCountedPointerIN4quic24QuicAckListenerInterfaceEEE",
+        macos: "__ZN3net25QuicChromiumClientStream12WriteHeadersEN6quiche15HttpHeaderBlockEbN6quiche29QuicheReferenceCountedPointerIN4quic24QuicAckListenerInterfaceEEE",
+        windows: "",
+    },
+    // PHASE-2 CHAIN-FALLBACK #2:
+    // quic::QuicSpdySession::WriteHeadersOnHeadersStream(QuicStreamId,
+    //   quiche::HttpHeaderBlock /*BY VALUE*/, bool fin,
+    //   const spdy::SpdyStreamPrecedence&,
+    //   quiche::QuicheReferenceCountedPointer<quic::QuicAckListenerInterface>)
+    // SESSION-LEVEL fallback below both QuicSpdyStream::WriteHeaders and the
+    // chrome shim. ARM64:
+    //   args[0] = QuicSpdySession*  (NOT a stream)
+    //   args[1] = QuicStreamId      (uint32_t — read low 32 bits as surrogate)
+    //   args[2] = HttpHeaderBlock*  (NOTE: shifted right by one slot vs the
+    //                                stream-level hooks — ABI gotcha)
+    //   args[3] = bool fin
+    // Stripped on every Cronet release build; pattern path is the workhorse.
+    quicSpdySessionWriteHeadersOnHeadersStream: {
+        linux: "_ZN4quic15QuicSpdySession27WriteHeadersOnHeadersStreamEjN6quiche15HttpHeaderBlockEbRKN4spdy20SpdyStreamPrecedenceEN6quiche29QuicheReferenceCountedPointerIN4quic24QuicAckListenerInterfaceEEE",
+        macos: "__ZN4quic15QuicSpdySession27WriteHeadersOnHeadersStreamEjN6quiche15HttpHeaderBlockEbRKN4spdy20SpdyStreamPrecedenceEN6quiche29QuicheReferenceCountedPointerIN4quic24QuicAckListenerInterfaceEEE",
+        windows: "",
+    },
 };
 
 // Single source of truth linking friTap pattern/offset *labels* (used in
@@ -151,6 +186,11 @@ export const LABEL_TO_KEY: Record<string, keyof typeof MANGLED_SYMBOLS> = {
     QuicSpdyStream_OnBodyAvailable:    "onBodyAvailable",
     QuicSpdyStream_OnHeadersDecoded:   "onHeadersDecoded",
     QuicSpdyStream_WriteHeaders:        "writeHeaders",
+    // Phase-2 chain-fallback labels — see MANGLED_SYMBOLS comments above for
+    // ABI notes. Patterns live in quic_patterns.json. The fallback chain is
+    // wired in installGoogleQuicheHooks() as winner-takes-all.
+    QuicChromiumClientStream_WriteHeaders:           "quicChromiumClientStreamWriteHeaders",
+    QuicSpdySession_WriteHeadersOnHeadersStream:     "quicSpdySessionWriteHeadersOnHeadersStream",
 };
 
 export const KEY_TO_LABEL: Record<keyof typeof MANGLED_SYMBOLS, string> =

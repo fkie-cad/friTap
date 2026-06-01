@@ -1,6 +1,6 @@
 /* In this file we store global variables and structures */
 
-import { keylog_enabled } from "../fritap_agent.js";
+import { keylog_enabled, _isShuttingDown } from "../fritap_agent.js";
 
 export type ModuleHookingType = (moduleName: string, is_base_hook: boolean) => void;
 
@@ -86,6 +86,15 @@ export function sendKeyMaterial(message: { [key: string]: any }, data?: ArrayBuf
 }
 
 export function sendDatalog(message: { [key: string]: any }, data: ArrayBuffer | number[] | null): void {
+    // Shutdown-time short-circuit. Once gracefulDetach has fired, this is the
+    // single chokepoint for ALL plaintext IPC (datalog from QUIC, TLS, SSH,
+    // IPSec — every protocol). Skipping send() here lets pending Interceptor
+    // callbacks already queued on the JS message loop drain in microseconds
+    // (just the gate check) instead of seconds (full message serialization +
+    // post to Python). Without this, script.unload() blocks until the queue
+    // drains, which under heavy Chrome HTTP/3 traffic blows past any
+    // reasonable detach timeout.
+    if (_isShuttingDown) return;
     message["contentType"] = "datalog";
     sendWithProtocol(message, data);
 }

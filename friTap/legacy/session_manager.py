@@ -10,6 +10,7 @@ signal handling, and cleanup.
 
 from __future__ import annotations
 import json
+import os
 import signal
 import sys
 import time
@@ -211,5 +212,15 @@ class SessionManager:
                     pass
             self.pcap_cleanup(logger.full_capture, logger.mobile, logger.pcap_name)
             logger.cleanup(logger.live, logger.socket_trace, logger.full_capture, logger.debug_output, logger.debug)
+
+            # Safety net. cleanup() normally force-exits the process itself (it
+            # finalizes the pcap/keylog, prints the goodbye banner, then calls
+            # os._exit). We only reach this line if cleanup() returned early via
+            # its _cleanup_done guard — i.e. another thread (e.g. on_detach) is
+            # already mid-teardown. In that case force the exit here so the user
+            # never has to press Ctrl+C a second time. os._exit (not sys.exit)
+            # because the Frida session/script is left half-torn-down and a
+            # non-daemon Frida thread would otherwise block interpreter shutdown.
+            os._exit(0)
 
         signal.signal(signal.SIGINT, signal_handler)

@@ -2,7 +2,7 @@ import { readAddresses, getPortsAndAddresses, resolveOffsets } from "../../../sh
 import { sendKeylog, sendDatalog } from "../../../shared/shared_structures.js";
 import { log, devlog_error } from "../../../util/log.js";
 import { enable_default_fd, pcap_enabled, keylog_enabled } from "../../../fritap_agent.js";
-import { resolveWithPipeline } from "../../../shared/pipeline_utils.js";
+import { resolveWithPipelineAsync } from "../../../shared/pipeline_utils.js";
 
 export class GnuTLS {
 
@@ -33,12 +33,12 @@ export class GnuTLS {
 
         resolveOffsets(this.addresses, this.moduleName, socket_library, "gnutls");
 
-        resolveWithPipeline(this.addresses, this.moduleName, "gnutls", [
+        resolveWithPipelineAsync(this.addresses, this.moduleName, "gnutls", [
             "gnutls_record_recv", "gnutls_record_send",
             "gnutls_session_set_keylog_function", "gnutls_transport_get_int",
             "gnutls_session_get_id", "gnutls_init", "gnutls_handshake",
             "gnutls_session_get_random"
-        ]);
+        ]).catch(() => {}); // best-effort pattern gap-fill (these libs ship no byte patterns)
 
         GnuTLS.gnutls_transport_get_int = new NativeFunction(this.addresses[this.moduleName]["gnutls_transport_get_int"], "int", ["pointer"])
         GnuTLS.gnutls_session_get_id = new NativeFunction(this.addresses[this.moduleName]["gnutls_session_get_id"], "int", ["pointer", "pointer", "pointer"])

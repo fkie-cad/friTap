@@ -2,7 +2,7 @@ import { readAddresses, getPortsAndAddresses, resolveOffsets} from "../../shared
 import { sendKeylog, sendDatalog } from "../../shared/shared_structures.js"
 import { enable_default_fd, pcap_enabled } from "../../fritap_agent.js"
 import { log, devlog } from "../../util/log.js"
-import { resolveWithPipeline } from "../../shared/pipeline_utils.js"
+import { resolveWithPipelineAsync } from "../../shared/pipeline_utils.js"
 
 
 export class S2nTLS {
@@ -36,11 +36,11 @@ export class S2nTLS {
 
         resolveOffsets(this.addresses, this.moduleName, socket_library, "s2n");
 
-        resolveWithPipeline(this.addresses, this.moduleName, "s2n", [
+        resolveWithPipelineAsync(this.addresses, this.moduleName, "s2n", [
             "s2n_send", "s2n_recv", "s2n_connection_get_read_fd",
             "s2n_connection_get_write_fd", "s2n_connection_new",
             "s2n_config_set_key_log_cb"
-        ]);
+        ]).catch(() => {}); // best-effort pattern gap-fill (these libs ship no byte patterns)
 
         //s2n_connection-get_read_fd and s2n_connection_get_write_fd return the corresponding file descriptors
         S2nTLS.s2n_get_read_fd = new NativeFunction(this.addresses[this.moduleName]["s2n_connection_get_read_fd"], "int", ["pointer", "pointer"]);

@@ -26,12 +26,12 @@ export class OpenSSL_BoringSSL_Windows extends OpenSSL_BoringSSL {
         // install hooking for windows
     }
 
-    execute_hooks(){
+    async execute_hooks(){
         OpenSSL_BoringSSL.initializePipeline(
             isPatternReplaced() ? patterns : undefined,
             experimental
         );
-        this.resolveWithPipeline([
+        await this.resolveWithPipelineAsync([
             "SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session",
             "SSL_SESSION_get_id", "SSL_new",
         ]);
@@ -123,12 +123,12 @@ export class OpenSSL_From_Python_Windows extends OpenSSL_BoringSSL {
 
 
 
-    execute_hooks(){
+    async execute_hooks(){
         OpenSSL_BoringSSL.initializePipeline(
             isPatternReplaced() ? patterns : undefined,
             experimental
         );
-        this.resolveWithPipeline([
+        await this.resolveWithPipelineAsync([
             "SSL_CTX_set_keylog_callback", "SSL_CTX_new", "SSL_new", "SSL_get_SSL_CTX",
         ]);
 

@@ -1,7 +1,7 @@
 import { readAddresses, getPortsAndAddresses, resolveOffsets, isSymbolAvailable, checkNumberOfExports, calculateZeroBytePercentage } from "../../shared/shared_functions.js";
 import { enable_default_fd, pcap_enabled } from "../../fritap_agent.js";
 import { devlog, devlog_error, log, devlog_info } from "../../util/log.js";
-import { initializePipeline as sharedInitializePipeline, resolveWithPipeline as sharedResolveWithPipeline } from "../../shared/pipeline_utils.js";
+import { initializePipeline as sharedInitializePipeline, resolveWithPipelineAsync as sharedResolveWithPipelineAsync } from "../../shared/pipeline_utils.js";
 import { ObjC } from "../../shared/objclib.js";
 import { sendKeylog, sendDatalog } from "../../shared/shared_structures.js";
 
@@ -163,11 +163,13 @@ export class OpenSSL_BoringSSL {
     }
 
     /**
-     * Fill in missing addresses using the hooking pipeline.
-     * Never overwrites existing non-null addresses from readAddresses().
+     * Fill in missing addresses using the hooking pipeline. Never overwrites
+     * existing non-null addresses from readAddresses(). Awaits the non-blocking
+     * pipeline so pattern resolution of ssl_log_secret on large stripped modules
+     * cannot stall a gracefulDetach.
      */
-    protected resolveWithPipeline(requiredFunctions: string[]): void {
-        sharedResolveWithPipeline(this.addresses, this.module_name, "openssl", requiredFunctions);
+    protected resolveWithPipelineAsync(requiredFunctions: string[]): Promise<void> {
+        return sharedResolveWithPipelineAsync(this.addresses, this.module_name, "openssl", requiredFunctions);
     }
 
     /**

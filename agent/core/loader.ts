@@ -4,6 +4,7 @@
 
 import { HookDefinition, ResolvedFunctions } from "./hook_definition.js";
 import { readAddresses, resolveOffsets } from "../shared/shared_functions.js";
+import { resolveWithPipelineAsync } from "../shared/pipeline_utils.js";
 import { installReadHook, installWriteHook } from "./executors/read_write.js";
 import { installKeylogHook } from "./executors/keylog_callback.js";
 import { installBoringSSLKeylogChain } from "../shared/boringssl_hook_chain.js";
@@ -19,13 +20,13 @@ import { devlog, log } from "../util/log.js";
  * 5. Dispatch keylog hook based on def.keylog.kind
  * 6. Run extraHooks if present
  */
-export function executeFromDefinition(
+export async function executeFromDefinition(
     def: HookDefinition,
     moduleName: string,
     socketLibrary: string,
     isBaseHook: boolean,
     enableDefaultFd: boolean,
-): void {
+): Promise<void> {
     // 1. Build library_method_mapping
     const mapping: { [key: string]: string[] } = {};
     mapping[`*${moduleName}*`] = def.functions.librarySymbols;
@@ -55,6 +56,17 @@ export function executeFromDefinition(
             }
         }
     }
+
+    // 2c. Fill symbols still missing after exports/offsets via the hooking
+    //     pipeline (user --patterns byte-scan). resolveWithPipelineAsync only
+    //     fills missing/null entries and never overwrites, so existing
+    //     resolution is untouched. No-op when no pattern data was supplied
+    //     (only the symbol strategy is registered, which already failed above).
+    const pipelineSymbols = [
+        ...def.functions.librarySymbols,
+        ...def.nativeFunctions.map(spec => spec.symbol),
+    ];
+    await resolveWithPipelineAsync(addresses, moduleName, def.offsetKey, pipelineSymbols);
 
     // 3. Create NativeFunction wrappers
     const resolvedFns: ResolvedFunctions = {};

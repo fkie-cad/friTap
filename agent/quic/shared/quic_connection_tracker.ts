@@ -106,6 +106,16 @@ class QuicConnectionTracker {
     // connection in its own Wireshark conversation.
     private _observedPeer: ObservedPeer | null = null;
 
+    // Last peer key (`addr:port`) we emitted a devlog for, per branch. The libc
+    // connect() observer fires on EVERY UDP connect() — including every DNS
+    // lookup to the resolver — so logging unconditionally floods the JS→Python
+    // message channel (hundreds of identical lines) and, at Ctrl+C, the
+    // un-drained backlog stalls script.unload()/session.detach(). We therefore
+    // log only when the peer actually changes; the stored _observedPeer is
+    // updated regardless, so capture behavior is unchanged.
+    private _lastLoggedObservedKey: string | null = null;
+    private _lastLoggedIgnoredKey: string | null = null;
+
     /**
      * Register a new QUIC connection.
      * @param connPtr  Native pointer to the connection object (as hex string key)
@@ -152,14 +162,26 @@ class QuicConnectionTracker {
      * cannot pollute the synthesized flow's server 4-tuple — see NON_QUIC_UDP_PORTS.
      */
     setObservedPeer(peer: ObservedPeer): void {
+        // Cheap dedup key — plain field concat, no formatAddr(). This runs on
+        // EVERY connect(); the costly human-readable formatting (IPv6 regex +
+        // allocations) is deferred into the rare on-change log branch below.
+        const peerKey = peer.family + "|" + peer.addr + "|" + peer.port;
         if (NON_QUIC_UDP_PORTS.has(peer.port)) {
-            devlog("[QUIC tracker] ignoring non-QUIC observed peer " +
-                   formatAddr(peer.addr, peer.family) + ":" + peer.port);
+            // Separate ignored/observed dedup streams so repeated DNS/mDNS/NTP
+            // connects stay quiet even when interleaved with real QUIC peers.
+            if (peerKey !== this._lastLoggedIgnoredKey) {
+                this._lastLoggedIgnoredKey = peerKey;
+                devlog("[QUIC tracker] ignoring non-QUIC observed peer " +
+                       formatAddr(peer.addr, peer.family) + ":" + peer.port);
+            }
             return;
         }
-        this._observedPeer = peer;
-        devlog("[QUIC tracker] observed real UDP peer " +
-               formatAddr(peer.addr, peer.family) + ":" + peer.port);
+        this._observedPeer = peer;  // stored regardless — capture behavior unchanged
+        if (peerKey !== this._lastLoggedObservedKey) {
+            this._lastLoggedObservedKey = peerKey;
+            devlog("[QUIC tracker] observed real UDP peer " +
+                   formatAddr(peer.addr, peer.family) + ":" + peer.port);
+        }
     }
 
     /**

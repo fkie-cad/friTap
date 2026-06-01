@@ -166,6 +166,41 @@ export let library_scan_enabled: boolean = false;
 export let ohttp_enabled: boolean = true;
 //@ts-ignore
 export let quic_capture_mode: string = "stream";
+// Force-mode override for the HTTP/3 egress-headers chain. "auto" keeps the
+// winner-takes-all fallback chain (quiche-internal preferred, chrome-shim as
+// fallback, session-level as last resort). Any other value installs exactly
+// that layer and skips the others — useful for chain-validation testing on
+// builds where the primary layer would otherwise always win. Only effective
+// in app-api capture mode. See agent/quic/definitions/google_quiche.ts.
+//@ts-ignore
+export let quic_egress_headers_layer: string = "auto";
+// Mirrors the -do / --debugoutput CLI flag. Used by paths that emit expensive
+// diagnostic output (e.g. enumerating every dynsym/pattern candidate for the
+// QUIC chain labels) so the agent can skip the work entirely when the user
+// did not ask for debug output. Cheap per-call devlog_debug() calls do NOT
+// need this gate — they're filtered Python-side based on the same flag.
+//@ts-ignore
+export let debug_output: boolean = false;
+// Shutdown gate. Set to true by the gracefulDetach RPC (called by Python's
+// detach_with_timeout before script.unload()). Hot data emission paths
+// (sendDatalog / emit) check this flag FIRST and bail immediately — so any
+// callback that was already queued on the single JS message loop drains in
+// microseconds (just the gate check) instead of seconds (full IPC). Without
+// this, Interceptor.detachAll() alone is insufficient: it removes the
+// trampolines for FUTURE calls, but the queue of already-scheduled callbacks
+// still has to drain through Python IPC before script.unload() can return,
+// and under heavy Chrome HTTP/3 traffic that drain takes >30s. Per Frida's
+// own design (single-threaded JS message loop, unbounded queue), this is the
+// canonical user-level workaround documented in frida-gum#474 and related.
+//@ts-ignore
+export let _isShuttingDown: boolean = false;
+// When --quic-only is set, install ONLY the Google QUICHE hooks and skip every TLS-
+// library hook + Java hooks + OHTTP + keylog scan-result hooks. Useful when the
+// user only wants HTTP/3 capture: the attach is much lighter (no multi-megabyte
+// pattern scans, no Java VM safepoint sync), which also reduces the risk of stalling
+// an already-busy target during attach.
+//@ts-ignore
+export let quic_only: boolean = false;
 
 /**
  * Perform a send/recv handshake with the Python host to receive a configuration value.
@@ -214,6 +249,9 @@ scan_results = config_batch.library_scan ?? scan_results;
 library_scan_enabled = config_batch.library_scan_enabled ?? library_scan_enabled;
 ohttp_enabled = config_batch.ohttp_enabled ?? ohttp_enabled;
 quic_capture_mode = config_batch.quic_capture_mode ?? quic_capture_mode;
+quic_only = config_batch.quic_only ?? quic_only;
+quic_egress_headers_layer = config_batch.quic_egress_headers_layer ?? quic_egress_headers_layer;
+debug_output = config_batch.debug_output ?? debug_output;
 
 // "anti" handshake must be LAST in the startup sequence to prevent deadlock
 anti_root = recvHandshake("anti", anti_root, "antiroot");
@@ -315,3 +353,51 @@ function load_os_specific_agent() {
 }
 
 load_os_specific_agent();
+
+// Best-effort graceful detach. Python calls this from
+// ssl_logger_core.detach_with_timeout() BEFORE script.unload() /
+// session.detach() so the JS thread isn't held draining in-flight
+// Interceptor callbacks — which is what was making detach hang for
+// >5s on processes with many hot hooks (e.g. Chrome with the QUIC
+// capture stack installed across libmainlinecronet + libmonochrome:
+// dozens of stream-level hooks, each potentially firing thousands of
+// times per second under traffic).
+//
+// Interceptor.detachAll() is synchronous: it pulls all attached
+// probes out of the trampoline table at once. New invocations of
+// those functions immediately bypass our handlers from this point
+// on, so the queue of pending callbacks stops growing. Frida then
+// drains whatever is already mid-flight (bounded by single-handler
+// runtime, NOT by the rate at which the target keeps calling the
+// hooked function), and returns. The Python timeout (30s by default)
+// is the safety net for any handler still in flight.
+//
+// Wrapped in try/catch so a probe-table issue can't make detach
+// itself throw — we'd rather log and let the host continue tearing
+// down. The Python side is also defensive about missing/old RPCs
+// (older standalone-agent integrations won't have this export, and
+// that's fine — detach just falls back to the slower path).
+// IMPORTANT — RPC naming convention: Frida 17+ maps Python's snake_case
+// (`script.exports.graceful_detach()`) to JS-side camelCase
+// (`rpc.exports.gracefulDetach`). The Python side MUST call `graceful_detach`,
+// and the JS side MUST declare `gracefulDetach`. Don't write the snake_case
+// name in JS — Frida won't find it and you'll see
+// "unable to find method 'gracefulDetach'" at detach time.
+rpc.exports = {
+    //@ts-ignore
+    gracefulDetach(): void {
+        // Set the shutdown flag BEFORE Interceptor.detachAll so any callback
+        // already mid-execution (or queued on the JS message loop) sees the
+        // flag at sendDatalog/emit and short-circuits. Order matters: if we
+        // detached first and then set the flag, callbacks already queued
+        // between the two statements would still pay the full IPC cost.
+        _isShuttingDown = true;
+        try {
+            Interceptor.detachAll();
+        } catch (e) {
+            try {
+                log(`[gracefulDetach] Interceptor.detachAll threw: ${e}`);
+            } catch (_e2) { /* host already gone */ }
+        }
+    }
+};

@@ -26,30 +26,79 @@ function wolfSslSessionIdDecoder(ssl: NativePointer, fns: ResolvedFunctions): st
     return readHexFromPointer(p, len);
 }
 
+/**
+ * Read one buffered key field via a WolfSSL getter that follows the
+ * `int get(ctx, out, outlen)` shape: call with (lengthCtx, NULL, 0) to query
+ * the size, then with (readCtx, buffer, len) to fill it. Returns the formatted
+ * "LABEL: <hex>\n" line, or "" when the getter is unavailable or yields nothing.
+ *
+ * `fn` may be undefined when the target WolfSSL build does not export the
+ * symbol (e.g. compiled without OPENSSL_EXTRA) — in that case we skip the field
+ * instead of crashing with "is not a function".
+ */
+function extractBufferedKey(
+    fn: ((...a: any[]) => any) | undefined,
+    lengthCtx: NativePointer,
+    readCtx: NativePointer,
+    label: string,
+): string {
+    if (!fn) {
+        devlog(`[wolfssl] ${label} extraction function unavailable; skipping`);
+        return "";
+    }
+    const len = fn(lengthCtx, NULL, 0) as number;
+    if (len <= 0) return "";
+    const buffer = Memory.alloc(len);
+    fn(readCtx, buffer, len);
+    return `${label}: ${toHexString(buffer.readByteArray(len))}\n`;
+}
+
+// Emit the wolfSSL_KeepArrays advisory only once per process to avoid spamming
+// the (per-connect) extraction path.
+let keepArraysNoticeLogged = false;
+
+function logKeepArraysNotice(): void {
+    if (keepArraysNoticeLogged) return;
+    keepArraysNoticeLogged = true;
+    devlog(
+        "[wolfssl] note: client/server random and master secret are only retained " +
+        "if wolfSSL_KeepArrays() was called before the handshake. Without it, wolfSSL " +
+        "frees these arrays after the handshake and the extracted values may be zeroed.",
+    );
+}
+
 function wolfSslExtractKeys(ssl: NativePointer, fns: ResolvedFunctions): void {
-    const session = fns["wolfSSL_get_session"](ssl) as NativePointer;
-    let keysString = "";
+    try {
+        logKeepArraysNotice();
+        const getSession = fns["wolfSSL_get_session"];
+        if (!getSession) {
+            devlog("[wolfssl] wolfSSL_get_session unavailable; cannot extract keys");
+            return;
+        }
+        const session = getSession(ssl) as NativePointer;
+        if (session.isNull()) {
+            devlog("[wolfssl] session is null; cannot extract keys");
+            return;
+        }
 
-    const requiredClientRandomLength = fns["wolfSSL_get_client_random"](session, NULL, 0) as number;
-    const clientBuffer = Memory.alloc(requiredClientRandomLength);
-    fns["wolfSSL_get_client_random"](ssl, clientBuffer, requiredClientRandomLength);
-    const clientBytes = clientBuffer.readByteArray(requiredClientRandomLength);
-    keysString = `${keysString}CLIENT_RANDOM: ${toHexString(clientBytes)}\n`;
+        // Preserve existing call semantics: client/server random length is
+        // queried with the session pointer but read from the ssl pointer; the
+        // master key uses the session pointer for both.
+        let keysString = "";
+        keysString += extractBufferedKey(fns["wolfSSL_get_client_random"], session, ssl, "CLIENT_RANDOM");
+        keysString += extractBufferedKey(fns["wolfSSL_get_server_random"], session, ssl, "SERVER_RANDOM");
+        keysString += extractBufferedKey(fns["wolfSSL_SESSION_get_master_key"], session, session, "MASTER_KEY");
 
-    const requiredServerRandomLength = fns["wolfSSL_get_server_random"](session, NULL, 0) as number;
-    const serverBuffer = Memory.alloc(requiredServerRandomLength);
-    fns["wolfSSL_get_server_random"](ssl, serverBuffer, requiredServerRandomLength);
-    const serverBytes = serverBuffer.readByteArray(requiredServerRandomLength);
-    keysString = `${keysString}SERVER_RANDOM: ${toHexString(serverBytes)}\n`;
+        if (keysString.length === 0) {
+            devlog("[wolfssl] no key material extracted (export functions unavailable)");
+            return;
+        }
 
-    const requiredMasterKeyLength = fns["wolfSSL_SESSION_get_master_key"](session, NULL, 0) as number;
-    const masterBuffer = Memory.alloc(requiredMasterKeyLength);
-    fns["wolfSSL_SESSION_get_master_key"](session, masterBuffer, requiredMasterKeyLength);
-    const masterBytes = masterBuffer.readByteArray(requiredMasterKeyLength);
-    keysString = `${keysString}MASTER_KEY: ${toHexString(masterBytes)}\n`;
-
-    devlog("invoking keylog dump from wolfSSL");
-    sendKeylog(keysString);
+        devlog("invoking keylog dump from wolfSSL");
+        sendKeylog(keysString);
+    } catch (e) {
+        devlog(`[wolfssl] key extraction failed: ${e}`);
+    }
 }
 
 const wolfSslClientRandomDecoder = createBufferedClientRandomDecoder("wolfSSL_get_client_random");

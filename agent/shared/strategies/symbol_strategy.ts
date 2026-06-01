@@ -14,7 +14,7 @@ export class SymbolStrategy implements HookingStrategy {
     name = "symbol";
     priority = 100;
 
-    tryHook(moduleName: string, libraryType: string, functions: string[]): HookResult {
+    async tryHookAsync(moduleName: string, libraryType: string, functions: string[]): Promise<HookResult> {
         const hooked: string[] = [];
         const errors: string[] = [];
         const resolved = new Map<string, NativePointer>();

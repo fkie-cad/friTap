@@ -1,6 +1,6 @@
 {
     "_meta": {
-        "description": "Hand-derived verification pattern for friTap Phase 1 consumption-path test. QuicSpdyStream::WriteOrBufferBody located in Chrome 148 libmonochrome_64.so (BuildID 5a4cc5503159c7f024daa1b1dddd3f63af34df97) via the unique '.rodata' string 'writing body data'. Entry vaddr 0x4aec4d8; pattern matches exactly once.",
+        "description": "Body/sequencer patterns hand-derived from Chrome 148 libmonochrome_64.so (BuildID 5a4cc5503159c7f024daa1b1dddd3f63af34df97); verified to also match YouTube's libcronet.148.0.7778.167.so (same Chrome 148 QUICHE base). QuicSpdyStream_OnHeadersDecoded cross-referenced from libmainlinecronet.141.0.7340.3.so's symbol-resolved address (_ZN4quic14QuicSpdyStream16OnHeadersDecodedENS_14QuicHeaderListEb at offset 0x4d2030) and structurally matched in libcronet.148 at offset 0x57c6a4 — UNIQUE 48-byte match. QuicSpdyStream_WriteHeaders re-derived 2026-05-24 via the 'writing headers' string-XREF anchor (Chrome's QuicSpdyStream::WriteHeaders loads this 15-byte string into x1 immediately after saving args; it's passed as the label arg to AssertNotOpen). Pattern F6 03 01 AA ?? ?? ?? ?? ?? ?? ?? ?? E2 01 80 52 ?? ?? ?? ?? F3 03 00 AA encodes: mov x22, x1 (save HttpHeaderBlock ptr) + ADRP/ADD wildcarded (PC-rel string load) + mov w2, #0xf (length 15) + 4-byte wild (save fin to a build-specific callee-preserve reg) + mov x19, x0 (save this). UNIQUE on libmainlinecronet.141.0.7340.3.so (match at 0x4d0908, fn=0x4d08e4 — matches symbol address) and on libcronet.148.0.7778.120.so (match at 0x57b080, fn=0x57b068). Hook attaches mid-function at the match address (+0x24 from fn start); args[0..3] are still in their original ABI registers because the saved-arg MOVs haven't executed yet. Runtime-verified on .141 in com.android.vending (Google Play Store): 30 fires each at symbol entry AND mid-function pattern anchor, identical args confirming arg validity, args[1] dereferences to a real HttpHeaderBlock walkable to 15-header request with pseudo-headers. The previous 3-arg-save pattern (F4 03 02 2A F6 03 01 AA F7 03 00 AA) was a misidentification — it matched a function in base::PersistentSampleVector at .148 offset 0x1f6fa8, not WriteHeaders.",
         "version": "1.0"
     },
     "google_quiche": {
@@ -16,6 +16,18 @@
             ],
             "QuicStreamSequencer_Readv": [
                 "3F 23 03 D5 FF 03 05 D1 FD 7B 10 A9 FC 8B 00 F9 F6 57 12 A9 F4 4F 13 A9 FD 03 04 91 56 D0 3B D5 F3 03 00 AA 00 20 00 91 C8 16 40 F9 E3 63 00 91 E4 83 00 91 A8 83 1F F8 FF 7F 02 A9 FF 1B 00 F9 ?? ?? ?? ?? ?? ?? ?? ?? F4 03 00 2A"
+            ],
+            "QuicSpdyStream_OnHeadersDecoded": [
+                "FF 83 05 D1 FD 7B 13 A9 FC 57 14 A9 F4 4F 15 A9 FD C3 04 91 F3 03 00 AA 00 A0 41 F9 F4 03 01 AA 62 2A 0A 39 7F A2 01 F9 40 00 00 B4 60 2B 00 94"
+            ],
+            "QuicSpdyStream_WriteHeaders": [
+                "F6 03 01 AA ?? ?? ?? ?? ?? ?? ?? ?? E2 01 80 52 ?? ?? ?? ?? F3 03 00 AA"
+            ],
+            "QuicChromiumClientStream_WriteHeaders": [
+                "F3 03 00 AA ?? ?? ?? ?? F5 03 03 AA F4 03 02 2A F6 03 01 AA"
+            ],
+            "QuicSpdySession_WriteHeadersOnHeadersStream": [
+                "F3 03 01 2A F4 03 00 AA ?? ?? ?? ?? E1 03 02 AA F6 03 05 AA F7 03 04 AA F5 03 03 2A"
             ]
         }
     }

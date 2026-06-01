@@ -3,7 +3,7 @@ import { pointerSize, sendKeylog, sendDatalog } from "../../../shared/shared_str
 import { log, devlog, devlog_error } from "../../../util/log.js";
 import { enable_default_fd, pcap_enabled, keylog_enabled } from "../../../fritap_agent.js";
 import { Java } from "../../../shared/javalib.js";
-import { resolveWithPipeline } from "../../../shared/pipeline_utils.js";
+import { resolveWithPipelineAsync } from "../../../shared/pipeline_utils.js";
 
 /**
  *  Current Todo:
@@ -224,10 +224,10 @@ export class NSS {
 
         resolveOffsets(this.addresses, this.moduleName, socket_library, "nss");
 
-        resolveWithPipeline(this.addresses, this.moduleName, "nss", [
+        resolveWithPipelineAsync(this.addresses, this.moduleName, "nss", [
             "PR_Write", "PR_Read", "PR_FileDesc2NativeHandle",
             "SSL_ImportFD", "PK11_ExtractKeyValue", "PK11_GetKeyData"
-        ]);
+        ]).catch(() => {}); // best-effort pattern gap-fill (these libs ship no byte patterns)
 
         if(!Java.available && this.addresses[this.moduleName]["SSL_GetSessionID"]){
             NSS.SSL_SESSION_get_id = new NativeFunction(this.addresses[this.moduleName]["SSL_GetSessionID"], "pointer", ["pointer"]);

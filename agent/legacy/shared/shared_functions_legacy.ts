@@ -18,14 +18,26 @@ export function executeSSLLibrary(
 ): void {
     const instance = new LibClass(moduleName, socket_library, is_base_hook);
 
+    // execute_hooks() may be sync (returns undefined) or async (returns a
+    // Promise — e.g. the OpenSSL/LibreSSL path that awaits a non-blocking
+    // pattern scan). Either way it runs synchronously up to its first `await`,
+    // so symbol-resolved hooks are installed before control returns here. We
+    // fire-and-forget the Promise but attach a .catch so an async rejection
+    // never leaks as an unhandled rejection.
+    const settleAsync = (maybePromise: any, label: string) => {
+        if (maybePromise && typeof maybePromise.then === "function") {
+            maybePromise.catch((e: any) => devlog(`executeSSLLibrary ${label}: ${e}`));
+        }
+    };
+
     if (options?.tryCatch) {
         try {
-            instance.execute_hooks();
+            settleAsync(instance.execute_hooks(), "async error");
         } catch (error_msg) {
             devlog(`executeSSLLibrary error: ${error_msg}`);
         }
     } else {
-        instance.execute_hooks();
+        settleAsync(instance.execute_hooks(), "async error");
     }
 
     if (is_base_hook) {

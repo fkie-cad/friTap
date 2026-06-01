@@ -55,12 +55,12 @@ export class OpenSSL_BoringSSL_MacOS extends OpenSSL_BoringSSL {
         super(moduleName, socket_library, is_base_hook, library_method_mapping);
     }
 
-    execute_hooks(){
+    async execute_hooks(){
         OpenSSL_BoringSSL.initializePipeline(
             isPatternReplaced() ? patterns : undefined,
             experimental
         );
-        this.resolveWithPipeline(["SSL_CTX_set_info_callback"]);
+        await this.resolveWithPipelineAsync(["SSL_CTX_set_info_callback"]);
 
         this.install_tls_keys_callback_hook();
     }
@@ -151,12 +151,12 @@ export class OpenSSL_From_Python_MacOS extends OpenSSL_BoringSSL {
 
 
 
-    execute_hooks(){
+    async execute_hooks(){
         OpenSSL_BoringSSL.initializePipeline(
             isPatternReplaced() ? patterns : undefined,
             experimental
         );
-        this.resolveWithPipeline([
+        await this.resolveWithPipelineAsync([
             "SSL_CTX_set_keylog_callback", "SSL_CTX_new", "SSL_new", "SSL_get_SSL_CTX",
         ]);
 

@@ -2,7 +2,7 @@ import { readAddresses, getPortsAndAddresses, resolveOffsets} from "../../shared
 import { sendDatalog } from "../../shared/shared_structures.js";
 import { enable_default_fd, pcap_enabled } from "../../fritap_agent.js";
 import { log } from "../../util/log.js";
-import { resolveWithPipeline } from "../../shared/pipeline_utils.js";
+import { resolveWithPipelineAsync } from "../../shared/pipeline_utils.js";
 
 /**
  * 
@@ -117,9 +117,9 @@ export class mbed_TLS {
 
         resolveOffsets(this.addresses, this.moduleName, socket_library, "mbedtls");
 
-        resolveWithPipeline(this.addresses, this.moduleName, "mbedtls", [
+        resolveWithPipelineAsync(this.addresses, this.moduleName, "mbedtls", [
             "mbedtls_ssl_read", "mbedtls_ssl_write"
-        ]);
+        ]).catch(() => {}); // best-effort pattern gap-fill (these libs ship no byte patterns)
 
     }
 

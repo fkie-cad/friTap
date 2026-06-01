@@ -7,6 +7,57 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Google QUICHE Phase-2 egress-headers chain** in
+  `agent/quic/definitions/google_quiche.ts`. The HTTP/3 request-header
+  capture path is now a winner-takes-all fallback chain:
+  `QuicSpdyStream::WriteHeaders` (quiche-internal, preferred) →
+  `net::QuicChromiumClientStream::WriteHeaders` (chrome shim, fallback) →
+  `quic::QuicSpdySession::WriteHeadersOnHeadersStream` (gQUIC, last resort).
+  Only the highest-priority layer that resolves is attached, so the Python
+  `FlowCollector` never sees duplicate header chunks for the same request.
+  When the user runs in `--quic-capture-mode app-api`, each attach prints a
+  one-line summary `[*] Google QUICHE egress headers chain in <module>:
+  active layer = <layer>` so the active layer is obvious at a glance.
+  Chrome-shim `args[0]` is the `QuicChromiumClientStream*` wrapper, not the
+  inner `QuicSpdyStream*`; a new `unwrapChromiumClientStream` helper
+  recovers the inner pointer (cached after first probe) so the chrome-shim
+  surrogate streamId still correlates with the response-side
+  `OnHeadersDecoded`. See `docs/protocols/quic.md` and
+  `SEEING_THROUGH_CHROME_HTTP3.md`.
+- Runtime-verified `arm64` patterns for the two chain-fallback labels
+  (`QuicChromiumClientStream_WriteHeaders`,
+  `QuicSpdySession_WriteHeadersOnHeadersStream`) shipped in
+  `friTap/patterns/default_patterns.json` so the chain works out of the box
+  on stripped Chrome 148 / libmonochrome and Cronet 148 / libcronet without
+  requiring `--patterns <user.json>`. User-supplied patterns continue to
+  override defaults via `PatternLoader.deep_merge` (leaf-list replace).
+- `--quic-egress-headers-layer
+  {auto,quiche-internal,chrome-shim,session-level}` CLI flag (default
+  `auto`). Non-`auto` values FORCE a specific layer of the egress chain;
+  the other two layers are skipped even when their patterns resolve. Use
+  this to validate chain behaviour on builds where the primary layer would
+  otherwise always win (e.g. exercise the chrome-shim unwrap path on
+  libmainlinecronet.141). Plumbed end-to-end through `config.py`,
+  `friTap.py`, `ssl_logger_core.py` `config_batch`, and `fritap_agent.ts`.
+  Only effective in `--quic-capture-mode app-api`.
+- `debug_output` config-batch field — mirrors the existing `-do` /
+  `--debugoutput` CLI flag into the agent so JS code paths can cheaply
+  skip expensive diagnostic work (e.g. full dynsym walks on Cronet /
+  libmonochrome) when the user did not ask for debug output. Standalone
+  agent integrators: add the field to your `config_batch` reply — defaults
+  to `False`.
+- Debug-mode candidate enumeration for the three chain labels: when `-do`
+  is set, `resolveQuicheSymbols` dumps every export-table, dynsym, and
+  byte-pattern candidate it considered for each chain label plus which one
+  was picked, with a `WARNING` line on labels whose pattern matched more
+  than one site (the blog's "uniqueness failure" hazard). Skipped silently
+  when `-do` is off.
+- `unwrapChromiumClientStream` hardening — outer try/catch so a wild
+  dereference during offset probing cannot crash the host or affect other
+  hooks, plus a module-validation step that rejects offsets whose alleged
+  inner stream's `vtable[0]` does not land in the wrapper's own module or
+  a Cronet-family module (`libcronet*`, `libmainlinecronet*`,
+  `libmonochrome*`). Per-probe diagnostics emitted only when `-do` is set.
 - `keylog_enabled` `config_batch` field — gates key extraction symmetrically
   with the existing `pcap_enabled` flag. When `friTap.py` is invoked with
   `-p <pcap>` but no `-k <keylog>`, the Python host sets `keylog_enabled=False`

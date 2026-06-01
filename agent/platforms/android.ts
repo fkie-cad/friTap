@@ -25,7 +25,7 @@ import { s2ntls_execute } from "../legacy/tls/platforms/android/s2ntls_android.j
 import { java_execute } from "../tls/platforms/android/android_java_tls_libs.js";
 import { flutter_execute, flutter_execute_modern } from "../tls/platforms/android/flutter_android.js";
 import { mono_btls_execute, mono_btls_execute_modern } from "../tls/platforms/android/mono_btls_android.js";
-import { patterns, isPatternReplaced, selected_protocol, use_modern, scan_results, library_scan_enabled } from "../fritap_agent.js"
+import { patterns, isPatternReplaced, selected_protocol, use_modern, scan_results, library_scan_enabled, quic_only } from "../fritap_agent.js"
 import { processScanResults, isModuleHooked, markModuleHooked } from "../shared/library_scanner.js";
 import { pattern_execute } from "../tls/platforms/android/pattern_android.js"
 import { rustls_execute, rustls_execute_modern } from "../tls/platforms/android/rustls_android.js";
@@ -127,7 +127,7 @@ function install_pattern_based_hooks(){
 
 
 export function load_android_hooking_agent() {
-    hookRegistry.registerAll([
+    const __androidHooks: Parameters<typeof hookRegistry.registerAll>[0] = [
         // TLS libraries (TLS protocol family — also covers QUIC and OHTTP below)
         { platform: plattform_name, pattern: /.*libssl_sb.so/, hookFn: (use_modern ? boring_execute_modern : boring_execute), library: "OpenSSL/BoringSSL", libraryType: "openssl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libssl\.so/, hookFn: (use_modern ? boring_execute_modern : boring_execute), library: "OpenSSL/BoringSSL", libraryType: "openssl", protocol: "tls" },
@@ -187,11 +187,12 @@ export function load_android_hooking_agent() {
         { platform: plattform_name, pattern: /^libmainlinecronet\.[\d.]+\.so$/, hookFn: google_quiche_execute, library: "Google QUICHE (Mainline Cronet APEX)", libraryType: "google_quiche", protocol: "tls" },
         { platform: plattform_name, pattern: /.*monochrome.*\.so/, hookFn: google_quiche_execute, library: "Google QUICHE (Monochrome)", libraryType: "google_quiche", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libxul\.so/, hookFn: neqo_execute, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo", protocol: "tls" },
-    ]);
+    ];
+    // --quic-only: install ONLY the Google QUICHE hooks (skip every TLS-library
+    // hook and its keylog pattern scans). Faster attach, no Java VM sync, less
+    // risk of stalling an already-busy target.
+    hookRegistry.registerAll(quic_only ? __androidHooks.filter(e => (e as any).libraryType === "google_quiche") : __androidHooks);
 
-
-    install_java_hooks();
-    hook_native_Android_SSL_Libs(hookRegistry, true);
     const androidLoaderConfig = {
         platform: plattform_name,
         platformLabel: "Android",
@@ -199,19 +200,37 @@ export function load_android_hooking_agent() {
         functionName: "dlopen",
         preferFunction: "android_dlopen_ext",
     };
-    installOhttpHooks(plattform_name, hookRegistry, moduleNames, "Android", androidLoaderConfig);
-    processScanResults(scan_results, plattform_name, true, selected_protocol);
-    hookDynamicLoader(androidLoaderConfig, hookRegistry, moduleNames, false, selected_protocol);
-    if (isPatternReplaced()){
-        install_pattern_based_hooks();
-    }
 
-    /*
-     * Our simple approach to find the modules which might use BoringSSL internally.
-     * Only runs when --library-scan is enabled to avoid slow startup from scanning all modules.
-     */
-    if (library_scan_enabled) {
-        try{
+    // Attach-time freeze mitigation: break the heavy install into setTimeout(0)-
+    // yielded phases. Each yield releases the Frida runtime so the target's hot
+    // threads (e.g. the QUICHE I/O thread when attaching to an already-playing
+    // YouTube) can make progress between bursts of Interceptor.attach work,
+    // preventing the cascading stall that drops the QUIC session. The host's
+    // script.load() promise still resolves promptly after the synchronous part
+    // (registerAll above) — actual hook installation completes within a few ticks.
+    const phases: Array<{ label: string; fn: () => void }> = [];
+    if (!quic_only) phases.push({ label: "java", fn: () => install_java_hooks() });
+    phases.push({ label: "ssl-libs", fn: () => hook_native_Android_SSL_Libs(hookRegistry, true) });
+    if (!quic_only) phases.push({
+        label: "ohttp+scan-results",
+        fn: () => {
+            installOhttpHooks(plattform_name, hookRegistry, moduleNames, "Android", androidLoaderConfig);
+            processScanResults(scan_results, plattform_name, true, selected_protocol);
+        },
+    });
+    phases.push({
+        label: "loader+patterns",
+        fn: () => {
+            hookDynamicLoader(androidLoaderConfig, hookRegistry, moduleNames, false, selected_protocol);
+            if (isPatternReplaced()) install_pattern_based_hooks();
+        },
+    });
+    // --library-scan is the auto-detect-extra-BoringSSL pass. Deferred to the
+    // last phase so it runs AFTER the base hooks (preserving the original
+    // synchronous ordering) and inherits the same per-phase yield budget.
+    if (library_scan_enabled) phases.push({
+        label: "library-scan",
+        fn: () => {
             let matchedModules = findModulesWithSSLKeyLogCallback();
             // Filter out modules already matched by registry to prevent double-hooking
             matchedModules = matchedModules.filter(mod => !hookRegistry.findMatch(plattform_name, mod, "", selected_protocol));
@@ -227,17 +246,18 @@ export function load_android_hooking_agent() {
                     });
                 }
                 hook_native_Android_SSL_Libs(hookRegistry, false);
-                hookDynamicLoader({
-                    platform: plattform_name,
-                    platformLabel: "Android",
-                    loaderLibrary: /.*libdl.*\.so/,
-                    functionName: "dlopen",
-                    preferFunction: "android_dlopen_ext",
-                }, hookRegistry, moduleNames, false, selected_protocol);
+                hookDynamicLoader(androidLoaderConfig, hookRegistry, moduleNames, false, selected_protocol);
                 log("[*] Hooked additional modules with SSL_CTX_set_keylog_callback.");
             }
-        }catch (error_msg){
-            devlog("[-] Error in hooking additional modules: " + error_msg);
-        }
-    }
+        },
+    });
+    const runPhase = (i: number) => {
+        if (i >= phases.length) return;
+        setTimeout(() => {
+            try { phases[i].fn(); }
+            catch (e) { devlog("[Android] install phase " + phases[i].label + " threw: " + e); }
+            runPhase(i + 1);
+        }, 0);
+    };
+    runPhase(0);
 }

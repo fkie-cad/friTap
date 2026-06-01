@@ -1,5 +1,5 @@
 import { hookRegistry, HookRegistry } from "../shared/registry.js";
-import { selected_protocol, use_modern, scan_results } from "../fritap_agent.js";
+import { selected_protocol, use_modern, scan_results, quic_only } from "../fritap_agent.js";
 import { processScanResults } from "../shared/library_scanner.js";
 import { log, devlog } from "../util/log.js";
 import { getModuleNames, ssl_library_loader, hookDynamicLoader, installOhttpHooks } from "../shared/shared_functions.js";
@@ -44,8 +44,63 @@ function hook_Linux_SSL_Libs(hookRegistry: HookRegistry, is_base_hook: boolean) 
     ssl_library_loader(plattform_name, hookRegistry, moduleNames, "Linux", is_base_hook, selected_protocol)
 }
 
+// --quic-only on Linux: install ONLY QUIC hooks (Cloudflare quiche, Google
+// QUICHE/Cronet, Mozilla Neqo). Broader than Android's google_quiche-only
+// filter because Linux desktop QUIC research is multi-stack: Cloudflare
+// warp/cloudflared (quiche), Chromium/Cronet (google_quiche), Firefox HTTP/3
+// (neqo). All three work on both arm64 and x86_64 via exported symbols;
+// google_quiche additionally has arm64 byte patterns in quic_patterns.json
+// (x86_64 patterns deferred — symbol resolution covers symbol-bearing desktop
+// Chrome/Cronet builds, which is the common case).
+const QUIC_ONLY_LINUX_HOOKS: Parameters<typeof hookRegistry.registerAll>[0] = [
+    { platform: plattform_name, pattern: /.*libquiche\.so/, hookFn: quiche_execute, library: "Cloudflare QUICHE", libraryType: "quiche", protocol: "tls" },
+    { platform: plattform_name, pattern: /.*libcronet.*\.so/, hookFn: google_quiche_execute, library: "Google QUICHE (Cronet)", libraryType: "google_quiche", protocol: "tls" },
+    { platform: plattform_name, pattern: /.*libxul\.so/, hookFn: neqo_execute, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo", protocol: "tls" },
+];
+
 
 export function load_linux_hooking_agent() {
+    if (quic_only) {
+        // QUIC-only opt-in path: install ONLY QUIC hooks, phased via
+        // setTimeout(0) to release the Frida runtime between Interceptor.attach
+        // bursts. Mirrors android.ts pattern but Linux-flavored: no Java VM
+        // step (Linux has none), no OHTTP (non-QUIC), no scan-results
+        // (tlsLibHunter doesn't classify QUIC), no library-scan (BoringSSL
+        // detection, contradicts quic-only intent).
+        //
+        // ROLLBACK: delete this entire `if (quic_only)` block to restore
+        // pre-change behavior (--quic-only silently no-op'd on Linux).
+        hookRegistry.registerAll(QUIC_ONLY_LINUX_HOOKS);
+
+        const linuxLoaderConfig = {
+            platform: plattform_name,
+            platformLabel: "Linux",
+            loaderLibrary: /.*libdl.*\.so/,        // POSIX dynamic loader (libdl); arch-agnostic
+            functionName: "dlopen",                // hook glibc dlopen() to catch late-loaded QUIC libs
+            extractModulePath: true,
+        };
+
+        const phases: Array<{ label: string; fn: () => void }> = [];
+        phases.push({ label: "quic-hooks", fn: () => hook_Linux_SSL_Libs(hookRegistry, true) });
+        phases.push({
+            label: "loader",
+            fn: () => hookDynamicLoader(linuxLoaderConfig, hookRegistry, moduleNames, false, selected_protocol),
+        });
+
+        const runPhase = (i: number) => {
+            if (i >= phases.length) return;
+            setTimeout(() => {
+                try { phases[i].fn(); }
+                catch (e) { devlog("[Linux/quic-only] install phase " + phases[i].label + " threw: " + e); }
+                runPhase(i + 1);
+            }, 0);
+        };
+        runPhase(0);
+        return;
+    }
+
+    // Normal Linux path (quic_only=false): existing synchronous behavior,
+    // preserved verbatim. NO CHANGES below this line.
     hookRegistry.registerAll([
         // TLS libraries (TLS protocol family — also covers QUIC and OHTTP below)
         { platform: plattform_name, pattern: /.*libssl_sb.so/, hookFn: (use_modern ? boring_execute_modern : boring_execute), library: "OpenSSL/BoringSSL", libraryType: "openssl", protocol: "tls" },

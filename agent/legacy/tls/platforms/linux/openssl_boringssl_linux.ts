@@ -134,28 +134,38 @@ export class OpenSSL_BoringSSL_Linux extends OpenSSL_BoringSSL {
 
 
 
-    execute_hooks(){
+    async execute_hooks(){
         // Initialize pipeline with available data (idempotent)
         OpenSSL_BoringSSL.initializePipeline(
             isPatternReplaced() ? patterns : undefined,
             experimental
         );
 
-        // Fill in addresses readAddresses() missed — including ssl_log_secret for patterns
-        this.resolveWithPipeline([
+        // Install the symbol/offset-resolved hooks FIRST and synchronously, so
+        // the hot plaintext + keylog-callback paths are live before we yield to
+        // the event loop for the async pattern scan below. These read addresses
+        // that readAddresses()/resolveOffsets() already populated in the
+        // constructor; they do not depend on the pipeline.
+        this.install_plaintext_read_hook();
+        this.install_plaintext_write_hook();
+        this.install_tls_keys_callback_hook();
+        this.install_extended_hooks();
+
+        // Fill in addresses readAddresses() missed — chiefly ssl_log_secret on
+        // stripped libs. Uses the non-blocking pipeline (async Memory.scan) so a
+        // gracefulDetach can be serviced mid-scan.
+        await this.resolveWithPipelineAsync([
             "SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session",
             "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_keylog_callback",
             "ssl_log_secret",
         ]);
 
-        this.install_plaintext_read_hook();
-        this.install_plaintext_write_hook();
+        // Consumes the pipeline-resolved ssl_log_secret if present, else falls
+        // back to async PatternBasedHooking.
         let hooker_instance = this.install_openssl_key_extraction_hook();
         if (hooker_instance !== undefined && hooker_instance !== null) {
             devlog("Installed OpenSSL key extraction function hooks using patterns: "+hooker_instance.no_hooking_success);
         }
-        this.install_tls_keys_callback_hook();
-        this.install_extended_hooks();
     }
 
 }
@@ -242,12 +252,12 @@ export class OpenSSL_From_Python_Linux extends OpenSSL_BoringSSL {
 
 
 
-    execute_hooks(){
+    async execute_hooks(){
         OpenSSL_BoringSSL.initializePipeline(
             isPatternReplaced() ? patterns : undefined,
             experimental
         );
-        this.resolveWithPipeline([
+        await this.resolveWithPipelineAsync([
             "SSL_CTX_set_keylog_callback", "SSL_CTX_new", "SSL_new", "SSL_get_SSL_CTX",
         ]);
 

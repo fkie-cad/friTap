@@ -29,14 +29,18 @@ export interface HookingStrategy {
     priority: number;
 
     /**
-     * Attempt to hook the required functions in the given module.
+     * Resolve the required functions in the given module. Always async so the
+     * pipeline can await a non-blocking Memory.scan (Pattern/MemoryScan) without
+     * blocking the JS thread — letting a gracefulDetach RPC be serviced
+     * mid-scan. Non-scanning strategies (Symbol/Offset) implement it as a
+     * trivial async method over their synchronous lookup.
      *
      * @param moduleName - Name of the module to hook
      * @param libraryType - Type of library (e.g., "openssl", "gnutls")
      * @param functions - Required function names to hook
      * @returns HookResult indicating success/failure
      */
-    tryHook(moduleName: string, libraryType: string, functions: string[]): HookResult;
+    tryHookAsync(moduleName: string, libraryType: string, functions: string[]): Promise<HookResult>;
 
     /**
      * Check if this strategy is available/applicable for the current context.
@@ -53,7 +57,7 @@ export class HookingPipeline {
 
     /**
      * Add a strategy to the pipeline. Strategies are sorted by priority
-     * (highest first) on each call to hookModule().
+     * (highest first) on each call to hookModuleAsync().
      */
     addStrategy(strategy: HookingStrategy): void {
         if (!this.strategies.some(s => s.name === strategy.name)) {
@@ -70,9 +74,13 @@ export class HookingPipeline {
 
     /**
      * Try all available strategies in priority order, accumulating results.
-     * Each strategy resolves what it can; remaining functions are passed to the next.
+     * Each strategy resolves what it can; remaining functions are passed to the
+     * next. Awaits each strategy's tryHookAsync() when present (falling back to
+     * the synchronous tryHook() for non-scanning strategies like Symbol/Offset),
+     * so pattern/memory scans run via the non-blocking Memory.scan and never
+     * stall a gracefulDetach.
      */
-    hookModule(moduleName: string, libraryType: string, requiredFunctions: string[]): HookResult {
+    async hookModuleAsync(moduleName: string, libraryType: string, requiredFunctions: string[]): Promise<HookResult> {
         const sorted = this.strategies
             .filter(s => s.isAvailable())
             .sort((a, b) => b.priority - a.priority);
@@ -86,9 +94,9 @@ export class HookingPipeline {
         for (const strategy of sorted) {
             if (remaining.length === 0) break;
 
-            devlog(`[HookingPipeline] Trying strategy: ${strategy.name} for ${moduleName} (${remaining.length} remaining)`);
+            devlog(`[HookingPipeline] Trying strategy (async): ${strategy.name} for ${moduleName} (${remaining.length} remaining)`);
             try {
-                const result = strategy.tryHook(moduleName, libraryType, remaining);
+                const result = await strategy.tryHookAsync(moduleName, libraryType, remaining);
 
                 for (const [fn, addr] of result.resolvedAddresses) {
                     if (!allResolved.has(fn)) {

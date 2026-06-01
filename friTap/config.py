@@ -67,6 +67,22 @@ class HookingConfig:
     # stream-level Readv hooks) or "app-api" (Boundary-4 decoded HTTP/3
     # headers; Chrome/Android Google QUICHE only).
     quic_capture_mode: str = "stream"
+    # When True, the agent installs ONLY the Google QUICHE hooks and skips every
+    # TLS-library hook (BoringSSL, Conscrypt, NSS, …), the Java hooks, OHTTP,
+    # and the keylog scan-result hooks. Useful when the user only wants HTTP/3
+    # capture: attach is dramatically lighter (no multi-megabyte Memory.scanSync
+    # passes, no Java VM safepoint sync), which also helps fritap attach to a
+    # target that is already in the middle of active QUIC traffic.
+    quic_only: bool = False
+    # Override which layer of the HTTP/3 egress-headers fallback chain the
+    # agent actually attaches to. "auto" (default) keeps the winner-takes-all
+    # logic: quiche-internal QuicSpdyStream::WriteHeaders preferred, then
+    # net::QuicChromiumClientStream::WriteHeaders, then
+    # quic::QuicSpdySession::WriteHeadersOnHeadersStream as a last-resort gQUIC
+    # fallback. Set to "chrome-shim" or "session-level" to FORCE a fallback
+    # layer for testing — useful for validating chain behavior on builds where
+    # the quiche-internal layer still resolves. Only effective in app-api mode.
+    quic_egress_headers_layer: str = "auto"
     encapsulated_protocols: Dict[str, bool] = field(
         default_factory=lambda: {"ohttp": True}
     )
@@ -186,6 +202,8 @@ class FriTapConfig:
         include_loopback: bool = False,
         force_scan_modules: Optional[List[str]] = None,
         quic_capture_mode: str = "stream",
+        quic_only: bool = False,
+        quic_egress_headers_layer: str = "auto",
     ) -> "FriTapConfig":
         """
         Build a FriTapConfig from the legacy SSL_Logger constructor parameters.
@@ -224,6 +242,8 @@ class FriTapConfig:
                 library_scan=library_scan,
                 force_scan_modules=list(force_scan_modules or []),
                 quic_capture_mode=quic_capture_mode,
+                quic_only=quic_only,
+                quic_egress_headers_layer=quic_egress_headers_layer,
             ),
             protocol=protocol,
             backend=backend,

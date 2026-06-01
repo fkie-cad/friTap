@@ -40,12 +40,12 @@ export class Consycrypt_BoringSSL_Android extends OpenSSL_BoringSSL {
     }
 
 
-    execute_conscrypt_hooks(){
+    async execute_conscrypt_hooks(){
         OpenSSL_BoringSSL.initializePipeline(
             isPatternReplaced() ? patterns : undefined,
             experimental
         );
-        this.resolveWithPipeline([
+        await this.resolveWithPipelineAsync([
             "SSL_CTX_new", "SSL_CTX_set_keylog_callback",
         ]);
 
@@ -58,7 +58,9 @@ export function conscrypt_native_execute(moduleName:string, is_base_hook: boolea
     try{
         var boring_ssl = new Consycrypt_BoringSSL_Android(moduleName,socket_library,is_base_hook);
     try {
-        boring_ssl.execute_conscrypt_hooks();
+        boring_ssl.execute_conscrypt_hooks().catch((error_msg) => {
+            devlog(`conscrypt_execute error: ${error_msg}`);
+        });
     }catch(error_msg){
         devlog(`conscrypt_execute error: ${error_msg}`);
     }

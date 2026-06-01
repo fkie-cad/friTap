@@ -24,7 +24,7 @@ export class OffsetStrategy implements HookingStrategy {
         this.offsetData = data;
     }
 
-    tryHook(moduleName: string, libraryType: string, functions: string[]): HookResult {
+    async tryHookAsync(moduleName: string, libraryType: string, functions: string[]): Promise<HookResult> {
         const hooked: string[] = [];
         const errors: string[] = [];
         const resolved = new Map<string, NativePointer>();

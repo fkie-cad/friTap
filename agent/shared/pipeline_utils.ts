@@ -42,42 +42,47 @@
      devlog(`[Pipeline] Initialized with ${defaultPipeline.size} strategies`);
  }
  
- /**
-  * Fill in missing addresses using the hooking pipeline.
-  * Never overwrites existing non-null addresses.
-  *
-  * @param addresses - The address map (e.g., this.addresses)
-  * @param moduleName - Module name key into addresses
-  * @param libraryType - Library type for pattern lookup (e.g., "openssl", "gnutls")
-  * @param requiredFunctions - Function names that should be resolved
-  */
- export function resolveWithPipeline(
-     addresses: { [libraryName: string]: { [functionName: string]: NativePointer } },
-     moduleName: string,
-     libraryType: string,
-     requiredFunctions: string[]
- ): void {
-     const modAddrs = addresses[moduleName] || {};
-     const missing = requiredFunctions.filter(
-         fn => !modAddrs[fn] || modAddrs[fn].isNull()
-     );
-     if (missing.length === 0) return;
- 
-     devlog(`[Pipeline] ${missing.length} unresolved in ${libraryType}: ${missing.join(", ")}`);
-     const result = defaultPipeline.hookModule(moduleName, libraryType, missing);
- 
-     if (result.resolvedAddresses.size > 0) {
-         if (!addresses[moduleName]) {
-             addresses[moduleName] = {};
-         }
-         for (const [fn, addr] of result.resolvedAddresses) {
-             if (!addresses[moduleName][fn] || addresses[moduleName][fn].isNull()) {
-                 addresses[moduleName][fn] = addr;
-                 devlog(`[Pipeline] Resolved ${fn} via ${result.strategy}: ${addr}`);
-             }
-         }
-     } else {
-         devlog(`[Pipeline] Could not resolve any of: ${missing.join(", ")}`);
-     }
- }
+/**
+ * Fill in missing addresses using the hooking pipeline. Never overwrites
+ * existing non-null addresses. Awaits the pipeline's non-blocking
+ * hookModuleAsync() so any underlying pattern/memory scan uses the async
+ * Memory.scan and a gracefulDetach can be serviced mid-scan. Callers in an
+ * async-capable context (e.g. an async execute_hooks) should await this;
+ * fire-and-forget is acceptable where the resolved addresses are not consumed
+ * synchronously on the next line.
+ *
+ * @param addresses - The address map (e.g., this.addresses)
+ * @param moduleName - Module name key into addresses
+ * @param libraryType - Library type for pattern lookup (e.g., "openssl", "gnutls")
+ * @param requiredFunctions - Function names that should be resolved
+ */
+export async function resolveWithPipelineAsync(
+    addresses: { [libraryName: string]: { [functionName: string]: NativePointer } },
+    moduleName: string,
+    libraryType: string,
+    requiredFunctions: string[]
+): Promise<void> {
+    const modAddrs = addresses[moduleName] || {};
+    const missing = requiredFunctions.filter(
+        fn => !modAddrs[fn] || modAddrs[fn].isNull()
+    );
+    if (missing.length === 0) return;
+
+    devlog(`[Pipeline] ${missing.length} unresolved in ${libraryType}: ${missing.join(", ")}`);
+    const result = await defaultPipeline.hookModuleAsync(moduleName, libraryType, missing);
+
+    if (result.resolvedAddresses.size > 0) {
+        if (!addresses[moduleName]) {
+            addresses[moduleName] = {};
+        }
+        for (const [fn, addr] of result.resolvedAddresses) {
+            if (!addresses[moduleName][fn] || addresses[moduleName][fn].isNull()) {
+                addresses[moduleName][fn] = addr;
+                devlog(`[Pipeline] Resolved ${fn} via ${result.strategy}: ${addr}`);
+            }
+        }
+    } else {
+        devlog(`[Pipeline] Could not resolve any of: ${missing.join(", ")}`);
+    }
+}
  

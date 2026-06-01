@@ -1,4 +1,33 @@
+// Shutdown gate accessor. We resolve the fritap_agent module via require()
+// rather than a top-level `import { _isShuttingDown }` because log.ts is
+// imported transitively during fritap_agent.ts init — a top-level import would
+// create a circular dependency that frida-compile resolves to `undefined` at
+// load time. Exported so other modules (pattern_strategy.ts, google_quiche.ts,
+// memory_scan_strategy.ts) reuse this one gate instead of re-deriving the
+// workaround.
+//
+// The module reference is memoised: frida-compile turns each require() into a
+// fresh `__toCommonJS(...)` that re-materialises the whole exports object (one
+// allocation + a getter per export) on every call. This runs on hot paths
+// (every QUIC Interceptor callback, every log/devlog). Caching the wrapper once
+// makes subsequent calls a single getter read; the getter still reads the live
+// `_isShuttingDown` binding, so we always observe the latest value.
+let _faModule: any = null;
+export function _isShuttingDownNow(): boolean {
+    try {
+        if (_faModule === null) {
+            // Late-bound: only resolved at first call (runtime, post-init), so
+            // the binding is fully wired before we cache the wrapper.
+            _faModule = require("../fritap_agent.js");
+        }
+        return _faModule && _faModule._isShuttingDown === true;
+    } catch (_e) {
+        return false;
+    }
+}
+
 export function log(str: string) {
+    if (_isShuttingDownNow()) return;
     var message: { [key: string]: string } = {}
     message["contentType"] = "console"
     message["console"] = str
@@ -7,6 +36,7 @@ export function log(str: string) {
 
 
 export function devlog(str: string) {
+    if (_isShuttingDownNow()) return;
     var message: { [key: string]: string } = {}
     message["contentType"] = "console_dev"
     message["console_dev"] = str
@@ -80,6 +110,13 @@ export function parseStack(): CallSite {
 }
 
 function emit(level: Level, msg: string, extra?: Record<string, unknown>) {
+  // Shutdown chokepoint for devlog_debug / devlog_info / devlog_warn /
+  // devlog_error. Same justification as sendDatalog's gate: once
+  // gracefulDetach has fired, every pending callback on the JS message loop
+  // should short-circuit at the IPC boundary so script.unload() doesn't
+  // block draining stale diagnostic messages. The cost when not shutting
+  // down is one boolean read.
+  if (_isShuttingDownNow()) return;
   const cs = ENABLE_CALLSITE ? parseStack() : {};
   const ts = new Date().toISOString();
   if (typeof msg !== "string" || msg.length === 0) return;

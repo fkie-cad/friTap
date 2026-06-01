@@ -613,6 +613,18 @@ class SSL_Logger():
                     'library_scan_enabled': self._config.hooking.library_scan,
                     'ohttp_enabled': getattr(self._config.hooking, 'ohttp_enabled', True),
                     'quic_capture_mode': getattr(self._config.hooking, 'quic_capture_mode', 'stream'),
+                    'quic_only': getattr(self._config.hooking, 'quic_only', False),
+                    # Override for the HTTP/3 egress-headers chain layer. "auto" keeps
+                    # the winner-takes-all fallback; anything else forces a specific
+                    # layer so chain validation tests can exercise lower tiers on
+                    # builds where the primary layer would otherwise always win.
+                    'quic_egress_headers_layer': getattr(self._config.hooking, 'quic_egress_headers_layer', 'auto'),
+                    # Mirrors the -do / --debugoutput CLI flag so the agent can
+                    # cheaply skip expensive debug-only enumeration (e.g. listing all
+                    # symbol-table candidates for a chain label) when the user did
+                    # not ask for debug output. Without this gate every attach would
+                    # walk the full Cronet/libmonochrome dynsym (~hundreds of MB).
+                    'debug_output': bool(getattr(self._config, 'debug_output', False)),
                     # In full-capture (-f) mode the raw packets are taken by the external
                     # tcpdump/scapy thread and the in-agent plaintext datalog is discarded
                     # by message_handler (`... and not full_capture`), so don't install the
@@ -1099,20 +1111,121 @@ class SSL_Logger():
         return wrapped_handler
 
 
-    def detach_with_timeout(self, timeout=5):
+    def detach_with_timeout(self, timeout=30):
         """
         Attempt to detach from the instrumented process with a timeout.
 
         Args:
             process: The instrumented process to detach from.
             timeout: Time in seconds to wait before forcing detachment.
+                     Default 30s — Frida's script.unload() blocks waiting for
+                     in-flight Interceptor callbacks to drain, and a process
+                     under heavy hook load (e.g. Chrome's QUIC stack with
+                     dozens of stream-level hooks installed) can keep the JS
+                     thread busy for >5s after Ctrl+C. The previous 5s default
+                     was too aggressive and produced spurious
+                     "Detach process timed out" warnings on QUIC-loaded
+                     captures even when the underlying detach eventually
+                     succeeded. Respects --timeout CLI arg when provided.
         """
         def detach():
             try:
                 if self.debug_output or self.debug:
                     self.logger.debug("Attempting to detach from instrumented process...")
-                self._backend.unload_script(self.script)
-                self._backend.detach(self.process)
+
+                # FAST PATH — the target already died (native crash inside a hook
+                # surfaces as 'process-terminated', and the script is destroyed
+                # with it). There is nothing left to unload or detach from: every
+                # Frida call below would just block until the outer timeout
+                # (default 30s), which delays cleanup()'s goodbye + os._exit and
+                # makes the user think they must press Ctrl+C again. Short-circuit
+                # so teardown finishes immediately.
+                script_dead = bool(getattr(self.script, "is_destroyed", False))
+
+                # Step 1 — graceful_detach RPC. Frida 17 splits the RPC proxy
+                # into exports_sync (blocking) and exports (async coroutine).
+                # We strictly prefer exports_sync so the call actually blocks
+                # until the JS side returns; the async variant would fire-
+                # and-forget the request and we'd race straight into unload.
+                # The agent's gracefulDetach sets a module-scope shutdown
+                # flag BEFORE calling Interceptor.detachAll, so any callback
+                # already queued on the JS message loop short-circuits at
+                # sendDatalog / emit (microsecond per pending callback
+                # instead of a full IPC round-trip).
+                graceful = None
+                exports_sync = getattr(self.script, "exports_sync", None)
+                if exports_sync is not None:
+                    graceful = getattr(exports_sync, "graceful_detach", None)
+                if graceful is None:
+                    exports_async = getattr(self.script, "exports", None)
+                    if exports_async is not None:
+                        graceful = getattr(exports_async, "graceful_detach", None)
+                if callable(graceful):
+                    try:
+                        graceful()
+                    except Exception as e:
+                        # A destroyed script raises here ("script has been
+                        # destroyed") — treat that as the target being gone.
+                        script_dead = True
+                        if self.debug_output or self.debug:
+                            self.logger.debug(f"graceful_detach RPC failed: {e}")
+
+                # Target already gone — nothing to unload or detach. Return now so
+                # cleanup()'s finally prints the goodbye and exits without delay.
+                if script_dead:
+                    if self.debug_output or self.debug:
+                        self.logger.debug(
+                            "target/script already gone — skipping unload + "
+                            "session.detach()"
+                        )
+                    return
+
+                # Step 2 — brief drain. Give the JS message loop a moment to
+                # process any pending callbacks (they'll now short-circuit on
+                # the shutdown flag) so the queue is empty when unload runs.
+                # 200ms is plenty even for thousands of callbacks because
+                # they each do nothing more than a single flag check.
+                try:
+                    threading.Event().wait(0.2)
+                except Exception:
+                    pass
+
+                # Step 3 — unload_script with its OWN timeout. Frida's
+                # script.unload() has no native timeout; if the JS thread is
+                # still busy for any reason it would block forever.
+                # Wrapping it lets us fall through to session.detach() after
+                # 5s no matter what.
+                unload_thread = threading.Thread(
+                    target=lambda: self._backend.unload_script(self.script),
+                    daemon=True,
+                )
+                unload_thread.start()
+                unload_thread.join(timeout=5)
+
+                # Step 4 — session.detach() (best-effort; backend handles
+                # races with the target already exiting).
+                #
+                # ORDERING MATTERS — do not "simplify" this back into an
+                # unconditional detach. If script.unload() is still in-flight on
+                # the daemon thread, the Frida session is busy and calling
+                # session.detach() into it serializes behind the stuck unload,
+                # which is exactly what produced the 30s "Detach process timed
+                # out" hang during heavy QUIC capture. gracefulDetach() already
+                # ran Interceptor.detachAll() on the JS side (Step 1), so the
+                # hooks are gone regardless; when unload is wedged we skip the
+                # racing detach and let process exit / frida-server reclaim the
+                # session. We only issue session.detach() when unload returned
+                # cleanly (the common, non-flooded case).
+                if unload_thread.is_alive():
+                    if self.debug_output or self.debug:
+                        self.logger.debug(
+                            "script.unload() did not return within 5s; skipping "
+                            "session.detach() to avoid racing the busy session "
+                            "(hooks already removed via gracefulDetach; unload "
+                            "thread will exit when the JS message loop drains)"
+                        )
+                else:
+                    self._backend.detach(self.process)
 
             except Exception as e:
                 self.logger.error(f"Error while detaching: {e}")
@@ -1144,6 +1257,36 @@ class SSL_Logger():
             return
         self._cleanup_done = True
 
+        # Run all teardown steps, then ALWAYS print the goodbye banner and force
+        # a clean process exit — even if a step raised (e.g. the target crashed
+        # mid-teardown). This is the single chokepoint every stop path funnels
+        # through: Ctrl+C (main thread via the SIGINT handler), process exit /
+        # native crash (Frida callback thread via on_detach), and the normal or
+        # --timeout return (the CLI's finally block in friTap.py).
+        try:
+            self._run_cleanup_steps(live, socket_trace, full_capture, debug_output, debug)
+        except Exception as _cleanup_err:
+            try:
+                self.logger.error(f"Error during cleanup: {_cleanup_err}")
+            except Exception:
+                pass
+        finally:
+            self.special_logger.info("\nThanks for using friTap. Have a great day!")
+            if not self._tui_mode:
+                # os._exit, not sys.exit: SystemExit only unwinds the current
+                # thread and still blocks interpreter shutdown while it joins the
+                # non-daemon Frida reactor/finalizer thread that stays alive when
+                # script.unload() is still draining the JS message loop. It also
+                # does nothing at all when cleanup() runs on a Frida callback
+                # thread (the crash/on_detach path). os._exit terminates the whole
+                # process immediately from whichever thread we're on, so the user
+                # never needs a second Ctrl+C.
+                os._exit(0)
+
+    def _run_cleanup_steps(self, live=False, socket_trace=False, full_capture=False, debug_output=False, debug=False):
+        """Perform the actual teardown work. Always invoked via cleanup(), which
+        guarantees the goodbye banner and a clean exit run afterward regardless
+        of whether any step here raises."""
         self._stop_consumer_thread()
 
         # Unload plugins
@@ -1210,7 +1353,16 @@ class SSL_Logger():
         self.running = False
         self._done_event.set()
         if self.process:
-            self.detach_with_timeout()  # Detach instrumented process if applicable
+            # Honor --timeout when explicitly set; otherwise use the
+            # 30s default in detach_with_timeout (raised from 5s because Frida's
+            # script.unload() drains in-flight Interceptor callbacks before
+            # returning, which can take >5s on processes with many hot hooks
+            # — typical for Chrome + QUIC capture).
+            _cli_timeout = getattr(self._config.device, 'timeout', None)
+            if isinstance(_cli_timeout, int) and _cli_timeout > 0:
+                self.detach_with_timeout(timeout=_cli_timeout)
+            else:
+                self.detach_with_timeout()
         if self.process is not None and not self._detected_libraries and not self._config.hooking.library_scan:
             if self._config.protocol in ("tls", "auto", "all"):
                 self.special_logger.info(
@@ -1223,9 +1375,6 @@ class SSL_Logger():
                     "If you believe this is incorrect, please open an issue at "
                     "https://github.com/fkie-cad/friTap/issues"
                 )
-        self.special_logger.info("\nThanks for using friTap. Have a great day!")
-        if not self._tui_mode:
-            sys.exit(0)
 
     def wait_for_completion(self):
         """Block until the session ends. Responds to KeyboardInterrupt."""

@@ -312,6 +312,32 @@ Examples:
                            "Readv). 'app-api' captures at the application-API "
                            "Boundary-4 with decoded HTTP/3 headers "
                            "(Chrome/Android Google QUICHE only).")
+    args.add_argument("--quic-egress-headers-layer", required=False,
+                      choices=["auto", "quiche-internal", "chrome-shim", "session-level"],
+                      default="auto",
+                      dest="quic_egress_headers_layer",
+                      help="Override which layer of the HTTP/3 egress-headers chain "
+                           "(QuicSpdyStream::WriteHeaders / "
+                           "net::QuicChromiumClientStream::WriteHeaders / "
+                           "QuicSpdySession::WriteHeadersOnHeadersStream) the agent "
+                           "actually attaches to. Default 'auto' keeps the winner-"
+                           "takes-all fallback chain (quiche-internal preferred, "
+                           "chrome-shim as fallback, session-level as last resort). "
+                           "Set to 'chrome-shim' or 'session-level' to force the "
+                           "fallback path for testing — useful for validating chain "
+                           "behavior on builds where the quiche-internal path still "
+                           "resolves. Only effective with --quic-capture-mode app-api.")
+    args.add_argument("--quic-only", required=False, action="store_const",
+                      const=True, default=False, dest="quic_only",
+                      help="Install ONLY QUIC hooks; skip TLS-library hooks (BoringSSL, "
+                           "NSS, GnuTLS, ...), OHTTP, the keylog scan-results pass, and "
+                           "(Android) the Java hooks. Dramatically lighter attach (no "
+                           "multi-MB pattern scans; on Android, no Java VM safepoint sync) "
+                           "— helps friTap attach to a target already in active QUIC "
+                           "traffic. Supported on Android and Linux (arm64 + x86_64). "
+                           "Filter scope: Android = Google QUICHE (Cronet) only; "
+                           "Linux = Cloudflare quiche, Google QUICHE (Cronet), Mozilla "
+                           "Neqo (Firefox).")
     args.add_argument("--library-scan", "-ls", required=False, action="store_const",
                       const=True, default=False,
                       help="Pre-scan for TLS libraries using tlsLibHunter before hooking. "
@@ -491,6 +517,55 @@ Examples:
         logger.warning("Without the key material, you have a complete network record, but no way to view the contents of the TLS traffic.")
         logger.info("Do you want to proceed without recording keys? : <press any key to proceed or Ctrl+C to abort>")
         input() 
+    # Chrome's network service runs in a child process on modern Android builds,
+    # so attaching to the browser process and hoping to see HTTP/3 page traffic
+    # is a frequent footgun: the socket observer fires for the browser process's
+    # own infra UDP (DoH/sync/Safe-Browsing) but QuicSpdyStream::WriteHeaders
+    # never fires because the streams live in the subprocess. Surface a hint so
+    # the user knows the right flags BEFORE they spend 10 minutes producing an
+    # empty pcap. Heuristic: target name matches a known Chrome-family package,
+    # we're in mobile mode, and the user did NOT pass --enable_child_gating.
+    _CHROME_FAMILY_TARGETS = {
+        "com.android.chrome",
+        "com.chrome.beta",
+        "com.chrome.dev",
+        "com.chrome.canary",
+        "org.chromium.chrome",
+        "Chrome",  # the friendly name Frida resolves on Android
+    }
+    target = (parsed.exec or "").strip()
+    # Only surface the subprocess hint when the user actually opted into QUIC
+    # capture (--quic-capture-mode app-api). Keylog-only Chrome captures
+    # (e.g. `fritap -m <serial> -k logs.log Chrome`) work fine against the
+    # browser process and don't need the subprocess warning — it would just
+    # be noise that hides the real startup output.
+    _explicit_quic_capture = (
+        getattr(parsed, 'quic_capture_mode', 'stream') == 'app-api'
+        or getattr(parsed, 'quic_only', False)
+    )
+    if (parsed.mobile and target in _CHROME_FAMILY_TARGETS and _explicit_quic_capture
+            and not parsed.enable_child_gating and not parsed.spawn_gating_all):
+        logger.warning(
+            "[hint] Chrome on Android runs its network service (where HTTP/3 streams "
+            "live) in a child process. Attaching only to '%s' typically captures the "
+            "browser process's infra UDP (DoH/sync/Safe-Browsing) but NOT the "
+            "user-visible HTTP/3 page traffic. If your pcap ends up empty, try one "
+            "of:", target)
+        logger.warning(
+            "  a)  fritap -m %s -s --enable_child_gating <other-flags> %s "
+            "(spawn fresh + child-gating)",
+            getattr(parsed, "mobile", "<serial>") if isinstance(parsed.mobile, str) else "<serial>",
+            target)
+        logger.warning(
+            "  b)  fritap -m <serial> --enable_child_gating <other-flags> %s "
+            "(attach to running Chrome + child-gating)", target)
+        logger.warning(
+            "  c)  attach directly to the network service subprocess by PID: "
+            "adb shell pidof %s:privileged_process0", target)
+        logger.warning(
+            "Run  adb shell \"ps -A | grep %s\"  to see which child processes "
+            "actually exist for your Chrome build.", target)
+
     try:
         special_logger.info("Start logging")
         special_logger.info("Press Ctrl+C to stop logging")
@@ -530,6 +605,8 @@ Examples:
             include_loopback=getattr(parsed, 'include_loopback', False),
             force_scan_modules=getattr(parsed, 'force_scan_modules', None),
             quic_capture_mode=getattr(parsed, 'quic_capture_mode', 'stream'),
+            quic_only=getattr(parsed, 'quic_only', False),
+            quic_egress_headers_layer=getattr(parsed, 'quic_egress_headers_layer', 'auto'),
         )
 
         # Validate filter expression early (before session starts)

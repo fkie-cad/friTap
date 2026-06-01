@@ -2,7 +2,7 @@ import { readAddresses, getPortsAndAddresses, resolveOffsets } from "../../share
 import { sendDatalog } from "../../shared/shared_structures.js";
 import { log } from "../../util/log.js";
 import { enable_default_fd, pcap_enabled } from "../../fritap_agent.js";
-import { resolveWithPipeline } from "../../shared/pipeline_utils.js";
+import { resolveWithPipelineAsync } from "../../shared/pipeline_utils.js";
 
 export class WolfSSL {
 
@@ -30,12 +30,12 @@ export class WolfSSL {
 
         resolveOffsets(this.addresses, this.moduleName, socket_library, "wolfssl");
 
-        resolveWithPipeline(this.addresses, this.moduleName, "wolfssl", [
+        resolveWithPipelineAsync(this.addresses, this.moduleName, "wolfssl", [
             "wolfSSL_read", "wolfSSL_write", "wolfSSL_get_fd",
             "wolfSSL_get_session", "wolfSSL_connect",
             "wolfSSL_SESSION_get_master_key", "wolfSSL_get_client_random",
             "wolfSSL_get_server_random"
-        ]);
+        ]).catch(() => {}); // best-effort pattern gap-fill (these libs ship no byte patterns)
 
         WolfSSL.wolfSSL_get_fd = new NativeFunction(this.addresses[this.moduleName]["wolfSSL_get_fd"], "int", ["pointer"])
         WolfSSL.wolfSSL_get_session = new NativeFunction(this.addresses[this.moduleName]["wolfSSL_get_session"], "pointer", ["pointer"])

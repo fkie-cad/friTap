@@ -5,10 +5,14 @@
  * to identify statically linked TLS libraries. Used as a last
  * resort when symbols, patterns, and offsets are unavailable.
  *
+ * Scanning is asynchronous (Frida's non-blocking Memory.scan) so the JS
+ * thread can service a gracefulDetach RPC mid-scan.
+ *
  * Priority: 40 (lowest - tried last)
  */
 
 import { HookingStrategy, HookResult } from "../hooking_pipeline";
+import { _isShuttingDownNow } from "../../util/log.js";
 
 /** Known string indicators for TLS libraries */
 const TLS_INDICATORS = [
@@ -28,7 +32,34 @@ export class MemoryScanStrategy implements HookingStrategy {
     name = "memory_scan";
     priority = 40;
 
-    tryHook(moduleName: string, _libraryType: string, functions: string[]): HookResult {
+    /**
+     * Resolve true as soon as the pattern is found anywhere in [base, base+size),
+     * false otherwise. Wraps the async Memory.scan so the JS thread yields between
+     * scan chunks and a gracefulDetach can be serviced mid-scan.
+     */
+    private _scanHasMatchAsync(base: NativePointer, size: number, pattern: string): Promise<boolean> {
+        return new Promise((resolve) => {
+            let matched = false;
+            try {
+                Memory.scan(base, size, pattern, {
+                    onMatch: () => { matched = true; return "stop"; },
+                    onError: () => { /* skip unreadable pages */ },
+                    onComplete: () => resolve(matched),
+                });
+            } catch (_e) {
+                resolve(false);
+            }
+        });
+    }
+
+    /**
+     * Detect a statically linked TLS library by scanning module memory for
+     * known TLS string indicators, then mark requested function names that
+     * appear as strings. Uses the non-blocking async Memory.scan (via
+     * _scanHasMatchAsync) so a gracefulDetach RPC can be serviced mid-scan.
+     * Awaited by the pipeline's hookModuleAsync() as the last-resort strategy.
+     */
+    async tryHookAsync(moduleName: string, _libraryType: string, functions: string[]): Promise<HookResult> {
         const hooked: string[] = [];
         const errors: string[] = [];
         const resolved = new Map<string, NativePointer>();
@@ -37,16 +68,11 @@ export class MemoryScanStrategy implements HookingStrategy {
             const mod = Process.getModuleByName(moduleName);
             const foundIndicators: string[] = [];
 
-            // Scan for TLS indicators in module memory
             for (const indicator of TLS_INDICATORS) {
-                try {
-                    const pattern = this._stringToHexPattern(indicator);
-                    const matches = Memory.scanSync(mod.base, mod.size, pattern);
-                    if (matches.length > 0) {
-                        foundIndicators.push(indicator);
-                    }
-                } catch (scanErr) {
-                    // Skip scan errors for individual indicators
+                if (_isShuttingDownNow()) break;
+                const pattern = this._stringToHexPattern(indicator);
+                if (await this._scanHasMatchAsync(mod.base, mod.size, pattern)) {
+                    foundIndicators.push(indicator);
                 }
             }
 
@@ -55,23 +81,14 @@ export class MemoryScanStrategy implements HookingStrategy {
                 return { success: false, strategy: this.name, hookedFunctions: hooked, errors, resolvedAddresses: new Map() };
             }
 
-            // If we found indicators, the module likely contains a TLS library
-            // Mark functions as "identified" (actual hooking is done by caller)
             for (const funcName of functions) {
-                // Check if the function name appears as a string in the module
-                try {
-                    const pattern = this._stringToHexPattern(funcName);
-                    const matches = Memory.scanSync(mod.base, mod.size, pattern);
-                    if (matches.length > 0) {
-                        hooked.push(funcName);
-                    }
-                } catch (scanErr) {
-                    // Skip
+                if (_isShuttingDownNow()) break;
+                const pattern = this._stringToHexPattern(funcName);
+                if (await this._scanHasMatchAsync(mod.base, mod.size, pattern)) {
+                    hooked.push(funcName);
                 }
             }
 
-            // Even if we didn't find function name strings, the presence of
-            // indicators means this module is worth investigating
             if (hooked.length === 0 && foundIndicators.length >= 2) {
                 hooked.push("_tls_library_detected");
             }
@@ -89,33 +106,26 @@ export class MemoryScanStrategy implements HookingStrategy {
     }
 
     /**
-     * Scan all loaded modules for TLS library indicators.
+     * Scan all loaded modules for TLS library indicators (non-blocking).
      * Returns modules that likely contain statically linked TLS code.
      */
-    scanAllModules(): Array<{ name: string; path: string; indicators: string[] }> {
+    async scanAllModulesAsync(): Promise<Array<{ name: string; path: string; indicators: string[] }>> {
         const results: Array<{ name: string; path: string; indicators: string[] }> = [];
         const modules = Process.enumerateModules();
 
         for (const mod of modules) {
+            if (_isShuttingDownNow()) break;
             const indicators: string[] = [];
             for (const indicator of TLS_INDICATORS) {
-                try {
-                    const pattern = this._stringToHexPattern(indicator);
-                    const matches = Memory.scanSync(mod.base, mod.size, pattern);
-                    if (matches.length > 0) {
-                        indicators.push(indicator);
-                    }
-                } catch (scanErr) {
-                    // Skip
+                if (_isShuttingDownNow()) break;
+                const pattern = this._stringToHexPattern(indicator);
+                if (await this._scanHasMatchAsync(mod.base, mod.size, pattern)) {
+                    indicators.push(indicator);
                 }
             }
 
             if (indicators.length >= 2) {
-                results.push({
-                    name: mod.name,
-                    path: mod.path,
-                    indicators,
-                });
+                results.push({ name: mod.name, path: mod.path, indicators });
             }
         }
 
