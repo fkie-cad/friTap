@@ -232,11 +232,28 @@ class CaptureWizard:
             if result:
                 state.encapsulated_protocols = result
             if self._capture_mode_id == "plaintext":
-                self._step_5d_view_mode()
+                self._step_5c2_quic_capture_mode()
             else:
                 self._skip_view_mode_to_configure()
 
         self._screen.app.push_screen(EncapsulatedProtocolModal(), callback=_on_result)
+
+    def _step_5c2_quic_capture_mode(self) -> None:
+        """Step 5c2: Select QUIC capture boundary (TLS/auto + plaintext only)."""
+        from .modals.quic_capture_mode_modal import QuicCaptureModeModal
+
+        def _on_result(mode: Optional[str]) -> None:
+            if mode is None:
+                # ESC -> back to step 5c
+                self._step_5c_encapsulated_protocols()
+                return
+            state = self._screen._get_state()
+            state.quic_capture_mode = mode
+            if mode != "stream":
+                self._screen._get_activity_log().log_info(f"QUIC capture mode: {mode}")
+            self._step_5d_view_mode()
+
+        self._screen.app.push_screen(QuicCaptureModeModal(), callback=_on_result)
 
     def _step_5d_view_mode(self) -> None:
         """Step 5d: Select display mode (legacy vs flow view).
@@ -246,16 +263,17 @@ class CaptureWizard:
         from .modals.view_mode_modal import ViewModeModal
 
         def _on_result(view_mode: Optional[str]) -> None:
+            state = self._screen._get_state()
             if view_mode is None:
-                # Back -> step 5c (encapsulated protocols) or 5b (non-tls protocols)
-                state = self._screen._get_state()
+                # Back -> step 5c2 (QUIC mode; tls/auto) or 5b (non-tls protocols).
+                # 5d is only reached in plaintext mode, so tls/auto always
+                # passed through the QUIC capture-mode step.
                 protocol = getattr(state, 'protocol', 'tls')
                 if protocol in ("tls", "auto"):
-                    self._step_5c_encapsulated_protocols()
+                    self._step_5c2_quic_capture_mode()
                 else:
                     self._step_5b_protocol()
                 return
-            state = self._screen._get_state()
             state.view_mode = view_mode
             if view_mode != "legacy":
                 self._screen._get_activity_log().log_info(f"Display mode: {view_mode}")
@@ -320,6 +338,7 @@ class CaptureWizard:
             "library_scan": getattr(state, "library_scan", False),
             "debug_log": getattr(state, "debug_log", False),
             "encapsulated_protocols": getattr(state, "encapsulated_protocols", {}),
+            "quic_capture_mode": getattr(state, "quic_capture_mode", "stream"),
         }
 
         confirm_modal = StartConfirmModal(summary=summary)

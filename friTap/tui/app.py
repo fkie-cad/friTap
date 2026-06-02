@@ -56,6 +56,7 @@ class AppState:
     view_mode: str = "legacy"  # "legacy", "flow"
     library_scan: bool = False
     encapsulated_protocols: dict = field(default_factory=lambda: {"ohttp": True})
+    quic_capture_mode: str = "stream"  # "stream" or "app-api"
 
     # Runtime
     session: Optional[object] = None

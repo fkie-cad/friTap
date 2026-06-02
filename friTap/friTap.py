@@ -39,6 +39,36 @@ from .backends.base import BackendName
 from .fritap_utility import get_pid_of_lsass, are_we_running_on_windows, setup_fritap_logging, Success, Failure, FriTapExit
 
 
+def _repair_shadowed_package_path():
+    """Heal ``friTap.__path__`` when a stale install shadows the real source.
+
+    A leftover ``site-packages/friTap`` directory (e.g. from a previous
+    non-editable ``pip install .``) has no ``__init__.py``, so Python resolves
+    ``friTap`` as a *namespace package* whose ``__path__`` points only at that
+    stale directory. Subpackages such as ``friTap.tui`` then resolve into the
+    empty stale tree, breaking the TUI with ``No module named 'friTap.tui.app'``.
+
+    This module always loads from the real source tree, so ``__file__`` gives
+    the correct package directory. We force ``friTap.__path__`` to it and drop
+    any submodules already cached from the wrong location. The function is a
+    no-op when the path is already correct, so it is safe to call eagerly.
+    """
+    import os
+    real_dir = os.path.dirname(os.path.abspath(__file__))
+    package = sys.modules.get("friTap")
+    if package is None or list(getattr(package, "__path__", []) or []) == [real_dir]:
+        return
+    package.__path__ = [real_dir]
+    for name in list(sys.modules):
+        if name == "friTap.tui" or name.startswith("friTap.tui."):
+            module_file = getattr(sys.modules[name], "__file__", None)
+            if not module_file or not os.path.abspath(module_file).startswith(real_dir):
+                del sys.modules[name]
+
+
+_repair_shadowed_package_path()
+
+
 # Libraries the modern agent path does not yet cover; users opting into --modern
 # (or --protocol ssh, which auto-enables it) fall back to legacy behavior for these.
 _MODERN_REGRESSIONS = "iOS/macOS Cronet, Windows LSASS, IPsec"
@@ -743,24 +773,29 @@ def main():
     if replay_file is not None:
         try:
             from .tui.app import run_tui
-            run_tui(replay_file=replay_file)
-        except ImportError:
+        except ImportError as e:
             logging.getLogger('friTap').error(
-                "Textual TUI is not available. Please install the 'textual' package."
+                f"Could not load the interactive TUI: {e}. "
+                "Ensure friTap's TUI dependencies are installed (pip install -e . / pip install textual)."
             )
+        else:
+            run_tui(replay_file=replay_file)
         return
 
     # When invoked with no arguments, launch the interactive TUI
     if len(sys.argv) == 1:
         try:
             from .tui.app import run_tui
-            run_tui()
-            return
-        except ImportError:
+        except ImportError as e:
             logging.getLogger('friTap').error(
-                "Textual TUI is not available. Please install the 'textual' package to use the interactive interface."
+                f"Could not load the interactive TUI: {e}. "
+                "Ensure friTap's TUI dependencies are installed (pip install -e . / pip install textual). "
+                "Falling back to the command-line interface."
             )
             # fall through to CLI help
+        else:
+            run_tui()
+            return
 
     try:
         cli()

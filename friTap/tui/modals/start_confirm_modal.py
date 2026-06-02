@@ -134,9 +134,17 @@ if TEXTUAL_AVAILABLE:
                 f"  Device:        [{type_tag}] {device_name}",
                 f"  Target:        {target_name} [{target_mode_upper}]",
                 f"  Mode:          {capture_mode_display}",
-                f"  Keys:          {keys_display}",
-                f"  Output:        {output_display}",
             ]
+
+            # QUIC capture boundary only matters for plaintext TLS/auto capture
+            # (mirrors the wizard gate that presents the QUIC capture-mode step).
+            protocol = self._summary.get("protocol", "tls")
+            if capture_mode_id == "plaintext" and protocol in ("tls", "auto"):
+                quic_mode = self._summary.get("quic_capture_mode", "stream")
+                lines.append(f"  QUIC Mode:     {quic_mode}")
+
+            lines.append(f"  Keys:          {keys_display}")
+            lines.append(f"  Output:        {output_display}")
 
             if live:
                 if self._ws_found:

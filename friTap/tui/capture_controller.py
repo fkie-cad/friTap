@@ -439,6 +439,7 @@ class CaptureController:
                 encapsulated_protocols=getattr(
                     state, 'encapsulated_protocols', {"ohttp": True}
                 ),
+                quic_capture_mode=getattr(state, 'quic_capture_mode', 'stream'),
             ),
             protocol=getattr(state, 'protocol', 'tls'),
             debug_output=getattr(state, 'debug_log', False),
