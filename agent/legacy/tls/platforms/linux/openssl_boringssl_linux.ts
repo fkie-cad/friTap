@@ -2,7 +2,7 @@
 import {OpenSSL_BoringSSL } from "../../../../tls/libs/openssl_boringssl.js";
 import { socket_library } from "../../../../platforms/linux.js";
 import { patterns, isPatternReplaced, experimental, enable_default_fd } from "../../../../fritap_agent.js"
-import {PatternBasedHooking, get_CPU_specific_pattern } from "../../../../tls/shared/pattern_based_hooking.js";
+import {PatternBasedHooking, get_CPU_specific_pattern, hasUsablePatternsFor } from "../../../../tls/shared/pattern_based_hooking.js";
 import { devlog, devlog_error } from "../../../../util/log.js";
 import { executeSSLLibrary } from "../../../shared/shared_functions_legacy.js";
 import { sendKeylog } from "../../../../shared/shared_structures.js";
@@ -110,7 +110,7 @@ export class OpenSSL_BoringSSL_Linux extends OpenSSL_BoringSSL {
 
         const hooker = new PatternBasedHooking(opensslModule);
 
-        if (isPatternReplaced()){
+        if (isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, "libssl.so3", "Dump-Keys")){
             devlog("Hooking libssl functions by patterns from JSON file");
             hooker.hook_DumpKeys(this.module_name,"libssl.so3",patterns,(args: any[]) => {
                 devlog("Installed ssl_log_secret() hooks using byte patterns.");

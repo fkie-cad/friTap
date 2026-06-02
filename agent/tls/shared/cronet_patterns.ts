@@ -3,6 +3,8 @@
  * x64 patterns are platform-agnostic; arm64 patterns vary by platform.
  */
 
+import { isAndroid, isiOS, isMacOS } from "../../util/process_infos.js";
+
 export const CRONET_X64_PATTERNS = {
     primary:  "41 57 41 56 41 55 41 54 53 48 83 EC ?? 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84",
     fallback: "55 41 57 41 56 41 54 53 48 83 EC 30 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84"
@@ -54,4 +56,62 @@ export function hasModulePatterns(jsonString: string, moduleName: string, fallba
         }
     }
     return false;
+}
+
+/** Current Frida platform mapped onto the keys used in the Schema-B pattern files. */
+function currentPlatformKey(): string {
+    if (isAndroid()) return "android";
+    if (isiOS()) return "ios";
+    if (isMacOS()) return "macos";
+    return Process.platform.toString(); // "linux", "windows"
+}
+
+/** Current Frida arch mapped onto the keys used in the pattern files ("ia32" -> "x86"). */
+function currentArchKey(): string {
+    const arch = Process.arch.toString();
+    return arch === "ia32" ? "x86" : arch;
+}
+
+/**
+ * True when an action value carries at least one non-empty byte-pattern string.
+ * Accepts the Schema-B `{primary, fallback, second_fallback?}` object as well as a
+ * bare string or an array of strings (defensive — never assumes a shape).
+ */
+function isNonEmptyActionPattern(actionValue: any): boolean {
+    if (!actionValue) return false;
+    const nonEmpty = (p: any) => typeof p === "string" && p.trim().length > 0;
+    if (typeof actionValue === "string") return nonEmpty(actionValue);
+    if (Array.isArray(actionValue)) return actionValue.some(nonEmpty);
+    if (typeof actionValue === "object") {
+        return nonEmpty(actionValue.primary) || nonEmpty(actionValue.fallback) || nonEmpty(actionValue.second_fallback);
+    }
+    return false;
+}
+
+/**
+ * Strict, throw-safe gate for the "use JSON pattern vs. fall back to the library's shipped
+ * hardcoded default" decision.
+ *
+ * Returns true ONLY when the loaded pattern JSON contains a USABLE (non-empty) Schema-B
+ * pattern for `moduleName` (or its `fallbackName` library key) at the CURRENT platform+arch
+ * for the given `actionType`. This mirrors the primary two branches of
+ * `PatternBasedHooking.hook_with_pattern_from_json*` (exact module name, then the library
+ * key), so a match here means the hooker would actually find something to scan.
+ *
+ * Returns false for absent / empty / wrong-schema input — notably the flat Schema-A
+ * `default_patterns.json` (which has no top-level `modules` wrapper). The caller then keeps
+ * its shipped hardcoded `default_pattern` instead of routing into an empty/no-op JSON scan.
+ *
+ * Uses optional chaining throughout so it NEVER throws (the legacy gate previously fed
+ * Schema-A data into a non-optional `this.patterns.modules[...]` access that threw a
+ * TypeError, which the loader swallowed — silently disabling the hook).
+ */
+export function hasUsablePatternsFor(jsonString: string, moduleName: string, fallbackName: string, actionType: string): boolean {
+    const parsed = parsePatterns(jsonString);
+    const modules = parsed?.modules;
+    if (!modules) return false;
+    const moduleEntry = modules[moduleName] ?? modules[fallbackName];
+    if (!moduleEntry) return false;
+    const archEntry = moduleEntry?.[currentPlatformKey()]?.[currentArchKey()];
+    return isNonEmptyActionPattern(archEntry?.[actionType]);
 }

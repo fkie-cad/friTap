@@ -1,7 +1,7 @@
 
 import {GoTLS, symbol_writeKeyLog, GoTlsLogger } from "../../../tls/libs/gotls.js";
 import { socket_library } from "../../../../platforms/android.js";
-import {PatternBasedHooking, get_CPU_specific_pattern } from "../../../tls/shared/pattern_based_hooking.js";
+import {PatternBasedHooking, get_CPU_specific_pattern, hasUsablePatternsFor } from "../../../tls/shared/pattern_based_hooking.js";
 import { patterns, isPatternReplaced, experimental } from "../../../../fritap_agent.js"
 import { devlog, devlog_error } from "../../../../util/log.js";
 
@@ -70,7 +70,7 @@ export class GoTLS_Android extends GoTLS {
 
             const hooker = new PatternBasedHooking(goTLSModule);
 
-            if (isPatternReplaced()){
+            if (isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, soName, "Dump-Keys")){
                 devlog("Hooking GoTLS functions by patterns from JSON file");
                 hooker.hook_DumpKeys(this.module_name,soName,patterns,(args: any[]) => {
                     devlog("Installed writeKeyLog() hooks using byte patterns.");

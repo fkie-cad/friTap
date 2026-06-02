@@ -1,7 +1,7 @@
 
 import {Cronet } from "../../../tls/libs/cronet.js";
 import { socket_library } from "../../../../platforms/android.js";
-import {PatternBasedHooking, get_CPU_specific_pattern, hasModulePatterns } from "../../../tls/shared/pattern_based_hooking.js";
+import {PatternBasedHooking, get_CPU_specific_pattern, hasUsablePatternsFor } from "../../../tls/shared/pattern_based_hooking.js";
 import { patterns, isPatternReplaced, keylog_enabled } from "../../../../fritap_agent.js"
 import { devlog, devlog_debug, devlog_error, devlog_info, log } from "../../../../util/log.js";
 import { sendKeylog } from "../../../../shared/shared_structures.js";
@@ -91,7 +91,7 @@ export class Cronet_Android extends Cronet {
         }
         const hooker = new PatternBasedHooking(cronetModule);
 
-        if (isPatternReplaced() && hasModulePatterns(patterns, this.module_name, "libcronet.so")){
+        if (isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, "libcronet.so", "Dump-Keys")){
             devlog("Hooking libcronet functions by patterns from JSON file");
             hooker.hook_DumpKeys(this.module_name,"libcronet.so",patterns,(args: any[]) => {
                 devlog("Installed ssl_log_secret() hooks using byte patterns for module "+this.module_name+".");

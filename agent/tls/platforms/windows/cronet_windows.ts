@@ -2,7 +2,7 @@
 
 import { socket_library } from "../../../platforms/windows.js";
 import { enable_default_fd } from "../../../fritap_agent.js";
-import { executeBoringSSLFamily } from "../../shared/boringssl_family_executor.js";
+import { cronetExecuteModern } from "../../shared/cronet_modern.js";
 import { devlog_debug } from "../../../util/log.js";
 
 export { cronet_execute } from "../../../legacy/tls/platforms/windows/cronet_windows.js";
@@ -17,5 +17,5 @@ export function cronet_execute_modern(moduleName: string, is_base_hook: boolean)
         devlog_debug(`Skipping module ${moduleName} due to excluded suffix/prefix.`);
         return;
     }
-    executeBoringSSLFamily(moduleName, socket_library, is_base_hook, enable_default_fd);
+    cronetExecuteModern(moduleName, socket_library as string, is_base_hook, enable_default_fd);
 }

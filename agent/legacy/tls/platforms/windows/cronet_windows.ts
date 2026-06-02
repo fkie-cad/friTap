@@ -1,7 +1,7 @@
 
 import {Cronet } from "../../../../tls/libs/cronet.js";
 import { socket_library } from "../../../../platforms/windows.js";
-import {PatternBasedHooking, get_CPU_specific_pattern, hasModulePatterns } from "../../../../tls/shared/pattern_based_hooking.js";
+import {PatternBasedHooking, get_CPU_specific_pattern, hasUsablePatternsFor } from "../../../../tls/shared/pattern_based_hooking.js";
 import { CRONET_X64_PATTERNS, CRONET_X86_PATTERNS } from "../../../../tls/shared/cronet_patterns.js";
 import { patterns, isPatternReplaced } from "../../../../fritap_agent.js"
 import { devlog, devlog_error, devlog_info, devlog_warn, devlog_debug, log } from "../../../../util/log.js";
@@ -42,7 +42,7 @@ export class Cronet_Windows extends Cronet {
         }
         const hooker = new PatternBasedHooking(cronetModule);
 
-        if (isPatternReplaced() && hasModulePatterns(patterns, this.module_name, "libcronet.dll")){
+        if (isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, "libcronet.dll", "Dump-Keys")){
             devlog("Hooking libcronet functions by patterns from JSON file");
             hooker.hook_DumpKeys(this.module_name,"libcronet.dll",patterns,(args: any[]) => {
                 devlog("Installed ssl_log_secret() hooks using byte patterns for module "+this.module_name+".");

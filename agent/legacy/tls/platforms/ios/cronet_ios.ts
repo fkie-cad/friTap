@@ -1,7 +1,7 @@
 
 import {Cronet } from "../../../../tls/libs/cronet.js";
 import { socket_library } from "../../../../platforms/ios.js";
-import {PatternBasedHooking, get_CPU_specific_pattern, hasModulePatterns } from "../../../../tls/shared/pattern_based_hooking.js";
+import {PatternBasedHooking, get_CPU_specific_pattern, hasUsablePatternsFor } from "../../../../tls/shared/pattern_based_hooking.js";
 import { patterns, isPatternReplaced } from "../../../../fritap_agent.js"
 import { devlog, devlog_debug, devlog_error } from "../../../../util/log.js";
 import { scheduleBoringSSLSymbolFallback, installBoringSSLSymbolHook } from "../../../../shared/boringssl_symbol_hook.js";
@@ -28,7 +28,7 @@ export class Cronet_iOS extends Cronet {
         if (cronetModule === null) return null;
         const hooker = new PatternBasedHooking(cronetModule);
 
-        if (isPatternReplaced() && hasModulePatterns(patterns, this.module_name, "Cronet")){
+        if (isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, "Cronet", "Dump-Keys")){
             devlog("Hooking Cronet functions by pattern\nThis is still untested and might fail");
             hooker.hook_DumpKeys(this.module_name,"Cronet",patterns,(args: any[]) => {
                 this.dumpKeys(args[1], args[0], args[2], lenArg(args[3]));

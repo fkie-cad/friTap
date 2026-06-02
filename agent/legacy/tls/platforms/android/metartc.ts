@@ -1,7 +1,7 @@
 
 import { Flutter } from "../../../tls/libs/flutter.js";
 import { socket_library } from "../../../../platforms/android.js";
-import {PatternBasedHooking, get_CPU_specific_pattern } from "../../../tls/shared/pattern_based_hooking.js";
+import {PatternBasedHooking, get_CPU_specific_pattern, hasUsablePatternsFor } from "../../../tls/shared/pattern_based_hooking.js";
 import { patterns, isPatternReplaced } from "../../../../fritap_agent.js"
 import { devlog, devlog_error } from "../../../../util/log.js";
 
@@ -44,7 +44,7 @@ export class MetaRTC_Android extends Flutter {
         const metartcModule = Process.findModuleByName(this.module_name);
         const hooker = new PatternBasedHooking(metartcModule);
 
-        if (isPatternReplaced()){
+        if (isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, "libstartup.so", "Dump-Keys")){
             devlog("Hooking libstartup (metartc) functions by patterns from JSON file");
             hooker.hook_DumpKeys(this.module_name,"libstartup.so",patterns,(args: any[]) => {
                 this.dumpKeys(args[1], args[0], args[2]);  // Unpack args into dumpKeys

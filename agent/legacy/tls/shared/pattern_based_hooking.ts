@@ -15,11 +15,11 @@ type ActionPatterns = {
     "KeyLogCallback-Function": Pattern;
 };
 
-export { hasModulePatterns } from "../../../tls/shared/cronet_patterns.js";
+export { hasModulePatterns, hasUsablePatternsFor } from "../../../tls/shared/cronet_patterns.js";
 
 export function get_CPU_specific_pattern(
     default_pattern: { [arch: string]: { primary: string; fallback: string; second_fallback?: string } }
-): { primary: string; fallback: string; second_fallback?: string } {
+): { primary: string; fallback: string; second_fallback?: string } | null {
     let arch = Process.arch.toString(); // Get architecture, e.g., "x64", "arm64"
 
     if (arch === "ia32") {
@@ -29,9 +29,12 @@ export function get_CPU_specific_pattern(
 
     if (default_pattern[arch]) {
         return default_pattern[arch]; // Return the pattern for the architecture
-    } else {
-        throw new Error(`No patterns found for CPU architecture: ${arch}`);
     }
+    // No shipped hardcoded pattern for this architecture. Return null instead of
+    // throwing so a missing-arch fallback does not abort sibling hook installs for
+    // the same library (callers treat null/empty as "nothing to scan" and no-op).
+    devlog_error(`No shipped hardcoded pattern for CPU architecture: ${arch}`);
+    return null;
 }
 
 export class PatternBasedHooking {
@@ -150,10 +153,17 @@ export class PatternBasedHooking {
      *  For hooking modules with either the primary or fallback pattern (onReturn)
      */
         public hookModuleByPatternOnReturn(
-            patterns: { primary: string; fallback: string },
+            patterns: { primary: string; fallback: string } | null | undefined,
             userCallback: (args: any[], retval?: NativePointer) => void,
             maxArgs: number
         ): void {
+            if (!patterns || (!patterns.primary && !patterns.fallback)) {
+                // No usable pattern (missing-arch shipped pattern, or empty JSON entry).
+                // Skip rather than scanning with an empty pattern.
+                devlog_debug("hookModuleByPatternOnReturn: no usable pattern, skipping scan");
+                this.no_hooking_success = true;
+                return;
+            }
             const moduleBase = this.module.base;
             const moduleSize = this.module.size;
             devlog(`Module Base Address: ${moduleBase}`);
@@ -629,9 +639,16 @@ export class PatternBasedHooking {
 
     // Method to hook the module with patterns provided as arguments
     hookModuleByPattern(
-        patterns: { primary: string; fallback: string; second_fallback?: string },
+        patterns: { primary: string; fallback: string; second_fallback?: string } | null | undefined,
         onMatchCallback: (args: any[]) => void
     ): void {
+        if (!patterns || (!patterns.primary && !patterns.fallback)) {
+            // No usable pattern (missing-arch shipped pattern, or empty JSON entry).
+            // Skip rather than scanning the whole module with an empty pattern.
+            devlog_debug("hookModuleByPattern: no usable pattern, skipping scan");
+            this.no_hooking_success = true;
+            return;
+        }
         const moduleName = this.module?.name;
         this.hookByPattern(patterns, "primary_pattern", onMatchCallback, (primary_success) => {
             if (!primary_success) {

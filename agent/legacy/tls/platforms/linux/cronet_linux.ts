@@ -1,7 +1,7 @@
 
 import {Cronet } from "../../../../tls/libs/cronet.js";
 import { socket_library } from "../../../../platforms/linux.js";
-import {PatternBasedHooking, get_CPU_specific_pattern, hasModulePatterns } from "../../../../tls/shared/pattern_based_hooking.js";
+import {PatternBasedHooking, get_CPU_specific_pattern, hasUsablePatternsFor } from "../../../../tls/shared/pattern_based_hooking.js";
 import { CRONET_X64_PATTERNS } from "../../../../tls/shared/cronet_patterns.js";
 import { patterns, isPatternReplaced } from "../../../../fritap_agent.js"
 import { devlog, devlog_debug, devlog_error } from "../../../../util/log.js";
@@ -30,7 +30,7 @@ export class Cronet_Linux extends Cronet {
         if (cronetModule === null) return null;
         const hooker = new PatternBasedHooking(cronetModule);
 
-        if (isPatternReplaced() && hasModulePatterns(patterns, this.module_name, "libcronet.so")){
+        if (isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, "libcronet.so", "Dump-Keys")){
             devlog("Hooking libcronet functions by pattern");
             hooker.hook_DumpKeys(this.module_name,"libcronet.so",patterns,(args: any[]) => {
                 this.dumpKeys(args[1], args[0], args[2], lenArg(args[3]));

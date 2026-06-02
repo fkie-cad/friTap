@@ -1,9 +1,11 @@
-import { get_hex_string_from_byte_array, readAddresses, checkNumberOfExports, isSymbolAvailable } from "../../shared/shared_functions.js";
-import { sendKeylog } from "../../shared/shared_structures.js";
-import { devlog, log } from "../../util/log.js";
+import { get_hex_string_from_byte_array, readAddresses, checkNumberOfExports, isSymbolAvailable, getPortsAndAddresses } from "../../shared/shared_functions.js";
+import { sendKeylog, sendDatalog } from "../../shared/shared_structures.js";
+import { devlog, devlog_debug, devlog_error, log } from "../../util/log.js";
 import { safeKeyLenLogged } from "../../shared/keylog_length.js";
-import { pcap_enabled, patterns as patternsJson, isPatternReplaced } from "../../fritap_agent.js";
-import { hasModulePatterns } from "../shared/cronet_patterns.js";
+import { pcap_enabled, patterns as patternsJson, isPatternReplaced, enable_default_fd } from "../../fritap_agent.js";
+import { hasUsablePatternsFor } from "../shared/cronet_patterns.js";
+import { openSslSessionIdDecoder } from "../definitions/openssl.js";
+import { isWindows, isiOS, isMacOS } from "../../util/process_infos.js";
 
 
 
@@ -19,18 +21,38 @@ export class Cronet {
     SSL_CTX_set_keylog_callback : any;
     keylog_callback: any;
     can_we_install_keylog_callback: boolean = false;
+    // Symbol-resolved plaintext surface (BoringSSL exports). Set in the
+    // constructor when the module exports the read/write/fd/session symbols.
+    SSL_get_fd: any;
+    SSL_get_session: any;
+    SSL_SESSION_get_id: any;
+    do_read_write_hooks: boolean = false;
+    // Resolved {SSL_get_session, SSL_SESSION_get_id} passed to the shared
+    // openSslSessionIdDecoder. Populated in the constructor when symbols resolve.
+    private sessionFns: { [fn: string]: any } = {};
+    // Pattern-resolved SSL_get_fd for stripped builds (see resolveSslGetFdPattern).
+    private patternSslGetFd: any = null;
+    // Platform-specific Schema-B family key used as the secondary lookup for a
+    // user --patterns file (primary lookup is always this.module_name). linux/android
+    // key under "libcronet.so"; ios/macos under "Cronet"; windows under "libcronet.dll".
+    // Set once in the constructor.
+    private cronetFallbackKey: string = "libcronet.so";
 
 
     constructor(public moduleName:string, public socket_library:String,is_base_hook: boolean ,public passed_library_method_mapping?: { [key: string]: Array<string> } ){
         this.module_name = moduleName;
         this.is_base_hook = is_base_hook;
 
+        if (isWindows()) this.cronetFallbackKey = "libcronet.dll";
+        else if (isiOS() || isMacOS()) this.cronetFallbackKey = "Cronet";
+        // else stays "libcronet.so" (linux/android)
+
         if(typeof passed_library_method_mapping !== 'undefined'){
             this.library_method_mapping = passed_library_method_mapping;
         }else{
             if(checkNumberOfExports(moduleName) > 2 ){
-                if (isSymbolAvailable(moduleName, "SSL_CTX_new") && isSymbolAvailable(moduleName, "SSL_CTX_set_keylog_callback")) {               
-                            this.library_method_mapping[`*${moduleName}*`] = ["SSL_CTX_new", "SSL_new", "SSL_CTX_set_keylog_callback"];
+                if (isSymbolAvailable(moduleName, "SSL_CTX_new") && isSymbolAvailable(moduleName, "SSL_CTX_set_keylog_callback")) {
+                            this.library_method_mapping[`*${moduleName}*`] = ["SSL_CTX_new", "SSL_new", "SSL_CTX_set_keylog_callback", "SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session", "SSL_SESSION_get_id"];
                             this.can_we_install_keylog_callback = true;
                 }
             }
@@ -45,9 +67,38 @@ export class Cronet {
         try{
             this.addresses = readAddresses(moduleName,this.library_method_mapping);
         }catch(e){
-            this.can_we_install_keylog_callback = false; 
+            this.can_we_install_keylog_callback = false;
         }
-        
+
+        // Bind the symbol-resolved plaintext surface independently of keylog.
+        // Only enable the symbol-based read/write hooks when every required
+        // symbol resolved non-null (mirrors the legacy Cronet class). When these
+        // symbols are absent (stripped Cronet) we fall through to the
+        // pattern-based path + SSL_get_fd hook point in resolveSslGetFdPattern().
+        try{
+            const moduleAddresses = this.addresses ? this.addresses[this.module_name] : undefined;
+            if (moduleAddresses
+                && moduleAddresses["SSL_read"]
+                && moduleAddresses["SSL_write"]
+                && moduleAddresses["SSL_get_fd"]
+                && moduleAddresses["SSL_get_session"]
+                && moduleAddresses["SSL_SESSION_get_id"]) {
+                this.SSL_get_fd = new NativeFunction(moduleAddresses["SSL_get_fd"], "int", ["pointer"]);
+                this.SSL_get_session = new NativeFunction(moduleAddresses["SSL_get_session"], "pointer", ["pointer"]);
+                this.SSL_SESSION_get_id = new NativeFunction(moduleAddresses["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
+                this.sessionFns = { "SSL_get_session": this.SSL_get_session, "SSL_SESSION_get_id": this.SSL_SESSION_get_id };
+                this.do_read_write_hooks = true;
+            }else{
+                this.do_read_write_hooks = false;
+            }
+        }catch(e){
+            this.do_read_write_hooks = false;
+            devlog_error("Error while binding plaintext read/write symbols for Cronet: "+ e);
+        }
+
+        // Try to wire a pattern-resolved SSL_get_fd for stripped builds (no-op
+        // unless an SSL_get_fd byte-pattern is shipped for this module).
+        this.resolveSslGetFdPattern();
     }
 
     are_callbacks_symbols_available(): boolean{
@@ -181,42 +232,124 @@ export class Cronet {
         sendKeylog(labelStr+" "+client_random+" "+secret_key);
     }
 
-    // Cronet plaintext hooks ride on byte patterns (SSL_Read / SSL_Write
-    // entries in pattern.json) because Cronet statically links BoringSSL and
-    // strips the SSL_read / SSL_write exports symbol-based capture would need.
-    // Pattern scanning is expensive, so callers only attempt this when the
-    // user actually requested a plaintext PCAP (pcap_enabled flag plumbed from
-    // --pcap). When patterns are not provided, emit a single per-(module,action)
-    // notice so the user knows why plaintext is missing.
+    // Cronet plaintext capture. Two code paths:
+    //   1. Symbol-bearing Cronet forks (e.g. libwarp_mobile.so) export
+    //      SSL_read/SSL_write/SSL_get_fd/SSL_get_session/SSL_SESSION_get_id.
+    //      We attach at those symbol addresses and resolve the fd via the
+    //      symbol-resolved SSL_get_fd decoder — this is the legacy Cronet
+    //      implementation, ported verbatim into the modern path.
+    //   2. Stripped/static Cronet (libcronet.so, libmonochrome) inlines
+    //      BoringSSL and exports nothing. The fd accessor then has to come from
+    //      a byte-pattern — see resolveSslGetFdPattern() (the SSL_get_fd hook
+    //      point). Until both the SSL_get_fd pattern and pattern-resolved
+    //      SSL_read/SSL_write addresses are wired, this path emits a single
+    //      precise notice instead of an empty/garbage PCAP.
     private static plaintextNoticeShown = new Set<string>();
 
-    private noticePlaintextMissing(action: "SSL_Read" | "SSL_Write"): void {
-        const key = `${this.module_name}:${action}`;
+    // Emit a single notice per (module, action, reason) explaining why stripped-Cronet
+    // plaintext is unavailable: "missing" = no symbols and no byte-pattern at all;
+    // "pending" = a byte-pattern exists but the SSL_get_fd hook point isn't wired yet.
+    private noticePlaintext(action: "SSL_Read" | "SSL_Write", reason: "missing" | "pending"): void {
+        const key = `${this.module_name}:${action}:${reason}`;
         if (Cronet.plaintextNoticeShown.has(key)) return;
         Cronet.plaintextNoticeShown.add(key);
-        log(`[!] ${this.module_name}: plaintext PCAP requested but no ${action} byte-pattern provided for this module; plaintext capture will be unavailable for it.`);
+        if (reason === "missing") {
+            log(`[!] ${this.module_name}: plaintext PCAP requested but neither ${action} symbols nor byte-patterns are available for this module; plaintext capture unavailable.`);
+        } else {
+            log(`[!] ${this.module_name}: ${action} byte-pattern present but stripped-Cronet plaintext needs a pattern-resolved SSL_get_fd (see resolveSslGetFdPattern) + pattern-resolved ${action} address; not yet wired — only keylog will be emitted.`);
+        }
+    }
+
+    // === Pattern-based SSL_get_fd hook point (stripped Cronet) ==============
+    // Stripped Cronet exports no SSL_get_fd, so the symbol-resolved fd decoder
+    // (this.SSL_get_fd) is null. To capture plaintext with correct src/dst
+    // addressing on such builds, ship an "SSL_get_fd" byte-pattern (Schema-B,
+    // alongside SSL_Read/SSL_Write) for the module. When that pattern is
+    // present, scan it, wrap the match as SSL_get_fd(SSL*) -> int, and store it
+    // in this.patternSslGetFd; resolveFd() then uses it automatically. Until a
+    // pattern is shipped this is a no-op and the hook point stays open.
+    private resolveSslGetFdPattern(): void {
+        this.patternSslGetFd = null;
+        if (!isPatternReplaced()) return;
+        if (!hasUsablePatternsFor(patternsJson, this.module_name, this.cronetFallbackKey, "SSL_get_fd")) {
+            // No SSL_get_fd pattern shipped for this module — hook point left open.
+            return;
+        }
+        // FILL-IN POINT: an SSL_get_fd pattern exists for this module. Resolve it
+        // to an address (see PatternStrategy.scanFirstMatchAsync for the scan
+        // helper) and wrap it, e.g.:
+        //   this.patternSslGetFd = new NativeFunction(matchedAddr, "int", ["pointer"]);
+        devlog_debug(`[Cronet modern] SSL_get_fd byte-pattern present for ${this.module_name}; pattern->address scan + NativeFunction wiring is the remaining fill-in.`);
+    }
+
+    // Resolve the socket fd for an SSL*. Prefers the symbol-resolved SSL_get_fd
+    // decoder; falls back to the pattern-resolved one (stripped builds). Returns
+    // -1 when neither is available (getPortsAndAddresses then honours
+    // enable_default_fd).
+    private resolveFd(ssl: NativePointer): number {
+        if (this.SSL_get_fd) {
+            try { return this.SSL_get_fd(ssl) as number; } catch (e) { devlog_debug("[Cronet modern] SSL_get_fd(symbol) threw: " + e); return -1; }
+        }
+        if (this.patternSslGetFd) {
+            try { return this.patternSslGetFd(ssl) as number; } catch (e) { devlog_debug("[Cronet modern] SSL_get_fd(pattern) threw: " + e); return -1; }
+        }
+        return -1;
+    }
+
+    // Attach the symbol-resolved SSL_read/SSL_write plaintext hook. Read and write
+    // share everything except the buffer-length source: SSL_read learns the byte
+    // count from retval (onLeave), SSL_write from the length arg (onEnter).
+    private installPlaintextHook(symbol: "SSL_read" | "SSL_write", isRead: boolean): void {
+        if (!pcap_enabled) return;
+        if (!this.do_read_write_hooks) {
+            // Stripped Cronet: symbol surface unavailable. Pattern-based capture is
+            // the companion to the SSL_get_fd hook point and is not wired yet.
+            const action = isRead ? "SSL_Read" : "SSL_Write";
+            const reason = (isPatternReplaced() && hasUsablePatternsFor(patternsJson, this.module_name, this.cronetFallbackKey, action))
+                ? "pending" : "missing";
+            this.noticePlaintext(action, reason);
+            return;
+        }
+
+        const lib_addresses = this.addresses;
+        const instance = this;
+        const current_module_name = this.module_name;
+
+        Interceptor.attach(this.addresses[this.module_name][symbol], {
+            onEnter: function (args: any) {
+                this.fd = instance.resolveFd(args[0]);
+                if (this.fd < 0 && !enable_default_fd) return;
+                const message = getPortsAndAddresses(this.fd as number, isRead, lib_addresses[current_module_name], enable_default_fd);
+                if (message === null) return;
+                message["ssl_session_id"] = openSslSessionIdDecoder(args[0], instance.sessionFns as any);
+                message["client_random"] = instance.get_client_random_from_ssl_struct(args[0]);
+                message["function"] = symbol;
+                if (isRead) {
+                    // Plaintext lands in the buffer during the call; read it in onLeave.
+                    this.message = message;
+                    this.buf = args[1];
+                } else {
+                    // Write payload is already in args[1]; args[2] is the length.
+                    sendDatalog(message, args[1].readByteArray(args[2].toInt32()));
+                }
+            },
+            onLeave: function (retval: any) {
+                if (!isRead) return;
+                retval |= 0; // Cast retval to 32-bit integer.
+                if (retval <= 0 || (this.fd < 0 && !enable_default_fd)) return;
+                if (this.message) {
+                    sendDatalog(this.message, this.buf.readByteArray(retval));
+                }
+            }
+        });
     }
 
     install_plaintext_read_hook(){
-        if (!pcap_enabled) return;
-        if (!isPatternReplaced() || !hasModulePatterns(patternsJson, this.module_name, "libcronet.so", "SSL_Read")) {
-            this.noticePlaintextMissing("SSL_Read");
-            return;
-        }
-        // TODO: Cronet plaintext data plumbing — pattern is present but the
-        // sendDatalog callback (SSL_get_fd / port-address extraction without
-        // exported symbols) is not yet implemented for Cronet. Surface that to
-        // the user explicitly so they're not surprised by an empty PCAP.
-        log(`[!] ${this.module_name}: SSL_Read pattern detected but Cronet plaintext capture pipeline is not yet implemented; only keylog will be emitted for this module.`);
+        this.installPlaintextHook("SSL_read", true);
     }
 
     install_plaintext_write_hook(){
-        if (!pcap_enabled) return;
-        if (!isPatternReplaced() || !hasModulePatterns(patternsJson, this.module_name, "libcronet.so", "SSL_Write")) {
-            this.noticePlaintextMissing("SSL_Write");
-            return;
-        }
-        log(`[!] ${this.module_name}: SSL_Write pattern detected but Cronet plaintext capture pipeline is not yet implemented; only keylog will be emitted for this module.`);
+        this.installPlaintextHook("SSL_write", false);
     }
 
     install_key_extraction_pattern_hook(){

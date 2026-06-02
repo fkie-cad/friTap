@@ -4,7 +4,7 @@ import { log, devlog } from "../../../../util/log.js"
 import { toHexString } from "../../../../shared/shared_functions.js";
 import { hasMoreThanFiveExports } from "../../../shared/shared_functions_legacy.js";
 import { sendKeylog } from "../../../../shared/shared_structures.js";
-import { PatternBasedHooking, get_CPU_specific_pattern } from "../../../../tls/shared/pattern_based_hooking.js";
+import { PatternBasedHooking, get_CPU_specific_pattern, hasUsablePatternsFor } from "../../../../tls/shared/pattern_based_hooking.js";
 import { patterns, isPatternReplaced} from "../../../../fritap_agent.js"
 
 export class Rustls_Linux extends RusTLS {
@@ -71,7 +71,7 @@ export class Rustls_Linux extends RusTLS {
 
 
         // Decide whether to hook from JSON patterns or from built-in patterns ( "_ex" vs. normal)
-        if (isPatternReplaced()) {
+        if (isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, "rustls", "Dump-Keys")) {
             hooker.hook_DumpKeys(
                 this.module_name,
                 // Pick the JSON module name based on whether it's "ex"
@@ -121,7 +121,7 @@ export class Rustls_Linux extends RusTLS {
         };
 
         // Decide whether to hook from JSON patterns or from built-in patterns
-        if (isPatternReplaced()) {
+        if (isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, "rustls", "Dump-Keys")) {
             hooker.hook_DumpKeys(
                 this.module_name,
                 "rustls",

@@ -4,7 +4,7 @@ import { log, devlog } from "../../../../util/log.js"
 import { toHexString } from "../../../../shared/shared_functions.js";
 import { hasMoreThanFiveExports } from "../../../shared/shared_functions_legacy.js";
 import { sendKeylog } from "../../../../shared/shared_structures.js";
-import { PatternBasedHooking, get_CPU_specific_pattern } from "../../../tls/shared/pattern_based_hooking.js";
+import { PatternBasedHooking, get_CPU_specific_pattern, hasUsablePatternsFor } from "../../../tls/shared/pattern_based_hooking.js";
 import { patterns, isPatternReplaced} from "../../../../fritap_agent.js"
 
 export class Rustls_Android extends RusTLS {
@@ -97,8 +97,9 @@ export class Rustls_Android extends RusTLS {
         const isX64 = Process.arch === "x64";
 
         this.install_key_extraction_hook_tls13(hooker, isEx, isX64);
-        if (!isPatternReplaced()) {
-            // Currently no support for tls12 json pattern
+        // TLS 1.2 has no JSON pattern support, so install its hardcoded hook whenever we
+        // are NOT using usable JSON patterns (absent/empty JSON -> fall back to shipped default).
+        if (!isPatternReplaced() || !hasUsablePatternsFor(patterns, this.module_name, isEx ? "librustls_ex.so" : "librustls.so", "Dump-Keys")) {
             this.install_key_extraction_hook_tls12(hooker, isEx, isX64);
         }
     }
@@ -148,7 +149,7 @@ export class Rustls_Android extends RusTLS {
 
 
         // Decide whether to hook from JSON patterns or from built-in patterns ( "_ex" vs. normal)
-        if (isPatternReplaced()) {
+        if (isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, isEx ? "librustls_ex.so" : "librustls.so", "Dump-Keys")) {
             devlog(`[Hooking with JSON patterns onReturn] isEx = ${isEx}`);
             hooker.hook_DumpKeys(
                 this.module_name,
@@ -217,7 +218,7 @@ export class Rustls_Android extends RusTLS {
         };
 
         // Decide whether to hook from JSON patterns or from built-in patterns ( "_ex" vs. normal)
-        if (isPatternReplaced()) {
+        if (isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, isEx ? "librustls_ex.so" : "librustls.so", "Dump-Keys")) {
             devlog(`[Hooking with JSON patterns onReturn] isEx = ${isEx}`);
             hooker.hook_DumpKeys(
                 this.module_name,

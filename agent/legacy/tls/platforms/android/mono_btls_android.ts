@@ -1,7 +1,7 @@
 
 import { Mono_BTLS } from "../../../tls/libs/monobtls.js";
 import { socket_library } from "../../../../platforms/android.js";
-import {PatternBasedHooking, get_CPU_specific_pattern } from "../../../tls/shared/pattern_based_hooking.js";
+import {PatternBasedHooking, get_CPU_specific_pattern, hasUsablePatternsFor } from "../../../tls/shared/pattern_based_hooking.js";
 import { patterns, isPatternReplaced } from "../../../../fritap_agent.js"
 import { devlog, devlog_debug, devlog_error } from "../../../../util/log.js";
 import { installBoringSSLSymbolHook } from "../../../../shared/boringssl_symbol_hook.js";
@@ -41,7 +41,7 @@ export class Mono_BTLS_Android extends Mono_BTLS {
         if (flutterModule === null) return null;
         const hooker = new PatternBasedHooking(flutterModule);
 
-        if (isPatternReplaced()){
+        if (isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, "libmono-btls-shared.so", "Dump-Keys")){
             devlog("Hooking Libmono functions by patterns from JSON file");
             hooker.hook_DumpKeys(this.module_name,"libmono-btls-shared.so",patterns,(args: any[]) => {
                 this.dumpKeys(args[1], args[0], args[2]);  // Unpack args into dumpKeys
