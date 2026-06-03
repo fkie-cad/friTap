@@ -459,6 +459,6 @@ adb shell getenforce
 
 ## Next Steps
 
-- **Pattern Generation**: Learn about [BoringSecretHunter](patterns.md#boringsecrethunter) for generating patterns
+- **Pattern Generation**: Learn about [BoringSecretHunter](patterns.md#automated-pattern-generation-with-boringsecrethunter) for generating patterns
 - **CLI Reference**: See [CLI options](../api/cli.md) for full friTap capabilities
 - **Python API**: Use [Python API](../api/python.md) for programmatic control with built-in PCAP generation

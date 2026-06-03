@@ -7,7 +7,6 @@ import os
 import struct
 import socket
 import time
-import sys
 import json
 import threading
 import queue

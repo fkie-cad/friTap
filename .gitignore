@@ -30,6 +30,11 @@ research/
 !dev/*.sh
 !CHANGELOG.md
 !README.md
+# docs/ markdown pages: the broad *.md rule above hides newly-added pages from
+# CI's fresh checkout, which breaks `mkdocs build --strict` (nav references not
+# found). Keep the whole docs/ tree trackable.
+!docs/**/*.md
+!docs/*.md
 test.json
 
 # Testing artifacts

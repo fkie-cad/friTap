@@ -7,8 +7,6 @@ Covers the three risk areas of the selectable-boundary feature:
     and the real-stream-0 case never collides with the "no stream" sentinel.
 """
 
-import pytest
-
 from friTap.events import DatalogEvent, EventBus
 from friTap.flow.collector import FlowCollector
 from friTap.message_router import MessageRouter

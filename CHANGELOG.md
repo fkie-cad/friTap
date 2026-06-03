@@ -77,6 +77,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     (strongSwan) `ipsec_child_sa_keys` / `ipsec_ike_keys` were previously emitted
     even in plaintext-only mode; SSH `ssh_key` / `ssh_keylog` now route through
     the same single gate.
+- **HTTP/3 body plaintext capture for Google QUICHE / Cronet**
+  (`agent/quic/definitions/google_quiche.ts`): hooks `OnDataFramePayload`
+  (inbound) and `WriteOrBufferBody` (outbound) so request/response bodies reach
+  the pcap in `--quic-capture-mode app-api`. QUIC records now carry real
+  endpoints via a new `resolveQuicMessage` helper instead of `0.0.0.0:0`.
+- **`--modern` flag** opts into the refactored agent (three-tier BoringSSL
+  keylog chain, improved Cronet hooks); the stable **legacy path stays the
+  default**, with a startup warning listing known modern-mode regressions.
+- **OpenSSH (SSH) interception** (modern mode): key-extraction and plaintext
+  packet hooks. `--protocol ssh` auto-enables `--modern` and child-gating for
+  `sshd`; `--protocol` also gains `all` / `auto`.
+- **`--force-scan <module>`** (repeatable; `re:`/prefix match, or
+  `FRITAP_FORCE_SCAN`) forces the BoringSSL pattern scan onto a Cronet
+  APEX-split module friTap would otherwise treat as already covered.
+- **QUIC capture-mode step in the TUI** capture wizard (`stream` vs
+  experimental `app-api`).
 
 ### Changed
 - Plaintext-only pcaps (`-p` without `-k`) no longer embed Decryption Secrets
@@ -87,6 +103,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   hooks are installed in-agent — the raw packets come from the external
   tcpdump/scapy capture, and the previously-installed in-agent plaintext hooks
   (whose output was discarded anyway) no longer run.
+- **Pattern-based hook install is now asynchronous and detach-safe** —
+  `PatternStrategy` uses non-blocking `Memory.scan`, so `gracefulDetach` is
+  serviced mid-scan and huge stripped modules (e.g. Chrome's ~193 MB
+  `libmonochrome_64.so`) no longer stall teardown.
+- **BoringSSL embedded in Android native libraries hooks more reliably** via a
+  shared `bssl::ssl_log_secret` symbol fallback for every boringssl-tagged lib
+  (libssl/Conscrypt, Cronet, Flutter, Mono-BTLS) when pattern-scan and the
+  keylog-callback interception both fail to resolve.
+- **Plaintext pcap hooks no longer fire during key-only captures** across legacy
+  and modern paths — a runtime `pcap_enabled` gate short-circuits the
+  `SSL_read` / `SSL_write` executors.
+- **New 3-segment SemVer scheme with a strict frida-major pin** (`compat.yml`
+  as source of truth + CI version-guard); legacy frida 15/16/17 installs via
+  per-major constraints files / `dev/install_legacy.py`.
+- **Flow-mode TUI**: backend errors are categorized and rendered as rich
+  diagnostics, plus per-session debug-log files and assorted polish.
+
+### Fixed
+- **Auto-loaded `default_patterns.json` no longer suppresses shipped hardcoded
+  patterns** — a throw-safe `hasUsablePatternsFor()` gate requires a real,
+  non-empty pattern for the current platform/arch before taking the JSON path,
+  otherwise the built-in default is used.
+- **Missing-architecture patterns no longer abort sibling hooks** —
+  `get_CPU_specific_pattern()` returns `null` instead of throwing, and the
+  pattern hookers skip cleanly on empty input rather than scanning with an
+  empty pattern.
+- **Parser and LLDB-backend stability** — hardened parsers against malformed
+  input and reworked the LLDB return-site dispatch to mirror GDB's synchronous
+  `finish`.
 
 ## [2.0.0] - 2026-05-09
 
