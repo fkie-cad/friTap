@@ -180,8 +180,15 @@ class Android:
             self.logger.debug("No running tcpdump processes found")
         
     def start_application(self, package_name, activity=None):
-        """Start an Android application using the instrumentation backend."""
-        pid = self._backend.spawn_raw(self.device, package_name)
+        """Start an Android application using the instrumentation backend.
+
+        When *activity* is given, the app is spawned directly onto that activity
+        via Frida's ``activity`` spawn option, so hooks are in place before any
+        app code runs (pass a relative ``.SomeActivity`` or a fully-qualified
+        class name). Without it, the default launcher activity is spawned.
+        """
+        aux = {"activity": activity} if activity else None
+        pid = self._backend.spawn_raw(self.device, package_name, aux=aux)
         self._backend.resume(self.device, pid)
         return True
 

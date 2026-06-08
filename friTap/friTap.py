@@ -310,6 +310,24 @@ Examples:
                       const=True, help="Show verbose output")
     args.add_argument("--hide-control-frames", required=False, action="store_true",
                       default=False, help="Hide HTTP/2 control frames (PING, SETTINGS, WINDOW_UPDATE, GOAWAY) in flow view")
+    args.add_argument("--scan", required=False, nargs="?", const="all", default=None,
+                      metavar="<analyzers>",
+                      help="Run passive analysis of observed traffic during capture. "
+                           "Optionally pass a comma-separated analyzer list (e.g. "
+                           "credentials,ioc); with no value, runs all built-in analyzers. "
+                           "This analyzes already-decrypted traffic only — it does not "
+                           "perform any active scanning of the target.")
+    args.add_argument("--scan-report", required=False,
+                      choices=["json", "csv", "md", "table"], default="table",
+                      dest="scan_report",
+                      help="Format for the passive-analysis report printed at the end of capture (default: table).")
+    args.add_argument("--scan-report-out", required=False, metavar="<path>",
+                      default=None, dest="scan_report_out",
+                      help="Write the passive-analysis report to this path instead of stdout.")
+    args.add_argument("--scan-min-severity", required=False,
+                      choices=["critical", "high", "medium", "low", "info"], default="info",
+                      dest="scan_min_severity",
+                      help="Only report passive-analysis findings at or above this severity (default: info).")
     args.add_argument('--version', action='version',version='friTap v{version}'.format(version=__version__))
     args.add_argument("--enable_spawn_gating", required=False, action="store_const", const=True,
                       help="Catch newly spawned processes matching the target app (useful for Android multi-process apps)")
@@ -637,6 +655,10 @@ Examples:
             quic_capture_mode=getattr(parsed, 'quic_capture_mode', 'stream'),
             quic_only=getattr(parsed, 'quic_only', False),
             quic_egress_headers_layer=getattr(parsed, 'quic_egress_headers_layer', 'auto'),
+            scan=getattr(parsed, 'scan', None),
+            scan_report=getattr(parsed, 'scan_report', 'table'),
+            scan_report_out=getattr(parsed, 'scan_report_out', None),
+            scan_min_severity=getattr(parsed, 'scan_min_severity', 'info'),
         )
 
         # Validate filter expression early (before session starts)
@@ -749,26 +771,104 @@ Examples:
     # only reached when error
     raise Failure
 
+def _looks_like_tap_input(token):
+    """Return True when ``token`` looks like a ``.tap`` capture file argument.
+
+    Used to disambiguate the bare ``analyze`` mode from a capture target that
+    happens to be named ``analyze`` (see :func:`_dispatch_special_mode`).
+    A token is treated as a ``.tap`` input only if it is a non-flag argument
+    ending in ``.tap``.
+    """
+    return bool(token) and not token.startswith("-") and token.endswith(".tap")
+
+
+def _dispatch_special_mode(argv):
+    """Resolve the pre-argparse "special mode" from a raw ``argv`` list.
+
+    friTap accepts a handful of leading positional/flag forms that must be
+    handled *before* the normal capture argparse parser sees them. This helper
+    centralizes that fragile chain in one readable, testable place. ``argv`` is
+    the full process argument vector (i.e. ``sys.argv``); element 0 is the
+    program name, so dispatch inspects ``argv[1]`` onward.
+
+    Returns a ``(mode, payload)`` tuple where ``mode`` is one of:
+
+    * ``"install-backend"`` — ``fritap install-backend <name>``: install an
+      external integration (currently only the Wireshark extcap). ``payload``
+      is the backend name (``argv[2]``).
+    * ``"from-pcap"``       — ``fritap --from-pcap capture.pcapng [...]``:
+      offline decryption of an encrypted pcap into a ``.tap`` file. ``payload``
+      is ``argv[1:]`` (forwarded verbatim to the offline CLI).
+    * ``"analyze"``         — ``fritap --analyze ...`` or ``fritap analyze
+      capture.tap``: passive offline analysis of an existing ``.tap``. ``payload``
+      is the argument list after the mode token (``argv[2:]``).
+    * ``"replay"``          — ``fritap -r capture.tap``, ``fritap --replay
+      capture.tap`` or ``fritap capture.tap``: open the capture in the TUI.
+      ``payload`` is the ``.tap`` path, or ``None`` when ``-r`` was given
+      without a file (caller prints usage).
+    * ``None``              — no special mode; fall through to normal capture.
+
+    Disambiguation rule for the bare ``analyze`` subcommand: ``analyze`` is only
+    treated as the analyze subcommand when the *next* token looks like a ``.tap``
+    input (``_looks_like_tap_input``). This mirrors the explicit ``--analyze``
+    flag (which is always the analyze mode) while ensuring that capturing a
+    process literally named ``analyze`` — e.g. ``fritap analyze`` or
+    ``fritap analyze -m`` — is *not* hijacked and falls through to capture.
+    """
+    # install-backend: requires a following backend name.
+    if len(argv) >= 3 and argv[1] == "install-backend":
+        return ("install-backend", argv[2])
+
+    # --from-pcap may appear anywhere in the argument list.
+    if len(argv) >= 2 and "--from-pcap" in argv:
+        return ("from-pcap", argv[1:])
+
+    # Analyze: explicit --analyze always wins; bare 'analyze' only when it is
+    # followed by a .tap input, so a target named 'analyze' is not hijacked.
+    if len(argv) >= 2 and argv[1] == "--analyze":
+        return ("analyze", argv[2:])
+    if (len(argv) >= 3 and argv[1] == "analyze"
+            and _looks_like_tap_input(argv[2])):
+        return ("analyze", argv[2:])
+
+    # Replay: -r/--replay <file>, or a single trailing .tap path.
+    if len(argv) >= 2 and argv[1] in ("-r", "--replay"):
+        return ("replay", argv[2] if len(argv) >= 3 else None)
+    if len(argv) == 2 and argv[1].endswith(".tap"):
+        return ("replay", argv[1])
+
+    return None
+
+
 def main():
-    # Handle sub-commands before argparse
-    if len(sys.argv) >= 3 and sys.argv[1] == "install-backend":
-        if sys.argv[2] == "wireshark":
-            from .commands.install_backend import install_wireshark_extcap
-            install_wireshark_extcap()
+    # Handle sub-commands before argparse via the centralized dispatcher.
+    mode = _dispatch_special_mode(sys.argv)
+
+    if mode is not None:
+        kind, payload = mode
+
+        if kind == "install-backend":
+            if payload == "wireshark":
+                from .commands.install_backend import install_wireshark_extcap
+                install_wireshark_extcap()
+                return
+            print(f"Unknown backend: {payload}. Available: wireshark")
             return
-        else:
-            print(f"Unknown backend: {sys.argv[2]}. Available: wireshark")
+
+        if kind == "from-pcap":
+            from .offline.cli import run_offline_pcap_to_tap
+            return run_offline_pcap_to_tap(payload)
+
+        if kind == "analyze":
+            from .commands.analyze import run_analyze_cli
+            return run_analyze_cli(payload)
+
+        if kind == "replay" and payload is None:
+            print("Usage: fritap -r <capture.tap>")
             return
 
     # Replay mode: fritap -r capture.tap  or  fritap capture.tap
-    replay_file = None
-    if len(sys.argv) >= 2 and sys.argv[1] in ("-r", "--replay"):
-        if len(sys.argv) < 3:
-            print("Usage: fritap -r <capture.tap>")
-            return
-        replay_file = sys.argv[2]
-    elif len(sys.argv) == 2 and sys.argv[1].endswith(".tap"):
-        replay_file = sys.argv[1]
+    replay_file = mode[1] if (mode is not None and mode[0] == "replay") else None
 
     if replay_file is not None:
         try:

@@ -331,10 +331,14 @@ class FridaBackend(Backend):
         device.resume(pid)
 
     @_wrap_frida_errors
-    def spawn_raw(self, device: Any, target, env: dict | None = None) -> int:
+    def spawn_raw(self, device: Any, target, env: dict | None = None,
+                  aux: dict | None = None) -> int:
+        # Frida routes recognized kwargs (env) to their slot and any others
+        # (e.g. Android "activity") into the spawn aux dictionary.
+        options = dict(aux) if aux else {}
         if env:
-            return device.spawn(target, env=env)
-        return device.spawn(target)
+            options["env"] = env
+        return device.spawn(target, **options)
 
     def on_detached(self, process: Any, callback: Callable) -> None:
         process.on('detached', callback)

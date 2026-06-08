@@ -86,6 +86,15 @@ class ConnectionLifecycleMessage(BaseAgentMessage):
     """Connection lifecycle event (created/destroyed).
 
     Emitted by SSL_free / SSL_new hooks to track connection boundaries.
+
+    METADATA IS OFFLINE-ONLY: this message intentionally carries connection
+    IDENTITY + lifecycle only — no TLS handshake metadata (cipher suite, TLS
+    version, SNI, ALPN). That metadata is produced exclusively by the offline
+    pcap+keys -> .tap pipeline (friTap/offline/tshark.py), which has the full
+    handshake. Do NOT add cipher_suite/protocol_version/server_name/alpn fields
+    here, and do NOT have the agent emit them: the live MessageRouter
+    (_emit_lifecycle) deliberately drops any such fields so the live and offline
+    metadata sources can never drift.
     """
 
     contentType: Literal["connection_lifecycle"] = "connection_lifecycle"

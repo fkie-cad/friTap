@@ -16,13 +16,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from friTap.flow.tap_format import (
+    FLAG_HAS_FINDINGS,
     FLAG_HAS_INDEX,
+    REC_FINDING,
     REC_FLOW,
     REC_FLOW_INDEX,
     REC_KEYLOG,
     REC_META,
     TapMeta,
     _HEADER_STRUCT,
+    encode_finding_record,
     encode_flow,
     encode_flow_index,
     encode_footer,
@@ -55,6 +58,7 @@ class TapWriter:
         self._path: str = ""
         self._flow_count: int = 0
         self._flow_index: list[dict] = []  # {"flow_id": str, "offset": int}
+        self._wrote_findings: bool = False  # any REC_FINDING written this session
         self._capture_start: float = 0.0
         self._capture_target: str = ""
         self._closed: bool = True
@@ -89,6 +93,7 @@ class TapWriter:
         self._capture_target = target
         self._flow_count = 0
         self._flow_index = []
+        self._wrote_findings = False
         self._closed = False
 
         self._file = open(self._path, "wb")
@@ -146,6 +151,27 @@ class TapWriter:
             payload = encode_keylog(key_data, timestamp or time.time())
             self._file.write(encode_record(REC_KEYLOG, payload))
 
+    def write_findings(self, flow_id: str, findings: list) -> None:
+        """Write analysis findings for a flow as a REC_FINDING record. Thread-safe.
+
+        *findings* is a list of ``friTap.analysis.Finding`` objects (anything with
+        a ``to_dict()`` method) or plain serialized dicts. Findings are stored in a
+        separate record (not inside the FLOW record) so the metadata-only summary
+        fast path stays lean and findings can be appended after the flow is written.
+        """
+        if not findings:
+            return
+        finding_dicts = [
+            f.to_dict() if hasattr(f, "to_dict") else dict(f) for f in findings
+        ]
+        payload = encode_finding_record(flow_id, finding_dicts)
+        record = encode_record(REC_FINDING, payload)
+        with self._lock:
+            if self._closed or self._file is None:
+                return
+            self._file.write(record)
+            self._wrote_findings = True
+
     def on_flow_event(self, flow: "Flow", event_type: str) -> None:
         """FlowCollector callback — writes COMPLETED flows.
 
@@ -182,11 +208,15 @@ class TapWriter:
             # Write footer
             self._file.write(encode_footer(index_offset))
 
-            # Update header: flow_count, flags, and preserve capture_target
+            # Update header: flow_count, flags, and preserve capture_target.
+            # Record finding presence so readers can skip the findings scan.
+            flags = FLAG_HAS_INDEX
+            if self._wrote_findings:
+                flags |= FLAG_HAS_FINDINGS
             header_bytes = encode_header(
                 capture_start=self._capture_start,
                 flow_count=self._flow_count,
-                flags=FLAG_HAS_INDEX,
+                flags=flags,
                 capture_target=self._capture_target,
             )
             self._file.seek(0)

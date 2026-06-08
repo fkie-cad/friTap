@@ -35,6 +35,10 @@ FORMAT_VERSION = 1
 # ---------------------------------------------------------------------------
 
 FLAG_HAS_INDEX = 0x0001
+# Set at close() when at least one REC_FINDING record was written. Lets a reader
+# decide cheaply (header-only) whether the findings scan is worth running.
+# Additive: old files lack it, so absence means "unknown", not "no findings".
+FLAG_HAS_FINDINGS = 0x0002
 
 # ---------------------------------------------------------------------------
 # Record types (u8)
@@ -43,6 +47,7 @@ FLAG_HAS_INDEX = 0x0001
 REC_FLOW = 0x01
 REC_KEYLOG = 0x02
 REC_META = 0x03
+REC_FINDING = 0x04
 REC_FLOW_INDEX = 0x10
 
 # ---------------------------------------------------------------------------
@@ -77,8 +82,11 @@ _META_LEN = struct.Struct("<I")
 _FOOTER_STRUCT = struct.Struct("<8sQ")
 assert _FOOTER_STRUCT.size == 16
 
-# Flow schema version embedded in every FLOW record's JSON
-FLOW_SCHEMA_VERSION = 1
+# Flow schema version embedded in every FLOW record's JSON.
+# v2 adds optional enrichment keys (tls, tags, notes, local/remote, process_name,
+# hook_*) and the body-from-chunks de-duplication flag. All additive — readers
+# use ``.get`` with defaults, so v1 and v2 records decode identically.
+FLOW_SCHEMA_VERSION = 3
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +109,7 @@ class TapHeader:
 class TapMeta:
     """File-level metadata from the META record."""
     schema_version: int = 1
-    flow_fields_version: int = 1
+    flow_fields_version: int = FLOW_SCHEMA_VERSION
     parse_result_version: int = 1
     fritap_version: str = ""
 
@@ -136,6 +144,12 @@ class FlowSummary:
     detected_protocol: str = ""
     # HTTP/2 control frame (SETTINGS, PING, etc.) — no request/response payload
     is_control_frame: bool = False
+    # Schema v2 enrichment scalars (read from FLOW meta; cheap, no blobs).
+    process_name: str = ""
+    tls_sni: str = ""
+    tls_alpn: str = ""
+    tag_count: int = 0
+    has_notes: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +222,62 @@ def encode_keylog(key_data: str, timestamp: float) -> bytes:
     return json.dumps(d, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
+# Cap on string-valued evidence fields persisted in a finding record, to keep
+# REC_FINDING records small (analysts get a snippet, not whole bodies).
+_MAX_EVIDENCE_STR = 512
+
+
+def _bound_finding_dict(d: dict) -> dict:
+    """Return a copy of a serialized finding with oversized evidence strings
+    truncated, so findings never bloat the .tap file."""
+    evidence = d.get("evidence")
+    if not isinstance(evidence, dict):
+        return d
+    bounded = {}
+    for k, v in evidence.items():
+        if isinstance(v, str) and len(v) > _MAX_EVIDENCE_STR:
+            bounded[k] = v[:_MAX_EVIDENCE_STR] + "…[truncated]"
+        elif isinstance(v, (bytes, bytearray)):
+            # bytes are not JSON-serializable, so ALWAYS hex-encode them — not
+            # only when oversized. A short raw-bytes evidence value (e.g. a
+            # matched binary token) would otherwise reach json.dumps unchanged
+            # and raise TypeError, aborting the whole REC_FINDING write.
+            if len(v) > _MAX_EVIDENCE_STR:
+                bounded[k] = bytes(v[:_MAX_EVIDENCE_STR]).hex() + "…[truncated]"
+            else:
+                bounded[k] = bytes(v).hex()
+        else:
+            bounded[k] = v
+    out = dict(d)
+    out["evidence"] = bounded
+    return out
+
+
+def encode_finding_record(flow_id: str, finding_dicts: list[dict]) -> bytes:
+    """Encode a REC_FINDING payload binding findings to a flow_id.
+
+    *finding_dicts* are already-serialized findings (``Finding.to_dict()``);
+    keeping tap_format free of an ``analysis`` import avoids a cycle. Evidence
+    string values are bounded via :func:`_bound_finding_dict`.
+    """
+    d = {
+        "flow_id": flow_id,
+        "findings": [_bound_finding_dict(fd) for fd in finding_dicts],
+    }
+    # default=str is a safety net for any other non-JSON evidence value a
+    # custom analyzer might emit (sets, paths, arbitrary objects) so a single
+    # odd value can never abort persisting the findings.
+    return json.dumps(
+        d, ensure_ascii=False, separators=(",", ":"), default=str
+    ).encode("utf-8")
+
+
+def decode_finding_record(payload: bytes) -> tuple[str, list[dict]]:
+    """Decode a REC_FINDING payload. Returns (flow_id, list[finding_dict])."""
+    d = json.loads(payload.decode("utf-8", errors="replace"))
+    return d.get("flow_id", ""), d.get("findings", [])
+
+
 def encode_flow(flow: "Flow") -> bytes:
     """Encode a Flow object into a FLOW record payload.
 
@@ -274,6 +344,56 @@ def encode_flow(flow: "Flow") -> bytes:
 
     if flow.detected_protocol:
         meta["detected_protocol"] = flow.detected_protocol
+
+    # --- Schema v2 additive enrichment (write only when non-default to keep
+    # records compact; findings are intentionally NOT inlined here — they are
+    # persisted as separate REC_FINDING records so the summary fast path
+    # (decode_flow_summary) stays lean). ---
+    if getattr(flow, "local_addr", "") or getattr(flow, "local_port", 0):
+        meta["local_addr"] = flow.local_addr
+        meta["local_port"] = flow.local_port
+        meta["remote_addr"] = flow.remote_addr
+        meta["remote_port"] = flow.remote_port
+    if getattr(flow, "process_name", ""):
+        meta["process_name"] = flow.process_name
+    if getattr(flow, "package_name", ""):
+        meta["package_name"] = flow.package_name
+    # Non-mutating lookup (encoding is a pure read): layer() returns None when
+    # absent rather than attaching an empty TLS layer to every serialized flow.
+    tls = flow.layer("tls")
+    if tls is not None and not tls.is_empty():
+        meta["tls"] = {
+            "library": tls.library, "version": tls.version, "sni": tls.sni,
+            "alpn": tls.alpn, "cipher": tls.cipher,
+        }
+    if getattr(flow, "hook_function", ""):
+        meta["hook_function"] = flow.hook_function
+    if getattr(flow, "hook_stack", ""):
+        meta["hook_stack"] = flow.hook_stack
+    if getattr(flow, "tags", None):
+        meta["tags"] = list(flow.tags)
+    if getattr(flow, "notes", ""):
+        meta["notes"] = flow.notes
+
+    # Transport hint (Phase 1b) — only when non-default to keep records compact.
+    if getattr(flow, "transport", "tls") and flow.transport != "tls":
+        meta["transport"] = flow.transport
+
+    # --- Schema v3: ordered protocol layer stack. ADDITIVE — every legacy field
+    # above stays the source of truth; layers MIRROR them. Transport/app layers
+    # carry NO bytes of their own (``data_from_chunks`` + a ``parsed_field`` tag
+    # pointing at request/response, which are already in meta), so no transport
+    # bytes and no ParseResult JSON are duplicated. Only genuinely owned inner
+    # layers (decryptor output) serialize their directional bytes, once, via
+    # register_blob. Empty layers are skipped (mirrors the meta["tls"] discipline
+    # and avoids persisting the lazily-created never-None stubs). ---
+    layers_meta = [
+        _encode_layer(ly, register_blob)
+        for ly in getattr(flow, "layers", [])
+        if not ly.is_empty()
+    ]
+    if layers_meta:
+        meta["layers"] = layers_meta
 
     meta_bytes = json.dumps(meta, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     blob_bytes = b"".join(blobs)
@@ -362,14 +482,34 @@ def verify_payload_crc(payload: bytes, stored_crc: int) -> bool:
 
 
 def decode_meta(payload: bytes) -> TapMeta:
-    """Decode a META record payload."""
+    """Decode a META record payload.
+
+    Defaults mirror the ``TapMeta`` dataclass exactly so an encode/decode
+    round-trip of an unset field is a fixed point: ``flow_fields_version``
+    falls back to ``FLOW_SCHEMA_VERSION`` (the same baseline ``encode_meta``
+    writes), keeping the versioning coherent rather than silently downgrading
+    a missing key to ``1``.
+    """
     d = json.loads(payload.decode("utf-8", errors="replace"))
     return TapMeta(
         schema_version=d.get("schema_version", 1),
-        flow_fields_version=d.get("flow_fields_version", 1),
+        flow_fields_version=d.get("flow_fields_version", FLOW_SCHEMA_VERSION),
         parse_result_version=d.get("parse_result_version", 1),
         fritap_version=d.get("fritap_version", ""),
     )
+
+
+def resolve_flow_schema_version(flow_meta: dict) -> int:
+    """Resolve a single flow's effective schema version from its JSON meta.
+
+    Contract: every FLOW record written by current friTap stamps ``_v`` with
+    ``FLOW_SCHEMA_VERSION``. Legacy/v1 records pre-date that key and carry no
+    ``_v``; they are treated as schema version 1 (the first release, before the
+    additive enrichment keys existed). This is the single place to branch on the
+    per-flow schema version so future readers can adapt decoding by version
+    without scattering ``meta.get("_v", ...)`` calls across the codebase.
+    """
+    return int(flow_meta.get("_v", 1))
 
 
 def decode_keylog(payload: bytes) -> tuple[str, float]:
@@ -454,8 +594,92 @@ def decode_flow(payload: bytes) -> "Flow":
         )
 
     flow.detected_protocol = meta.get("detected_protocol", "")
+    flow.transport = meta.get("transport", "tls")
+
+    # --- Schema v2 additive enrichment (absent in v1 files → defaults) ---
+    flow.local_addr = meta.get("local_addr", "")
+    flow.local_port = meta.get("local_port", 0)
+    flow.remote_addr = meta.get("remote_addr", "")
+    flow.remote_port = meta.get("remote_port", 0)
+    flow.process_name = meta.get("process_name", "")
+    flow.package_name = meta.get("package_name", "")
+    flow.hook_function = meta.get("hook_function", "")
+    flow.hook_stack = meta.get("hook_stack", "")
+    flow.tags = list(meta.get("tags", []))
+    flow.notes = meta.get("notes", "")
+
+    # Rebuild the protocol layer stack. v3 records carry an explicit
+    # meta["layers"]; v1/v2 records pre-date it and rebuild from the legacy
+    # meta["tls"] + request/response fields (so old .tap files still open).
+    _rebuild_layers(flow, meta, read_blob)
 
     return flow
+
+
+def _rebuild_layers(flow: "Flow", meta: dict, read_blob) -> None:
+    """Reconstruct ``flow.layers`` after the legacy scalar fields are populated.
+
+    v3: rebuild the full ordered stack from ``meta["layers"]`` — the only path
+    that restores owned inner-layer bytes. v1/v2: seed the TLS layer from
+    ``meta["tls"]`` and let the LayerPipeline rebuild the transport+app layers
+    from the (mirrored, source-of-truth) request/response/detected_protocol
+    fields — a free-bonus reconstruction so pre-v3 captures still expose the
+    layer stack.
+    """
+    layers_meta = meta.get("layers")
+    if layers_meta is not None:
+        _decode_layers(flow, layers_meta, read_blob)
+        return
+
+    tls_meta = meta.get("tls")
+    if tls_meta:
+        # flow.tls lazily resolves/creates the tls layer; mutate in place
+        # (assigning a new object would shadow the layer-stack lookup).
+        tls_layer = flow.tls
+        tls_layer.library = tls_meta.get("library", "")
+        tls_layer.version = tls_meta.get("version", "")
+        tls_layer.sni = tls_meta.get("sni", "")
+        tls_layer.alpn = tls_meta.get("alpn", "")
+        tls_layer.cipher = tls_meta.get("cipher", "")
+    from friTap.flow.layer_pipeline import LayerPipeline
+    LayerPipeline().finalize(flow)
+
+
+def _decode_layers(flow: "Flow", layers_meta: list, read_blob) -> None:
+    """Rebuild ``flow.layers`` from a v3 ``meta["layers"]`` list.
+
+    Layers are added in ascending depth so ``add_layer`` relinks parent/child
+    contiguously (tolerating gaps left by skipped empty layers at encode time).
+    Mirrored layers rebind their chunks view / parsed_field; owned inner layers
+    restore their directional bytes from blobs and their inline parsed result.
+    """
+    from friTap.flow.layers import AppLayer, LayerData
+    from friTap.flow.layer_registry import get_registry
+
+    registry = get_registry()
+    flow.layers = []
+    for lm in sorted(layers_meta, key=lambda d: d.get("depth", 0)):
+        name = lm.get("name", "")
+        desc = registry.get(name)
+        layer_cls = desc.layer_cls if desc is not None else AppLayer
+        layer = layer_cls.from_dict(lm)
+        layer._name = name
+        if lm.get("data_from_chunks"):
+            layer.data = LayerData(data_source="chunks", _owner=flow)
+        elif "data_owned" in lm:
+            owned = lm["data_owned"]
+            data = LayerData()
+            data.set_owned(
+                read=read_blob(owned.get("r_off", 0), owned.get("r_len", 0)),
+                write=read_blob(owned.get("w_off", 0), owned.get("w_len", 0)),
+            )
+            layer.data = data
+        parsed_field = lm.get("parsed_field")
+        if parsed_field:
+            layer._parsed_field = parsed_field
+        elif lm.get("parsed") is not None:
+            layer.set_parsed(_decode_parse_result(lm["parsed"], read_blob))
+        flow.add_layer(layer)
 
 
 def decode_flow_summary(payload: bytes, file_offset: int = 0) -> FlowSummary:
@@ -510,6 +734,11 @@ def decode_flow_summary(payload: bytes, file_offset: int = 0) -> FlowSummary:
         file_offset=file_offset,
         detected_protocol=detected,
         is_control_frame=req.get("is_control_frame", False) if req else False,
+        process_name=meta.get("process_name", ""),
+        tls_sni=(meta.get("tls") or {}).get("sni", ""),
+        tls_alpn=(meta.get("tls") or {}).get("alpn", ""),
+        tag_count=len(meta.get("tags", [])),
+        has_notes=bool(meta.get("notes", "")),
     )
 
 
@@ -535,6 +764,42 @@ def find_sync_marker(data: bytes, start: int = 0) -> int:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+def _encode_layer(layer, register_blob) -> dict:
+    """Encode one ProtocolLayer for ``meta["layers"]``.
+
+    Mirrored transport/app layers store NO bytes: ``data_from_chunks`` marks the
+    data as a chunks view and ``parsed_field`` names the flow attribute
+    (``request``/``response``) the layer mirrors — both already in meta, so
+    nothing is duplicated. Owned inner layers (decryptor output) store their
+    directional bytes once via *register_blob* and inline their own parsed
+    result (which is NOT one of the flow's mirrored fields).
+    """
+    from friTap.flow.layer_registry import get_registry
+
+    d = layer.to_dict()  # name, depth, + typed metadata fields
+    # The registry is the authority on whether a protocol's data is a chunks
+    # view (transport tls/quic + app layers) — mark it so regardless of how the
+    # instance was built, so the view is never serialized as bytes. Only genuine
+    # owned-data layers (decryptor output, unregistered names) blob their bytes.
+    desc = get_registry().get(layer.name)
+    if (desc is not None and desc.data_source == "chunks") \
+            or layer.data.data_source == "chunks":
+        d["data_from_chunks"] = True
+    elif layer.data.data_source == "owned":
+        read = layer.data.read
+        write = layer.data.write
+        r_off, r_len = register_blob(read) if read else (0, 0)
+        w_off, w_len = register_blob(write) if write else (0, 0)
+        d["data_owned"] = {
+            "r_off": r_off, "r_len": r_len, "w_off": w_off, "w_len": w_len,
+        }
+    if layer._parsed_field:
+        d["parsed_field"] = layer._parsed_field
+    elif layer._inner_parsed is not None:
+        d["parsed"] = _encode_parse_result(layer._inner_parsed, register_blob)
+    return d
+
+
 def _encode_parse_result(
     pr: "Optional[ParseResult]",
     register_blob,
@@ -542,17 +807,25 @@ def _encode_parse_result(
 ) -> dict | None:
     """Encode a ParseResult into a JSON-serializable dict with blob references.
 
-    The body is stored as a blob reference; the `raw` field is omitted
-    (it can be reconstructed from chunks).  When *flow* is provided and
-    ``pr.body`` is empty, the body is reconstructed on demand from chunks.
+    The ``raw`` field is omitted (reconstructible from chunks). Body storage:
+    when *flow* is provided (request/response) and ``pr.body`` is empty, the body
+    is reconstructable from ``flow.chunks`` on read, so we store **no** body blob
+    and set ``body_from_chunks`` — this avoids the historical double-storage
+    (chunks + a duplicated reconstructed-body blob). When *flow* is absent
+    (ohttp/trailing) or ``pr.body`` is set (e.g. WebSocket, where the payload is
+    not separately recoverable from chunks), the body is stored as before.
     """
     if pr is None:
         return None
 
     body = pr.body
+    body_from_chunks = False
     if not body and flow is not None:
-        direction = "write" if pr.is_request else "read"
-        body = flow.reconstruct_body(direction)
+        # Reconstructable from chunks on read (Flow.reconstruct_body /
+        # request_body / response_body fall back to chunks when pr.body is
+        # empty). Do not duplicate it in a blob.
+        body_from_chunks = True
+        body = b""
     body_off, body_len = register_blob(body) if body else (0, 0)
 
     return {
@@ -565,6 +838,7 @@ def _encode_parse_result(
         "headers": pr.headers,
         "body_blob_offset": body_off,
         "body_blob_len": body_len,
+        "body_from_chunks": body_from_chunks,
         "body_size": pr.body_size,
         "is_complete": pr.is_complete,
         "is_request": pr.is_request,
@@ -591,7 +865,7 @@ def _decode_parse_result(
         meta.get("body_blob_len", 0),
     )
 
-    return ParseResult(
+    pr = ParseResult(
         protocol=meta.get("protocol", "unknown"),
         method=meta.get("method", ""),
         url=meta.get("url", ""),
@@ -610,6 +884,15 @@ def _decode_parse_result(
         stream_id=meta.get("stream_id", 0),
         is_control_frame=meta.get("is_control_frame", False),
     )
+    # Consume the writer's body-storage hint. When ``body_from_chunks`` is set,
+    # ``pr.body`` was intentionally left empty at encode time (the de-dup path)
+    # and the real body must be recovered from ``Flow.chunks`` via
+    # ``request_body``/``response_body``/``reconstruct_body``. Stash it on the
+    # instance (ParseResult has no such field; dataclass instances allow it) so
+    # callers can distinguish "no body" from "body lives in chunks" instead of
+    # the flag being write-only. Absent in legacy/v1 records -> False.
+    pr.body_from_chunks = bool(meta.get("body_from_chunks", False))
+    return pr
 
 
 def _truncate_utf8(text: str, max_bytes: int) -> bytes:

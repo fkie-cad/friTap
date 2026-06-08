@@ -381,8 +381,15 @@ class Backend(ABC):
         raise NotImplementedError(f"{self.name} backend does not support USB devices")
 
     @abstractmethod
-    def spawn_raw(self, device: Any, target, env: dict | None = None) -> int:
-        """Spawn a process on device and return its PID (without attaching)."""
+    def spawn_raw(self, device: Any, target, env: dict | None = None,
+                  aux: dict | None = None) -> int:
+        """Spawn a process on device and return its PID (without attaching).
+
+        ``aux`` carries backend-specific auxiliary spawn options. The Frida
+        backend forwards them to ``device.spawn`` (e.g. Android activity
+        selection: ``{"activity": ".SomeActivity"}``); backends that spawn a
+        local binary ignore it.
+        """
         ...
 
     @abstractmethod

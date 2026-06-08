@@ -196,6 +196,16 @@ class SSL_Logger():
         # The TUI creates its own FlowCollector in capture_controller.py.
         self._flow_collector = None
 
+        # Live passive-analysis ("scan") state. Populated by _setup_live_scan()
+        # only when --scan is requested. Completed flows are enqueued onto a
+        # bounded queue and drained by a daemon worker thread so analyzers never
+        # run on the Frida callback thread.
+        self._scan_plugins = []
+        self._scan_queue = None
+        self._scan_thread = None
+        self._scan_stop = threading.Event()
+        self._scan_drop_count = 0
+
         # JSON session data
         self.session_data = {
             "friTap_version": __version__,
@@ -429,6 +439,11 @@ class SSL_Logger():
             handler.setup(self._event_bus)
             if isinstance(handler, KeylogOutputHandler):
                 self.keylog_file = handler._file
+                # Propagate the keylog file path into the pcap object so the
+                # capture manifest ('keylog' branch in PCAP._write_capture_manifest)
+                # is actually populated; PCAP.keylog_path is otherwise never set.
+                if self.pcap_obj is not None:
+                    self.pcap_obj.keylog_path = handler._path
             if isinstance(handler, (LivePcapngHandler, LiveAutoDecryptHandler, LiveWiresharkHandler)):
                 self._live_handler = handler
 
@@ -1074,8 +1089,160 @@ class SSL_Logger():
             self._consumer_thread = None
         self._drain_message_queue()
 
+    # ------------------------------------------------------------------
+    # Live passive analysis ("scan") of observed traffic
+    # ------------------------------------------------------------------
+
+    # Bound the in-flight scan queue so a slow analyzer can never grow memory
+    # without limit. When full, completed flows are dropped (and counted)
+    # rather than blocking the capture / Frida callback thread.
+    _SCAN_QUEUE_MAXSIZE = 2048
+
+    def _setup_live_scan(self):
+        """Wire up live passive analysis of observed traffic, if requested.
+
+        Must be called BEFORE instrumentation starts so no completed flows are
+        missed. Subscribes a lightweight handler that ENQUEUES completed flows
+        onto a bounded queue; a daemon worker thread drains it and runs the
+        analyzers off the Frida callback thread. No-op when --scan is unset.
+        """
+        scan_spec = getattr(self._config.output, "scan", None)
+        if not scan_spec:
+            return
+
+        try:
+            from ..analysis import AnalyzerPlugin
+            from ..analysis.registry import resolve_analyzers
+            from ..flow.collector import FlowCollector
+            from ..flow.models import FlowEventType
+            from ..events import DatalogEvent, OhttpEvent, FlowEvent
+
+            self._scan_plugins = [AnalyzerPlugin(a) for a in resolve_analyzers(scan_spec)]
+            if not self._scan_plugins:
+                return
+
+            # Mirror the TUI wiring (capture_controller.py): give the collector
+            # the event bus and subscribe it to the data/ohttp/library events.
+            if self._flow_collector is None:
+                self._flow_collector = FlowCollector(event_bus=self._event_bus)
+            self._flow_collector.set_event_bus(self._event_bus)
+            self._event_bus.subscribe(DatalogEvent, self._flow_collector.on_data)
+            self._event_bus.subscribe(OhttpEvent, self._flow_collector.on_ohttp)
+            self._event_bus.subscribe(
+                LibraryDetectedEvent, self._flow_collector.on_library_detected
+            )
+            self._event_bus.subscribe(
+                SessionEvent, self._flow_collector.on_session_event
+            )
+            self._flow_collector.set_capture_target(self._config.target)
+
+            # Bounded queue + daemon worker so analyzers never run inline on the
+            # Frida callback thread.
+            self._scan_queue = queue.Queue(maxsize=self._SCAN_QUEUE_MAXSIZE)
+            self._scan_stop.clear()
+
+            def _enqueue_completed_flow(event):
+                if event.flow_event_type != FlowEventType.COMPLETED or event.flow is None:
+                    return
+                try:
+                    self._scan_queue.put_nowait(event.flow)
+                except queue.Full:
+                    self._scan_drop_count += 1
+
+            self._event_bus.subscribe(FlowEvent, _enqueue_completed_flow)
+
+            self._scan_thread = threading.Thread(
+                target=self._scan_worker, name="fritap-scan", daemon=True,
+            )
+            self._scan_thread.start()
+            self.logger.info(
+                "Passive analysis enabled (%s) — analyzing observed traffic",
+                ", ".join(p.name for p in self._scan_plugins),
+            )
+        except Exception as e:
+            # A scan setup failure must never break normal capture.
+            self.logger.warning("Could not enable passive analysis: %s", e)
+            self._scan_plugins = []
+            self._scan_queue = None
+            self._scan_thread = None
+
+    def _scan_worker(self):
+        """Daemon worker: drain completed flows and run them through analyzers."""
+        while not (self._scan_stop.is_set() and self._scan_queue.empty()):
+            try:
+                flow = self._scan_queue.get(timeout=0.25)
+            except queue.Empty:
+                continue
+            for plugin in self._scan_plugins:
+                try:
+                    plugin.analyze(flow)
+                except Exception:
+                    self.logger.debug("Analyzer raised on flow", exc_info=True)
+            self._scan_queue.task_done()
+
+    def _finalize_live_scan(self):
+        """Flush, drain, and render passive-analysis findings. Never raises."""
+        if not self._scan_plugins:
+            return
+        try:
+            from ..commands.analyze import _REPORTER_REGISTRY, _filter_min_severity
+
+            # Flush still-active flows so they complete and get enqueued.
+            if self._flow_collector is not None:
+                try:
+                    self._flow_collector.flush()
+                except Exception:
+                    self.logger.debug("FlowCollector flush failed", exc_info=True)
+
+            # Signal the worker to drain and stop, then wait for it to finish.
+            # We must not read plugin.findings while the worker thread is still
+            # calling plugin.analyze() -> findings.extend() on the same lists.
+            self._scan_stop.set()
+            if self._scan_thread is not None:
+                self._scan_thread.join(timeout=10)
+                if self._scan_thread.is_alive():
+                    self.logger.warning(
+                        "Passive-analysis worker did not finish draining within "
+                        "10s; reported findings may be incomplete",
+                    )
+
+            # Snapshot each plugin's findings with list() — a single GIL-atomic
+            # copy — so that even if the worker is still alive we never iterate a
+            # list it is concurrently extending (which would raise "list changed
+            # size during iteration"). The worst case is a few not-yet-appended
+            # findings are omitted, which the warning above already flags.
+            findings = []
+            for plugin in self._scan_plugins:
+                findings.extend(list(plugin.findings))
+
+            min_sev = getattr(self._config.output, "scan_min_severity", "info")
+            findings = _filter_min_severity(findings, min_sev)
+
+            report_fmt = getattr(self._config.output, "scan_report", "table")
+            reporter = _REPORTER_REGISTRY.get(report_fmt, _REPORTER_REGISTRY["table"])()
+            meta = {"analyzers": [p.name for p in self._scan_plugins]}
+            rendered = reporter.report(findings, meta)
+
+            report_out = getattr(self._config.output, "scan_report_out", None)
+            if report_out:
+                with open(report_out, "w", encoding="utf-8") as fh:
+                    fh.write(rendered)
+                self.logger.info("Passive-analysis report written to %s", report_out)
+            else:
+                self.special_logger.info("\n%s", rendered)
+
+            if self._scan_drop_count:
+                self.logger.warning(
+                    "Passive analysis dropped %d completed flows (queue full)",
+                    self._scan_drop_count,
+                )
+        except Exception as e:
+            self.logger.warning("Passive-analysis finalization failed: %s", e)
+
     def start_fritap_session(self, own_message_handler=None):
         self.connect_live()  # No-op if already connected or not in live mode
+        # Wire passive analysis BEFORE instrumentation so no flows are missed.
+        self._setup_live_scan()
         self._start_consumer_thread()
         return self._session_manager.start_session(own_message_handler)
 
@@ -1292,6 +1459,11 @@ class SSL_Logger():
         if hasattr(self, '_plugin_loader'):
             self._plugin_loader.unload_all(self._plugin_shim)
 
+        # Finalize live passive analysis (flush flows, drain queue, render
+        # findings) after plugins unload but before detaching. Guarded so a
+        # scan error never breaks normal capture cleanup.
+        self._finalize_live_scan()
+
         # Close output handlers (new modular path)
         if self._handlers_active:
             for handler in self._output_handlers:
@@ -1345,7 +1517,13 @@ class SSL_Logger():
                         self.logger.warning(f"friTap observed no sockets during capture. The resulting {suffix}")
                     else:
                         self.logger.info(f"Socket tracing disabled. The resulting {suffix}")
-                    self.pcap_obj.finalize_full_capture(formatted_keys)
+                    # Seed manifest ports from the socket trace when available
+                    # (populated only with --socket_trace). Pure --full_capture
+                    # without it leaves this empty and ports stay unrecorded.
+                    self.pcap_obj.finalize_full_capture(
+                        formatted_keys,
+                        traced_Socket_Set=self.traced_Socket_Set,
+                    )
             except Exception as e:
                 self.logger.error(f"Error: {e}")
 

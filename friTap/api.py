@@ -387,7 +387,10 @@ class FriTap:
         if self._flow_callbacks:
             from .flow import FlowCollector
             flow_collector = FlowCollector(event_bus=event_bus)
+            flow_collector.set_capture_target(self._target)
             event_bus.subscribe(DatalogEvent, flow_collector.on_data)
+            event_bus.subscribe(LibraryDetectedEvent, flow_collector.on_library_detected)
+            event_bus.subscribe(SessionEvent, flow_collector.on_session_event)
             for cb in self._flow_callbacks:
                 event_bus.subscribe(FlowEvent, cb)
 

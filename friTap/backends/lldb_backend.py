@@ -184,7 +184,10 @@ class LLDBBackend(Backend):
         self._logger.info("Spawned process: %s (PID %d)", target, pid)
         return process, pid
 
-    def spawn_raw(self, device: Any, target, env: dict | None = None) -> int:
+    def spawn_raw(self, device: Any, target, env: dict | None = None,
+                  aux: dict | None = None) -> int:
+        # aux (e.g. Android activity selection) is Frida-specific; not
+        # applicable when launching a local binary under lldb.
         self._require_lldb()
         if isinstance(target, list):
             exe = target[0]

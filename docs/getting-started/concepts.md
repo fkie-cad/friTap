@@ -174,6 +174,80 @@ fritap --offsets offsets.json target
 4. **Packet Reconstruction**: Rebuild network packets
 5. **PCAP Generation**: Save as standard PCAP file
 
+## Protocol Layer Stack & Flow Model
+
+Every captured connection is represented as a `Flow`. A flow is an ordered,
+**linear** stack of typed protocol layers, from the outermost transport down to
+the innermost application/decrypted protocol — for example `[tls, http2]` or
+`[quic, http3]`. Because HTTP/2 and HTTP/3 streams are demultiplexed into
+separate flows, the stack never branches; it always stays a single straight
+line.
+
+### Accessing layers
+
+A flow exposes its layers three ways:
+
+- **By protocol name**: `flow.<protocol>` returns the typed layer, e.g.
+  `flow.tls.sni`, `flow.tls.version`, `flow.quic.alpn`, `flow.ssh.kex`. These
+  accessors are **lazy** — the layer is materialized on first access and is
+  never `None`, so `flow.tls` always answers (empty fields until populated).
+- **By name lookup**: `flow.layer("http2")` returns the layer instance or
+  `None` if the flow has no such layer.
+- **Positionally**: `flow.layers` is the ordered list (outermost first).
+
+Application protocols (`http1`, `http2`, `http3`, `websocket`) resolve through
+the same registry as the transport layers.
+
+### The three facets of a layer
+
+Every layer exposes three facets:
+
+1. **Typed metadata fields** — protocol-specific handshake values, e.g.
+   `flow.tls.cipher`, `flow.tls.version`, `flow.quic.alpn`,
+   `flow.ssh.kex`. (See [Metadata is offline-only](#metadata-is-offline-only)
+   below for how these get populated.)
+2. **`.data`** — the decrypted/plaintext bytes for that layer, with directional
+   accessors `.read` (server→client) and `.write` (client→server), plus the
+   aliases `.s2c` and `.c2s`. For transport and application layers, `.data` is a
+   **zero-copy view** over the flow's decrypted chunks — it is never serialized
+   separately. For inner decrypted layers (produced by the nested-decryption
+   seam), `.data` is **owned bytes**, serialized once into the `.tap`.
+3. **`.parsed`** — the parsed result for that layer. For application layers this
+   mirrors the flow's `request`/`response`, so
+   `flow.layer("http2").parsed is flow.request`.
+
+### Registry and extensibility
+
+The set of known protocols lives in a registry. Adding a protocol means
+registering a `ProtocolDescriptor` (`name`, `layer_cls`, `data_source`, plus an
+optional `offline_extractor` and `decryptor`) — see
+[CONTRIBUTING.md](https://github.com/fkie-cad/friTap/blob/main/CONTRIBUTING.md)
+for the steps. The descriptor's `decryptor` is the seam for future
+nested-protocol support: a decryptor would peel a plaintext inner protocol out
+of an encrypted carrier (e.g. Signal's double-ratchet or MTProto inside TLS).
+The decryptor registry ships **empty** today, so the seam is a no-op for all
+current traffic.
+
+### Metadata is offline-only
+
+TLS/QUIC/SSH handshake metadata — cipher, version, SNI, ALPN, SSH key-exchange
+and algorithm fields — is produced **only** by the offline `pcap + keys → .tap`
+pipeline, which runs `tshark` and therefore sees the full plaintext handshake.
+The **live Frida agent never carries this metadata**: the live capture path
+records connection identity and lifecycle only. As a result, `flow.tls.cipher`
+and friends are empty on a freshly-captured live `.tap` until you reconstruct it
+offline.
+
+To populate `flow.tls` / `flow.quic` / `flow.ssh` metadata, rebuild the `.tap`
+from the capture and its keylog:
+
+```bash
+fritap --from-pcap capture.pcapng --keylog keys.log --tap out.tap
+```
+
+(SSH and IPsec, whose handshakes are plaintext, surface as synthetic
+metadata-only flows in the reconstructed `.tap`.)
+
 ## Platform Differences
 
 Since friTap depends on Frida, it requires root (or administrator) privileges on every platform.

@@ -146,6 +146,18 @@ def reparse_flow(flow: "Flow") -> bool:
             )
             upgraded = True
 
+    # Per-layer generalization: after the app-level request/response are
+    # re-detected, refresh the protocol layer stack so flow.<proto> reflects the
+    # new protocol and any OWNED inner layers (decryptor output) are re-parsed
+    # against their current bytes. Mirrored transport/app layers track the
+    # reassigned request/response automatically; this rebuilds their identity.
+    try:
+        from friTap.flow.layer_pipeline import LayerPipeline
+        LayerPipeline().reparse(flow)
+    except Exception:
+        logger.debug("Layer-stack reparse failed for flow %s",
+                     getattr(flow, "flow_id", "?"), exc_info=True)
+
     if upgraded:
         logger.debug(
             "Reparsed flow %s: protocol=%s method=%s",

@@ -110,14 +110,27 @@ class SessionEvent(FriTapEvent):
     session_id: str = ""
     event_type: str = ""  # SESSION_STARTED, SESSION_RESUMED, SESSION_ENDED, SESSION_DESTROYED
     cipher_suite: str = ""
-    protocol_version: str = ""
+    protocol_version: str = ""  # TLS version, e.g. "TLS 1.3"
     server_name: str = ""
+    alpn: str = ""  # negotiated ALPN protocol ("h2", "http/1.1", ...)
+    quic_version: str = ""  # QUIC transport version ("1", "2", ...) — QUIC only
     client_random: str = ""
     connection_id: str = ""
     src_addr: str = ""
     src_port: int = 0
     dst_addr: str = ""
     dst_port: int = 0
+
+    @property
+    def cipher(self) -> str:
+        """Public alias for the negotiated cipher — single source of truth.
+
+        Historically ``cipher`` was a separate (and never-populated) dataclass
+        field, which let it drift from ``cipher_suite``. It is now a read-only
+        view onto ``cipher_suite`` so consumers that read ``.cipher`` always see
+        the one authoritative value. No producer ever set ``cipher`` directly.
+        """
+        return self.cipher_suite
 
 
 @dataclass

@@ -2,6 +2,7 @@
 
 import copy
 import logging
+import re
 import threading
 import time
 from typing import Callable, Optional, TYPE_CHECKING
@@ -15,6 +16,8 @@ from friTap.events import (
     FlowEvent,
     ErrorEvent,
     ERROR_SEVERITY_WARNING,
+    SESSION_STARTED,
+    SESSION_RESUMED,
     SESSION_ENDED,
     SESSION_DESTROYED,
 )
@@ -30,6 +33,7 @@ from friTap.parsers.http2 import Http2Parser, is_h2_control_frame_data
 from friTap.parsers.http3 import build_h3_result_from_headers
 from friTap.parsers.registry import get_default_registry
 
+from .layer_pipeline import LayerPipeline
 from .models import Flow, FlowEventType, FlowState, FlowChunk
 
 logger = logging.getLogger(__name__)
@@ -57,15 +61,35 @@ class FlowCollector:
     def __init__(self, event_bus=None, show_control_frames: bool = True):
         self._lock = threading.Lock()
         self._flows: dict[str, Flow] = {}  # flow_id -> Flow
+        # conn_id -> [flow_id], maintained in lockstep with _flows. Lets
+        # per-connection work (metadata stamping, synthetic-flow sequencing)
+        # look up a connection's flows directly instead of scanning every flow
+        # on each session/synthetic event (O(flows) -> O(1) lookup, turning an
+        # O(streams x flows) offline conversion back into O(streams)).
+        self._flow_index: dict[str, list[str]] = {}
         self._connections: dict[str, _ConnectionState] = {}  # conn_id -> state
+        # Owns the *vertical* layer-stack structure (transport -> app -> inner).
+        # Invoked at flow finalize (inside the lock, before the COMPLETE flip).
+        self._pipeline = LayerPipeline()
         self._callbacks: list[Callable] = []
         self._event_bus = event_bus
         self._show_control_frames = show_control_frames
         # HTTP/2 stream-level index: (conn_id, stream_id) -> flow_id
         self._h2_stream_flows: dict[tuple[str, int], str] = {}
+        # Per-connection cache of TLS handshake metadata from SESSION_STARTED/
+        # RESUMED events. Lets _stamp_metadata() backfill TLS fields onto flows
+        # created AFTER the session event arrived (the common handshake-before-
+        # data ordering). Keyed by connection_id; cleared in _finalize_connection.
+        self._session_tls: dict[str, dict] = {}  # conn_id -> {version,sni,alpn,cipher}
         # Orphan request index: dst_key -> [(timestamp, flow_id), ...]
         self._orphan_requests: dict[str, list[tuple[float, str]]] = {}
         self._event_count = 0
+        # Cheaply-available metadata stamped onto each new Flow. Populated by
+        # on_library_detected() and set_capture_target(); read under _lock.
+        self._detected_library: str = ""
+        self._capture_target: str = ""
+        self._process_name: str = ""
+        self._package_name: str = ""
         # ErrorEvents staged by SafeParserAdapter via _on_parser_failure;
         # populated under _lock and drained by entry-point methods after the
         # lock is released so EventBus.emit cannot deadlock against TUI
@@ -136,6 +160,67 @@ class FlowCollector:
         """Set the EventBus for FlowEvent emission."""
         self._event_bus = event_bus
 
+    def on_library_detected(self, event) -> None:
+        """EventBus subscriber for LibraryDetectedEvent.
+
+        Records the detected TLS/SSL library so it can be stamped onto each
+        new Flow's ``tls.library``.
+        """
+        library = getattr(event, 'library', '') or ''
+        with self._lock:
+            self._detected_library = library
+
+    def set_capture_target(self, target: str) -> None:
+        """Record the capture target and derive process/package names.
+
+        The whole target string is used as ``process_name``. It is ALSO used as
+        ``package_name`` only when it has Android-package shape — dot-separated
+        identifier segments (``com.example.app``) — and is not an IP address,
+        a numeric PID, a path, or a known native/binary file (``.so``/``.exe``/
+        etc.). This avoids misclassifying IPs, PIDs, paths and executables.
+        """
+        target = target or ""
+        looks_like_package = self._looks_like_android_package(target)
+        with self._lock:
+            self._capture_target = target
+            self._process_name = target
+            self._package_name = target if looks_like_package else ""
+
+    # Android package: dot-separated identifier segments, each starting with a
+    # letter (e.g. "com.example.app"). Single-segment names (no dot) are not
+    # packages — they are plain process/executable names.
+    _ANDROID_PACKAGE_RE = re.compile(
+        r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$"
+    )
+    # File/binary extensions a real package name would never end in.
+    _NON_PACKAGE_EXTENSIONS = (
+        ".so", ".exe", ".bin", ".apk", ".dll", ".dylib",
+        ".jar", ".dex", ".out", ".elf",
+    )
+
+    @classmethod
+    def _looks_like_android_package(cls, target: str) -> bool:
+        """Return True only for strings shaped like an Android package id.
+
+        Rejects whitespace, paths, IP addresses, bare numeric PIDs and names
+        ending in a known binary/file extension so that those are not
+        misclassified as package names.
+        """
+        if not target or any(c.isspace() for c in target):
+            return False
+        if "/" in target or "\\" in target:  # paths like /proc/1/exe
+            return False
+        lowered = target.lower()
+        if lowered.endswith(cls._NON_PACKAGE_EXTENSIONS):
+            return False
+        if not cls._ANDROID_PACKAGE_RE.match(target):
+            return False
+        # An all-numeric-segment dotted string (e.g. "10.0.0.1") is an IP, not a
+        # package — every package must have at least one alphabetic segment.
+        # The regex already forces each segment to start with a letter, so any
+        # match here is alphabetic-led and an IPv4 literal cannot match.
+        return True
+
     def set_show_control_frames(self, show: bool) -> None:
         """Toggle visibility of HTTP/2 control frames (PING, SETTINGS, etc.)."""
         with self._lock:
@@ -151,12 +236,18 @@ class FlowCollector:
 
     def on_data(self, event) -> None:
         """EventBus subscriber for DatalogEvent."""
-        # Build connection ID using tiered key resolution (session_token → normalized 4-tuple)
+        # Build connection ID using tiered key resolution (client_random →
+        # session_token → normalized 4-tuple). The ``protocol`` is passed so the
+        # cr:/sid: prefix reflects the event's real protocol (e.g. "quic"); empty/
+        # None is normalized to "tls" inside resolve_connection_key, the same
+        # single source of truth MessageRouter._emit_lifecycle keys through, so
+        # lifecycle and data events always resolve to the same key.
         conn_id = resolve_connection_key(
             event.src_addr, event.src_port,
             event.dst_addr, event.dst_port,
             session_token=getattr(event, 'ssl_session_id', ''),
             client_random=getattr(event, 'client_random', ''),
+            protocol=getattr(event, 'protocol', 'tls'),
         )
 
         pending = []
@@ -199,7 +290,7 @@ class FlowCollector:
                                 else 0)
                 result = build_h3_result_from_headers(h3_headers, synthetic_id, direction)
                 flow = self._create_or_update_flow(conn, chunk, result, event, pending)
-                pending.append((FlowEventType.UPDATED, flow))
+                self._append_progress(pending, flow)
             # Parser detection with buffering retry
             elif conn.parser is None:
                 # Buffer chunks until we have enough data for reliable detection
@@ -226,11 +317,11 @@ class FlowCollector:
                         if results:
                             for result in results:
                                 flow = self._create_or_update_flow(conn, pending_chunk, result, event, pending)
-                                pending.append((FlowEventType.UPDATED, flow))
+                                self._append_progress(pending, flow)
                         else:
                             flow = self._get_or_create_active_flow(conn, event, pending)
                             self._append_chunk(flow, pending_chunk)
-                            pending.append((FlowEventType.UPDATED, flow))
+                            self._append_progress(pending, flow)
                     # Stamp detected_protocol on the active flow when the parser
                     # matched a real protocol but produced no ParseResult yet
                     # (e.g. HTTP/2 SETTINGS-only prelude).
@@ -249,7 +340,7 @@ class FlowCollector:
                     # Still buffering — create/update flow with chunk but don't feed parser yet
                     flow = self._get_or_create_active_flow(conn, event, pending)
                     self._append_chunk(flow, chunk)
-                    pending.append((FlowEventType.UPDATED, flow))
+                    self._append_progress(pending, flow)
             else:
                 # Parser already committed — try upgrade if on fallback
                 if isinstance(unwrap_parser(conn.parser), HexdumpParser):
@@ -268,7 +359,7 @@ class FlowCollector:
                     flow = None
                     for result in results:
                         flow = self._create_or_update_flow(conn, chunk, result, event, pending)
-                        pending.append((FlowEventType.UPDATED, flow))
+                        self._append_progress(pending, flow)
                     # Propagate trailing data to flow
                     if flow is not None:
                         self._propagate_trailing_data(conn.parser, flow)
@@ -283,7 +374,7 @@ class FlowCollector:
                         flow = self._get_or_create_active_flow(conn, event, pending)
                         self._append_chunk(flow, chunk)
                         self._propagate_trailing_data(conn.parser, flow)
-                        pending.append((FlowEventType.UPDATED, flow))
+                        self._append_progress(pending, flow)
 
             self._event_count += 1
             if self._event_count % _SWEEP_INTERVAL == 0:
@@ -313,8 +404,19 @@ class FlowCollector:
 
             if event.direction == "request" or result.is_request:
                 flow.ohttp_inner_request = result
+                inner_field = "ohttp_inner_request"
             else:
                 flow.ohttp_inner_response = result
+                inner_field = "ohttp_inner_response"
+
+            # Route the event-fed inner protocol into the layer model. The
+            # legacy ohttp_inner_* fields stay the source of truth; the "ohttp"
+            # layer MIRRORS them via parsed_field (no byte/result duplication).
+            # The request is the canonical parsed reference when both exist.
+            ohttp_layer = self._pipeline.push_layer(
+                flow, protocol="ohttp", source="event:ohttp")
+            if inner_field == "ohttp_inner_request" or not ohttp_layer._parsed_field:
+                ohttp_layer._parsed_field = inner_field
 
             pending.append((FlowEventType.UPDATED, flow))
 
@@ -323,6 +425,13 @@ class FlowCollector:
 
     def on_session_event(self, event) -> None:
         """EventBus subscriber for SessionEvent -- handle connection lifecycle."""
+        # On STARTED/RESUMED, stamp any available TLS handshake metadata onto
+        # the flows belonging to this connection. This path does not finalize
+        # or remove the connection, so it returns once stamping is done.
+        if event.event_type in (SESSION_STARTED, SESSION_RESUMED):
+            self._stamp_tls_metadata(event)
+            return
+
         if event.event_type not in (SESSION_ENDED, SESSION_DESTROYED):
             return
 
@@ -346,6 +455,98 @@ class FlowCollector:
         for event_type, flow in pending:
             self._notify(event_type, flow)
         self._emit_errors(errors_to_emit)
+
+    @staticmethod
+    def _apply_session_metadata(flow: Flow, meta: dict) -> bool:
+        """Stamp cached session metadata onto the flow's transport layer.
+
+        Transport-aware: a QUIC flow stamps onto ``flow.quic`` (transport
+        version from ``quic_version``, plus alpn/cipher recovered from the
+        QUIC-embedded TLS handshake); a TLS flow stamps onto ``flow.tls``
+        (version/sni/alpn/cipher). Only empty fields are filled. Returns True if
+        anything changed (so callers can decide whether to notify).
+        """
+        changed = False
+        if getattr(flow, "transport", "tls") == "quic":
+            layer = flow.quic
+            qv = meta.get("quic_version", "")
+            if qv and not layer.version:
+                layer.version = qv
+                changed = True
+            if meta.get("sni") and not layer.sni:
+                layer.sni = meta["sni"]
+                changed = True
+            if meta.get("alpn") and not layer.alpn:
+                layer.alpn = meta["alpn"]
+                changed = True
+            if meta.get("cipher") and not layer.cipher:
+                layer.cipher = meta["cipher"]
+                changed = True
+        else:
+            layer = flow.tls
+            if meta.get("version") and not layer.version:
+                layer.version = meta["version"]
+                changed = True
+            if meta.get("sni") and not layer.sni:
+                layer.sni = meta["sni"]
+                changed = True
+            if meta.get("alpn") and not layer.alpn:
+                layer.alpn = meta["alpn"]
+                changed = True
+            if meta.get("cipher") and not layer.cipher:
+                layer.cipher = meta["cipher"]
+                changed = True
+        return changed
+
+    def _stamp_tls_metadata(self, event) -> None:
+        """Stamp handshake metadata from a SessionEvent onto matching flows.
+
+        Transport-aware (TLS -> ``flow.tls``, QUIC -> ``flow.quic``): caches the
+        metadata by ``connection_id`` so flows created LATER (handshake-before-
+        data ordering) are backfilled by :meth:`_stamp_metadata`, and stamps any
+        flows that already exist. Metadata is OFFLINE-ONLY — the live agent path
+        emits none, so in practice only the offline pcap->tap producer's
+        SessionEvents reach here. Updated flows are notified after the lock.
+        """
+        conn_id = getattr(event, 'connection_id', '')
+        if not conn_id:
+            return
+
+        meta = {
+            "version": getattr(event, 'protocol_version', '') or '',
+            "sni": getattr(event, 'server_name', '') or '',
+            "alpn": getattr(event, 'alpn', '') or '',
+            "cipher": (getattr(event, 'cipher', '')
+                       or getattr(event, 'cipher_suite', '') or ''),
+            "quic_version": getattr(event, 'quic_version', '') or '',
+        }
+        if not any(meta.values()):
+            return
+
+        pending = []
+        with self._lock:
+            # Merge into any existing cache entry so a partial RESUMED event
+            # never blanks fields a prior STARTED already set.
+            cached = self._session_tls.setdefault(conn_id, {})
+            for key, value in meta.items():
+                if value:
+                    cached[key] = value
+
+            # Look up this connection's flows via the index instead of scanning
+            # every flow (which was O(flows) per session event -> O(streams x
+            # flows) over an offline conversion). Index order mirrors _flows
+            # insertion order, so UPDATED events fire in the same order as before.
+            for flow_id in self._flow_index.get(conn_id, ()):
+                flow = self._flows.get(flow_id)
+                if flow is None:
+                    continue
+                # Only notify flows that actually changed — a re-RESUMED
+                # connection whose flows already carry metadata is a no-op.
+                if self._apply_session_metadata(flow, meta):
+                    pending.append((FlowEventType.UPDATED, flow))
+
+        for event_type, flow in pending:
+            self._notify(event_type, flow)
 
     def get_flow_summaries(self) -> list["FlowSummary"]:
         """Lightweight summaries for all flows (no chunks, no body bytes).
@@ -381,13 +582,126 @@ class FlowCollector:
     def clear(self) -> None:
         with self._lock:
             self._flows.clear()
+            self._flow_index.clear()
             self._connections.clear()
             self._h2_stream_flows.clear()
             self._orphan_requests.clear()
+            self._session_tls.clear()
+
+    def add_synthetic_flow(
+        self,
+        *,
+        src_addr: str,
+        src_port: int,
+        dst_addr: str,
+        dst_port: int,
+        layer=None,
+        detected_protocol: str = "",
+        transport: str = "tcp",
+        protocol: str = "",
+        started: float = 0.0,
+        ssl_session_id: str = "",
+    ) -> Flow:
+        """Register a metadata-only synthetic flow; emit CREATED then COMPLETED.
+
+        For protocols whose METADATA is recoverable offline but whose payload is
+        NOT — SSH (plaintext KEXINIT/banner, no session keys) and IPsec (stub).
+        The flow carries no chunks; *layer* (e.g. an SshLayer/IpsecLayer) holds
+        the metadata and *detected_protocol* drives display. The flow is created
+        already COMPLETE so the TapWriter persists it on the COMPLETED notify.
+        Thread-safe; notifies outside the lock.
+        """
+        conn_id = resolve_connection_key(
+            src_addr, src_port, dst_addr, dst_port,
+            session_token=ssl_session_id,
+            protocol=protocol or transport,
+        )
+        pending: list = []
+        with self._lock:
+            # Sequence within this connection so repeated synthetic flows for
+            # the same endpoints get distinct ids (mirrors _make_flow's scheme).
+            # The index length is the count the old full scan produced, in O(1).
+            seq = len(self._flow_index.get(conn_id, ()))
+            flow_id = f"{conn_id}:{seq}"
+            flow = Flow(
+                flow_id=flow_id,
+                connection_id=conn_id,
+                src_addr=src_addr,
+                src_port=src_port,
+                dst_addr=dst_addr,
+                dst_port=dst_port,
+                ssl_session_id=ssl_session_id,
+                started=started,
+                ended=started,
+                state=FlowState.COMPLETE,
+                transport=transport,
+            )
+            # Lightweight metadata (no event to stamp from): identity endpoints
+            # + process/package/library known to the collector.
+            flow.local_addr = src_addr
+            flow.local_port = src_port
+            flow.remote_addr = dst_addr
+            flow.remote_port = dst_port
+            flow.process_name = self._process_name
+            flow.package_name = self._package_name
+            flow.detected_protocol = detected_protocol
+            if layer is not None:
+                flow.add_layer(layer)
+            self._flows[flow_id] = flow
+            self._index_flow(flow)
+            pending.append((FlowEventType.CREATED, flow))
+            pending.append((FlowEventType.COMPLETED, flow))
+
+        for event_type, f in pending:
+            self._notify(event_type, f)
+        return flow
+
+    def _complete_flow(self, flow: Flow, ended: float, out: list) -> bool:
+        """Transition a flow ACTIVE->COMPLETE exactly once, enqueuing COMPLETED.
+
+        The single shared completion site for all three paths that finalize a
+        flow: on_data (via _attach_response, when a response is is_complete),
+        flush(), and _finalize_connection(). It builds the layer stack BEFORE
+        the state flip (write-ordering: the writer encodes the flow at the
+        COMPLETED notify) and appends exactly one ``(COMPLETED, flow)`` to
+        *out*. The ACTIVE guard makes it idempotent — a flow already COMPLETE is
+        never re-flipped or re-emitted, so no caller double-processes it and the
+        COMPLETED event fires exactly once whichever path reaches it first.
+        Returns True iff it performed the transition. Must be called under lock.
+        """
+        if flow.state != FlowState.ACTIVE:
+            return False
+        self._pipeline.finalize(flow)
+        flow.state = FlowState.COMPLETE
+        flow.ended = ended
+        out.append((FlowEventType.COMPLETED, flow))
+        return True
+
+    @staticmethod
+    def _append_progress(pending: list, flow: Flow) -> None:
+        """Enqueue a non-terminal UPDATED event for an in-progress flow.
+
+        Skips a flow that just reached COMPLETE: its single COMPLETED event was
+        already enqueued at the completion site (_complete_flow via
+        _attach_response), so a trailing UPDATED would be redundant and emitted
+        out of order after the terminal event.
+        """
+        if flow.state == FlowState.ACTIVE:
+            pending.append((FlowEventType.UPDATED, flow))
 
     def flush(self) -> None:
-        """Flush all parsers and finalize active flows."""
+        """Flush all parsers and finalize active flows.
+
+        Emits a COMPLETED FlowEvent for every flow this call transitions from
+        ACTIVE to COMPLETE, mirroring _finalize_connection. This lets the
+        end-of-capture path (legacy ssl_logger_core._finalize_live_scan) enqueue
+        still-active flows for passive analysis. _complete_flow guards on
+        FlowState.ACTIVE so flows already completed/notified earlier (by
+        _finalize_connection or by _attach_response during on_data) are never
+        re-emitted (no double-processing for any caller).
+        """
         removed_flows: list[Flow] = []
+        completed_events: list = []
         with self._lock:
             for conn in self._connections.values():
                 # Commit parser for connections still in the buffering phase
@@ -400,11 +714,12 @@ class FlowCollector:
             # Merge orphan request-only + response-only flows by destination
             removed_flows = self._merge_remaining_orphans()
 
-            # Mark all active flows as complete
+            # Complete every still-active flow (building its layer stack first,
+            # inside the lock, before the COMPLETE flip). Already-COMPLETE flows
+            # are skipped by _complete_flow's guard, so they are never notified
+            # twice.
             for flow in self._flows.values():
-                if flow.state == FlowState.ACTIVE:
-                    flow.state = FlowState.COMPLETE
-                    flow.ended = time.time()
+                self._complete_flow(flow, time.time(), completed_events)
 
             self._orphan_requests.clear()
             errors_to_emit = self._drain_pending_errors()
@@ -412,6 +727,9 @@ class FlowCollector:
         # Notify about removed flows (outside lock)
         for removed_flow in removed_flows:
             self._notify(FlowEventType.REMOVED, removed_flow)
+        # Emit COMPLETED for flows this flush finalized (outside lock).
+        for event_type, completed_flow in completed_events:
+            self._notify(event_type, completed_flow)
         self._emit_errors(errors_to_emit)
 
     def _merge_remaining_orphans(self) -> list[Flow]:
@@ -452,6 +770,7 @@ class FlowCollector:
             if resp_flow.ended > req_flow.ended:
                 req_flow.ended = resp_flow.ended
             del self._flows[resp_fid]
+            self._unindex_flow(resp_flow)
             removed.append(resp_flow)
 
         return removed
@@ -466,17 +785,17 @@ class FlowCollector:
         if conn.parser:
             self._flush_parser_to_flow(conn)
         if conn.active_flow_id and conn.active_flow_id in self._flows:
-            flow = self._flows[conn.active_flow_id]
-            if flow.state == FlowState.ACTIVE:
-                flow.state = FlowState.COMPLETE
-                flow.ended = ended
-                pending.append((FlowEventType.COMPLETED, flow))
+            self._complete_flow(self._flows[conn.active_flow_id], ended, pending)
 
         # Clean up H2 stream index entries for this connection
         stale_streams = [key for key in self._h2_stream_flows
                          if key[0] == conn.conn_id]
         for key in stale_streams:
             del self._h2_stream_flows[key]
+
+        # Drop the cached TLS metadata for this connection to avoid unbounded
+        # growth across many short-lived connections.
+        self._session_tls.pop(conn.conn_id, None)
 
     def _periodic_sweep(self, pending: list) -> None:
         """Periodic maintenance: clean stale indices, idle connections, body caches.
@@ -564,14 +883,24 @@ class FlowCollector:
         flow._total_bytes += len(chunk.data)
         flow.invalidate_body_cache()
 
-    @staticmethod
-    def _attach_response(flow: Flow, result, chunk: FlowChunk, timestamp: float) -> None:
-        """Attach a response ParseResult to a flow and optionally mark complete."""
+    def _attach_response(self, flow: Flow, result, chunk: FlowChunk,
+                          timestamp: float, pending: list) -> None:
+        """Attach a response ParseResult to a flow and optionally complete it.
+
+        Instance method (rather than static) so the COMPLETE transition that an
+        ``is_complete`` response triggers here — a flow-finalization site
+        distinct from flush()/`_finalize_connection`, and the common case for
+        Content-Length HTTP/1 responses — runs through the shared
+        :meth:`_complete_flow`. That builds the layer stack before the flip AND
+        enqueues the COMPLETED event onto *pending* (emitted after the lock by
+        on_data), so these flows are persisted/analyzed like any other; before
+        this they flipped to COMPLETE but were only ever notified UPDATED, so
+        the TapWriter (which writes on COMPLETED) silently dropped them.
+        """
         flow.response = result
-        FlowCollector._append_chunk(flow, chunk)
+        self._append_chunk(flow, chunk)
         if result.is_complete:
-            flow.state = FlowState.COMPLETE
-            flow.ended = timestamp
+            self._complete_flow(flow, timestamp, pending)
 
     def _commit_pending(self, conn: '_ConnectionState') -> None:
         """Commit a parser and feed pending chunks for a buffering-phase connection.
@@ -633,9 +962,15 @@ class FlowCollector:
                 if flow.response is None:
                     flow.response = result
 
-    @staticmethod
-    def _propagate_trailing_data(parser, flow: Flow) -> None:
-        """Move trailing data from a parser instance to a Flow. Must be called under lock."""
+    def _propagate_trailing_data(self, parser, flow: Flow) -> None:
+        """Move trailing data from a parser instance to a Flow. Must be called under lock.
+
+        Instance method (rather than static) so the trailing data is also routed
+        into the layer model: a "trailing" layer MIRRORS ``flow.trailing_parse``
+        via parsed_field (the trailing_* fields remain the source of truth and
+        the trailing bytes are NOT re-stored — they already serialize via
+        meta["trailing_*"], so the layer carries no owned data).
+        """
         td = getattr(parser, 'trailing_data', None)
         if td is None:
             return
@@ -643,6 +978,10 @@ class FlowCollector:
         flow.trailing_protocol = getattr(parser, 'trailing_protocol', '')
         flow.trailing_parse = getattr(parser, 'trailing_sub_parse', None)
         parser.trailing_data = None
+        if flow.trailing_parse is not None:
+            self._pipeline.push_layer(
+                flow, protocol="trailing", source="trailing",
+                parsed_field="trailing_parse")
 
     def _check_parser_upgrade(self, conn: '_ConnectionState') -> None:
         """Swap the parser if the current one signals a protocol upgrade (e.g., 101 → WebSocket)."""
@@ -743,7 +1082,7 @@ class FlowCollector:
                 stream_key = (conn.conn_id, stream_id)
                 matched_flow_id = self._h2_stream_flows.get(stream_key)
                 if matched_flow_id and matched_flow_id in self._flows:
-                    self._attach_response(self._flows[matched_flow_id], result, chunk, event.timestamp)
+                    self._attach_response(self._flows[matched_flow_id], result, chunk, event.timestamp, pending)
                     # Remove stream mapping when response is complete
                     if result.is_complete:
                         self._h2_stream_flows.pop(stream_key, None)
@@ -752,20 +1091,24 @@ class FlowCollector:
             # Fall back to active flow on this connection
             if conn.active_flow_id and conn.active_flow_id in self._flows:
                 flow = self._flows[conn.active_flow_id]
-                self._attach_response(flow, result, chunk, event.timestamp)
+                self._attach_response(flow, result, chunk, event.timestamp, pending)
                 return flow
             else:
                 # Response without request — try orphan index match
                 matched = self._match_orphan_request(event)
                 if matched:
-                    self._attach_response(matched, result, chunk, event.timestamp)
+                    self._attach_response(matched, result, chunk, event.timestamp, pending)
                     return matched
-                # No match — create orphan flow
+                # No match — create orphan flow. Enqueue CREATED BEFORE
+                # _attach_response: a self-contained complete response makes
+                # _attach_response -> _complete_flow enqueue COMPLETED, and
+                # subscribers (drained FIFO) must never see COMPLETED for a
+                # flow_id whose CREATED they have not seen yet.
                 flow = self._make_flow(conn, event)
-                self._attach_response(flow, result, chunk, event.timestamp)
                 conn.active_flow_id = flow.flow_id
                 conn.flow_sequence += 1
                 pending.append((FlowEventType.CREATED, flow))
+                self._attach_response(flow, result, chunk, event.timestamp, pending)
                 return flow
 
     def _match_orphan_request(self, event) -> Optional[Flow]:
@@ -813,8 +1156,67 @@ class FlowCollector:
             ssl_session_id=getattr(event, 'ssl_session_id', ''),
             started=event.timestamp,
         )
+        self._stamp_metadata(flow, event)
         self._flows[flow_id] = flow
+        self._index_flow(flow)
         return flow
+
+    def _index_flow(self, flow: Flow) -> None:
+        """Record *flow* under its connection_id. Must run under the lock, at
+        every site that adds to ``_flows`` (``_make_flow``, ``add_synthetic_flow``)
+        so ``_flow_index`` stays a faithful mirror of ``_flows``."""
+        self._flow_index.setdefault(flow.connection_id, []).append(flow.flow_id)
+
+    def _unindex_flow(self, flow: Flow) -> None:
+        """Drop *flow* from the per-connection index. Must run under the lock, at
+        every site that removes from ``_flows`` (currently only the orphan-merge
+        in :meth:`_merge_remaining_orphans`)."""
+        ids = self._flow_index.get(flow.connection_id)
+        if not ids:
+            return
+        try:
+            ids.remove(flow.flow_id)
+        except ValueError:
+            pass
+        if not ids:
+            del self._flow_index[flow.connection_id]
+
+    def _stamp_metadata(self, flow: Flow, event) -> None:
+        """Stamp cheaply-available metadata onto a freshly-created Flow.
+
+        Must be called under lock. Fills the detected TLS library, process /
+        package names from the capture target, the originating hook function,
+        and defaults local/remote endpoints from the event's src/dst.
+        """
+        # Transport/encryption protocol ("tls" or "quic"), the only transport
+        # hint the Flow stores. Mirrors the value on_data folds into the
+        # connection key. Set FIRST so the layer pipeline picks TlsLayer vs
+        # QuicLayer and the metadata backfill below targets the right layer.
+        flow.transport = getattr(event, 'protocol', 'tls') or 'tls'
+        if self._detected_library and not flow.tls.library:
+            flow.tls.library = self._detected_library
+        # Backfill handshake metadata cached from an earlier SESSION_STARTED/
+        # RESUMED for this connection (handshake arrives before the first data
+        # event, so _stamp_tls_metadata found no flow to stamp at that time).
+        # Transport-aware: stamps flow.tls or flow.quic per flow.transport.
+        # Only fills fields that are still empty so we never clobber later data.
+        cached_meta = self._session_tls.get(flow.connection_id)
+        if cached_meta:
+            self._apply_session_metadata(flow, cached_meta)
+        flow.process_name = self._process_name
+        flow.package_name = self._package_name
+        # Hook origin: prefer the first chunk's function, fall back to event.
+        hook = ""
+        if flow.chunks:
+            hook = flow.chunks[0].function
+        if not hook:
+            hook = getattr(event, 'function', '') or ''
+        flow.hook_function = hook
+        # Default local/remote endpoints from the event's src/dst.
+        flow.local_addr = event.src_addr
+        flow.local_port = event.src_port
+        flow.remote_addr = event.dst_addr
+        flow.remote_port = event.dst_port
 
     def _notify(self, event_type: str, flow: Flow) -> None:
         """Call all subscribers and emit FlowEvent to EventBus (outside lock)."""

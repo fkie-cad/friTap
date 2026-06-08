@@ -189,7 +189,10 @@ class GDBBackend(Backend):
         inferior = self._gdb.selected_inferior()
         return inferior, inferior.pid
 
-    def spawn_raw(self, device: Any, target, env: dict | None = None) -> int:
+    def spawn_raw(self, device: Any, target, env: dict | None = None,
+                  aux: dict | None = None) -> int:
+        # aux (e.g. Android activity selection) is Frida-specific; not
+        # applicable when launching a local binary under gdb.
         _ensure_gdb()
         exe = target[0] if isinstance(target, list) else str(target)
         args = " ".join(target[1:]) if isinstance(target, list) and len(target) > 1 else ""

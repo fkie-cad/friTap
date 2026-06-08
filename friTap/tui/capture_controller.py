@@ -463,6 +463,7 @@ class CaptureController:
             try:
                 from friTap.flow.collector import FlowCollector
                 self._flow_collector = FlowCollector()
+                self._flow_collector.set_capture_target(state.target or "")
                 self._flow_collector.subscribe(self._on_flow_update)
             except ImportError:
                 self._flow_collector = None
@@ -514,12 +515,20 @@ class CaptureController:
 
             # Wire FlowCollector to event bus for data events
             if self._flow_collector is not None:
-                from friTap.events import DatalogEvent, OhttpEvent
+                from friTap.events import (
+                    DatalogEvent, OhttpEvent, LibraryDetectedEvent, SessionEvent,
+                )
                 self._ssl_logger._event_bus.subscribe(
                     DatalogEvent, self._flow_collector.on_data
                 )
                 self._ssl_logger._event_bus.subscribe(
                     OhttpEvent, self._flow_collector.on_ohttp
+                )
+                self._ssl_logger._event_bus.subscribe(
+                    LibraryDetectedEvent, self._flow_collector.on_library_detected
+                )
+                self._ssl_logger._event_bus.subscribe(
+                    SessionEvent, self._flow_collector.on_session_event
                 )
                 # Give FlowCollector access to EventBus for emitting FlowEvents
                 self._flow_collector.set_event_bus(self._ssl_logger._event_bus)

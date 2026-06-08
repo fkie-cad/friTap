@@ -54,7 +54,13 @@ def resolve_connection_key(
     Tier 3: normalized 4-tuple (perspective-independent, works for any protocol)
 
     The ``cr:`` / ``sid:`` / ``net:`` prefixes prevent cross-tier key collisions.
+
+    A present-but-empty/None ``protocol`` is coerced to ``"tls"`` HERE, in the one
+    function that owns the key format, so every caller (lifecycle + data paths)
+    keys a connection identically and cannot drift into a ``cr::`` vs ``cr:tls:``
+    mismatch.
     """
+    protocol = str(protocol or "tls")
     if client_random:
         return f"cr:{protocol}:{client_random}"
     if session_token and not session_token.startswith(DUMMY_SESSION_ID_BASE) and session_token != NSS_DUMMY_SESSION_ID:

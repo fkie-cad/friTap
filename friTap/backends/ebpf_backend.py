@@ -54,7 +54,8 @@ class EBPFBackend(Backend):
     def spawn(self, device: Any, target: str, env: dict | None = None) -> tuple[Any, int]:
         self._not_implemented("spawn")
 
-    def spawn_raw(self, device: Any, target, env: dict | None = None) -> int:
+    def spawn_raw(self, device: Any, target, env: dict | None = None,
+                  aux: dict | None = None) -> int:
         self._not_implemented("spawn_raw")
 
     def on_detached(self, process: Any, callback: Callable) -> None:

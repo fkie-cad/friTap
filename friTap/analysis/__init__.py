@@ -22,6 +22,7 @@ Usage::
 
 from __future__ import annotations
 
+import dataclasses
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -33,12 +34,30 @@ if TYPE_CHECKING:
 
 
 class Severity(str, Enum):
-    """Finding severity levels."""
+    """Finding severity levels, declared most-severe first."""
     CRITICAL = "critical"
     HIGH = "high"
     MEDIUM = "medium"
     LOW = "low"
     INFO = "info"
+
+
+# Canonical severity ranking derived from the enum's declaration order
+# (CRITICAL=0 … INFO=4): lower rank == more severe. This is the single source
+# of truth — callers that need an ordering should use ``severity_rank``.
+_SEVERITY_RANK: dict[Severity, int] = {sev: i for i, sev in enumerate(Severity)}
+
+
+def severity_rank(severity) -> int:
+    """Return the rank of a :class:`Severity` (or its string value).
+
+    Lower rank == more severe. Unknown values rank as ``INFO`` (least severe).
+    """
+    try:
+        sev = severity if isinstance(severity, Severity) else Severity(severity)
+    except ValueError:
+        sev = Severity.INFO
+    return _SEVERITY_RANK[sev]
 
 
 @dataclass(frozen=True)
@@ -65,6 +84,59 @@ class Finding:
     timestamp: float = field(default_factory=time.time)
     evidence: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a JSON-friendly dict.
+
+        This is the single serialization contract shared by reporters,
+        the ``.tap`` REC_FINDING record, and the findings sidecar.
+        ``severity`` is stored as its string value.
+
+        Derived from :func:`dataclasses.asdict` so new dataclass fields are
+        serialized automatically without editing this method (#34). ``asdict``
+        already deep-copies nested ``dict`` fields (evidence/metadata), matching
+        the previous behaviour; we only convert the ``severity`` enum to its
+        ``.value`` string afterwards.
+        """
+        data = dataclasses.asdict(self)
+        data["severity"] = self.severity.value
+        return data
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "Finding":
+        """Inverse of :meth:`to_dict`. Unknown keys are ignored.
+
+        Unknown or empty ``severity`` values fall back to ``Severity.INFO``
+        (mirroring :func:`severity_rank`) so deserializing a ``.tap`` written
+        by a different friTap version or hand-edited record never raises.
+
+        Field selection is driven by :func:`dataclasses.fields` so new fields
+        are picked up automatically without editing this method (#34); any key
+        not matching a known field is ignored per the documented contract.
+        """
+        field_names = {f.name for f in dataclasses.fields(cls)}
+        kwargs = {k: v for k, v in d.items() if k in field_names}
+
+        # The required string fields have no dataclass default; preserve the
+        # legacy contract of defaulting them to "" so from_dict stays total over
+        # partial/hand-edited records. Optional fields fall back to the
+        # dataclass defaults when absent.
+        for required in ("title", "description", "source"):
+            kwargs.setdefault(required, "")
+
+        # Coerce severity, preserving the unknown/empty -> INFO guard.
+        try:
+            kwargs["severity"] = Severity(d.get("severity", "info"))
+        except ValueError:
+            kwargs["severity"] = Severity.INFO
+
+        # Normalize falsy evidence/metadata to empty dicts (legacy "or {}"
+        # guard) only when the key is present; absent keys use the defaults.
+        for opt in ("evidence", "metadata"):
+            if opt in kwargs and not kwargs[opt]:
+                kwargs[opt] = {}
+
+        return cls(**kwargs)
 
 
 @runtime_checkable
@@ -155,11 +227,21 @@ class AnalyzerPlugin:
     def name(self) -> str:
         return f"analyzer:{self._analyzer.name}"
 
+    def analyze(self, flow: "Flow") -> list[Finding]:
+        """Run the wrapped analyzer on *flow*, accumulate, and return its findings.
+
+        Public entry point for callers that already hold a completed flow (e.g.
+        an off-thread scan worker), so they don't reach into ``_analyzer``.
+        """
+        found = self._analyzer.analyze_flow(flow)
+        self.findings.extend(found)
+        return found
+
     def on_flow(self, event: "FlowEvent") -> None:
         """EventBus callback for FlowEvent. Analyzes completed flows."""
         from friTap.flow.models import FlowEventType
         if event.flow_event_type == FlowEventType.COMPLETED and event.flow is not None:
-            self.findings.extend(self._analyzer.analyze_flow(event.flow))
+            self.analyze(event.flow)
 
     def clear(self) -> None:
         """Clear accumulated findings."""
@@ -168,6 +250,7 @@ class AnalyzerPlugin:
 
 __all__ = [
     "Severity",
+    "severity_rank",
     "Finding",
     "BaseAnalyzer",
     "analyze_tap",

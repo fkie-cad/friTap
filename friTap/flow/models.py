@@ -8,6 +8,10 @@ from typing import Optional, TYPE_CHECKING
 import time
 
 from friTap.flow import display as _display
+from friTap.flow.layers import (
+    ProtocolLayer, LayerData, TlsLayer, QuicLayer, SshLayer, IpsecLayer,
+)
+from friTap.flow.layer_registry import get_registry
 
 if TYPE_CHECKING:
     from friTap.parsers.base import ParseResult
@@ -47,6 +51,14 @@ class FlowChunk:
     direction: str  # "read" or "write"
     timestamp: float
     function: str = ""
+
+
+# TLS handshake metadata is now the ``tls`` protocol LAYER (TlsLayer in
+# friTap/flow/layers.py), carrying the same library/version/sni/alpn/cipher
+# fields plus the shared layer facets (.data/.parsed/.depth). ``TlsMetadata``
+# remains as an alias so existing imports/constructions keep working; a Flow
+# exposes it via ``flow.tls`` (resolved from ``flow.layers`` by __getattr__).
+TlsMetadata = TlsLayer
 
 
 _OHTTP_SENTINEL = object()  # Truthy sentinel for FlowSummary OHTTP filter compat
@@ -96,6 +108,13 @@ class FlowSummary:
     trailing_protocol: str = ""
     total_bytes: int = 0
     detected_protocol: str = ""
+    # Schema v2 additive enrichment scalars (cheap to surface in list/filter views)
+    process_name: str = ""
+    tls_sni: str = ""
+    tls_alpn: str = ""
+    tag_count: int = 0
+    finding_count: int = 0
+    has_notes: bool = False
 
     @property
     def duration(self) -> float:
@@ -171,6 +190,9 @@ class FlowSummary:
                 body_size=r.body_size, stream_id=r.stream_id,
                 is_control_frame=r.is_control_frame,
             )
+        # Non-mutating lookup: a summary is a pure read, so use layer() (None if
+        # absent) rather than flow.tls, which would attach an empty layer.
+        tls_layer = flow.layer("tls")
         return FlowSummary(
             flow_id=flow.flow_id,
             connection_id=flow.connection_id,
@@ -190,6 +212,12 @@ class FlowSummary:
             trailing_protocol=flow.trailing_protocol,
             total_bytes=flow._total_bytes,
             detected_protocol=flow.detected_protocol,
+            process_name=flow.process_name,
+            tls_sni=(tls_layer.sni if tls_layer is not None else ""),
+            tls_alpn=(tls_layer.alpn if tls_layer is not None else ""),
+            tag_count=len(flow.tags),
+            finding_count=len(flow.findings),
+            has_notes=bool(flow.notes),
         )
 
 
@@ -203,6 +231,13 @@ class Flow:
     dst_addr: str = ""
     dst_port: int = 0
     ssl_session_id: str = ""
+
+    # Transport/encryption protocol of the underlying connection: "tls"
+    # (TLS-over-TCP, the default) or "quic" (QUIC-over-UDP). Stamped from
+    # ``event.protocol`` at flow creation (FlowCollector._stamp_metadata). The
+    # Flow itself stores no other transport hint, so the LayerPipeline reads
+    # this to decide whether the layer-0 transport is a TlsLayer or QuicLayer.
+    transport: str = "tls"
 
     # State
     state: FlowState = FlowState.ACTIVE
@@ -232,6 +267,140 @@ class Flow:
     # ``request``/``response`` is produced yet (e.g. HTTP/2 control-frame-only
     # flows). Used as a display fallback before showing "unknown".
     detected_protocol: str = ""
+
+    # ------------------------------------------------------------------
+    # Schema v2 additive enrichment fields (all optional, back-compat safe)
+    # ------------------------------------------------------------------
+
+    # Explicit endpoint-role labeling (v2-reserved). ``src_*``/``dst_*`` remain
+    # the canonical transport endpoints (used across display/collector/filters);
+    # these name the same two ends by *role* — local (instrumented process) and
+    # remote (peer). They are stored fields (not properties) because both the
+    # FLOW decode path (tap_format.decode_flow) and the collector assign them,
+    # and they are persisted as their own keys in the .tap meta. They are
+    # populated from src/dst in exactly ONE place — FlowCollector._enrich_flow —
+    # which is the single source of truth for the local==src / remote==dst
+    # mapping; everything else only reads them. Kept as a v2 hook so a future
+    # capture source that distinguishes role from src/dst order (e.g. inbound
+    # server flows) can set them without changing readers.
+    local_addr: str = ""
+    local_port: int = 0
+    remote_addr: str = ""
+    remote_port: int = 0
+
+    # Process / package identity (from the capture target / agent).
+    process_name: str = ""
+    package_name: str = ""
+
+    # Ordered protocol layer stack (outermost transport -> innermost), e.g.
+    # [tls, http2] or [quic, http3]. Per-flow LINEAR (HTTP/2-3 streams are
+    # already separate flows). Resolved by name via __getattr__: ``flow.tls``,
+    # ``flow.quic``, ``flow.ssh`` each return their typed layer (lazily created
+    # empty if absent, so e.g. ``flow.tls.sni`` is never None — matching the
+    # old TlsMetadata value-object ergonomics). Whole-layer writes go through
+    # add_layer/set_layer; field mutation (``flow.tls.sni = ...``) works on the
+    # cached instance returned by __getattr__.
+    layers: list[ProtocolLayer] = field(default_factory=list, repr=False)
+
+    # Hook origin. ``hook_function`` mirrors the dominant chunk.function;
+    # ``hook_stack`` is reserved for full backtraces (NICE-later).
+    hook_function: str = ""
+    hook_stack: str = ""
+
+    # Mutable analyst annotations.
+    tags: list[str] = field(default_factory=list)
+    notes: str = ""
+    # Attached analysis findings. Typed loosely as ``list`` to avoid importing
+    # ``friTap.analysis`` here (it imports ``flow.models`` under TYPE_CHECKING);
+    # elements are ``friTap.analysis.Finding`` instances.
+    findings: list = field(default_factory=list)
+
+    # ------------------------------------------------------------------
+    # Protocol layer access (flow.<protocol> -> typed ProtocolLayer)
+    # ------------------------------------------------------------------
+
+    def __getattr__(self, name: str):
+        # Only invoked when normal attribute lookup fails — real dataclass
+        # fields/methods never reach here. Resolve a registered protocol name
+        # to its layer (lazily creating an empty one so flow.tls/flow.quic are
+        # never-None, matching the old TlsMetadata ergonomics). Anything else
+        # raises AttributeError so getattr(flow, x, default) (filter engine,
+        # copy/pickle dunder probing) keeps working.
+        #
+        # This materializes-and-attaches by design: it is the writable
+        # never-None ergonomic (``flow.tls.version = ...`` persists). PURE-READ
+        # probes that must NOT grow the stack (serializers, snapshots) must use
+        # the non-mutating :meth:`layer` instead of attribute access.
+        if name.startswith("_"):
+            raise AttributeError(name)
+        layers = self.__dict__.get("layers")
+        if layers is None:
+            # Half-constructed (e.g. during copy/unpickle before fields set).
+            raise AttributeError(name)
+        desc = get_registry().get(name)
+        if desc is None:
+            raise AttributeError(name)
+        for ly in layers:
+            if ly.name == name:
+                return ly
+        return self._create_layer(name, desc)
+
+    def _create_layer(self, name: str, desc) -> ProtocolLayer:
+        layer = desc.layer_cls()
+        # Stamp the per-instance name so generic layers (AppLayer, registered
+        # under several names against one class) report the right ``name``.
+        # Harmless for typed layers (their ``NAME`` already equals ``name``).
+        layer._name = name
+        layer.depth = len(self.layers)
+        layer._flow = self
+        if desc.data_source == "chunks":
+            layer.data = LayerData(data_source="chunks", _owner=self)
+        self.layers.append(layer)
+        return layer
+
+    def layer(self, name: str) -> Optional[ProtocolLayer]:
+        """Return the layer named *name*, or None if not present."""
+        for ly in self.layers:
+            if ly.name == name:
+                return ly
+        return None
+
+    def add_layer(self, layer: ProtocolLayer) -> ProtocolLayer:
+        """Append *layer* to the stack, linking parent/child + binding data."""
+        layer.depth = len(self.layers)
+        if self.layers:
+            parent = self.layers[-1]
+            parent.child = layer
+            layer.parent = parent
+        layer._flow = self
+        if layer.data.data_source == "chunks" and layer.data._owner is None:
+            layer.data._owner = self
+        self.layers.append(layer)
+        return layer
+
+    def set_layer(self, layer: ProtocolLayer) -> ProtocolLayer:
+        """Replace an existing same-name layer in place, else append it."""
+        for i, existing in enumerate(self.layers):
+            if existing.name == layer.name:
+                layer.depth = existing.depth
+                layer.parent, layer.child = existing.parent, existing.child
+                layer._flow = self
+                if layer.data.data_source == "chunks" and layer.data._owner is None:
+                    layer.data._owner = self
+                self.layers[i] = layer
+                return layer
+        return self.add_layer(layer)
+
+    def __copy__(self) -> "Flow":
+        # Shallow copy that re-lists the mutable containers (chunks, layers) so
+        # appending to a live flow does not mutate a snapshot's lists. Element
+        # objects are shared, matching the pre-existing snapshot semantics
+        # (the collector already shared the TlsMetadata/FlowChunk objects).
+        new = Flow.__new__(Flow)
+        new.__dict__.update(self.__dict__)
+        new.chunks = list(self.chunks)
+        new.layers = list(self.layers)
+        return new
 
     @property
     def has_trailing_data(self) -> bool:

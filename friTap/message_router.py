@@ -13,6 +13,7 @@ import logging
 
 from .events import EventBus, KeylogEvent, DatalogEvent, LibraryDetectedEvent, ConsoleEvent, SessionEvent, OhttpEvent, HookBreadcrumbEvent
 from .constants import SSL_READ, ContentType
+from .connection_index import resolve_connection_key
 from .ssl_logger import get_addr_string
 
 
@@ -223,8 +224,34 @@ class MessageRouter:
 
     def _emit_lifecycle(self, payload: dict) -> None:
         src_addr_str, src_port, dst_addr_str, dst_port, *_ = self._resolve_addresses(payload)
-        conn_id = f"{src_addr_str}:{src_port}-{dst_addr_str}:{dst_port}"
+        # connection_index.resolve_connection_key is the single source of truth
+        # for connection keying. FlowCollector.on_data uses the very same helper
+        # for DatalogEvents, so lifecycle keys and data keys agree by sharing
+        # this function — there is no duplicated construction left to "keep in
+        # sync". We MUST pass the same ``protocol`` both sites derive for a
+        # connection (here from the payload, there from the event) so that, e.g.
+        # a QUIC connection produces a ``cr:quic:...`` / ``sid:quic:...`` prefix
+        # on BOTH paths instead of a mismatched ``tls`` prefix on one side.
+        # The same coerced value also rides the emitted SessionEvent below; the
+        # empty/None -> "tls" coercion is ALSO enforced inside
+        # resolve_connection_key, so the two paths can never key differently.
+        protocol = str(payload.get("protocol") or "tls")
+        conn_id = resolve_connection_key(
+            src_addr_str, src_port, dst_addr_str, dst_port,
+            session_token=str(payload.get("ssl_session_id", "")),
+            client_random=str(payload.get("client_random", "")),
+            protocol=protocol,
+        )
 
+        # METADATA IS OFFLINE-ONLY. The live agent path deliberately carries NO
+        # TLS handshake metadata (cipher_suite/protocol_version/server_name/alpn):
+        # those are produced solely by the offline pcap+keys -> .tap pipeline
+        # (offline/tshark.py), where tshark has the full handshake. The live
+        # SessionEvent carries ONLY connection IDENTITY + lifecycle so flows are
+        # keyed/finalized; its metadata fields stay at their "" defaults. Do NOT
+        # re-introduce metadata reads here — that would split the source of truth
+        # and let live and offline metadata drift. (_stamp_tls_metadata still
+        # consumes these fields, but only from the offline producer's events.)
         self._event_bus.emit(SessionEvent(
             session_id=str(payload.get("ssl_session_id", "")),
             event_type=payload.get("event", ""),
@@ -234,5 +261,5 @@ class MessageRouter:
             src_port=src_port,
             dst_addr=dst_addr_str,
             dst_port=dst_port,
-            protocol=payload.get("protocol", "tls"),
+            protocol=protocol,
         ))

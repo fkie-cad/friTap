@@ -59,6 +59,42 @@ is wired into `agent/platforms/<os>.ts`. If you are unsure which structure fits
 best for a new protocol, please open an issue first so we can discuss the
 expected layout before you start implementing it.
 
+## Adding a protocol layer
+
+The agent-side hooks above capture bytes; the **flow-side protocol layer model**
+(`friTap/flow/`) is how those bytes and their metadata surface to consumers as
+`flow.<protocol>.{field, data, parsed}`. To expose a new protocol there:
+
+1. Pick a layer class. For a metadata-bearing transport/encryption protocol,
+   subclass `ProtocolLayer` (in `friTap/flow/layers.py`) and add its typed
+   metadata fields, following `TlsLayer` / `QuicLayer` / `SshLayer`. For a plain
+   application protocol, reuse the generic `AppLayer` instead of writing a new
+   class.
+2. Register it by adding a `ProtocolDescriptor` in
+   `friTap/flow/layer_registry.py`:
+
+   ```python
+   register(ProtocolDescriptor("foo", FooLayer, data_source="chunks"))
+   ```
+
+   `data_source` declares where the layer's `.data` comes from:
+   - `"chunks"` — a zero-copy view over the flow's decrypted bytes (transport
+     and application layers).
+   - `"owned"` — bytes the layer holds itself (inner protocols decrypted out of
+     a carrier).
+   - `"none"` — metadata-only, no payload bytes.
+
+Two rules to keep in mind:
+
+- **Metadata extraction belongs in the offline pipeline**, never the live agent.
+  TLS/QUIC/SSH handshake metadata is recovered by tshark in
+  `friTap/offline/tshark.py` and stamped onto the flow during offline
+  reconstruction. The live agent emits connection identity and lifecycle only.
+- **Nested-protocol plaintext** goes through the optional `decryptor` seam
+  (`friTap/flow/decryptors/`): a decryptor peels a plaintext inner protocol out
+  of an encrypted carrier and feeds it to an `"owned"`-data inner layer. The
+  registry is empty today; this is the extension point for protocols like
+  Signal or MTProto carried inside TLS.
 
 ## Ground truth
 

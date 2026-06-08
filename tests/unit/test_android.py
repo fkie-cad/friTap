@@ -11,11 +11,6 @@ from unittest.mock import patch, MagicMock
 
 from friTap.android import Android, ADB
 
-_XFAIL_START_APPLICATION = (
-    "start_application now uses Frida backend (spawn_raw); test still asserts "
-    "legacy `adb shell am start` invocation — needs rewrite against Frida mocks"
-)
-
 # Helper to set up an Android object to an expected state
 def configured_android(*,
         device_id=None,
@@ -246,44 +241,38 @@ package:com.google.android.gm"""
         
         assert pid is None
 
-    @pytest.mark.xfail(reason=_XFAIL_START_APPLICATION)
-    @patch('subprocess.run')
-    def test_start_application(self, mock_subprocess):
-        """Test starting Android application."""
+    def test_start_application(self):
+        """Without an activity, the default launcher activity is spawned (aux=None)."""
         android = configured_android()
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_subprocess.return_value = mock_result
-        
+        android._backend = MagicMock()
+        android._backend.spawn_raw.return_value = 4321
+        android.device = MagicMock()  # prime the `device` cached_property
+
         success = android.start_application("com.example.app")
-        
-        mock_subprocess.assert_called_with(
-            ['adb', 'shell', 'am', 'start', '-n', 'com.example.app/.MainActivity'], 
-            capture_output=True, 
-            text=True, 
-            timeout=10
+
+        android._backend.spawn_raw.assert_called_once_with(
+            android.device, "com.example.app", aux=None
         )
-        
+        android._backend.resume.assert_called_once_with(android.device, 4321)
         assert success
-        
-    @pytest.mark.xfail(reason=_XFAIL_START_APPLICATION)
-    @patch('subprocess.run')
-    def test_start_application_with_activity(self, mock_subprocess):
-        """Test starting Android application with specific activity."""
+
+    def test_start_application_with_activity(self):
+        """A specific activity is forwarded to the backend as a spawn aux option
+        so the app is instrumented before that activity launches."""
         android = configured_android()
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_subprocess.return_value = mock_result
-        
-        success = android.start_application("com.example.app", "com.example.app.CustomActivity")
-        
-        mock_subprocess.assert_called_with(
-            ['adb', 'shell', 'am', 'start', '-n', 'com.example.app/com.example.app.CustomActivity'], 
-            capture_output=True, 
-            text=True, 
-            timeout=10
+        android._backend = MagicMock()
+        android._backend.spawn_raw.return_value = 4321
+        android.device = MagicMock()  # prime the `device` cached_property
+
+        success = android.start_application(
+            "com.example.app", "com.example.app.CustomActivity"
         )
-        
+
+        android._backend.spawn_raw.assert_called_once_with(
+            android.device, "com.example.app",
+            aux={"activity": "com.example.app.CustomActivity"},
+        )
+        android._backend.resume.assert_called_once_with(android.device, 4321)
         assert success
 
 

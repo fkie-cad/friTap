@@ -51,6 +51,12 @@ class OutputConfig:
     filter_infrastructure: bool = True
     # Include loopback/localhost traffic (e.g. Firefox NSS IPC) — off by default
     include_loopback: bool = False
+    # Live passive-analysis ("scan") of observed traffic during capture.
+    # ``scan`` is an analyzer spec (None disables; "all" / comma-list selects).
+    scan: Optional[str] = None
+    scan_report: str = "table"
+    scan_report_out: Optional[str] = None
+    scan_min_severity: str = "info"
 
 
 @dataclass
@@ -204,6 +210,10 @@ class FriTapConfig:
         quic_capture_mode: str = "stream",
         quic_only: bool = False,
         quic_egress_headers_layer: str = "auto",
+        scan: Optional[str] = None,
+        scan_report: str = "table",
+        scan_report_out: Optional[str] = None,
+        scan_min_severity: str = "info",
     ) -> "FriTapConfig":
         """
         Build a FriTapConfig from the legacy SSL_Logger constructor parameters.
@@ -231,6 +241,10 @@ class FriTapConfig:
                 filter_expression=filter_expression,
                 filter_infrastructure=filter_infrastructure,
                 include_loopback=include_loopback,
+                scan=scan,
+                scan_report=scan_report,
+                scan_report_out=scan_report_out,
+                scan_min_severity=scan_min_severity,
             ),
             hooking=HookingConfig(
                 offsets=offsets,

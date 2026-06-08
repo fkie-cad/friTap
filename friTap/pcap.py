@@ -92,6 +92,15 @@ class PCAP:
         self.SSL_READ = SSL_READ
         self.SSL_WRITE = SSL_WRITE
 
+        # Distinct SERVER (destination) ports observed per transport, used to
+        # write the best-effort <pcap>.fritap.json sidecar manifest so the
+        # offline pcap-to-tap pipeline knows which ports to Decode-As.
+        # {"tcp": {443, ...}, "udp": {443, ...}}
+        self._observed_server_ports = {"tcp": set(), "udp": set()}
+        # Keylog file path, if friTap is also exporting an SSLKEYLOGFILE.
+        # Populated externally; recorded in the manifest when present.
+        self.keylog_path = None
+
         if doFullCapture:
             if isMobile:
                 self.logger.debug(f"Applying debug mode: {self.print_debug_infos}")
@@ -288,6 +297,10 @@ class PCAP:
         """
 
         t = time.time()
+
+        # Record the server-side port for the manifest. On a read the server is
+        # the source; on a write it is the destination.
+        self._record_server_port(transport, function, src_port, dst_port)
 
         if transport == "udp":
             self._log_plaintext_payload_udp(
@@ -621,10 +634,111 @@ class PCAP:
         else:
             os.replace(source_pcap, self.pcap_file_name)
 
-    def finalize_full_capture(self, formatted_keys=()):
+    def _record_server_port(self, transport, function, src_port, dst_port):
+        """Record the distinct server (destination) port for the manifest.
+
+        On a read the remote server is the *source*; on a write it is the
+        *destination*. Best-effort and fully guarded — never raises.
+        """
+        try:
+            # The server side of the 4-tuple is determined purely by the
+            # *direction* of the call, never by transport (TCP vs UDP/QUIC):
+            #   - on a READ the peer wrote to us, so the peer (server) is the
+            #     source -> server_port = src_port
+            #   - on a WRITE we wrote to the peer, so the peer (server) is the
+            #     destination -> server_port = dst_port
+            if function in self.SSL_READ:
+                server_port = src_port
+            else:
+                server_port = dst_port
+            # Choosing the transport bucket is an independent decision: QUIC
+            # plaintext rides on UDP, everything else is recorded as TCP.
+            transport_key = "udp" if transport == "udp" else "tcp"
+            if isinstance(server_port, int) and server_port > 0:
+                self._observed_server_ports[transport_key].add(server_port)
+        except Exception:
+            self.logger.debug("Could not record server port for manifest", exc_info=True)
+
+    def _seed_server_ports_from_sockets(self, valid_sockets):
+        """Best-effort: add destination ports from traced sockets to the manifest sets.
+
+        Socket dicts are not guaranteed to carry port/transport keys, so every
+        lookup is optional and the whole helper is guarded.
+
+        Transport-bucket caveat: the traced-socket descriptors emitted by the
+        agent (see ssl_logger_core._on_message) only carry src/dst addr+port and
+        ss_family — there is *no* protocol/transport field. We therefore honor a
+        transport hint *if one is ever present* (``ss_protocol``/``protocol``),
+        but when none is available we fall back to TCP. This means UDP/QUIC
+        server ports seeded purely from a socket trace are filed under TCP; we do
+        not invent a transport we cannot observe. Ports recorded via the
+        plaintext-logging path (``_record_server_port``) carry a real transport
+        and are bucketed correctly, and the user can always pass
+        ``--quic-port`` to record QUIC ports explicitly.
+        """
+        try:
+            for sock in valid_sockets:
+                dst_port = sock.get("dst_port") or sock.get("dstport")
+                if not isinstance(dst_port, int):
+                    try:
+                        dst_port = int(dst_port)
+                    except (TypeError, ValueError):
+                        continue
+                if dst_port <= 0:
+                    continue
+                # Honor a transport hint when the socket dict provides one;
+                # otherwise default to TCP (see transport-bucket caveat above).
+                proto = str(sock.get("ss_protocol") or sock.get("protocol") or "").lower()
+                transport_key = "udp" if "udp" in proto else "tcp"
+                self._observed_server_ports[transport_key].add(dst_port)
+        except Exception:
+            self.logger.debug("Could not seed server ports from sockets", exc_info=True)
+
+    def _write_capture_manifest(self):
+        """Write a best-effort ``<pcap>.fritap.json`` sidecar manifest.
+
+        Records the distinct TLS (TCP) and QUIC (UDP) server ports observed
+        during capture plus the keylog path when known, so the offline
+        ``--from-pcap`` pipeline can auto-load Decode-As ports and the keylog.
+
+        Fully guarded: a manifest write failure never breaks capture finalize.
+
+        NOTE: ports come from the plaintext-logging path (``log_plaintext_payload``),
+        which sees every decrypted record's 4-tuple. In pure full-capture mode
+        with no plaintext logging that path is never exercised, so the sets are
+        additionally seeded from traced-socket destination ports when available:
+        ``create_application_traffic_pcap`` seeds from its valid sockets and
+        ``finalize_full_capture`` seeds from any ``traced_Socket_Set`` the caller
+        passes. When no per-connection socket data exists at all (pure
+        ``--full_capture`` without ``--socket_trace``) the sets may still be
+        empty; this is acceptable for a best-effort convenience file and the
+        user can pass ``--tls-port``/``--quic-port`` to record ports explicitly.
+        """
+        try:
+            import json as _json
+            manifest = {
+                "tls_ports": sorted(self._observed_server_ports.get("tcp", set())),
+                "quic_ports": sorted(self._observed_server_ports.get("udp", set())),
+            }
+            if self.keylog_path:
+                manifest["keylog"] = str(self.keylog_path)
+            manifest_path = f"{self.pcap_file_name}.fritap.json"
+            with open(manifest_path, "w", encoding="utf-8") as fh:
+                _json.dump(manifest, fh, indent=2)
+            self.logger.debug(f"Wrote capture manifest {manifest_path}")
+        except Exception as e:
+            self.logger.debug(f"Could not write capture manifest: {e}")
+
+    def finalize_full_capture(self, formatted_keys=(), traced_Socket_Set=None):
         """Finalize the *unfiltered* full capture: emit the temp file at
         ``self.pcap_file_name`` in the user-requested format. Embeds DSB
         when the target is pcapng.
+
+        ``traced_Socket_Set`` (optional) is the caller's set of frozenset
+        socket descriptors. When supplied, its destination ports seed the
+        manifest's TLS/QUIC port sets so the offline pipeline's custom-port
+        zero-config (Decode-As) still works even though pure ``--full_capture``
+        never exercises the plaintext-logging path that normally records ports.
         """
         try:
             self._emit_final(self._temp_pcap_path(), formatted_keys, bpf_filter=None)
@@ -632,6 +746,24 @@ class PCAP:
             self.logger.error(f"Error finalizing full capture: {e}")
         else:
             self.logger.info(f"Full capture written to {self.pcap_file_name}")
+        # Seed manifest ports from any per-connection socket data the caller has.
+        # Pure full captures (no plaintext logging) never hit
+        # log_plaintext_payload, so this is the only chance to record ports.
+        if traced_Socket_Set:
+            socket_dicts = [dict(entry) for entry in traced_Socket_Set]
+            self._seed_server_ports_from_sockets(socket_dicts)
+        if not (self._observed_server_ports.get("tcp")
+                or self._observed_server_ports.get("udp")):
+            # No reliable per-connection port/transport data was available at
+            # finalize time (the common case for pure --full_capture without
+            # --socket_trace). Don't fake ports — tell the user how to record
+            # them explicitly for the offline Decode-As convenience.
+            self.logger.info(
+                "No server ports recorded for this full capture; offline "
+                "custom-port auto-detection may be unavailable. Pass "
+                "--tls-port/--quic-port (or --socket_trace) to record them."
+            )
+        self._write_capture_manifest()
 
     # this function is able to reduce a capture to the traffic from the traced target application by using the information from the socket trace and applying a bpf filter of those traced packets
     def create_application_traffic_pcap(self, traced_Socket_Set, pcap_obj,
@@ -663,6 +795,9 @@ class PCAP:
             self.logger.error("No valid sockets found. Falling back to full capture.")
             return self.finalize_full_capture(formatted_keys)
 
+        # Seed the manifest with destination ports from the traced sockets.
+        self._seed_server_ports_from_sockets(valid_sockets)
+
         bpf_filter = PCAP.get_filter_from_traced_sockets(valid_sockets, filter_type="bpf")
         if not bpf_filter:
             self.logger.error("Failed to generate a valid BPF filter. Falling back to full capture.")
@@ -685,6 +820,7 @@ class PCAP:
             self.logger.error(f"Error during PCAP filtering: {e}")
         else:
             self.logger.info(f"Successfully filtered. Output written to {self.pcap_file_name}")
+        self._write_capture_manifest()
 
     
     

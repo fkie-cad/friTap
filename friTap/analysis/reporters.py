@@ -50,18 +50,13 @@ class Reporter(Protocol):
 
 
 def _finding_to_dict(finding: Finding) -> dict[str, Any]:
-    """Convert a Finding to a plain dict for serialization."""
-    return {
-        "severity": finding.severity.value,
-        "title": finding.title,
-        "description": finding.description,
-        "source": finding.source,
-        "flow_id": finding.flow_id,
-        "confidence": finding.confidence,
-        "timestamp": finding.timestamp,
-        "evidence": finding.evidence,
-        "metadata": finding.metadata,
-    }
+    """Convert a Finding to a plain dict for serialization.
+
+    Delegates to ``Finding.to_dict()`` so there is a single serialization
+    contract shared by reporters, the ``.tap`` REC_FINDING record, and the
+    findings sidecar.
+    """
+    return finding.to_dict()
 
 
 class JsonReporter:

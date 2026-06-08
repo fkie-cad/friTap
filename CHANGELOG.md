@@ -93,6 +93,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   APEX-split module friTap would otherwise treat as already covered.
 - **QUIC capture-mode step in the TUI** capture wizard (`stream` vs
   experimental `app-api`).
+- **Per-flow protocol layer stack** — each flow is now an ordered, linear stack
+  of typed protocol layers (outermost transport → innermost application), each
+  exposing `flow.<protocol>.{field, data, parsed}` (e.g. `flow.tls.sni`,
+  `flow.layer("http2").parsed`) plus `flow.layers` for positional access. The
+  stack is registry-driven (`ProtocolDescriptor`), with an empty `decryptor`
+  seam reserved for future nested protocols (Signal/MTProto inside TLS).
+- **`.tap` schema v3** — flows now serialize an ordered `meta["layers"]`.
+  Transport and application layers add no bytes (they record chunk-views plus a
+  parsed-field tag); only owned inner-layer bytes are serialized, exactly once.
+  Backward compatible: v1/v2 `.tap` files still open, with their layer stacks
+  rebuilt from the legacy flow fields.
+- **Offline handshake-metadata producer** — the offline pcap→tap pipeline now
+  extracts TLS (SNI/cipher/version/ALPN) and SSH (banners plus KEXINIT
+  kex/cipher/mac) handshake metadata via tshark and stamps it onto `flow.tls` /
+  `flow.ssh`. SSH and IPsec surface as synthetic metadata-only flows.
 
 ### Changed
 - Plaintext-only pcaps (`-p` without `-k`) no longer embed Decryption Secrets
@@ -119,6 +134,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   per-major constraints files / `dev/install_legacy.py`.
 - **Flow-mode TUI**: backend errors are categorized and rendered as rich
   diagnostics, plus per-session debug-log files and assorted polish.
+- **Handshake metadata is now offline-only** — the live agent / `MessageRouter`
+  no longer carries TLS handshake metadata (cipher/version/SNI/ALPN); the live
+  path emits connection identity and lifecycle only. This metadata is produced
+  solely by the offline `pcap + keys → .tap` pipeline.
 
 ### Fixed
 - **Auto-loaded `default_patterns.json` no longer suppresses shipped hardcoded
@@ -132,6 +151,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Parser and LLDB-backend stability** — hardened parsers against malformed
   input and reworked the LLDB return-site dispatch to mirror GDB's synchronous
   `finish`.
+- **TapWriter persistence gap** — flows that completed via a Content-Length
+  response (in `_attach_response` during `on_data`) previously emitted only an
+  `UPDATED` event and were never written or analyzed. They now emit exactly one
+  `COMPLETED` and are persisted to the `.tap`.
 
 ## [2.0.0] - 2026-05-09
 
