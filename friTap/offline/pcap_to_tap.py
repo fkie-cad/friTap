@@ -25,6 +25,7 @@ from friTap.flow.layers import SshLayer
 from friTap.flow.tap_writer import TapWriter
 
 from .tshark import (
+    build_plaintext_command,
     build_quic_command,
     build_tls_command,
     capture_has_dsb,
@@ -42,6 +43,12 @@ from .tshark import (
 
 logger = logging.getLogger(__name__)
 
+# Well-known cleartext server ports used to anchor flow direction when ingesting
+# an already-plaintext capture (there is no TLS/QUIC handshake to infer the
+# server side from). Any --tls-port / --quic-port values are folded in as extra
+# hints at the call site, since those are the only server-port signals fritap has.
+_PLAINTEXT_SERVER_PORTS = (80, 8080, 8000)
+
 
 @dataclass
 class ConvertResult:
@@ -56,6 +63,10 @@ class ConvertResult:
     # TLS streams that could not be followed/decoded (whole-stream drops).
     dropped_stream_count: int = 0
     findings_count: int = 0
+    # Streams skipped during a keyless (plaintext) conversion because they were
+    # encrypted (TLS/QUIC) and therefore need keys. Drives the "looks encrypted —
+    # pass --keylog" hint in the offline CLI.
+    encrypted_streams_skipped: int = 0
 
 
 class _StreamDirectionTracker:
@@ -199,6 +210,23 @@ def _tls_segments_to_events(
     return events
 
 
+def _extract_addrs(layers: dict) -> tuple[str, str, str]:
+    """Return ``(src_addr, dst_addr, ss_family)`` from a `-T ek` layers dict.
+
+    Prefers IPv6 endpoints when present, else IPv4. Shared by every
+    packet->events translator so the address/family logic lives in one place.
+    """
+    ip6_src = _first(_field(layers, "ipv6.src"))
+    ip6_dst = _first(_field(layers, "ipv6.dst"))
+    if ip6_src or ip6_dst:
+        return ip6_src or "", ip6_dst or "", "AF_INET6"
+    return (
+        _first(_field(layers, "ip.src")) or "",
+        _first(_field(layers, "ip.dst")) or "",
+        "AF_INET",
+    )
+
+
 def _quic_packet_to_events(
     pkt: dict,
     tracker: _StreamDirectionTracker,
@@ -221,19 +249,7 @@ def _quic_packet_to_events(
 
     timestamp = _coerce_float(_first(_field(layers, "frame.time_epoch")))
 
-    ip_src = _first(_field(layers, "ip.src"))
-    ip_dst = _first(_field(layers, "ip.dst"))
-    ip6_src = _first(_field(layers, "ipv6.src"))
-    ip6_dst = _first(_field(layers, "ipv6.dst"))
-
-    if ip6_src or ip6_dst:
-        ss_family = "AF_INET6"
-        src_addr = ip6_src or ""
-        dst_addr = ip6_dst or ""
-    else:
-        ss_family = "AF_INET"
-        src_addr = ip_src or ""
-        dst_addr = ip_dst or ""
+    src_addr, dst_addr, ss_family = _extract_addrs(layers)
 
     src_port = _coerce_int(_first(_field(layers, "udp.srcport")))
     dst_port = _coerce_int(_first(_field(layers, "udp.dstport")))
@@ -300,19 +316,7 @@ def _tls_packet_to_events(
 
     timestamp = _coerce_float(_first(_field(layers, "frame.time_epoch")))
 
-    ip_src = _first(_field(layers, "ip.src"))
-    ip_dst = _first(_field(layers, "ip.dst"))
-    ip6_src = _first(_field(layers, "ipv6.src"))
-    ip6_dst = _first(_field(layers, "ipv6.dst"))
-
-    if ip6_src or ip6_dst:
-        ss_family = "AF_INET6"
-        src_addr = ip6_src or ""
-        dst_addr = ip6_dst or ""
-    else:
-        ss_family = "AF_INET"
-        src_addr = ip_src or ""
-        dst_addr = ip_dst or ""
+    src_addr, dst_addr, ss_family = _extract_addrs(layers)
 
     src_port = _coerce_int(_first(_field(layers, "tcp.srcport")))
     dst_port = _coerce_int(_first(_field(layers, "tcp.dstport")))
@@ -651,6 +655,123 @@ def _emit_tls_streams_singlepass(
     result.stream_count += len(tcp_streams)
 
 
+def _plaintext_packet_to_events(
+    pkt: dict,
+    tracker: _StreamDirectionTracker,
+    encrypted_streams: set[str],
+) -> list[DatalogEvent]:
+    """Translate one raw-payload ``-T ek`` packet dict into DatalogEvents.
+
+    For an already-plaintext capture there are no keys: the application bytes are
+    the raw transport payload (``tcp.payload`` / ``udp.payload``). Streams whose
+    ``frame.protocols`` reveal TLS/QUIC are encrypted — they need keys, so we
+    record them in *encrypted_streams* (for a later "pass --keylog" hint) and
+    skip them rather than ingesting cipher-text as bogus plaintext. Mirrors
+    :func:`_tls_packet_to_events`, but reads the raw payload field instead of the
+    decrypted ``data.data``.
+    """
+    layers = pkt.get("layers") or {}
+    # frame.protocols is the colon-separated dissector stack, e.g.
+    # "eth:ethertype:ip:tcp:tls"; split so membership is exact (no substring
+    # false-matches against a protocol name that merely contains "tls"/"quic").
+    proto_layers = str(_first(_field(layers, "frame.protocols")) or "").lower().split(":")
+
+    timestamp = _coerce_float(_first(_field(layers, "frame.time_epoch")))
+
+    src_addr, dst_addr, ss_family = _extract_addrs(layers)
+
+    tcp_stream = _first(_field(layers, "tcp.stream"))
+    if tcp_stream is not None:
+        transport = "tcp"
+        stream_key = f"tcp:{tcp_stream}"
+        src_port = _coerce_int(_first(_field(layers, "tcp.srcport")))
+        dst_port = _coerce_int(_first(_field(layers, "tcp.dstport")))
+        payload_field = "tcp.payload"
+    else:
+        udp_stream = _first(_field(layers, "udp.stream"))
+        transport = "udp"
+        stream_key = f"udp:{udp_stream}"
+        src_port = _coerce_int(_first(_field(layers, "udp.srcport")))
+        dst_port = _coerce_int(_first(_field(layers, "udp.dstport")))
+        payload_field = "udp.payload"
+
+    # Encrypted streams need keys: record once and skip every packet on them.
+    if "tls" in proto_layers or "quic" in proto_layers:
+        encrypted_streams.add(stream_key)
+        return []
+
+    payloads = _as_list(_field(layers, payload_field))
+    data = b"".join(decode_hex(str(p)) for p in payloads)
+    if not data:
+        return []
+
+    direction = tracker.direction_for(
+        stream_key, src_addr, src_port, dst_addr, dst_port)
+
+    return [DatalogEvent(
+        timestamp=timestamp,
+        data=data,
+        function="tshark_offline",
+        direction=direction,
+        src_addr=src_addr,
+        src_port=src_port,
+        dst_addr=dst_addr,
+        dst_port=dst_port,
+        ss_family=ss_family,
+        ssl_session_id="",
+        transport=transport,
+        stream_id=None,
+    )]
+
+
+def _emit_plaintext_streams_singlepass(
+    tshark_bin: str,
+    pcap_path: str,
+    *,
+    extra_decode_as: tuple[str, ...],
+    heuristic: bool,
+    bus: EventBus,
+    state: _WriterState,
+    result: ConvertResult,
+    tracker: _StreamDirectionTracker,
+) -> None:
+    """Export raw transport payload via ONE ``-T ek`` pass and emit events.
+
+    The keyless counterpart to :func:`_emit_tls_streams_singlepass`: instead of
+    decrypted ``data.data`` it reads ``tcp.payload`` / ``udp.payload`` for an
+    already-plaintext capture. Encrypted (TLS/QUIC) streams are detected via
+    ``frame.protocols`` and skipped, with their count surfaced on *result* so the
+    caller can hint that ``--keylog`` is required. Emitted bytes flow through the
+    same EventBus -> FlowCollector -> parser pipeline as every other path.
+    """
+    cmd = build_plaintext_command(
+        pcap_path, extra_decode_as=extra_decode_as, heuristic=heuristic)
+    cmd[0] = tshark_bin  # replace the literal "tshark" with the resolved path
+
+    encrypted_streams: set[str] = set()
+    for pkt in stream_packets(cmd):
+        try:
+            events = _plaintext_packet_to_events(
+                pkt, tracker, encrypted_streams)
+        except Exception:
+            result.dropped_packet_count += 1
+            logger.debug("Skipping unparseable plaintext packet", exc_info=True)
+            continue
+        if not events:
+            continue
+
+        state.ensure_open()
+        for ev in events:
+            result.decrypted_packet_count += 1
+            bus.emit(ev)
+
+    # The tracker only sees cleartext packets (encrypted ones return before
+    # direction_for is called), so its stream_count is the distinct-cleartext
+    # count. Encrypted streams are tallied separately for the "needs keys" hint.
+    result.stream_count += tracker.stream_count
+    result.encrypted_streams_skipped += len(encrypted_streams)
+
+
 class NoDecryptionKeysError(ValueError):
     """Raised when a capture cannot be decrypted: no keylog and no embedded DSB."""
 
@@ -810,7 +931,18 @@ def convert_pcap_to_tap(
     if tap_path is None:
         tap_path = os.path.splitext(pcap_path)[0] + ".tap"
 
-    _require_decryptable(pcap_path, keylog_path)
+    # Decryption uses EITHER an explicit keylog file OR a pcapng with an embedded
+    # Decryption Secrets Block (DSB). Three cases:
+    #   * keys available            -> decrypt (TLS/QUIC passes below).
+    #   * no --keylog and no DSB     -> treat the capture as already-plaintext and
+    #     ingest the raw transport payload directly (encrypted streams are skipped
+    #     and surfaced via result.encrypted_streams_skipped).
+    #   * --keylog given but missing -> fail loud, so a typo'd keylog path is not
+    #     silently masked as "plaintext".
+    keylog_present = bool(keylog_path) and os.path.isfile(keylog_path)
+    has_keys = keylog_present or capture_has_dsb(pcap_path)
+    if keylog_path and not has_keys:
+        _require_decryptable(pcap_path, keylog_path)  # raises NoDecryptionKeysError
 
     tshark_bin = find_tshark(tshark_path)
     warn_if_outdated(tshark_version(tshark_bin))
@@ -838,44 +970,56 @@ def convert_pcap_to_tap(
     # produces a valid (empty) file via the fallback below.
     state = _WriterState(writer, tap_path, target, keylog_path)
     try:
-        # Extract TLS handshake metadata ONCE up front (SNI/version/cipher/alpn)
-        # so each stream can emit a SessionEvent before its data, backfilling the
-        # flow's TLS layer. Metadata failure is non-fatal — the decrypted-bytes
-        # path is unaffected.
-        tls_meta_by_stream = _extract_tls_metadata_safe(
-            tshark_bin, pcap_path, keylog_path,
-            tls_ports=tls_ports, extra_decode_as=extra_decode_as,
-            heuristic=heuristic,
-        )
+        if has_keys:
+            # Extract TLS handshake metadata ONCE up front (SNI/version/cipher/alpn)
+            # so each stream can emit a SessionEvent before its data, backfilling the
+            # flow's TLS layer. Metadata failure is non-fatal — the decrypted-bytes
+            # path is unaffected.
+            tls_meta_by_stream = _extract_tls_metadata_safe(
+                tshark_bin, pcap_path, keylog_path,
+                tls_ports=tls_ports, extra_decode_as=extra_decode_as,
+                heuristic=heuristic,
+            )
 
-        # Single ``-T ek`` pass over all TLS streams (was one
-        # ``follow,tls,raw`` pass PER stream — O(streams x pcap)). The legacy
-        # per-stream helpers (_emit_tls_streams / follow_tls_stream) are retained
-        # as utilities but no longer drive the conversion.
-        _emit_tls_streams_singlepass(
-            tshark_bin, pcap_path, keylog_path,
-            tls_ports=tls_ports, extra_decode_as=extra_decode_as,
-            heuristic=heuristic,
-            bus=bus, state=state, result=result, tracker=tls_tracker,
-            tls_meta_by_stream=tls_meta_by_stream,
-        )
-        # QUIC metadata (transport version + embedded-TLS cipher/alpn) extracted
-        # up front and emitted as SessionEvents BEFORE the QUIC data, so the
-        # collector stamps each flow's QUIC layer when the data creates it.
-        quic_meta_by_stream = _extract_quic_metadata_safe(
-            tshark_bin, pcap_path, keylog_path,
-            quic_ports=quic_ports, extra_decode_as=extra_decode_as,
-            heuristic=heuristic,
-        )
-        for quic_meta in quic_meta_by_stream.values():
-            _emit_quic_session_event(bus, quic_meta)
+            # Single ``-T ek`` pass over all TLS streams (was one
+            # ``follow,tls,raw`` pass PER stream — O(streams x pcap)). The legacy
+            # per-stream helpers (_emit_tls_streams / follow_tls_stream) are retained
+            # as utilities but no longer drive the conversion.
+            _emit_tls_streams_singlepass(
+                tshark_bin, pcap_path, keylog_path,
+                tls_ports=tls_ports, extra_decode_as=extra_decode_as,
+                heuristic=heuristic,
+                bus=bus, state=state, result=result, tracker=tls_tracker,
+                tls_meta_by_stream=tls_meta_by_stream,
+            )
+            # QUIC metadata (transport version + embedded-TLS cipher/alpn) extracted
+            # up front and emitted as SessionEvents BEFORE the QUIC data, so the
+            # collector stamps each flow's QUIC layer when the data creates it.
+            quic_meta_by_stream = _extract_quic_metadata_safe(
+                tshark_bin, pcap_path, keylog_path,
+                quic_ports=quic_ports, extra_decode_as=extra_decode_as,
+                heuristic=heuristic,
+            )
+            for quic_meta in quic_meta_by_stream.values():
+                _emit_quic_session_event(bus, quic_meta)
 
-        _emit_quic_streams(
-            tshark_bin, pcap_path, keylog_path,
-            quic_ports=quic_ports, extra_decode_as=extra_decode_as,
-            heuristic=heuristic,
-            bus=bus, state=state, result=result, tracker=tracker,
-        )
+            _emit_quic_streams(
+                tshark_bin, pcap_path, keylog_path,
+                quic_ports=quic_ports, extra_decode_as=extra_decode_as,
+                heuristic=heuristic,
+                bus=bus, state=state, result=result, tracker=tracker,
+            )
+        else:
+            # No keys and no DSB: ingest the capture as already-plaintext. The raw
+            # transport payload is fed through the SAME parser pipeline; encrypted
+            # streams are detected and skipped (tallied for a --keylog hint).
+            plaintext_tracker = _StreamDirectionTracker(
+                server_ports=(*_PLAINTEXT_SERVER_PORTS, *tls_ports, *quic_ports))
+            _emit_plaintext_streams_singlepass(
+                tshark_bin, pcap_path,
+                extra_decode_as=extra_decode_as, heuristic=heuristic,
+                bus=bus, state=state, result=result, tracker=plaintext_tracker,
+            )
 
         # SSH metadata pass: plaintext banners/KEXINIT need no keys. Purely
         # additive synthetic flows; failure never aborts the conversion.

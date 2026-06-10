@@ -27,13 +27,17 @@ MANIFEST_SUFFIX = ".fritap.json"
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="fritap --from-pcap",
-        description="Offline: decrypt a captured pcap/pcapng with tshark and "
-                    "reconstruct a friTap .tap file.",
+        description="Offline: reconstruct a friTap .tap from a captured "
+                    "pcap/pcapng — decrypt with tshark when keys are available "
+                    "(--keylog or an embedded DSB), or ingest an already-plaintext "
+                    "capture directly when no keys are given.",
     )
     parser.add_argument("--from-pcap", dest="from_pcap", required=True,
-                        help="Encrypted capture file (pcap or pcapng) to decrypt.")
+                        help="Capture file (pcap or pcapng): encrypted (decrypted "
+                             "via --keylog / embedded DSB) or already-plaintext.")
     parser.add_argument("--keylog", dest="keylog", default=None,
-                        help="NSS SSLKEYLOGFILE. Omit for a DSB-embedded pcapng.")
+                        help="NSS SSLKEYLOGFILE. Omit for a plaintext capture or a "
+                             "DSB-embedded pcapng.")
     parser.add_argument("--tap", dest="tap", default=None,
                         help="Output .tap path (default: <pcap stem>.tap).")
     parser.add_argument("--scan", action="store_true",
@@ -98,6 +102,8 @@ def _print_summary(result: ConvertResult, run_scan: bool) -> None:
     print(f"  streams:           {result.stream_count}")
     if result.dropped_packet_count:
         print(f"  dropped packets:   {result.dropped_packet_count}")
+    if result.encrypted_streams_skipped:
+        print(f"  encrypted streams: {result.encrypted_streams_skipped} (skipped — need keys)")
     if run_scan:
         print(f"  findings:          {result.findings_count}")
 
@@ -144,11 +150,22 @@ def run_offline_pcap_to_tap(argv: Sequence[str]) -> int:
     _print_summary(result, args.scan)
 
     if result.decrypted_packet_count == 0:
-        print(
-            "Warning: no decrypted application data was produced. The keylog "
-            "may not match this capture, or custom TLS/QUIC ports may be "
-            "needed (see --tls-port / --quic-port / --decode-as)."
-        )
+        if result.encrypted_streams_skipped:
+            print(
+                f"Warning: no plaintext application data was produced; "
+                f"{result.encrypted_streams_skipped} stream(s) look encrypted "
+                "(TLS/QUIC) and were skipped. This capture needs keys — pass "
+                "--keylog <SSLKEYLOGFILE>, or use a pcapng with an embedded "
+                "Decryption Secrets Block (DSB)."
+            )
+        else:
+            print(
+                "Warning: no application data was produced. If this capture is "
+                "encrypted, it needs keys — pass --keylog <SSLKEYLOGFILE> (or use "
+                "a pcapng with an embedded DSB) and check --tls-port / --quic-port "
+                "/ --decode-as. If it is already plaintext, no extractable payload "
+                "was found."
+            )
         return 4
 
     return 0

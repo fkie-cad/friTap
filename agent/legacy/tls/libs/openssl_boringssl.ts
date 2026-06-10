@@ -5,6 +5,7 @@ import { devlog, devlog_error, log, devlog_info } from "../../../util/log.js";
 import { initializePipeline as sharedInitializePipeline, resolveWithPipelineAsync as sharedResolveWithPipelineAsync } from "../../../shared/pipeline_utils.js";
 import { ObjC } from "../../../shared/objclib.js";
 import { sendKeylog, sendDatalog } from "../../../shared/shared_structures.js";
+import { installSocketFdTracker, recoverSocketFd } from "../../../shared/socket_fd_tracker.js";
 
 class ModifyReceiver{
     public readModification: ArrayBuffer | null = null;
@@ -215,13 +216,22 @@ export class OpenSSL_BoringSSL {
                 {
                     this.bufLen = args[2].toInt32()
                     this.fd = instance.SSL_get_fd(args[0])
+                    if (this.fd < 0) {
+                        // BIO-based TLS (e.g. Conscrypt): no socket fd on the SSL object.
+                        // Arm the fd-less recovery tracker LAZILY (idempotent) — only now that
+                        // we've actually observed SSL_get_fd()<0 — then recover the real peer
+                        // via thread->socket-fd correlation.
+                        installSocketFdTracker();
+                        const recovered = recoverSocketFd();
+                        if (recovered >= 0) this.fd = recovered;
+                    }
                     if(this.fd < 0 && enable_default_fd == false) {
                         return
                     }
-    
-    
-    
-                
+
+
+
+
                     var message = getPortsAndAddresses(this.fd as number, true, lib_addesses[current_module_name], enable_default_fd)
                     if (message === null) { return; }
                     message["ssl_session_id"] = instance.getSslSessionId(args[0])
@@ -302,6 +312,15 @@ export class OpenSSL_BoringSSL {
                         }
 
                         }
+                    if (this.fd < 0) {
+                        // BIO-based TLS (e.g. Conscrypt): no socket fd on the SSL object.
+                        // Arm the fd-less recovery tracker LAZILY (idempotent) — only now that
+                        // we've actually observed SSL_get_fd()<0 — then recover the real peer
+                        // via thread->socket-fd correlation.
+                        installSocketFdTracker();
+                        const recovered = recoverSocketFd();
+                        if (recovered >= 0) this.fd = recovered;
+                    }
                     if(this.fd < 0 && enable_default_fd == false) {
                         return
                     }
@@ -459,6 +478,15 @@ export class OpenSSL_BoringSSL {
                 {
                     this.bufLen = args[2].toInt32()
                     this.fd = instance.SSL_get_fd(args[0])
+                    if (this.fd < 0) {
+                        // BIO-based TLS (e.g. Conscrypt): no socket fd on the SSL object.
+                        // Arm the fd-less recovery tracker LAZILY (idempotent) — only now that
+                        // we've actually observed SSL_get_fd()<0 — then recover the real peer
+                        // via thread->socket-fd correlation.
+                        installSocketFdTracker();
+                        const recovered = recoverSocketFd();
+                        if (recovered >= 0) this.fd = recovered;
+                    }
                     if(this.fd < 0 && enable_default_fd == false) {
                         return
                     }
@@ -513,6 +541,15 @@ export class OpenSSL_BoringSSL {
                         }
 
                         }
+                    if (this.fd < 0) {
+                        // BIO-based TLS (e.g. Conscrypt): no socket fd on the SSL object.
+                        // Arm the fd-less recovery tracker LAZILY (idempotent) — only now that
+                        // we've actually observed SSL_get_fd()<0 — then recover the real peer
+                        // via thread->socket-fd correlation.
+                        installSocketFdTracker();
+                        const recovered = recoverSocketFd();
+                        if (recovered >= 0) this.fd = recovered;
+                    }
                     if(this.fd < 0 && enable_default_fd == false) {
                         return
                     }
@@ -545,7 +582,7 @@ export class OpenSSL_BoringSSL {
                 log("using dummy SessionID: 59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336")
                 return "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336"
             }
-            log("Session is null")
+            devlog("Session is null")
             return 0
         }
         var len_pointer = Memory.alloc(4)

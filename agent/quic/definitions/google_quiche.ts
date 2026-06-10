@@ -9,7 +9,7 @@
 //
 // These are virtual methods on QuicSpdyStream, which inherits from QuicStream.
 
-import { sendQuicDatalog } from "../../shared/shared_structures.js";
+import { sendQuicDatalog, AF_INET, AF_INET6 } from "../../shared/shared_structures.js";
 import { log, devlog, devlog_debug, devlog_error, hookBreadcrumb, _isShuttingDownNow } from "../../util/log.js";
 import { pcap_enabled, getParsedPatterns, offsets, quic_capture_mode, quic_egress_headers_layer, debug_output } from "../../fritap_agent.js";
 import { MANGLED_SYMBOLS, LABEL_TO_KEY, KEY_TO_LABEL } from "../shared/google_quiche_offsets.js";
@@ -33,6 +33,15 @@ function resolveQuicMessage(streamPtr: string, label: string): { [key: string]: 
  * integer, AF_INET6 → 32-char uppercase hex), mirroring getPortsAndAddresses.
  */
 function parseObservedPeer(sa: NativePointer): ObservedPeer | null {
+    // Guard the FULL family-specific read length BEFORE decodeSockaddr touches the address.
+    // connect() hands us an app-supplied sockaddr that may be short/truncated/AF_UNSPEC, and a
+    // native fault inside decodeSockaddr's port/addr reads is NOT catchable by the caller's
+    // try/catch. decodeSockaddr reads through offset 7 for AF_INET (8 bytes) and offset 23 for
+    // AF_INET6 (24 bytes); a 2-byte family check alone is insufficient.
+    if (sa.isNull() || !isReadable(sa, 2)) return null;
+    const family = sa.readU16();
+    const needed = family === AF_INET ? 8 : family === AF_INET6 ? 24 : 0;
+    if (needed === 0 || !isReadable(sa, needed)) return null;
     // Byte math (no libc ntoh* available inside this connect() hook). The shared
     // decoder folds v4-mapped IPv6 to AF_INET, so a single loopback check covers both.
     const decoded = decodeSockaddr(sa);
@@ -253,12 +262,18 @@ function installQuicSocketObserver(): void {
         });
     }
     if (connectAddr) {
+        // Feed connected-UDP peers into the QUIC connection tracker so synthesized
+        // flows can attribute a server IP/port. SAFETY (this hook fires on EVERY
+        // connect, process-wide, during the fragile attach window): the isReadable()
+        // guard before parseObservedPeer is mandatory — connect() may pass an
+        // AF_UNSPEC/short/odd sockaddr, and a native fault in an unguarded readU16
+        // there is NOT catchable by the JS try/catch below.
         Interceptor.attach(connectAddr, {
             onEnter(args) {
                 const fd = args[0].toInt32();
                 if (!udpFds.has(fd)) return;
                 try {
-                    const peer = parseObservedPeer(args[1]);
+                    const peer = parseObservedPeer(args[1]); // self-guards readability + length
                     if (peer) quicConnectionTracker.setObservedPeer(peer);
                 } catch (e) { /* best-effort */ }
             },
@@ -1002,17 +1017,19 @@ export async function installGoogleQuicheHooks(moduleName: string): Promise<void
     // std::__Cr::basic_string_view occupies x1 (data ptr) and x2 (length).
     if (onDataFramePayloadAddr && !onDataFramePayloadAddr.isNull()) {
         try {
-            let odfpCount = 0;
+            // Built once at install time (moduleName is constant); avoids rebuilding the
+            // string on every frame in the hot onEnter (hookBreadcrumb is throttled).
+            const breadcrumb = `QuicSpdyStream::OnDataFramePayload (${moduleName})`;
             Interceptor.attach(onDataFramePayloadAddr, {
                 onEnter(args) {
                     if (_isShuttingDownNow()) return;
+                    // Crash attribution: this hook walks args/struct pointers that can
+                    // be garbage on a mis-resolved address; a native fault here is
+                    // uncatchable by the try/catch below, so leave a breadcrumb first.
+                    hookBreadcrumb(breadcrumb);
                     try {
                         const dataPtr = args[1];
                         const dataLen = args[2].toUInt32();
-                        if (odfpCount < 8) {
-                            odfpCount++;
-                            devlog_debug(`[OnDataFramePayload] call #${odfpCount} in ${moduleName}: len=${dataLen} ptr=${dataPtr}`);
-                        }
                         if (dataLen === 0 || dataPtr.isNull()) return;
                         // Symbol-resolved Cronet addresses can yield garbage
                         // args; guard the read so a bad ptr/len skips instead of
@@ -1325,9 +1342,13 @@ export async function installGoogleQuicheHooks(moduleName: string): Promise<void
     // On ARM64: this=x0, data.ptr=x1, data.length=x2, fin=w3
     if (writeAddr && !writeAddr.isNull()) {
         try {
+            // Built once at install time (see OnDataFramePayload).
+            const breadcrumb = `QuicSpdyStream::WriteOrBufferBody (${moduleName})`;
             Interceptor.attach(writeAddr, {
                 onEnter(args) {
                     if (_isShuttingDownNow()) { this.data = null; this.dataLen = 0; return; }
+                    // Crash attribution before any pointer walk (see OnDataFramePayload).
+                    hookBreadcrumb(breadcrumb);
                     this.streamObj = args[0];       // QuicSpdyStream* this
                     const dataPtr = args[1];         // absl::string_view.ptr
                     const dataLen = args[2].toUInt32(); // size_t but HTTP/3 bodies are bounded in practice

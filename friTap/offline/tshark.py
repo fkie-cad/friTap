@@ -840,6 +840,32 @@ _TLS_DATA_DISPLAY_FILTER = "tls.app_data"
 # with its own protocol parsers, so tshark's interpretation is unwanted).
 _TLS_DISABLED_SUBDISSECTORS = ("http", "http2")
 
+# Fields for the plaintext (no-keys) single-pass: the raw transport payload of an
+# already-cleartext capture, plus the per-frame protocol stack so encrypted
+# (TLS/QUIC) streams can be detected and skipped. frame.protocols looks like
+# "eth:ethertype:ip:tcp:tls"; its presence of "tls"/"quic" marks a stream that
+# needs keys and cannot be ingested as plaintext.
+_PLAINTEXT_FIELDS = (
+    "frame.time_epoch",
+    "frame.protocols",
+    "ip.src",
+    "ip.dst",
+    "ipv6.src",
+    "ipv6.dst",
+    "tcp.stream",
+    "tcp.srcport",
+    "tcp.dstport",
+    "tcp.payload",
+    "udp.stream",
+    "udp.srcport",
+    "udp.dstport",
+    "udp.payload",
+)
+# Export every frame that carries raw transport payload. TLS/QUIC frames also
+# match (their records ride in tcp.payload/udp.payload), so the Python side skips
+# those streams by inspecting frame.protocols — keeping the tshark side simple.
+_PLAINTEXT_DISPLAY_FILTER = "tcp.payload or udp.payload"
+
 
 def build_tls_command(
     pcap: str,
@@ -885,6 +911,41 @@ def build_tls_command(
 
     cmd += _decode_as_flags("tcp.port", "tls", tls_ports, extra_decode_as)
     cmd += ["-Y", _TLS_DATA_DISPLAY_FILTER]
+    return cmd
+
+
+def build_plaintext_command(
+    pcap: str,
+    *,
+    extra_decode_as: Sequence[str] = (),
+    heuristic: bool = False,
+) -> list[str]:
+    """Build the ``tshark`` argv for a SINGLE-pass raw-payload export (no keys).
+
+    For an already-plaintext capture there is nothing to decrypt: the application
+    bytes ARE the raw transport payload. We export ``tcp.payload`` / ``udp.payload``
+    in one ``-T ek`` pass (mirroring :func:`build_tls_command`) and let friTap's
+    own parsers reconstruct the protocols. ``frame.protocols`` is exported so the
+    caller can detect and skip encrypted (TLS/QUIC) streams that would need keys.
+
+    Args:
+        pcap: Path to the capture (pcap or pcapng).
+        extra_decode_as: Raw ``-d`` rule strings passed through verbatim.
+        heuristic: Enable tshark's TCP heuristic-first dissection.
+
+    Returns:
+        The full argv list (first element is the literal ``"tshark"``; callers
+        resolve the real path via :func:`find_tshark`).
+    """
+    cmd: list[str] = ["tshark", "-r", pcap, "-2", "-T", "ek"]
+    cmd += _heuristic_flags(heuristic)
+    for field in _PLAINTEXT_FIELDS:
+        cmd += ["-e", field]
+    # No port-based Decode-As (plaintext has no protocol to map a port to); reuse
+    # the shared helper purely to append the raw `-d` rules, as every other
+    # command builder does, so extra_decode_as handling stays consistent.
+    cmd += _decode_as_flags("tcp.port", "tls", (), extra_decode_as)
+    cmd += ["-Y", _PLAINTEXT_DISPLAY_FILTER]
     return cmd
 
 

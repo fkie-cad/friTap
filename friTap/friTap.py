@@ -256,7 +256,7 @@ def cli():
     
     parser = ArgParser(
         add_help=False,
-        description="Decrypts and logs an executables or mobile applications SSL/TLS traffic.",
+        description="Decrypts and logs an executables or mobile applications encrypted traffic.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         allow_abbrev=False,
         epilog=r"""
@@ -271,6 +271,11 @@ Examples:
   %(prog)s -m -p log.pcap --enable_spawn_gating -v -do -sot --full_capture -k keys.log com.example.app
   %(prog)s -m -p log.pcap --enable_spawn_gating -v -do --anti_root --full_capture -k keys.log com.example.app
   %(prog)s -m -p log.pcap --enable_default_fd com.example.app
+
+Offline (pcap -> .tap):
+  %(prog)s --from-pcap capture.pcapng --keylog keys.log --tap out.tap --scan
+  %(prog)s --from-pcap cleartext.pcap --tap out.tap        # already-plaintext capture
+  (full offline options: %(prog)s --from-pcap <file> --help)
 """)
 
     args = parser.add_argument_group("Arguments")

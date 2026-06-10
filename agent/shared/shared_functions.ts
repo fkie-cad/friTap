@@ -483,6 +483,21 @@ let _cachedSocketFns: {
 let _cachedAddrBuf: NativePointer | null = null;
 let _cachedAddrLenBuf: NativePointer | null = null;
 
+// Armed once, lazily, on the first getPortsAndAddresses call. Evicting a blacklisted fd when
+// it is close()d makes the blacklist self-healing: a reused fd number starts fresh instead of
+// being permanently dropped. Lives here (not in the fd-recovery tracker) because EVERY caller
+// of getPortsAndAddresses writes the blacklist, but only some install the tracker.
+let _unwantedFdEvictionInstalled = false;
+function installUnwantedFdEviction(): void {
+    if (_unwantedFdEvictionInstalled) return;
+    _unwantedFdEvictionInstalled = true;
+    const closeAddr = Module.findGlobalExportByName("close");
+    if (!closeAddr) return;
+    Interceptor.attach(closeAddr, {
+        onEnter(args) { unwantedFDs.delete(args[0].toInt32()); },
+    });
+}
+
 /**
 * Returns a dictionary of a sockfd's "src_addr", "src_port", "dst_addr", and
 * "dst_port".
@@ -494,6 +509,8 @@ let _cachedAddrLenBuf: NativePointer | null = null;
 *     and "dst_port".
 */
 export function getPortsAndAddresses(sockfd: number, isRead: boolean, methodAddresses: { [key: string]: NativePointer }, enable_default_fd : boolean): { [key: string]: string | number } {
+
+    if (!_unwantedFdEvictionInstalled) installUnwantedFdEviction();
 
     var message: { [key: string]: string | number } = {}
     if (enable_default_fd && (sockfd < 0)){
@@ -530,11 +547,9 @@ export function getPortsAndAddresses(sockfd: number, isRead: boolean, methodAddr
     for (let i = 0; i < src_dst.length; i++) {
         addrlen.writeU32(128)
         if ((src_dst[i] == "src") !== isRead) {
-            devlog("src")
             getsockname(sockfd, addr, addrlen)
         }
         else {
-            devlog("dst")
             getpeername(sockfd, addr, addrlen)
         }
 
@@ -545,7 +560,7 @@ export function getPortsAndAddresses(sockfd: number, isRead: boolean, methodAddr
             //const familyName = AddressFamilyMapping[addr.readU16()] || `UNKNOWN`;
             //devlog("[-] getPortsAndAddresses resolving error: Only supporting IPv4/6");
             //devlog(`[-] Inspecting fd: ${sockfd}, Address family: ${addr.readU16()} (${familyName})`);
-            unwantedFDs.add(sockfd); // Mark this fd as unwanted
+            unwantedFDs.add(sockfd); // Mark this fd as unwanted (auto-evicted when the fd is close()d; see installUnwantedFdEviction)
             return null;
         }
         message[src_dst[i] + "_port"] = decoded.port;

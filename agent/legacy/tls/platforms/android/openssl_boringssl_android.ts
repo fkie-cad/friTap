@@ -2,7 +2,7 @@
 import {OpenSSL_BoringSSL } from "../../../tls/libs/openssl_boringssl.js";
 import { devlog, devlog_debug, devlog_error, log } from "../../../../util/log.js";
 import { socket_library } from "../../../../platforms/android.js";
-import { patterns, isPatternReplaced, experimental, enable_default_fd } from "../../../../fritap_agent.js";
+import { patterns, isPatternReplaced, experimental, enable_default_fd, keylog_enabled } from "../../../../fritap_agent.js";
 import { sendKeylog } from "../../../../shared/shared_structures.js";
 import { executeSSLLibrary } from "../../../shared/shared_functions_legacy.js";
 import { installBoringSSLSymbolHook, boringSslDumpKeys, isResolvedSymbol } from "../../../../shared/boringssl_symbol_hook.js";
@@ -98,14 +98,26 @@ export class OpenSSL_BoringSSL_Android extends OpenSSL_BoringSSL {
 
         this.install_plaintext_read_hook();
         this.install_plaintext_write_hook();
-        this.install_tls_keys_callback_hook();
-        // Unified install banner — `log()` so default-verbosity stdout shows it.
-        // `install_tls_keys_callback_hook` swallows exceptions silently, so a
-        // positive return value isn't available here; the banner reflects that
-        // the install attempt completed, matching the legacy code's existing
-        // "success == no exception" semantics.
-        log(`[*] ${this.module_name}: keylog hooks installed via callback (SSL_CTX_set_keylog_callback)`);
-        this.install_conscrypt_tls_keys_callback_hook();
+        // Install-time keylog gate: in plaintext-only mode (no -k) the host sets
+        // keylog_enabled=false, and the agent must skip every key-extraction path
+        // — otherwise it installs the SSL_CTX_set_keylog_callback interception
+        // (overwriting the app's own callback) and floods the debug log with
+        // "invoking keylog_callback" lines even though sendKeylog() would drop
+        // every secret downstream. This mirrors the gates already present in
+        // cronet_android (cronet_android.ts:188) and the dynamic loader
+        // (loader.ts:119); the base BoringSSL class was previously missing it.
+        if (keylog_enabled) {
+            this.install_tls_keys_callback_hook();
+            // Unified install banner — `log()` so default-verbosity stdout shows it.
+            // `install_tls_keys_callback_hook` swallows exceptions silently, so a
+            // positive return value isn't available here; the banner reflects that
+            // the install attempt completed, matching the legacy code's existing
+            // "success == no exception" semantics.
+            log(`[*] ${this.module_name}: keylog hooks installed via callback (SSL_CTX_set_keylog_callback)`);
+            this.install_conscrypt_tls_keys_callback_hook();
+        } else {
+            devlog(`[*] ${this.module_name}: keylog install skipped (keylog_enabled=false, plaintext-only mode)`);
+        }
         this.install_extended_hooks();
     }
 

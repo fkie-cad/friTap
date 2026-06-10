@@ -46,8 +46,18 @@ export function devlog(str: string) {
 // Crash-attribution breadcrumb. Emitted on entry of a crash-prone hook walk so
 // that, if the target dies inside it, Python's on_detach can name the last hook.
 // Stored in memory only on the Python side (never printed), so it works
-// regardless of -v/debug. Use sparingly — only on low-frequency hooks.
+// regardless of -v/debug.
+//
+// Throttled to last-changed: a steady stream of identical breadcrumbs (e.g. an
+// SSL_read loop on one connection, or repeated OnDataFramePayload calls) collapses
+// to a single send until a DIFFERENT hook intervenes. This keeps per-call overhead
+// near-zero so breadcrumbs can safely cover hot struct-walk paths (TLS read/write,
+// QUIC body) — not just low-frequency header hooks. The host still always holds the
+// most-recently-entered hook, which is the correct crash suspect.
+let _lastBreadcrumb = "";
 export function hookBreadcrumb(str: string) {
+    if (str === _lastBreadcrumb) return;
+    _lastBreadcrumb = str;
     var message: { [key: string]: string } = {}
     message["contentType"] = "hook_breadcrumb"
     message["hook_breadcrumb"] = str

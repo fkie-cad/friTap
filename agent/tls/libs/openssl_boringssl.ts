@@ -541,7 +541,7 @@ export class OpenSSL_BoringSSL {
                 log("using dummy SessionID: 59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336")
                 return "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336"
             }
-            log("Session is null")
+            devlog("Session is null")
             return 0
         }
         var len_pointer = Memory.alloc(4)

@@ -824,20 +824,28 @@ def test_capture_has_dsb_false_for_pcapng_without_dsb(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Fail-loud: no keylog AND no DSB must error, not silently emit an empty .tap
+# Keyless behavior: no --keylog at all => ingest as plaintext; an explicitly
+# given but missing keylog still fails loud (don't mask a typo'd path).
 # ---------------------------------------------------------------------------
 
-def test_classic_pcap_without_keys_fails_loud(tmp_path):
-    """Hermeticity check: a classic pcap with no keylog used to "decrypt" only
-    by inheriting the ambient Wireshark profile keylog. It must now error
-    clearly before tshark is ever spawned, depending on nothing hidden."""
+def test_classic_pcap_without_keys_ingests_as_plaintext(tmp_path, monkeypatch):
+    """A capture with NO --keylog and no DSB is no longer an error: it is treated
+    as already-plaintext and the raw transport payload is ingested. With no
+    packets the conversion simply yields an empty .tap (no raise)."""
+    monkeypatch.setattr(p2t, "find_tshark", lambda *a, **k: "/usr/bin/tshark")
+    monkeypatch.setattr(p2t, "tshark_version", lambda path: (4, 6, 0))
+    monkeypatch.setattr(p2t, "stream_packets", lambda cmd: iter(()))
+
     pcap = tmp_path / "classic.pcap"
     pcap.write_bytes(_classic_pcap_header())
-    with pytest.raises(p2t.NoDecryptionKeysError):
-        p2t.convert_pcap_to_tap(str(pcap))
+    result = p2t.convert_pcap_to_tap(str(pcap), tap_path=str(tmp_path / "out.tap"))
+    assert result.flow_count == 0
+    assert result.decrypted_packet_count == 0
 
 
 def test_missing_keylog_file_fails_loud(tmp_path):
+    """An EXPLICIT --keylog whose file does not exist (and no DSB) still errors,
+    so a typo'd keylog path is not silently masked as a plaintext capture."""
     pcap = tmp_path / "classic.pcap"
     pcap.write_bytes(_classic_pcap_header())
     with pytest.raises(p2t.NoDecryptionKeysError):
@@ -857,13 +865,146 @@ def test_pcapng_with_dsb_needs_no_keylog(tmp_path, monkeypatch):
     assert result.flow_count == 0  # no traffic, but the guard let it proceed
 
 
-def test_cli_no_keys_no_dsb_returns_exit_5(tmp_path, monkeypatch, capsys):
+def test_cli_no_keys_no_dsb_ingests_plaintext_empty(tmp_path, monkeypatch, capsys):
+    """No --keylog and no DSB now ingests as plaintext. An empty capture yields no
+    plaintext data, so the CLI returns exit 4 with the generic no-data warning."""
     monkeypatch.setattr(offline_cli, "find_tshark", lambda *a, **k: "/usr/bin/tshark")
+    monkeypatch.setattr(p2t, "find_tshark", lambda *a, **k: "/usr/bin/tshark")
+    monkeypatch.setattr(p2t, "tshark_version", lambda path: (4, 6, 0))
+    monkeypatch.setattr(p2t, "stream_packets", lambda cmd: iter(()))
     pcap = tmp_path / "classic.pcap"
     pcap.write_bytes(_classic_pcap_header())
     rc = offline_cli.run_offline_pcap_to_tap(["--from-pcap", str(pcap)])
-    assert rc == 5
-    assert "Cannot decrypt" in capsys.readouterr().out
+    assert rc == 4
+    assert "no application data" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Plaintext (keyless) ingestion of an already-cleartext capture
+# ---------------------------------------------------------------------------
+
+def _plaintext_ek_packets(endpoints, segments, *, stream=0, transport="tcp",
+                          protocols="eth:ethertype:ip:tcp", t0=1700000000.0):
+    """Build raw-payload ``-T ek`` packet dicts mirroring build_plaintext_command.
+
+    One ``<transport>.payload`` frame per direction-tagged segment; *protocols*
+    is the frame.protocols stack (include "tls"/"quic" to mark a stream as
+    encrypted so the translator skips it)."""
+    c_addr, c_port, s_addr, s_port = endpoints
+    packets = []
+    for i, (direction, data) in enumerate(segments):
+        if direction == "write":
+            src_a, src_p, dst_a, dst_p = c_addr, c_port, s_addr, s_port
+        else:
+            src_a, src_p, dst_a, dst_p = s_addr, s_port, c_addr, c_port
+        packets.append({"layers": {
+            "frame_time_epoch": [f"{t0 + i}"],
+            "frame_protocols": [protocols],
+            "ip_src": [src_a], "ip_dst": [dst_a],
+            f"{transport}_stream": [str(stream)],
+            f"{transport}_srcport": [str(src_p)], f"{transport}_dstport": [str(dst_p)],
+            f"{transport}_payload": [data.hex()],
+        }})
+    return packets
+
+
+def _plaintext_stream_dispatch(packets):
+    """A ``stream_packets`` fake returning *packets* for the plaintext export
+    command (identified by the ``tcp.payload`` field) and nothing otherwise."""
+    def fake(cmd):
+        return iter(packets) if "tcp.payload" in cmd else iter(())
+    return fake
+
+
+def test_plaintext_packet_to_events_parses_cleartext_tcp():
+    """A cleartext TCP frame (no tls/quic in frame.protocols) yields one event
+    carrying the raw payload, direction anchored on the server port."""
+    tracker = p2t._StreamDirectionTracker(server_ports=(80,))
+    skipped: set[str] = set()
+    pkt = _plaintext_ek_packets(
+        ("10.0.0.1", 50000, "93.184.216.34", 80),
+        [("write", b"GET / HTTP/1.1\r\n")],
+    )[0]
+    events = p2t._plaintext_packet_to_events(pkt, tracker, skipped)
+    assert len(events) == 1
+    ev = events[0]
+    assert ev.data == b"GET / HTTP/1.1\r\n"
+    assert ev.transport == "tcp"
+    assert ev.direction == "write"   # dst port 80 -> source is the client
+    assert not skipped
+
+
+def test_plaintext_packet_to_events_skips_encrypted_stream():
+    """A frame whose frame.protocols include 'tls' is encrypted: it produces no
+    event and the stream is recorded for the 'needs keys' hint."""
+    tracker = p2t._StreamDirectionTracker(server_ports=(443,))
+    skipped: set[str] = set()
+    pkt = _plaintext_ek_packets(
+        ("10.0.0.1", 50000, "93.184.216.34", 443),
+        [("write", b"\x16\x03\x01encryptedrecord")],
+        protocols="eth:ethertype:ip:tcp:tls",
+    )[0]
+    assert p2t._plaintext_packet_to_events(pkt, tracker, skipped) == []
+    assert skipped == {"tcp:0"}
+
+
+def test_convert_pcap_plaintext_end_to_end(tmp_path, monkeypatch):
+    """Keyless conversion of an already-cleartext HTTP capture reconstructs the
+    request/response into a flow and writes a readable .tap."""
+    request = b"GET /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n"
+    response = (
+        b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n"
+        b"Content-Type: text/plain\r\n\r\nhello"
+    )
+    endpoints = ("10.0.0.1", 50000, "93.184.216.34", 80)
+    segments = [("write", request), ("read", response)]
+
+    monkeypatch.setattr(p2t, "find_tshark", lambda *a, **k: "/usr/bin/tshark")
+    monkeypatch.setattr(p2t, "tshark_version", lambda path: (4, 6, 0))
+    monkeypatch.setattr(
+        p2t, "stream_packets",
+        _plaintext_stream_dispatch(_plaintext_ek_packets(endpoints, segments)))
+
+    pcap = tmp_path / "cleartext.pcap"
+    pcap.write_bytes(_classic_pcap_header())  # classic pcap: no DSB
+    tap = tmp_path / "cleartext.tap"
+
+    result = p2t.convert_pcap_to_tap(str(pcap), tap_path=str(tap))
+
+    assert result.decrypted_packet_count == 2
+    assert result.flow_count >= 1
+    assert result.stream_count == 1
+    assert result.encrypted_streams_skipped == 0
+    assert tap.exists()
+
+    with TapReader(str(tap)) as reader:
+        flows = reader.read_all_flows()
+    assert len(flows) >= 1
+    flow = flows[0]
+    assert flow.request is not None
+    assert flow.request.method == "GET"
+    assert flow.response is not None
+    assert flow.response.status_code == 200
+
+
+def test_convert_pcap_plaintext_skips_encrypted_and_reports(tmp_path, monkeypatch):
+    """A keyless capture made only of TLS streams produces no plaintext and
+    reports the skipped encrypted streams so the CLI can hint for --keylog."""
+    monkeypatch.setattr(p2t, "find_tshark", lambda *a, **k: "/usr/bin/tshark")
+    monkeypatch.setattr(p2t, "tshark_version", lambda path: (4, 6, 0))
+    packets = _plaintext_ek_packets(
+        ("10.0.0.1", 50000, "93.184.216.34", 443),
+        [("write", b"\x16\x03\x01abc"), ("read", b"\x16\x03\x03def")],
+        protocols="eth:ethertype:ip:tcp:tls",
+    )
+    monkeypatch.setattr(p2t, "stream_packets", _plaintext_stream_dispatch(packets))
+
+    pcap = tmp_path / "enc.pcap"
+    pcap.write_bytes(_classic_pcap_header())
+    result = p2t.convert_pcap_to_tap(str(pcap), tap_path=str(tmp_path / "enc.tap"))
+
+    assert result.decrypted_packet_count == 0
+    assert result.encrypted_streams_skipped == 1
 
 
 # ---------------------------------------------------------------------------
