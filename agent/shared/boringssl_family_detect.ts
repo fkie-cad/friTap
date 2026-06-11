@@ -32,6 +32,9 @@ const FAMILY_RULES: FamilyRule[] = [
     { family: "stable_cronet",   match: (m) => /^stable_cronet/.test(m) },
     { family: "mainline_cronet", match: (m) => /libmainlinecronet/.test(m) },
     { family: "monochrome",      match: (m) => /monochrome/.test(m) },
+    // Android System WebView ships the same Chromium/BoringSSL monolith as
+    // monochrome (libwebviewchromium.so); reuse the monochrome family bundle.
+    { family: "monochrome",      match: (m) => /webviewchromium/.test(m) },
     // Apps that statically link Cronet/BoringSSL.
     { family: "signal",          match: (m) => /libsignal_jni\b/.test(m) },
     { family: "ringrtc",         match: (m) => /libringrtc_rffi/.test(m) },

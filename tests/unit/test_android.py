@@ -6,7 +6,6 @@ device detection, and Android SSL library handling.
 """
 
 import subprocess
-import pytest
 from unittest.mock import patch, MagicMock
 
 from friTap.android import Android, ADB

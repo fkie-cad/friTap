@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from friTap.connection_index import resolve_connection_key
 from friTap.events import DatalogEvent, EventBus, SESSION_STARTED, SessionEvent

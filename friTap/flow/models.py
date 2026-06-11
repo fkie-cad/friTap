@@ -9,7 +9,7 @@ import time
 
 from friTap.flow import display as _display
 from friTap.flow.layers import (
-    ProtocolLayer, LayerData, TlsLayer, QuicLayer, SshLayer, IpsecLayer,
+    ProtocolLayer, LayerData, TlsLayer,
 )
 from friTap.flow.layer_registry import get_registry
 

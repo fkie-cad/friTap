@@ -15,7 +15,7 @@ import copy
 import pytest
 
 from friTap.flow.models import Flow, FlowChunk, TlsMetadata
-from friTap.flow.layers import TlsLayer, QuicLayer, SshLayer, LayerData
+from friTap.flow.layers import TlsLayer, QuicLayer, SshLayer
 
 
 def _flow_with_chunks() -> Flow:

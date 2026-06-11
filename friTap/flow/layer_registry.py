@@ -18,7 +18,6 @@ from typing import Callable, Optional
 from friTap.flow.layers import (
     AppLayer,
     IpsecLayer,
-    ProtocolLayer,
     QuicLayer,
     SshLayer,
     TlsLayer,
