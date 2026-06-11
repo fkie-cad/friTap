@@ -134,10 +134,10 @@ Many apps detect root and refuse to run:
 
 ```bash
 # Enable anti-root detection bypass
-fritap -m --enable-anti-root -k keys.log com.example.app
+fritap -m --anti_root -k keys.log com.example.app
 
 # Combined with other options (here we are doing a full packet capture)
-fritap -m -f --enable-anti-root -k keys.log --pcap traffic.pcap com.example.app
+fritap -m -f --anti_root -k keys.log --pcap traffic.pcap com.example.app
 ```
 
 ## App-Specific Examples
@@ -283,11 +283,11 @@ cat malware_analysis.json | jq '.connections[] | select(.dst_port != 443 and .ds
 
 **App Crashes on Analysis:**
 ```bash
-# Use gentler approach
-fritap -m --no-spawn -k keys.log com.example.app
+# Use gentler approach (omit -s/--spawn so fritap attaches instead of spawning)
+fritap -m -k keys.log com.example.app
 
 # Enable anti-detection
-fritap -m --enable-anti-root -k keys.log com.example.app
+fritap -m --anti_root -k keys.log com.example.app
 ```
 
 **No SSL Library Detected:**
@@ -312,14 +312,14 @@ fritap -m --full_capture -k keys.log com.example.app
 
 **Samsung Knox Detection:**
 ```bash
-# Samsung devices with Knox
-fritap -m --enable-anti-root --no-spawn -k keys.log com.example.app
+# Samsung devices with Knox (omit -s/--spawn to attach instead of spawning)
+fritap -m --anti_root -k keys.log com.example.app
 ```
 
 **MIUI Security:**
 ```bash
 # Xiaomi devices with MIUI
-fritap -m --enable-anti-root -k keys.log com.example.app
+fritap -m --anti_root -k keys.log com.example.app
 ```
 
 ## Performance Optimization
@@ -341,8 +341,8 @@ watch -n 1 "adb shell top -p \$(adb shell pgrep frida-server)"
 # Reduce analysis overhead
 fritap -m --timeout 60 -k keys.log com.example.app
 
-# Use targeted analysis
-fritap -m --no-spawn -k keys.log com.example.app
+# Use targeted analysis (attach mode is the default when -s/--spawn is omitted)
+fritap -m -k keys.log com.example.app
 ```
 
 ## Automation Scripts

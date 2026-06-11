@@ -1,1256 +1,356 @@
 # Adding Features to friTap
 
-This guide covers how to add new features to friTap, including SSL/TLS library support, platform support, and analysis capabilities.
+This guide shows how to extend friTap with new capabilities. Each section is a
+single, end-to-end worked example so you can follow one task from start to
+finish:
 
-## Overview
+1. [Add a TLS library (modern `HookDefinition` path)](#add-a-tls-library-modern-hookdefinition-path)
+2. [Legacy class-based path (deprecated)](#legacy-class-based-path-deprecated)
+3. [Add a protocol parser (Python)](#add-a-protocol-parser-python)
+4. [Add a plugin / custom Frida script](#add-a-plugin-custom-frida-script)
+5. [Adding a brand-new protocol family](#adding-a-brand-new-protocol-family)
 
-friTap's architecture is designed to be extensible:
+friTap is split into two halves: a **TypeScript Frida agent** (`agent/`, compiled
+to `friTap/fritap_agent.js`) that does the in-process hooking, and a **Python
+host** (`friTap/`) that orchestrates the agent and post-processes the captured
+data. TLS/SSH/QUIC library support lives in the agent; parsers, plugins, and
+analyzers live in Python.
 
-- **Python Host**: CLI interface, process management, output formatting
-- **TypeScript Agent**: SSL library hooking, cross-platform compatibility
-- **Plugin System**: Modular SSL library implementations
-- **Platform Abstraction**: OS-specific code organization
+!!! info "Research first"
+    Before hooking a new native library, study it. Locate the read/write and
+    key-derivation functions, confirm their argument order, and decide whether
+    you can resolve them by exported symbol or need byte patterns:
 
+    ```bash
+    # Exported symbols (preferred resolution path)
+    readelf -s libnewssl.so | grep FUNC
+    objdump -T libnewssl.so | grep -E "ssl|tls|read|write"
 
-## Architecture Overview
+    # Stripped? Generate byte patterns with BoringSecretHunter, or reverse with
+    # Ghidra/radare2 and capture the function prologue. See advanced/patterns.md.
+    ```
 
-friTap is built on a multi-component architecture that combines Python orchestration with frida's dynamic instrumentation:
+---
 
+## Add a TLS library (modern `HookDefinition` path)
+
+The modern agent is **data-driven**: instead of writing a hand-rolled hooking
+class, you describe the library declaratively as a `HookDefinition`, and a
+generic executor installs the Frida interceptors for you. This is the path you
+should take for new libraries.
+
+!!! warning "The modern path is opt-in (EXPERIMENTAL)"
+    For TLS libraries the modern executors are selected only when the user
+    passes `--modern` (`use_modern`); the **default is the legacy path**
+    (`friTap/friTap.py`, `default=False`). SSH and IPsec auto-enable modern.
+    Known modern-path regressions (`_MODERN_REGRESSIONS`) cover iOS/macOS Cronet,
+    Windows LSASS, and IPsec. Register your library on **both** the modern and
+    legacy `hookFn`s (as the existing entries do) so it works regardless of the
+    flag, and treat the modern path as experimental until verified on a device.
+
+We will add a fictional `libnewssl` whose API mirrors OpenSSL. The reference
+implementation to copy from is `agent/tls/definitions/openssl.ts`.
+
+### Step 1 — Write the definition factory
+
+Create `agent/tls/definitions/newssl.ts` exporting a factory that returns a
+`HookDefinition`. The full interface is in `agent/core/hook_definition.ts`
+(`HookDefinition`); the fields below are the minimal real-shaped set.
+
+```typescript
+// agent/tls/definitions/newssl.ts
+import { HookDefinition, ResolvedFunctions } from "../../core/hook_definition.js";
+import { readHexFromPointer } from "../decoders/hex_utils.js";
+import { STANDARD_SOCKET_SYMBOLS } from "./shared_constants.js";
+import { createLifecycleHook } from "./shared_factories.js";
+
+// fdDecoder: turn the library's SSL context into a socket file descriptor so
+// friTap can attribute traffic to the right connection.
+export function newSslFdDecoder(ssl: NativePointer, fns: ResolvedFunctions): number {
+    if (!fns["NewSSL_get_fd"]) return -1;
+    return fns["NewSSL_get_fd"](ssl) as number;
+}
+
+export function newSslSessionIdDecoder(ssl: NativePointer, fns: ResolvedFunctions): string {
+    if (!fns["NewSSL_get_session_id"]) return "";
+    const idPtr = fns["NewSSL_get_session_id"](ssl) as NativePointer;
+    return idPtr.isNull() ? "" : readHexFromPointer(idPtr, 32);
+}
+
+export function createNewSslDefinition(): HookDefinition {
+    const def: HookDefinition = {
+        libraryId: "newssl",
+        offsetKey: "newssl",                 // key used to look up --offsets / patterns
+        functions: {
+            // Symbols resolved in the target library...
+            librarySymbols: [
+                "NewSSL_read",
+                "NewSSL_write",
+                "NewSSL_get_fd",
+                "NewSSL_get_session_id",
+                "NewSSL_set_keylog_callback",
+            ],
+            // ...and in the socket library (libc on Linux, etc.)
+            socketSymbols: STANDARD_SOCKET_SYMBOLS,
+        },
+        // NativeFunction wrappers the executor will build for you, so your
+        // decoders can call them directly (see newSslFdDecoder above).
+        nativeFunctions: [
+            { symbol: "NewSSL_get_fd", retType: "int", argTypes: ["pointer"] },
+            { symbol: "NewSSL_get_session_id", retType: "pointer", argTypes: ["pointer"] },
+            { symbol: "NewSSL_set_keylog_callback", retType: "void", argTypes: ["pointer", "pointer"] },
+        ],
+        fdDecoder: newSslFdDecoder,
+        sessionIdDecoder: newSslSessionIdDecoder,
+        // Plaintext capture: which args carry the SSL ctx / buffer / length, and
+        // where the byte count comes from (return value for read, arg for write).
+        readHook: {
+            symbol: "NewSSL_read",
+            args: { sslCtxArgIndex: 0, bufferArgIndex: 1, bytesTransferred: "retval" },
+            functionLabel: "NewSSL_read",
+        },
+        writeHook: {
+            symbol: "NewSSL_write",
+            args: { sslCtxArgIndex: 0, bufferArgIndex: 1, lengthArgIndex: 2, bytesTransferred: "arg" },
+            functionLabel: "NewSSL_write",
+        },
+        // Key extraction. Use kind: "callback_on_ssl_new" / "callback_on_init" /
+        // "manual_on_connect" / "custom" / "none". A custom installer gives you
+        // full control (see createBoringSSLKeylogApproach in openssl.ts).
+        keylog: { kind: "none" },
+    };
+
+    // Lifecycle hook so sessions are torn down cleanly when the ctx is freed.
+    def.extraHooks = [
+        createLifecycleHook("NewSSL_free", newSslFdDecoder, newSslSessionIdDecoder),
+    ];
+
+    return def;
+}
 ```
-┌─────────────────┐        ┌─────────────────┐      ┌─────────────────┐
-│   Python CLI    │        │  Frida Engine   │      │ Target Process  │
-│   (friTap.py)   │────────│   (Runtime)     │──────│   (Hooked)      │
-└─────────────────┘        └─────────────────┘      └─────────────────┘
-         │                          │                       │
-         │                          │                       │
-    ┌─────────┐            ┌─────────────────┐       ┌─────────────┐
-    │SSL Logic│            │    TypeScript   │       │SSL Libraries│
-    │& PCAP   │            │    Agent        │       │(OpenSSL,    │
-    │Gen      │            │(fritap_agent.js)│       │BoringSSL,   │
-    └─────────┘            └─────────────────┘       │NSS, etc.)   │
-                                                     └─────────────┘
+
+!!! tip "BoringSSL-family libraries"
+    If your library is a BoringSSL fork, set `libraryType: "boringssl"` on the
+    definition. The loader then routes keylog extraction through the three-tier
+    chain in `agent/shared/boringssl_hook_chain.ts` (callback →
+    `bssl::ssl_log_secret` symbol → `pattern.json` byte scan) automatically.
+
+### Step 2 — Add a platform executor
+
+The executor is the thin glue that hands your definition to the generic loader.
+Create one per platform, e.g. `agent/tls/platforms/linux/newssl_linux.ts`,
+following `agent/tls/platforms/linux/gnutls_linux.ts`:
+
+```typescript
+// agent/tls/platforms/linux/newssl_linux.ts
+import { socket_library } from "../../../platforms/linux.js";
+import { enable_default_fd } from "../../../fritap_agent.js";
+import { executeFromDefinition } from "../../../core/loader.js";
+import { createNewSslDefinition } from "../../definitions/newssl.js";
+
+export function newssl_execute_modern(moduleName: string, is_base_hook: boolean) {
+    executeFromDefinition(
+        createNewSslDefinition(),
+        moduleName,
+        socket_library,
+        is_base_hook,          // isBaseHook
+        enable_default_fd,     // enable_default_fd
+    );
+}
 ```
 
-### Components
+`executeFromDefinition(def, moduleName, socketLibrary, isBaseHook, enableDefaultFd)`
+(`agent/core/loader.ts`) resolves the symbols (exports → offsets → user
+`--patterns`), wraps the `nativeFunctions`, installs your read/write hooks,
+dispatches the keylog approach, and runs any `extraHooks`.
 
-1. **Python CLI** (`friTap.py`): Main orchestration layer
-2. **SSL Logger** (`ssl_logger.py`): Core logging and processing engine
-3. **PCAP Generator** (`pcap.py`): Network packet creation and manipulation
-4. **Frida Agent** (`agent/fritap_agent.ts`): TypeScript-based instrumentation agent (this is build via `frida-compile` from the TypeScript code in the agent/ folder)
-5. **Platform Agents**: Platform-specific SSL library hooks
+### Step 3 — Register the library
 
+Wire the executor into the platform agent — for Linux that is
+`agent/platforms/linux.ts`, inside the `hookRegistry.registerAll([...])` block
+(around the existing TLS entries, ~`:104-132`):
 
-## Adding SSL/TLS Library Support
+```typescript
+// agent/platforms/linux.ts — add to the registerAll([...]) array
+{
+    platform: plattform_name,
+    pattern: /.*libnewssl\.so/,                 // module-name regex
+    hookFn: (use_modern ? newssl_execute_modern : newssl_execute),
+    library: "NewSSL",                          // shown in logs
+    libraryType: "newssl",                      // tlsLibHunter scan key
+    protocol: "tls",
+},
+```
 
-Adding support for a new SSL/TLS library involves both TypeScript agent code and Python integration.
+Each registration is a `HookRegistration` (`agent/shared/registry.ts`):
+`platform`, `pattern`, `hookFn`, and `library` are required; `protocol`
+(defaults to `"tls"`) and `priority` (defaults to `100`) are optional, as are
+`libraryType`, `pathFilter`, and `excludePattern`. Use `register(...)` for a
+single hook or `registerAll([...])` for several. Add the matching entry to
+`windows.ts` / `macos.ts` / `android.ts` if you support those platforms.
 
-### Step 1: Research the Library
+The agent entry point is `agent/fritap_agent.ts`; the platform agents are loaded
+from there.
 
-Before implementation, thoroughly analyze the target library:
+### Step 4 — Build
 
 ```bash
-# Analyze library structure
-objdump -T new_library.so | grep -E "(ssl|tls|read|write)"
-
-# Study function signatures
-readelf -s new_library.so | grep FUNC
-
-# Check for debug symbols
-file new_library.so
-objdump -h new_library.so | grep debug
-
-# Analyze with Ghidra/IDA Pro for patterns
-# Document function calling conventions
-# Identify key structures and data types
-```
-
-### Step 2: Create TypeScript Implementation
-
-Create the main library implementation in `agent/ssl_lib/`:
-
-```typescript
-// agent/ssl_lib/new_library.ts
-import { log, devlog, devlog_error } from "../util/log.js";
-import { SharedStructures } from "../shared/shared_structures.js";
-
-export class NewLibraryHooks {
-    private moduleName: string;
-    private baseAddress: NativePointer;
-    private addresses: { [key: string]: NativePointer } = {};
-    
-    constructor(moduleName: string) {
-        this.moduleName = moduleName;
-        this.baseAddress = Module.getBaseAddress(moduleName);
-        this.addresses = this.getAddresses();
-    }
-    
-    /**
-     * Get function addresses for the new library.
-     * Try symbol-based detection first, then patterns.
-     */
-    private getAddresses(): { [key: string]: NativePointer } {
-        const addresses: { [key: string]: NativePointer } = {};
-        
-        try {
-            // Symbol-based detection (preferred)
-            addresses["NewSSL_Read"] = Module.getExportByName(this.moduleName, "NewSSL_Read");
-            addresses["NewSSL_Write"] = Module.getExportByName(this.moduleName, "NewSSL_Write");
-            addresses["NewSSL_GetKeys"] = Module.getExportByName(this.moduleName, "NewSSL_GetKeys");
-            
-            devlog(`[${this.moduleName}] Found functions via symbols`);
-            
-        } catch (error) {
-            devlog_error(`Symbol-based detection failed for ${this.moduleName}: ${error}`);
-            
-            // Fall back to pattern-based detection
-            this.findFunctionsByPatterns(addresses);
-        }
-        
-        return addresses;
-    }
-    
-    /**
-     * Find functions using byte patterns when symbols are not available.
-     */
-    private findFunctionsByPatterns(addresses: { [key: string]: NativePointer }): void {
-        const module = Process.getModuleByName(this.moduleName);
-        
-        // Define patterns for different architectures
-        const patterns = {
-            "arm64": {
-                "NewSSL_Read": "1F 20 03 D5 ?? ?? ?? ?? F4 4F 01 A9",
-                "NewSSL_Write": "FF 83 00 D1 ?? ?? ?? ?? F4 4F 02 A9"
-            },
-            "x64": {
-                "NewSSL_Read": "55 48 89 E5 ?? ?? ?? ?? 48 83 EC ??",
-                "NewSSL_Write": "55 48 89 E5 ?? ?? ?? ?? 48 8B 45 ??"
-            }
-        };
-        
-        const archPatterns = patterns[Process.arch as keyof typeof patterns];
-        if (!archPatterns) {
-            devlog_error(`No patterns defined for architecture: ${Process.arch}`);
-            return;
-        }
-        
-        // Search for each function pattern
-        for (const [funcName, pattern] of Object.entries(archPatterns)) {
-            try {
-                const matches = Memory.scanSync(module.base, module.size, pattern);
-                
-                if (matches.length > 0) {
-                    addresses[funcName] = matches[0].address;
-                    devlog(`[${this.moduleName}] Found ${funcName} at ${matches[0].address} via pattern`);
-                } else {
-                    devlog_error(`[${this.moduleName}] Pattern not found for ${funcName}`);
-                }
-                
-            } catch (error) {
-                devlog_error(`[${this.moduleName}] Pattern search failed for ${funcName}: ${error}`);
-            }
-        }
-    }
-    
-    /**
-     * Install all hooks for this library.
-     */
-    public install(): boolean {
-        if (Object.keys(this.addresses).length === 0) {
-            devlog_error(`[${this.moduleName}] No function addresses found`);
-            return false;
-        }
-        
-        let successCount = 0;
-        
-        // Install read/write hooks
-        if (this.hookSSLRead()) successCount++;
-        if (this.hookSSLWrite()) successCount++;
-        if (this.hookKeyExtraction()) successCount++;
-        
-        if (successCount > 0) {
-            log(`Successfully installed ${successCount} hooks for ${this.moduleName}`);
-            return true;
-        } else {
-            devlog_error(`[${this.moduleName}] Failed to install any hooks`);
-            return false;
-        }
-    }
-    
-    /**
-     * Hook SSL read function.
-     */
-    private hookSSLRead(): boolean {
-        const readAddress = this.addresses["NewSSL_Read"];
-        if (!readAddress) {
-            devlog_error(`[${this.moduleName}] NewSSL_Read address not found`);
-            return false;
-        }
-        
-        try {
-            Interceptor.attach(readAddress, {
-                onEnter(args) {
-                    // Store arguments for onLeave
-                    this.ssl = args[0];          // SSL context
-                    this.buffer = args[1];       // Data buffer
-                    this.bufferSize = args[2];   // Buffer size
-                    
-                    devlog(`[${this.moduleName}] SSL_Read called with buffer size: ${this.bufferSize}`);
-                },
-                
-                onLeave(retval) {
-                    const bytesRead = retval.toInt32();
-                    
-                    if (bytesRead > 0) {
-                        try {
-                            const data = this.buffer.readByteArray(bytesRead);
-                            
-                            // Get connection info
-                            const connectionInfo = this.getConnectionInfo(this.ssl);
-                            
-                            // Process data using shared functions
-                            SharedStructures.logSSLRead(this.ssl, data, connectionInfo);
-                            
-                            devlog(`[${this.moduleName}] Captured ${bytesRead} bytes via SSL_Read`);
-                            
-                        } catch (error) {
-                            devlog_error(`[${this.moduleName}] Error processing SSL_Read data: ${error}`);
-                        }
-                    }
-                }
-            });
-            
-            devlog(`[${this.moduleName}] Hooked NewSSL_Read at ${readAddress}`);
-            return true;
-            
-        } catch (error) {
-            devlog_error(`[${this.moduleName}] Failed to hook NewSSL_Read: ${error}`);
-            return false;
-        }
-    }
-    
-    /**
-     * Hook SSL write function.
-     */
-    private hookSSLWrite(): boolean {
-        const writeAddress = this.addresses["NewSSL_Write"];
-        if (!writeAddress) {
-            devlog_error(`[${this.moduleName}] NewSSL_Write address not found`);
-            return false;
-        }
-        
-        try {
-            Interceptor.attach(writeAddress, {
-                onEnter(args) {
-                    const ssl = args[0];
-                    const dataPtr = args[1];
-                    const dataSize = args[2].toInt32();
-                    
-                    if (dataSize > 0) {
-                        try {
-                            const data = dataPtr.readByteArray(dataSize);
-                            
-                            // Get connection info
-                            const connectionInfo = this.getConnectionInfo(ssl);
-                            
-                            // Process data using shared functions
-                            SharedStructures.logSSLWrite(ssl, data, connectionInfo);
-                            
-                            devlog(`[${this.moduleName}] Captured ${dataSize} bytes via SSL_Write`);
-                            
-                        } catch (error) {
-                            devlog_error(`[${this.moduleName}] Error processing SSL_Write data: ${error}`);
-                        }
-                    }
-                }
-            });
-            
-            devlog(`[${this.moduleName}] Hooked NewSSL_Write at ${writeAddress}`);
-            return true;
-            
-        } catch (error) {
-            devlog_error(`[${this.moduleName}] Failed to hook NewSSL_Write: ${error}`);
-            return false;
-        }
-    }
-    
-    /**
-     * Hook key extraction functions.
-     */
-    private hookKeyExtraction(): boolean {
-        const keyAddress = this.addresses["NewSSL_GetKeys"];
-        if (!keyAddress) {
-            devlog(`[${this.moduleName}] Key extraction function not found (optional)`);
-            return false;
-        }
-        
-        try {
-            Interceptor.attach(keyAddress, {
-                onLeave(retval) {
-                    // Extract keys based on library-specific format
-                    const keyData = this.extractKeyData(retval);
-                    if (keyData) {
-                        SharedStructures.logSSLKeys(keyData);
-                        devlog(`[${this.moduleName}] Extracted SSL keys`);
-                    }
-                }
-            });
-            
-            devlog(`[${this.moduleName}] Hooked key extraction at ${keyAddress}`);
-            return true;
-            
-        } catch (error) {
-            devlog_error(`[${this.moduleName}] Failed to hook key extraction: ${error}`);
-            return false;
-        }
-    }
-    
-    /**
-     * Extract connection information from SSL context.
-     */
-    private getConnectionInfo(ssl: NativePointer): any {
-        try {
-            // Library-specific SSL context parsing
-            // This will vary significantly between libraries
-            
-            // Example structure access (adjust for actual library)
-            const socketFd = ssl.add(0x10).readInt();  // Offset to socket descriptor
-            
-            // Get socket information using shared utilities
-            return SharedStructures.getSocketInfo(socketFd);
-            
-        } catch (error) {
-            devlog_error(`[${this.moduleName}] Failed to get connection info: ${error}`);
-            return { src: "0.0.0.0", dst: "0.0.0.0", src_port: 0, dst_port: 0 };
-        }
-    }
-    
-    /**
-     * Extract key data from library-specific structures.
-     */
-    private extractKeyData(keyPtr: NativePointer): any {
-        try {
-            // Parse library-specific key structures
-            // Return in standard friTap format
-            
-            return {
-                client_random: keyPtr.readByteArray(32),
-                master_secret: keyPtr.add(32).readByteArray(48)
-            };
-            
-        } catch (error) {
-            devlog_error(`[${this.moduleName}] Failed to extract key data: ${error}`);
-            return null;
-        }
-    }
-}
-
-/**
- * Main entry point for new library detection and hooking.
- */
-export function installNewLibraryHooks(): boolean {
-    const possibleNames = [
-        "libnewssl.so",      // Linux
-        "libnewssl.so.1",    // Linux versioned
-        "newssl.dll",        // Windows
-        "NewSSL",            // macOS framework
-        "libNewSSL.dylib"    // macOS dynamic library
-    ];
-    
-    for (const name of possibleNames) {
-        try {
-            const module = Process.getModuleByName(name);
-            if (module) {
-                devlog(`[NewLibrary] Found module: ${name}`);
-                
-                const hooks = new NewLibraryHooks(name);
-                const success = hooks.install();
-                
-                if (success) {
-                    log(`NewLibrary hooks installed for ${name}`);
-                    return true;
-                }
-            }
-        } catch (error) {
-            // Module not found, continue to next
-            devlog(`[NewLibrary] Module ${name} not found`);
-        }
-    }
-    
-    devlog(`[NewLibrary] No compatible modules found`);
-    return false;
-}
-```
-
-### Step 3: Add Platform-Specific Integration
-
-Create platform-specific integration files for each supported platform:
-
-```typescript
-// agent/linux/new_library_linux.ts
-import { installNewLibraryHooks } from "../ssl_lib/new_library.js";
-import { devlog } from "../util/log.js";
-
-export function installNewLibraryLinux(): boolean {
-    devlog("[Linux] Attempting NewLibrary detection");
-    
-    // Linux-specific module names and paths
-    const linuxModules = [
-        "libnewssl.so",
-        "libnewssl.so.1",
-        "libnewssl.so.1.0",
-        "/usr/lib/x86_64-linux-gnu/libnewssl.so",
-        "/usr/local/lib/libnewssl.so"
-    ];
-    
-    // Check for library presence
-    for (const moduleName of linuxModules) {
-        try {
-            const module = Process.getModuleByName(moduleName);
-            if (module) {
-                devlog(`[Linux] Found NewLibrary module: ${moduleName}`);
-                return installNewLibraryHooks();
-            }
-        } catch (error) {
-            // Continue to next module
-        }
-    }
-    
-    devlog("[Linux] NewLibrary not found");
-    return false;
-}
-```
-
-```typescript
-// agent/android/new_library_android.ts
-import { installNewLibraryHooks } from "../ssl_lib/new_library.js";
-import { devlog, devlog_error } from "../util/log.js";
-
-export function installNewLibraryAndroid(): boolean {
-    devlog("[Android] Attempting NewLibrary detection");
-    
-    // Android-specific considerations
-    const androidModules = [
-        "libnewssl.so",
-        "libapp.so",  // May be statically linked in app
-        "libflutter.so"  // If using Flutter with NewSSL
-    ];
-    
-    // Check if we're in an Android app context
-    if (!Java.available) {
-        devlog_error("[Android] Java runtime not available");
-        return false;
-    }
-    
-    // Attempt to find NewLibrary in loaded modules
-    for (const moduleName of androidModules) {
-        try {
-            const module = Process.getModuleByName(moduleName);
-            if (module) {
-                devlog(`[Android] Found potential NewLibrary module: ${moduleName}`);
-                
-                // Additional Android-specific checks
-                if (this.validateAndroidModule(module)) {
-                    return installNewLibraryHooks();
-                }
-            }
-        } catch (error) {
-            // Continue to next module
-        }
-    }
-    
-    devlog("[Android] NewLibrary not found");
-    return false;
-}
-
-function validateAndroidModule(module: Module): boolean {
-    // Android-specific validation
-    // Check for expected exports or patterns
-    try {
-        const exports = module.enumerateExports();
-        const newSSLExports = exports.filter(exp => 
-            exp.name.toLowerCase().includes('newssl') ||
-            exp.name.toLowerCase().includes('ssl_read') ||
-            exp.name.toLowerCase().includes('ssl_write')
-        );
-        
-        return newSSLExports.length > 0;
-        
-    } catch (error) {
-        devlog_error(`[Android] Module validation failed: ${error}`);
-        return false;
-    }
-}
-```
-
-### Step 4: Update Main Agent
-
-Integrate the new library into the main detection loop:
-
-```typescript
-// agent/ssl_log.ts (add to main detection function)
-import { installNewLibraryLinux } from "./linux/new_library_linux.js";
-import { installNewLibraryAndroid } from "./android/new_library_android.js";
-import { installNewLibraryWindows } from "./windows/new_library_windows.js";
-import { installNewLibraryMacOS } from "./macos/new_library_macos.js";
-import { installNewLibraryIOS } from "./ios/new_library_ios.js";
-
-// In main SSL library detection function
-function detectSSLLibraries(): void {
-    let librariesFound = 0;
-    
-    // Existing libraries...
-    librariesFound += installOpenSSLHooks() ? 1 : 0;
-    librariesFound += installBoringSSLHooks() ? 1 : 0;
-    librariesFound += installNSSHooks() ? 1 : 0;
-    
-    // Add new library detection
-    if (isLinux()) {
-        librariesFound += installNewLibraryLinux() ? 1 : 0;
-    } else if (isAndroid()) {
-        librariesFound += installNewLibraryAndroid() ? 1 : 0;
-    } else if (isWindows()) {
-        librariesFound += installNewLibraryWindows() ? 1 : 0;
-    } else if (isMacOS()) {
-        librariesFound += installNewLibraryMacOS() ? 1 : 0;
-    } else if (isiOS()) {
-        librariesFound += installNewLibraryIOS() ? 1 : 0;
-    }
-    
-    log(`Detected ${librariesFound} SSL/TLS libraries`);
-}
-```
-
-### Step 5: Compile and Test
-
-```bash
-# Compile the agent
 npm run build
-
-# Verify compilation succeeded
-ls -la friTap/fritap_agent.js friTap/_ssl_log_legacy.js
-
-# Test with a simple application
-python -m friTap.friTap -k test_keys.log ground_truth/new_library_test_app
-
-# Test with debug output
-python -m friTap.friTap -do -k test_keys.log ground_truth/new_library_test_app
-
-# Verify key extraction
-grep "CLIENT_RANDOM" test_keys.log
+# runs: frida-compile agent/fritap_agent.ts -o friTap/fritap_agent.js
 ```
 
-### Step 6: Add Python Integration
+Then test on a device against a known-good target:
 
-Update Python code to handle the new library:
+```bash
+fritap --modern -k newssl_keys.log ./newssl_test_app
+grep CLIENT_RANDOM newssl_keys.log     # confirm key extraction fired
+```
+
+---
+
+## Legacy class-based path (deprecated)
+
+Before the data-driven refactor, each library was a hand-written class with its
+own `install()` / pattern-scan logic. Those implementations still ship and are
+selected when `use_modern` is **false** (the current default for TLS). They live
+under `agent/legacy/tls/...` — for example
+`agent/legacy/tls/platforms/linux/openssl_boringssl_linux.ts` exports
+`boring_execute`, which `agent/platforms/linux.ts` selects via
+`(use_modern ? boring_execute_modern : boring_execute)`.
+
+!!! note
+    Do not author new libraries against the legacy classes. Write a
+    `HookDefinition` (above) and register it on both the modern and legacy
+    `hookFn` slots so it works whether or not the user passes `--modern`.
+
+---
+
+## Add a protocol parser (Python)
+
+Parsers turn captured plaintext byte streams into structured `ParseResult`
+records (method/URL/headers/body) so flows can be analyzed and replayed. They
+run in the **Python host**, not the agent, and are registered at runtime.
+
+Subclass `BaseParser` (`friTap/parsers/base.py`) and implement the three
+abstract methods plus the `PROTOCOL` class attribute:
 
 ```python
-# friTap/ssl_logger.py (add detection logic)
-def _detect_ssl_libraries(self) -> Dict[str, Any]:
-    """Detect available SSL libraries in target process."""
-    libraries = {}
-    
-    try:
-        # Get loaded modules from Frida
-        modules = self.session.enumerate_modules()
-        
-        for module in modules:
-            # Existing library detection...
-            
-            # Add new library detection
-            if self._is_new_library_module(module):
-                libraries["NewLibrary"] = {
-                    "name": "NewLibrary",
-                    "module": module.name,
-                    "base": module.base_address,
-                    "size": module.size,
-                    "version": self._get_new_library_version(module)
-                }
-                
-    except Exception as e:
-        self.logger.error(f"SSL library detection failed: {e}")
-    
-    return libraries
+# my_grpc_parser.py
+from friTap.parsers.base import BaseParser, ParseResult
 
-def _is_new_library_module(self, module) -> bool:
-    """Check if module contains NewLibrary."""
-    new_library_indicators = [
-        "libnewssl",
-        "newssl.dll",
-        "NewSSL"
-    ]
-    
-    module_name_lower = module.name.lower()
-    return any(indicator in module_name_lower for indicator in new_library_indicators)
 
-def _get_new_library_version(self, module) -> str:
-    """Get NewLibrary version from module."""
-    try:
-        # Extract version from module exports or metadata
-        # This is library-specific
-        return "1.0.0"  # Default version
-    except Exception:
-        return "unknown"
+class GrpcParser(BaseParser):
+    PROTOCOL = "grpc"
+
+    def can_parse(self, data: bytes) -> bool:
+        """Cheap sniff: return True if this looks like our protocol."""
+        return data[:1] in (b"\x00", b"\x01")  # gRPC length-prefixed frame flag
+
+    def feed(self, data: bytes, direction: str,
+             stream_id: int | None = None) -> list[ParseResult]:
+        """Consume bytes; return any completed messages.
+
+        `direction` is "in"/"out"; `stream_id` is set for multiplexed
+        transports (HTTP/3) and may be ignored otherwise.
+        """
+        results: list[ParseResult] = []
+        # ...accumulate and decode frames...
+        return results
+
+    def flush(self) -> list[ParseResult]:
+        """Emit anything still buffered when the flow ends."""
+        return []
 ```
 
-### Step 7: Add Tests
-
-Create comprehensive tests for the new library:
+Register the class with the registry (`friTap/parsers/registry.py`). Higher
+priority is tried first; the first parser whose `can_parse()` returns `True`
+wins, and `HexdumpParser` is the guaranteed fallback:
 
 ```python
-# tests/unit/test_new_library.py
-import pytest
-from unittest.mock import MagicMock, patch
-from friTap.ssl_logger import SSL_Logger
+from friTap.parsers.registry import get_default_registry
 
-class TestNewLibraryDetection:
-    """Test NewLibrary SSL detection and hooking."""
-    
-    @patch('friTap.ssl_logger.frida')
-    def test_new_library_detection(self, mock_frida):
-        """Test detection of NewLibrary SSL."""
-        # Mock module detection
-        mock_process = MagicMock()
-        mock_module = MagicMock()
-        mock_module.name = "libnewssl.so"
-        mock_module.base_address = 0x7f0000000000
-        mock_module.size = 1024 * 1024
-        
-        mock_process.enumerate_modules.return_value = [mock_module]
-        mock_frida.get_local_device.return_value.attach.return_value = mock_process
-        
-        logger = SSL_Logger("test_app")
-        detected_libraries = logger._detect_ssl_libraries()
-        
-        assert "NewLibrary" in detected_libraries
-        assert detected_libraries["NewLibrary"]["module"] == "libnewssl.so"
-        
-    def test_new_library_version_extraction(self):
-        """Test NewLibrary version extraction."""
-        logger = SSL_Logger("test_app")
-        
-        mock_module = MagicMock()
-        mock_module.name = "libnewssl.so.1.2.3"
-        
-        version = logger._get_new_library_version(mock_module)
-        assert version is not None
-        
-    @patch('subprocess.run')
-    def test_new_library_ground_truth(self, mock_subprocess):
-        """Test NewLibrary with ground truth application."""
-        # Mock successful friTap execution
-        mock_subprocess.return_value.returncode = 0
-        mock_subprocess.return_value.stdout = "NewLibrary hooks installed"
-        
-        # This would be a real test with actual ground truth app
-        assert True  # Placeholder
+get_default_registry().register(GrpcParser, priority=75)
 ```
 
-```python
-# tests/agent/test_new_library_compilation.py
-def test_new_library_agent_compiles():
-    """Test that new library agent code compiles successfully."""
-    result = subprocess.run(['npm', 'run', 'build'], 
-                          capture_output=True, text=True)
-    
-    assert result.returncode == 0
-    assert "error" not in result.stderr.lower()
-    
-    # Verify new library code is included
-    with open('friTap/fritap_agent.js', 'r') as f:
-        content = f.read()
-    
-    assert 'NewLibraryHooks' in content
-    assert 'installNewLibraryHooks' in content
-```
+The built-in parsers, in descending priority, are **HTTP/1** (100), **HTTP/2**
+(90), **WebSocket** (85), **HTTP/3** (80), and **Hexdump** (0, fallback). Because
+registration is a plain runtime call, the cleanest way to ship a parser is from
+a plugin's `on_load` hook via `session.register_parser(GrpcParser, priority=75)`
+(see the next section).
 
-### Step 8: Update Documentation
+---
 
-Update the documentation to include the new library:
+## Add a plugin / custom Frida script
 
-```markdown
-<!-- docs/libraries/new-library.md -->
-# NewLibrary Support
+Plugins extend the Python host without modifying friTap itself — they subscribe
+to the `EventBus`, register parsers/columns/tabs, or inject extra Frida scripts.
+There are two base classes:
 
-friTap supports NewLibrary SSL/TLS implementation with full key extraction and traffic analysis capabilities.
+- **`FriTapPlugin`** (`friTap/plugins/base.py`) — the general plugin. Override
+  `name`, `version`, and `on_load(session)`; subscribe to events
+  (`DatalogEvent`, `FlowEvent`, …) or call `session.register_parser(...)` there.
+- **`ScriptPlugin`** (`friTap/plugins/script_plugin.py`) — for plugins that
+  inject their own Frida script. It adds a two-phase lifecycle and a
+  `load_order` of either `ScriptLoadOrder.BEFORE_MAIN` or `AFTER_MAIN`
+  (default), controlling whether your script loads before or after friTap's main
+  agent.
 
-## Overview
+The `-c` / `--custom_script` CLI flag is itself implemented as a plugin:
+`LegacyCustomScriptPlugin` (`friTap/plugins/legacy_custom_script.py`) wraps the
+supplied script file as a `ScriptPlugin` with `load_order = BEFORE_MAIN`, so a
+user-provided script runs before the main hooks install.
 
-NewLibrary is a [description of the library, its features, common usage].
+!!! tip "Decryptor seam"
+    To decrypt a nested protocol layer (e.g. an inner tunnel) rather than parse
+    plaintext, implement `LayerDecryptor` and register it with the (intentionally
+    empty) `DecryptorRegistry` from `friTap/flow/decryptors/`
+    (`get_default_decryptor_registry()`). This is a live extension point.
 
-## Supported Features
+For full plugin lifecycle, discovery paths, and worked examples, see the
+plugin guide at `docs/development/plugins.md`.
 
-| Platform | Key Extraction | Traffic Capture | Notes |
-|----------|---------------|-----------------|-------|
-| Linux    | Full       | Full         | All versions |
-| Windows  | Full       | Full         | Windows 10+ |
-| Android  | Full       | Full         | API 21+ |
-| macOS    | Limited    | Full         | Key extraction partial |
-| iOS      | Limited    | Full         | Requires jailbreak |
+---
 
-## Usage Examples
+## Adding a brand-new protocol family
 
-### Basic Key Extraction
-
-```bash
-# Linux/Windows application
-fritap -k newlibrary_keys.log target_app
-
-# Android application
-fritap -m -k newlibrary_keys.log com.example.app
-```
-
-### Traffic Analysis
-
-```bash
-# Full traffic capture with keys
-fritap -k keys.log -p traffic.pcap target_app
-
-# Live analysis with Wireshark
-fritap -l target_app
-```
-
-## Implementation Details
-
-NewLibrary hooks are implemented using:
-- Symbol-based detection (preferred)
-- Pattern-based detection (for stripped libraries)
-- Multiple architecture support (x86, x64, ARM, ARM64)
-
-## Troubleshooting
-
-Common issues and solutions:
-
-### Library Not Detected
-
-```bash
-# Check if library is loaded
-fritap --list-libraries target_app
-
-# Enable debug output
-fritap -do -v target_app
-```
-
-### Pattern-Based Hooking
-
-For stripped NewLibrary implementations:
-
-```bash
-# Generate patterns with BoringSecretHunter
-mkdir -p binary results
-cp libnewssl.so binary/
-docker run --rm -v "$(pwd)/binary":/usr/local/src/binaries -v "$(pwd)/results":/host_output boringsecrethunter
-
-# Use generated patterns
-fritap --patterns results/libnewssl.so_patterns.json -k keys.log target_app
-```
-```
-
-Update the main library support matrix:
-
-```markdown
-<!-- docs/libraries/index.md -->
-| Library     | Linux | Windows | macOS | Android | iOS |
-|-------------|-------|---------|-------|---------|-----|
-| OpenSSL     | Full  | R/W     | TBI   | Full    | TBI |
-| BoringSSL   | Full  | R/W     | KeyEo | Full    | KeyEo |
-| NSS         | Full  | R/W     | TBI   | TBA     | TBI |
-| GnuTLS      | R/W   | R/W     | TBI   | Full    | TBI |
-| NewLibrary  | Full  | Full    | KeyEo | Full    | KeyEo |
-```
-
-## Adding Platform Support
-
-When adding support for a new platform (operating system or architecture):
-
-### Step 1: Platform Analysis
-
-Research the new platform's characteristics:
-
-```bash
-# Analyze target platform
-uname -a                    # System information
-file /path/to/executable    # Binary format
-ldd /path/to/executable     # Library dependencies
-readelf -h /path/to/executable  # ELF header (Linux)
-
-# Study platform-specific SSL libraries
-find /usr -name "*ssl*" 2>/dev/null
-find /lib -name "*ssl*" 2>/dev/null
-```
-
-### Step 2: Platform Detection
-
-Add platform detection to TypeScript agent:
+TLS, SSH, QUIC (under the TLS family), and IPsec are the protocols friTap
+understands. The set of **protocol families** is a static map in
+`agent/protocols/registry.ts`:
 
 ```typescript
-// agent/util/process_infos.ts
-export function isNewPlatform(): boolean {
-    // Platform-specific detection logic
-    return Process.platform === "new_platform_name" && 
-           // Additional platform-specific checks
-           checkNewPlatformFeatures();
-}
-
-function checkNewPlatformFeatures(): boolean {
-    try {
-        // Platform-specific API availability checks
-        // For example, check for specific system calls, libraries, or features
-        return true;
-    } catch (error) {
-        return false;
-    }
-}
+const _protocols: { [name: string]: Protocol } = {
+    tls: new TLSProtocol(),
+    ipsec: new IPSecProtocol(),
+    ssh: new SSHProtocol(),
+};
 ```
 
-### Step 3: Platform-Specific Code
+`getProtocol(name)` resolves a `--protocol` value against this map and returns
+`undefined` for anything unknown. Adding a genuinely new family (e.g. `signal`,
+`smb3`) therefore requires two changes:
 
-Create platform-specific directory and implementations:
+1. Implement the `Protocol` interface in a new file under `agent/protocols/`
+   (the contract is in `agent/protocols/base.ts`: `detect`,
+   `getLibraryPatterns`, `getRequiredFunctions`, `getKeyLabels`,
+   `formatKeylog`).
+2. Add the instance to the `_protocols` map in `agent/protocols/registry.ts` and
+   register your library hooks for it (the per-library `HookRegistration.protocol`
+   field carries the family name).
 
-```typescript
-// agent/new_platform/ssl_libraries_new_platform.ts
-import { log, devlog } from "../util/log.js";
+Most new work is adding a **library** under an existing family (the first
+section), not a new family — reach for this only when the cryptographic protocol
+itself is new.
 
-export function installNewPlatformSSLHooks(): boolean {
-    devlog("[NewPlatform] Starting SSL library detection");
-    
-    let hookCount = 0;
-    
-    // Platform-specific SSL library detection
-    hookCount += installOpenSSLNewPlatform() ? 1 : 0;
-    hookCount += installBoringSSLNewPlatform() ? 1 : 0;
-    // Add other libraries...
-    
-    if (hookCount > 0) {
-        log(`[NewPlatform] Installed hooks for ${hookCount} SSL libraries`);
-        return true;
-    } else {
-        devlog("[NewPlatform] No SSL libraries found");
-        return false;
-    }
-}
+!!! warning "IPsec key extraction is EXPERIMENTAL"
+    The IPsec family currently ships as a **detection-only stub**
+    (`agent/ipsec/definitions/strongswan.ts`). The `derive_ike_keys` /
+    `ikev2_derive_child_sa_keys` hooks exist but are partial and do not yet
+    extract usable key material. Detection works; key extraction does not.
 
-function installOpenSSLNewPlatform(): boolean {
-    // Platform-specific OpenSSL module names and paths
-    const platformModules = [
-        "platform_libssl.so",
-        "/platform/path/to/libssl.so"
-    ];
-    
-    for (const moduleName of platformModules) {
-        try {
-            const module = Process.getModuleByName(moduleName);
-            if (module) {
-                // Use existing OpenSSL hooks with platform adaptations
-                return installOpenSSLHooks(moduleName);
-            }
-        } catch (error) {
-            // Continue to next module
-        }
-    }
-    
-    return false;
-}
-```
+---
 
-### Step 4: Python Platform Handler
+## Next steps
 
-Create Python platform handler:
-
-```python
-# friTap/platforms/new_platform.py
-import logging
-import subprocess
-from typing import List, Dict, Any, Optional
-
-class NewPlatformHandler:
-    """Handle NewPlatform-specific operations."""
-    
-    def __init__(self):
-        self.platform_name = "NewPlatform"
-        self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
-        
-    def setup_environment(self) -> bool:
-        """Setup NewPlatform environment for analysis."""
-        try:
-            # Platform-specific setup
-            self._check_permissions()
-            self._setup_dependencies()
-            return True
-        except Exception as e:
-            self.logger.error(f"NewPlatform setup failed: {e}")
-            return False
-            
-    def get_process_list(self) -> List[Dict[str, Any]]:
-        """Get list of running processes on NewPlatform."""
-        try:
-            # Platform-specific process enumeration
-            result = subprocess.run(['platform_ps_command'], 
-                                  capture_output=True, text=True)
-            
-            processes = []
-            for line in result.stdout.strip().split('\n')[1:]:  # Skip header
-                parts = line.split()
-                if len(parts) >= 2:
-                    processes.append({
-                        'pid': int(parts[0]),
-                        'name': parts[1],
-                        'full_path': ' '.join(parts[1:])
-                    })
-            
-            return processes
-            
-        except Exception as e:
-            self.logger.error(f"Failed to get process list: {e}")
-            return []
-            
-    def attach_to_process(self, target: str) -> Optional[Any]:
-        """Attach to process on NewPlatform."""
-        try:
-            import frida
-            
-            # Platform-specific attachment logic
-            device = frida.get_device("new_platform_device_id")
-            
-            # Handle different target formats
-            if target.isdigit():
-                # PID
-                session = device.attach(int(target))
-            else:
-                # Process name
-                session = device.attach(target)
-                
-            return session
-            
-        except Exception as e:
-            self.logger.error(f"Failed to attach to process: {e}")
-            return None
-            
-    def _check_permissions(self) -> None:
-        """Check required permissions for NewPlatform."""
-        # Platform-specific permission checks
-        pass
-        
-    def _setup_dependencies(self) -> None:
-        """Setup required dependencies for NewPlatform."""
-        # Platform-specific dependency setup
-        pass
-
-def is_new_platform() -> bool:
-    """Check if running on NewPlatform."""
-    import platform
-    return platform.system().lower() == "newplatform"
-```
-
-### Step 5: Integration Points
-
-Update main SSL_Logger class:
-
-```python
-# friTap/ssl_logger.py
-from .platforms.new_platform import NewPlatformHandler, is_new_platform
-
-class SSL_Logger:
-    def _detect_platform(self):
-        """Detect current platform and return appropriate handler."""
-        if is_android():
-            return AndroidHandler()
-        elif is_ios():
-            return IOSHandler()
-        elif is_new_platform():
-            return NewPlatformHandler()
-        else:
-            return DesktopHandler()  # Default for Linux/Windows/macOS
-```
-
-### Step 6: Platform Testing
-
-Create platform-specific tests:
-
-```python
-# tests/platforms/test_new_platform.py
-import pytest
-import platform
-from friTap.platforms.new_platform import NewPlatformHandler, is_new_platform
-
-@pytest.mark.skipif(not is_new_platform(), reason="NewPlatform only")
-class TestNewPlatformSupport:
-    """Test NewPlatform-specific functionality."""
-    
-    def test_platform_detection(self):
-        """Test NewPlatform detection."""
-        assert is_new_platform() == True
-        
-    def test_environment_setup(self):
-        """Test NewPlatform environment setup."""
-        handler = NewPlatformHandler()
-        assert handler.setup_environment() == True
-        
-    def test_process_enumeration(self):
-        """Test process enumeration on NewPlatform."""
-        handler = NewPlatformHandler()
-        processes = handler.get_process_list()
-        
-        assert isinstance(processes, list)
-        if len(processes) > 0:
-            assert 'pid' in processes[0]
-            assert 'name' in processes[0]
-            
-    @pytest.mark.slow
-    def test_ssl_analysis_workflow(self):
-        """Test complete SSL analysis workflow on NewPlatform."""
-        from friTap.ssl_logger import SSL_Logger
-        
-        logger = SSL_Logger("test_app")
-        # Test platform-specific workflow
-        assert logger.platform_handler.platform_name == "NewPlatform"
-```
-
-## Adding Analysis Features
-
-When adding new analysis capabilities to friTap:
-
-### Step 1: Feature Design
-
-Design the new analysis feature:
-
-```python
-# friTap/analysis/new_feature.py
-import logging
-from typing import Dict, List, Any, Optional
-
-class NewAnalysisFeature:
-    """Implement new analysis capability."""
-    
-    def __init__(self, config: Dict[str, Any]):
-        self.config = config
-        self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
-        self.results: Dict[str, Any] = {}
-        
-    def analyze(self, ssl_data: bytes, metadata: Dict[str, Any]) -> Dict[str, Any]:
-        """Perform new type of analysis on SSL data."""
-        try:
-            # Core analysis logic
-            results = self._process_data(ssl_data, metadata)
-            
-            # Format results
-            formatted_results = self._format_results(results)
-            
-            # Update internal state
-            self.results.update(formatted_results)
-            
-            return formatted_results
-            
-        except Exception as e:
-            self.logger.error(f"Analysis failed: {e}")
-            return {"error": str(e)}
-            
-    def _process_data(self, data: bytes, metadata: Dict[str, Any]) -> Dict[str, Any]:
-        """Core data processing logic."""
-        # Implement specific analysis algorithm
-        # Example: pattern detection, anomaly analysis, etc.
-        
-        processed_results = {
-            "data_size": len(data),
-            "analysis_timestamp": time.time(),
-            "patterns_found": self._find_patterns(data),
-            "statistics": self._calculate_statistics(data)
-        }
-        
-        return processed_results
-        
-    def _format_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        """Format analysis results for output."""
-        return {
-            "feature_name": "new_analysis_feature",
-            "version": "1.0.0",
-            "results": results,
-            "summary": self._generate_summary(results)
-        }
-        
-    def get_summary(self) -> Dict[str, Any]:
-        """Get analysis summary."""
-        return {
-            "total_analyzed": len(self.results),
-            "feature_specific_metrics": self._calculate_metrics()
-        }
-```
-
-### Step 2: CLI Integration
-
-Add command-line interface for the new feature:
-
-```python
-# friTap/friTap.py (add new CLI argument)
-@click.option(
-    "--new-feature",
-    is_flag=True,
-    help="Enable new analysis feature"
-)
-@click.option(
-    "--new-feature-config",
-    type=str,
-    help="Configuration file for new analysis feature"
-)
-def main(..., new_feature: bool, new_feature_config: Optional[str]):
-    """Main friTap entry point."""
-    
-    # Initialize new feature if enabled
-    analysis_features = []
-    
-    if new_feature:
-        config = {}
-        if new_feature_config:
-            with open(new_feature_config, 'r') as f:
-                config = json.load(f)
-                
-        from friTap.analysis.new_feature import NewAnalysisFeature
-        analysis_features.append(NewAnalysisFeature(config))
-    
-    # Pass features to SSL_Logger
-    logger = SSL_Logger(target, analysis_features=analysis_features)
-```
-
-### Step 3: Output Integration
-
-Integrate with existing output formats:
-
-```python
-# friTap/ssl_logger.py
-def _process_ssl_data(self, data: bytes, metadata: Dict[str, Any]) -> None:
-    """Process SSL data with all enabled analysis features."""
-    
-    # Existing processing...
-    self._log_to_pcap(data, metadata)
-    self._log_keys(metadata.get('keys', []))
-    
-    # Run analysis features
-    for feature in self.analysis_features:
-        try:
-            feature_results = feature.analyze(data, metadata)
-            
-            # Add to JSON output
-            if self.json_output:
-                self._add_to_json_output("analysis", feature_results)
-                
-            # Log significant findings
-            if feature_results.get("significant_finding"):
-                self.logger.info(f"Analysis finding: {feature_results['summary']}")
-                
-        except Exception as e:
-            self.logger.error(f"Analysis feature failed: {e}")
-
-def _add_to_json_output(self, category: str, data: Dict[str, Any]) -> None:
-    """Add analysis results to JSON output."""
-    if category not in self.session_data:
-        self.session_data[category] = []
-    
-    self.session_data[category].append({
-        "timestamp": time.time(),
-        "data": data
-    })
-```
-
-### Step 4: Feature Testing
-
-Create comprehensive tests for the new feature:
-
-```python
-# tests/analysis/test_new_feature.py
-import pytest
-from friTap.analysis.new_feature import NewAnalysisFeature
-
-class TestNewAnalysisFeature:
-    """Test new analysis feature."""
-    
-    def test_feature_initialization(self):
-        """Test feature initialization with config."""
-        config = {"param1": "value1", "param2": 42}
-        feature = NewAnalysisFeature(config)
-        
-        assert feature.config == config
-        assert hasattr(feature, 'results')
-        
-    def test_data_analysis(self):
-        """Test data analysis functionality."""
-        feature = NewAnalysisFeature({})
-        
-        test_data = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"
-        metadata = {"src": "192.168.1.1", "dst": "8.8.8.8"}
-        
-        results = feature.analyze(test_data, metadata)
-        
-        assert "feature_name" in results
-        assert "results" in results
-        assert results["results"]["data_size"] == len(test_data)
-        
-    def test_results_formatting(self):
-        """Test results formatting."""
-        feature = NewAnalysisFeature({})
-        
-        raw_results = {
-            "data_size": 100,
-            "patterns_found": ["pattern1", "pattern2"]
-        }
-        
-        formatted = feature._format_results(raw_results)
-        
-        assert "feature_name" in formatted
-        assert "version" in formatted
-        assert "summary" in formatted
-        
-    def test_error_handling(self):
-        """Test error handling in analysis."""
-        feature = NewAnalysisFeature({})
-        
-        # Test with invalid data
-        results = feature.analyze(None, {})
-        
-        assert "error" in results
-```
-
-## Best Practices for Feature Development
-
-### 1. Incremental Development
-- Start with basic functionality
-- Add platform support incrementally
-- Test thoroughly at each stage
-- Document as you develop
-
-### 2. Compatibility Considerations
-- Maintain backward compatibility
-- Test with existing features
-- Consider performance impact
-- Follow established patterns
-
-### 3. Error Handling
-- Graceful degradation
-- Comprehensive logging
-- User-friendly error messages
-- Recovery mechanisms
-
-### 4. Testing Strategy
-- Unit tests for all components
-- Integration tests for workflows
-- Platform-specific testing
-- Performance benchmarking
-
-### 5. Documentation Requirements
-- API documentation
-- Usage examples
-- Troubleshooting guides
-- Platform-specific notes
-
-## Next Steps
-
-After adding new features:
-
-1. **Test thoroughly**: Use the [Testing Guide](testing.md)
-2. **Update documentation**: Follow [Documentation Guide](documentation.md)
-3. **Submit for review**: Use [Pull Request Process](pull-requests.md)
-4. **Monitor performance**: Check for regressions
-5. **Gather feedback**: From community and maintainers
-
-For more information:
-- **[Development Setup](development-setup.md)**: Environment configuration
-- **[Coding Standards](coding-standards.md)**: Code quality guidelines
-- **[Testing Guide](testing.md)**: Comprehensive testing strategies
+- `docs/development/plugins.md` — full plugin system: lifecycle, discovery, custom scripts, decryptors.
+- [advanced/patterns.md](../advanced/patterns.md) — byte-pattern resolution for stripped libraries (`--patterns` / `--offsets`).
+- `docs/development/architecture.md` — agent build, the `config_batch` message protocol, and end-to-end data flow.

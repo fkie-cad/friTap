@@ -145,6 +145,15 @@ class TapReader:
             except Exception:
                 logger.debug("Failed to read flow summary at offset %d", offset, exc_info=True)
 
+        # Enrich finding_count from the findings index: findings are stored in
+        # separate REC_FINDING records, not in FLOW meta, so decode_flow_summary
+        # cannot know them and leaves the count at 0. has_findings() is a cheap
+        # no-op short-circuit for findings-free captures (the common case); only
+        # captures that actually carry findings pay for the (cached) index build.
+        if self.has_findings():
+            for summary in summaries:
+                summary.finding_count = len(self.read_findings(summary.flow_id))
+
         summaries.sort(key=lambda s: s.started)
         return summaries
 

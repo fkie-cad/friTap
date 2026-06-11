@@ -884,12 +884,17 @@ def test_cli_no_keys_no_dsb_ingests_plaintext_empty(tmp_path, monkeypatch, capsy
 # ---------------------------------------------------------------------------
 
 def _plaintext_ek_packets(endpoints, segments, *, stream=0, transport="tcp",
-                          protocols="eth:ethertype:ip:tcp", t0=1700000000.0):
+                          protocols="eth:ethertype:ip:tcp", t0=1700000000.0,
+                          tls_content_type=None, quic_header_form=None):
     """Build raw-payload ``-T ek`` packet dicts mirroring build_plaintext_command.
 
     One ``<transport>.payload`` frame per direction-tagged segment; *protocols*
-    is the frame.protocols stack (include "tls"/"quic" to mark a stream as
-    encrypted so the translator skips it)."""
+    is the frame.protocols stack. Marking a stream as *genuinely* encrypted now
+    requires BOTH a "tls"/"quic" entry in *protocols* AND a corroborating record
+    marker: pass *tls_content_type* (e.g. "23") or *quic_header_form* (e.g. "1")
+    to populate ``tls.record.content_type`` / ``quic.header_form`` so the
+    translator skips the stream. A "tls"/"quic" stack with no marker mimics
+    tshark heuristically mislabeling decrypted plaintext and is ingested."""
     c_addr, c_port, s_addr, s_port = endpoints
     packets = []
     for i, (direction, data) in enumerate(segments):
@@ -897,14 +902,19 @@ def _plaintext_ek_packets(endpoints, segments, *, stream=0, transport="tcp",
             src_a, src_p, dst_a, dst_p = c_addr, c_port, s_addr, s_port
         else:
             src_a, src_p, dst_a, dst_p = s_addr, s_port, c_addr, c_port
-        packets.append({"layers": {
+        layers = {
             "frame_time_epoch": [f"{t0 + i}"],
             "frame_protocols": [protocols],
             "ip_src": [src_a], "ip_dst": [dst_a],
             f"{transport}_stream": [str(stream)],
             f"{transport}_srcport": [str(src_p)], f"{transport}_dstport": [str(dst_p)],
             f"{transport}_payload": [data.hex()],
-        }})
+        }
+        if tls_content_type is not None:
+            layers["tls_record_content_type"] = [str(tls_content_type)]
+        if quic_header_form is not None:
+            layers["quic_header_form"] = [str(quic_header_form)]
+        packets.append({"layers": layers})
     return packets
 
 
@@ -935,17 +945,38 @@ def test_plaintext_packet_to_events_parses_cleartext_tcp():
 
 
 def test_plaintext_packet_to_events_skips_encrypted_stream():
-    """A frame whose frame.protocols include 'tls' is encrypted: it produces no
-    event and the stream is recorded for the 'needs keys' hint."""
+    """A 'tls' frame that ALSO carries a parsed record (tls.record.content_type)
+    is genuinely encrypted: it produces no event and the stream is recorded for
+    the 'needs keys' hint."""
     tracker = p2t._StreamDirectionTracker(server_ports=(443,))
     skipped: set[str] = set()
     pkt = _plaintext_ek_packets(
         ("10.0.0.1", 50000, "93.184.216.34", 443),
         [("write", b"\x16\x03\x01encryptedrecord")],
         protocols="eth:ethertype:ip:tcp:tls",
+        tls_content_type="23",  # application_data: a real TLS record was parsed
     )[0]
     assert p2t._plaintext_packet_to_events(pkt, tracker, skipped) == []
     assert skipped == {"tcp:0"}
+
+
+def test_plaintext_packet_to_events_ingests_mislabeled_tls_plaintext():
+    """A 'tls'-tagged frame with NO parsed TLS record is decrypted plaintext that
+    tshark's heuristic dissector mislabeled (e.g. an HTTP/2 frame on port 443). It
+    must be ingested, not skipped, so real data is not dropped."""
+    tracker = p2t._StreamDirectionTracker(server_ports=(443,))
+    skipped: set[str] = set()
+    # HTTP/2 SETTINGS frame: len=6, type=0x04, on stream 0 — no TLS record header.
+    h2_settings = bytes.fromhex("000006040000000000000401000000")
+    pkt = _plaintext_ek_packets(
+        ("10.0.0.1", 50000, "93.184.216.34", 443),
+        [("write", h2_settings)],
+        protocols="eth:ethertype:ip:tcp:tls",  # heuristic mislabel, no content_type
+    )[0]
+    events = p2t._plaintext_packet_to_events(pkt, tracker, skipped)
+    assert len(events) == 1
+    assert events[0].data == h2_settings
+    assert not skipped
 
 
 def test_convert_pcap_plaintext_end_to_end(tmp_path, monkeypatch):
@@ -996,6 +1027,7 @@ def test_convert_pcap_plaintext_skips_encrypted_and_reports(tmp_path, monkeypatc
         ("10.0.0.1", 50000, "93.184.216.34", 443),
         [("write", b"\x16\x03\x01abc"), ("read", b"\x16\x03\x03def")],
         protocols="eth:ethertype:ip:tcp:tls",
+        tls_content_type="22",  # handshake: genuine TLS records were parsed
     )
     monkeypatch.setattr(p2t, "stream_packets", _plaintext_stream_dispatch(packets))
 
@@ -1060,14 +1092,33 @@ def test_stream_packets_spawns_tshark_with_isolated_config(monkeypatch):
 _FIXTURE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "fixtures"))
 _PREMASTER_PCAP = os.path.join(_FIXTURE_DIR, "dump_premaster.pcapng")
 _PREMASTER_KEYLOG = os.path.join(_FIXTURE_DIR, "premaster.txt")
+# Real app-api QUIC capture whose decrypted HTTP/2 frames tshark mislabels as
+# "tls" on TCP/443 (no DSB, no keys). Regression guard for the keyless classifier.
+_H2_PLAINTEXT_PCAP = os.path.join(_FIXTURE_DIR, "weather6_apiapi_h2_plaintext.pcapng")
+# Real encrypted Chrome QUIC (no keys); DLT_RAW so QUIC only dissects with an explicit Decode-As.
+_QUIC_ENCRYPTED_PCAP = os.path.join(_FIXTURE_DIR, "chrome_quic_encrypted.pcapng")
 
 
-def _premaster_available() -> bool:
+def _fixtures_available(*paths: str) -> bool:
+    """True when a real tshark binary exists and every fixture *path* is present.
+    Gates the integration tests so they skip cleanly without tshark/fixtures."""
     try:
         tshark_mod.find_tshark()
     except RuntimeError:
         return False
-    return os.path.isfile(_PREMASTER_PCAP) and os.path.isfile(_PREMASTER_KEYLOG)
+    return all(os.path.isfile(p) for p in paths)
+
+
+def _premaster_available() -> bool:
+    return _fixtures_available(_PREMASTER_PCAP, _PREMASTER_KEYLOG)
+
+
+def _h2_plaintext_available() -> bool:
+    return _fixtures_available(_H2_PLAINTEXT_PCAP)
+
+
+def _quic_encrypted_available() -> bool:
+    return _fixtures_available(_QUIC_ENCRYPTED_PCAP)
 
 
 @pytest.mark.skipif(not _premaster_available(),
@@ -1099,3 +1150,401 @@ def test_real_tshark_premaster_decrypts_http_semantics(tmp_path):
 
     statuses = {f.response.status_code for f in flows if f.response}
     assert 200 in statuses, f"expected a 200 response, got {statuses}"
+
+
+@pytest.mark.skipif(not _h2_plaintext_available(),
+                    reason="real tshark binary or h2-plaintext fixture unavailable")
+def test_real_tshark_keyless_ingests_mislabeled_h2_plaintext(tmp_path):
+    """Regression: a keyless app-api capture (no DSB, no keylog) whose decrypted
+    HTTP/2 frames tshark heuristically tags 'tls' on TCP/443 must NOT be reported
+    as encrypted/skipped. Before the fix, 3 streams were skipped and the HTTP/2
+    HEADERS (carrying 'application/json') were dropped from the .tap."""
+    tap = tmp_path / "h2_plaintext.tap"
+    result = p2t.convert_pcap_to_tap(_H2_PLAINTEXT_PCAP, tap_path=str(tap))
+
+    assert tap.exists()
+    # The whole point: zero false-positive encrypted streams (was 3).
+    assert result.encrypted_streams_skipped == 0
+    # The previously-skipped HTTP/2 frames are now ingested (was 25 → all 33).
+    assert result.decrypted_packet_count > 25
+
+    with TapReader(str(tap)) as reader:
+        flows = reader.read_all_flows()
+    # The recovered HTTP/2 HEADERS frame carries a literal 'application/json'
+    # content-type in its HPACK block — proof the dropped data is now present.
+    blob = b"".join(c.data for f in flows for c in (f.chunks or []))
+    assert b"application/json" in blob
+
+
+@pytest.mark.skipif(not _quic_encrypted_available(),
+                    reason="real tshark binary or encrypted-QUIC fixture unavailable")
+def test_real_tshark_quic_marker_calibration():
+    """Calibrate the QUIC "encrypted record" marker against a real capture.
+
+    Wireshark renames dissector fields between releases, so this asserts that a
+    living tshark still emits the exact field the predicate keys on
+    (``quic.header_form``, read from the shared ``ENCRYPTED_RECORD_MARKERS``
+    constant so the test follows the constant if it ever changes) AND that
+    ``_is_encrypted_record`` actually fires on genuinely-encrypted QUIC.
+
+    The fixture is a DLT_RAW capture (``raw:ip:udp:data``): tshark does NOT
+    dissect it as QUIC by default — ``quic.header_form`` stays empty unless we
+    pass the Decode-As ``-d udp.port==443,quic`` (the same mapping the real QUIC
+    path uses). We therefore add that Decode-As here so QUIC dissects and the
+    marker populates. Note plainly: the keyless ``build_plaintext_command`` does
+    NOT add this Decode-As, so this test calibrates the marker field name and the
+    predicate as they behave when QUIC dissection is enabled.
+    """
+    quic_marker = dict(tshark_mod.ENCRYPTED_RECORD_MARKERS)["quic"]
+
+    tshark_bin = tshark_mod.find_tshark()
+    cmd = [
+        tshark_bin, "-r", _QUIC_ENCRYPTED_PCAP, "-2", "-T", "ek",
+        "-d", "udp.port==443,quic",
+        "-e", "frame.protocols", "-e", quic_marker, "-e", "udp.stream",
+    ]
+
+    packets = list(tshark_mod.stream_packets(cmd))
+    assert packets, "tshark produced no packets for the encrypted-QUIC fixture"
+
+    marker_seen = False
+    fired = False
+    for p in packets:
+        layers = p.get("layers") or {}
+        proto_layers = str(
+            p2t._first(p2t._field(layers, "frame.protocols")) or ""
+        ).lower().split(":")
+        if "quic" in proto_layers and p2t._first(p2t._field(layers, quic_marker)) is not None:
+            marker_seen = True
+        if "quic" in proto_layers and p2t._is_encrypted_record(layers, proto_layers):
+            fired = True
+
+    assert marker_seen, (
+        f"tshark no longer emits {quic_marker!r} on dissected QUIC — calibration drift"
+    )
+    assert fired, (
+        "_is_encrypted_record did not classify genuine encrypted QUIC as encrypted"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Handshake-anchored encrypted-QUIC detection for the KEYLESS plaintext path
+# ---------------------------------------------------------------------------
+
+
+def test_build_quic_detection_command_argv_shape():
+    """The detection-command builder produces the expected ``-T ek`` argv: the
+    core flags, the default ``udp.port==443,quic`` Decode-As, ``udp.stream`` as
+    the only exported field, and the conservative handshake-marker display
+    filter. Custom ports and raw decode-as rules pass through too."""
+    cmd = tshark_mod.build_quic_detection_command("cap.pcapng")
+
+    # Core invocation shape, in order.
+    assert cmd[:6] == ["tshark", "-r", "cap.pcapng", "-2", "-T", "ek"]
+    # Default Decode-As (no explicit ports) maps UDP/443 to QUIC.
+    assert "udp.port==443,quic" in cmd
+    # The udp.stream field is exported (so streams can be keyed).
+    assert _consecutive(cmd, "-e", "udp.stream")
+    # The display filter is the shared zero-false-positive handshake marker.
+    assert _consecutive(cmd, "-Y", tshark_mod._QUIC_DETECTION_DISPLAY_FILTER)
+
+    # Custom QUIC ports add their own Decode-As rule.
+    cmd_custom = tshark_mod.build_quic_detection_command(
+        "cap.pcapng", quic_ports=[8443])
+    assert "udp.port==8443,quic" in cmd_custom
+
+    # Raw extra Decode-As rules pass through verbatim.
+    cmd_extra = tshark_mod.build_quic_detection_command(
+        "cap.pcapng", extra_decode_as=["udp.port==9000,quic"])
+    assert "udp.port==9000,quic" in cmd_extra
+
+
+def test_plaintext_packet_to_events_skips_handshake_confirmed_quic_stream():
+    """A bare UDP packet (no per-packet TLS/QUIC record marker) is skipped when
+    its stream was confirmed as genuine QUIC by the handshake pre-scan: it
+    yields no event and the stream is recorded for the 'needs keys' hint. The
+    SAME packet with an empty confirmed-set and no marker is ingested."""
+    tracker = p2t._StreamDirectionTracker(server_ports=(443,))
+
+    # udp.stream 7, plain UDP stack (no quic.header_form / tls marker) — only the
+    # handshake pre-scan can flag this opaque 1-RTT-style packet as encrypted.
+    pkt = _plaintext_ek_packets(
+        ("10.0.0.1", 50000, "93.184.216.34", 443),
+        [("write", b"\x40opaque-1rtt-bytes")],
+        stream=7, transport="udp", protocols="eth:ethertype:ip:udp",
+    )[0]
+
+    skipped: set[str] = set()
+    assert p2t._plaintext_packet_to_events(
+        pkt, tracker, skipped,
+        encrypted_quic_streams=frozenset({"udp:7"})) == []
+    assert "udp:7" in skipped
+
+    # Contrast: without the confirmed-set and with no record marker, the very
+    # same opaque UDP payload is ingested as plaintext (one event, not skipped).
+    not_skipped: set[str] = set()
+    events = p2t._plaintext_packet_to_events(
+        pkt, tracker, not_skipped, encrypted_quic_streams=frozenset())
+    assert len(events) == 1
+    assert events[0].transport == "udp"
+    assert not_skipped == set()
+
+
+def test_detect_encrypted_quic_streams_parses_udp_stream_ids(monkeypatch):
+    """``_detect_encrypted_quic_streams`` turns the detection pass's per-packet
+    ``udp.stream`` values into a ``udp:<id>`` frozenset, and degrades to an empty
+    frozenset when the underlying stream_packets call raises."""
+    detection_packets = [
+        {"layers": {"udp_stream": ["3"]}},
+        {"layers": {"udp_stream": ["5"]}},
+    ]
+    monkeypatch.setattr(p2t, "stream_packets", lambda cmd: iter(detection_packets))
+
+    streams = p2t._detect_encrypted_quic_streams(
+        "/usr/bin/tshark", "cap.pcapng",
+        quic_ports=(), extra_decode_as=(), heuristic=False)
+    assert streams == frozenset({"udp:3", "udp:5"})
+
+    # Detection failure is non-fatal: a raising stream_packets yields empty set.
+    def _boom(cmd):
+        raise RuntimeError("tshark blew up")
+    monkeypatch.setattr(p2t, "stream_packets", _boom)
+
+    assert p2t._detect_encrypted_quic_streams(
+        "/usr/bin/tshark", "cap.pcapng",
+        quic_ports=(), extra_decode_as=(), heuristic=False) == frozenset()
+
+
+def _craft_quic_v1_initial_payload() -> bytes:
+    """Return a long-header QUIC v1 Initial UDP payload tshark recognizes.
+
+    First byte ``0xC3`` = long header, fixed bit, Initial packet type; then the
+    32-bit cleartext version (``0x00000001`` = QUIC v1), an 8-byte DCID, empty
+    SCID, empty token, a 2-byte length, packet number and padded payload. The
+    version field is NOT under header protection, so this is the exact key-free
+    signal the detection filter anchors on."""
+    return (bytes([0xC3]) + struct.pack(">I", 0x00000001)
+            + bytes([8]) + b"\xde\xad\xbe\xef\xca\xfe\x00\x01"
+            + bytes([0]) + bytes([0]) + b"\x44\x10" + b"\x00\x00\x00\x00"
+            + b"\x00" * 40)
+
+
+@pytest.mark.skipif(not _fixtures_available(),
+                    reason="real tshark binary unavailable")
+def test_detect_encrypted_quic_streams_real_tshark(tmp_path):
+    """INTEGRATION: a crafted QUIC v1 Initial is detected (every returned key
+    starts with ``udp:``), while a plain non-QUIC UDP datagram is NOT — no false
+    positive. Exercises the real detection pass through tshark end-to-end."""
+    scapy_all = pytest.importorskip("scapy.all")
+    IP, UDP, Raw, wrpcap = (
+        scapy_all.IP, scapy_all.UDP, scapy_all.Raw, scapy_all.wrpcap)
+
+    # Positive: a genuine QUIC v1 Initial long-header packet.
+    quic_pcap = tmp_path / "quic_initial.pcap"
+    quic_pkt = (IP(src="10.0.0.1", dst="2.2.2.2")
+                / UDP(sport=50000, dport=443)
+                / Raw(_craft_quic_v1_initial_payload()))
+    wrpcap(str(quic_pcap), [quic_pkt])
+
+    streams = p2t._detect_encrypted_quic_streams(
+        tshark_mod.find_tshark(), str(quic_pcap),
+        quic_ports=(), extra_decode_as=(), heuristic=False)
+    assert streams, "the crafted QUIC v1 Initial was not detected"
+    assert all(s.startswith("udp:") for s in streams)
+
+    # Negative: a plain non-QUIC UDP datagram must yield no false positive.
+    plain_pcap = tmp_path / "plain_udp.pcap"
+    plain_pkt = (IP(src="10.0.0.1", dst="2.2.2.2")
+                 / UDP(sport=51111, dport=53)
+                 / Raw(b"hello-plaintext-not-quic"))
+    wrpcap(str(plain_pcap), [plain_pkt])
+
+    assert p2t._detect_encrypted_quic_streams(
+        tshark_mod.find_tshark(), str(plain_pcap),
+        quic_ports=(), extra_decode_as=(), heuristic=False) == frozenset()
+
+
+@pytest.mark.skipif(not _fixtures_available(),
+                    reason="real tshark binary unavailable")
+def test_convert_keyless_skips_encrypted_quic_ingests_plaintext(tmp_path):
+    """INTEGRATION end-to-end: a keyless capture mixing a genuine QUIC v1
+    connection (Initial handshake + opaque 1-RTT follow-ups) with a plaintext UDP
+    datagram on a different 5-tuple must skip the QUIC stream (counted as
+    encrypted) and ingest only the plaintext packet — proving the handshake
+    pre-scan stops cipher-text being ingested as bogus plaintext."""
+    scapy_all = pytest.importorskip("scapy.all")
+    IP, UDP, Raw, wrpcap = (
+        scapy_all.IP, scapy_all.UDP, scapy_all.Raw, scapy_all.wrpcap)
+
+    # QUIC connection on 10.0.0.1:50000 <-> 2.2.2.2:443 — an Initial that the
+    # detector recognizes, plus two opaque follow-up packets on the SAME 5-tuple
+    # (these carry no per-packet marker; only the handshake pre-scan flags them).
+    quic_initial = (IP(src="10.0.0.1", dst="2.2.2.2")
+                    / UDP(sport=50000, dport=443)
+                    / Raw(_craft_quic_v1_initial_payload()))
+    quic_followup = (IP(src="10.0.0.1", dst="2.2.2.2")
+                     / UDP(sport=50000, dport=443)
+                     / Raw(b"\x40" + b"\x99" * 200))
+    # Plaintext UDP on a DIFFERENT 5-tuple — must be ingested.
+    plaintext = (IP(src="10.0.0.1", dst="9.9.9.9")
+                 / UDP(sport=51111, dport=53)
+                 / Raw(b"hello-plaintext-udp"))
+
+    pcap = tmp_path / "mixed.pcap"
+    wrpcap(str(pcap), [quic_initial, quic_followup, quic_followup, plaintext])
+
+    tap = tmp_path / "mixed.tap"
+    result = p2t.convert_pcap_to_tap(str(pcap), tap_path=str(tap))
+
+    assert result.encrypted_streams_skipped == 1, \
+        "the genuine QUIC stream was not skipped as encrypted"
+    assert result.decrypted_packet_count == 1, \
+        "exactly the one plaintext UDP datagram should have been ingested"
+    assert tap.exists()
+
+
+# ---------------------------------------------------------------------------
+# Public API: convert_pcap_to_tap / ConvertResult identity + serialization
+# ---------------------------------------------------------------------------
+
+import importlib as _importlib  # noqa: E402
+
+# Reach the pcap_to_tap *submodule* unambiguously. The public wrapper
+# ``pcap_to_tap`` *function* lives INSIDE this submodule (and is re-exported at
+# the package root as ``friTap.pcap_to_tap``); it is deliberately NOT bound in
+# friTap/offline/__init__.py so it does not shadow the same-named submodule
+# attribute. importlib.import_module always returns the module object, and
+# ``_p2t_mod.pcap_to_tap`` is the wrapper function.
+_p2t_mod = _importlib.import_module("friTap.offline.pcap_to_tap")
+
+
+def test_convert_symbols_identity_from_top_level_package():
+    """The offline symbols are the SAME objects when imported from ``friTap``."""
+    import friTap
+
+    assert friTap.convert_pcap_to_tap is _p2t_mod.convert_pcap_to_tap
+    assert friTap.ConvertResult is _p2t_mod.ConvertResult
+    assert friTap.NoDecryptionKeysError is _p2t_mod.NoDecryptionKeysError
+
+
+def test_convert_result_to_dict_roundtrips_all_fields():
+    """ConvertResult.to_dict() exposes all 8 fields and is JSON-serializable."""
+    result = _p2t_mod.ConvertResult(
+        tap_path="out.tap",
+        flow_count=3,
+        decrypted_packet_count=10,
+        stream_count=2,
+        dropped_packet_count=1,
+        dropped_stream_count=4,
+        findings_count=5,
+        encrypted_streams_skipped=6,
+    )
+    d = result.to_dict()
+
+    expected = {
+        "tap_path": "out.tap",
+        "flow_count": 3,
+        "decrypted_packet_count": 10,
+        "stream_count": 2,
+        "dropped_packet_count": 1,
+        "dropped_stream_count": 4,
+        "findings_count": 5,
+        "encrypted_streams_skipped": 6,
+    }
+    assert d == expected
+    assert len(d) == 8
+    # Round-trips through JSON cleanly.
+    assert json.loads(json.dumps(d)) == expected
+
+
+# ---------------------------------------------------------------------------
+# Public API: pcap_to_tap manifest-merge precedence (monkeypatched, no tshark)
+# ---------------------------------------------------------------------------
+
+def _capture_convert_kwargs(monkeypatch) -> dict:
+    """Patch ``friTap.offline.pcap_to_tap.convert_pcap_to_tap`` to record the
+    kwargs it gets and return a dummy ConvertResult, so no real tshark is ever
+    invoked. The ``pcap_to_tap`` wrapper looks up ``convert_pcap_to_tap`` in its
+    own (submodule) namespace, so that is the name we must patch."""
+    captured: dict = {}
+
+    def fake_convert(pcap_path, **kwargs):
+        captured["pcap_path"] = pcap_path
+        captured.update(kwargs)
+        return _p2t_mod.ConvertResult(tap_path=kwargs.get("tap_path") or "x.tap")
+
+    monkeypatch.setattr(_p2t_mod, "convert_pcap_to_tap", fake_convert)
+    return captured
+
+
+def _write_sidecar(pcap, payload: dict) -> None:
+    sidecar = pcap.parent / f"{pcap.name}.fritap.json"
+    sidecar.write_text(json.dumps(payload))
+
+
+def test_pcap_to_tap_manifest_fills_unset_values(tmp_path, monkeypatch):
+    """When the caller passes nothing, the manifest supplies the values."""
+    pcap = tmp_path / "cap.pcapng"
+    pcap.write_bytes(b"\x00")
+    _write_sidecar(pcap, {
+        "tls_ports": [8443], "quic_ports": [9443], "keylog": "/tmp/manifest.log",
+    })
+
+    captured = _capture_convert_kwargs(monkeypatch)
+    _p2t_mod.pcap_to_tap(str(pcap))
+
+    assert captured["keylog_path"] == "/tmp/manifest.log"
+    assert captured["tls_ports"] == (8443,)
+    assert captured["quic_ports"] == (9443,)
+
+
+def test_pcap_to_tap_explicit_args_win_over_manifest(tmp_path, monkeypatch):
+    """Explicit caller arguments always beat the manifest values."""
+    pcap = tmp_path / "cap.pcapng"
+    pcap.write_bytes(b"\x00")
+    _write_sidecar(pcap, {
+        "tls_ports": [8443], "quic_ports": [9443], "keylog": "/tmp/manifest.log",
+    })
+
+    captured = _capture_convert_kwargs(monkeypatch)
+    _p2t_mod.pcap_to_tap(
+        str(pcap),
+        keylog_path="/tmp/explicit.log",
+        tls_ports=(1111,),
+        quic_ports=(2222,),
+    )
+
+    assert captured["keylog_path"] == "/tmp/explicit.log"
+    assert captured["tls_ports"] == (1111,)
+    assert captured["quic_ports"] == (2222,)
+
+
+def test_pcap_to_tap_manifest_fills_only_unset_values(tmp_path, monkeypatch):
+    """A partial override: explicit tls_ports wins, manifest still fills keylog."""
+    pcap = tmp_path / "cap.pcapng"
+    pcap.write_bytes(b"\x00")
+    _write_sidecar(pcap, {
+        "tls_ports": [8443], "keylog": "/tmp/manifest.log",
+    })
+
+    captured = _capture_convert_kwargs(monkeypatch)
+    _p2t_mod.pcap_to_tap(str(pcap), tls_ports=(1111,))
+
+    assert captured["tls_ports"] == (1111,)            # explicit wins
+    assert captured["keylog_path"] == "/tmp/manifest.log"  # manifest fills the gap
+
+
+def test_pcap_to_tap_use_manifest_false_ignores_sidecar(tmp_path, monkeypatch):
+    """``use_manifest=False`` ignores the sidecar even when one is present."""
+    pcap = tmp_path / "cap.pcapng"
+    pcap.write_bytes(b"\x00")
+    _write_sidecar(pcap, {
+        "tls_ports": [8443], "quic_ports": [9443], "keylog": "/tmp/manifest.log",
+    })
+
+    captured = _capture_convert_kwargs(monkeypatch)
+    _p2t_mod.pcap_to_tap(str(pcap), use_manifest=False)
+
+    assert captured["keylog_path"] is None
+    assert captured["tls_ports"] == ()
+    assert captured["quic_ports"] == ()

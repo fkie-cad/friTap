@@ -46,7 +46,7 @@ frida --version
 
 # Reinstall frida with specific version
 pip uninstall frida frida-tools
-pip install frida==17.0.0 frida-tools==12.0.0
+pip install frida==17.0.0 frida-tools==14.0.0
 
 # Verify friTap compatibility
 fritap --version
@@ -71,7 +71,7 @@ fritap --version
     
     # Check process ownership
     ps aux | grep firefox
-    sudo fritap --pid $(pgrep firefox) -k keys.log
+    sudo fritap $(pgrep firefox) -k keys.log
     ```
 
 === "macOS"
@@ -208,7 +208,7 @@ fritap --full_capture -k keys.log target_app
 fritap --enable_spawn_gating --pcap traffic.pcap target_app
 
 # Target specific child process
-fritap --pid $(pgrep -f "child_process") -k keys.log
+fritap $(pgrep -f "child_process") -k keys.log
 ```
 
 ## Mobile-Specific Issues
@@ -234,7 +234,7 @@ adb shell su -c "/data/local/tmp/frida-server &"
 **App Crashes on Hook**:
 ```bash
 # Enable anti-root detection bypass
-fritap -m --enable-anti-root -k keys.log com.example.app
+fritap -m --anti_root -k keys.log com.example.app
 
 # Run with debug output and try to figure out why it is 
 fritap -m -v -do -k keys.log com.example.app
@@ -329,7 +329,7 @@ fritap -k firefox_keys.log firefox
 **Electron Detection Issues**:
 ```bash
 # Target electron process directly
-fritap --pid $(pgrep electron) -k keys.log
+fritap $(pgrep electron) -k keys.log
 
 # Hook main process and renderers
 fritap --enable_spawn_gating -k keys.log electron_app

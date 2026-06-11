@@ -1,10 +1,17 @@
-# SSH (OpenSSH) capture
+# SSH (OpenSSH & libssh) capture
 
-friTap can capture plaintext SSH traffic from **OpenSSH** on **Linux and
-Android (Termux)** in the same shape it captures plaintext TLS: synthetic
-TCP/22 frames written into a PCAPNG file, plus a side-car keylog file that
-Wireshark's SSH dissector can read to decrypt a *paired ciphertext capture*
-(produced separately, e.g. via tcpdump).
+friTap can capture plaintext SSH traffic from **OpenSSH** and **libssh** on
+**Linux and Android (Termux)** in the same shape it captures plaintext TLS:
+synthetic TCP/22 frames written into a PCAPNG file, plus a side-car keylog
+file that Wireshark's SSH dissector can read to decrypt a *paired ciphertext
+capture* (produced separately, e.g. via tcpdump).
+
+!!! info "Two SSH implementations"
+    The bulk of this page documents the **OpenSSH** hook ladder, which is the
+    most mature path. **libssh** (used by the Qt/KDE ecosystem, Ansible, and
+    various git clients) is detected and routed through the same SSH pipeline
+    — see [libssh support](#libssh-support) below. **Dropbear** and **libssh2**
+    are **not** supported.
 
 ## Quick start
 
@@ -30,7 +37,7 @@ After a run the working directory contains:
 |---|---|---|
 | `out.pcapng` | friTap PCAPNG sink | Open in Wireshark — plaintext TCP/22 frames |
 | `keys.log` (when `-k` set) | friTap keylog handler | Human-readable per-direction SSH keys |
-| `out.ssh-keys.log` (auto-derived from `-p`) | friTap SSH keylog side-car | Wireshark `Edit → Preferences → Protocols → SSH → Key log filename` |
+| `out.ssh.log` (auto-derived from `-p`) | friTap SSH keylog side-car | Wireshark `Edit → Preferences → Protocols → SSH → Key log filename` |
 
 ## What the PCAPNG contains
 
@@ -80,11 +87,11 @@ sudo tcpdump -i any -w /tmp/ssh-cipher.pcap "tcp port 22" &
 # 2. friTap produces the keylog (and a plaintext PCAPNG we don't need here)
 fritap --protocol ssh -p /tmp/dummy.pcapng \
     -- /usr/bin/ssh user@host 'echo decryptme'
-# → /tmp/dummy.ssh-keys.log is auto-derived from /tmp/dummy.pcapng
+# → /tmp/dummy.ssh.log is auto-derived from /tmp/dummy.pcapng
 
 # 3. Open /tmp/ssh-cipher.pcap in Wireshark
 # 4. Edit → Preferences → Protocols → SSH → Key log filename
-#    → /tmp/dummy.ssh-keys.log
+#    → /tmp/dummy.ssh.log
 # 5. Reload (Ctrl-R). Encrypted SSH packets are now dissected.
 ```
 
@@ -127,7 +134,7 @@ ciphertext PCAP, the plaintext file from friTap is usable.
 ```
 
 When `--protocol ssh -p OUT.pcapng` is set and `--ssh-keylog` is omitted,
-friTap auto-derives the side-car path: `OUT.ssh-keys.log`.
+friTap auto-derives the side-car path: `OUT.ssh.log`.
 
 Programmatic API mirror:
 
@@ -137,9 +144,8 @@ from friTap.api import FriTap
     FriTap("ssh")
     .protocol("ssh")
     .pcap("out.pcapng")
-    .keylog("keys.log")
-    .ssh_keylog("out.ssh-keys.log")
-    .run("ssh user@host 'echo hello'")
+    .keylog("keys.log")  # SSH side-car (keys.ssh.log) is auto-derived
+    .start("ssh user@host 'echo hello'")
 )
 ```
 
@@ -162,6 +168,35 @@ Signatures are stable across **OpenSSH 7.6 → 10.x** (verified against
 upstream tags V_7_6_P1 → V_10_0_P1). The legacy `kex_derive_keys_bn`
 (BIGNUM-based, older OpenSSH) is supported as an automatic fallback.
 
+## libssh support
+
+In addition to OpenSSH, friTap recognises **libssh** — the standalone SSH
+library used by the Qt/KDE ecosystem, Ansible, and a number of git clients.
+libssh is selected by the same `--protocol ssh` selector and flows through the
+same SSH capture pipeline; no separate flag is required.
+
+libssh's key-derivation entry points differ from OpenSSH (there is no
+`kex_derive_keys` / `sshenc`; instead libssh uses `ssh_make_sessionkey` plus a
+packet-callback model). friTap advertises the libssh symbol set so the loader's
+address-resolution surface is accurate:
+
+| Symbol | Role |
+|---|---|
+| `ssh_make_sessionkey` | Session-key derivation |
+| `ssh_packet_kexdh_init` / `ssh_packet_newkeys` | Key-exchange state transitions |
+| `ssh_socket_unbuffered_write` | Send path |
+| `ssh_packet_socket_callback` | Receive path |
+| `ssh_channel_read` / `ssh_channel_write` | Channel-level plaintext |
+
+The SSH executor probes each symbol family independently and no-ops the hooks
+that don't resolve, so an OpenSSH binary and a libssh-linked binary can both be
+attached with the same `--protocol ssh` invocation.
+
+!!! note "Maturity"
+    The OpenSSH path (above) is the most battle-tested. libssh detection and
+    symbol resolution are wired through the same pipeline; treat libssh
+    plaintext/keylog coverage as newer and verify against your target build.
+
 ## Server-side caveat: sshd privilege separation
 
 `sshd` forks a pre-auth child for KEX, then re-execs into `sshd-session`
@@ -179,7 +214,7 @@ friTap resolves symbols via `Module.findExportByName` and falls back to a
 |---|---|
 | Debian / Ubuntu / Fedora / Arch (default `sshd`/`ssh` packages) | Works out of the box |
 | Termux openssh (Android) | Works out of the box |
-| Alpine Linux (stripped sshd) | Pattern matching required; v1 ships placeholder entries — see the [pattern file format](../advanced/patterns.md#pattern-file-format) and the [pattern derivation guide](../advanced/patterns.md#automated-pattern-generation-with-boringsecrethunter) |
+| Alpine Linux (stripped sshd) | Pattern matching required; v1 ships placeholder entries — see the [pattern file format](../advanced/patterns.md#pattern-file-format) and the [pattern derivation guide](../advanced/patterns.md#automating-with-boringsecrethunter) |
 | Custom statically-stripped builds | Same as Alpine |
 
 When all primary plaintext hooks fail to resolve, friTap falls back to
@@ -197,7 +232,8 @@ hex view still shows the cleartext.
   Decryption Secrets Block type. The side-car file is the only delivery
   channel for now.
 * **Dropbear** (LineageOS, OpenWrt) is *not* covered. Different codebase,
-  different struct layouts. Out of scope for v1.
-* **libssh / libssh2** library hooks are detection stubs only; plaintext
-  capture in these libraries is a planned extension.
+  different struct layouts. Out of scope.
+* **libssh** is supported via the same `--protocol ssh` pipeline (see
+  [libssh support](#libssh-support)); its coverage is newer than OpenSSH's.
+  **libssh2** is *not* covered.
 * **iOS** is not supported (no native OpenSSH on iOS).

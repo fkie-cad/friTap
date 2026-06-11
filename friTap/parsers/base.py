@@ -29,6 +29,34 @@ class ParseResult:
     stream_id: int = 0  # HTTP/2 stream ID for multiplexing correlation
     is_control_frame: bool = False  # HTTP/2 connection-level control frame
 
+    def to_dict(self, include_body: bool = False) -> dict:
+        """Return a JSON-safe dict view of this parse result.
+
+        The raw byte buffers (``body``/``raw``) are omitted by default so the
+        result is cheap and JSON-serializable for web/API consumers; pass
+        ``include_body=True`` to include ``body`` hex-encoded.
+        """
+        result = {
+            "protocol": self.protocol,
+            "method": self.method,
+            "url": self.url,
+            "host": self.host,
+            "status_code": self.status_code,
+            "status_text": self.status_text,
+            "headers": dict(self.headers),
+            "body_size": self.body_size,
+            "is_complete": self.is_complete,
+            "is_request": self.is_request,
+            "content_encoding": self.content_encoding,
+            "content_type": self.content_type,
+            "error": self.error,
+            "stream_id": self.stream_id,
+            "is_control_frame": self.is_control_frame,
+        }
+        if include_body:
+            result["body"] = self.body.hex()
+        return result
+
 
 def apply_http2_headers(stream, headers: list[tuple[str, str]]) -> None:
     """Apply decoded HTTP/2 or HTTP/3 headers to a stream state object.

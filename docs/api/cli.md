@@ -1,665 +1,604 @@
 # CLI Reference
 
-Complete reference for friTap's command-line interface, based on the actual available options and features.
+The single, canonical reference for friTap's command-line interface. Every flag
+below is verified against friTap's actual argument parser. Other documentation
+pages link here rather than re-listing flags.
 
-## Basic Syntax
+## Synopsis
 
 ```bash
 fritap [OPTIONS] <executable/app name/pid>
 ```
 
-Where `<executable/app name/pid>` can be:
-- Process name (e.g., `firefox`)
-- Process ID (e.g., with pid selection)
-- Package name for mobile (e.g., `com.example.app`)
-- Executable path (e.g., `./application`)
+Where `<executable/app name/pid>` is the capture target:
 
-## Core Options
+- Process name (e.g. `firefox`)
+- Process ID (a numeric PID)
+- Package name for mobile (e.g. `com.example.app`)
+- Executable path, optionally with arguments (e.g. `"$(which curl) https://example.com"`)
 
-### Output Options
+friTap also has several **subcommands and alternate modes** (offline conversion,
+analysis, replay, the interactive TUI, and backend installation). These are
+described in [Subcommands and modes](#subcommands-and-modes).
 
-#### `-k, --keylog PATH`
-Save TLS keys to file in NSS Key Log format.
+!!! tip "Discoverability"
+    `fritap --help` always prints the authoritative, version-specific flag list.
+    This page documents the same flags with context, examples, and caveats.
 
-```bash
-# Basic key logging
-fritap -k keys.log firefox
+---
 
-# Mobile key logging
-fritap -m -k mobile_keys.log com.example.app
-```
+## Flag reference
 
-**Key Log Format (NSS Key Log Format):**
-```
-CLIENT_RANDOM 52345678... ABCDEF123456...
-CLIENT_RANDOM 87654321... FEDCBA654321...
-```
+Flags are grouped logically. Each entry shows the long form, short form (if any),
+the value placeholder, choices, default, and behavior.
 
-#### `-p, --pcap PATH`
-Save decrypted traffic to PCAP file.
+### Targeting and spawning
+
+#### `-m, --mobile [<device_id>]`
+Attach to a process on Android or iOS. When multiple devices are connected, pass
+the device id (e.g. `emulator-5554`). iOS targets require a jailbroken device.
 
 ```bash
-# Basic PCAP capture
-fritap -p traffic.pcap firefox
-
-# Combined with key logging
-fritap -k keys.log -p traffic.pcap firefox
-```
-
-#### Direct Terminal Output
-friTap can print the decrypted TLS payload directly to the terminal.
-
-```bash
-# Display decrypted content in terminal
-fritap firefox
-
-# Verbose terminal output
-fritap -v firefox
-```
-
-### Process Control
-
-#### `-m, --mobile [DEVICE_ID]`
-Enable mobile application analysis mode.
-
-```bash
-# Android analysis
 fritap -m -k keys.log com.example.app
-
-# Specific device (if multiple connected)
 fritap -m emulator-5554 -k keys.log com.example.app
+```
 
-# iOS analysis (requires jailbreak)
-fritap -m -k keys.log com.example.app
+#### `-H, --host <ip:port>`
+Attach to a process on a remote device through a remote Frida server.
+
+```bash
+fritap -H 192.168.1.100:27042 -m -k keys.log com.example.app
 ```
 
 #### `-s, --spawn`
-Spawn target application under friTap control.
+Spawn the executable/app instead of attaching to a running process. Use this to
+capture activity that happens during startup/initialization.
 
 ```bash
-# Desktop application
 fritap -s -k keys.log firefox
-
-# Mobile application
 fritap -m -s -k keys.log com.example.app
 ```
 
-#### `-H, --host IP:PORT`
-Connect to remote Frida server.
+#### `-env, --environment <env.json>`
+Provide environment variables for spawning as a JSON file. Especially useful on
+desktop. Example file:
 
-```bash
-# Remote Frida server
-fritap -H 192.168.1.100:27042 -m -k keys.log com.example.app
-
-# Custom port
-fritap -H 192.168.1.100:27043 -m -k keys.log com.example.app
-```
-
-### Advanced Hooking
-
-#### `--patterns PATH`
-Use pattern file for libraries without symbols.
-
-```bash
-# Basic pattern usage
-fritap --patterns patterns.json -k keys.log target
-
-# Debug pattern matching
-fritap -do --patterns patterns.json -v target
-```
-
-**Pattern File Example:**
 ```json
-{
-  "version": "1.0",
-  "patterns": {
-    "SSL_Read": {
-      "primary": "1F 20 03 D5 ?? ?? ?? ?? F4 4F 01 A9",
-      "fallback": "1F 20 03 D5 ?? ?? ?? ?? ?? ?? ?? ?? F4 4F 01 A9"
-    }
-  }
-}
+{ "ENV_VAR_NAME": "ENV_VAR_VALUE", "ANOTHER_VAR": "value" }
 ```
-
-!!! note "Pattern Generation"
-    Use BoringSecretHunter Docker to generate patterns for stripped libraries:
-    ```bash
-    # Setup directories
-    mkdir -p binary results
-    cp libssl.so binary/
-    
-    # Generate patterns with Docker (recommended)
-    docker run --rm -v "$(pwd)/binary":/usr/local/src/binaries -v "$(pwd)/results":/host_output boringsecrethunter
-    
-    # Use generated patterns
-    fritap --patterns results/libssl.so_patterns.json -k keys.log target
-    ```
-
-#### `--offsets PATH`
-Use offset file for known memory layouts.
 
 ```bash
-# Offset-based hooking
-fritap --offsets offsets.json -k keys.log target
-
-# Combined with patterns
-fritap --patterns patterns.json --offsets offsets.json -k keys.log target
+fritap -env env.json -s -k keys.log target
 ```
 
-**Offset File Example:**
-```json
-{
-  "library": "libssl.so",
-  "base_address": "0x7000000000",
-  "functions": {
-    "SSL_read": {
-      "offset": "0x1234",
-      "type": "relative"
-    },
-    "SSL_write": {
-      "address": "0x7000001234",
-      "type": "absolute"
-    }
-  }
-}
-```
-
-#### `-c, --custom_script PATH`
-Include custom Frida script.
+#### `-t, --timeout <seconds>`
+Set a timeout in seconds. After the timeout the process is resumed automatically.
+If not set, the process resumes immediately (relevant for spawned targets).
 
 ```bash
-# Use custom JavaScript
-fritap -c custom_hooks.js -k keys.log target
-
-# Multiple custom scripts
-fritap -c script1.js -c script2.js -k keys.log target
+fritap -t 60 -k keys.log firefox
 ```
-
-### Process and Network Options
 
 #### `--enable_spawn_gating`
-Intercept and analyze child processes that match the target application name.
-
-```bash
-# Capture subprocess traffic
-fritap --enable_spawn_gating -p all_traffic.pcap parent_app
-
-# Mobile app with services
-fritap -m --enable_spawn_gating -k keys.log com.example.app
-```
+Catch newly spawned processes matching the target app name (useful for Android
+multi-process apps).
 
 #### `--spawn_gating_all`
-Catch ALL newly spawned processes without filtering by target name.
+Catch **all** newly spawned processes without filtering by target name.
 
-!!! warning "Use with Caution"
-    This option hooks every new process spawned on the system/device, which can cause significant overhead and may affect system stability. Use only when necessary.
-
-```bash
-# Hook all spawned processes (use carefully)
-fritap --spawn_gating_all -k keys.log target_app
-
-# Mobile - catch all spawned processes
-fritap -m --spawn_gating_all -k keys.log com.example.app
-```
+!!! warning "Use with caution"
+    This hooks every newly spawned process on the system/device, which can add
+    significant overhead and affect stability. Use only when necessary.
 
 #### `--enable_child_gating`
 Intercept child processes spawned by the target application (via fork/clone).
 
 ```bash
-# Capture forked child processes
-fritap --enable_child_gating -k keys.log parent_app
-
-# Combined with spawn gating for comprehensive coverage
 fritap --enable_spawn_gating --enable_child_gating -k keys.log target_app
-
-# Mobile with child gating
-fritap -m --enable_child_gating -k keys.log com.example.app
 ```
 
 #### `-ed, --enable_default_fd`
-Use default socket information when FD lookup fails.
+Activate the fallback socket information (`127.0.0.1:1234-127.0.0.1:2345`)
+whenever the socket's file descriptor cannot be determined.
 
 ```bash
-# Fallback socket info (127.0.0.1:1234-127.0.0.1:2345)
-fritap -ed -p traffic.pcap target
-
-# Mobile troubleshooting
 fritap -m -ed -k keys.log com.example.app
 ```
 
-#### `-f, --full_capture`
-Enable full packet capture mode.
-
-```bash
-# Complete network capture (requires -p)
-fritap -f -k keys.log -p traffic.pcap target
-
-# For libraries with limited PCAP support
-fritap -m -f -k keys.log com.example.app
-```
-
-### Library Analysis
-
-#### `-ll, --list-libraries`
-List loaded libraries to help debug hooking issues.
-
-```bash
-# List all loaded libraries and SSL-related exports
-fritap --list-libraries target_app
-
-# With spawning for new processes
-fritap -s --list-libraries target_app
-
-# Mobile applications  
-fritap -m --list-libraries com.example.app
-```
-
-**Example Output:**
-```
-=== [ Loaded Libraries ] ===
-- libc.so.6 @ 0x7ffff7c00000 (2097152 bytes)
-- libssl.so.3 @ 0x7ffff7800000 (1048576 bytes)
-
-=== [ Libraries with 'ssl' in their name ] ===
-- libssl.so.3
-
-=== [ Libraries with TLS/SSL-related exports ] ===
-- libssl.so.3 (142 TLS/SSL exports)
-  * SSL_read @ 0x7ffff7801234
-  * SSL_write @ 0x7ffff7801567
-  * SSL_get_session @ 0x7ffff7801890
-  * BIO_get_fd @ 0x7ffff7801abc
-  * SSL_new @ 0x7ffff7801def
-  ... and 137 more
-
-=== [ Known SSL/TLS Library Detection ] ===
-✓ OpenSSL detected:
-  - libssl.so.3 @ 0x7ffff7800000
-  - libcrypto.so.3 @ 0x7ffff7900000
-```
-
-!!! tip "Debugging Workflow"
-    Use `--list-libraries` to identify:
-    
-    1. **Available SSL libraries** in the target process
-    2. **Export symbols** for manual pattern creation
-    3. **Library versions** and implementations
-    4. **Base addresses** for offset calculation
-
-### Debug and Verbosity
-
-#### `-v, --verbose`
-Enable verbose output.
-
-```bash
-# Verbose logging
-fritap -v -k keys.log target
-
-# Show library detection
-fritap -v target | grep -i "found"
-```
-
-#### `-do, --debugoutput`
-Enable debug output only (without Chrome Inspector).
-
-```bash
-# Maximum debugging
-fritap -do -v target
-
-# Save debug to file
-fritap -do -v target 2>&1 | tee debug.log
-```
-
-#### `-d, --debug`
-Enable full debug mode with Chrome Inspector.
-
-```bash
-# Full debug mode with Chrome Inspector
-fritap -d -k keys.log target
-
-# Access Chrome DevTools for script debugging
-```
-
-### Mobile-Specific Options
-
 #### `-ar, --anti_root`
-Enable anti-root detection bypass (Android).
+Activate anti-root hooks for Android.
 
 ```bash
-# Bypass root detection
 fritap -m -ar -k keys.log com.example.app
-
-# Combined with spawn mode
-fritap -m -s -ar -k keys.log com.example.app
 ```
-
-### Live Analysis
-
-#### `-l, --live`
-Create named pipe for live analysis with Wireshark.
-
-```bash
-# Linux/macOS live analysis
-fritap -l target
-
-# Then open Wireshark:
-# File → Open → /tmp/sharkfin
-```
-
-### Socket and Network Tracing
-
-#### `-sot, --socket_tracing [PATH]`
-Enable socket tracing.
-
-```bash
-# Basic socket tracing
-fritap -sot -k keys.log target
-
-# Save socket trace to file
-fritap -sot socket_trace.log -k keys.log target
-```
-
-### Environment and Experimental
-
-#### `-env, --environment PATH`
-Provide environment variables for spawning. This is especially on desktop environments helpful.
-
-```bash
-# JSON environment file
-fritap -env env.json -s -k keys.log target
-```
-
-**Environment File Example (env.json):**
-```json
-{
-  "ENV_VAR_NAME": "ENV_VAR_VALUE",
-  "ANOTHER_VAR": "value"
-}
-```
-
-#### `-exp, --experimental`
-Enable experimental features.
-
-```bash
-# Enable all experimental features
-fritap -exp -k keys.log target
-```
-
-#### `--payload_modification`
-Enable payload modification capabilities.
-
-!!! warning "Use with Caution"
-    This feature can crash applications.
-
-```bash
-# Enable payload modification
-fritap --payload_modification -k keys.log target
-```
-
-!!! tip "How to Modify Payloads"
-    When `--payload_modification` is active, friTap's agent listens for two specific Frida messages: `readmod` for modifying incoming data (from `SSL_read`) and `writemod` for modifying outgoing data (from `SSL_write`).
-
-    You must use a separate script to send a message with a payload containing the new data as a byte array. For example, using Frida's Python bindings:
-    ```python
-    # script.py
-    import frida
-
-    new_payload = [0x48, 0x45, 0x4C, 0x4C, 0x4F] # "HELLO"
-
-    session = frida.attach("target_app")
-    script = session.create_script("...") # Your agent script
-    script.load()
-
-    # To modify the next SSL_write call's data
-    script.post({'type': 'writemod', 'payload': new_payload})
-    ```
-
-#### `-t, --timeout SECONDS`
-Set a timeout in seconds for the process. After the timeout, the process will be resumed automatically.
-
-```bash
-# Run analysis for 60 seconds
-fritap -t 60 -k keys.log firefox
-
-# Mobile analysis with timeout
-fritap -m -t 120 -k keys.log com.example.app
-
-# Batch analysis with timeout
-fritap -t 300 -k keys.log -p traffic.pcap target
-```
-
-### Windows-Specific Options
 
 #### `-nl, --no-lsass`
-Skip LSASS (Local Security Authority Subsystem Service) hooking on Windows.
+Windows only. By default friTap also hooks the LSASS process (the default TLS
+provider on Windows via Schannel/SSPI). With this flag LSASS is **not** hooked.
 
-By default, friTap hooks lsass.exe to extract TLS keys from Windows' native Schannel TLS implementation. This provides system-wide Schannel traffic decryption but requires administrator privileges.
-
-!!! info "Windows TLS Architecture"
-    Windows uses **Schannel** (Secure Channel) as its native TLS library, which implements the **SSPI** (Security Support Provider Interface). Due to Windows' **key isolation** architecture, all TLS secrets are stored in **lsass.exe** and never leave that process. By hooking lsass.exe, friTap can extract keys for ALL applications using Schannel (Edge, .NET apps, PowerShell, etc.).
+!!! info "Windows TLS architecture"
+    Windows uses **Schannel** (SSPI). Due to key isolation, TLS secrets live in
+    `lsass.exe`. Hooking LSASS yields system-wide Schannel decryption (Edge, .NET,
+    PowerShell, ...) but needs administrator privileges and can be blocked by PPL
+    or antivirus. Use `--no-lsass` when analyzing non-Schannel apps (e.g. OpenSSL
+    `curl.exe`).
 
 ```bash
-# Default behavior - hooks both target app and LSASS
-fritap -k keys.log firefox.exe
-
-# Disable LSASS hooking (only hook target application directly)
-fritap --no-lsass -k keys.log firefox.exe
-
-# Skip LSASS when analyzing apps using OpenSSL instead of Schannel
 fritap -nl -k keys.log curl.exe
 ```
 
-!!! warning "Requirements for LSASS Hooking"
-    - Administrator privileges required
-    - May not work with Protected Process Light (PPL) enabled
-    - Antivirus software may interfere with LSASS access
-    - Use `--no-lsass` if you only need to analyze non-Schannel traffic
+---
 
-## Practical Examples
+### Output
 
-### Basic Usage
+#### `-k, --keylog <path>`
+Log key material in the Wireshark-loadable format for the active protocol (NSS
+`SSLKEYLOGFILE` for TLS, `SHARED_SECRET` for SSH). With `--protocol all`/`auto`
+and multiple protocols emitting keys, the file is split per protocol as
+`<stem>.<proto><ext>` (e.g. `keys.tls.log`, `keys.ssh.log`).
 
 ```bash
-# Simple key extraction
 fritap -k keys.log firefox
+```
 
-# PCAP capture
-fritap -p traffic.pcap curl https://example.com
+#### `-p, --pcap <path>`
+Name of the PCAP file to write (decrypted traffic).
 
-# Mobile analysis
+```bash
+fritap -k keys.log -p traffic.pcap firefox
+```
+
+#### `-f, --full_capture`
+Do a full packet capture instead of logging only the decrypted TLS payload. Set
+the PCAP name with `-p`.
+
+```bash
+fritap -f -k keys.log -p traffic.pcap target
+```
+
+#### `-j, --json <path>`
+Save session metadata and analysis results in JSON format.
+
+```bash
+fritap -j session.json -k keys.log target
+```
+
+#### `-l, --live`
+Create a named pipe `/tmp/sharkfin` that Wireshark can read during the capture.
+
+```bash
+fritap -l target
+# then in Wireshark: File -> Open -> /tmp/sharkfin
+```
+
+#### `-sot, --socket_tracing [<path>]`
+Trace all sockets of the target application and provide a prepared Wireshark
+display filter. If a path is given, the socket trace is written to that file.
+
+```bash
+fritap -sot -k keys.log target
+fritap -sot socket_trace.log -k keys.log target
+```
+
+#### Direct terminal output
+With no output flag, friTap prints decrypted payload directly to the terminal.
+
+```bash
+fritap firefox
+fritap -v firefox
+```
+
+---
+
+### Key logging and payload
+
+#### `--payload_modification`
+Capability to alter the decrypted payload at runtime.
+
+!!! warning "Use with caution"
+    Modifying payloads in flight can crash the application.
+
+When active, the agent listens for two Frida messages: `readmod` (modify incoming
+`SSL_read` data) and `writemod` (modify outgoing `SSL_write` data). Drive it from
+a companion script:
+
+```python
+import frida
+new_payload = [0x48, 0x45, 0x4C, 0x4C, 0x4F]  # "HELLO"
+session = frida.attach("target_app")
+script = session.create_script("...")  # your agent script
+script.load()
+script.post({"type": "writemod", "payload": new_payload})
+```
+
+---
+
+### Hooking and libraries
+
+#### `-c, --custom_script <path>`
+Path to a custom Frida hook script executed **before** friTap applies its own
+hooks. Loaded as a plugin in the `BEFORE_MAIN` phase. See
+[Plugins](../development/plugins.md).
+
+```bash
+fritap -c custom_hooks.js -k keys.log target
+```
+
+#### `--patterns <pattern.json>`
+Provide custom byte patterns for module hooking (libraries without resolvable
+symbols, e.g. stripped Cronet). Accepts a JSON file path or an inline JSON string.
+Patterns deep-merge over the built-in defaults; an invalid file falls back to
+defaults with a warning.
+
+```bash
+fritap --patterns pattern.json -k keys.log -s com.google.android.youtube
+```
+
+See [Pattern-based hooking](../advanced/patterns.md) for the correct schema
+(`library -> arch -> function -> [hex strings]`), wildcard rules, and how to
+generate patterns with BoringSecretHunter.
+
+#### `--offsets <offsets.json>`
+Provide custom offsets for hooked functions as a JSON file or inline JSON string
+(`module -> function -> {address, absolute}`). A separate mechanism from
+`--patterns`. See [Pattern-based hooking](../advanced/patterns.md).
+
+```bash
+fritap --offsets offsets.json -k keys.log target
+```
+
+#### `--library-scan, -ls`
+Pre-scan for TLS libraries using **tlsLibHunter** before hooking. Discovers
+renamed or statically linked libraries.
+
+#### `-ll, --list-libraries`
+List the loaded libraries (and TLS/SSL-related exports) to help debug hooking,
+then exit **without** starting capture.
+
+```bash
+fritap -m --list-libraries com.example.app
+```
+
+#### `--extract-libraries <dir>`
+Extract detected TLS libraries to the given directory, then exit.
+
+```bash
+fritap --extract-libraries ./libs com.example.app
+```
+
+#### `--force-scan <module>`
+Force the BoringSSL pattern scan to run on the given module even if friTap thinks
+it is covered by a sibling library (Cronet APEX split). Repeatable. Accepts a
+regex when prefixed with `re:`, or a trailing `*` for prefix matching. Also
+honored via the `FRITAP_FORCE_SCAN` env var (comma-separated).
+
+```bash
+fritap --force-scan libmainlinecronet.141.0.7340.3.so -m com.example.app
+```
+
+---
+
+### QUIC
+
+#### `--quic-capture-mode {stream,app-api}`
+Select the QUIC plaintext capture boundary. **Default `stream`** uses the
+lower-boundary stream-level hooks (`QuicStream`/`QuicStreamSequencer::Readv`).
+`app-api` captures at the application-API Boundary-4 with decoded HTTP/3 headers
+(Chrome/Android Google QUICHE only).
+
+#### `--quic-egress-headers-layer {auto,quiche-internal,chrome-shim,session-level}`
+Override which layer of the HTTP/3 egress-headers chain the agent attaches to.
+**Default `auto`** keeps the winner-takes-all fallback chain (quiche-internal
+preferred, chrome-shim fallback, session-level last resort). Force `chrome-shim`
+or `session-level` to validate chain behavior on specific builds. Only effective
+with `--quic-capture-mode app-api`.
+
+#### `--quic-only`
+Install **only** QUIC hooks; skip TLS-library hooks (BoringSSL, NSS, GnuTLS, ...),
+OHTTP, the keylog scan-results pass, and (Android) the Java hooks. Much lighter
+attach (no multi-MB pattern scans; on Android no Java VM safepoint sync) — helps
+friTap attach to a target already in active QUIC traffic. Supported on Android and
+Linux (arm64 + x86_64). Filter scope: Android = Google QUICHE (Cronet) only;
+Linux = Cloudflare quiche, Google QUICHE (Cronet), Mozilla Neqo (Firefox).
+
+---
+
+### Protocol and backend
+
+#### `--protocol {tls,ipsec,ssh,all,auto}`
+Protocol to intercept. **Default `tls`**.
+
+- `tls` covers the **TLS family** — TLS, QUIC, and **OHTTP**. There is no
+  separate `--protocol ohttp` / `--ohttp` flag; OHTTP is on by default within
+  `--protocol tls`. See [OHTTP](../protocols/ohttp.md).
+- `ssh` and `ipsec` are exclusive (only their hooks install). `ssh` and `ipsec`
+  auto-enable the modern agent path.
+- `all` hooks every supported protocol and asks for confirmation (skip with
+  `-y`/`--yes`).
+- `auto` is a script-friendly alias for `all` that does **not** prompt.
+
+!!! warning "IPsec is EXPERIMENTAL"
+    `--protocol ipsec` is **detection-only**. IPsec/IKE detection works, but
+    key extraction does not yet. See [IPsec](../protocols/ipsec.md).
+
+```bash
+fritap --protocol ssh -k keys.log sshd
+fritap --protocol auto -k keys.log target
+```
+
+#### `-y, --yes`
+Auto-confirm interactive prompts (e.g. the `--protocol all` warning).
+
+#### `--backend {frida,gdb,lldb,ebpf}`
+Instrumentation backend to use. **Default `frida`**.
+
+!!! warning "Only frida is supported today"
+    `frida` is the supported backend. **`gdb`, `lldb`, and `ebpf` are
+    EXPERIMENTAL/future** — the CLI accepts the choices, but the configuration
+    layer rejects the unsupported ones with a clear error.
+
+---
+
+### Scanning and analysis (live capture)
+
+These flags run **passive** analysis over already-decrypted traffic during a live
+capture. They never perform any active scanning of the target. For offline
+analysis of an existing `.tap`, see the [`analyze` subcommand](#analyze-passive-tap-analysis)
+and [Traffic analysis](../advanced/traffic-analysis.md).
+
+#### `--scan [<analyzers>]`
+Run passive analysis during capture. Optionally pass a comma-separated analyzer
+list (e.g. `credentials,ioc`).
+
+- **Absent: analysis is off** (default `None`).
+- **Bare `--scan` (no value): runs all built-in analyzers** (`const="all"`).
+- `--scan credentials,ioc`: runs just those analyzers.
+
+Built-in analyzers: `credentials`, `ioc`, `protobuf`.
+
+#### `--scan-report {json,csv,md,table}`
+Format for the report printed at the end of capture. **Default `table`**.
+
+#### `--scan-report-out <path>`
+Write the report to this path instead of stdout.
+
+#### `--scan-min-severity {critical,high,medium,low,info}`
+Only report findings at or above this severity. **Default `info`** (keep all).
+
+```bash
+fritap --scan --scan-report md --scan-min-severity medium -k keys.log target
+```
+
+---
+
+### Filtering
+
+#### `--filter <expression>`
+Display filter using Wireshark-like syntax.
+
+```bash
+fritap --filter "http.response.code >= 400 and ip.dst == 10.0.0.1" target
+```
+
+#### `--hide-control-frames`
+Hide HTTP/2 control frames (PING, SETTINGS, WINDOW_UPDATE, GOAWAY) in the flow
+view.
+
+#### `--no-filter-infrastructure`
+Include frida/adb control traffic in captures. By default ports
+`5037`/`5555`/`27042`/`27043` are dropped.
+
+#### `--include-loopback`
+Include loopback/localhost traffic (e.g. Firefox internal NSS IPC). By default
+loopback traffic is filtered out to reduce noise.
+
+#### `--proxy <host:port>`
+Redirect connections to a proxy (e.g. mitmproxy) and bypass certificate pinning.
+Requires the `fritap-proxy` package.
+
+```bash
+fritap --proxy 127.0.0.1:8080 -m com.example.app
+```
+
+---
+
+### Debug
+
+friTap has **three distinct** debug flags. Choose based on what you need:
+
+#### `-d, --debug`
+Full debug mode: debug output **plus** a listening Chrome Inspector server for
+remote debugging of the agent (Chrome DevTools).
+
+#### `-do, --debugoutput`
+Debug output **only** (no Chrome Inspector server). Use this for verbose
+diagnostics when you do not need a live debugger.
+
+#### `--debug-log <path>`
+Write the friTap debug log to `<path>` (default
+`./fritap_debug_<ts>_<pid>.log`). Captures session-level errors, warnings, and
+uncaught exceptions even in non-TUI mode. This is orthogonal to `-d`/`-do` — it
+controls **where** the log goes, not the verbosity tier.
+
+#### `-v, --verbose`
+Show verbose output (not a debug flag; safe for everyday use).
+
+```bash
+fritap -do -v target 2>&1 | tee debug.log     # verbose diagnostics to a file
+fritap -d -k keys.log target                   # attach Chrome DevTools
+fritap --debug-log ./run.log -v target         # persist session-level log
+```
+
+---
+
+### Miscellaneous and experimental
+
+#### `--modern` (EXPERIMENTAL)
+Opt into the modern (refactored) friTap agent code path. Unlocks the three-tier
+BoringSSL keylog chain and improved Cronet hooks on Android/Windows.
+
+!!! warning "Default is legacy"
+    `--modern` is **opt-in**; the default agent path is **legacy** for TLS
+    libraries. It is auto-enabled for `--protocol ssh` and `--protocol ipsec`.
+    Known regressions vs. the legacy default: **iOS/macOS Cronet, Windows LSASS,
+    IPsec**.
+
+#### `-exp, --experimental`
+Activate all existing experimental features. See the relevant feature docs.
+
+#### `--version`
+Print the program's version number and exit.
+
+---
+
+## Subcommands and modes
+
+friTap dispatches several modes **before** the main capture argument parser, based
+on the first argument (or the presence of `--from-pcap`). Each runs an independent
+flow.
+
+### `install-backend wireshark`
+Install the friTap Wireshark extcap backend so friTap appears as a capture
+interface inside Wireshark.
+
+```bash
+fritap install-backend wireshark
+```
+
+See the platform live-capture sections for usage.
+
+### `--from-pcap` — offline pcap → .tap conversion
+Reconstruct a friTap `.tap` from a captured pcap/pcapng — decrypting with tshark
+when keys are available (`--keylog` or an embedded DSB), or ingesting an
+already-plaintext capture directly. `--from-pcap` may appear anywhere in argv.
+
+!!! info "Requires Wireshark/tshark >= 4.x"
+    This pipeline shells out to `tshark`. If it is not on `PATH`, point friTap at
+    it with `--tshark-path` or the `$FRITAP_TSHARK` env var (handy on macOS where
+    tshark ships inside `Wireshark.app`).
+
+Sub-flags (own parser): `--from-pcap <file>` (required), `--keylog <path>`,
+`--tap <path>`, `--scan`, `--tls-port <n>` (repeatable), `--quic-port <n>`
+(repeatable), `--decode-as <rule>` (repeatable), `--tls-heuristic`,
+`--tshark-path <path>`. A sidecar manifest `<pcap>.fritap.json` supplies
+defaults (CLI flags win). Exit codes: `0` success, `2` pcap not found, `3` tshark
+missing, `4` ran but produced no decrypted packets (wrong keys/ports), `5` no
+decryption keys (no keylog and no embedded DSB), `1` other failure.
+
+```bash
+fritap --from-pcap capture.pcapng --keylog keys.log --tap out.tap --scan
+fritap --from-pcap cleartext.pcap --tap out.tap     # already-plaintext capture
+fritap --from-pcap <file> --help                    # full offline option list
+```
+
+Full guide: [Offline pcap → tap](../advanced/offline-pcap-to-tap.md).
+
+### `analyze` — passive .tap analysis
+Run friTap's analyzers over an existing `.tap` file and render findings. Purely
+offline; no network activity. Two equivalent entry forms:
+
+- `fritap --analyze <file.tap>` — explicit, always analysis mode.
+- `fritap analyze <file.tap>` — bare form, treated as analysis only when the next
+  token looks like a `.tap` input (so a target literally named `analyze` is not
+  hijacked).
+
+Sub-flags (own parser, **distinct from the live `--scan*` family**):
+`--scanners <names>` (comma-separated; default all built-ins), `--report
+{json,csv,md,table}` (default `table`), `--report-out <path>`, `--min-severity
+{critical,high,medium,low,info}` (default `info`), `--analyzer-path
+<module[:Class]>`, `--include-private-ips`, `--protobuf-schema <path>`.
+
+A `<stem>.findings.json` sidecar is always written next to the `.tap`. Exit codes:
+`0` success, `2` when any finding is at or above the gate severity (`medium`) — a
+usable CI gate, `1` for usage/IO errors.
+
+```bash
+fritap analyze capture.tap --report md
+fritap --analyze capture.tap --report md
+```
+
+Full guide: [Traffic analysis](../advanced/traffic-analysis.md).
+
+### `-r, --replay` / bare `.tap` — interactive replay (TUI)
+Browse the flows of an existing `.tap` capture in the interactive terminal UI.
+
+```bash
+fritap -r capture.tap        # explicit replay
+fritap capture.tap           # a single trailing .tap path replays too
+```
+
+### Bare `fritap` — interactive TUI
+Invoked with **no arguments**, friTap launches the interactive TUI for live
+capture and flow browsing. Requires the `textual` dependency.
+
+```bash
+fritap
+```
+
+Full guide: [Interactive TUI](../getting-started/tui.md).
+
+---
+
+## Practical examples
+
+### Basic
+
+```bash
+fritap -k keys.log firefox
+fritap -p traffic.pcap "$(which curl) https://example.com"
 fritap -m -k keys.log com.instagram.android
 ```
 
-### Advanced Usage
+### Advanced
 
 ```bash
-# Comprehensive analysis
+# Comprehensive: keys + pcap + verbose
 fritap -k keys.log -p traffic.pcap -v firefox
 
-# Pattern-based hooking
+# Pattern-based hooking for a stripped library
 fritap --patterns flutter.json -k keys.log com.flutter.app
 
 # Mobile with anti-root and spawn gating
 fritap -m -s -ar --enable_spawn_gating -k keys.log com.example.app
+
+# QUIC-only attach to a live Cronet target
+fritap -m --quic-only --quic-capture-mode app-api com.example.app
 ```
 
-### Troubleshooting
+### Real examples from `fritap --help`
 
 ```bash
-# Debug mode
-fritap -do -v target
-
-# Maximum verbosity with live analysis
-fritap -do -v -l target
-
-# Pattern debug
-fritap -do -v --patterns patterns.json target
-```
-
-### Live Analysis Workflow
-
-```bash
-# Start live capture
-fritap -l target &
-
-# Open Wireshark in another terminal
-wireshark /tmp/sharkfin
-
-# Or combine with key logging
-fritap -l -k keys.log target
-```
-
-### Mobile Analysis Workflow
-
-```bash
-# Check device connection
-adb devices
-# or frida-ls-devices as an alternative
-
-# Start frida-server on device
-adb shell su -c "/data/local/tmp/frida-server &"
-
-# Basic mobile analysis
-fritap -m -k keys.log com.example.app
-
-# Advanced mobile analysis
-fritap -m -s -ar --enable_spawn_gating --enable_default_fd \
-       -k keys.log -p traffic.pcap com.example.app
-```
-
-## Exit Codes
-
-friTap uses standard exit codes:
-
-- `0`: Success
-- `1`: General error
-- `2`: Invalid arguments/configuration
-- Additional codes for specific Frida errors
-
-## Real CLI Examples from friTap Help
-
-Based on the actual examples in friTap:
-
-```bash
-# Mobile examples
 fritap -m -p ssl.pcap com.example.app
 fritap -m --pcap log.pcap --verbose com.example.app
 fritap -m -k keys.log -v -s com.example.app
-fritap -m -k keys.log -v -c custom_script.js -s com.example.app
+fritap -m -k keys.log -v -c <custom hook script> -s com.example.app
 fritap -m --patterns pattern.json -k keys.log -s com.google.android.youtube
-
-# Desktop examples  
 fritap --pcap log.pcap "$(which curl) https://www.google.com"
-fritap -H --pcap log.pcap 192.168.0.1:1234 com.example.app
-
-# Advanced examples
+fritap -H 192.168.0.1:1234 --pcap log.pcap com.example.app
 fritap -m -p log.pcap --enable_spawn_gating -v -do -sot --full_capture -k keys.log com.example.app
 fritap -m -p log.pcap --enable_spawn_gating -v -do --anti_root --full_capture -k keys.log com.example.app
 fritap -m -p log.pcap --enable_default_fd com.example.app
 ```
 
-## Best Practices
+---
 
-### 1. Start Simple
+## Exit codes
 
-Begin with basic key extraction:
-```bash
-fritap -k keys.log target
+| Mode | Codes |
+|------|-------|
+| Live capture | `0` success · `1` general error · `2` invalid arguments/configuration · additional Frida-specific codes |
+| `analyze` / `--analyze` | `0` success · `2` finding at/above gate severity (medium) · `1` usage/IO error |
+| `--from-pcap` | `0` success · `2` pcap not found · `3` tshark missing · `4` no decrypted packets · `5` no decryption keys · `1` other failure |
+
+---
+
+## Next steps
+
+- **Python API**: [Python integration](python.md)
+- **Patterns**: [Pattern-based hooking](../advanced/patterns.md)
+- **Offline conversion**: [Offline pcap → tap](../advanced/offline-pcap-to-tap.md)
+- **Traffic analysis**: [Traffic analysis](../advanced/traffic-analysis.md)
+- **Interactive TUI**: [TUI](../getting-started/tui.md)
+- **Examples**: [Usage examples](../examples/index.md)
+- **Troubleshooting**: [Common issues](../troubleshooting/common-issues.md)
 ```
-
-### 2. Use Verbose Mode for Learning
-
-```bash
-fritap -v -k keys.log target
-```
-
-### 3. Debug When Needed
-
-```bash
-fritap -do -v target 2>&1 | tee debug.log
-```
-
-### 4. Combine Multiple Outputs
-
-```bash
-fritap -k keys.log -p traffic.pcap target
-```
-
-### 5. Mobile Best Practices
-
-```bash
-# Always check device connection first
-adb devices
-# or frida-ls-devices as an alternative
-
-
-# Use anti-root when needed
-fritap -m -ar -k keys.log com.example.app
-
-# Use spawn mode for initialization analysis
-fritap -m -s -k keys.log com.example.app
-```
-
-## Common Option Combinations
-
-### Comprehensive Analysis
-
-```bash
-fritap -k keys.log -p traffic.pcap -v target
-```
-
-### Mobile Troubleshooting
-
-```bash
-fritap -m -ar -ed --enable_spawn_gating -do -v -k keys.log com.example.app
-```
-
-### Pattern-Based Analysis
-
-If the integrated patterns of friTap not working try to provide your own patterns:
-
-```bash
-fritap --patterns patterns.json -do -v -k keys.log target
-```
-
-### Live Monitoring
-
-```bash
-fritap -l -k keys.log target
-```
-
-## Integration Examples
-
-### CI/CD Script
-
-```bash
-#!/bin/bash
-set -e
-
-# Run friTap analysis
-timeout 60 fritap -k keys.log -p traffic.pcap ./app_under_test
-
-# Validate results
-if [ ! -s keys.log ]; then
-    echo "ERROR: No TLS keys extracted"
-    exit 1
-fi
-
-echo "Analysis complete: $(grep -c CLIENT_RANDOM keys.log) sessions captured"
-```
-
-### Batch Analysis
-
-```bash
-#!/bin/bash
-for app in app1 app2 app3; do
-    fritap -m -k "${app}_keys.log" -p "${app}_traffic.pcap" "$app"
-done
-```
-
-## Next Steps
-
-- **Python API**: Learn about [Python integration](python.md)
-- **Examples**: Check [Usage Examples](../examples/index.md)
-- **Patterns**: Learn about [Pattern-Based Hooking](../advanced/patterns.md)
-- **Troubleshooting**: Review [Common Issues](../troubleshooting/common-issues.md)

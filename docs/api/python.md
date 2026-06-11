@@ -1,714 +1,643 @@
 # Python API
 
-friTap can be used as a Python library for programmatic SSL/TLS traffic analysis and integration into larger security analysis workflows.
+friTap ships a stable, SemVer-guaranteed Python API for driving captures, consuming live events, and working with `.tap` files offline. The public surface is everything exported from the `friTap` package `__all__` (58 symbols); removing or breaking any of them requires a friTap MAJOR bump (see `RELEASING.md`).
 
-## Installation for Python Use
+This page leads with the **modern API**:
 
-```bash
-# Install friTap
-pip install fritap
+- the [`FriTap` builder](#quick-start-fritap-builder) for configuring and starting captures,
+- the [`EventBus`](#events-eventbus) and typed events for consuming data programmatically,
+- [configuration dataclasses](#configuration-dataclasses),
+- working with [flows](#working-with-flows), [offline conversion](#offline-conversion), [reading `.tap`](#reading-tap-files), [traffic analysis](#traffic-analysis), and [protobuf utilities](#protobuf-utilities).
 
-# Import in Python
-from friTap import SSL_Logger
+The legacy `SSL_Logger` class is documented last, in a [deprecated section](#legacy-ssl_logger-deprecated).
+
+!!! note "CI-runnable vs. live-device examples"
+    Examples in this page are labelled either **live / device** (they attach to or
+    spawn a real process and cannot run in CI) or **offline / CI-runnable** (they
+    operate on `.tap` files or in-memory objects and run anywhere friTap imports).
+
+---
+
+## Quick start (FriTap builder)
+
+!!! warning "Live / device example"
+    `FriTap(...).start()` attaches to or spawns a real target through Frida. This
+    cannot run in CI — it needs a device and the target app/process.
+
+```python
+from friTap import FriTap
+
+session = (
+    FriTap("com.example.app")
+    .mobile()                  # target a USB device
+    .keylog("keys.log")        # write an SSLKEYLOGFILE
+    .pcap("cap.pcapng")        # write decrypted traffic (pcapng → embedded DSB)
+    .start()                   # returns a FriTapSession
+)
+
+session.wait()   # block until the target exits; or call session.stop()
 ```
 
-## Basic Python Usage
+With callbacks (also **live / device**):
 
-### Simple SSL Logger
+```python
+from friTap import FriTap
+
+session = (
+    FriTap("com.example.app")
+    .mobile("device-id")
+    .pcap("capture.pcap")
+    .on_keylog(lambda e: print(e.key_data))
+    .on_data(lambda e: print(f"{e.src_addr}:{e.src_port} -> {e.dst_addr}:{e.dst_port}"))
+    .start()
+)
+```
+
+`build_config()` is the **offline-safe** half of the builder — it returns a
+[`FriTapConfig`](#configuration-dataclasses) without touching a device, which is
+useful for tests and for inspecting/serializing configuration:
+
+```python
+from friTap import FriTap
+
+config = FriTap("com.example.app").mobile().keylog("keys.log").build_config()
+print(config.target, config.output.keylog)   # offline / CI-runnable
+```
+
+### `FriTapSession`
+
+`start()` returns a `FriTapSession` handle:
+
+| Member | Kind | Description |
+| --- | --- | --- |
+| `event_bus` | property → `EventBus` | The session's [event bus](#events-eventbus); subscribe for live events. |
+| `is_running` | property → `bool` | Whether the capture is still active. |
+| `stop()` | method | Gracefully stop the capture session. |
+| `wait()` | method | Block until the session ends (e.g. the process exits). |
+
+---
+
+## Builder reference
+
+Every method below returns `self`, so calls chain. Names are verbatim from
+`friTap.api.FriTap`. The builder is hand-documented (chained APIs render poorly
+under autodoc).
+
+### Device & target
+
+| Method | Description |
+| --- | --- |
+| `mobile(device_id=None)` | Target a mobile device — USB if `device_id` is omitted, otherwise the given Frida device ID. |
+| `host(address)` | Target a remote Frida device (`host:port`). |
+| `spawn(enable=True)` | Spawn the target instead of attaching. |
+| `spawn_gating(enable=True, all_processes=False)` | Enable spawn gating for multi-process apps. `all_processes=True` catches every spawn. |
+| `child_gating(enable=True)` | Enable child-process gating. |
+| `timeout(seconds)` | Set a timeout before resuming the suspended target. |
+
+### Output
+
+| Method | Description |
+| --- | --- |
+| `pcap(path)` | Write decrypted traffic to a PCAP file. The extension is authoritative — `.pcap` writes classic libpcap, `.pcapng` writes pcapng (with embedded DSB when keys are extracted). |
+| `pcapng(path)` | Write self-decrypting PCAPNG. Equivalent to `pcap()` with a `.pcapng` extension; the file extension still wins. |
+| `keylog(path)` | Write key material in Wireshark-loadable form for the active protocol (NSS `SSLKEYLOGFILE` for TLS). With `--protocol all/auto`, the path is split per protocol as `<stem>.<proto><ext>`. |
+| `json_output(path)` | Write session metadata as JSON. |
+| `verbose(enable=True)` | Enable verbose console output. |
+| `live(enable=True)` | Stream to Wireshark via a named pipe. |
+| `full_capture(enable=True)` | Capture the full network stream, not just decrypted payload. |
+
+### Hooking
+
+| Method | Description |
+| --- | --- |
+| `patterns(path)` | Use pattern-based (symbol-less) hooking from a JSON file. |
+| `offsets(path)` | Use offset-based hooking from a JSON file. |
+| `experimental(enable=True)` | Enable experimental features. |
+| `anti_root(enable=True)` | Enable anti-root-detection hooks (Android). |
+| `payload_modification(enable=True)` | Enable payload-modification capability. |
+| `force_scan(name)` | Force-scan a module that Cronet-split-topology suppression would otherwise skip. Accepts a literal name, a stem prefix (`name*`) or a regex (`re:...`). May be called multiple times. |
+
+### Protocol & backend
+
+| Method | Description |
+| --- | --- |
+| `protocol(proto)` | Set the target protocol: `tls`, `ipsec`, `ssh`, `auto` (and other registered values). Default `tls`. |
+| `backend(backend)` | Set the instrumentation backend: `frida` (default), `gdb`, `lldb`, `ebpf`. |
+
+!!! warning "Experimental backends"
+    Only `frida` is fully supported. `gdb`/`lldb`/`ebpf` are experimental/future;
+    [`FriTapConfig`](#configuration-dataclasses) rejects a protocol/backend combination
+    that is not fully supported.
+
+### Debug & misc
+
+| Method | Description |
+| --- | --- |
+| `debug(enable=True)` | Enable debug mode with Chrome Inspector (also turns on debug output). |
+| `debug_output(enable=True)` | Enable debug output only (no inspector). |
+| `custom_script(path)` | Load a custom Frida script before friTap's hooks. |
+| `add_script_plugin(plugin)` | Register a `ScriptPlugin` to load when the session starts. |
+| `environment(path)` | Provide an environment-variables JSON for spawn. |
+| `proxy(address)` | Redirect connections to a `host:port` proxy and bypass cert pinning (requires `fritap-proxy`). |
+
+### Callbacks
+
+Each registers a callback fired on the session's [event bus](#events-eventbus).
+
+| Method | Event delivered |
+| --- | --- |
+| `on_keylog(callback)` | [`KeylogEvent`](#keylogevent) |
+| `on_data(callback)` | [`DatalogEvent`](#datalogevent) |
+| `on_library_detected(callback)` | [`LibraryDetectedEvent`](#librarydetectedevent) |
+| `on_session(callback)` | [`SessionEvent`](#sessionevent) |
+| `on_flow(callback)` | [`FlowEvent`](#flowevent) — wires up a `FlowCollector` automatically. |
+
+### Terminal methods
+
+| Method | Description |
+| --- | --- |
+| `build_config()` | Build a `FriTapConfig` from the current builder state. **Offline-safe** — does not touch a device. |
+| `start()` | Build the config, create the capture, wire up the event bus, and start. Returns a `FriTapSession`. **Live / device.** |
+
+---
+
+## Events & EventBus
+
+friTap dispatches typed events through a thread-safe publish-subscribe
+`EventBus`. Output handlers, the TUI, plugins, and your own callbacks all
+subscribe to event classes.
+
+::: friTap.events.EventBus
+    options:
+      show_root_heading: true
+      members:
+        - subscribe
+        - unsubscribe
+        - emit
+        - clear
+
+The bus also exposes the class constant `PLUGIN_PRIORITY = 100`; plugins should
+pass `priority=EventBus.PLUGIN_PRIORITY` to `subscribe()` so they run before the
+built-in output handlers.
+
+A standalone bus can be created, subscribed to, and emitted into without any
+device — useful for testing handlers:
+
+```python
+from friTap import EventBus, KeylogEvent
+
+bus = EventBus()
+bus.subscribe(KeylogEvent, lambda e: print("key:", e.key_data))
+bus.emit(KeylogEvent(key_data="CLIENT_RANDOM abc def"))   # offline / CI-runnable
+# -> key: CLIENT_RANDOM abc def
+```
+
+### Event base class
+
+All events subclass `FriTapEvent`, which provides:
+
+| Field / member | Type | Description |
+| --- | --- | --- |
+| `timestamp` | `float` | Creation time (`time.time()`). |
+| `protocol` | `str` | Protocol context (default `"tls"`). |
+| `cancel()` | method | Advisory cancellation (DOM `preventDefault` style). |
+| `cancelled` | property → `bool` | Whether `cancel()` was called. |
+
+### KeylogEvent
+
+Emitted when key material is extracted (`on_keylog`).
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `key_data` | `str` | Pre-formatted keylog line (e.g. `CLIENT_RANDOM <hex> <hex>`). |
+| `payload` | `dict \| None` | Structured payload for protocols that need it (e.g. SSH KEX shared secret). |
+
+### DatalogEvent
+
+Emitted when decrypted application data is captured (`on_data`).
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `data` | `bytes` | The decrypted payload. |
+| `function` | `str` | The hooked function that produced it. |
+| `direction` | `str` | `"read"` or `"write"`. |
+| `src_addr` / `src_port` | `str` / `int` | Source endpoint. |
+| `dst_addr` / `dst_port` | `str` / `int` | Destination endpoint. |
+| `ss_family` | `str` | Socket family (e.g. `"AF_INET"`). |
+| `ssl_session_id` | `str` | TLS session identifier. |
+| `client_random` | `str` | TLS client random. |
+| `transport` | `str` | `"tcp"` or `"udp"` (QUIC is `udp`). |
+| `http3_headers` | `list \| None` | Decoded HTTP/3 headers `[[name, value], ...]` (app-api QUIC mode). |
+| `stream_id` | `int \| None` | QUIC stream id. |
+| `quic_scid` / `quic_dcid` | `str` | QUIC source / destination connection IDs. |
+| `quic_stream_type` | `str` | QUIC stream type. |
+
+### LibraryDetectedEvent
+
+Emitted when a TLS/SSL library is detected (`on_library_detected`).
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `library` | `str` | Logical library name (e.g. `"openssl"`). |
+| `module` | `str` | The loaded module/file name. |
+| `path` | `str` | Full module path in the target. |
+
+### SessionEvent
+
+Emitted on TLS/QUIC session lifecycle changes (`on_session`).
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `session_id` | `str` | Session identifier. |
+| `event_type` | `str` | One of `SESSION_STARTED`/`SESSION_RESUMED`/`SESSION_ENDED`/`SESSION_DESTROYED` (the string constants `"started"`, `"resumed"`, `"ended"`, `"destroyed"`). |
+| `cipher_suite` | `str` | Negotiated cipher suite. |
+| `cipher` | property → `str` | Read-only alias for `cipher_suite`. |
+| `protocol_version` | `str` | TLS version (e.g. `"TLS 1.3"`). |
+| `server_name` | `str` | SNI server name. |
+| `alpn` | `str` | Negotiated ALPN (`"h2"`, `"http/1.1"`, …). |
+| `quic_version` | `str` | QUIC transport version (QUIC only). |
+| `client_random`, `connection_id`, `src_addr`, `src_port`, `dst_addr`, `dst_port` | | Additional session/endpoint metadata. |
+
+### FlowEvent
+
+Emitted when a flow is created, updated, or completed (`on_flow`).
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `flow` | [`Flow`](#working-with-flows) | The flow object. |
+| `flow_event_type` | `str` | `"created"`, `"updated"`, or `"completed"`. |
+
+### Other events
+
+These are part of the public surface and are emitted by the agent/output
+pipeline; subscribe to them the same way:
+
+- **`ConsoleEvent`** (`message`, `level`) — console log lines from the agent.
+- **`ErrorEvent`** (`error`, `description`, `stack`, `file`, `line`, `severity`) — agent/hooking errors; `severity` is `"info"`/`"warning"`/`"error"`/`"fatal"`.
+- **`SocketTraceEvent`** (`src_addr`, `src_port`, `dst_addr`, `dst_port`, `ss_family`) — traced socket info.
+- **`DetachEvent`** (`reason`) — emitted when the target process detaches.
+
+---
+
+## Configuration dataclasses
+
+`FriTap.build_config()` returns a `FriTapConfig`. You can also construct it
+directly and pass it to the lower-level `CoreController` / `SSL_Logger`.
+
+::: friTap.config.FriTapConfig
+    options:
+      show_root_heading: true
+      members: false
+
+::: friTap.config.DeviceConfig
+    options:
+      show_root_heading: true
+      members: false
+
+::: friTap.config.OutputConfig
+    options:
+      show_root_heading: true
+      members: false
+
+::: friTap.config.HookingConfig
+    options:
+      show_root_heading: true
+      members: false
+
+`HookingConfig` exposes the encapsulated-protocol toggle `ohttp_enabled`
+(OHTTP is on by default within `--protocol tls`) and the QUIC knobs
+`quic_capture_mode`, `quic_only`, and `quic_egress_headers_layer`.
+
+### Migrating from legacy parameters
+
+`FriTapConfig.from_legacy_params(...)` bridges the old flat `SSL_Logger`
+keyword arguments (`app`, `pcap_name`, `keylog`, `mobile`, `patterns`, …) into
+the structured dataclasses, so existing code can move incrementally:
+
+```python
+from friTap import FriTapConfig
+
+config = FriTapConfig.from_legacy_params(
+    app="com.example.app",
+    pcap_name="capture.pcap",
+    keylog="keys.log",
+    mobile=True,
+)
+print(config.target, config.device.mobile, config.output.pcap)   # offline / CI-runnable
+```
+
+---
+
+## Working with flows
+
+A `Flow` is friTap's reconstructed picture of one connection: endpoints, timing,
+parsed request/response, a protocol **layer stack**, and any attached findings.
+Flows are produced live (via `on_flow`) and read back from `.tap` files (see
+[Reading `.tap`](#reading-tap-files)).
+
+::: friTap.flow.models.Flow
+    options:
+      show_root_heading: true
+      members:
+        - to_dict
+        - layer
+        - request_body
+        - response_body
+        - reconstruct_body
+
+### Serializing a flow
+
+`Flow.to_dict(include_bodies=False)` returns a JSON-safe view: identity,
+transport/timing, parsed request/response, layer names, tags/notes and findings.
+Raw chunk bytes are never included; request/response bodies are included
+(hex-encoded) only when `include_bodies=True`.
+
+```python
+flow_dict = flow.to_dict()                  # bodies omitted
+flow_dict = flow.to_dict(include_bodies=True)  # bodies hex-encoded
+```
+
+### Layer access
+
+Each flow carries a stack of protocol layers. Access them two ways:
+
+- **Attribute access** — `flow.tls`, `flow.quic`, `flow.ssh` lazily materialize a
+  typed layer if that protocol is registered (raises `AttributeError` for an
+  unregistered name). Typed layers expose fields such as `flow.tls.sni` and
+  `flow.tls.alpn`.
+- **`flow.layer(name)`** — a non-mutating lookup returning the existing layer or
+  `None`. Use this in serialization paths so reading never grows the stack:
+  `flow.layer("http2")`, then inspect `.parsed` / `.data`.
+
+```python
+sni = flow.tls.sni                  # typed accessor
+http2 = flow.layer("http2")         # None if absent
+if http2 is not None:
+    parsed = http2.parsed
+```
+
+### Why `pr.body` may be empty
+
+Bodies are **not** accumulated in the parser's `ParseResult` anymore — to keep
+`.tap` files small, identical/large bodies are reconstructed on demand from the
+flow's raw chunks. So a `ParseResult` (`flow.request` / `flow.response`) can have
+an empty `.body` even when data was captured. To get the bytes, reconstruct from
+the flow:
+
+```python
+req = flow.request_body        # bytes, reconstructed + cached
+resp = flow.response_body
+# equivalently: flow.reconstruct_body("write") / flow.reconstruct_body("read")
+```
+
+### FlowSummary
+
+`FlowSummary` is the lightweight index entry used when listing flows without
+reading their full bodies (returned by `read_flow_summaries()` /
+`get_summaries()`).
+
+::: friTap.flow.models.FlowSummary
+    options:
+      show_root_heading: true
+      members: false
+
+---
+
+## Offline conversion
+
+Reconstruct a `.tap` file from an existing packet capture plus its key material —
+no device, no live capture.
+
+!!! warning "Requires Wireshark / tshark ≥ 4.x"
+    `pcap_to_tap()` (and the `--from-pcap` CLI) shell out to `tshark` for
+    dissection. If `tshark` is not on `PATH`, set `tshark_path=` (or the
+    `$FRITAP_TSHARK` environment variable). The example below is **offline** but
+    needs `tshark` installed.
+
+```python
+from friTap import pcap_to_tap
+
+result = pcap_to_tap(
+    "chrome.pcap",
+    keylog_path="chromekeys.log",   # SSLKEYLOGFILE; raises NoDecryptionKeysError if given but unusable
+    tap_path="out.tap",
+    run_scan=True,                  # also run analyzers and embed findings
+)
+print(result.to_dict())
+```
+
+!!! note "Import path"
+    `pcap_to_tap` is importable from the package root (`from friTap import pcap_to_tap`),
+    but **not** from `friTap.offline` — re-exporting it there would shadow the
+    `friTap.offline.pcap_to_tap` *module*. The no-manifest core is
+    `friTap.convert_pcap_to_tap(...)`.
+
+`pcap_to_tap()` reads a manifest sidecar `<pcap>.fritap.json` (keys
+`keylog`/`tls_ports`/`quic_ports`) when `use_manifest=True`; explicit arguments
+win over the manifest, which wins over defaults. It returns a `ConvertResult`:
+
+::: friTap.offline.pcap_to_tap.ConvertResult
+    options:
+      show_root_heading: true
+      members:
+        - to_dict
+
+Key fields: `tap_path`, `flow_count`, `decrypted_packet_count`, `stream_count`,
+`dropped_packet_count`, `dropped_stream_count`, `findings_count`, and
+`encrypted_streams_skipped` (streams that could not be decrypted and were
+tallied rather than emitted).
+
+!!! note "Caveats"
+    Keyless 1-RTT-only QUIC captures are undetectable without keys. Encrypted
+    streams that cannot be decrypted are skipped and counted in
+    `encrypted_streams_skipped`. SSH banners and HTTP/2 control frames become
+    synthetic, metadata-only flows. `NoDecryptionKeysError` is raised when
+    `keylog_path` is given but no usable keys (and no embedded DSB) are found.
+
+---
+
+## Reading `.tap` files
+
+friTap captures persist as a binary `.tap` file (see the
+`.tap` binary format). Two readers are provided.
+
+### TapReader
+
+`TapReader` is the low-level streaming reader.
+
+::: friTap.flow.tap_reader.TapReader
+    options:
+      show_root_heading: true
+      members:
+        - open
+        - read_flow_summaries
+        - read_flow
+        - read_all_flows
+        - close
+
+```python
+from friTap import TapReader
+
+reader = TapReader("capture_20260507_153933.tap")   # offline / CI-runnable
+meta = reader.open()
+for summary in reader.read_flow_summaries():
+    print(summary.flow_id, summary.host, summary.status_code)
+reader.close()
+```
+
+### ReplayController
+
+`ReplayController` is the higher-level facade used by the TUI replay view. It
+adds an LRU cache (128 flows), a context-manager interface, and convenience
+properties. It implements `IFlowSource` (`get_flows()` / `get_flow(id)`).
+
+::: friTap.flow.replay.ReplayController
+    options:
+      show_root_heading: true
+      members:
+        - load
+        - get_summaries
+        - get_flows
+        - get_flow
+        - close
+
+```python
+from friTap import ReplayController
+
+with ReplayController("capture_20260507_153933.tap") as rc:   # offline / CI-runnable
+    meta = rc.load()
+    print("flows:", rc.flow_count)
+    for summary in rc.get_summaries():
+        print(summary.flow_id, summary.protocol, summary.host)
+    flow = rc.get_flow(rc.get_summaries()[0].flow_id)
+    print(flow.to_dict())
+```
+
+---
+
+## Traffic analysis
+
+friTap can run its analyzers (`credentials`, `ioc`, `protobuf`, plus custom
+ones) over a captured `.tap` file — passive analysis, no network activity. Use
+`analyze_tap_report()` for programmatic access; it performs no I/O beyond reading
+the `.tap` and never calls `sys.exit`.
+
+::: friTap.commands.analyze.analyze_tap_report
+    options:
+      show_root_heading: true
+
+::: friTap.commands.analyze.AnalyzeReport
+    options:
+      show_root_heading: true
+      members:
+        - gate_tripped
+        - exit_code
+
+```python
+from friTap import analyze_tap_report
+
+report = analyze_tap_report(
+    "capture_20260507_153933.tap",   # offline / CI-runnable
+    scanners="credentials,ioc",      # None or "all" → built-ins
+    min_severity="info",
+    report_format="table",
+)
+
+for finding in report.findings:
+    print(finding.severity.name, finding.title, finding.flow_id)
+
+print(report.rendered)               # the rendered table/json/csv/md
+raise SystemExit(report.exit_code)   # 2 if any finding ≥ medium, else 0 (CI gate)
+```
+
+### Findings & severity
+
+Each `Finding` has: `severity` (a `Severity` enum), `title`, `description`,
+`source`, `flow_id`, `confidence` (default `1.0`), `timestamp`, and the dicts
+`evidence` and `metadata`. `Severity` is `CRITICAL`/`HIGH`/`MEDIUM`/`LOW`/`INFO`
+(rank 0 is most severe).
+
+### CI gate
+
+`AnalyzeReport.gate_tripped` is `True` when any finding is at or above the gate
+severity (`medium`), and `exit_code` returns `2` in that case (else `0`) —
+mirroring the `fritap analyze` CLI exit code. Use it to fail a pipeline when a
+capture contains sensitive findings.
+
+### Discovery helpers
+
+- `list_analyzers()` → built-in analyzer names.
+- `list_report_formats()` → available report formats (`json`, `csv`, `md`, `table`).
+
+Custom analyzers can be loaded via the CLI `--analyzer-path module:Class`
+(the `module:Class` form skips the `is_fritap_analyzer` marker requirement).
+
+---
+
+## Protobuf utilities
+
+Schema-less protobuf wire decoding with zero external dependencies — handy for
+inspecting captured gRPC/protobuf bodies.
+
+::: friTap.parsers.protobuf.decode_raw
+    options:
+      show_root_heading: true
+
+::: friTap.parsers.protobuf.format_message
+    options:
+      show_root_heading: true
+
+```python
+from friTap import decode_raw, format_message
+
+msg = decode_raw(b"\x08\x96\x01")   # offline / CI-runnable
+print(format_message(msg))
+# 1: 150
+```
+
+`decode_raw(data, max_depth=16)` returns a `ProtobufMessage` (a tree of
+`ProtobufField` objects); `format_message(msg, indent=0)` renders it as
+human-readable text. `ProtobufProcessor` provides higher-level, schema-aware
+processing.
+
+---
+
+## Legacy `SSL_Logger` (deprecated)
+
+!!! warning "Deprecated — will be removed in friTap 3.0"
+    `SSL_Logger` is retained only for backward compatibility. New code should use
+    the [`FriTap` builder](#quick-start-fritap-builder) (or pass a
+    [`FriTapConfig`](#configuration-dataclasses) — build one from old kwargs with
+    [`FriTapConfig.from_legacy_params(...)`](#migrating-from-legacy-parameters)).
+
+Minimal legacy usage (**live / device**):
 
 ```python
 from friTap import SSL_Logger
 import time
 
-# Create SSL logger instance
 logger = SSL_Logger(
-    app="firefox",              # Target application (process name, PID, or package name)
-    pcap_name="traffic.pcap",   # PCAP output file path
-    verbose=True,               # Enable verbose output
-    spawn=False,                # Attach to existing process (True = spawn new process)
-    keylog="keys.log",          # Key log file path (or False to disable)
-    enable_spawn_gating=False,  # Intercept spawned child processes
-    spawn_gating_all=False,     # Catch ALL spawned processes (use with caution)
-    enable_child_gating=False,  # Intercept child processes
-    mobile=False,               # Mobile mode (True or device ID string)
-    live=False,                 # Live Wireshark analysis via named pipe
-    environment_file=None,      # JSON file with environment variables
-    debug_mode=False,           # Enable debug mode with Chrome Inspector
-    full_capture=False,         # Full packet capture (requires tcpdump)
-    socket_trace=False,         # Enable socket tracing
-    host=False,                 # Remote Frida host (IP:port string or False)
-    offsets=None,               # Custom function offsets (JSON file path)
-    debug_output=False,         # Enable debug output only (no Chrome Inspector)
-    experimental=False,         # Enable experimental features (e.g., Wine support)
-    anti_root=False,            # Enable anti-root detection bypass (Android)
-    payload_modification=False, # Enable payload modification capabilities
-    enable_default_fd=False,    # Use default socket info when FD lookup fails
-    patterns=None,              # Pattern file path for symbol-less hooking
-    custom_hook_script=None,    # Custom Frida script to load before friTap hooks
-    json_output=None,           # JSON output file for session metadata
-    install_lsass_hook=True,    # Hook LSASS for Schannel key extraction (Windows)
-    timeout=None                # Timeout in seconds for process suspension
+    app="firefox",
+    pcap_name="traffic.pcap",
+    keylog="keys.log",
+    verbose=True,
 )
-
-# Install signal handler for cleanup
 logger.install_signal_handler()
-
-# Start analysis session
 logger.start_fritap_session()
 
-# Keep running
-try:
-    while logger.running:
-        time.sleep(1)
-except KeyboardInterrupt:
-    print("Stopping analysis...")
-finally:
-    # Cleanup is handled automatically
-    pass
+while logger.running:
+    time.sleep(1)
 ```
 
-### Configuration Class
+To migrate, replace the flat constructor with the builder:
 
 ```python
-from friTap import SSL_Logger
+from friTap import FriTap
 
-class FriTapConfig:
-    def __init__(self):
-        self.app = None
-        self.pcap_name = None
-        self.keylog = None
-        self.verbose = False
-        self.mobile = False
-        self.patterns = None
-
-    def to_dict(self):
-        return {
-            'app': self.app,
-            'pcap_name': self.pcap_name,
-            'keylog': self.keylog,
-            'verbose': self.verbose,
-            'mobile': self.mobile,
-            'patterns': self.patterns
-        }
-
-# Usage
-config = FriTapConfig()
-config.app = "firefox"
-config.keylog = "keys.log"
-config.verbose = True
-
-logger = SSL_Logger(**config.to_dict())
+session = FriTap("firefox").pcap("traffic.pcap").keylog("keys.log").verbose().start()
 ```
 
-## Advanced Usage Examples
+## Next steps
 
-### Mobile Application Analysis
-
-```python
-from friTap import SSL_Logger
-import json
-
-def analyze_android_app(package_name, output_dir):
-    """Analyze Android application SSL traffic"""
-
-    keylog_path = f"{output_dir}/{package_name}_keys.log"
-    pcap_path = f"{output_dir}/{package_name}_traffic.pcap"
-
-    logger = SSL_Logger(
-        app=package_name,
-        pcap_name=pcap_path,
-        keylog=keylog_path,
-        verbose=True,
-        mobile=True,                    # Enable mobile mode
-        spawn=True,                     # Spawn application
-        enable_spawn_gating=True,       # Capture child processes
-        anti_root=True,                 # Bypass root detection
-        enable_default_fd=True          # Fallback socket info
-    )
-
-    logger.install_signal_handler()
-    logger.start_fritap_session()
-
-    # Wait for analysis completion
-    while logger.running:
-        time.sleep(1)
-
-    return {
-        'keylog': keylog_path,
-        'pcap': pcap_path,
-        'app': package_name
-    }
-
-# Usage
-result = analyze_android_app("com.instagram.android", "/tmp/analysis")
-print(f"Analysis complete: {result}")
-```
-
-### Pattern-Based Analysis
-
-```python
-from friTap import SSL_Logger
-import json
-
-def analyze_with_patterns(target_app, pattern_file):
-    """Analyze application using custom patterns"""
-
-    # Load pattern file to verify format
-    with open(pattern_file, 'r') as f:
-        patterns_data = json.load(f)
-
-    logger = SSL_Logger(
-        app=target_app,
-        keylog="pattern_keys.log",
-        pcap_name="pattern_traffic.pcap",
-        verbose=True,
-        patterns=pattern_file,          # Use pattern file
-        debug_output=True               # Enable debug output
-    )
-
-    logger.install_signal_handler()
-    logger.start_fritap_session()
-
-    while logger.running:
-        time.sleep(1)
-
-# Usage for Flutter app
-analyze_with_patterns("com.flutter.app", "flutter_patterns.json")
-```
-
-### Batch Analysis
-
-```python
-from friTap import SSL_Logger
-import time
-import threading
-from datetime import datetime
-
-class BatchAnalyzer:
-    def __init__(self, output_dir="./analysis"):
-        self.output_dir = output_dir
-        self.results = []
-        
-    def analyze_target(self, target, duration=300):
-        """Analyze single target for specified duration"""
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        keylog_path = f"{self.output_dir}/{target}_{timestamp}_keys.log"
-        pcap_path = f"{self.output_dir}/{target}_{timestamp}_traffic.pcap"
-
-        logger = SSL_Logger(
-            app=target,
-            keylog=keylog_path,
-            pcap_name=pcap_path,
-            verbose=False,              # Reduce output for batch
-            timeout=duration
-        )
-
-        logger.install_signal_handler()
-        logger.start_fritap_session()
-
-        # Wait for completion or timeout
-        start_time = time.time()
-        while logger.running and (time.time() - start_time) < duration:
-            time.sleep(1)
-
-        result = {
-            'app': target,
-            'keylog': keylog_path,
-            'pcap': pcap_path,
-            'duration': time.time() - start_time,
-            'timestamp': timestamp
-        }
-
-        self.results.append(result)
-        return result
-    
-    def analyze_multiple(self, targets, duration=300):
-        """Analyze multiple targets sequentially"""
-        
-        for target in targets:
-            print(f"Starting analysis of {target}")
-            try:
-                result = self.analyze_target(target, duration)
-                print(f"Completed {target}: {result['keylog']}")
-            except Exception as e:
-                print(f"Error analyzing {target}: {e}")
-        
-        return self.results
-
-# Usage
-analyzer = BatchAnalyzer("/tmp/batch_analysis")
-targets = ["firefox", "curl", "wget"]
-results = analyzer.analyze_multiple(targets, duration=180)
-
-for result in results:
-    print(f"App: {result['app']}, Keys: {result['keylog']}")
-```
-
-### Custom Callback Integration
-
-```python
-from friTap import SSL_Logger
-import json
-
-class CustomAnalyzer:
-    def __init__(self):
-        self.session_count = 0
-        self.data_transferred = 0
-        
-    def on_session_start(self, session_info):
-        """Called when new TLS session starts"""
-        self.session_count += 1
-        print(f"New session #{self.session_count}: {session_info}")
-        
-    def on_data_captured(self, data_info):
-        """Called when data is captured"""
-        self.data_transferred += data_info.get('size', 0)
-        print(f"Data captured: {data_info['size']} bytes")
-        
-    def analyze_with_callbacks(self, target_app):
-        """Analyze target with custom callbacks"""
-
-        # Note: This is a conceptual example
-        # Actual callback integration would require friTap modifications
-        logger = SSL_Logger(
-            app=target_app,
-            keylog="callback_keys.log",
-            verbose=True
-        )
-        
-        # Custom callback attachment would go here
-        # logger.on_session_start = self.on_session_start
-        # logger.on_data_captured = self.on_data_captured
-        
-        logger.install_signal_handler()
-        logger.start_fritap_session()
-        
-        while logger.running:
-            time.sleep(1)
-        
-        return {
-            'sessions': self.session_count,
-            'data_transferred': self.data_transferred
-        }
-
-# Usage
-analyzer = CustomAnalyzer()
-stats = analyzer.analyze_with_callbacks("firefox")
-print(f"Analysis complete: {stats}")
-```
-
-## Configuration Management
-
-### Configuration File Support
-
-```python
-import json
-from friTap import SSL_Logger
-
-class FriTapConfigManager:
-    def __init__(self, config_file=None):
-        self.config = self.load_config(config_file) if config_file else {}
-        
-    def load_config(self, config_file):
-        """Load configuration from JSON file"""
-        with open(config_file, 'r') as f:
-            return json.load(f)
-    
-    def save_config(self, config_file):
-        """Save configuration to JSON file"""
-        with open(config_file, 'w') as f:
-            json.dump(self.config, f, indent=2)
-    
-    def create_logger(self, target_app, overrides=None):
-        """Create SSL_Logger with configuration"""
-
-        config = self.config.copy()
-        if overrides:
-            config.update(overrides)
-
-        config['app'] = target_app
-
-        return SSL_Logger(**config)
-
-# Example configuration file (config.json)
-config_data = {
-    "verbose": True,
-    "mobile": False,
-    "enable_spawn_gating": False,
-    "anti_root": False,
-    "debug_output": False
-}
-
-# Save configuration
-with open("config.json", "w") as f:
-    json.dump(config_data, f, indent=2)
-
-# Usage
-config_manager = FriTapConfigManager("config.json")
-logger = config_manager.create_logger(
-    target_app="firefox",
-    overrides={"keylog": "firefox_keys.log"}
-)
-```
-
-### Environment-Based Configuration
-
-```python
-import os
-from friTap import SSL_Logger
-
-class EnvironmentConfig:
-    @staticmethod
-    def from_environment():
-        """Create configuration from environment variables"""
-        
-        return {
-            'verbose': os.getenv('FRITAP_VERBOSE', 'false').lower() == 'true',
-            'mobile': os.getenv('FRITAP_MOBILE', 'false').lower() == 'true',
-            'debug_output': os.getenv('FRITAP_DEBUG', 'false').lower() == 'true',
-            'anti_root': os.getenv('FRITAP_ANTI_ROOT', 'false').lower() == 'true',
-            'timeout': int(os.getenv('FRITAP_TIMEOUT', '300')),
-            'patterns': os.getenv('FRITAP_PATTERNS'),
-            'host': os.getenv('FRITAP_HOST')
-        }
-    
-    @staticmethod
-    def create_logger(target_app, **overrides):
-        """Create logger with environment configuration"""
-
-        config = EnvironmentConfig.from_environment()
-        config.update(overrides)
-        config['app'] = target_app
-
-        # Remove None values
-        config = {k: v for k, v in config.items() if v is not None}
-
-        return SSL_Logger(**config)
-
-# Usage with environment variables
-# export FRITAP_VERBOSE=true
-# export FRITAP_MOBILE=true
-# export FRITAP_ANTI_ROOT=true
-
-logger = EnvironmentConfig.create_logger(
-    "com.example.app",
-    keylog="env_keys.log"
-)
-```
-
-## Integration Examples
-
-### Flask Web Service
-
-```python
-from flask import Flask, request, jsonify
-from friTap import SSL_Logger
-import threading
-import time
-import uuid
-
-app = Flask(__name__)
-active_sessions = {}
-
-class AnalysisSession:
-    def __init__(self, session_id, target, config):
-        self.session_id = session_id
-        self.target = target
-        self.config = config
-        self.logger = None
-        self.thread = None
-        self.status = "initialized"
-        
-    def start(self):
-        """Start analysis in background thread"""
-        self.thread = threading.Thread(target=self._run_analysis)
-        self.thread.start()
-        self.status = "running"
-        
-    def _run_analysis(self):
-        """Run analysis in thread"""
-        try:
-            self.logger = SSL_Logger(
-                app=self.target,
-                **self.config
-            )
-            self.logger.install_signal_handler()
-            self.logger.start_fritap_session()
-            
-            while self.logger.running:
-                time.sleep(1)
-                
-            self.status = "completed"
-        except Exception as e:
-            self.status = f"error: {e}"
-
-@app.route('/analyze', methods=['POST'])
-def start_analysis():
-    """Start new analysis session"""
-    data = request.json
-    
-    session_id = str(uuid.uuid4())
-    target = data.get('target')
-    config = data.get('config', {})
-    
-    session = AnalysisSession(session_id, target, config)
-    session.start()
-    
-    active_sessions[session_id] = session
-    
-    return jsonify({
-        'session_id': session_id,
-        'status': 'started',
-        'target': target
-    })
-
-@app.route('/status/<session_id>')
-def get_status(session_id):
-    """Get analysis session status"""
-    session = active_sessions.get(session_id)
-    
-    if not session:
-        return jsonify({'error': 'Session not found'}), 404
-    
-    return jsonify({
-        'session_id': session_id,
-        'target': session.target,
-        'status': session.status
-    })
-
-if __name__ == '__main__':
-    app.run(debug=True)
-```
-
-### Jupyter Notebook Integration
-
-```python
-# Jupyter notebook cell
-from friTap import SSL_Logger
-import matplotlib.pyplot as plt
-import pandas as pd
-import time
-
-def analyze_and_visualize(target_app, duration=60):
-    """Analyze target and create visualizations"""
-
-    # Start analysis
-    logger = SSL_Logger(
-        app=target_app,
-        keylog=f"{target_app}_keys.log",
-        pcap_name=f"{target_app}_traffic.pcap",
-        verbose=True
-    )
-    
-    logger.install_signal_handler()
-    logger.start_fritap_session()
-    
-    # Monitor for specified duration
-    start_time = time.time()
-    while logger.running and (time.time() - start_time) < duration:
-        time.sleep(1)
-    
-    # Process results (this would require additional parsing)
-    # This is a conceptual example
-    
-    # Read key log file
-    keys_data = []
-    try:
-        with open(f"{target_app}_keys.log", 'r') as f:
-            for line in f:
-                if line.startswith('CLIENT_RANDOM'):
-                    keys_data.append({
-                        'timestamp': time.time(),  # Would need actual timestamp
-                        'type': 'CLIENT_RANDOM'
-                    })
-    except FileNotFoundError:
-        pass
-    
-    # Create DataFrame
-    df = pd.DataFrame(keys_data)
-    
-    # Plot results
-    if not df.empty:
-        plt.figure(figsize=(10, 6))
-        plt.plot(df['timestamp'], range(len(df)))
-        plt.title(f'TLS Sessions for {target_app}')
-        plt.xlabel('Time')
-        plt.ylabel('Session Count')
-        plt.show()
-    
-    return df
-
-# Usage in Jupyter
-# result_df = analyze_and_visualize("firefox", duration=120)
-# print(f"Captured {len(result_df)} TLS sessions")
-```
-
-## Error Handling
-
-### Robust Error Handling
-
-```python
-from friTap import SSL_Logger
-import logging
-import traceback
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-class RobustAnalyzer:
-    def __init__(self):
-        self.logger = None
-        
-    def analyze_with_retry(self, target_app, max_retries=3, **config):
-        """Analyze target with retry logic"""
-
-        for attempt in range(max_retries):
-            try:
-                logger.info(f"Analysis attempt {attempt + 1} for {target_app}")
-
-                self.logger = SSL_Logger(
-                    app=target_app,
-                    **config
-                )
-                
-                self.logger.install_signal_handler()
-                self.logger.start_fritap_session()
-                
-                while self.logger.running:
-                    time.sleep(1)
-                
-                logger.info(f"Analysis completed successfully for {target_app}")
-                return True
-
-            except Exception as e:
-                logger.error(f"Attempt {attempt + 1} failed: {e}")
-                logger.debug(traceback.format_exc())
-
-                if attempt < max_retries - 1:
-                    logger.info(f"Retrying in 5 seconds...")
-                    time.sleep(5)
-                else:
-                    logger.error(f"All {max_retries} attempts failed for {target_app}")
-                    return False
-        
-        return False
-    
-    def cleanup(self):
-        """Cleanup resources"""
-        if self.logger:
-            # Cleanup would be handled by SSL_Logger
-            pass
-
-# Usage
-analyzer = RobustAnalyzer()
-success = analyzer.analyze_with_retry(
-    "firefox",
-    max_retries=3,
-    keylog="robust_keys.log",
-    verbose=True
-)
-
-if success:
-    print("Analysis completed successfully")
-else:
-    print("Analysis failed after retries")
-```
-
-## Best Practices
-
-### 1. Resource Management
-
-```python
-from contextlib import contextmanager
-from friTap import SSL_Logger
-
-@contextmanager
-def fritap_session(target_app, **config):
-    """Context manager for friTap sessions"""
-    ssl_logger = None
-    try:
-        ssl_logger = SSL_Logger(app=target_app, **config)
-        ssl_logger.install_signal_handler()
-        yield ssl_logger
-    finally:
-        if ssl_logger:
-            # Cleanup is handled automatically
-            pass
-
-# Usage
-with fritap_session("firefox", keylog="keys.log") as session:
-    session.start_fritap_session()
-    # Session automatically cleaned up on exit
-```
-
-### 2. Configuration Validation
-
-```python
-def validate_config(config):
-    """Validate friTap configuration"""
-    required_fields = ['app']
-
-    for field in required_fields:
-        if field not in config:
-            raise ValueError(f"Missing required field: {field}")
-
-    if config.get('mobile') and not config.get('app', '').startswith('com.'):
-        raise ValueError("Mobile targets should be package names")
-
-    return True
-
-# Usage
-config = {
-    'app': 'com.example.app',
-    'mobile': True,
-    'keylog': 'keys.log'
-}
-
-if validate_config(config):
-    logger = SSL_Logger(**config)
-```
-
-### 3. Logging Integration
-
-```python
-import logging
-from friTap import SSL_Logger
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-
-class LoggingAnalyzer:
-    def __init__(self):
-        self.logger = logging.getLogger(__name__)
-
-    def analyze(self, target_app, **config):
-        """Analyze with proper logging"""
-
-        self.logger.info(f"Starting analysis of {target_app}")
-        self.logger.debug(f"Configuration: {config}")
-
-        try:
-            ssl_logger = SSL_Logger(app=target_app, **config)
-            ssl_logger.install_signal_handler()
-            ssl_logger.start_fritap_session()
-
-            while ssl_logger.running:
-                time.sleep(1)
-
-            self.logger.info(f"Analysis completed for {target_app}")
-
-        except Exception as e:
-            self.logger.error(f"Analysis failed for {target_app}: {e}")
-            raise
-```
-
-## Next Steps
-
-- **Learn about [CLI usage](cli.md)** for command-line integration
-- **Check [CLI Reference](cli.md)** for all available options and their Python equivalents
-- **Review [Examples](../examples/index.md)** for practical usage patterns
-- **See [Troubleshooting](../troubleshooting/common-issues.md)** for common issues
+- **[CLI reference](cli.md)** — every command-line flag and subcommand.
+- **[Examples](../examples/index.md)** — practical end-to-end workflows.

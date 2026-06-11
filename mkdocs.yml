@@ -41,7 +41,7 @@ plugins:
   - mkdocstrings:
       handlers:
         python:
-          paths: [friTap]
+          paths: [.]
   - git-revision-date-localized:
       enable_creation_date: true
   - minify:
@@ -80,6 +80,8 @@ nav:
     - Installation: getting-started/installation.md
     - Quick Start: getting-started/quick-start.md
     - Basic Concepts: getting-started/concepts.md
+    - Interactive TUI: getting-started/tui.md
+    - Offline Quick Start: getting-started/offline-quickstart.md
   - Usage Examples:
     - Overview: examples/index.md
     - Desktop Applications: examples/desktop.md
@@ -96,9 +98,13 @@ nav:
   - Advanced Features:
     - Pattern-based Hooking: advanced/patterns.md
     - Standalone Agent Usage: advanced/standalone-agent.md
+    - Traffic Analysis: advanced/traffic-analysis.md
+    - Offline pcap to .tap: advanced/offline-pcap-to-tap.md
   - Protocols:
     - QUIC & HTTP/3: protocols/quic.md
-    - SSH (OpenSSH): protocols/ssh.md
+    - SSH (OpenSSH & libssh): protocols/ssh.md
+    - OHTTP (Oblivious HTTP): protocols/ohttp.md
+    - IPsec (Experimental): protocols/ipsec.md
   - SSL/TLS Libraries:
     - Overview: libraries/index.md
     - BoringSSL: libraries/boringssl.md
@@ -107,14 +113,17 @@ nav:
   - API Reference:
     - Python API: api/python.md
     - CLI Reference: api/cli.md
+    - .tap File Format: api/tap-format.md
   - Troubleshooting:
     - Common Issues: troubleshooting/common-issues.md
   - Development:
     - Contributing: development/contributing.md
+    - Architecture: development/architecture.md
     - Development Setup: development/development-setup.md
     - Coding Standards: development/coding-standards.md
     - Testing Guide: development/testing.md
     - Adding Features: development/adding-features.md
+    - Plugins & Custom Scripts: development/plugins.md
     - Documentation: development/documentation.md
     - Pull Requests: development/pull-requests.md
     - Community: development/community.md

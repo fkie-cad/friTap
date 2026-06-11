@@ -9,6 +9,11 @@ friTap consists of two main components:
 1. **Python Host (`SSL_Logger`)** - Manages Frida sessions, handles output, generates PCAP files
 2. **JavaScript Agent (`fritap_agent.js`)** - Performs the actual SSL/TLS hooking inside the target process
 
+friTap ships a **single** compiled agent, `friTap/fritap_agent.js`, built from
+`agent/fritap_agent.ts` via `frida-compile` (see `package.json`). The legacy and
+modern code paths live in that one file and are toggled internally through the
+`use_modern` configuration field rather than living in separate agent files.
+
 You can use the agent standalone if you:
 
 - Need custom message handling
@@ -18,12 +23,14 @@ You can use the agent standalone if you:
 
 ## Agent Location
 
-The compiled JavaScript agent is located at:
+The single compiled JavaScript agent is located at:
 
 ```
-friTap/friTap/fritap_agent.js        # Modern agent (Frida 17+)
-friTap/friTap/_ssl_log_legacy.js # Legacy agent (Frida <17)
+friTap/fritap_agent.js   # the one and only compiled agent
 ```
+
+Both the modern (Frida 17+) and legacy (Frida <17) hook paths are bundled into this
+file; the active path is selected at runtime via the `use_modern` config field.
 
 ## Critical: Initialization Protocol
 
@@ -37,8 +44,13 @@ waiting for each response:
 
 | Message | Expected Response Type | Purpose |
 |---------|----------------------|---------|
-| `"config_batch"` | `{"type": "config_batch", "payload": <dict with 13 fields>}` | Single consolidated handshake carrying every configuration value (see [field reference](#config_batch-field-reference) below) |
+| `"config_batch"` | `{"type": "config_batch", "payload": <dict with 17 fields>}` | Single consolidated handshake carrying every configuration value (see [field reference](#config_batch-field-reference) below) |
 | `"anti"` | `{"type": "antiroot", "payload": <bool>}` | Enable anti-root bypass (Android); sent once after `config_batch` |
+
+!!! info "Canonical message protocol"
+    For the full agent ↔ host message protocol — every outgoing `contentType`
+    the agent emits, plus the build/compile pipeline — see the
+    [Architecture reference](../development/architecture.md).
 
 > **Note:** Older agent builds shipped individual per-feature handshakes
 > (`offset_hooking`, `pattern_hooking`, `socket_tracing`, `defaultFD`,
@@ -60,19 +72,23 @@ def on_message(message, data):
     # blocks until we reply with a dict containing every config value.
     if payload == "config_batch":
         script.post({"type": "config_batch", "payload": {
-            "offsets":              None,    # JSON string or None
-            "patterns":             None,    # JSON string or None
-            "socket_tracing":       False,
-            "defaultFD":            False,
-            "pcap_enabled":         False,
-            "keylog_enabled":       False,   # set True to also extract TLS keys
-            "experimental":         False,
-            "protocol_select":      "tls",   # "tls" | "ssh" | "ipsec"
-            "install_lsass_hook":   False,   # Windows only
-            "use_modern":           False,   # experimental modern path
-            "library_scan":         None,
-            "library_scan_enabled": False,
-            "ohttp_enabled":        True,
+            "offsets":                   None,    # JSON string or None
+            "patterns":                  None,    # JSON string or None
+            "socket_tracing":            False,
+            "defaultFD":                 False,
+            "pcap_enabled":              False,
+            "keylog_enabled":            False,   # set True to also extract TLS keys
+            "experimental":              False,
+            "protocol_select":           "tls",   # "tls" | "ssh" | "ipsec"
+            "install_lsass_hook":        False,   # Windows only
+            "use_modern":                False,   # experimental modern path
+            "library_scan":              None,
+            "library_scan_enabled":      False,
+            "ohttp_enabled":             True,
+            "quic_capture_mode":         "stream",  # "stream" | "app-api"
+            "quic_only":                 False,
+            "quic_egress_headers_layer": "auto",
+            "debug_output":              False,
         }})
         return
 
@@ -117,8 +133,12 @@ not relevant to your run can be left at their defaults.
 | `install_lsass_hook` | bool | `False` | Hook LSASS (Windows only) |
 | `use_modern` | bool | `False` | Opt into the experimental modern agent path |
 | `library_scan` | object or `None` | `None` | Library-scan configuration |
-| `library_scan_enabled` | bool | `False` | Enable the lsLibHunter library scan |
-| `ohttp_enabled` | bool | `True` | Enable OHTTP keylog hooks |
+| `library_scan_enabled` | bool | `False` | Enable the tlsLibHunter library scan |
+| `ohttp_enabled` | bool | `True` | Enable OHTTP (NSS HPKE) keylog hooks within the TLS family |
+| `quic_capture_mode` | `"stream"` \| `"app-api"` | `"stream"` | QUIC/HTTP-3 capture strategy: `stream` taps the QUIC stream layer; `app-api` taps app-decoded headers |
+| `quic_only` | bool | `False` | Restrict hooking to the QUIC path only (skips classic TLS hooks for a leaner, lower-risk attach) |
+| `quic_egress_headers_layer` | `"auto"` or layer name | `"auto"` | Forces the HTTP/3 egress-headers chain layer; `"auto"` keeps the winner-takes-all fallback |
+| `debug_output` | bool | `False` | Mirrors the `-do`/`--debugoutput` CLI flag; gates expensive debug-only symbol enumeration in the agent |
 
 ## Message Types from Agent
 
@@ -233,19 +253,23 @@ def on_message(message, data):
         # above for the full field reference).
         if payload == "config_batch":
             script.post({"type": "config_batch", "payload": {
-                "offsets":              None,
-                "patterns":             None,
-                "socket_tracing":       False,
-                "defaultFD":            False,
-                "pcap_enabled":         False,
-                "keylog_enabled":       False,
-                "experimental":         False,
-                "protocol_select":      "tls",
-                "install_lsass_hook":   False,
-                "use_modern":           False,
-                "library_scan":         None,
-                "library_scan_enabled": False,
-                "ohttp_enabled":        True,
+                "offsets":                   None,
+                "patterns":                  None,
+                "socket_tracing":            False,
+                "defaultFD":                 False,
+                "pcap_enabled":              False,
+                "keylog_enabled":            False,
+                "experimental":              False,
+                "protocol_select":           "tls",
+                "install_lsass_hook":        False,
+                "use_modern":                False,
+                "library_scan":              None,
+                "library_scan_enabled":      False,
+                "ohttp_enabled":             True,
+                "quic_capture_mode":         "stream",
+                "quic_only":                 False,
+                "quic_egress_headers_layer": "auto",
+                "debug_output":              False,
             }})
             return
 
@@ -336,19 +360,23 @@ if payload == "config_batch":
         }
     }
     script.post({"type": "config_batch", "payload": {
-        "offsets":              None,
-        "patterns":             json.dumps(patterns),
-        "socket_tracing":       True,
-        "defaultFD":            True,
-        "pcap_enabled":         False,
-        "keylog_enabled":       False,
-        "experimental":         False,
-        "protocol_select":      "tls",
-        "install_lsass_hook":   False,
-        "use_modern":           False,
-        "library_scan":         None,
-        "library_scan_enabled": False,
-        "ohttp_enabled":        True,
+        "offsets":                   None,
+        "patterns":                  json.dumps(patterns),
+        "socket_tracing":            True,
+        "defaultFD":                 True,
+        "pcap_enabled":              False,
+        "keylog_enabled":            False,
+        "experimental":              False,
+        "protocol_select":           "tls",
+        "install_lsass_hook":        False,
+        "use_modern":                False,
+        "library_scan":              None,
+        "library_scan_enabled":      False,
+        "ohttp_enabled":             True,
+        "quic_capture_mode":         "stream",
+        "quic_only":                 False,
+        "quic_egress_headers_layer": "auto",
+        "debug_output":              False,
     }})
     return
 
@@ -361,32 +389,39 @@ if payload == "anti":
 ### Custom Function Offsets
 
 For libraries without symbols, provide custom offsets via the `offsets` field
-of `config_batch` (it expects a JSON-encoded string):
+of `config_batch` (it expects a JSON-encoded string). Each function maps to an
+object with an `address` and an `absolute` flag (the `IAddress` interface):
+`absolute: true` means a runtime virtual address, `absolute: false` an offset from
+the module base.
 
 ```python
 import json
 
 if payload == "config_batch":
     offsets = {
-        "libcustom.so": {
-            "SSL_read": "0x1234",
-            "SSL_write": "0x5678"
+        "openssl": {
+            "SSL_read":  {"address": "0x1234", "absolute": True},
+            "SSL_write": {"address": "0x5678", "absolute": True}
         }
     }
     script.post({"type": "config_batch", "payload": {
-        "offsets":              json.dumps(offsets),
-        "patterns":             None,
-        "socket_tracing":       False,
-        "defaultFD":            False,
-        "pcap_enabled":         False,
-        "keylog_enabled":       False,
-        "experimental":         False,
-        "protocol_select":      "tls",
-        "install_lsass_hook":   False,
-        "use_modern":           False,
-        "library_scan":         None,
-        "library_scan_enabled": False,
-        "ohttp_enabled":        True,
+        "offsets":                   json.dumps(offsets),
+        "patterns":                  None,
+        "socket_tracing":            False,
+        "defaultFD":                 False,
+        "pcap_enabled":              False,
+        "keylog_enabled":            False,
+        "experimental":              False,
+        "protocol_select":           "tls",
+        "install_lsass_hook":        False,
+        "use_modern":                False,
+        "library_scan":              None,
+        "library_scan_enabled":      False,
+        "ohttp_enabled":             True,
+        "quic_capture_mode":         "stream",
+        "quic_only":                 False,
+        "quic_egress_headers_layer": "auto",
+        "debug_output":              False,
     }})
     return
 ```
@@ -427,7 +462,7 @@ device.resume(pid)
 **Cause:** Missing initialization message responses.
 
 **Solution:** Ensure your message handler responds to BOTH initialization
-messages — `config_batch` (with a dict containing all 13 fields) and `anti`
+messages — `config_batch` (with a dict containing all 17 fields) and `anti`
 (with `{"type": "antiroot", "payload": <bool>}`). If you are porting code
 from an older agent build that listened for individual handshakes
 (`offset_hooking`, `pattern_hooking`, `socket_tracing`, `defaultFD`,
@@ -459,6 +494,6 @@ adb shell getenforce
 
 ## Next Steps
 
-- **Pattern Generation**: Learn about [BoringSecretHunter](patterns.md#automated-pattern-generation-with-boringsecrethunter) for generating patterns
+- **Pattern Generation**: Learn about [BoringSecretHunter](patterns.md#automating-with-boringsecrethunter) for generating patterns
 - **CLI Reference**: See [CLI options](../api/cli.md) for full friTap capabilities
 - **Python API**: Use [Python API](../api/python.md) for programmatic control with built-in PCAP generation

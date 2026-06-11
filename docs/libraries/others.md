@@ -246,25 +246,10 @@ fritap -k webserver_keys.log --pcap web_traffic.pcap embedded_httpd
 
 Network.framework is Apple's modern replacement for traditional socket APIs, with built-in TLS support.
 
-#### Key Features
-
-- **Modern API**: Replaces legacy BSD sockets
-- **Built-in Security**: TLS by default
-- **Performance**: Optimized for Apple hardware
-- **Privacy**: Enhanced privacy features
-
-#### Usage with friTap
-
-```bash
-# macOS applications using Network.framework
-sudo fritap -k network_keys.log --json network_metadata.json modern_macos_app
-
-# iOS applications (requires jailbreak)
-fritap -m -k network_keys.log com.modern.ios.app
-
-# Debug Network.framework detection
-sudo fritap -do -v modern_app | grep -i network
-```
+**Not currently supported (no hooks implemented). Planned.** friTap does not
+hook Network.framework, so applications that rely on it cannot be analyzed. This
+is consistent with the note above: friTap focuses on portable SSL libraries
+(OpenSSL, BoringSSL, etc.) rather than Apple's native networking/TLS stacks.
 
 ## Commercial and Proprietary Libraries
 
@@ -290,15 +275,10 @@ sudo fritap -do -v commercial_app | grep -i matrix
 
 Cryptlib is a comprehensive cryptographic library that includes SSL/TLS support.
 
-#### Usage with friTap
-
-```bash
-# Applications using Cryptlib
-sudo fritap --patterns cryptlib_patterns.json -k keys.log application
-
-# Debug Cryptlib detection
-sudo fritap -do -v application | grep -i crypt
-```
+**Not currently implemented.** friTap has no Cryptlib hooks; it is on the
+[planned list](index.md#future-library-support). In principle support could be
+added in the future via custom byte patterns, but there is no supported workflow
+for Cryptlib today.
 
 ## Legacy Libraries
 
@@ -511,21 +491,30 @@ fritap --experimental -k keys.log target
 
 ### Pattern Contribution Guidelines
 
-```bash
-# Pattern format
+Pattern files use the **Schema B** object form for the default engine (see
+[Pattern-Based Hooking](../advanced/patterns.md#pattern-file-format) for the full schema):
+
+```json
 {
-  "library": "new_library.so",
-  "patterns": {
-    "SSL_Read": {
-      "primary": "XX XX XX XX ?? ?? ?? ??",
-      "secondary": "YY YY YY YY ?? ?? ?? ??"
-    },
-    "SSL_Write": {
-      "primary": "ZZ ZZ ZZ ZZ ?? ?? ?? ??"
+  "modules": {
+    "new_library.so": {
+      "android": {
+        "arm64": {
+          "SSL_Read": {
+            "primary":  "XX XX XX XX ?? ?? ?? ??",
+            "fallback": "YY YY YY YY ?? ?? ?? ??"
+          },
+          "SSL_Write": {
+            "primary": "ZZ ZZ ZZ ZZ ?? ?? ?? ??"
+          }
+        }
+      }
     }
   }
 }
+```
 
+```bash
 # Testing procedure
 fritap --patterns new_patterns.json -k test.log target
 cat test.log | wc -l  # Should contain extracted keys

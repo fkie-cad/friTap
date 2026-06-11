@@ -79,8 +79,19 @@ friTap declares two stability tiers:
 - Python: `FriTap`, `FriTapSession`, `FriTapConfig`, `DeviceConfig`,
   `OutputConfig`, `HookingConfig`, all `*Event` types, `EventBus`, `Flow`,
   `FlowChunk`, `FlowState`, `FlowEventType`, `FlowSummary`, `TapReader`,
-  `Severity`, `Finding`, `BaseAnalyzer`, `analyze_tap`, `analyze_tap_multi`,
-  `AnalyzerPlugin`, the protobuf utilities, and `__version__`.
+  `TapMeta`, `Severity`, `Finding`, `BaseAnalyzer`, `analyze_tap`,
+  `analyze_tap_multi`, `AnalyzerPlugin`, `severity_rank`, the protobuf
+  utilities, and `__version__`.
+- Offline analyze orchestration: `analyze_tap_report`, `AnalyzeReport`,
+  `list_analyzers`, `list_report_formats`, `Reporter`, `JsonReporter`,
+  `CsvReporter`, `MarkdownReporter`, `TableReporter`.
+- Offline pcap → tap: `pcap_to_tap`, `convert_pcap_to_tap`, `ConvertResult`,
+  `NoDecryptionKeysError`.
+- Flow replay / high-level overview: `ReplayController`, `IFlowSource`.
+- Parsed-metadata types: `ParseResult`, `ProtocolLayer`, `TlsLayer`,
+  `QuicLayer`, `SshLayer`. These specific symbols are stable and re-exported
+  from the package root even though their home namespaces
+  (`friTap.parsers.*`, `friTap.flow.layers`) remain internal.
 - `SSL_Logger` is in the stable tier *but* deprecated; scheduled for
   removal in friTap 3.0. New code should use `FriTap` or `CoreController`.
 

@@ -163,16 +163,12 @@ fritap -m --patterns ios_patterns.json com.example.app
 
 ### System Applications
 
-```bash
-# Analyze Safari
-fritap -m -k safari_keys.log com.apple.mobilesafari
-
-# Analyze Mail app
-fritap -m -k mail_keys.log com.apple.mobilemail
-
-# Analyze Messages
-fritap -m -k messages_keys.log com.apple.MobileSMS
-```
+!!! warning "System iOS apps will NOT work — SecureTransport not supported"
+    Safari, Mail, Messages and other native iOS apps use Apple's SecureTransport
+    / Network.framework, which friTap does **not** hook. There are no working
+    capture commands for these apps — see the iOS Limitations note above
+    (No SecureTransport support). Only BoringSSL-based apps (e.g. Chrome) and
+    Flutter apps can be analyzed.
 
 ### Third-Party Applications
 
@@ -311,8 +307,8 @@ netstat -an | grep 27042
 ### App Analysis Issues
 
 ```bash
-# App crashes on hook
-fritap -m --no-spawn com.example.app
+# App crashes on hook (attach mode is the default when you omit -s/--spawn)
+fritap -m com.example.app
 
 # Use gentler approach
 fritap -m -k keys.log com.example.app

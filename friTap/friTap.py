@@ -267,7 +267,7 @@ Examples:
   %(prog)s -m -k keys.log -v -c <path to custom hook script> -s com.example.app
   %(prog)s -m --patterns pattern.json -k keys.log -s com.google.android.youtube
   %(prog)s --pcap log.pcap "$(which curl) https://www.google.com"
-  %(prog)s -H --pcap log.pcap 192.168.0.1:1234 com.example.app
+  %(prog)s -H 192.168.0.1:1234 --pcap log.pcap com.example.app
   %(prog)s -m -p log.pcap --enable_spawn_gating -v -do -sot --full_capture -k keys.log com.example.app
   %(prog)s -m -p log.pcap --enable_spawn_gating -v -do --anti_root --full_capture -k keys.log com.example.app
   %(prog)s -m -p log.pcap --enable_default_fd com.example.app
@@ -276,6 +276,11 @@ Offline (pcap -> .tap):
   %(prog)s --from-pcap capture.pcapng --keylog keys.log --tap out.tap --scan
   %(prog)s --from-pcap cleartext.pcap --tap out.tap        # already-plaintext capture
   (full offline options: %(prog)s --from-pcap <file> --help)
+
+Offline (read / analyze .tap):
+  %(prog)s -r capture.tap                       # browse flows interactively in the TUI
+  %(prog)s --analyze capture.tap                # passive analysis + findings report
+  %(prog)s --analyze capture.tap --report md
 """)
 
     args = parser.add_argument_group("Arguments")

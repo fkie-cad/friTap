@@ -1,5 +1,12 @@
 # friTap Integration Guide
 
+> **Canonical reference:** For the authoritative, up-to-date agent ↔ host
+> message protocol — including the full `config_batch` field list and every
+> outgoing `contentType` — see
+> [`docs/development/architecture.md`](docs/development/architecture.md). This
+> guide focuses on library usage; the architecture page is the source of truth
+> for the wire protocol.
+
 This guide explains how to use the `friTap` as a Python library to hook into applications, log SSL/TLS data, and manage its integration with the `AndroidFridaManager`. The only required argument to initialize `friTap` is the app package name to be hooked.
 
 ---
@@ -99,23 +106,35 @@ script = None
 def myAwesomeHandler(message, data):
     global script
 
-    # Pass options to friTap hooks (mandatory)
-    if message['payload'] == 'experimental':
-        script.post({'type':'experimental', 'payload': False})
+    # Pass options to friTap hooks (mandatory).
+    #
+    # Modern friTap agents consolidate every per-feature handshake into a
+    # single `config_batch` round-trip. Reply with one dict containing all
+    # config values (see docs/development/architecture.md for the field list).
+    if message['payload'] == 'config_batch':
+        script.post({'type': 'config_batch', 'payload': {
+            'offsets':                   None,
+            'patterns':                  None,
+            'socket_tracing':            False,
+            'defaultFD':                 False,
+            'pcap_enabled':              False,
+            'keylog_enabled':            True,
+            'experimental':              False,
+            'protocol_select':           'tls',
+            'install_lsass_hook':        False,
+            'use_modern':                False,
+            'library_scan':              None,
+            'library_scan_enabled':      False,
+            'ohttp_enabled':             True,
+            'quic_capture_mode':         'stream',
+            'quic_only':                 False,
+            'quic_egress_headers_layer': 'auto',
+            'debug_output':              False,
+        }})
         return
 
-    if message['payload'] == 'defaultFD':
-        script.post({'type':'defaultFD', 'payload': False})
-        return
-
-    if message['payload'] == 'pattern_hooking':
-        script.post({'type':'pattern_hooking', 'payload': False})
-        return
-
-    if message['payload'] == 'offset_hooking':
-        script.post({'type':'offset_hooking', 'payload': False})
-        return
-    
+    # The anti-root probe is the only remaining per-message handshake; it is
+    # sent once, after config_batch.
     if message['payload'] == 'anti':
         script.post({'type':'antiroot', 'payload': False})
         return

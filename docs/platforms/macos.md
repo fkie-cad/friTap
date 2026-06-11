@@ -100,16 +100,12 @@ frida-ps
 
 ### Native macOS Applications
 
-```bash
-# Analyze Safari
-sudo fritap -k safari_keys.log --pcap safari_traffic.pcap Safari
-
-# Analyze Mail app
-sudo fritap -k mail_keys.log Mail
-
-# Analyze system applications
-sudo fritap -k system_keys.log /System/Applications/App\ Store.app/Contents/MacOS/App\ Store
-```
+!!! warning "Native macOS apps will NOT work — SecureTransport not supported"
+    Safari, Mail, Messages, App Store and other native macOS apps use Apple's
+    SecureTransport / Network.framework, which friTap does **not** hook. There
+    are no working capture commands for these apps. See
+    [Unsupported Applications](#unsupported-applications) below. Use
+    BoringSSL-based apps (e.g. Chrome) or Python's OpenSSL instead.
 
 ### Third-Party Applications
 

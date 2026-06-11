@@ -117,8 +117,8 @@ sudo fritap -k mysql_keys.log mysql
 # By process name
 sudo fritap -k keys.log firefox
 
-# By process ID
-sudo fritap -k keys.log --pid 1234
+# By process ID (positional)
+sudo fritap -k keys.log 1234
 
 # By executable path
 sudo -E fritap -k keys.log /usr/bin/curl https://example.com

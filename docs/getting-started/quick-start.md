@@ -12,6 +12,28 @@ friTap operates in two main modes:
 !!! tip "Key Extraction"
     In general, friTap’s key extraction `-k <keylogfile>` mode is better supported than its live decryption mode.
 
+## The Fastest Way to Start: the Interactive TUI
+
+If you are not sure which flags you need, just run friTap with **no arguments**:
+
+```bash
+# Launch the interactive terminal UI (wizard)
+fritap
+```
+
+This opens an interactive wizard where you pick a device, choose attach/spawn,
+select a capture mode, and watch live flows — no flags to memorize. To inspect
+a capture you already made, open it directly in the replay view:
+
+```bash
+# Open a saved .tap file in the replay UI
+fritap -r capture.tap
+# (a bare `fritap capture.tap` also opens replay)
+```
+
+The TUI ships by default (it uses the bundled `textual` dependency). See the
+[Terminal UI guide](tui.md) for the full layout, capture modes, keybindings and
+flow filtering.
 
 ## Desktop Applications
 
@@ -21,8 +43,8 @@ friTap operates in two main modes:
 # Extract keys from Firefox
 sudo fritap -k firefox_keys.log firefox
 
-# Extract keys from a specific process ID
-sudo fritap -k keys.log --pid 1234
+# Extract keys from a specific process ID (PID is a positional argument)
+sudo fritap -k keys.log 1234
 ```
 
 ### Capture Decrypted Traffic
@@ -87,6 +109,22 @@ fritap -m com.example.app
 # List running processes
 frida-ps
 ```
+
+### Inspecting Loaded TLS Libraries
+
+Before capturing, you can see which TLS/SSL libraries a target loads (powered by
+`tlsLibHunter`):
+
+```bash
+# List the TLS/SSL libraries detected in the target
+fritap -ll com.example.app
+fritap --list-libraries firefox
+
+# Extract the detected libraries into a directory for offline analysis
+fritap --extract-libraries ./libs com.example.app
+```
+
+See the [CLI reference](../api/cli.md) for the full flag list.
 
 ### Output Options
 
@@ -333,6 +371,21 @@ sudo fritap --pcap curl_traffic.pcap curl https://httpbin.org/get
 # Test with Firefox
 sudo fritap -k firefox_keys.log firefox
 ```
+
+## Working from an Existing PCAP (Offline)
+
+Already have a packet capture and its TLS key log? You can rebuild a fully
+analyzable `.tap` without re-running the target — convert, analyze, then replay:
+
+```bash
+fritap --from-pcap chrome.pcap --keylog chromekeys.log --tap out.tap
+```
+
+!!! note "Requires Wireshark/tshark"
+    The offline `--from-pcap` pipeline shells out to `tshark` (Wireshark ≥ 4.x).
+
+See the [Offline Quick Start](offline-quickstart.md) for the complete
+pcap → analyze → replay path.
 
 ## Next Steps
 

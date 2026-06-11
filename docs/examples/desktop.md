@@ -80,8 +80,8 @@ Safari analysis requires special considerations due to macOS security features.
 # May require SIP disabled
 sudo fritap -k safari_keys.log Safari
 
-# Alternative: Use process ID
-sudo fritap -k safari_keys.log --pid $(pgrep Safari)
+# Alternative: Use process ID (the PID is a positional argument)
+sudo fritap -k safari_keys.log $(pgrep Safari)
 ```
 
 **Troubleshooting Safari:**
@@ -412,16 +412,16 @@ watch -n 1 "ps -p $FRITAP_PID -o pid,ppid,cmd,%mem,%cpu"
 
 **Optimize for Large Applications:**
 ```bash
-# Reduce overhead for resource-intensive apps
-sudo fritap --buffer-size 512KB --timeout 60 -k keys.log target_app
+# Reduce overhead for resource-intensive apps with a capture timeout
+sudo fritap --timeout 60 -k keys.log target_app
 ```
 
 ### Output Management
 
 **Manage Large Captures:**
 ```bash
-# Rotate capture files
-sudo fritap -k keys.log --pcap traffic.pcap --max-size 100MB target_app
+# Write keys and a PCAP for the session
+sudo fritap -k keys.log --pcap traffic.pcap target_app
 
 # Compress old captures
 gzip old_traffic.pcap

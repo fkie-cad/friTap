@@ -18,9 +18,9 @@ BoringSSL is Google's fork of OpenSSL, designed for use in Google's various prod
 |----------|---------------|-----------------|-------|
 | Linux    | ✓ Full       | ✓ Full         | All versions |
 | Windows  | ✓ Limited    | ✓ Full         | Read/Write hooks only |
-| macOS    | KeyEo      | ✓ Full         | Key extraction only |
+| macOS    | Keys      | ✓ Full         | Key extraction only |
 | Android  | ✓ Full       | ✓ Full         | All Android versions |
-| iOS      | KeyEo      | ✓ Full         | Key extraction only |
+| iOS      | Keys      | ✓ Full         | Key extraction only |
 
 **Legend:**
 - **Full**: Complete key extraction and traffic capture
@@ -133,24 +133,27 @@ fritap --patterns results/libboringssl.so_patterns.json -k keys.log target_app
 
 ### Example Pattern File
 
+friTap's default (legacy) hooking engine uses the **Schema B** object form — patterns
+nested as `modules → module → platform → arch → function → {primary, fallback}`. See
+[Pattern-Based Hooking](../advanced/patterns.md#pattern-file-format) for the full schema
+(and the modern `--modern` Schema A list form).
+
 ```json
 {
-  "version": "1.0",
-  "architecture": "arm64",
-  "platform": "android",
-  "library": "libflutter.so",
-  "patterns": {
-    "SSL_Read": {
-      "primary": "1F 20 03 D5 FD 7B BF A9 F4 4F 01 A9",
-      "fallback": "1F 20 03 D5 ?? ?? ?? ?? F4 4F 01 A9",
-      "offset": 0,
-      "description": "BoringSSL SSL_read in Flutter"
-    },
-    "SSL_Write": {
-      "primary": "FF 83 00 D1 FD 7B 01 A9 F4 4F 02 A9",
-      "fallback": "FF 83 00 D1 ?? ?? ?? ?? F4 4F 02 A9",
-      "offset": 0,
-      "description": "BoringSSL SSL_write in Flutter"
+  "modules": {
+    "libflutter.so": {
+      "android": {
+        "arm64": {
+          "SSL_Read": {
+            "primary":  "1F 20 03 D5 FD 7B BF A9 F4 4F 01 A9",
+            "fallback": "1F 20 03 D5 ?? ?? ?? ?? F4 4F 01 A9"
+          },
+          "SSL_Write": {
+            "primary":  "FF 83 00 D1 FD 7B 01 A9 F4 4F 02 A9",
+            "fallback": "FF 83 00 D1 ?? ?? ?? ?? F4 4F 02 A9"
+          }
+        }
+      }
     }
   }
 }

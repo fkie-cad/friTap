@@ -21,14 +21,14 @@ git clone https://github.com/fkie-cad/friTap.git
 cd friTap
 
 # Run automated setup
-python setup_developer_env.py
+python dev/setup_dev.py
 ```
 
 This script automatically handles all setup requirements and verifies the installation.
 
 ## Automated Setup Details
 
-The `setup_developer_env.py` script performs the following steps:
+The `dev/setup_dev.py` script performs the following steps:
 
 ### Python Environment Setup
 - Validates Python 3.7+ installation
@@ -181,9 +181,9 @@ The `package.json` file includes all necessary TypeScript dependencies:
     "typescript": "^4.9.0"
   },
   "scripts": {
-    "build": "./compile_agent.sh",
-    "watch": "tsc --watch",
-    "clean": "rm -f friTap/_ssl_log*.js"
+    "prepare": "npm run build",
+    "build": "frida-compile agent/fritap_agent.ts -o friTap/fritap_agent.js",
+    "watch": "frida-compile agent/fritap_agent.ts -o friTap/_fritap_agent.js -w"
   }
 }
 ```
@@ -206,26 +206,33 @@ friTap consists of two main components:
 
 ```
 agent/
-├── ssl_log.ts              # Main agent entry point
-├── util/                   # Utility functions
-│   ├── process_infos.ts    # OS/platform detection
-│   ├── log.ts              # Logging functions
-│   └── ssl_library_infos.ts # Library inspection
-├── shared/                 # Common functionality
-│   ├── shared_functions.ts # Cross-platform functions
-│   └── pattern_based_hooking.ts # Pattern matching
-├── ssl_lib/               # SSL library implementations
-│   ├── openssl_boringssl.ts
-│   ├── nss.ts
-│   ├── gnutls.ts
-│   └── ...
-└── {platform}/            # Platform-specific implementations
-    ├── android/
-    ├── ios/
-    ├── linux/
-    ├── windows/
-    └── macos/
+├── fritap_agent.ts         # Main agent entry point (compiled to friTap/fritap_agent.js)
+├── core/                   # HookDefinition + executeFromDefinition loader
+│   ├── hook_definition.ts  # Data-driven hook contract
+│   └── loader.ts           # executeFromDefinition()
+├── shared/                 # Cross-platform helpers + HookRegistry
+│   └── strategies/         # pattern_strategy.ts (byte-pattern scanning)
+├── platforms/              # Platform agents (register hooks)
+│   ├── android.ts
+│   ├── ios.ts
+│   ├── linux.ts
+│   ├── macos.ts
+│   └── windows.ts
+├── tls/                    # TLS library hooks
+│   ├── definitions/        # Modern HookDefinition files (openssl.ts, gnutls.ts, ...)
+│   └── platforms/          # Per-platform executors
+├── quic/                   # QUIC/HTTP3 (google_quiche, quiche, neqo)
+├── ssh/                    # SSH (openssh, libssh)
+├── ipsec/                  # IPsec (strongSwan — detection-only, experimental)
+├── ohttp/                  # OHTTP (NSS HPKE, RFC 9292)
+├── protocols/              # Protocol registry (tls/ipsec/ssh)
+├── schemas/                # Generated message schemas (do not edit by hand)
+├── util/                   # Logging, platform detection
+└── legacy/                 # Legacy class-based hooks (use_modern=false)
 ```
+
+> See [Architecture](architecture.md) for how the agent is injected and talks to the Python host,
+> and [Adding Features](adding-features.md) for the modern `HookDefinition` workflow.
 
 ### Compilation Workflow
 
@@ -235,9 +242,8 @@ agent/
 # Primary compilation (recommended)
 npm run build
 
-# Platform-specific scripts
-./compile_agent.sh     # Linux/macOS  
-compile_agent.bat      # Windows
+# Direct frida-compile invocation
+frida-compile agent/fritap_agent.ts -o friTap/fritap_agent.js
 
 # Watch mode for development
 npm run watch
@@ -249,22 +255,20 @@ python run_tests.py agent
 #### What Compilation Does
 
 1. **Processes TypeScript** files using frida-compile
-2. **Bundles modules** into single JavaScript files
-3. **Generates two versions**:
-   - Modern: `friTap/fritap_agent.js` (Frida 17+)
-   - Legacy: `friTap/_ssl_log_legacy.js` (Frida <17)
+2. **Bundles modules** into a single JavaScript file
+3. **Produces the agent**:
+   - `friTap/fritap_agent.js` (the single compiled agent)
 4. **Injects placeholders** for runtime values (offsets, patterns)
 
 #### Compilation Output
 
 ```bash
 $ npm run build
-> friTap@1.3.5.0 build
-> frida-compile agent/ssl_log.ts -o friTap/fritap_agent.js
+> friTap build
+> frida-compile agent/fritap_agent.ts -o friTap/fritap_agent.js
 
 Compiling main agent...
 ✓ Generated friTap/fritap_agent.js (450KB)
-✓ Generated friTap/_ssl_log_legacy.js (420KB)
 ```
 
 ### Agent Development Cycle
@@ -625,7 +629,7 @@ python -c "import pstats; pstats.Stats('profile_output.prof').sort_stats('cumula
 
 Once your development environment is set up:
 
-1. **Explore the codebase**: Start with `friTap/friTap.py` and `agent/ssl_log.ts`
+1. **Explore the codebase**: Start with `friTap/friTap.py` and `agent/fritap_agent.ts`
 2. **Run the test suite**: `python run_tests.py --fast`
 3. **Try a simple change**: Add a log message and recompile
 4. **Read the other guides**: [Coding Standards](coding-standards.md), [Testing Guide](testing.md)

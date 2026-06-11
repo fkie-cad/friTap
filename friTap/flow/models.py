@@ -220,6 +220,50 @@ class FlowSummary:
             has_notes=bool(flow.notes),
         )
 
+    def to_dict(self) -> dict:
+        """Return a JSON-safe, body-free dict for a high-level flow overview.
+
+        Emits the canonical FlowSummary key set shared with
+        :meth:`friTap.flow.tap_format.FlowSummary.to_dict` so that live
+        summaries (built via :meth:`from_flow`) and offline summaries (read
+        from a .tap) render identically in a web UI / TUI / CLI overview.
+        """
+        req, resp = self.request, self.response
+        return {
+            "flow_id": self.flow_id,
+            "connection_id": self.connection_id,
+            "src_addr": self.src_addr,
+            "src_port": self.src_port,
+            "dst_addr": self.dst_addr,
+            "dst_port": self.dst_port,
+            "ssl_session_id": self.ssl_session_id,
+            "state": self.state.value if isinstance(self.state, FlowState) else str(self.state),
+            "started": self.started,
+            "ended": self.ended,
+            # Deterministic and parity-matched with tap_format.FlowSummary.to_dict:
+            # the `duration` property returns wall-clock `time.time() - started`
+            # for in-progress flows (ended == 0), which is non-deterministic and
+            # would diverge from the offline summary shape. A serialized snapshot
+            # uses 0.0 until the flow completes.
+            "duration": (self.ended - self.started) if self.ended > 0 else 0.0,
+            "protocol": (self.detected_protocol
+                         or (req.protocol if req else "")
+                         or (resp.protocol if resp else "")
+                         or "unknown"),
+            "method": req.method if req else "",
+            "url": req.url if req else "",
+            "host": req.host if req else "",
+            "status_code": resp.status_code if resp else 0,
+            "total_bytes": self.total_bytes,
+            "detected_protocol": self.detected_protocol,
+            "process_name": self.process_name,
+            "tls_sni": self.tls_sni,
+            "tls_alpn": self.tls_alpn,
+            "tag_count": self.tag_count,
+            "finding_count": self.finding_count,
+            "has_notes": self.has_notes,
+        }
+
 
 @dataclass
 class Flow:
@@ -508,6 +552,48 @@ class Flow:
             self.response if self.has_response_data else None,
             self.src_addr, self.src_port, self.dst_addr, self.dst_port,
         )
+
+    def to_dict(self, include_bodies: bool = False) -> dict:
+        """Return a JSON-safe dict view of this flow for API/web consumers.
+
+        Covers identity, transport/timing, parsed request/response (via
+        :meth:`ParseResult.to_dict`), the protocol layer names, analyst
+        annotations and attached findings. Raw chunk bytes are never included;
+        request/response bodies are included (hex-encoded) only when
+        *include_bodies* is True. Uses the non-mutating :meth:`layer` lookup so
+        serializing never grows the layer stack.
+        """
+        tls = self.layer("tls")
+        total_bytes = self._total_bytes or sum(len(c.data) for c in self.chunks)
+        return {
+            "flow_id": self.flow_id,
+            "connection_id": self.connection_id,
+            "src_addr": self.src_addr,
+            "src_port": self.src_port,
+            "dst_addr": self.dst_addr,
+            "dst_port": self.dst_port,
+            "ssl_session_id": self.ssl_session_id,
+            "transport": self.transport,
+            "state": self.state.value if isinstance(self.state, FlowState) else str(self.state),
+            "started": self.started,
+            "ended": self.ended,
+            # Deterministic: avoid the wall-clock `duration` property for an
+            # in-progress flow so the serialized snapshot is stable across calls.
+            "duration": (self.ended - self.started) if self.ended > 0 else 0.0,
+            "protocol": self.display_protocol,
+            "detected_protocol": self.detected_protocol,
+            "total_bytes": total_bytes,
+            "process_name": self.process_name,
+            "package_name": self.package_name,
+            "tls_sni": tls.sni if tls is not None else "",
+            "tls_alpn": tls.alpn if tls is not None else "",
+            "layers": [ly.name for ly in self.layers],
+            "tags": list(self.tags),
+            "notes": self.notes,
+            "request": self.request.to_dict(include_body=include_bodies) if self.request else None,
+            "response": self.response.to_dict(include_body=include_bodies) if self.response else None,
+            "findings": [f.to_dict() for f in self.findings],
+        }
 
     # ------------------------------------------------------------------
     # On-demand body reconstruction from raw chunks

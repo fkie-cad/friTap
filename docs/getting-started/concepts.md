@@ -174,6 +174,27 @@ fritap --offsets offsets.json target
 4. **Packet Reconstruction**: Rebuild network packets
 5. **PCAP Generation**: Save as standard PCAP file
 
+## End-to-End Data Flow
+
+At a high level, a single capture moves through these stages:
+
+1. The **Python CLI** (`fritap`) parses your arguments and builds a
+   `FriTapConfig` — the offline-safe description of *what* to capture.
+2. friTap **injects the Frida agent** (`friTap/fritap_agent.js`) into the
+   target process and hands it the configuration as one `config_batch` message.
+3. The agent installs the requested **hooks** (key callbacks, `SSL_read`/
+   `SSL_write`, QUIC/SSH equivalents) and streams results back to Python as
+   typed **messages** (keylog, datalog, library-detected, lifecycle, …).
+4. Python turns those messages into **events**, which feed the **flow model**
+   and are persisted — keys to a NSS key log, plaintext to PCAP/PCAPNG, and the
+   full session to a self-contained **`.tap`** file.
+
+!!! info "Wire-level detail"
+    The exact `config_batch` fields, the outgoing message `contentType`s, and
+    the build/compile pipeline are documented in
+    [Architecture](../development/architecture.md). This page stays at the
+    conceptual level and does not duplicate the field tables.
+
 ## Protocol Layer Stack & Flow Model
 
 Every captured connection is represented as a `Flow`. A flow is an ordered,
@@ -182,6 +203,14 @@ the innermost application/decrypted protocol — for example `[tls, http2]` or
 `[quic, http3]`. Because HTTP/2 and HTTP/3 streams are demultiplexed into
 separate flows, the stack never branches; it always stays a single straight
 line.
+
+```mermaid
+graph LR
+    F[Flow] --> T[tls<br/>TlsLayer]
+    T --> A[http2<br/>AppLayer]
+    A -.->|.parsed| R["flow.request / flow.response"]
+    T -.->|.data .read / .write| D[decrypted bytes]
+```
 
 ### Accessing layers
 
@@ -227,6 +256,51 @@ nested-protocol support: a decryptor would peel a plaintext inner protocol out
 of an encrypted carrier (e.g. Signal's double-ratchet or MTProto inside TLS).
 The decryptor registry ships **empty** today, so the seam is a no-op for all
 current traffic.
+
+### Working with the protocol layer stack (programmatically)
+
+When you consume flows from Python (live via callbacks, or offline via
+`TapReader`/`ReplayController`), the layer stack is the typed API you reach
+for. The relevant types live in `friTap.flow.layers`:
+
+```python
+# Transport handshake metadata via the never-None attribute accessors:
+flow.tls.sni          # -> str   (TlsLayer.sni; "" until populated)
+flow.tls.version      # TlsLayer: library / version / sni / alpn / cipher
+flow.quic.alpn        # QuicLayer: version / sni / alpn / cipher / scid / dcid
+flow.ssh.kex          # SshLayer: client_version / server_version / kex / cipher / mac
+
+# Non-mutating lookup (returns the layer or None — does NOT grow the stack):
+http2 = flow.layer("http2")
+if http2 is not None:
+    parsed = http2.parsed         # mirrors flow.request / flow.response
+    body_c2s = http2.data.write   # client->server decrypted bytes (alias .c2s)
+    body_s2c = http2.data.read    # server->client decrypted bytes (alias .s2c)
+
+# Positional view (outermost transport first):
+[ly.name for ly in flow.layers]   # e.g. ["tls", "http2"]
+```
+
+!!! warning "Attribute access vs. `layer()`"
+    `flow.tls` / `flow.quic` / `flow.ssh` are **lazy and never `None`** — they
+    materialize and *attach* an empty typed layer on first access (so
+    `flow.tls.sni = "..."` persists). For a pure read that must not grow the
+    stack — serializers, snapshots, filter probing — use the non-mutating
+    `flow.layer(name)`, which returns `None` when the layer is absent.
+
+Each layer exposes a `LayerData` (`flow.<layer>.data`) with the directional
+views `.read`/`.write` (and aliases `.s2c`/`.c2s`). For transport and
+application layers these are zero-copy views over the flow's decrypted chunks;
+only nested-decryption *inner* layers hold owned bytes.
+
+!!! note "Why `pr.body` may be empty — body de-dup"
+    To keep `.tap` files small, friTap does **not** store a separate body blob
+    when a parsed result's body can be reconstructed from the captured chunks.
+    On such records the parsed result carries `body_from_chunks=True` and an
+    empty `pr.body`; the real bytes are rebuilt on demand. Read bodies through
+    the flow helpers — `flow.request_body` / `flow.response_body` (or
+    `Flow.reconstruct_body(direction)`) — rather than `flow.request.body`,
+    which can legitimately be empty even when a body exists.
 
 ### Metadata is offline-only
 

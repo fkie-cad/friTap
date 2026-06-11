@@ -235,10 +235,18 @@ if (version.toInt32() >= 0x0304) {
 
 The Python host application follows PEP 8 with Black formatting and additional friTap-specific conventions.
 
+!!! note "Tool configuration is recommended, not yet enforced"
+    The `pyproject.toml` shipped in the repository currently contains only a
+    `[build-system]` section. The `[tool.black]`, isort, and related tool
+    configurations shown below are **recommended** settings for contributors —
+    they are not (yet) present in `pyproject.toml`, so they are not enforced
+    automatically. Apply them locally if you want output matching these
+    conventions.
+
 ### Code Formatting
 
 #### Black Configuration
-We use Black with these settings (in `pyproject.toml`):
+friTap recommends Black with these settings (add them to `pyproject.toml` if you want them applied):
 
 ```toml
 [tool.black]
@@ -254,7 +262,7 @@ extend-exclude = '''
 ```
 
 #### Import Organization
-Follow this import order (enforced by isort):
+Follow this import order (recommended; matches isort's default profile, though isort is not configured in `pyproject.toml`):
 
 ```python
 # Standard library imports

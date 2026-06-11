@@ -14,6 +14,11 @@ import re
 import logging
 
 
+# Shared hex-pattern grammar: space-separated 2-char tokens, ``?``/``??`` wildcards
+# allowed (used by both the modern list schema and the legacy object schema).
+_HEX_PATTERN_RE = re.compile(r'^([0-9A-Fa-f?]{2}\s)*[0-9A-Fa-f?]{2}$')
+
+
 class PatternLoader:
     """Loads, validates, and merges pattern data for friTap hooking."""
 
@@ -67,27 +72,51 @@ class PatternLoader:
 
     @staticmethod
     def validate(patterns: dict, logger=None) -> bool:
-        """Validate pattern data structure and hex format.
+        """Validate pattern data against either supported schema.
 
-        Expected structure: {lib_name: {arch: {function: [pattern_str, ...]}}}
-        Pattern format: hex bytes separated by spaces, ? wildcards allowed.
+        friTap has two byte-pattern engines, each with its own valid schema:
+
+        * **Legacy** engine (``PatternBasedHooking``; the default when ``--modern``
+          is off) — an object form wrapped in a top-level ``modules`` key::
+
+              {"modules": {<module>: {<platform>: {<arch>: {<function>:
+                  {"primary": "..", "fallback": "..", "second_fallback": ".."}}}}}}
+
+          Leaves may also be a bare hex string or a list of hex strings.
+        * **Modern** engine (``PatternStrategy``; the ``--modern`` path) — a flat
+          map ``{<library>: {<arch>: {<function>: [pattern_str, ...]}}}``.
+
+        A file is valid when it matches *either* schema; only files matching
+        neither are rejected. (Historically this validator accepted only the
+        modern list form and silently dropped legacy ``--patterns`` files.)
+
+        Pattern format (both schemas): hex bytes separated by spaces, ``?``
+        wildcards allowed.
 
         Args:
             patterns: Pattern dictionary to validate.
             logger: Optional logger; falls back to 'friTap' logger if None.
 
         Returns:
-            True if all patterns are valid.
+            True if all patterns are valid for the detected schema.
         """
         if logger is None:
             logger = logging.getLogger("friTap")
-        hex_pattern = re.compile(r'^([0-9A-Fa-f?]{2}\s)*[0-9A-Fa-f?]{2}$')
-        valid = True
 
         if not isinstance(patterns, dict):
             logger.warning("Pattern data must be a dictionary")
             return False
 
+        # The legacy engine wraps everything under a top-level "modules" key;
+        # the modern engine does not. Dispatch on that marker.
+        if "modules" in patterns:
+            return PatternLoader._validate_legacy(patterns["modules"], logger)
+        return PatternLoader._validate_modern(patterns, logger)
+
+    @staticmethod
+    def _validate_modern(patterns: dict, logger) -> bool:
+        """Validate the modern flat schema: {lib: {arch: {func: [pattern, ...]}}}."""
+        valid = True
         for lib_name, lib_data in patterns.items():
             if lib_name.startswith("_"):
                 continue
@@ -110,12 +139,95 @@ class PatternLoader:
                         valid = False
                         continue
                     for i, pat in enumerate(pattern_list):
-                        if not isinstance(pat, str) or not hex_pattern.match(pat):
+                        if not isinstance(pat, str) or not _HEX_PATTERN_RE.match(pat):
                             logger.warning(
                                 "Invalid hex pattern at %s/%s/%s[%d]: %r",
                                 lib_name, arch_name, func_name, i, pat
                             )
                             valid = False
+        return valid
+
+    @staticmethod
+    def _validate_legacy(modules: dict, logger) -> bool:
+        """Validate the legacy object schema under the ``modules`` wrapper:
+        {module: {platform: {arch: {function: <leaf>}}}} where <leaf> is a hex
+        string, a list of hex strings, or a {primary, fallback, second_fallback}
+        object.
+
+        Validation is **structural** (the nesting and leaf *types* must be
+        right) — that part is fatal. Hex *content* is only advisory: the legacy
+        engine deliberately tolerates empty / placeholder / not-yet-derived
+        entries (``isNonEmptyActionPattern`` skips empties; bad patterns fall
+        back to symbol hooking), and shipped pattern files legitimately carry
+        placeholders. So a malformed hex string warns at debug level but never
+        fails validation — otherwise a perfectly usable legacy file would be
+        dropped just because one entry is a placeholder.
+        """
+        if not isinstance(modules, dict):
+            logger.warning("Legacy pattern 'modules' must be a dictionary")
+            return False
+
+        valid = True
+
+        def check_hex(label, value):
+            # Content-only, advisory. Empty strings are intentional placeholders.
+            if isinstance(value, str) and value.strip() and not _HEX_PATTERN_RE.match(value):
+                logger.debug("Non-hex legacy pattern at %s: %r", label, value)
+
+        def check_leaf(label, leaf):
+            nonlocal valid
+            if isinstance(leaf, str):
+                check_hex(label, leaf)
+            elif isinstance(leaf, list):
+                for i, pat in enumerate(leaf):
+                    check_hex("%s[%d]" % (label, i), pat)
+            elif isinstance(leaf, dict):
+                # Object form — any of primary/fallback/second_fallback may be
+                # present (mirrors the agent's isNonEmptyActionPattern contract).
+                for key in ("primary", "fallback", "second_fallback"):
+                    if key in leaf:
+                        check_hex("%s.%s" % (label, key), leaf[key])
+            else:
+                logger.warning(
+                    "Legacy pattern '%s' must be a hex string, list, or "
+                    "{primary, fallback} object", label
+                )
+                valid = False
+
+        for mod_name, mod_data in modules.items():
+            if mod_name.startswith("_"):
+                continue
+            if not isinstance(mod_data, dict):
+                logger.warning("Legacy pattern module '%s' must be a dictionary", mod_name)
+                valid = False
+                continue
+            for platform_name, platform_data in mod_data.items():
+                if platform_name.startswith("_"):
+                    continue
+                if not isinstance(platform_data, dict):
+                    logger.warning(
+                        "Legacy pattern platform '%s/%s' must be a dictionary",
+                        mod_name, platform_name
+                    )
+                    valid = False
+                    continue
+                for arch_name, arch_data in platform_data.items():
+                    if arch_name.startswith("_"):
+                        continue
+                    if not isinstance(arch_data, dict):
+                        logger.warning(
+                            "Legacy pattern arch '%s/%s/%s' must be a dictionary",
+                            mod_name, platform_name, arch_name
+                        )
+                        valid = False
+                        continue
+                    for func_name, leaf in arch_data.items():
+                        if func_name.startswith("_"):
+                            continue
+                        check_leaf(
+                            "%s/%s/%s/%s" % (mod_name, platform_name, arch_name, func_name),
+                            leaf
+                        )
         return valid
 
     @staticmethod

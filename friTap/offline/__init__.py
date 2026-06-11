@@ -15,6 +15,12 @@ from .pcap_to_tap import (
 )
 from .tshark import capture_has_dsb
 
+# NOTE: the manifest-aware ``pcap_to_tap`` wrapper lives in the submodule
+# ``friTap.offline.pcap_to_tap`` (next to ``convert_pcap_to_tap``) and is NOT
+# bound here, because doing so would shadow the same-named submodule attribute
+# (``friTap.offline.pcap_to_tap`` must keep resolving to the module). The
+# wrapper is re-exported from the package root as ``friTap.pcap_to_tap``.
+
 __all__ = [
     "ConvertResult",
     "NoDecryptionKeysError",

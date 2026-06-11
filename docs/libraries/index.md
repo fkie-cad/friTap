@@ -8,6 +8,7 @@ friTap supports a wide range of SSL/TLS libraries across different platforms. Th
 |---------|-------|---------|-------|---------|-----|--------------|
 | **OpenSSL** | ✓ Full | R/W | Keys | ✓ Full | Keys | Most widely used |
 | **BoringSSL** | ✓ Full | R/W | Keys | ✓ Full | Keys | Google's OpenSSL fork |
+| **LibreSSL** | TBI | TBI | Keys | TBI | TBI | OpenBSD's fork (macOS system `/usr/lib/libssl.*.dylib`) |
 | **NSS** | ✓ Full | R/W | TBI | ✓ Full | TBI | Mozilla's library |
 | **GnuTLS** | R/W | R/W | TBI | ✓ Full | TBI | GNU project library |
 | **WolfSSL** | R/W | R/W | TBI | ✓ Full | TBI | Embedded/IoT focused |
@@ -22,6 +23,7 @@ friTap supports a wide range of SSL/TLS libraries across different platforms. Th
 | **Mono BTLS** | TBI | TBI | TBI | ✓ Full | TBI | Xamarin/.NET |
 | **MatrixSSL** | ✓ Full | TBI | TBI | TBI | TBI | Commercial SSL |
 | **BouncyCastle** | TBA | TBA | TBA | ✓ Full | TBA | Java crypto |
+| **metaRTC** | TBI | TBI | TBI | ✓ Full | TBI | WebRTC stack (`libstartup`) |
 
 **Legend:**
 - ✓ **Full**: Complete support (keys + traffic decryption)
@@ -33,6 +35,23 @@ friTap supports a wide range of SSL/TLS libraries across different platforms. Th
 
 !!! note "Schannel Support"
     Windows Schannel support is implemented via LSASS hooking, providing system-wide TLS key extraction for all applications using Windows native TLS. See [Windows Platform Guide](../platforms/windows.md) for details.
+
+!!! info "Beyond the TLS-library matrix"
+    The matrix above covers the TLS libraries. friTap also supports protocols
+    that sit outside this table:
+
+    - **QUIC / HTTP-3** — Google QUICHE, Cloudflare quiche, and Mozilla neqo, in
+      both `stream` and `app-api` capture modes.
+    - **OHTTP** — Oblivious HTTP via NSS HPKE (RFC 9292). Captured *within* the
+      TLS family (covered by `--protocol tls`); there is no separate `--ohttp`
+      flag. See [OHTTP](../protocols/ohttp.md).
+    - **SSH** — OpenSSH and libssh. See [SSH](../protocols/ssh.md).
+    - **IPsec** — **EXPERIMENTAL**, detection-only (strongSwan/libcharon); IKE/CHILD_SA
+      key extraction is not functional yet.
+
+    The `gdb`, `lldb`, and `ebpf` instrumentation backends are
+    **EXPERIMENTAL/future**; the default and only production backend is `frida`.
+    Dropbear and libssh2 are **not** supported.
 
 ## Library Detection
 
@@ -69,8 +88,10 @@ fritap --list-libraries target_app
 
 **Platform-Specific**
 - **Schannel**: Windows native SSL/TLS
-- **Secure Transport**: macOS/iOS native implementation
 - **NSS**: Mozilla's Network Security Services
+
+**Not Currently Supported (Planned)**
+- **Secure Transport / Network.framework**: macOS/iOS native TLS implementations — no hooks are implemented, so apps using Apple's native TLS (e.g. Safari, Mail) cannot be analyzed
 
 ### Embedded Libraries
 
@@ -200,13 +221,20 @@ fritap --patterns patterns.json -k keys.log target
 
 ### Common Pattern Sources
 
+Pattern files use the **Schema B** object form (`modules → module → platform → arch →
+function → {primary, fallback}`) for the default engine — see
+[Pattern-Based Hooking](../advanced/patterns.md#pattern-file-format) for the complete schema.
+
 **Flutter Applications:**
 ```json
 {
-  "library": "libflutter.so",
-  "patterns": {
-    "SSL_Read": {
-      "primary": "1F 20 03 D5 ?? ?? ?? ?? F4 4F 01 A9"
+  "modules": {
+    "libflutter.so": {
+      "android": {
+        "arm64": {
+          "SSL_Read": { "primary": "1F 20 03 D5 ?? ?? ?? ?? F4 4F 01 A9" }
+        }
+      }
     }
   }
 }
@@ -215,10 +243,13 @@ fritap --patterns patterns.json -k keys.log target
 **Cronet (Chrome Network Stack):**
 ```json
 {
-  "library": "libcronet.so", 
-  "patterns": {
-    "SSL_Write": {
-      "primary": "FF 83 00 D1 ?? ?? ?? ?? F4 4F 02 A9"
+  "modules": {
+    "libcronet.so": {
+      "android": {
+        "arm64": {
+          "SSL_Write": { "primary": "FF 83 00 D1 ?? ?? ?? ?? F4 4F 02 A9" }
+        }
+      }
     }
   }
 }
@@ -338,10 +369,13 @@ fritap --patterns new_patterns.json -k test.log target
 
 **Planned Additions:**
 - **Botan**: Crypto++ successor
-- **LibreSSL**: OpenBSD SSL library
 - **Cryptlib**: Peter Gutmann's library
-- **MatrixSSL**: Commercial SSL library
 - **JSSE**: Java Secure Socket Extension
+
+!!! note "Already implemented"
+    **LibreSSL** (macOS system SSL) and **MatrixSSL** are now supported — see
+    the [support matrix](#supported-libraries-matrix) above. They are no longer
+    on the planned list.
 
 **Community Requests:**
 - Submit library support requests via GitHub issues

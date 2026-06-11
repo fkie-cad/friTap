@@ -812,6 +812,64 @@ def build_quic_command(
     return cmd
 
 
+# QUIC versions whose long-header Initial tshark recognizes — the FALLBACK half of
+# the detection filter (the ClientHello clause is the primary, version-INDEPENDENT
+# signal). A genuine Initial carries one of these in its CLEARTEXT version field
+# (not under header protection); decrypted HTTP/3 force-parsed as QUIC never hits
+# these exact values (verified: zero matches). A brand-new version is still caught
+# via its ClientHello, so this list is belt-and-suspenders — but extend it as IANA
+# registers versions to keep the fallback current.
+_KNOWN_QUIC_VERSIONS = ("1", "0x6b3343cf")  # QUIC v1 (RFC 9000), v2 (RFC 9369)
+
+# A capture carries a genuine, undecryptable QUIC connection when tshark sees a
+# QUIC ClientHello (it derives Initial keys from the public salt + client DCID — no
+# private keys needed) OR a long-header Initial bearing a registered version. Both
+# are impossible for friTap's decrypted HTTP/3 to fake, so this filter never
+# matches a decrypted capture. Captures with no handshake (mid-connection 1-RTT)
+# carry no such marker and are intentionally NOT detectable without keys.
+_QUIC_DETECTION_DISPLAY_FILTER = (
+    "tls.handshake.type == 1 || (quic.long.packet_type == 0 && ("
+    + " || ".join(f"quic.version == {v}" for v in _KNOWN_QUIC_VERSIONS)
+    + "))"
+)
+
+
+def build_quic_detection_command(
+    pcap: str,
+    *,
+    quic_ports: Sequence[int] = (),
+    extra_decode_as: Sequence[str] = (),
+    heuristic: bool = False,
+) -> list[str]:
+    """Build the ``tshark`` argv that lists udp.streams carrying genuine QUIC.
+
+    Used by the KEYLESS plaintext path to find encrypted-QUIC streams it must skip
+    rather than ingest as bogus plaintext. Mirrors :func:`build_quic_command`'s
+    Decode-As/heuristic shape (QUIC is only dissected on DLT_RAW captures when a
+    ``udp.port==443,quic`` rule is supplied), but exports ONLY ``udp.stream`` and
+    filters to :data:`_QUIC_DETECTION_DISPLAY_FILTER` — a conservative,
+    zero-false-positive handshake marker. The plaintext pass itself stays
+    Decode-As-free, so this detection never alters how decrypted bytes are read.
+
+    Args:
+        pcap: Path to the capture (pcap or pcapng).
+        quic_ports: Extra UDP ports to Decode-As QUIC. 443 is always included
+            when this is empty.
+        extra_decode_as: Raw ``-d`` rule strings passed through verbatim.
+        heuristic: Enable tshark's TCP heuristic-first dissection.
+
+    Returns:
+        The full argv list (first element is the literal ``"tshark"``; callers
+        resolve the real path via :func:`find_tshark`).
+    """
+    cmd: list[str] = ["tshark", "-r", pcap, "-2", "-T", "ek"]
+    cmd += _heuristic_flags(heuristic)
+    cmd += _decode_as_flags("udp.port", "quic", quic_ports, extra_decode_as,
+                            default_port=DEFAULT_QUIC_PORT)
+    cmd += ["-e", "udp.stream", "-Y", _QUIC_DETECTION_DISPLAY_FILTER]
+    return cmd
+
+
 # TLS-over-TCP fields for the single-pass decrypted-data export. There is NO
 # decrypted-TLS display field (``tls.app_data`` is the ENCRYPTED record), so the
 # decrypted bytes are recovered indirectly: build_tls_command disables the HTTP
@@ -840,11 +898,24 @@ _TLS_DATA_DISPLAY_FILTER = "tls.app_data"
 # with its own protocol parsers, so tshark's interpretation is unwanted).
 _TLS_DISABLED_SUBDISSECTORS = ("http", "http2")
 
+# (frame.protocols token -> tshark field that proves a genuinely-dissected
+# record). A real TLS record / QUIC packet exposes cleartext framing even without
+# keys, so the field is present ONLY when tshark actually parsed one. friTap.offline
+# .pcap_to_tap._is_encrypted_record uses these to tell genuine cipher-text from
+# payload the heuristic dissector merely *tagged* "tls"/"quic" (e.g. friTap's own
+# decrypted HTTP/2 on TCP/443). Declared once here because the field must be
+# exported in _PLAINTEXT_FIELDS AND looked up by the consumer — the two MUST stay
+# in lockstep, so both derive from this single source.
+ENCRYPTED_RECORD_MARKERS = (
+    ("tls", "tls.record.content_type"),
+    ("quic", "quic.header_form"),
+)
+
 # Fields for the plaintext (no-keys) single-pass: the raw transport payload of an
 # already-cleartext capture, plus the per-frame protocol stack so encrypted
 # (TLS/QUIC) streams can be detected and skipped. frame.protocols looks like
-# "eth:ethertype:ip:tcp:tls"; its presence of "tls"/"quic" marks a stream that
-# needs keys and cannot be ingested as plaintext.
+# "eth:ethertype:ip:tcp:tls"; a "tls"/"quic" token PLUS its record marker (see
+# ENCRYPTED_RECORD_MARKERS) marks a stream that needs keys and cannot be ingested.
 _PLAINTEXT_FIELDS = (
     "frame.time_epoch",
     "frame.protocols",
@@ -860,10 +931,11 @@ _PLAINTEXT_FIELDS = (
     "udp.srcport",
     "udp.dstport",
     "udp.payload",
-)
+) + tuple(field for _proto, field in ENCRYPTED_RECORD_MARKERS)
 # Export every frame that carries raw transport payload. TLS/QUIC frames also
 # match (their records ride in tcp.payload/udp.payload), so the Python side skips
-# those streams by inspecting frame.protocols — keeping the tshark side simple.
+# those streams by inspecting frame.protocols PLUS a corroborating record marker
+# (see ENCRYPTED_RECORD_MARKERS) — keeping the tshark side simple.
 _PLAINTEXT_DISPLAY_FILTER = "tcp.payload or udp.payload"
 
 

@@ -19,7 +19,8 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-from typing import TYPE_CHECKING, Callable
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Callable
 
 from friTap.analysis import Severity, analyze_tap_multi, severity_rank
 from friTap.analysis.registry import resolve_analyzers
@@ -71,6 +72,98 @@ def _sidecar_path(tap_file: str) -> str:
     """Return the ``<tap_stem>.findings.json`` sidecar path for *tap_file*."""
     stem, _ext = os.path.splitext(tap_file)
     return f"{stem}.findings.json"
+
+
+@dataclass(frozen=True)
+class AnalyzeReport:
+    """Result of a programmatic ``.tap`` analysis.
+
+    Carries both the structured (already severity-filtered) findings and the
+    report rendered in the requested format, so web / TUI / CLI callers can use
+    whichever they need without re-running the analyzers. Returned by
+    :func:`analyze_tap_report`.
+    """
+
+    findings: list["Finding"]
+    rendered: str
+    report_format: str
+    analyzer_names: list[str] = field(default_factory=list)
+    meta: dict[str, Any] = field(default_factory=dict)
+    gate_severity: str = _GATE_SEVERITY
+
+    @property
+    def gate_tripped(self) -> bool:
+        """True iff any finding is at or above :attr:`gate_severity`.
+
+        Mirrors the condition under which :func:`run_analyze_cli` returns the
+        non-zero CI-gate exit code.
+        """
+        return bool(_filter_min_severity(self.findings, self.gate_severity))
+
+    @property
+    def exit_code(self) -> int:
+        """CLI-parity exit code: 2 when :attr:`gate_tripped`, else 0."""
+        return 2 if self.gate_tripped else 0
+
+
+def analyze_tap_report(
+    tap_file: str,
+    *,
+    scanners: str | None = None,
+    analyzer_path: str | None = None,
+    min_severity: str = "info",
+    report_format: str = "table",
+    include_private_ips: bool = False,
+    protobuf_schema: str | None = None,
+) -> AnalyzeReport:
+    """Run analyzers over *tap_file* and return findings + a rendered report.
+
+    Pure orchestration shared by the CLI and external tools: resolve analyzers
+    (``scanners`` is a comma-separated name list, or ``None``/``"all"`` for the
+    built-ins) → run them → filter by *min_severity* → render in
+    *report_format* (one of :func:`list_report_formats`). Performs no stdout,
+    no sidecar write and never calls ``sys.exit`` — callers decide how to
+    surface the result.
+
+    Raises ``ValueError`` for an unknown *report_format* or an unresolvable
+    analyzer spec, ``ImportError`` for a bad ``analyzer_path``; any .tap
+    read/analyze failure propagates.
+    """
+    if report_format not in _REPORTER_REGISTRY:
+        raise ValueError(
+            f"unknown report format {report_format!r}; "
+            f"choose from {', '.join(sorted(_REPORTER_REGISTRY))}"
+        )
+
+    analyzers = resolve_analyzers(
+        scanners,
+        analyzer_path=analyzer_path,
+        include_private_ips=include_private_ips,
+        protobuf_schema=protobuf_schema,
+    )
+    findings = analyze_tap_multi(analyzers, tap_file)
+    filtered = _filter_min_severity(findings, min_severity)
+    analyzer_names = [a.name for a in analyzers]
+    meta = {"tap_file": tap_file, "analyzers": analyzer_names}
+    rendered = _REPORTER_REGISTRY[report_format]().report(filtered, meta)
+    return AnalyzeReport(
+        findings=filtered,
+        rendered=rendered,
+        report_format=report_format,
+        analyzer_names=analyzer_names,
+        meta=meta,
+    )
+
+
+def list_report_formats() -> list[str]:
+    """Return the available report-format names (e.g. ``json``/``csv``/``md``/``table``)."""
+    return sorted(_REPORTER_REGISTRY)
+
+
+def list_analyzers() -> list[str]:
+    """Return the names of the built-in analyzers available to ``--scan``/analyze."""
+    from friTap.analysis.registry import available_analyzers
+    return available_analyzers()
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -136,8 +229,15 @@ def run_analyze_cli(argv: list[str]) -> int:
         logger.error("tap file not found: %s", args.tap_file)
         return 1
 
+    # Resolve analyzers first so a bad scanner name / --analyzer-path surfaces
+    # the precise "Could not resolve analyzers" diagnostic. analyze_tap_report
+    # resolves again internally, but resolution is pure, cheap object
+    # construction — the duplicate call is worth keeping the two-stage error
+    # classification (resolve failure vs. analyze/read/render failure), so a
+    # ValueError raised while reading a corrupt .tap is not mislabeled as a
+    # scanner-resolution problem.
     try:
-        analyzers = resolve_analyzers(
+        resolve_analyzers(
             args.scanners,
             analyzer_path=args.analyzer_path,
             include_private_ips=args.include_private_ips,
@@ -148,19 +248,22 @@ def run_analyze_cli(argv: list[str]) -> int:
         return 1
 
     try:
-        findings = analyze_tap_multi(analyzers, args.tap_file)
+        report = analyze_tap_report(
+            args.tap_file,
+            scanners=args.scanners,
+            analyzer_path=args.analyzer_path,
+            min_severity=args.min_severity,
+            report_format=args.report,
+            include_private_ips=args.include_private_ips,
+            protobuf_schema=args.protobuf_schema,
+        )
     except Exception as exc:  # noqa: BLE001 — surface any read/analyze failure cleanly
         logger.error("Analysis failed: %s", exc)
         return 1
 
-    filtered = _filter_min_severity(findings, args.min_severity)
-    meta = {
-        "tap_file": args.tap_file,
-        "analyzers": [a.name for a in analyzers],
-    }
-
-    reporter = _REPORTER_REGISTRY[args.report]()
-    rendered = reporter.report(filtered, meta)
+    filtered = report.findings
+    meta = report.meta
+    rendered = report.rendered
 
     if args.report_out:
         # Mirror the sidecar write below: an unwritable path must surface as the
@@ -185,12 +288,16 @@ def run_analyze_cli(argv: list[str]) -> int:
         logger.warning("Could not write findings sidecar: %s", exc)
 
     # Gate: non-zero exit when any finding is at or above _GATE_SEVERITY.
-    # Reuse the filter rather than a second bespoke severity scan.
-    return 2 if _filter_min_severity(filtered, _GATE_SEVERITY) else 0
+    # Reuse the AnalyzeReport gate rather than a second bespoke severity scan.
+    return report.exit_code
 
 
 __all__ = [
     "run_analyze_cli",
+    "AnalyzeReport",
+    "analyze_tap_report",
+    "list_report_formats",
+    "list_analyzers",
     "_REPORTER_REGISTRY",
     "_SEVERITY_ORDER",
     "_filter_min_severity",

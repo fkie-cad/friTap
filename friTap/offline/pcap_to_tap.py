@@ -25,8 +25,10 @@ from friTap.flow.layers import SshLayer
 from friTap.flow.tap_writer import TapWriter
 
 from .tshark import (
+    ENCRYPTED_RECORD_MARKERS,
     build_plaintext_command,
     build_quic_command,
+    build_quic_detection_command,
     build_tls_command,
     capture_has_dsb,
     decode_hex,
@@ -67,6 +69,15 @@ class ConvertResult:
     # encrypted (TLS/QUIC) and therefore need keys. Drives the "looks encrypted —
     # pass --keylog" hint in the offline CLI.
     encrypted_streams_skipped: int = 0
+
+    def to_dict(self) -> dict:
+        """Return a JSON-safe dict view of this conversion summary.
+
+        Lets web/API callers serialize the result of a pcap-to-tap conversion
+        without reaching into the dataclass fields by hand.
+        """
+        from dataclasses import asdict
+        return asdict(self)
 
 
 class _StreamDirectionTracker:
@@ -655,20 +666,81 @@ def _emit_tls_streams_singlepass(
     result.stream_count += len(tcp_streams)
 
 
+def _is_encrypted_record(layers: dict, proto_layers: list[str]) -> bool:
+    """Return True when a keyless packet carries genuine cipher-text.
+
+    tshark's heuristic dissector tags any unparseable TCP/443 (or UDP) payload as
+    ``tls``/``quic`` in ``frame.protocols``, so the protocol-stack string alone is
+    not proof of encryption — friTap's own decrypted HTTP/2 frames get tagged
+    ``tls`` too. A genuinely encrypted stream additionally exposes a parsed record
+    marker, because the TLS record header / QUIC packet header is cleartext even
+    without keys (``tls.record.content_type`` 22/23/…, ``quic.header_form``). We
+    require that marker before skipping a stream. The (protocol, marker) pairs and
+    the matching tshark export live in :data:`~friTap.offline.tshark.
+    ENCRYPTED_RECORD_MARKERS`.
+    """
+    return any(
+        proto in proto_layers and _first(_field(layers, marker)) is not None
+        for proto, marker in ENCRYPTED_RECORD_MARKERS
+    )
+
+
+def _detect_encrypted_quic_streams(
+    tshark_bin: str,
+    pcap_path: str,
+    *,
+    quic_ports: tuple[int, ...],
+    extra_decode_as: tuple[str, ...],
+    heuristic: bool,
+) -> frozenset[str]:
+    """Return ``udp:<stream>`` keys for genuinely-encrypted QUIC in a keyless capture.
+
+    QUIC header protection encrypts the first header byte, so without keys tshark
+    cannot tell real QUIC cipher-text from friTap's decrypted HTTP/3 by header
+    fields alone. The one robust, key-free signal is a captured QUIC handshake (see
+    :func:`~friTap.offline.tshark.build_quic_detection_command`): a ClientHello or a
+    registered-version Initial — neither of which decrypted HTTP/3 can produce. We
+    run that detection pass and return the matching streams so the plaintext pass
+    skips them instead of ingesting cipher-text. Detection failure is non-fatal
+    (returns empty): at worst we fall back to the prior over-ingest behavior.
+    """
+    cmd = build_quic_detection_command(
+        pcap_path, quic_ports=quic_ports,
+        extra_decode_as=extra_decode_as, heuristic=heuristic)
+    cmd[0] = tshark_bin
+    streams: set[str] = set()
+    try:
+        for pkt in stream_packets(cmd):
+            layers = pkt.get("layers") or {}
+            stream_id = _first(_field(layers, "udp.stream"))
+            if stream_id is not None and str(stream_id) != "":
+                streams.add(f"udp:{stream_id}")
+    except Exception:
+        logger.debug("QUIC encrypted-stream detection failed; "
+                     "treating capture as fully plaintext", exc_info=True)
+        return frozenset()
+    return frozenset(streams)
+
+
 def _plaintext_packet_to_events(
     pkt: dict,
     tracker: _StreamDirectionTracker,
     encrypted_streams: set[str],
+    encrypted_quic_streams: frozenset[str] = frozenset(),
 ) -> list[DatalogEvent]:
     """Translate one raw-payload ``-T ek`` packet dict into DatalogEvents.
 
     For an already-plaintext capture there are no keys: the application bytes are
-    the raw transport payload (``tcp.payload`` / ``udp.payload``). Streams whose
-    ``frame.protocols`` reveal TLS/QUIC are encrypted — they need keys, so we
-    record them in *encrypted_streams* (for a later "pass --keylog" hint) and
-    skip them rather than ingesting cipher-text as bogus plaintext. Mirrors
-    :func:`_tls_packet_to_events`, but reads the raw payload field instead of the
-    decrypted ``data.data``.
+    the raw transport payload (``tcp.payload`` / ``udp.payload``). Genuinely
+    encrypted streams need keys, so we record them in *encrypted_streams* (for a
+    later "pass --keylog" hint) and skip them rather than ingesting cipher-text as
+    bogus plaintext. Mirrors :func:`_tls_packet_to_events`, but reads the raw
+    payload field instead of the decrypted ``data.data``.
+
+    A stream is encrypted when EITHER :func:`_is_encrypted_record` matches a parsed
+    TLS/QUIC record marker on this packet, OR its ``udp.stream`` is in
+    *encrypted_quic_streams* (genuine QUIC identified by the handshake pre-scan —
+    see :func:`_detect_encrypted_quic_streams` for why that pre-scan is needed).
     """
     layers = pkt.get("layers") or {}
     # frame.protocols is the colon-separated dissector stack, e.g.
@@ -696,7 +768,9 @@ def _plaintext_packet_to_events(
         payload_field = "udp.payload"
 
     # Encrypted streams need keys: record once and skip every packet on them.
-    if "tls" in proto_layers or "quic" in proto_layers:
+    # Either this packet exposes a parsed TLS/QUIC record marker, or its stream was
+    # confirmed as genuine QUIC by the handshake pre-scan.
+    if stream_key in encrypted_quic_streams or _is_encrypted_record(layers, proto_layers):
         encrypted_streams.add(stream_key)
         return []
 
@@ -734,13 +808,15 @@ def _emit_plaintext_streams_singlepass(
     state: _WriterState,
     result: ConvertResult,
     tracker: _StreamDirectionTracker,
+    encrypted_quic_streams: frozenset[str] = frozenset(),
 ) -> None:
     """Export raw transport payload via ONE ``-T ek`` pass and emit events.
 
     The keyless counterpart to :func:`_emit_tls_streams_singlepass`: instead of
     decrypted ``data.data`` it reads ``tcp.payload`` / ``udp.payload`` for an
-    already-plaintext capture. Encrypted (TLS/QUIC) streams are detected via
-    ``frame.protocols`` and skipped, with their count surfaced on *result* so the
+    already-plaintext capture. Encrypted streams are detected and skipped — TLS (and
+    per-packet-marked QUIC) via :func:`_is_encrypted_record`, and handshake-confirmed
+    QUIC via *encrypted_quic_streams* — with their count surfaced on *result* so the
     caller can hint that ``--keylog`` is required. Emitted bytes flow through the
     same EventBus -> FlowCollector -> parser pipeline as every other path.
     """
@@ -752,7 +828,7 @@ def _emit_plaintext_streams_singlepass(
     for pkt in stream_packets(cmd):
         try:
             events = _plaintext_packet_to_events(
-                pkt, tracker, encrypted_streams)
+                pkt, tracker, encrypted_streams, encrypted_quic_streams)
         except Exception:
             result.dropped_packet_count += 1
             logger.debug("Skipping unparseable plaintext packet", exc_info=True)
@@ -1013,12 +1089,21 @@ def convert_pcap_to_tap(
             # No keys and no DSB: ingest the capture as already-plaintext. The raw
             # transport payload is fed through the SAME parser pipeline; encrypted
             # streams are detected and skipped (tallied for a --keylog hint).
+            # A handshake pre-scan first identifies genuinely-encrypted QUIC streams
+            # (header protection hides their per-packet marker), so they are skipped
+            # rather than ingested as bogus plaintext.
+            encrypted_quic_streams = _detect_encrypted_quic_streams(
+                tshark_bin, pcap_path,
+                quic_ports=quic_ports, extra_decode_as=extra_decode_as,
+                heuristic=heuristic,
+            )
             plaintext_tracker = _StreamDirectionTracker(
                 server_ports=(*_PLAINTEXT_SERVER_PORTS, *tls_ports, *quic_ports))
             _emit_plaintext_streams_singlepass(
                 tshark_bin, pcap_path,
                 extra_decode_as=extra_decode_as, heuristic=heuristic,
                 bus=bus, state=state, result=result, tracker=plaintext_tracker,
+                encrypted_quic_streams=encrypted_quic_streams,
             )
 
         # SSH metadata pass: plaintext banners/KEXINIT need no keys. Purely
@@ -1065,3 +1150,63 @@ def _run_scan(tap_path: str) -> int:
 
     findings = analyze_tap_multi(resolve_analyzers("all"), tap_path)
     return len(findings)
+
+
+def pcap_to_tap(
+    pcap_path: str,
+    *,
+    keylog_path: str | None = None,
+    tap_path: str | None = None,
+    tls_ports: tuple[int, ...] = (),
+    quic_ports: tuple[int, ...] = (),
+    extra_decode_as: tuple[str, ...] = (),
+    heuristic: bool = False,
+    run_scan: bool = False,
+    capture_target: str = "",
+    tshark_path: str | None = None,
+    use_manifest: bool = True,
+) -> ConvertResult:
+    """Convert a captured pcap/pcapng to a friTap ``.tap``, manifest-aware.
+
+    Presentation-agnostic wrapper around :func:`convert_pcap_to_tap` for
+    external tools (Sandroid, web/TUI/CLI). When *use_manifest* is True and a
+    ``<pcap>.fritap.json`` sidecar exists, the values the caller did NOT pass
+    explicitly (``keylog_path``/``tls_ports``/``quic_ports``) are filled from
+    it — the same precedence the ``fritap --from-pcap`` CLI uses (explicit
+    arguments always win). Returns a :class:`ConvertResult`.
+
+    Exposed at the package root as :func:`friTap.pcap_to_tap`. It lives in this
+    submodule (not ``friTap/offline/__init__.py``) so it does not shadow the
+    same-named ``friTap.offline.pcap_to_tap`` module attribute.
+
+    Raises :class:`NoDecryptionKeysError` when the capture is encrypted and no
+    keys (``--keylog`` / embedded DSB) are available; other tshark/IO failures
+    propagate.
+    """
+    keylog = keylog_path
+    tls = tuple(tls_ports)
+    quic = tuple(quic_ports)
+    if use_manifest:
+        # load_manifest takes a pcap path (not an argparse Namespace), so it is
+        # safe to reuse here; imported lazily to avoid a cli <-> pcap_to_tap
+        # import cycle (cli imports convert_pcap_to_tap from this module).
+        from .cli import load_manifest
+
+        manifest = load_manifest(pcap_path)
+        if manifest:
+            keylog = keylog or manifest.get("keylog") or None
+            tls = tls or tuple(manifest.get("tls_ports", []))
+            quic = quic or tuple(manifest.get("quic_ports", []))
+
+    return convert_pcap_to_tap(
+        pcap_path,
+        keylog_path=keylog,
+        tap_path=tap_path,
+        tls_ports=tls,
+        quic_ports=quic,
+        extra_decode_as=tuple(extra_decode_as),
+        heuristic=heuristic,
+        run_scan=run_scan,
+        capture_target=capture_target,
+        tshark_path=tshark_path,
+    )

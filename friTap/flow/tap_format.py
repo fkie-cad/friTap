@@ -149,7 +149,89 @@ class FlowSummary:
     tls_sni: str = ""
     tls_alpn: str = ""
     tag_count: int = 0
+    finding_count: int = 0
     has_notes: bool = False
+
+    @staticmethod
+    def from_flow(flow: "Flow") -> "FlowSummary":
+        """Build this (flat, public) summary shape from a live/full Flow.
+
+        Mirrors :meth:`friTap.flow.models.FlowSummary.from_flow` but produces
+        the publicly exported ``tap_format`` shape, so the live capture path
+        (``FlowSummary.from_flow(event.flow)``) and the offline path
+        (``TapReader.read_flow_summaries()``) yield the *same* summary type
+        with a matching :meth:`to_dict` key set. Uses the non-mutating
+        ``flow.layer()`` lookup so it never grows the flow's layer stack.
+        """
+        req = flow.request
+        resp = flow.response
+        tls = flow.layer("tls")
+        total = getattr(flow, "_total_bytes", 0) or sum(len(c.data) for c in flow.chunks)
+        state = flow.state.value if hasattr(flow.state, "value") else str(flow.state)
+        return FlowSummary(
+            flow_id=flow.flow_id,
+            connection_id=flow.connection_id,
+            src_addr=flow.src_addr,
+            src_port=flow.src_port,
+            dst_addr=flow.dst_addr,
+            dst_port=flow.dst_port,
+            ssl_session_id=flow.ssl_session_id,
+            state=state,
+            started=flow.started,
+            ended=flow.ended,
+            protocol=(req.protocol if req else "") or (resp.protocol if resp else "") or "unknown",
+            method=req.method if req else "",
+            url=req.url if req else "",
+            host=req.host if req else "",
+            status_code=resp.status_code if resp else 0,
+            status_text=resp.status_text if resp else "",
+            body_size=(resp.body_size if resp else (req.body_size if req else 0)),
+            total_size=total,
+            file_offset=0,
+            detected_protocol=getattr(flow, "detected_protocol", "") or "",
+            is_control_frame=(req.is_control_frame if req else False),
+            process_name=getattr(flow, "process_name", "") or "",
+            tls_sni=(tls.sni if tls is not None else ""),
+            tls_alpn=(tls.alpn if tls is not None else ""),
+            tag_count=len(getattr(flow, "tags", []) or []),
+            finding_count=len(getattr(flow, "findings", []) or []),
+            has_notes=bool(getattr(flow, "notes", "")),
+        )
+
+    def to_dict(self) -> dict:
+        """Return a JSON-safe, body-free dict for a high-level flow overview.
+
+        Emits the canonical FlowSummary key set shared with
+        :meth:`friTap.flow.models.FlowSummary.to_dict` so live and offline
+        summaries render identically for web/TUI/CLI consumers.
+        """
+        duration = (self.ended - self.started) if self.ended > 0 else 0.0
+        return {
+            "flow_id": self.flow_id,
+            "connection_id": self.connection_id,
+            "src_addr": self.src_addr,
+            "src_port": self.src_port,
+            "dst_addr": self.dst_addr,
+            "dst_port": self.dst_port,
+            "ssl_session_id": self.ssl_session_id,
+            "state": str(self.state),
+            "started": self.started,
+            "ended": self.ended,
+            "duration": duration,
+            "protocol": self.detected_protocol or self.protocol or "unknown",
+            "method": self.method,
+            "url": self.url,
+            "host": self.host,
+            "status_code": self.status_code,
+            "total_bytes": self.total_size,
+            "detected_protocol": self.detected_protocol,
+            "process_name": self.process_name,
+            "tls_sni": self.tls_sni,
+            "tls_alpn": self.tls_alpn,
+            "tag_count": self.tag_count,
+            "finding_count": self.finding_count,
+            "has_notes": self.has_notes,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -738,6 +820,7 @@ def decode_flow_summary(payload: bytes, file_offset: int = 0) -> FlowSummary:
         tls_sni=(meta.get("tls") or {}).get("sni", ""),
         tls_alpn=(meta.get("tls") or {}).get("alpn", ""),
         tag_count=len(meta.get("tags", [])),
+        finding_count=0,  # findings live in separate REC_FINDING records; TapReader fills this in
         has_notes=bool(meta.get("notes", "")),
     )
 

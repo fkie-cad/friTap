@@ -1,24 +1,410 @@
 # Pattern-Based Hooking
 
-Pattern-based hooking is one of friTap's most powerful features, allowing you to analyze applications with stripped SSL libraries or statically linked implementations where traditional symbol-based hooking fails.
+Pattern-based hooking is one of friTap's most powerful features. It lets you analyze
+applications whose SSL/TLS library is **stripped of symbols** or **statically linked**,
+where traditional name-based resolution fails.
 
-## Overview
+## What it is and why it exists
 
-When SSL/TLS libraries are stripped of symbols or statically linked into applications, friTap cannot use traditional function name resolution. Pattern-based hooking solves this by matching byte patterns in memory to identify and hook the required functions. By default friTap has already some patterns included for well-known libaries but due to compilation and library updates it might be the case that these patterns needs to be updated.
+friTap normally finds a function such as `SSL_read` by looking up its **symbol** in the
+target module's export/symbol table. That works for shared libraries that ship symbols.
+It does **not** work when:
 
-### When to Use Pattern-Based Hooking
+- the library is **stripped** (no symbol table), or
+- the TLS stack is **statically linked** into another binary (BoringSSL inside Chrome,
+  Cronet, or `libflutter.so`), so there is no separate `libssl.so` to resolve against.
 
-Pattern-based hooking works by searching for unique byte sequences (patterns) that identify specific functions in memory. This technique is essential for:
+!!! note "Explain the why"
+    A stripped or statically linked BoringSSL exposes **no symbol** you can hook by name.
+    The function still exists in memory — it just has no label. A **byte signature** of
+    the function's machine-code prologue becomes the *only* available hook target. That
+    is exactly what pattern-based hooking provides: friTap scans the module's executable
+    memory for the signature and installs the hook at the matching address.
 
-- **Stripped libraries**: No symbol information available
-- **Statically linked SSL**: BoringSSL embedded in Chrome, libflutter.so
-- **Obfuscated binaries**: Anti-analysis protections
-- **Custom SSL implementations**: Modified or proprietary libraries
-- **Mobile applications**: Flutter, React Native, Unity apps
+friTap ships a default pattern database (`friTap/patterns/default_patterns.json`) for
+several well-known libraries. Because compilers and library versions change, the shipped
+patterns can drift over time, so you can supply your own with `--patterns`.
 
-## Pattern File Format
+### Two hooking engines, two pattern schemas
 
-Pattern files use a nested JSON structure organized by module, platform, and architecture:
+friTap has **two** pattern-based hooking engines, and each expects its own JSON schema. A
+`--patterns` file is valid as long as it matches **one** of them — write the schema for the
+engine you are targeting:
+
+| Engine | Active when | Schema | Shape | Example file |
+|--------|-------------|--------|-------|--------------|
+| **Legacy** (`PatternBasedHooking`) | **default** | **Schema B** | `modules → module → platform → arch → function → {primary, fallback, second_fallback?}` | repo-root `pattern.json` |
+| **Modern** (`PatternStrategy`) | opt-in via `--modern` | **Schema A** | `library → arch → function → [hex, …]` | `friTap/patterns/default_patterns.json` |
+
+!!! tip "Which schema should I write?"
+    The **legacy engine is the default** (the modern engine only runs with `--modern`), and
+    it is what the Cronet / Flutter / Android key-extraction hooks use today. So for most
+    real targets you write **Schema B** — the object form, exactly like the repo-root
+    `pattern.json`. Write **Schema A** (the flat list form) only when you run with
+    `--modern`. The loader accepts both, and they can even coexist in one file: Schema B
+    lives under the top-level `modules` key while Schema A uses top-level library keys.
+
+### Defaults and merging
+
+- The shipped **default patterns load automatically** — you do not need `--patterns` to
+  benefit from them. (`default_patterns.json` is Schema A.)
+- When you pass `--patterns <file.json>`, friTap **deep-merges** your file *on top of* the
+  defaults. The merge is granular: only the specific leaf entries present in your file
+  override the defaults; everything else stays intact. A Schema-B `modules` subtree merges
+  in alongside the Schema-A defaults untouched, so the legacy engine sees your patterns and
+  the modern defaults remain available.
+- If your file is **structurally invalid for both schemas** (wrong nesting or leaf types),
+  friTap logs a warning and **falls back to the defaults only** — your file is ignored, but
+  the run continues.
+
+## When to use pattern-based hooking
+
+- **Stripped libraries** — no symbol information available.
+- **Statically linked SSL** — BoringSSL embedded in Chrome, Cronet, `libflutter.so`.
+- **Obfuscated binaries** — anti-analysis protections strip or rename symbols.
+- **Custom / proprietary SSL** — modified builds with no recognizable exports.
+
+### Decision tree
+
+```mermaid
+flowchart TD
+    A[Need to hook a TLS function] --> B{Are symbols present<br/>in the module?}
+    B -- Yes --> C[Symbol-based hook<br/>no extra config]
+    B -- No --> D{Do you know a fixed<br/>address / offset for<br/>this exact build?}
+    D -- Yes --> E["Offsets: --offsets offsets.json<br/>(module → function → address)"]
+    D -- No --> F["Pattern scan: --patterns patterns.json<br/>(byte signature of the prologue)"]
+    F --> G{Pattern matches<br/>exactly one site?}
+    G -- Yes --> H[Hook installed]
+    G -- No / many --> I[Refine the signature<br/>add context bytes]
+```
+
+## Pattern file format
+
+Write the schema for the engine you are targeting (see the table above). The loader accepts
+**both**.
+
+### Schema B — legacy engine (the default)
+
+Nested as **`modules` → module → platform → arch → function → pattern**, where a pattern is
+an object `{ "primary": "…", "fallback": "…", "second_fallback": "…" }` (only `primary` is
+typically needed; the others are optional). This is the form the repo-root `pattern.json`
+uses and the one the default Cronet / Flutter / Android hooks read. The legacy engine scans
+`primary`, then `fallback`, then `second_fallback`, stopping at the first match.
+
+```json
+{
+  "modules": {
+    "libcronet.so": {
+      "android": {
+        "arm64": {
+          "Dump-Keys": {
+            "primary":  "FF 83 02 D1 FD 7B 05 A9 F9 33 00 F9 F8 5F 07 A9",
+            "fallback": "3F 23 03 D5 FF ?3 02 D1 FD 7B 0? A9 F? ?? 0? ?9"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+The platform key is one of `android` / `ios` / `linux` / `macos` / `windows`. Empty strings
+are allowed as placeholders (the engine skips them and falls back to symbol hooking).
+
+### Schema A — modern engine (`--modern`)
+
+A flat map **library → arch → function → list of hex strings**. Each function maps to a
+**list** of candidate patterns, tried in order. This is the form `default_patterns.json`
+uses. The list itself is the primary/fallback chain.
+
+```json
+{
+  "openssl": {
+    "x64": {
+      "ssl_log_secret": [
+        "55 48 89 E5 48 83 EC 20 48 89 7D F8",
+        "55 41 57 41 56 41 54 53 48 83 EC 30 48 8B 47 68"
+      ]
+    }
+  }
+}
+```
+
+Both examples validate `True` against `friTap.patterns.loader.PatternLoader.validate`. In
+Schema A the top-level library key is matched against the **module name** first, then the
+library type (`pattern_strategy.ts:74`); the arch key is compared against `Process.arch`,
+falling back to `"default"` if present (`pattern_strategy.ts:81-82`).
+
+### Structure hierarchy at a glance
+
+```
+Schema B (legacy, default):
+modules/<module>/<platform>/<arch>/<function> → { "primary": "<hex>", "fallback": "<hex>" }
+
+Schema A (modern, --modern):
+<library>/<arch>/<function> → [ "<hex>", "<hex>", … ]
+```
+
+In both, `<arch>` is `x64` / `arm64` / `arm` / `x86` (or `default`), and `<function>` is a
+category label such as `ssl_log_secret`, `Dump-Keys`, `SSL_Read`, `SSL_Write`,
+`Install-Key-Log-Callback`, `KeyLogCallback-Function`.
+
+### Architecture keys
+
+Use exactly these architecture keys (compared against `Process.arch`):
+
+| Key       | Use for                                |
+|-----------|----------------------------------------|
+| `x64`     | 64-bit x86 (Intel/AMD)                 |
+| `arm64`   | 64-bit ARM (most modern phones)        |
+| `arm`     | 32-bit ARM                             |
+| `x86`     | 32-bit x86                             |
+| `default` | catch-all if no arch-specific entry    |
+
+!!! warning "Do not use `x86_64` or `armv7`"
+    Frida's `Process.arch` reports `x64` / `arm64` / `arm` / `x86`. Keys like `x86_64` or
+    `armv7` will **never match** and your patterns will be silently skipped.
+
+### Reserved keys
+
+Any top-level key (or arch/function key) that **starts with an underscore** is reserved
+and ignored by the validator (`loader.py:92,99,106`). The shipped defaults use this for
+documentation:
+
+- `_meta` — version / format metadata.
+- `_docs` — category descriptions, architecture list, contributor notes.
+
+You can keep your own `_comment` entries inside a pattern file without breaking validation.
+
+### Hex and wildcard rules
+
+Each pattern string must match the regex `^([0-9A-Fa-f?]{2}\s)*[0-9A-Fa-f?]{2}$`
+(`loader.py:84`):
+
+- **Space-separated 2-character tokens**, e.g. `55 48 89 E5`.
+- Each token is either two hex digits (`0-9A-Fa-f`) or wildcards.
+- `?` and `??` **wildcards are allowed mid-pattern** for variable bytes (registers,
+  immediates, padding, compiler-specific differences). A nibble wildcard like `E?` is also
+  valid (the token stays 2 characters).
+
+!!! warning "Avoid leading/trailing `??`"
+    Do not begin or end a pattern with `??`. Frida's scanner rejects patterns whose edges
+    are fully wildcarded. Always anchor the signature with concrete bytes at both ends.
+
+## `--patterns` vs `--offsets` — two separate mechanisms
+
+These are **different** features and must not be mixed in one file:
+
+| Feature      | Flag         | File shape                                        | Use when                                  |
+|--------------|--------------|---------------------------------------------------|-------------------------------------------|
+| Byte scanning| `--patterns` | Schema B `modules → … → {primary, fallback}` (default) or Schema A `library → arch → function → [hex]` (`--modern`) | You have a signature but no fixed address |
+| Offsets      | `--offsets`  | `module → function → {address, absolute}`         | You know the exact address/offset already |
+
+**Offsets file** (`offsets_example.json`):
+
+```json
+{
+  "openssl": {
+    "SSL_read":  { "address": "0x572115b4", "absolute": true },
+    "SSL_write": { "address": "0x144c",     "absolute": false }
+  }
+}
+```
+
+`absolute: true` means a runtime virtual address; `absolute: false` means an offset from
+the module base. Offsets skip scanning entirely — friTap hooks the computed address
+directly.
+
+## Create a pattern (step-by-step)
+
+This tutorial is **tool-agnostic** for the prologue extraction, then shows how a
+BoringSecretHunter line drops straight into one list entry.
+
+### Step 1 — Locate the target function
+
+Use any disassembler (radare2, Ghidra, IDA, objdump). The most valuable target for TLS key
+extraction is `ssl_log_secret` (BoringSSL/OpenSSL), which is **always called during the
+handshake**, even when key logging is disabled.
+
+```bash
+# radare2 example
+r2 -A libflutter.so
+[0x00000000]> afl | grep -i ssl
+[0x00000000]> pdf @ sym.ssl_log_secret
+```
+
+### Step 2 — Read the prologue bytes
+
+Dump the first ~32-48 bytes of the function. A typical x64 prologue:
+
+```assembly
+push rbp           ; 55
+mov  rbp, rsp      ; 48 89 E5
+sub  rsp, 0x20     ; 48 83 EC 20
+mov  [rbp-8], rdi  ; 48 89 7D F8
+```
+
+This becomes the pattern token sequence: `55 48 89 E5 48 83 EC 20 48 89 7D F8`.
+
+### Step 3 — Wildcard the volatile bytes
+
+Replace bytes that vary across builds (relative offsets, immediates, some registers) with
+`?`/`??`, but keep concrete bytes at the start and end:
+
+```
+55 48 89 E5 ?? ?? ?? ?? 48 83 EC ?? 48 89 7D F8
+```
+
+### Step 4 — Drop it into the schema for your engine
+
+For the **default (legacy) engine**, use Schema B — put the signature in `primary` under
+`modules → module → platform → arch → function`:
+
+```json
+{
+  "modules": {
+    "libflutter.so": {
+      "android": {
+        "arm64": {
+          "Dump-Keys": { "primary": "55 48 89 E5 ?? ?? ?? ?? 48 83 EC ?? 48 89 7D F8" }
+        }
+      }
+    }
+  }
+}
+```
+
+If you run with `--modern`, use Schema A instead — the same signature as one element of a
+list: `{ "libflutter": { "arm64": { "ssl_log_secret": ["55 48 89 E5 ?? ?? ?? ?? 48 83 EC ?? 48 89 7D F8"] } } }`.
+
+!!! note "Function label naming"
+    Use the label friTap expects for the strategy you are extending. The shipped defaults
+    use `ssl_log_secret` for OpenSSL/BoringSSL key dumping; the `_docs` block lists the
+    category labels (`Dump-Keys`, `SSL_Read`, `SSL_Write`, `Install-Key-Log-Callback`,
+    `KeyLogCallback-Function`).
+
+### Automating with BoringSecretHunter
+
+[BoringSecretHunter](https://github.com/monkeywave/BoringSecretHunter) is a Ghidra-based
+tool that locates `ssl_log_secret()` in stripped BoringSSL/rustls libraries and emits a
+ready-to-use Frida byte pattern.
+
+```bash
+git clone https://github.com/monkeywave/BoringSecretHunter.git
+cd BoringSecretHunter
+docker build -t boringsecrethunter .
+
+mkdir -p binary results
+cp /path/to/libsignal_jni.so binary/
+
+docker run --rm \
+  -v "$(pwd)/binary":/usr/local/src/binaries \
+  -v "$(pwd)/results":/host_output \
+  -e DEBUG_RUN=true \
+  boringsecrethunter
+```
+
+**Example output:**
+
+```
+[*] Start analyzing binary libsignal_jni.so (CPU Architecture: AARCH64)...
+[*] Target function identified (ssl_log_secret):
+
+Function label: FUN_00493BB0
+Function offset: 00493BB0 (0X493BB0)
+Byte pattern for frida (friTap): 3F 23 03 D5 FF C3 01 D1 FD 7B 04 A9 F6 57 05 A9 F4 4F 06 A9 FD 03 01 91 08 34 40 F9 08 11 41 F9 C8 07 00 B4
+```
+
+The "Byte pattern for frida (friTap)" line drops in with no reformatting. For the default
+(legacy) engine, place it in `primary` (Schema B):
+
+```json
+{
+  "modules": {
+    "libsignal_jni.so": {
+      "android": {
+        "arm64": {
+          "Dump-Keys": { "primary": "3F 23 03 D5 FF C3 01 D1 FD 7B 04 A9 F6 57 05 A9 F4 4F 06 A9 FD 03 01 91 08 34 40 F9 08 11 41 F9 C8 07 00 B4" }
+        }
+      }
+    }
+  }
+}
+```
+
+Under `--modern`, drop the same string into a Schema-A list instead:
+`{ "libsignal_jni": { "arm64": { "ssl_log_secret": ["3F 23 03 D5 …"] } } }`.
+
+!!! tip "Why Docker?"
+    The Docker image bundles a pre-configured Ghidra, eliminating setup and giving
+    consistent extraction across platforms.
+
+### Validate before you deploy
+
+Catch format mistakes early without a device:
+
+```bash
+# Quick JSON sanity check
+python -m json.tool signal_pattern.json
+
+# Validate against the actual loader (prints True on success)
+python -c "import json, logging; from friTap.patterns.loader import PatternLoader; \
+print(PatternLoader.validate(json.load(open('signal_pattern.json')), logging.getLogger('t')))"
+```
+
+## Gotchas
+
+!!! note "Scans executable (r-x) ranges, with a whole-module fallback"
+    The scanner enumerates the module's **r-x ranges** and scans those, because function
+    prologues always live in executable memory and a single scan over the whole
+    `[base, base+size]` span can hit unreadable pages and throw an access violation on
+    huge modules (e.g. Chrome's ~193 MB `libmonochrome_64.so`). If range enumeration
+    yields nothing, it falls back to a whole-module scan (`pattern_strategy.ts:139-158`).
+
+!!! warning "Ambiguous match → first hit + warning"
+    If a pattern matches **more than one site**, friTap installs the hook at the **first**
+    match and emits a warning (`pattern_strategy.ts:45-53`). A wrong first hit can land on
+    a hot path and slow or hang the process. Make your signature longer/more specific if
+    you see this warning.
+
+!!! warning "No-match falls through silently"
+    If no pattern matches, the pattern strategy simply reports failure for that function
+    and the pipeline continues — there is **no hard error**. Run with `-do`
+    (debug output) to see per-pattern scan diagnostics, otherwise a missing hook can look
+    like "nothing happened".
+
+## Using pattern files on the CLI
+
+```bash
+# Use a pattern file for key extraction (deep-merged on top of defaults)
+fritap --patterns patterns.json -k keys.log target_app
+
+# Mobile target
+fritap -m --patterns android_patterns.json -k keys.log com.example.app
+
+# See what matched / why it did not (debug output)
+fritap -do -v --patterns patterns.json target_app
+
+# Use fixed addresses instead of scanning
+fritap --offsets offsets.json -k keys.log target_app
+
+# Force a full library scan (do not trust cached/known module lists)
+fritap --force-scan --patterns patterns.json -k keys.log target_app
+```
+
+| Flag          | Purpose                                                                 |
+|---------------|-------------------------------------------------------------------------|
+| `--patterns`  | Supply byte signatures (deep-merged on top of shipped defaults).        |
+| `--offsets`   | Supply fixed addresses/offsets (separate from `--patterns`).            |
+| `--force-scan`| Force a fresh library scan instead of relying on known module lists.    |
+| `-do`         | Emit debug output, including per-pattern scan diagnostics.              |
+
+## Real-world examples
+
+### Flutter applications
+
+Flutter statically links BoringSSL into `libflutter.so`. Flutter key extraction runs on the
+default (legacy) engine, so use **Schema B** (`primary`/`fallback` under `modules`):
 
 ```json
 {
@@ -27,36 +413,8 @@ Pattern files use a nested JSON structure organized by module, platform, and arc
       "android": {
         "arm64": {
           "Dump-Keys": {
-            "primary": "FF 83 01 D1 F6 1B 00 F9 F5 53 04 A9 F3 7B 05 A9...",
-            "fallback": "FF 43 02 D1 FD 7B 05 A9 F7 33 00 F9..."
-          }
-        },
-        "arm": {
-          "Dump-Keys": {
-            "primary": "2D E9 F0 4F 85 B0 04 46 0D 46...",
-            "fallback": "2D E9 F0 47 87 B0 04 46 0D 46..."
-          }
-        },
-        "x86_64": {
-          "Dump-Keys": {
-            "primary": "55 48 89 E5 41 57 41 56 41 55 41 54...",
-            "fallback": "55 48 89 E5 41 57 41 56 53 48 83 EC..."
-          }
-        },
-        "x86": {
-          "Dump-Keys": {
-            "primary": "55 89 E5 57 56 53 81 EC...",
-            "fallback": "55 89 E5 57 56 53 83 EC..."
-          }
-        }
-      }
-    },
-    "libsignal_jni.so": {
-      "android": {
-        "arm64": {
-          "Dump-Keys": {
-            "primary": "FF 43 02 D1 FD 7B 05 A9 F7 33 00 F9...",
-            "fallback": "FF 83 01 D1 FD 7B 03 A9 F6 57 04 A9..."
+            "primary":  "FF 83 00 D1 FD 7B 01 A9 ?? ?? ?? ?? F4 4F 03 A9",
+            "fallback": "FF 83 00 D1 FD 7B 01 A9 F4 4F 03 A9"
           }
         }
       }
@@ -65,541 +423,70 @@ Pattern files use a nested JSON structure organized by module, platform, and arc
 }
 ```
 
-### JSON Structure Hierarchy
-
-```
-modules/
-├── <module_name>/           # e.g., "libflutter.so"
-│   └── <platform>/          # "android", "ios", "linux", "windows"
-│       └── <architecture>/  # "arm64", "arm", "x86_64", "x86"
-│           └── <action>/    # "Dump-Keys", "SSL_Read", etc.
-│               ├── primary  # Primary pattern (tried first)
-│               └── fallback # Fallback pattern (if primary fails)
-```
-
-### Pattern Categories
-
-friTap supports five main hooking categories:
-
-| Category | Description | Status |
-|----------|-------------|--------|
-| **Dump-Keys** | Extract TLS encryption keys via `ssl_log_secret()` | Fully supported |
-| **Install-Key-Log-Callback** | Install key logging callbacks | Implemented |
-| **KeyLogCallback-Function** | Key callback function hooks | Implemented |
-| **SSL_Read** | Hook SSL read operations | Implemented |
-| **SSL_Write** | Hook SSL write operations | Implemented |
-
-!!! note "Current Focus"
-    The `Dump-Keys` category is the primary use case for pattern-based hooking, especially for apps using statically-linked BoringSSL where symbols are stripped.
-
-## Creating Pattern Files
-
-### Manual Pattern Creation
-
-**Step 1: Identify Target Functions**
-
-Use tools like Ghidra, IDA Pro, or Radare2 to analyze the binary code of target functions:
-
-```bash
-# Use radare2 to analyze library
-r2 -A libflutter.so
-[0x00000000]> afl | grep -i ssl
-[0x00000000]> pdf @ sym.ssl_log_secret
-```
-
-**Step 2: Extract Byte Patterns**
-
-```bash
-# Extract bytes around function prologue
-# example pattern 1
-[0x00000000]> px 32 @ sym.ssl_log_secret
-0x12345678  1f2003d5 12345678 f44f01a9 87654321  .....O......
-```
-
-In other tools, retrieving the function’s bytes often requires an even more manual process:
-
-```assembly
-; Example ssl_log_secret function prologue
-; example pattern 2
-push rbp           ; 55
-mov rbp, rsp       ; 48 89 E5
-sub rsp, 0x20      ; 48 83 EC 20
-mov [rbp-8], rdi   ; 48 89 7D F8
-```
-
-This translates to the pattern: `55 48 89 E5 48 83 EC 20 48 89 7D F8`
-
-**Step 3: Create Pattern with Wildcards**
-
-Replace variable bytes with `?` or `??`:
-```
-; example pattern 1
-1F 20 03 D5 ?? ?? ?? ?? F4 4F 01 A9
-; example pattern 2
-55 48 89 E? ?? 83 EC 20 ?8 89 ?? F8
-;  
-```
-Wildcards (`?` or `??`) are used for:
-- Register variations
-- Immediate value variations
-- Padding bytes
-- Compiler-specific differences
-
-### Automated Pattern Generation with BoringSecretHunter
-
-[BoringSecretHunter](https://github.com/monkeywave/BoringSecretHunter) is a Ghidra-based tool that automates byte pattern extraction from stripped TLS libraries, particularly BoringSSL and rustls. It's the recommended approach for generating `Dump-Keys` patterns.
-
-#### What BoringSecretHunter Does
-
-- **Identifies TLS libraries** by scanning for characteristic strings (`CLIENT_RANDOM`, `EXPORTER_SECRET`)
-- **Locates `ssl_log_secret()`** - the function responsible for TLS key logging
-- **Generates byte patterns** from function prologues (32-48 bytes)
-- **Supports multiple architectures** (ARM64, ARM, x86_64, x86)
-- **Provides primary and fallback patterns** for robustness
-
-#### Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/monkeywave/BoringSecretHunter.git
-cd BoringSecretHunter
-
-# Build the Docker container
-docker build -t boringsecrethunter .
-```
-
-#### Complete Workflow
-
-**Step 1: Discover TLS Libraries on Android Device**
-
-Use the included helper script to find and download target libraries:
-
-```bash
-# List all app-specific libraries
-python3 findBoringSSLLibsOnAndroid.py --package org.thoughtcrime.securesms -L
-
-# Download libraries to local dumps/ directory
-python3 findBoringSSLLibsOnAndroid.py --package org.thoughtcrime.securesms -L -D
-```
-
-**Step 2: Prepare and Analyze Libraries**
-
-```bash
-# Create working directories
-mkdir -p binary results
-
-# Copy target libraries
-cp dumps/libsignal_jni.so binary/
-
-# Run BoringSecretHunter analysis
-docker run --rm \
-  -v "$(pwd)/binary":/usr/local/src/binaries \
-  -v "$(pwd)/results":/host_output \
-  -e DEBUG_RUN=true \
-  boringsecrethunter
-```
-
-**Example Output:**
-
-```
-[*] Start analyzing binary libsignal_jni.so (CPU Architecture: AARCH64)...
-
-[*] Target function identified (ssl_log_secret):
-
-Function label: FUN_00493BB0
-Function offset: 00493BB0 (0X493BB0)
-Byte pattern for frida (friTap): 3F 23 03 D5 FF C3 01 D1 FD 7B 04 A9 F6 57 05 A9 F4 4F 06 A9 FD 03 01 91 08 34 40 F9 08 11 41 F9 C8 07 00 B4
-```
-
-**Step 3: Create Pattern File**
-
-Convert the analysis output to friTap's JSON format:
-
-```json
-{
-  "modules": {
-    "libsignal_jni.so": {
-      "android": {
-        "arm64": {
-          "Dump-Keys": {
-            "primary": "3F 23 03 D5 FF C3 01 D1 FD 7B 04 A9 F6 57 05 A9 F4 4F 06 A9 FD 03 01 91 08 34 40 F9 08 11 41 F9 C8 07 00 B4",
-            "fallback": "FF 43 02 D1 FD 7B 05 A9 F7 33 00 F9 F5 53 04 A9 F3 7B 05 A9"
-          }
-        }
-      }
-    }
-  }
-}
-```
-
-**Step 4: Use with friTap**
-
-```bash
-# Deploy patterns for TLS key extraction
-fritap -m -v -k signal_keys.log \
-  --patterns signal_pattern.json \
-  org.thoughtcrime.securesms
-```
-
-**Expected Output:**
-
-```
-[*] Pattern found at (primary_pattern) address: 0x6d82648b0c on libsignal_jni.so
-[*] Pattern-based hooks installed.
-[*] CLIENT_HANDSHAKE_TRAFFIC_SECRET 65042333... F2E8000B...
-[*] SERVER_HANDSHAKE_TRAFFIC_SECRET 65042333... 4501F2E4...
-[*] CLIENT_TRAFFIC_SECRET_0 65042333... 77597112...
-```
-
-#### Why BoringSecretHunter Works
-
-The `ssl_log_secret()` function in BoringSSL is **always called** during TLS handshakes, regardless of whether key logging is enabled. This makes it a reliable hook target even in production builds where logging is disabled.
-
-!!! tip "Why Docker?"
-    The Docker approach provides a pre-configured Ghidra environment, eliminating setup complexity and ensuring consistent results across platforms.
-
-## Using Pattern Files
-
-### Basic Pattern Usage
-
-```bash
-# Use pattern file for analysis
-fritap --patterns patterns.json -k keys.log target_app
-
-# Combine with other options
-fritap --patterns patterns.json --pcap traffic.pcap -k keys.log target_app
-
-# Mobile application with patterns
-fritap -m --patterns android_patterns.json -k keys.log com.example.app
-```
-
-### Debug Pattern Matching
-
-```bash
-# Enable debug output to see pattern matching
-fritap -do --patterns patterns.json -v target_app
-
-# Expected output:
-# [*] Pattern matching enabled
-# [*] Loading patterns from patterns.json
-# [*] Searching for SSL_Read pattern in libssl.so
-# [*] Pattern match found at offset 0x12345678
-# [*] Hooking SSL_read at 0x12345678
-```
-
-### Platform-Specific Patterns
-
-**Android Patterns:**
-```bash
-# ARM64 Android patterns
-fritap -m --patterns android_arm64_patterns.json -k keys.log com.example.app
-
-# x86_64 Android patterns (emulator)
-fritap -m --patterns android_x64_patterns.json -k keys.log com.example.app
-```
-
-**iOS Patterns:**
-```bash
-# ARM64 iOS patterns
-fritap -m --patterns ios_arm64_patterns.json -k keys.log com.example.app
-```
-
-## Advanced Pattern Techniques
-
-### Multi-Architecture Support
-
-Create patterns for multiple architectures:
-
-```json
-{
-  "version": "1.0",
-  "patterns": {
-    "arm64": {
-      "SSL_Read": {
-        "primary": "1F 20 03 D5 ?? ?? ?? ?? F4 4F 01 A9"
-      }
-    },
-    "x86_64": {
-      "SSL_Read": {
-        "primary": "55 48 89 E5 ?? ?? ?? ?? 48 83 EC ??"
-      }
-    },
-    "armv7": {
-      "SSL_Read": {
-        "primary": "?? ?? 2D E9 ?? ?? ?? ?? ?? ?? ?? ??"
-      }
-    }
-  }
-}
-```
-
-## Real-World Examples
-
-### Flutter Applications
-
-Flutter apps often have statically linked BoringSSL:
-
-**Flutter Pattern File (flutter_patterns.json):**
-```json
-{
-  "version": "1.0",
-  "architecture": "arm64",
-  "platform": "android",
-  "library": "libflutter.so",
-  "patterns": {
-    "Dump-Keys": {
-      "primary": "FF 83 00 D1 FD 7B 01 A9 ?? ?? ?? ?? F4 4F 03 A9",
-      "fallback": "FF 83 00 D1 ?? ?? ?? ?? ?? ?? ?? ?? F4 4F 03 A9"
-    }
-  }
-}
-```
-
-**Usage:**
 ```bash
 fritap -m --patterns flutter_patterns.json -k flutter_keys.log com.example.flutter_app
 ```
 
-### Cronet Applications
+### Cronet applications
 
-Chrome's Cronet library with embedded BoringSSL:
+Chrome's Cronet (Google QUICHE / BoringSSL) is the canonical pattern target. Two cases:
 
-**Cronet Pattern File (cronet_patterns.json):**
+- **BoringSSL key dump** (default/legacy engine) — use **Schema B**, exactly like the
+  `libcronet.so` example earlier in this page (`modules → libcronet.so → android → arch →
+  Dump-Keys → {primary, fallback}`).
+- **QUICHE HTTP/3 stream patterns** — the shipped defaults already carry runtime-verified
+  arm64 QUICHE patterns under the `google_quiche` library key in **Schema A** (the form
+  `default_patterns.json` uses). Override per build with your own Schema-A file:
+
 ```json
 {
-  "version": "1.0",
-  "architecture": "arm64",
-  "platform": "android",
-  "library": "libcronet.so",
-  "patterns": {
-    "SSL_Read": {
-      "primary": "FF 83 00 D1 FD 7B 01 A9 F4 4F 02 A9 F6 57 03 A9",
-      "fallback": "FF 83 00 D1 ?? ?? ?? ?? F4 4F 02 A9",
-      "offset": 0,
-      "description": "Cronet BoringSSL SSL_read"
-    },
-    "SSL_Write": {
-      "primary": "FF 83 00 D1 FD 7B 01 A9 F4 4F 02 A9 F6 57 03 A9",
-      "fallback": "FF 83 00 D1 ?? ?? ?? ?? F4 4F 02 A9",
-      "offset": 0,
-      "description": "Cronet BoringSSL SSL_write"
+  "google_quiche": {
+    "arm64": {
+      "QuicSpdyStream_OnDataFramePayload": [
+        "3F 23 03 D5 FD 7B BF A9 FD 03 00 91 08 04 40 F9 00 ?? ?? 91 ?? ?? ?? ?? 20 00 80 52 FD 7B C1 A8 BF 23 03 D5 C0 03 5F D6"
+      ]
     }
   }
 }
 ```
 
-**Usage:**
 ```bash
 fritap -m --patterns cronet_patterns.json -k cronet_keys.log com.google.android.gms
 ```
 
-## Pattern Development Workflow
+## Troubleshooting
 
-### Step-by-Step Pattern Creation
+**Pattern not found**
 
-**1. Analyze Target Application:**
 ```bash
-# Extract APK and analyze libraries
-apktool d target_app.apk
-cd target_app/lib/arm64-v8a/
-file *.so | grep -v stripped
-```
+# Verify JSON + schema first
+python -m json.tool patterns.json
 
-**2. Use Static Analysis:**
-```bash
-# Analyze with radare2
-r2 -A libssl.so
-[0x00000000]> afl | grep -i ssl_read
-[0x00000000]> pdf @ sym.SSL_read
-```
-
-**3. Extract and Test Patterns:**
-```bash
-# Test pattern matching
-fritap --patterns test_patterns.json -do -v target_app
-
-# Check debug output for pattern matches
-grep -i "pattern" debug_output.log
-```
-
-**4. Refine Patterns:**
-```bash
-# Adjust patterns based on results
-# Test with different app versions
-# Add fallback patterns
-```
-
-### Pattern Validation
-
-**Test Pattern Reliability:**
-```bash
-#!/bin/bash
-# Test pattern across multiple app versions
-
-PATTERN_FILE="$1"
-APP_PACKAGE="$2"
-
-for version in v1.0 v1.1 v1.2; do
-    echo "Testing $APP_PACKAGE $version"
-    fritap -m --patterns "$PATTERN_FILE" -k "test_${version}.log" "$APP_PACKAGE"
-    
-    if [ -s "test_${version}.log" ]; then
-        echo "✓ $version: Pattern worked"
-    else
-        echo "✗ $version: Pattern failed"
-    fi
-done
-```
-
-## Troubleshooting Patterns
-
-### Common Issues
-
-**Pattern Not Found:**
-```bash
-# Enable debug output
+# See per-pattern scan diagnostics
 fritap -do --patterns patterns.json -v target_app
 
-# Check library loading
+# Confirm the library is actually loaded / named as you expect
 fritap --list-libraries target_app
-
-# Verify pattern syntax
-python -m json.tool patterns.json
 ```
 
-**False Positives:**
-```bash
-# Make patterns more specific
-# Add additional context bytes
-# Use multiple validation patterns
-```
+If the run is silent, the most common causes are: wrong architecture key
+(`x86_64`/`armv7` instead of `x64`/`arm64`), using the **wrong schema for the active
+engine** (a Schema-A flat list while on the default legacy engine, or a Schema-B `modules`
+object while on `--modern`), or a leading/trailing `??`.
 
-**Performance Issues:**
-```bash
-# Optimize pattern length
-# Use specific library targeting
-# Implement pattern caching
-```
+**False positives / ambiguous-match warning**
 
-### Debug Techniques
+Add more concrete context bytes to make the signature unique — the scanner warns when a
+pattern hits multiple sites and installs at the first one.
 
-**Pattern Matching Debug:**
-```bash
-# Enable maximum verbosity
-fritap -do -v --patterns patterns.json target_app 2>&1 | tee pattern_debug.log
+**Pattern worked on one build, fails on the next**
 
-# Analyze pattern matching process
-grep -E "(Pattern|Match|Hook)" pattern_debug.log
-```
+Re-extract with BoringSecretHunter for the new build, or widen the volatile mid-pattern
+bytes with wildcards while keeping the edges concrete.
 
-**Memory Analysis:**
-```bash
-# Dump memory regions for analysis
-fritap -c memory_dump.js --patterns patterns.json target_app
+## Next steps
 
-# Where memory_dump.js contains:
-# Memory.scan(ptr("0x7000000000"), 0x10000000, "1F 20 03 D5", {
-#     onMatch: function(address, size) {
-#         console.log("Match at: " + address);
-#     }
-# });
-```
-
-## Best Practices
-
-### 1. Pattern Design
-
-- **Use sufficient context**: Include enough bytes to avoid false positives
-- **Implement fallbacks**: Provide alternative patterns for robustness
-- **Document patterns**: Include descriptions and version information
-- **Test thoroughly**: Validate across different versions and devices
-
-### 2. Maintenance
-
-- **Version control**: Track pattern changes over time
-- **Automated testing**: Validate patterns against known samples
-- **Community sharing**: Contribute patterns to friTap community
-- **Regular updates**: Update patterns for new library versions
-
-### 3. Performance
-
-- **Optimize pattern length**: Balance specificity with performance
-- **Target specific libraries**: Avoid scanning unnecessary memory regions
-- **Use caching**: Cache successful pattern matches
-- **Parallel scanning**: Use multiple patterns simultaneously
-
-
-## How Pattern-Based Hooking Works
-
-### 1. Pattern Generation
-
-Patterns are generated by analyzing the binary code of target functions:
-
-```assembly
-; Example SSL_read function prologue
-push rbp           ; 55
-mov rbp, rsp       ; 48 89 E5
-sub rsp, 0x20      ; 48 83 EC 20
-mov [rbp-8], rdi   ; 48 89 7D F8
-```
-
-This translates to the pattern: `55 48 89 E5 48 83 EC 20 48 89 7D F8`
-
-### 2. Pattern Matching
-
-friTap searches for these patterns in the target process memory:
-
-```typescript
-function find_pattern_in_module(module_name: string, pattern: string): NativePointer[] {
-    const module = Process.getModuleByName(module_name);
-    const pattern_bytes = pattern_to_bytes(pattern);
-    
-    return Memory.scan(module.base, module.size, pattern_bytes, {
-        onMatch: function(address, size) {
-            return address;
-        },
-        onError: function(reason) {
-            devlog_error(`Pattern scan failed: ${reason}`);
-        }
-    });
-}
-```
-
-### 3. Hook Installation
-
-Once patterns are found, hooks are installed at the matching addresses:
-
-```typescript
-function hook_by_pattern(
-    module_name: string,
-    pattern: string,
-    function_name: string,
-    hook_callback: Function
-): boolean {
-    const addresses = find_pattern_in_module(module_name, pattern);
-    
-    if (addresses.length === 0) {
-        devlog_error(`Pattern not found: ${pattern}`);
-        return false;
-    }
-    
-    if (addresses.length > 1) {
-        devlog_error(`Multiple matches for pattern: ${pattern}`);
-        return false;
-    }
-    
-    Interceptor.attach(addresses[0], hook_callback);
-    return true;
-}
-```
-
-## Summary
-
-Pattern-based hooking is a powerful technique that extends friTap's capabilities to handle stripped binaries and complex scenarios. By understanding the principles, implementing proper validation, and following best practices, you can create robust pattern-based hooks that work reliably across different environments and library versions.
-
-The key to successful pattern-based hooking is careful pattern selection, thorough testing, and robust error handling. Combined with friTap's other hooking methods, it provides comprehensive coverage for SSL/TLS traffic analysis in any scenario.
-
-## Next Steps
-- **Learn about custom Frida scripts** using `-c` parameter for advanced hooking
-- **Explore anti-detection techniques** in specialized security analysis scenarios
-- **Check platform-specific guides** for pattern examples
+- **[Add a new library / hook](../development/adding-features.md)** — how the hooking
+  pipeline and strategies fit together.
+- **[CLI reference](../api/cli.md)** — full documentation for `--patterns`, `--offsets`,
+  `--force-scan`, `-do`, and related flags.

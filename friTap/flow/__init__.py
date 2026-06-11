@@ -15,6 +15,7 @@ from .stream_buffer import StreamBuffer
 from .tap_format import FlowSummary, TapHeader, TapMeta
 from .tap_reader import TapReader
 from .tap_writer import TapWriter
+from .replay import IFlowSource, ReplayController
 
 __all__ = [
     "FlowCollector",
@@ -28,6 +29,8 @@ __all__ = [
     "TapMeta",
     "TapReader",
     "TapWriter",
+    "ReplayController",
+    "IFlowSource",
     # http_utils
     "IMAGE_MIME_TYPES",
     "detect_image_mime_from_bytes",

@@ -265,21 +265,21 @@ socket          remote  Local Socket
 
 ```bash
 # Optimize for large captures
-fritap --buffer-size 1MB --timeout 300 -k keys.log target
+fritap --timeout 300 -k keys.log target
 ```
 
 ### Memory-Constrained Environments
 
 ```bash
-# Minimize memory usage
-fritap -k keys.log --no-pcap target
+# Minimize memory usage (omit -p/--pcap so no PCAP is written, only keys)
+fritap -k keys.log target
 ```
 
 ### High-Performance Capture
 
 ```bash
-# Use minimal output
-fritap --json --no-verbose target > analysis.json
+# Write structured JSON output to a file (-j/--json takes a path; verbose is off by default)
+fritap --json analysis.json target
 ```
 
 ## Automation Examples

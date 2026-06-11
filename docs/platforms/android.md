@@ -172,9 +172,19 @@ friTap has comprehensive support for Android TLS libraries, covering both system
 - R/W: Read/Write hooks (traffic without keys)
 - Keys: Key extraction only
 
+!!! note "QUIC keys and OHTTP are captured alongside TLS"
+    QUIC key material — **Google QUICHE** (Chrome/Cronet), **Cloudflare quiche**, and
+    **Mozilla neqo** (Firefox) — is extracted on Android together with the TLS keylog;
+    no separate flag is required. Likewise, **OHTTP** (Oblivious HTTP, NSS HPKE) is
+    captured **within `--protocol tls`** — there is no separate `--protocol ohttp` or
+    `--ohttp` flag, since `tls` covers the whole TLS family (TLS, QUIC, and OHTTP).
+
 ### Pattern-Based Hooking for Stripped Libraries
 
-For apps with stripped or statically linked SSL libraries (Flutter, Cronet, Signal):
+Many Android apps ship **stripped** or **statically-linked** TLS stacks where the
+key-extraction symbols (`SSL_log_secret`, etc.) are not exported. friTap resolves
+these byte-pattern first, falling back to its built-in pattern registry when no
+symbol is available — no manual offsets required for the common cases.
 
 ```bash
 # Use patterns for Flutter apps
@@ -185,7 +195,125 @@ docker run --rm -v "$(pwd)/binary":/usr/local/src/binaries \
   -v "$(pwd)/results":/host_output boringsecrethunter
 ```
 
-friTap includes built-in patterns for common libraries, but you may need to generate custom patterns for specific app versions. See [Pattern-based Hooking](../advanced/patterns.md) for details. 
+friTap includes built-in patterns for common libraries, but you may need to generate custom patterns for specific app versions.
+
+#### Built-in pattern registry (Android)
+
+The Android hook registry (`agent/platforms/android.ts`) ships matchers for the
+stripped/statically-linked stacks below. These are matched by **library filename**,
+so a stripped APK is hooked without any extra configuration:
+
+| Library / stack | Matches (filename) | friTap registry entry |
+|-----------------|--------------------|-----------------------|
+| **libcronet** (GMS / mainline / APEX) | `libcronet*.so`, `libmainlinecronet.<ver>.so` | `Cronet`, `Cronet (mainline runtime)`, `Google QUICHE (Cronet)` |
+| **libflutter** | `*flutter*.so` | `Flutter BoringSSL` |
+| **libmonochrome** (Chrome / WebView) | `*monochrome*.so` | `Cronet (Monochrome)`, `Google QUICHE (Monochrome)` |
+| **Signal / RingRTC** | `libsignal_jni*.so`, `libringrtc_rffi*.so` | `Cronet (Signal)`, `Cronet (RingRTC)` |
+| **Cloudflare Warp** | `libwarp_mobile*.so` | `Cronet (Warp Mobile)` |
+
+!!! note "Chrome / Cronet are BoringSSL underneath"
+    The Chrome, Cronet, Signal, RingRTC and Warp matchers all route to the same
+    BoringSSL key-extraction hook. Chrome-browser QUIC specifically lives in
+    `libmonochrome*.so` (no resolvable symbols), which is why pattern-based hooking
+    is mandatory there.
+
+See [Pattern-based Hooking](../advanced/patterns.md) for the pattern-file schema, the
+`--patterns`/`--offsets`/`--force-scan` flags, and how to author patterns with
+BoringSecretHunter, r2 or Ghidra.
+
+## QUIC / HTTP/3 on Android
+
+Modern Android apps increasingly use QUIC (HTTP/3) through Chrome's network stack
+(Cronet / `libmonochrome`). friTap extracts **QUIC keys alongside TLS** and can
+capture decrypted QUIC/HTTP/3 plaintext. The QUIC stacks covered on Android are
+Google QUICHE (Chrome/Cronet), Cloudflare quiche, and Mozilla neqo (Firefox); their
+key material is dumped together with the TLS keylog — no separate flag is needed.
+
+### `--quic-only` — QUIC-only hooking
+
+Install **only** the QUIC hooks and skip the TLS-library hooks (BoringSSL, NSS,
+GnuTLS, ...), OHTTP, the keylog scan pass, and the Android Java hooks:
+
+```bash
+# Attach with QUIC hooks only (lighter attach, no Java VM safepoint sync)
+fritap -m --quic-only -k quic_keys.log com.android.chrome
+```
+
+This gives a dramatically lighter attach (no multi-MB pattern scans, and on Android
+no Java VM safepoint synchronization), which helps friTap attach to a target that is
+**already in active QUIC traffic**. On Android the filter scope is **Google QUICHE
+(Cronet) only**.
+
+### `--quic-capture-mode {stream,app-api}`
+
+Select the QUIC plaintext capture boundary (default: `stream`):
+
+```bash
+# Default lower-boundary stream-level hooks
+fritap -m --quic-capture-mode stream -k keys.log com.android.chrome
+
+# Application-API boundary with decoded HTTP/3 headers (Chrome / Android Google QUICHE)
+fritap -m --quic-capture-mode app-api -k keys.log com.android.chrome
+```
+
+- **`stream`** (default) — current lower-boundary stream-level hooks
+  (`QuicStream` / `QuicStreamSequencer::Readv`).
+- **`app-api`** — captures at the application-API "Boundary-4" with **decoded HTTP/3
+  headers**. Only available for Chrome/Android Google QUICHE.
+
+### `--quic-egress-headers-layer {auto,quiche-internal,chrome-shim,session-level}`
+
+Override which layer of the HTTP/3 **egress**-headers chain the agent attaches to
+(default: `auto`). This only takes effect with `--quic-capture-mode app-api`:
+
+```bash
+# Force the chrome-shim fallback layer (testing the egress chain)
+fritap -m --quic-capture-mode app-api --quic-egress-headers-layer chrome-shim \
+  -k keys.log com.android.chrome
+```
+
+`auto` keeps the winner-takes-all fallback chain (`quiche-internal` preferred,
+`chrome-shim` as fallback, `session-level` as last resort). Set it explicitly to force
+a particular layer when validating chain behavior on builds where the
+`quiche-internal` path still resolves.
+
+See the [QUIC protocol guide](../protocols/quic.md) for the full HTTP/3 capture model.
+
+## Decrypted Plaintext Capture Stability
+
+Recent Android work improved the reliability of **plaintext (decrypted)** capture for
+apps whose TLS sockets are not directly reachable from the SSL object. Stacks that
+wrap the socket in an in-memory BIO (or do async I/O) leave the SSL object **without a
+usable socket file descriptor**, which previously produced flows with missing peer
+addresses.
+
+friTap now correlates each thread's most-recent stream-socket FD with the
+`SSL_Read`/`SSL_Write` calls happening synchronously on that same thread, recovering
+the peer endpoint for the connection. The tracker is armed lazily — only the first
+time a socket-less SSL object is actually observed — so apps that always expose a
+valid FD pay no overhead. Only TCP (SOCK_STREAM) sockets are eligible, so DNS/QUIC
+datagram sockets are never mis-attributed as the peer of a TLS connection.
+
+In practice this means more complete `--pcap` output (correct source/destination
+addresses) for apps using BIO-wrapped or NIO/async networking, with no extra flags.
+
+## `--modern` (EXPERIMENTAL agent path)
+
+!!! warning "EXPERIMENTAL — default is the legacy path"
+    `--modern` opts into the refactored ("modern") friTap agent code path. The
+    **default is the stable legacy path** for TLS libraries. On Android/Windows the
+    modern path unlocks the three-tier BoringSSL keylog chain and improved Cronet
+    hooks, but it has **known regressions** versus legacy: **iOS/macOS Cronet, Windows
+    LSASS, and IPsec**. Use it only when you specifically need the modern hooks.
+
+```bash
+# Opt into the modern agent path on Android
+fritap -m --modern -k keys.log com.example.app
+```
+
+The modern path is **auto-enabled** when you select `--protocol ssh` or
+`--protocol ipsec` (those agents live only in the modern path); you do not need to
+pass `--modern` in that case.
 
 ## Application Categories
 
@@ -384,6 +512,18 @@ fritap -m --live com.example.app
 
 # Then in Wireshark: File → Open → /tmp/sharkfin
 ```
+
+!!! tip "Capture live from inside Wireshark (extcap backend)"
+    friTap ships a Wireshark **extcap** backend so you can start an Android capture
+    directly from Wireshark's interface list. Install it once with:
+
+    ```bash
+    fritap install-backend wireshark
+    ```
+
+    After installing, friTap appears as a capture interface in Wireshark. See the
+    [CLI reference](../api/cli.md) for `install-backend` and the live-capture mode in
+    the [Terminal UI guide](../getting-started/tui.md).
 
 ### Burp Suite Integration
 

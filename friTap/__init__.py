@@ -16,8 +16,16 @@ must stay in sync with that document and with `__all__` below.
       SessionEvent, ConsoleEvent, ErrorEvent, SocketTraceEvent, DetachEvent,
       FlowEvent, FriTapEvent (base), EventBus
     - Flow analysis: Flow, FlowChunk, FlowState, FlowEventType, FlowSummary,
-      TapReader, Severity, Finding, BaseAnalyzer, analyze_tap,
-      analyze_tap_multi, AnalyzerPlugin
+      TapReader, TapMeta, Severity, Finding, BaseAnalyzer, analyze_tap,
+      analyze_tap_multi, AnalyzerPlugin, severity_rank
+    - Offline analyze: analyze_tap_report, AnalyzeReport, list_analyzers,
+      list_report_formats, Reporter, JsonReporter, CsvReporter,
+      MarkdownReporter, TableReporter
+    - Offline pcap -> tap: pcap_to_tap, convert_pcap_to_tap, ConvertResult,
+      NoDecryptionKeysError
+    - Flow replay / overview: ReplayController, IFlowSource
+    - Parsed-metadata types: ParseResult, ProtocolLayer, TlsLayer, QuicLayer,
+      SshLayer
     - Protobuf utilities: decode_raw, format_message, ProtobufMessage,
       ProtobufField, ProtobufProcessor
     - Version: __version__
@@ -108,6 +116,33 @@ from .parsers.protobuf import (
     ProtobufProcessor,
 )
 
+# Offline analyze orchestration — reusable report function + reporters/discovery
+from .analysis import severity_rank
+from .analysis.reporters import (
+    Reporter,
+    JsonReporter,
+    CsvReporter,
+    MarkdownReporter,
+    TableReporter,
+)
+from .commands.analyze import (
+    AnalyzeReport,
+    analyze_tap_report,
+    list_analyzers,
+    list_report_formats,
+)
+
+# Offline pcap -> tap reconstruction. ``pcap_to_tap`` is imported from the
+# submodule directly (not the offline package) so it does not shadow — and is
+# not shadowed by — the ``friTap.offline.pcap_to_tap`` module attribute.
+from .offline import convert_pcap_to_tap, ConvertResult, NoDecryptionKeysError
+from .offline.pcap_to_tap import pcap_to_tap
+
+# Flow replay / high-level overview + parsed-metadata types
+from .flow import ReplayController, IFlowSource, TapMeta
+from .flow.layers import ProtocolLayer, TlsLayer, QuicLayer, SshLayer
+from .parsers.base import ParseResult
+
 __all__ = [
     # --- Stable public API (covered by SemVer guarantees) ---
     "__version__",
@@ -151,6 +186,32 @@ __all__ = [
     "ProtobufMessage",
     "ProtobufField",
     "ProtobufProcessor",
+    # Offline analyze orchestration
+    "analyze_tap_report",
+    "AnalyzeReport",
+    "list_analyzers",
+    "list_report_formats",
+    "severity_rank",
+    "Reporter",
+    "JsonReporter",
+    "CsvReporter",
+    "MarkdownReporter",
+    "TableReporter",
+    # Offline pcap -> tap
+    "pcap_to_tap",
+    "convert_pcap_to_tap",
+    "ConvertResult",
+    "NoDecryptionKeysError",
+    # Flow replay / overview
+    "ReplayController",
+    "IFlowSource",
+    "TapMeta",
+    # Parsed-metadata types
+    "ParseResult",
+    "ProtocolLayer",
+    "TlsLayer",
+    "QuicLayer",
+    "SshLayer",
     # --- Deprecated; will be removed in friTap 3.0 ---
     "SSL_Logger",
 ]

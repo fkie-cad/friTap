@@ -241,7 +241,7 @@ class FriTap:
     # ------------------------------------------------------------------
 
     def protocol(self, proto: str) -> "FriTap":
-        """Set the target protocol: tls, ipsec, ssh, signal, smb3, auto."""
+        """Set the target protocol: tls, ipsec, ssh, all, auto."""
         self._protocol = proto
         return self
 

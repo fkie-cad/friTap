@@ -8,7 +8,7 @@ This guide will help you install and set up friTap for SSL/TLS traffic analysis.
 
 ### Minimum Requirements
 
-- **Python**: 3.7 or higher
+- **Python**: 3.10 or higher
 - **Frida**: 17.x (see [Frida compatibility](https://github.com/fkie-cad/friTap#frida-compatibility))
 - **Operating System**: Linux, Windows, macOS
 - **Memory**: 512 MB RAM (minimum)
@@ -173,7 +173,7 @@ fritap --help
 ### Expected Output
 
 ```
-friTap 2.0.0
+friTap v2.0.8
 Usage: fritap [OPTIONS] TARGET
 
 Options:
@@ -213,7 +213,7 @@ frida --version
 
 ### Issue: Python Version Compatibility
 
-**Problem**: `friTap requires Python 3.7+`
+**Problem**: `friTap requires Python 3.10+`
 
 **Solution**:
 ```bash
@@ -255,14 +255,25 @@ Once friTap is installed, you can:
 friTap automatically installs the following dependencies:
 
 - **frida** (>= 17.0.0, < 18.0.0): Core instrumentation framework
-- **frida-tools** (>= 12.0.0, < 13.0.0): Frida command-line tools
+- **frida-tools** (>= 14.0.0, < 15.0.0): Frida command-line tools
 - **scapy**: Network packet manipulation
 - **AndroidFridaManager**: Android device management
 - **rich** (>= 13.0.0): Terminal output formatting
-- **click**: Command-line interface
 - **hexdump**: Binary data display
 - **watchdog**: File system monitoring
 - **psutil**: System and process utilities
+- **textual** (>= 0.80.0): Powers the interactive [terminal UI](tui.md) (ships by default; no extra install needed)
+- **tlsLibHunter**: TLS/SSL library detection — powers `--library-scan`, `-ll/--list-libraries` and `--extract-libraries` (imported as `tlslibhunter`)
+- **platformdirs**, **pydantic** (>= 2.0): Configuration and platform-aware paths
+- **h11**, **hpack**, **pylsqpack**: HTTP/1, HTTP/2 and HTTP/3 (QPACK) parsing
+- **zstandard** (>= 0.19), **brotli** (>= 1.0): Response body decompression
+
+!!! note "The Frida agent is shipped pre-compiled"
+    friTap bundles a pre-built JavaScript agent at `friTap/fritap_agent.js`, so
+    installing the package is all you need to run captures — there is **no**
+    Node/TypeScript toolchain required for normal use. Contributors who change
+    the agent source under `agent/` rebuild it with `npm run build` (see
+    [Architecture](../development/architecture.md) for the build pipeline).
 
 ## Optional Dependencies
 

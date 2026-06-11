@@ -43,7 +43,7 @@ Test Python components in isolation with mocked dependencies.
 #### Test Structure
 
 ```python
-# tests/unit/testfritap_agentger.py
+# tests/unit/test_ssl_logger.py
 import pytest
 from unittest.mock import Mock, patch, MagicMock
 from friTap.ssl_logger import SSL_Logger
@@ -189,26 +189,34 @@ class TestAgentFunctionality:
     def test_pattern_file_loading(self):
         """Test agent can load pattern files correctly."""
         # Create test pattern file
+        # Schema B (the default engine): modules -> module -> platform -> arch -> function
         test_patterns = {
-            "version": "1.0",
-            "patterns": {
-                "SSL_Read": {
-                    "primary": "1F 20 03 D5 ?? ?? ?? ?? F4 4F 01 A9"
+            "modules": {
+                "libflutter.so": {
+                    "android": {
+                        "arm64": {
+                            "SSL_Read": {
+                                "primary": "1F 20 03 D5 ?? ?? ?? ?? F4 4F 01 A9"
+                            }
+                        }
+                    }
                 }
             }
         }
-        
+
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
             json.dump(test_patterns, f)
             pattern_file = f.name
-        
+
         try:
-            # Test pattern file validation (this would be done by the agent)
+            # Validate with friTap's loader (accepts both Schema A and Schema B)
+            import logging
+            from friTap.patterns.loader import PatternLoader
             with open(pattern_file, 'r') as f:
                 loaded_patterns = json.load(f)
-            
-            assert loaded_patterns["version"] == "1.0"
-            assert "SSL_Read" in loaded_patterns["patterns"]
+
+            assert "libflutter.so" in loaded_patterns["modules"]
+            assert PatternLoader.validate(loaded_patterns, logging.getLogger("t")) is True
         finally:
             Path(pattern_file).unlink()
 ```
@@ -598,10 +606,10 @@ tox
 pytest-watch tests/unit/
 
 # Run specific test file
-pytest tests/unit/testfritap_agentger.py -v
+pytest tests/unit/test_ssl_logger.py -v
 
 # Run with debugging output
-pytest tests/unit/testfritap_agentger.py::TestSSLLogger::test_specific -v -s
+pytest tests/unit/test_ssl_logger.py::TestSSLLogger::test_specific -v -s
 
 # Profile test performance
 pytest --profile tests/unit/
@@ -646,18 +654,18 @@ def mock_boringssl_module():
 ```python
 @pytest.fixture
 def sample_patterns():
-    """Sample pattern file data for testing."""
+    """Sample pattern file data for testing (Schema B — the default engine)."""
     return {
-        "version": "1.0",
-        "architecture": "arm64",
-        "platform": "android",
-        "library": "libflutter.so",
-        "patterns": {
-            "SSL_Read": {
-                "primary": "1F 20 03 D5 ?? ?? ?? ?? F4 4F 01 A9",
-                "fallback": "1F 20 03 D5 ?? ?? ?? ?? ?? ?? ?? ?? F4 4F 01 A9",
-                "offset": 0,
-                "description": "BoringSSL SSL_read in Flutter"
+        "modules": {
+            "libflutter.so": {
+                "android": {
+                    "arm64": {
+                        "SSL_Read": {
+                            "primary":  "1F 20 03 D5 ?? ?? ?? ?? F4 4F 01 A9",
+                            "fallback": "1F 20 03 D5 ?? ?? ?? ?? ?? ?? ?? ?? F4 4F 01 A9"
+                        }
+                    }
+                }
             }
         }
     }
@@ -676,7 +684,7 @@ import time
 class TestMemoryUsage:
     """Test memory usage patterns."""
     
-    def testfritap_agentger_memory_usage(self):
+    def test_ssl_logger_memory_usage(self):
         """Test that SSL_Logger doesn't leak memory."""
         initial_memory = psutil.Process().memory_info().rss
         
@@ -798,10 +806,10 @@ jobs:
 pytest --cache-clear
 
 # Run tests in verbose mode
-pytest -v -s tests/unit/testfritap_agentger.py
+pytest -v -s tests/unit/test_ssl_logger.py
 
 # Debug specific test failure
-pytest --pdb tests/unit/testfritap_agentger.py::test_specific_function
+pytest --pdb tests/unit/test_ssl_logger.py::test_specific_function
 
 # Check test coverage
 pytest --cov=friTap --cov-report=html tests/unit/
