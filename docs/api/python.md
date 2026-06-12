@@ -1,6 +1,6 @@
 # Python API
 
-friTap ships a stable, SemVer-guaranteed Python API for driving captures, consuming live events, and working with `.tap` files offline. The public surface is everything exported from the `friTap` package `__all__` (58 symbols); removing or breaking any of them requires a friTap MAJOR bump (see `RELEASING.md`).
+friTap ships a stable, SemVer-guaranteed Python API for driving captures, consuming live events, and working with `.tap` files offline. The public surface is everything exported from the `friTap` package `__all__` (59 symbols); removing or breaking any of them requires a friTap MAJOR bump (see `RELEASING.md`).
 
 This page leads with the **modern API**:
 
@@ -517,10 +517,10 @@ with ReplayController("capture_20260507_153933.tap") as rc:   # offline / CI-run
 
 ## Traffic analysis
 
-friTap can run its analyzers (`credentials`, `ioc`, `protobuf`, plus custom
-ones) over a captured `.tap` file — passive analysis, no network activity. Use
-`analyze_tap_report()` for programmatic access; it performs no I/O beyond reading
-the `.tap` and never calls `sys.exit`.
+friTap can run its analyzers (`credentials`, `ioc`, `privacy`, `protobuf`, plus
+custom ones) over a captured `.tap` file — passive analysis, no network activity.
+Use `analyze_tap_report()` for programmatic access; it performs no I/O beyond
+reading the `.tap` and never calls `sys.exit`.
 
 ::: friTap.commands.analyze.analyze_tap_report
     options:
@@ -538,17 +538,27 @@ from friTap import analyze_tap_report
 
 report = analyze_tap_report(
     "capture_20260507_153933.tap",   # offline / CI-runnable
-    scanners="credentials,ioc",      # None or "all" → built-ins
+    scanners="credentials,ioc",      # None or "all" → built-ins (which analyzers RUN)
     min_severity="info",
     report_format="table",
+    # report-side filters (additive, keyword-only; all default to no-op):
+    min_confidence=0.0,              # drop findings below this confidence (0.0–1.0)
+    source=None,                     # comma-separated source names to SHOW (e.g. "credentials,privacy")
+    category=None,                   # "secret,pii,network,protocol" to SHOW
+    show_pii=False,                  # reveal PII/secret values instead of redacting
 )
 
 for finding in report.findings:
-    print(finding.severity.name, finding.title, finding.flow_id)
+    print(finding.severity.name, finding.category, finding.title, finding.flow_id)
 
 print(report.rendered)               # the rendered table/json/csv/md
 raise SystemExit(report.exit_code)   # 2 if any finding ≥ medium, else 0 (CI gate)
 ```
+
+`min_confidence`, `source`, `category`, and `show_pii` are **additive,
+keyword-only** parameters — older calls that omit them keep working unchanged.
+`scanners` chooses which analyzers *run*; `source`/`category` filter which of the
+resulting findings are *shown*.
 
 ### Findings & severity
 
@@ -556,6 +566,35 @@ Each `Finding` has: `severity` (a `Severity` enum), `title`, `description`,
 `source`, `flow_id`, `confidence` (default `1.0`), `timestamp`, and the dicts
 `evidence` and `metadata`. `Severity` is `CRITICAL`/`HIGH`/`MEDIUM`/`LOW`/`INFO`
 (rank 0 is most severe).
+
+Every finding now carries a **category** in `metadata["category"]`, surfaced as the
+`Finding.category` property: `secret` (credentials), `pii` (privacy), `network`
+(IOC), or `protocol` (protobuf). PII findings additionally carry
+`metadata["compliance"]` (e.g. `GDPR`, `CCPA`, `PCI-DSS`, `HIPAA`).
+
+### Filtering findings
+
+`FindingFilter` (exported from the top-level `friTap` package) is the reusable
+filter behind the CLI's `--source`/`--category`/`--min-confidence` flags. Apply it
+to any iterable of `Finding` objects:
+
+```python
+from friTap import FindingFilter
+
+flt = FindingFilter(
+    min_severity="info",
+    min_confidence=0.8,
+    sources={"credentials", "privacy"},
+    categories={"secret", "pii"},
+)
+kept = [f for f in report.findings if flt.matches(f)]
+```
+
+!!! note "PrivacyAnalyzer import path"
+    The built-in analyzer classes are available under `friTap.analysis.*` — the
+    `privacy` analyzer is `from friTap.analysis.privacy import PrivacyAnalyzer`
+    (**not** re-exported from the top-level `friTap` package). Select it by name via
+    `scanners="privacy"` rather than importing it directly.
 
 ### CI gate
 

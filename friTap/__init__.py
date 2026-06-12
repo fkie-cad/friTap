@@ -118,6 +118,7 @@ from .parsers.protobuf import (
 
 # Offline analyze orchestration — reusable report function + reporters/discovery
 from .analysis import severity_rank
+from .analysis.filtering import FindingFilter
 from .analysis.reporters import (
     Reporter,
     JsonReporter,
@@ -192,6 +193,7 @@ __all__ = [
     "list_analyzers",
     "list_report_formats",
     "severity_rank",
+    "FindingFilter",
     "Reporter",
     "JsonReporter",
     "CsvReporter",

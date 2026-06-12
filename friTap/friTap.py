@@ -338,6 +338,18 @@ Offline (read / analyze .tap):
                       choices=["critical", "high", "medium", "low", "info"], default="info",
                       dest="scan_min_severity",
                       help="Only report passive-analysis findings at or above this severity (default: info).")
+    args.add_argument("--scan-min-confidence", required=False, type=float, default=0.0,
+                      dest="scan_min_confidence",
+                      help="Only report passive-analysis findings with confidence at or above this value (default: 0.0).")
+    args.add_argument("--scan-source", required=False, default=None, metavar="<names>",
+                      dest="scan_source",
+                      help="Comma-separated analyzer source names to include in the passive-analysis report (default: all).")
+    args.add_argument("--scan-category", required=False, default=None, metavar="<categories>",
+                      dest="scan_category",
+                      help="Comma-separated finding categories to include (secret,pii,network,protocol; default: all).")
+    args.add_argument("--scan-show-pii", required=False, action="store_true", default=False,
+                      dest="scan_show_pii",
+                      help="Reveal PII/secret values in the passive-analysis report instead of redacting them (default: redacted).")
     args.add_argument('--version', action='version',version='friTap v{version}'.format(version=__version__))
     args.add_argument("--enable_spawn_gating", required=False, action="store_const", const=True,
                       help="Catch newly spawned processes matching the target app (useful for Android multi-process apps)")
@@ -669,6 +681,10 @@ Offline (read / analyze .tap):
             scan_report=getattr(parsed, 'scan_report', 'table'),
             scan_report_out=getattr(parsed, 'scan_report_out', None),
             scan_min_severity=getattr(parsed, 'scan_min_severity', 'info'),
+            scan_min_confidence=getattr(parsed, 'scan_min_confidence', 0.0),
+            scan_source=getattr(parsed, 'scan_source', None),
+            scan_category=getattr(parsed, 'scan_category', None),
+            scan_show_pii=getattr(parsed, 'scan_show_pii', False),
         )
 
         # Validate filter expression early (before session starts)

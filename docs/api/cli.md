@@ -354,19 +354,37 @@ list (e.g. `credentials,ioc`).
 - **Bare `--scan` (no value): runs all built-in analyzers** (`const="all"`).
 - `--scan credentials,ioc`: runs just those analyzers.
 
-Built-in analyzers: `credentials`, `ioc`, `protobuf`.
+Built-in analyzers: `credentials`, `ioc`, `privacy`, `protobuf`.
 
 #### `--scan-report {json,csv,md,table}`
-Format for the report printed at the end of capture. **Default `table`**.
+Format for the passive-analysis report printed at the end of capture (default: table).
 
 #### `--scan-report-out <path>`
-Write the report to this path instead of stdout.
+Write the passive-analysis report to this path instead of stdout.
 
 #### `--scan-min-severity {critical,high,medium,low,info}`
-Only report findings at or above this severity. **Default `info`** (keep all).
+Only report passive-analysis findings at or above this severity (default: info).
+
+#### `--scan-min-confidence <float>`
+Only report passive-analysis findings with confidence at or above this value
+(default: 0.0).
+
+#### `--scan-source <names>`
+Comma-separated analyzer source names to include in the passive-analysis report
+(default: all). Filters which findings **show**; use `--scan` to choose which
+analyzers **run**.
+
+#### `--scan-category <categories>`
+Comma-separated finding categories to include (`secret,pii,network,protocol`;
+default: all).
+
+#### `--scan-show-pii`
+Reveal PII/secret values in the passive-analysis report instead of redacting them
+(default: redacted).
 
 ```bash
 fritap --scan --scan-report md --scan-min-severity medium -k keys.log target
+fritap --scan --scan-category pii --scan-min-confidence 0.8 -k keys.log target
 ```
 
 ---
@@ -503,10 +521,22 @@ offline; no network activity. Two equivalent entry forms:
   hijacked).
 
 Sub-flags (own parser, **distinct from the live `--scan*` family**):
-`--scanners <names>` (comma-separated; default all built-ins), `--report
-{json,csv,md,table}` (default `table`), `--report-out <path>`, `--min-severity
-{critical,high,medium,low,info}` (default `info`), `--analyzer-path
-<module[:Class]>`, `--include-private-ips`, `--protobuf-schema <path>`.
+
+| Flag | Description |
+| --- | --- |
+| `--scanners <names>` | Comma-separated analyzer names (default: all built-ins). Selects which analyzers **run**. |
+| `--report {csv,json,md,table}` | Report output format (default: table). |
+| `--report-out <path>` | Write the report to this path instead of stdout. |
+| `--min-severity {critical,high,medium,low,info}` | Only report findings at or above this severity (default: info). |
+| `--min-confidence <float>` | Only report findings with confidence at or above this value (0.0-1.0; default: 0.0). |
+| `--source <names>` | Comma-separated analyzer source names to include in the report (e.g. `credentials,privacy`). Filters which findings **show**; use `--scanners` to choose which analyzers **run**. Default: all. |
+| `--category <categories>` | Comma-separated finding categories to include (`secret,pii,network,protocol`). Default: all. |
+| `--show-pii` | Reveal PII/secret values in the report instead of redacting them (default: redacted). |
+| `--analyzer-path <module[:Class]>` | Load an external analyzer (`module` or `module:Class`). |
+| `--include-private-ips` | Include private/reserved IP addresses in IOC findings. |
+| `--protobuf-schema <path>` | Path to a protobuf schema for the protobuf analyzer. |
+
+Built-in analyzers: `credentials`, `ioc`, `privacy`, `protobuf`.
 
 A `<stem>.findings.json` sidecar is always written next to the `.tap`. Exit codes:
 `0` success, `2` when any finding is at or above the gate severity (`medium`) — a
@@ -515,6 +545,8 @@ usable CI gate, `1` for usage/IO errors.
 ```bash
 fritap analyze capture.tap --report md
 fritap --analyze capture.tap --report md
+fritap analyze capture.tap --category pii --show-pii          # reveal redacted PII
+fritap analyze capture.tap --source credentials --min-confidence 0.8
 ```
 
 Full guide: [Traffic analysis](../advanced/traffic-analysis.md).

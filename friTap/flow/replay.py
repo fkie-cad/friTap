@@ -145,6 +145,27 @@ class ReplayController:
         """Store reparse results so they survive cache eviction."""
         self._reparse_results[flow_id] = (request, response)
 
+    def read_all_findings(self) -> list:
+        """Return persisted findings (as dicts) across all flows in the .tap.
+
+        Passthrough over :class:`~friTap.flow.tap_reader.TapReader` so callers
+        (e.g. the TUI findings viewer) don't reach into the private reader.
+        Iterates the loaded summaries and collects each flow's REC_FINDING
+        records. Returns an empty list if the file carries none.
+        """
+        if self._reader is None:
+            return []
+        findings: list = []
+        for summary in self._summaries:
+            findings.extend(self._reader.read_findings(summary.flow_id))
+        return findings
+
+    def has_findings(self) -> bool:
+        """True if the .tap file contains any persisted findings."""
+        if self._reader is None:
+            return False
+        return self._reader.has_findings()
+
     def close(self) -> None:
         """Close the reader and release resources."""
         if self._reader is not None:

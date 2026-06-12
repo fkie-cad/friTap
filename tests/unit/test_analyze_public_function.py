@@ -104,7 +104,7 @@ def test_list_report_formats_values():
 
 
 def test_list_analyzers_values():
-    assert list_analyzers() == ["credentials", "ioc", "protobuf"]
+    assert list_analyzers() == ["credentials", "ioc", "privacy", "protobuf"]
 
 
 # ---------------------------------------------------------------------------

@@ -120,7 +120,8 @@ class ProtobufAnalyzer:
             self._analyze_body(flow, "response", findings)
         except Exception:
             logger.debug("Unexpected error analyzing flow %s", flow.flow_id, exc_info=True)
-        return findings
+        from friTap.analysis.filtering import with_category
+        return [with_category(f, "protocol") for f in findings]
 
     def _check_grpc(self, flow: "Flow", findings: list[Finding]) -> None:
         """Detect gRPC endpoints from content-type headers."""

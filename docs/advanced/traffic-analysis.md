@@ -118,13 +118,28 @@ fritap --analyze capture.tap        # explicit flag
 
 | Flag | Default | Effect |
 |------|---------|--------|
-| `--scanners <list>` | all built-ins | Comma-separated analyzer names, e.g. `credentials,ioc`. |
-| `--report {json,csv,md,table}` | `table` | Output format. |
+| `--scanners <list>` | all built-ins | Comma-separated analyzer names, e.g. `credentials,ioc`. Selects which analyzers **run**. |
+| `--report {csv,json,md,table}` | `table` | Output format. |
 | `--report-out <path>` | stdout | Write the report to a file instead of printing it. |
 | `--min-severity {critical,high,medium,low,info}` | `info` | Only report findings at or above this severity. |
+| `--min-confidence <float>` | `0.0` | Only report findings with confidence at or above this value (0.0–1.0). |
+| `--source <names>` | all | Comma-separated analyzer source names to include in the report (e.g. `credentials,privacy`). Filters which findings **show**; use `--scanners` to choose which analyzers **run**. |
+| `--category <categories>` | all | Comma-separated finding categories to include (`secret,pii,network,protocol`). |
+| `--show-pii` | off (redacted) | Reveal PII/secret values in the report instead of redacting them. |
 | `--analyzer-path <module[:Class]>` | — | Load an external analyzer. |
 | `--include-private-ips` | off | Include private/reserved IPs in IOC findings (default skips them). |
 | `--protobuf-schema <path>` | — | Schema path for the protobuf analyzer. |
+
+!!! note "`--scanners` (run) vs `--source`/`--category` (show)"
+    `--scanners` chooses **which analyzers execute**. `--source` and `--category`
+    are *report-side filters* that narrow which already-produced findings are shown
+    (and which are written to the sidecar). They compose: run only what you need,
+    then display only the categories you care about.
+
+```bash
+fritap analyze capture.tap --category pii --show-pii          # reveal redacted PII
+fritap analyze capture.tap --source credentials --min-confidence 0.8
+```
 
 See [`api/cli.md`](../api/cli.md) for the canonical flag reference across all
 subcommands.
@@ -150,6 +165,14 @@ built-in analyzers (the argument is `nargs="?"` with a default of `all`).
 | `--scan-report {json,csv,md,table}` | `table` | Format of the end-of-capture report. |
 | `--scan-report-out <path>` | stdout | Write the report to a file. |
 | `--scan-min-severity {critical,high,medium,low,info}` | `info` | Severity filter for the report. |
+| `--scan-min-confidence <float>` | `0.0` | Only report findings with confidence at or above this value. |
+| `--scan-source <names>` | all | Comma-separated analyzer source names to include in the report. |
+| `--scan-category <categories>` | all | Comma-separated finding categories to include (`secret,pii,network,protocol`). |
+| `--scan-show-pii` | off (redacted) | Reveal PII/secret values in the report instead of redacting them. |
+
+The live `--scan-*` filters mirror the offline `analyze` filters one-for-one
+(`--scan-min-confidence` ≙ `--min-confidence`, `--scan-source` ≙ `--source`,
+`--scan-category` ≙ `--category`, `--scan-show-pii` ≙ `--show-pii`).
 
 !!! info "Same analyzers, live wiring"
     Internally the live path wraps each analyzer in an `AnalyzerPlugin` that subscribes
@@ -160,8 +183,9 @@ built-in analyzers (the argument is `nargs="?"` with a default of `all`).
 
 ## Analyzer catalog
 
-friTap ships three built-in analyzers. Their names (used with `--scanners`/`--scan`)
-are **`credentials`**, **`ioc`**, and **`protobuf`**.
+friTap ships four built-in analyzers. Their names (used with `--scanners`/`--scan`)
+are **`credentials`**, **`ioc`**, **`privacy`**, and **`protobuf`**. All four run by
+default when you pass a bare `--scan` / `--scanners` (i.e. the full built-in set).
 
 ### `credentials`
 
@@ -178,10 +202,17 @@ secrets. All reported secret values are **redacted** (first few characters only)
 | Password fields in JSON / form bodies (`password`, `passwd`, `pass`, `pwd`, `secret`, `*_password`) | CRITICAL |
 | Token/key fields in JSON (`token`, `access_token`, `refresh_token`, `id_token`, `api_key`, `apikey`, `secret`, `client_secret`, `auth_token`, `session_token`) | HIGH |
 | JWT (decoded; flags `alg:none` and expiry) | HIGH, or CRITICAL when `alg=none` |
+| Digest/NTLM/Negotiate `Authorization` scheme | (credential-bearing) |
+| Non-standard `Authorization` scheme (`'<scheme>'`) | (credential-bearing) |
+| CSRF / anti-forgery token (header, JSON field, or form field) | — |
 | High-entropy strings (≥ 4.5 bits, length 20–256) | LOW (confidence 0.4) |
 
 JWTs are detected anywhere in the body via pattern `eyJ...`, decoded without
 verification, and flagged CRITICAL if the header algorithm is `none`.
+
+All reported secret values are **redacted by default**. The `credentials` analyzer
+tags every finding with `metadata["category"] = "secret"` (see
+[Category taxonomy](#category-taxonomy-and-compliance-tags)).
 
 The API-key/secret pattern set:
 
@@ -191,15 +222,36 @@ The API-key/secret pattern set:
 | AWS Secret Key (`aws_secret_access_key=…`) | CRITICAL |
 | GitHub Token (`ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`) | HIGH |
 | GitHub Classic Token (`ghp_` + 36) | HIGH |
+| GitHub Fine-Grained PAT (`github_pat_…`) | HIGH |
 | GitLab Token (`glpat-…`) | HIGH |
 | Slack Token (`xox[boaprs]-…`) | HIGH |
+| Slack Webhook URL (`https://hooks.slack.com/services/…`) | HIGH |
 | Stripe Secret Key (`sk_live_…`) | CRITICAL |
 | Stripe Publishable Key (`pk_live_…`) | MEDIUM |
 | Google API Key (`AIza…`) | HIGH |
+| Google OAuth Access Token (`ya29.…`) | HIGH |
+| Google OAuth Refresh Token (`1//…`, keyword-gated) | HIGH |
 | GCP Service Account (`"type":"service_account"`) | CRITICAL |
 | Twilio API Key (`SK` + 32 hex) | HIGH |
 | SendGrid API Key (`SG.…`) | HIGH |
+| npm Access Token (`npm_…`) | HIGH |
+| PyPI Token (`pypi-AgEIcHlwaS5vcmc…`) | HIGH |
+| Docker Personal Access Token (`dckr_pat_…`) | HIGH |
 | Private Key (`-----BEGIN … PRIVATE KEY-----`) | CRITICAL |
+| Encrypted Private Key (`-----BEGIN ENCRYPTED PRIVATE KEY-----`) | CRITICAL |
+| PGP Private Key (`-----BEGIN PGP PRIVATE KEY BLOCK-----`) | CRITICAL |
+| PuTTY Private Key (`PuTTY-User-Key-File-…`) | CRITICAL |
+| SSH2 Encrypted Private Key (`---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----`) | CRITICAL |
+| X.509 Certificate (`-----BEGIN CERTIFICATE-----`) | INFO |
+| Private JWK (JSON with `kty` + private `d`/`k`) | CRITICAL |
+| PKCS#12 / PFX key store (DER or content-type) | CRITICAL |
+
+!!! note "De-noised high-entropy scanning"
+    To cut false positives, low-signal high-entropy strings (UUIDs, common
+    crypto-hash digests, encoded payloads) are **suppressed** and collapsed into a
+    single per-flow **INFO** record titled
+    `Entropy scan suppressed low-signal strings`, summarizing how many were dropped.
+    Genuine high-entropy secrets are still reported as their own LOW findings.
 
 ### `ioc`
 
@@ -239,6 +291,60 @@ Detects and decodes protobuf and gRPC content in HTTP flows.
 Pass `--protobuf-schema <path>` to supply a schema. Non-gRPC bodies are decoded when
 the content-type indicates protobuf *or* the bytes heuristically look like protobuf.
 
+### `privacy`
+
+Detects **personally identifiable information (PII)** leaking through observed
+traffic — headers, query parameters, JSON/form bodies, and URLs. Every finding is
+tagged `metadata["category"] = "pii"` and carries one or more **compliance** tags in
+`metadata["compliance"]` (e.g. `GDPR`, `CCPA`, `PCI-DSS`, `HIPAA`).
+
+| Detection | Severity | Compliance |
+|-----------|----------|------------|
+| Email address | LOW | GDPR, CCPA |
+| Phone number (E.164) | LOW | GDPR, CCPA |
+| Phone number (loose, key-gated) | LOW | GDPR, CCPA |
+| Credit-card PAN (Luhn + IIN validated) | MEDIUM | PCI-DSS, GDPR |
+| IBAN (mod-97 validated) | MEDIUM | GDPR, CCPA |
+| US SSN (range-validated) | MEDIUM | GDPR, CCPA, HIPAA |
+| IMEI (15-digit + Luhn) | MEDIUM | GDPR, CCPA |
+| MAC address | LOW | GDPR, CCPA |
+| Android ID (16-hex, key-gated) | — | GDPR, CCPA |
+| Advertising ID (GAID/IDFA, UUID-v4) | MEDIUM | GDPR, CCPA |
+| IP address in PII context (forwarding headers / `ip_*` keys; excludes private) | LOW | GDPR, CCPA |
+| Geolocation — lat/lon sibling keys, a coord pair/array under a geo-ish key (`coordinates`/`geo`/`position`/`location`), Plus Codes / Open Location Codes (also matched in free text), or geohashes (only under an explicit `geohash` key) | MEDIUM | GDPR, CCPA |
+| Postal address (≥2 of street/city/zip keys) | LOW | GDPR, CCPA |
+| Date of birth | MEDIUM | GDPR, HIPAA |
+| Passport number (key-gated) | MEDIUM | GDPR |
+| Health data (diagnosis/ICD-10/prescription/blood type/medical record) | HIGH | HIPAA, GDPR |
+
+!!! warning "PII is redacted by default"
+    Detected PII values are **redacted** in findings, reports, and the sidecar (PAN
+    keeps first-6/last-4, email keeps first char + domain, SSN/DOB/passport/health
+    are fully masked, others keep the first 8 characters). Pass `--show-pii`
+    (offline) or `--scan-show-pii` (live) to reveal the raw values. Each finding's
+    evidence carries a `redacted` boolean.
+
+The `privacy` analyzer runs as part of the default built-in set.
+
+---
+
+## Category taxonomy and compliance tags
+
+Every finding now carries a **category** in `metadata["category"]`, surfaced as the
+`Finding.category` property. The four categories are:
+
+| Category | Meaning | Produced by |
+|----------|---------|-------------|
+| `secret` | Credentials, keys, tokens | `credentials` |
+| `pii` | Personally identifiable information | `privacy` |
+| `network` | Network/connection indicators (IPs, domains, URLs, UAs, hashes) | `ioc` |
+| `protocol` | Decoded protocol structure (protobuf/gRPC) | `protobuf` |
+
+Filter the report by category with `--category secret,pii` (offline) or
+`--scan-category` (live). PII findings additionally carry `metadata["compliance"]`,
+listing the regulatory regimes (`GDPR`, `CCPA`, `PCI-DSS`, `HIPAA`) implicated by
+that data type.
+
 ---
 
 ## Finding and Severity model
@@ -256,7 +362,10 @@ dataclass:
 | `confidence` | `float` | 0.0–1.0 (default 1.0). |
 | `timestamp` | `float` | Epoch seconds (auto-set). |
 | `evidence` | `dict` | Structured evidence (matched data, location, host, …). |
-| `metadata` | `dict` | Optional extension fields (MITRE ATT&CK ID, CVE, …). |
+| `metadata` | `dict` | Extension fields, incl. `category` (`secret`/`pii`/`network`/`protocol`), `compliance` (PII only), MITRE ATT&CK ID, CWE, … |
+
+The finding's category is exposed directly as the `Finding.category` property
+(reading `metadata["category"]`).
 
 `Severity` (`friTap.analysis.Severity`) is declared **most-severe first**, so rank `0`
 is the most severe:
@@ -356,12 +465,16 @@ from friTap import analyze_tap_report
 
 report = analyze_tap_report(
     "capture.tap",
-    scanners="credentials,ioc",   # None / "all" / "" -> every built-in
+    scanners="credentials,ioc",   # None / "all" / "" -> every built-in (which analyzers RUN)
     min_severity="info",
     report_format="table",
     include_private_ips=False,
     protobuf_schema=None,
     analyzer_path=None,           # "module" or "module:Class"
+    min_confidence=0.0,           # report-side: drop findings below this confidence
+    source=None,                  # report-side: comma-separated source names to SHOW
+    category=None,                # report-side: "secret,pii,network,protocol" to SHOW
+    show_pii=False,               # reveal PII/secret values instead of redacting
 )
 
 print(report.rendered)            # the formatted report string

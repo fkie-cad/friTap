@@ -85,6 +85,17 @@ class Finding:
     evidence: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def category(self) -> str | None:
+        """Finding category (``secret``/``pii``/``network``/``protocol``).
+
+        Read-only convenience accessor over ``metadata["category"]``. This is a
+        property — not a dataclass field — so the frozen contract, equality, and
+        :func:`dataclasses.asdict` serialization are all unaffected. The category
+        taxonomy is documented in :mod:`friTap.analysis.filtering`.
+        """
+        return self.metadata.get("category")
+
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-friendly dict.
 

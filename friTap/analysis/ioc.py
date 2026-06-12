@@ -75,7 +75,16 @@ class IocAnalyzer:
         self._extract_url_ioc(flow, findings)
         self._extract_body_hashes(flow, resp_body, findings)
         self._extract_body_iocs(flow, resp_body, findings)
-        return findings
+        return [self._categorize(f) for f in findings]
+
+    @staticmethod
+    def _categorize(finding: Finding) -> Finding:
+        """Tag an IOC finding with its category: emails are PII, the rest network."""
+        from friTap.analysis.filtering import with_category
+
+        if finding.evidence.get("type") == "email":
+            return with_category(finding, "pii", compliance=["GDPR", "CCPA"])
+        return with_category(finding, "network")
 
     def _extract_connection_iocs(self, flow: "Flow", findings: list[Finding]) -> None:
         """Extract IOCs from connection metadata (dst IP, dst port)."""

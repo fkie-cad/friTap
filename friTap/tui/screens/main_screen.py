@@ -34,6 +34,11 @@ if TEXTUAL_AVAILABLE:
     from ..widgets.flow_list import FlowListWidget
     from ..widgets.flow_detail import FlowDetailWidget
     from ..widgets.filter_bar import FilterBar
+    from ..widgets.findings_list import FindingsListWidget
+    from ..widgets.findings_filter_bar import FindingsFilterBar
+    from ..modals.findings_filter_modal import FindingsFilterModal, FindingFilterResult
+    from friTap.analysis import Finding, Severity  # noqa: F401
+    from friTap.analysis.filtering import FindingFilter
     from ..modals.device_modal import DeviceSelectModal
     from ..modals.process_modal import ProcessSelectModal
     from ..modals.spawn_modal import SpawnInputModal
@@ -77,6 +82,10 @@ if TEXTUAL_AVAILABLE:
             Binding("f", "toggle_view", "Toggle View", show=False),
             Binding("slash", "focus_filter", "Filter", show=False),
             Binding("shift+escape", "clear_filter", "Clear Filter", show=False),
+            Binding("shift+f", "toggle_findings_view", "Findings", show=False),
+            Binding("c", "findings_quick_creds", "Creds", show=False),
+            Binding("p", "findings_quick_pii", "PII", show=False),
+            Binding("1", "findings_quick_critical", "Critical", show=False),
         ]
 
         def __init__(self, replay_file: str | None = None, **kwargs) -> None:
@@ -84,6 +93,7 @@ if TEXTUAL_AVAILABLE:
             self._replay_file = replay_file
             self._replay_filename: str | None = None
             self._replay_ctrl = None
+            self._findings_cache: list | None = None
             self._wizard = CaptureWizard(self)
             self._capture = CaptureController(self)
             self._mode_ctrl = ModeController(self)
@@ -107,6 +117,8 @@ if TEXTUAL_AVAILABLE:
                     yield ActivityLog(id="activity-log")
                     yield FlowListWidget(id="flow-list")
                     yield FlowDetailWidget(id="flow-detail")
+                    yield FindingsFilterBar(id="findings-filter-bar")
+                    yield FindingsListWidget(id="findings-list")
             yield Footer()
 
         def on_mount(self) -> None:
@@ -117,6 +129,8 @@ if TEXTUAL_AVAILABLE:
             self.query_one("#filter-bar").display = False
             self.query_one("#flow-list").display = False
             self.query_one("#flow-detail").display = False
+            self.query_one("#findings-filter-bar").display = False
+            self.query_one("#findings-list").display = False
 
             # Replay mode — skip wizard, load .tap file directly
             if self._replay_file:
@@ -244,6 +258,7 @@ if TEXTUAL_AVAILABLE:
             """Show the flow detail widget for a given Flow object."""
             self.query_one("#flow-list").display = False
             self.query_one("#left-panel").display = False
+            self._hide_findings_widgets()
             detail = self.query_one("#flow-detail", FlowDetailWidget)
             detail.show_flow(flow)
             detail.display = True
@@ -755,6 +770,7 @@ if TEXTUAL_AVAILABLE:
             """Switch right panel to full-screen flow list view."""
             self.query_one("#activity-log").display = False
             self.query_one("#flow-detail").display = False
+            self._hide_findings_widgets()
             self.query_one("#flow-list").display = True
             self.query_one("#filter-bar").display = True
             self.query_one("#left-panel").display = False
@@ -835,6 +851,7 @@ if TEXTUAL_AVAILABLE:
             self.query_one("#flow-list").display = False
             self.query_one("#flow-detail").display = False
             self.query_one("#filter-bar").display = False
+            self._hide_findings_widgets()
             self.query_one("#activity-log").display = True
             self.query_one("#left-panel").display = True
             self.query_one("#right-panel").remove_class("flow-mode")
@@ -873,8 +890,167 @@ if TEXTUAL_AVAILABLE:
             """Handle back request from flow detail."""
             self._back_to_flow_list()
 
+        # ----------------------------------------------------------
+        # Findings view management
+        # ----------------------------------------------------------
+
+        def _findings_list_displayed(self) -> bool:
+            """Return True if the findings list is currently displayed."""
+            try:
+                return bool(self.query_one("#findings-list").display)
+            except Exception:
+                return False
+
+        def _hide_findings_widgets(self) -> None:
+            """Hide the findings list + filter bar (no-op if not yet composed)."""
+            try:
+                self.query_one("#findings-list").display = False
+                self.query_one("#findings-filter-bar").display = False
+            except Exception:
+                pass
+
+        def _load_findings(self) -> list:
+            """Lazily load and cache findings as Finding objects.
+
+            Sources findings from the replay controller (offline .tap) via the
+            presentation-agnostic ``read_all_findings`` passthrough.
+            """
+            if self._findings_cache is not None:
+                return self._findings_cache
+
+            findings: list = []
+            if self._replay_ctrl is not None:
+                try:
+                    for item in self._replay_ctrl.read_all_findings():
+                        try:
+                            # read_findings() reconstructs Finding objects, but
+                            # accept plain dicts too for forward-compatibility.
+                            if isinstance(item, Finding):
+                                findings.append(item)
+                            elif isinstance(item, dict):
+                                findings.append(Finding.from_dict(item))
+                        except Exception:
+                            continue
+                except Exception:
+                    findings = []
+
+            self._findings_cache = findings
+            return findings
+
+        def _activate_findings_view(self) -> None:
+            """Switch right panel to full-screen findings list view."""
+            findings = self._load_findings()
+
+            findings_list = self.query_one("#findings-list", FindingsListWidget)
+            if findings_list.total_count == 0 and findings:
+                findings_list.add_findings(findings)
+
+            # Hide other right-panel views and the left panel.
+            self.query_one("#activity-log").display = False
+            self.query_one("#flow-list").display = False
+            self.query_one("#flow-detail").display = False
+            self.query_one("#filter-bar").display = False
+            self.query_one("#left-panel").display = False
+            self.query_one("#right-panel").add_class("flow-mode")
+
+            # Show findings widgets.
+            self.query_one("#findings-filter-bar").display = True
+            findings_list.display = True
+
+            self._update_findings_title()
+            findings_list.focus()
+
+        def _update_findings_title(self) -> None:
+            """Update the title bar with findings-view hints."""
+            try:
+                findings_list = self.query_one("#findings-list", FindingsListWidget)
+                total = findings_list.total_count
+            except Exception:
+                total = 0
+
+            if total == 0:
+                hint = "[dim]No findings — re-run with --scan[/]"
+            else:
+                hints = [
+                    f"[dim]{total} finding{'s' if total != 1 else ''}[/]",
+                    "[dim]Enter: flow[/]",
+                    "[dim]/: filter[/]",
+                    "[dim]c: creds  p: pii  1: critical[/]",
+                    "[dim]shift+f: flows[/]",
+                ]
+                hint = " [dim]|[/] ".join(hints)
+            self._set_title_hints(hint)
+            self._update_capture_indicator()
+
+        def action_toggle_findings_view(self) -> None:
+            """Toggle the findings view (Shift+F)."""
+            if self._findings_list_displayed():
+                self._activate_flow_view()
+            else:
+                self._activate_findings_view()
+
+        def _apply_findings_filter(self, flt: "FindingFilter", label: str) -> None:
+            """Apply a findings filter via the findings filter bar."""
+            try:
+                bar = self.query_one("#findings-filter-bar", FindingsFilterBar)
+                bar.apply_filter(flt, label)
+            except Exception:
+                pass
+
+        def action_findings_quick_creds(self) -> None:
+            """Quick filter to credential findings (c key, findings view only)."""
+            if not self._findings_list_displayed():
+                return
+            self._apply_findings_filter(
+                FindingFilter(sources=frozenset({"credentials"})), "credentials"
+            )
+
+        def action_findings_quick_pii(self) -> None:
+            """Quick filter to PII findings (p key, findings view only)."""
+            if not self._findings_list_displayed():
+                return
+            self._apply_findings_filter(
+                FindingFilter(categories=frozenset({"pii"})), "pii"
+            )
+
+        def action_findings_quick_critical(self) -> None:
+            """Quick filter to critical findings (1 key, findings view only)."""
+            if not self._findings_list_displayed():
+                return
+            self._apply_findings_filter(
+                FindingFilter(min_severity="critical"), "critical"
+            )
+
+        def on_findings_filter_bar_findings_filter_changed(
+            self, event: "FindingsFilterBar.FindingsFilterChanged"
+        ) -> None:
+            """Apply the filter from the findings filter bar to the list."""
+            try:
+                findings_list = self.query_one("#findings-list", FindingsListWidget)
+                findings_list.set_filter(event.flt)
+            except Exception:
+                pass
+
+        def on_findings_list_widget_finding_selected(
+            self, event: "FindingsListWidget.FindingSelected"
+        ) -> None:
+            """When a finding is selected, jump to its flow detail (if any)."""
+            if event.flow_id:
+                self._show_flow_detail(event.flow_id)
+
         def action_focus_filter(self) -> None:
             """Open the filter modal (/ key)."""
+            # Findings view has its own filter modal.
+            if self._findings_list_displayed():
+                def _on_result(result) -> None:
+                    if result is None:
+                        return
+                    self._apply_findings_filter(result.flt, result.label)
+                try:
+                    self.app.push_screen(FindingsFilterModal(), callback=_on_result)
+                except Exception:
+                    pass
+                return
             try:
                 filter_bar = self.query_one("#filter-bar", FilterBar)
                 if not filter_bar.display:
@@ -891,6 +1067,14 @@ if TEXTUAL_AVAILABLE:
 
         def action_clear_filter(self) -> None:
             """Clear the active filter (Shift+Esc)."""
+            # Findings view: clear the findings filter bar.
+            if self._findings_list_displayed():
+                try:
+                    bar = self.query_one("#findings-filter-bar", FindingsFilterBar)
+                    bar.clear_filter()
+                except Exception:
+                    pass
+                return
             try:
                 filter_bar = self.query_one("#filter-bar", FilterBar)
                 if not filter_bar.display:

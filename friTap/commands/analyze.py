@@ -58,14 +58,14 @@ _GATE_SEVERITY = "medium"
 def _filter_min_severity(findings: list["Finding"], min_severity: str) -> list["Finding"]:
     """Return findings whose severity is at least *min_severity*.
 
-    Severity comparison uses :data:`_SEVERITY_ORDER` (lower rank == more
-    severe). An unknown *min_severity* falls back to ``"info"`` (keep all).
+    Thin wrapper over :class:`~friTap.analysis.filtering.FindingFilter` (the
+    single filtering primitive). An unknown *min_severity* falls back to
+    ``"info"`` (keep all), preserving the historical behaviour byte-for-byte.
     """
-    threshold = _SEVERITY_ORDER.get(min_severity, _SEVERITY_ORDER["info"])
-    return [
-        f for f in findings
-        if _SEVERITY_ORDER.get(f.severity.value, _SEVERITY_ORDER["info"]) <= threshold
-    ]
+    from friTap.analysis.filtering import FindingFilter, apply
+
+    normalized = min_severity if min_severity in _SEVERITY_ORDER else "info"
+    return apply(findings, FindingFilter(min_severity=normalized))
 
 
 def _sidecar_path(tap_file: str) -> str:
@@ -115,20 +115,37 @@ def analyze_tap_report(
     report_format: str = "table",
     include_private_ips: bool = False,
     protobuf_schema: str | None = None,
+    min_confidence: float = 0.0,
+    source: str | None = None,
+    category: str | None = None,
+    show_pii: bool = False,
 ) -> AnalyzeReport:
     """Run analyzers over *tap_file* and return findings + a rendered report.
 
     Pure orchestration shared by the CLI and external tools: resolve analyzers
     (``scanners`` is a comma-separated name list, or ``None``/``"all"`` for the
-    built-ins) → run them → filter by *min_severity* → render in
-    *report_format* (one of :func:`list_report_formats`). Performs no stdout,
-    no sidecar write and never calls ``sys.exit`` — callers decide how to
-    surface the result.
+    built-ins) → run them → filter (severity/confidence/source/category) →
+    render in *report_format* (one of :func:`list_report_formats`). Performs no
+    stdout, no sidecar write and never calls ``sys.exit`` — callers decide how
+    to surface the result.
+
+    The filter arguments are all additive and default to no-ops, so existing
+    callers are unaffected:
+
+    * ``min_confidence`` — keep findings with confidence at or above this value.
+    * ``source`` — comma-separated analyzer source names to keep (which findings
+      *show*; distinct from ``scanners``, which selects analyzers that *run*).
+    * ``category`` — comma-separated finding categories to keep
+      (``secret``/``pii``/``network``/``protocol``).
+    * ``show_pii`` — reveal PII/secret values instead of redacting them
+      (forwarded to analyzers as ``reveal_pii``; default redacts).
 
     Raises ``ValueError`` for an unknown *report_format* or an unresolvable
     analyzer spec, ``ImportError`` for a bad ``analyzer_path``; any .tap
     read/analyze failure propagates.
     """
+    from friTap.analysis.filtering import FindingFilter, apply, split_csv
+
     if report_format not in _REPORTER_REGISTRY:
         raise ValueError(
             f"unknown report format {report_format!r}; "
@@ -140,12 +157,22 @@ def analyze_tap_report(
         analyzer_path=analyzer_path,
         include_private_ips=include_private_ips,
         protobuf_schema=protobuf_schema,
+        reveal_pii=show_pii,
     )
     findings = analyze_tap_multi(analyzers, tap_file)
-    filtered = _filter_min_severity(findings, min_severity)
+    normalized_severity = min_severity if min_severity in _SEVERITY_ORDER else "info"
+    finding_filter = FindingFilter(
+        min_severity=normalized_severity,
+        sources=split_csv(source),
+        categories=split_csv(category),
+        min_confidence=min_confidence if min_confidence > 0.0 else None,
+    )
+    filtered = apply(findings, finding_filter)
     analyzer_names = [a.name for a in analyzers]
     meta = {"tap_file": tap_file, "analyzers": analyzer_names}
-    rendered = _REPORTER_REGISTRY[report_format]().report(filtered, meta)
+    # AnalyzeReport.findings keep full fidelity; only the rendered report is
+    # redacted (unless show_pii). The reporter is the redaction enforcement point.
+    rendered = _REPORTER_REGISTRY[report_format](redact_pii=not show_pii).report(filtered, meta)
     return AnalyzeReport(
         findings=filtered,
         rendered=rendered,
@@ -197,6 +224,34 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=sorted(_SEVERITY_ORDER, key=lambda s: _SEVERITY_ORDER[s]),
         default="info",
         help="Only report findings at or above this severity (default: info).",
+    )
+    parser.add_argument(
+        "--min-confidence",
+        type=float,
+        default=0.0,
+        help="Only report findings with confidence at or above this value (0.0-1.0; default: 0.0).",
+    )
+    parser.add_argument(
+        "--source",
+        default=None,
+        help=(
+            "Comma-separated analyzer source names to include in the report "
+            "(e.g. credentials,privacy). Filters which findings show; use "
+            "--scanners to choose which analyzers run. Default: all."
+        ),
+    )
+    parser.add_argument(
+        "--category",
+        default=None,
+        help=(
+            "Comma-separated finding categories to include "
+            "(secret,pii,network,protocol). Default: all."
+        ),
+    )
+    parser.add_argument(
+        "--show-pii",
+        action="store_true",
+        help="Reveal PII/secret values in the report instead of redacting them (default: redacted).",
     )
     parser.add_argument(
         "--analyzer-path",
@@ -256,6 +311,10 @@ def run_analyze_cli(argv: list[str]) -> int:
             report_format=args.report,
             include_private_ips=args.include_private_ips,
             protobuf_schema=args.protobuf_schema,
+            min_confidence=args.min_confidence,
+            source=args.source,
+            category=args.category,
+            show_pii=args.show_pii,
         )
     except Exception as exc:  # noqa: BLE001 — surface any read/analyze failure cleanly
         logger.error("Analysis failed: %s", exc)
@@ -278,11 +337,12 @@ def run_analyze_cli(argv: list[str]) -> int:
     else:
         print(rendered)
 
-    # Always write the JSON findings sidecar next to the tap file.
+    # Always write the JSON findings sidecar next to the tap file. The sidecar
+    # is a shareable derived artifact, so redact by default (unless --show-pii).
     try:
         sidecar = _sidecar_path(args.tap_file)
         with open(sidecar, "w", encoding="utf-8") as fh:
-            fh.write(JsonReporter().report(filtered, meta))
+            fh.write(JsonReporter(redact_pii=not args.show_pii).report(filtered, meta))
         logger.info("Findings sidecar written to %s", sidecar)
     except OSError as exc:
         logger.warning("Could not write findings sidecar: %s", exc)

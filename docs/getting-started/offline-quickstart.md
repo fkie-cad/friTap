@@ -48,8 +48,22 @@ record you can analyze and replay anywhere — no keys or tshark needed from her
 fritap analyze out.tap --report table
 ```
 
-This runs friTap's analyzers over the flows and prints a findings table
-(credentials, IOCs, protobuf, …). It's read-only and passive.
+This runs friTap's built-in analyzers over the flows and prints a findings table
+(credentials, IOCs, **privacy/PII**, protobuf). It's read-only and passive.
+
+Narrow what you see with the report-side filters — these decide which findings
+**show**, while `--scanners` decides which analyzers **run**:
+
+```bash
+# Only PII findings, and reveal the redacted values
+fritap analyze out.tap --category pii --show-pii
+
+# Only high-confidence credential findings
+fritap analyze out.tap --source credentials --min-confidence 0.8
+```
+
+Detected PII and secrets are **redacted by default** (e.g. `a***@example.com`);
+`--show-pii` reveals the raw values.
 
 !!! tip "No tshark? Start here"
     Steps 2 and 3 work on any `.tap`, including the committed sample:

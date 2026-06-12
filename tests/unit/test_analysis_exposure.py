@@ -118,11 +118,12 @@ SENDGRID_API_KEY = "SG." + "C" * 22 + "." + "D" * 43
 
 def test_registry_resolution():
     builtin = len(ANALYZER_REGISTRY)
-    assert builtin == 3
+    assert builtin == 4
+    assert "privacy" in ANALYZER_REGISTRY
 
     for spec in (None, "all", ""):
         resolved = resolve_analyzers(spec)
-        assert len(resolved) == 3
+        assert len(resolved) == 4
         assert {a.name for a in resolved} == set(ANALYZER_REGISTRY)
 
     pair = resolve_analyzers("credentials,ioc")

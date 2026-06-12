@@ -57,6 +57,10 @@ class OutputConfig:
     scan_report: str = "table"
     scan_report_out: Optional[str] = None
     scan_min_severity: str = "info"
+    scan_min_confidence: float = 0.0
+    scan_source: Optional[str] = None
+    scan_category: Optional[str] = None
+    scan_show_pii: bool = False
 
 
 @dataclass
@@ -214,6 +218,10 @@ class FriTapConfig:
         scan_report: str = "table",
         scan_report_out: Optional[str] = None,
         scan_min_severity: str = "info",
+        scan_min_confidence: float = 0.0,
+        scan_source: Optional[str] = None,
+        scan_category: Optional[str] = None,
+        scan_show_pii: bool = False,
     ) -> "FriTapConfig":
         """
         Build a FriTapConfig from the legacy SSL_Logger constructor parameters.
@@ -245,6 +253,10 @@ class FriTapConfig:
                 scan_report=scan_report,
                 scan_report_out=scan_report_out,
                 scan_min_severity=scan_min_severity,
+                scan_min_confidence=scan_min_confidence,
+                scan_source=scan_source,
+                scan_category=scan_category,
+                scan_show_pii=scan_show_pii,
             ),
             hooking=HookingConfig(
                 offsets=offsets,

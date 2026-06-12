@@ -1117,7 +1117,14 @@ class SSL_Logger():
             from ..flow.models import FlowEventType
             from ..events import DatalogEvent, OhttpEvent, FlowEvent
 
-            self._scan_plugins = [AnalyzerPlugin(a) for a in resolve_analyzers(scan_spec)]
+            # Forward reveal_pii so the privacy analyzer keeps raw values when
+            # --scan-show-pii is set; other analyzers ignore the opt. Redaction
+            # is still enforced at the reporter layer in _finalize_live_scan.
+            reveal_pii = getattr(self._config.output, "scan_show_pii", False)
+            self._scan_plugins = [
+                AnalyzerPlugin(a)
+                for a in resolve_analyzers(scan_spec, reveal_pii=reveal_pii)
+            ]
             if not self._scan_plugins:
                 return
 
@@ -1185,7 +1192,8 @@ class SSL_Logger():
         if not self._scan_plugins:
             return
         try:
-            from ..commands.analyze import _REPORTER_REGISTRY, _filter_min_severity
+            from ..commands.analyze import _REPORTER_REGISTRY
+            from ..analysis.filtering import FindingFilter, apply, split_csv
 
             # Flush still-active flows so they complete and get enqueued.
             if self._flow_collector is not None:
@@ -1216,10 +1224,22 @@ class SSL_Logger():
                 findings.extend(list(plugin.findings))
 
             min_sev = getattr(self._config.output, "scan_min_severity", "info")
-            findings = _filter_min_severity(findings, min_sev)
+            min_conf = getattr(self._config.output, "scan_min_confidence", 0.0)
+            sources = split_csv(getattr(self._config.output, "scan_source", None))
+            categories = split_csv(getattr(self._config.output, "scan_category", None))
+            flt = FindingFilter(
+                min_severity=min_sev,
+                sources=sources,
+                categories=categories,
+                min_confidence=min_conf or None,
+            )
+            findings = apply(findings, flt)
 
+            show_pii = getattr(self._config.output, "scan_show_pii", False)
             report_fmt = getattr(self._config.output, "scan_report", "table")
-            reporter = _REPORTER_REGISTRY.get(report_fmt, _REPORTER_REGISTRY["table"])()
+            reporter = _REPORTER_REGISTRY.get(report_fmt, _REPORTER_REGISTRY["table"])(
+                redact_pii=not show_pii
+            )
             meta = {"analyzers": [p.name for p in self._scan_plugins]}
             rendered = reporter.report(findings, meta)
 

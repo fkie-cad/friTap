@@ -45,10 +45,17 @@ def _make_protobuf(*, protobuf_schema: str | None = None, **_ignored) -> "BaseAn
     return ProtobufAnalyzer(schema_path=protobuf_schema)
 
 
+def _make_privacy(*, reveal_pii: bool = False, verbose: bool = False, **_ignored) -> "BaseAnalyzer":
+    """Factory for PrivacyAnalyzer (accepts reveal_pii / verbose passthroughs)."""
+    from friTap.analysis.privacy import PrivacyAnalyzer
+    return PrivacyAnalyzer(reveal_pii=reveal_pii, verbose=verbose)
+
+
 # Name -> factory. Keys MUST equal each analyzer class's ``.name`` attribute.
 ANALYZER_REGISTRY: dict[str, Callable[..., "BaseAnalyzer"]] = {
     "ioc": _make_ioc,
     "credentials": _make_credentials,
+    "privacy": _make_privacy,
     "protobuf": _make_protobuf,
 }
 

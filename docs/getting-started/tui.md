@@ -120,8 +120,31 @@ context-sensitive — some apply only in the flow list or detail view.
 | Key | Action |
 |-----|--------|
 | `f` | Toggle console / flow view |
+| `Shift+F` | Toggle the Findings Viewer (analyzer findings) |
 | `/` | Open the filter dialog |
 | `Shift+Esc` | Clear the active filter |
+
+### Findings Viewer
+
+Press `Shift+F` to toggle the **Findings Viewer** — a table of the analyzer
+findings for the current capture (columns: **Severity**, **Source**, **Category**,
+**Conf**, **Title**, **Flow**), with severity-colored rows. Selecting a row drills
+into the flow that produced the finding.
+
+| Key | Action |
+|-----|--------|
+| `Shift+F` | Toggle the Findings Viewer on/off |
+| `c` | Quick filter: credentials only |
+| `p` | Quick filter: PII only |
+| `1` | Quick filter: critical only |
+| `/` | Open the filter dialog |
+| `Shift+Esc` | Clear the active filter |
+
+!!! warning "PII is redacted in the viewer"
+    PII and secret values are **redacted by default** in the Findings Viewer, just
+    as in the report and sidecar. There is no in-TUI reveal toggle; use
+    `fritap analyze <file>.tap --show-pii` (or `--scan-show-pii` during capture) to
+    see raw values in a report.
 
 ### Flow detail view
 
