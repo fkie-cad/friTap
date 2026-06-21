@@ -1,10 +1,13 @@
-// Shutdown gate accessor. We resolve the fritap_agent module via require()
-// rather than a top-level `import { _isShuttingDown }` because log.ts is
-// imported transitively during fritap_agent.ts init — a top-level import would
-// create a circular dependency that frida-compile resolves to `undefined` at
-// load time. Exported so other modules (pattern_strategy.ts, google_quiche.ts,
-// memory_scan_strategy.ts) reuse this one gate instead of re-deriving the
-// workaround.
+// Shutdown gate accessor. We resolve shared_structures (which owns the
+// _isShuttingDown binding) via require() rather than a top-level
+// `import { _isShuttingDown }` because log.ts is imported transitively during
+// module init — a top-level import would create a circular dependency that
+// frida-compile resolves to `undefined` at load time. require()-ing the
+// side-effect-free shared_structures (NOT the agent entry) also guarantees a
+// log()/devlog() during another module's init can't run the agent's top-level
+// install early. Exported so other modules (pattern_strategy.ts,
+// google_quiche.ts, memory_scan_strategy.ts) reuse this one gate instead of
+// re-deriving the workaround.
 //
 // The module reference is memoised: frida-compile turns each require() into a
 // fresh `__toCommonJS(...)` that re-materialises the whole exports object (one
@@ -12,15 +15,22 @@
 // (every QUIC Interceptor callback, every log/devlog). Caching the wrapper once
 // makes subsequent calls a single getter read; the getter still reads the live
 // `_isShuttingDown` binding, so we always observe the latest value.
-let _faModule: any = null;
+let _stateModule: any = null;
 export function _isShuttingDownNow(): boolean {
     try {
-        if (_faModule === null) {
-            // Late-bound: only resolved at first call (runtime, post-init), so
-            // the binding is fully wired before we cache the wrapper.
-            _faModule = require("../fritap_agent.js");
+        if (_stateModule === null) {
+            // Read the shutdown gate from the side-effect-free shared_structures
+            // module (which owns _isShuttingDown). Resolved lazily via require()
+            // and pointed at shared_structures — NOT the agent entry — so that a
+            // log()/devlog() call made during another module's initialization can
+            // never transitively require fritap_agent and run its top-level
+            // install early. (Doing so under the full-build import order ran the
+            // install before the frida bridges' module bodies had assigned
+            // Java/ObjC, crashing platform detection.) shared_structures has no
+            // import side effects, so requiring it mid-init is safe.
+            _stateModule = require("../shared/shared_structures.js");
         }
-        return _faModule && _faModule._isShuttingDown === true;
+        return _stateModule && _stateModule._isShuttingDown === true;
     } catch (_e) {
         return false;
     }

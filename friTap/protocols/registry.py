@@ -7,7 +7,7 @@ from __future__ import annotations
 import importlib
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .base import ProtocolHandler
 
@@ -116,8 +116,118 @@ class ProtocolRegistry:
         return matrix
 
 
+# Companion-protocol expansion: some protocols, when selected, also require
+# others (e.g. a TLS-wrapped protocol pulls in "tls" so the SSLKEYLOGFILE is
+# captured to strip TLS first). Public built-ins add no implications; extension
+# handlers declare theirs via register_protocol_handler(..., implies=[...]).
+PROTOCOL_IMPLIES: dict[str, list[str]] = {}
+
+# Handler factory tables (zero-arg callables returning a fresh ProtocolHandler).
+# Built-ins are public and always available; extensions (optional/private
+# protocols) self-register at runtime via register_protocol_handler() and are
+# discovered by _discover_protocol_extensions(). The public core only ever
+# iterates these tables — it never imports or names an extension's module.
+_BUILTIN_HANDLER_FACTORIES: "dict[str, Callable[[], ProtocolHandler]]" = {}
+_EXTENSION_HANDLER_FACTORIES: "dict[str, Callable[[], ProtocolHandler]]" = {}
+_EXTENSIONS_DISCOVERED = False
+
+
+def register_protocol_handler(name, factory, implies=None) -> None:
+    """Register an extension protocol handler.
+
+    Lets an optional/private protocol add itself to the registry, the CLI
+    ``--protocol`` choices, and companion-protocol expansion WITHOUT the public
+    core importing or naming its module. *factory* is a zero-arg callable
+    returning a fresh :class:`ProtocolHandler`; *implies* lists companion
+    protocol names the handler pulls in.
+    """
+    _EXTENSION_HANDLER_FACTORIES[name] = factory
+    if implies:
+        PROTOCOL_IMPLIES[name] = list(implies)
+
+
+def _register_builtin_handler_factories() -> None:
+    """Populate the public built-in factory table (deferred imports keep this
+    module's import light and avoid cycles). Idempotent."""
+    if _BUILTIN_HANDLER_FACTORIES:
+        return
+    from .tls_handler import TLSHandler
+#    from .ipsec_handler import IPSecHandler # needs to be impl.
+    from .ssh_handler import SSHHandler
+    from .mtproto_handler import MTProtoHandler
+    from .telegram_handler import TelegramHandler
+    _BUILTIN_HANDLER_FACTORIES.update({
+        "tls": TLSHandler,
+#        "ipsec": IPSecHandler,  # needs to be impl.
+        "ssh": SSHHandler,
+        "mtproto": MTProtoHandler,
+        "telegram": TelegramHandler,
+    })
+
+
+def _discover_protocol_extensions() -> None:
+    """Import in-tree extension modules under ``protocols/_ext/`` so they
+    self-register. Idempotent.
+
+    A filtered build that omits an extension module simply has nothing to import
+    here — no public code names it, so any protocol can be dropped from a build
+    cleanly. A broken/optional extension is logged and skipped, never fatal.
+    """
+    global _EXTENSIONS_DISCOVERED
+    if _EXTENSIONS_DISCOVERED:
+        return
+    _EXTENSIONS_DISCOVERED = True
+    import pkgutil
+    try:
+        from . import _ext as _ext_pkg
+    except Exception:
+        return
+    log = logging.getLogger("friTap.protocols")
+    for info in pkgutil.iter_modules(_ext_pkg.__path__):
+        if info.name.startswith("_"):
+            continue
+        try:
+            importlib.import_module(f"{_ext_pkg.__name__}.{info.name}")
+        except Exception as e:  # a broken/optional extension must not break core
+            log.debug("skipping protocol extension %r: %s", info.name, e)
+
+
+def _all_handler_factories() -> "dict[str, Callable[[], ProtocolHandler]]":
+    """Return built-in + discovered extension factories (an extension never
+    overrides a built-in of the same name)."""
+    _register_builtin_handler_factories()
+    _discover_protocol_extensions()
+    factories = dict(_BUILTIN_HANDLER_FACTORIES)
+    for name, factory in _EXTENSION_HANDLER_FACTORIES.items():
+        factories.setdefault(name, factory)
+    return factories
+
+
+def available_protocol_names() -> List[str]:
+    """Protocol names available in THIS build (built-ins + registered
+    extensions), sorted. Excludes the meta values ``all``/``auto``. Drives the
+    CLI ``--protocol`` choices so a filtered build advertises only what it ships.
+    """
+    return sorted(_all_handler_factories().keys())
+
+
+def implied_protocols(name) -> List[str]:
+    """Companion protocols pulled in by *name* (after extension discovery)."""
+    _discover_protocol_extensions()
+    return list(PROTOCOL_IMPLIES.get(name, []))
+
+
+def expand_protocols(selected) -> set:
+    """Return *selected* plus any companion protocols from PROTOCOL_IMPLIES."""
+    _discover_protocol_extensions()
+    out = set(selected)
+    for proto in list(selected):
+        out.update(PROTOCOL_IMPLIES.get(proto, []))
+    return out
+
+
 def create_default_registry(protocols: Optional[List[str]] = None) -> ProtocolRegistry:
-    """Create a registry with built-in protocol handlers.
+    """Create a registry with built-in (and any registered extension) handlers.
 
     Parameters
     ----------
@@ -126,11 +236,8 @@ def create_default_registry(protocols: Optional[List[str]] = None) -> ProtocolRe
         behaviour of registering everything available, so the no-arg
         callers (lazy discovery, tests, TUI menu) keep working.
     """
-    from .tls_handler import TLSHandler
-#    from .ipsec_handler import IPSecHandler # needs to be impl.
-    from .ssh_handler import SSHHandler
-
-    known = {"tls", "ssh"}
+    factories = _all_handler_factories()
+    known = set(factories)
     selected = set(protocols) if protocols is not None else known
     if not selected:
         raise ValueError("create_default_registry: at least one protocol required")
@@ -141,11 +248,18 @@ def create_default_registry(protocols: Optional[List[str]] = None) -> ProtocolRe
             f"known: {sorted(known)}"
         )
 
+    # Expand companion protocols (e.g. a TLS-wrapped protocol also needs the TLS
+    # handler to capture the SSLKEYLOGFILE used to strip TLS before app-layer
+    # decryption). See PROTOCOL_IMPLIES / register_protocol_handler(implies=...).
+    selected = expand_protocols(selected)
+
+    # Deterministic registration order: built-ins first (TLS first, so it stays
+    # the auto_detect fallback), then extensions sorted by name.
     registry = ProtocolRegistry()
-    if "tls" in selected:
-        registry.register(TLSHandler())
-#    if "ipsec" in selected:
-#        registry.register(IPSecHandler()) # needs to be impl.
-    if "ssh" in selected:
-        registry.register(SSHHandler())
+    order = list(_BUILTIN_HANDLER_FACTORIES.keys()) + sorted(_EXTENSION_HANDLER_FACTORIES.keys())
+    for name in order:
+        if name in selected:
+            factory = factories.get(name)
+            if factory is not None:
+                registry.register(factory())
     return registry

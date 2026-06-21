@@ -253,7 +253,7 @@ optional `offline_extractor` and `decryptor`) — see
 [CONTRIBUTING.md](https://github.com/fkie-cad/friTap/blob/main/CONTRIBUTING.md)
 for the steps. The descriptor's `decryptor` is the seam for future
 nested-protocol support: a decryptor would peel a plaintext inner protocol out
-of an encrypted carrier (e.g. Signal's double-ratchet or MTProto inside TLS).
+of an encrypted carrier (e.g. MTProto inside TLS).
 The decryptor registry ships **empty** today, so the seam is a no-op for all
 current traffic.
 

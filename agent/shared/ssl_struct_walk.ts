@@ -66,3 +66,43 @@ export function tryReadClientRandomAt(
         return null;
     }
 }
+
+/*
+ * Candidate ssl->s3 offsets, in the same probe order used for client_random
+ * recovery (arch-primary 0x30 / 0x2c, then nearby fork-observed slots).
+ */
+const S3_CANDIDATE_OFFSETS = [0x30, 0x2c, 0x28, 0x38];
+
+/*
+ * Resolve the live ``ssl->s3`` pointer from an SSL*, validating the candidate
+ * by reading a plausible (non-mostly-zero) client_random at s3+0x30. Returns
+ * the s3 pointer or null. Used by the TLS 1.3 attach-mode secret recovery to
+ * read both client_random and the retained traffic secrets from the same s3.
+ */
+export function findS3(sslPtr: NativePointer): NativePointer | null {
+    if (sslPtr.isNull()) return null;
+    for (const off of S3_CANDIDATE_OFFSETS) {
+        try {
+            const s3Ptr = sslPtr.add(off).readPointer();
+            if (s3Ptr.isNull() || s3Ptr.compare(MIN_VALID_S3_PTR) < 0) continue;
+            const buf = s3Ptr.add(0x30).readByteArray(SSL3_RANDOM_SIZE);
+            if (!buf) continue;
+            if (isMostlyZero(new Uint8Array(buf as ArrayBuffer))) continue;
+            return s3Ptr;
+        } catch (_) {
+            /* try next candidate offset */
+        }
+    }
+    return null;
+}
+
+/* Read the 32-byte client_random at s3+0x30 as a hex string ("" on failure). */
+export function readClientRandomHex(s3Ptr: NativePointer): string {
+    try {
+        const buf = s3Ptr.add(0x30).readByteArray(SSL3_RANDOM_SIZE);
+        if (!buf) return "";
+        return get_hex_string_from_byte_array(new Uint8Array(buf as ArrayBuffer));
+    } catch (_) {
+        return "";
+    }
+}

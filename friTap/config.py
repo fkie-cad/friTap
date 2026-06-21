@@ -61,6 +61,9 @@ class OutputConfig:
     scan_source: Optional[str] = None
     scan_category: Optional[str] = None
     scan_show_pii: bool = False
+    # External analyzer references ("module" or "module:Class") to load for the
+    # live scan, mirroring offline ``analyze --analyzer-path``. Repeatable.
+    scan_analyzer_path: Optional[List[str]] = None
 
 
 @dataclass
@@ -93,6 +96,11 @@ class HookingConfig:
     # layer for testing — useful for validating chain behavior on builds where
     # the quiche-internal layer still resolves. Only effective in app-api mode.
     quic_egress_headers_layer: str = "auto"
+    # Generic memory-region key-scan target (--scan-keys-region). None disables
+    # the scan. Passed through to the agent via config_batch.extensions.scan_region;
+    # protocol-agnostic (the public scan engine and any private scan binding both
+    # read it). See agent/shared/scan/.
+    scan_keys_region: Optional[str] = None
     encapsulated_protocols: Dict[str, bool] = field(
         default_factory=lambda: {"ohttp": True}
     )
@@ -214,6 +222,7 @@ class FriTapConfig:
         quic_capture_mode: str = "stream",
         quic_only: bool = False,
         quic_egress_headers_layer: str = "auto",
+        scan_keys_region: Optional[str] = None,
         scan: Optional[str] = None,
         scan_report: str = "table",
         scan_report_out: Optional[str] = None,
@@ -222,6 +231,7 @@ class FriTapConfig:
         scan_source: Optional[str] = None,
         scan_category: Optional[str] = None,
         scan_show_pii: bool = False,
+        scan_analyzer_path: Optional[List[str]] = None,
     ) -> "FriTapConfig":
         """
         Build a FriTapConfig from the legacy SSL_Logger constructor parameters.
@@ -257,6 +267,7 @@ class FriTapConfig:
                 scan_source=scan_source,
                 scan_category=scan_category,
                 scan_show_pii=scan_show_pii,
+                scan_analyzer_path=scan_analyzer_path,
             ),
             hooking=HookingConfig(
                 offsets=offsets,
@@ -270,6 +281,7 @@ class FriTapConfig:
                 quic_capture_mode=quic_capture_mode,
                 quic_only=quic_only,
                 quic_egress_headers_layer=quic_egress_headers_layer,
+                scan_keys_region=scan_keys_region,
             ),
             protocol=protocol,
             backend=backend,

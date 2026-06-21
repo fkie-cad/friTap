@@ -57,6 +57,35 @@ def test_unknown_min_severity_keeps_all():
     assert len(out) == 4
 
 
+def test_severities_exact_bucket():
+    # Exact-match (not a floor): only the LOW finding, unlike min_severity="low"
+    # which would keep everything at or above low.
+    out = apply(_sample(), FindingFilter(severities=frozenset({"low"})))
+    assert [f.title for f in out] == ["Email"]
+    # The floor keeps critical/medium/low (everything at or above low), excluding
+    # only info — strictly more than the single exact-bucket match.
+    floor = apply(_sample(), FindingFilter(min_severity="low"))
+    assert {f.title for f in floor} == {"Basic auth", "Email", "Geolocation"}
+
+
+def test_severities_multiple_buckets():
+    out = apply(_sample(), FindingFilter(severities=frozenset({"critical", "info"})))
+    assert {f.title for f in out} == {"Basic auth", "Dest IP"}
+
+
+def test_is_active():
+    # An all-default filter is a no-op ("show all"), so it is NOT active.
+    assert FindingFilter().is_active() is False
+    assert FindingFilter(text="").is_active() is False  # empty text is a no-op
+    # Any real criterion makes it active.
+    assert FindingFilter(min_severity="high").is_active() is True
+    assert FindingFilter(severities=frozenset({"low"})).is_active() is True
+    assert FindingFilter(sources=frozenset({"ioc"})).is_active() is True
+    assert FindingFilter(categories=frozenset({"pii"})).is_active() is True
+    assert FindingFilter(min_confidence=0.5).is_active() is True
+    assert FindingFilter(text="abc").is_active() is True
+
+
 def test_sources_filter():
     out = apply(_sample(), FindingFilter(sources=frozenset({"credentials"})))
     assert [f.title for f in out] == ["Basic auth"]

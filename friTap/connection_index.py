@@ -38,6 +38,43 @@ def normalize_4tuple(src_addr: str, src_port: int,
     return f"{lo}-{hi}"
 
 
+def normalize_addr(addr: str) -> str:
+    """Canonicalize an IP literal so the same host always yields the same string.
+
+    Strips IPv6 brackets (``[2001:db8::1]`` -> ``2001:db8::1``) and zone ids
+    (``fe80::1%eth0`` -> ``fe80::1``), then compresses the address via the stdlib
+    :mod:`ipaddress` parser so equivalent spellings collapse. Returns the input
+    unchanged when it is not a parseable IP literal (hostnames, empty strings).
+
+    This exists so that endpoint keys derived from different tshark passes
+    (``follow,tls`` vs ``-T ek``) — which spell IPv6 literals differently — collapse
+    to one key and message metadata reliably correlates to its flow.
+    """
+    if not addr:
+        return addr
+    a = addr.strip()
+    if a.startswith("[") and a.endswith("]"):
+        a = a[1:-1]
+    if "%" in a:  # drop IPv6 zone id
+        a = a.split("%", 1)[0]
+    try:
+        import ipaddress
+        return str(ipaddress.ip_address(a))
+    except ValueError:
+        return a
+
+
+def canonical_4tuple(src_addr: str, src_port: int,
+                     dst_addr: str, dst_port: int) -> str:
+    """:func:`normalize_4tuple` over :func:`normalize_addr`-canonicalized addresses.
+
+    Perspective-independent AND spelling-independent, so the same physical
+    connection produces one key regardless of which tshark pass reported it.
+    """
+    return normalize_4tuple(normalize_addr(src_addr), src_port,
+                            normalize_addr(dst_addr), dst_port)
+
+
 def resolve_connection_key(
     src_addr: str,
     src_port: int,

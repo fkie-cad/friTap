@@ -58,7 +58,8 @@ _READ_FUNCTIONS = SSL_READ | frozenset({
 class FlowCollector:
     """Thread-safe flow collector that groups SSL events into flows."""
 
-    def __init__(self, event_bus=None, show_control_frames: bool = True):
+    def __init__(self, event_bus=None, show_control_frames: bool = True,
+                 signal_messages: bool = False):
         self._lock = threading.Lock()
         self._flows: dict[str, Flow] = {}  # flow_id -> Flow
         # conn_id -> [flow_id], maintained in lockstep with _flows. Lets
@@ -95,6 +96,14 @@ class FlowCollector:
         # lock is released so EventBus.emit cannot deadlock against TUI
         # subscribers that may need to read collector state.
         self._pending_errors: list[ErrorEvent] = []
+        # Opt-in live Signal message decoding (enabled when on_message consumers
+        # exist). The decryptor reuses the offline Signal pipeline; it is created
+        # only when requested so a non-Signal capture pays no import cost.
+        self._signal_messages = signal_messages
+        self._signal_decryptor = None
+        if signal_messages:
+            from .signal_live import LiveSignalDecryptor
+            self._signal_decryptor = LiveSignalDecryptor()
 
     def _wrap_parser(
         self,
@@ -169,6 +178,23 @@ class FlowCollector:
         library = getattr(event, 'library', '') or ''
         with self._lock:
             self._detected_library = library
+
+    def on_keylog(self, event) -> None:
+        """EventBus subscriber for KeylogEvent — feed Signal keys to the live
+        decryptor.
+
+        Only active when live Signal message decoding was requested
+        (``signal_messages``). TLS keylog events carry ``key_data`` (not a
+        ``payload`` dict) and are ignored here; non-Signal ``payload`` dicts are
+        rejected by the decryptor's keylog-spec validation.
+        """
+        if not self._signal_messages or self._signal_decryptor is None:
+            return
+        payload = getattr(event, 'payload', None)
+        if not payload:
+            return
+        with self._lock:
+            self._signal_decryptor.add_key(payload)
 
     def set_capture_target(self, target: str) -> None:
         """Record the capture target and derive process/package names.
@@ -251,6 +277,7 @@ class FlowCollector:
         )
 
         pending = []
+        signal_events: list = []
 
         with self._lock:
             # Get or create connection state
@@ -376,6 +403,11 @@ class FlowCollector:
                         self._propagate_trailing_data(conn.parser, flow)
                         self._append_progress(pending, flow)
 
+            # Live Signal message decoding (opt-in). Runs after the normal flow
+            # processing so it can attach to the connection's active flow.
+            if self._signal_messages:
+                self._collect_signal_messages(conn, direction, event, signal_events)
+
             self._event_count += 1
             if self._event_count % _SWEEP_INTERVAL == 0:
                 self._periodic_sweep(pending)
@@ -385,6 +417,114 @@ class FlowCollector:
         for event_type, flow in pending:
             self._notify(event_type, flow)
         self._emit_errors(errors_to_emit)
+        self._emit_message_events(signal_events)
+
+    def _collect_signal_messages(self, conn, direction, event, out_events) -> None:
+        """Decode newly-arrived live Signal messages for one DatalogEvent.
+
+        Accumulates the raw decrypted-TLS bytes per direction on the connection
+        and re-runs the offline Signal pipeline over the growing buffer, emitting
+        only messages not previously seen. Attaches new messages to the
+        connection's active flow's ``SignalLayer`` and stages a ``MessageEvent``
+        per message in *out_events* (emitted by the caller outside the lock).
+
+        Must be called under ``self._lock``. Assumes a message's key arrives
+        before (or with) its bytes — the common live ordering; a key that lands
+        strictly after its message's bytes is recovered offline, not here.
+        """
+        decryptor = self._signal_decryptor
+        if decryptor is None or direction not in ("read", "write"):
+            return
+        data = getattr(event, 'data', b'') or b''
+        if not data:
+            return
+        # Accumulate even before keys arrive so history is intact once they do.
+        buf = conn.signal_raw.setdefault(direction, bytearray())
+        buf.extend(data)
+        if not decryptor.has_keys:
+            return
+
+        # id(conn) disambiguates a reset connection (fresh state, empty buffer)
+        # reusing the same conn_id, so dedup counters restart correctly.
+        stream_key = f"{conn.conn_id}:{direction}:{id(conn)}"
+        new_msgs = decryptor.feed(
+            stream_key, bytes(buf), direction,
+            src_addr=getattr(event, 'src_addr', ''),
+            src_port=getattr(event, 'src_port', 0),
+            dst_addr=getattr(event, 'dst_addr', ''),
+            dst_port=getattr(event, 'dst_port', 0),
+            ss_family=getattr(event, 'ss_family', 'AF_INET'),
+        )
+        if not new_msgs:
+            return
+
+        flow = self._flows.get(conn.active_flow_id) if conn.active_flow_id else None
+        if flow is not None:
+            self._attach_signal_messages(flow, new_msgs)
+        for msg in new_msgs:
+            out_events.append(self._build_message_event(msg))
+
+    def _attach_signal_messages(self, flow, msgs) -> None:
+        """Append decrypted Signal messages onto *flow*'s SignalLayer (live).
+
+        Mirrors the offline ``_apply_signal_meta`` per-message dict shape so live
+        and offline ``SignalLayer.messages`` are identical. A typed
+        :class:`~friTap.flow.layers.SignalLayer` is created on first use (the
+        generic ``push_layer`` only makes an untyped ``AppLayer``).
+        """
+        from friTap.flow.layers import SignalLayer
+        layer = flow.layer(SignalLayer.NAME)
+        if not isinstance(layer, SignalLayer):
+            layer = flow.add_layer(SignalLayer())
+        if msgs and not getattr(layer, 'chat_type', ''):
+            layer.chat_type = msgs[0].chat_type
+            layer.identifier = msgs[0].identifier_hex
+        for m in msgs:
+            layer.messages.append({
+                "sender": m.sender,
+                "direction": m.direction,
+                "timestamp": m.timestamp,
+                "kind": m.kind,
+                "body": m.body,
+                "attachments": m.has_attachments,
+                "quote": m.has_quote,
+                "reaction": m.has_reaction,
+            })
+        layer.message_count = len(layer.messages)
+
+    @staticmethod
+    def _build_message_event(msg):
+        """Build a MessageEvent from an offline-style DecryptedMessage."""
+        from friTap.events import MessageEvent
+        return MessageEvent(
+            protocol="signal",
+            direction=msg.direction,
+            src_addr=msg.src_addr,
+            src_port=msg.src_port,
+            dst_addr=msg.dst_addr,
+            dst_port=msg.dst_port,
+            ss_family=msg.ss_family,
+            chat_type=msg.chat_type,
+            identifier=msg.identifier_hex,
+            sender=msg.sender,
+            kind=msg.kind,
+            body=msg.body,
+            timestamp=msg.timestamp,
+            has_attachments=msg.has_attachments,
+            has_quote=msg.has_quote,
+            has_reaction=msg.has_reaction,
+            raw=msg.message,
+        )
+
+    def _emit_message_events(self, events) -> None:
+        """Emit staged MessageEvents on the bus. Must NOT hold _lock."""
+        if not events or self._event_bus is None:
+            return
+        for ev in events:
+            try:
+                self._event_bus.emit(ev)
+            except Exception:
+                logger.debug("MessageEvent emit failed", exc_info=True)
 
     def on_ohttp(self, event) -> None:
         """EventBus subscriber for OhttpEvent -- attach decrypted bhttp payload to last active flow."""
@@ -568,6 +708,18 @@ class FlowCollector:
                 snapshot.chunks = list(flow.chunks)  # Snapshot the chunk list
                 result.append(snapshot)
             return result
+
+    def live_flows(self) -> list[Flow]:
+        """The LIVE flow objects in insertion order (NOT snapshots).
+
+        Unlike :meth:`get_flows` (which returns ``copy.copy`` snapshots), this
+        exposes the collector's own ``Flow`` instances so a pre-write
+        post-processing pass (e.g. offline TLS-metadata correlation onto Signal
+        flows) can mutate the exact objects ``flush()`` will serialize. Mutate
+        with care — these are the collector's working set.
+        """
+        with self._lock:
+            return list(self._flows.values())
 
     def get_flow(self, flow_id: str) -> Optional[Flow]:
         """Return a snapshot of a single flow, or None."""
@@ -1245,6 +1397,11 @@ class _ConnectionState:
         self.last_activity: float = 0.0
         self.pending_chunks: list[FlowChunk] = []  # buffered before parser committed
         self.pending_bytes: int = 0  # total bytes in pending_chunks
+        # Raw decrypted-TLS bytes per direction, accumulated only when live
+        # Signal message decoding is enabled. The offline Signal pipeline needs
+        # the full per-direction WebSocket/HTTP-2 byte stream (it does its own
+        # de-framing), which the parser-oriented flow chunks do not preserve.
+        self.signal_raw: dict[str, bytearray] = {"read": bytearray(), "write": bytearray()}
         # Map a real (QUIC) stream id -> a dense, strictly-positive synthetic
         # id. The collector treats stream_id == 0 as "no stream / ghost", but
         # QUIC's first client bidi stream is legitimately 0, so we remap real

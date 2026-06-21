@@ -38,6 +38,20 @@ class ProtocolHandler(ABC):
         """Human-readable name (e.g., 'TLS/SSL', 'IPSec')."""
         ...
 
+    @property
+    def upcoming(self) -> bool:
+        """Whether this protocol is an *upcoming* (code-only) feature.
+
+        ``False`` (default) → the protocol is surfaced in user-facing menus
+        (the TUI protocol picker). ``True`` → it is implemented and still
+        selectable via the ``--protocol`` CLI, but kept OUT of the TUI until it
+        is announced. This is the single, protocol-owned visibility knob: a unit
+        flips it to ``False`` to surface itself. (The public build additionally
+        never ships a private protocol's handler at all, so an upcoming protocol
+        is hidden in the full build and simply absent in the public one.)
+        """
+        return False
+
     @abstractmethod
     def get_keylog_format(self) -> str:
         """Return the keylog format description."""
@@ -70,6 +84,17 @@ class ProtocolHandler(ABC):
     def get_display_filter_template(self) -> str:
         """Return Wireshark display filter template."""
         return ""
+
+    def validate_cli_intent(self, parsed, parser, logger) -> None:
+        """Validate/adjust parsed CLI arguments for this protocol.
+
+        Default: no-op. A protocol that requires a specific capture intent or
+        agent mode overrides this; it may mutate *parsed* or call
+        ``parser.error(...)`` (which exits) to reject an invalid combination.
+        Keeps protocol-specific CLI rules with the handler instead of hardcoded
+        in the generic argument parser.
+        """
+        return None
 
     def matches_libraries(self, detected_libraries: List[str]) -> bool:
         """Check if detected libraries match this protocol."""

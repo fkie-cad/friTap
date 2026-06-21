@@ -1,5 +1,0 @@
-# Era pin for friTap 1.4.4.0 - 1.6.3.1 (frida 17.x line, legacy 4-segment scheme).
-# frida-tools 14.x is required: 12.x and 13.x both reject frida 17.x.
-# Use via: pip install fritap==1.6.3.1 -c constraints/frida17-legacy.txt
-frida>=17.0.0,<18.0.0
-frida-tools>=14.0.0,<15.0.0

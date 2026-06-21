@@ -77,7 +77,11 @@ class FindingFilter:
     Attributes:
         min_severity: Keep findings at least this severe (string or
             :class:`~friTap.analysis.Severity`). Unknown values are treated as
-            ``info`` (matching :func:`~friTap.analysis.severity_rank`).
+            ``info`` (matching :func:`~friTap.analysis.severity_rank`). This is a
+            *floor* — use ``severities`` for an exact-bucket match.
+        severities: Keep only findings whose exact severity value is in this set
+            (e.g. ``{"high"}`` matches high only, not critical). Complements the
+            ``min_severity`` floor for per-bucket selection.
         sources: Keep only findings whose ``source`` is in this set.
         categories: Keep only findings whose ``category`` is in this set.
         min_confidence: Keep findings with ``confidence`` at or above this value.
@@ -86,10 +90,28 @@ class FindingFilter:
     """
 
     min_severity: str | Severity | None = None
+    severities: frozenset[str] | None = None
     sources: frozenset[str] | None = None
     categories: frozenset[str] | None = None
     min_confidence: float | None = None
     text: str | None = None
+
+    def is_active(self) -> bool:
+        """True when at least one criterion would actually constrain results.
+
+        An all-default ``FindingFilter()`` is a no-op (matches everything), so it
+        reports ``False`` here — callers use this to distinguish "showing all"
+        from "a real filter is applied". Mirrors the criteria used in
+        :meth:`matches` (``text`` counts only when non-empty).
+        """
+        return (
+            self.min_severity is not None
+            or self.severities is not None
+            or self.sources is not None
+            or self.categories is not None
+            or self.min_confidence is not None
+            or bool(self.text)
+        )
 
     def matches(self, finding: Finding) -> bool:
         """Return ``True`` if *finding* satisfies every active criterion."""
@@ -97,6 +119,9 @@ class FindingFilter:
             # Lower rank == more severe; keep findings at or above the floor.
             if severity_rank(finding.severity) > severity_rank(self.min_severity):
                 return False
+
+        if self.severities is not None and finding.severity.value not in self.severities:
+            return False
 
         if self.sources is not None and finding.source not in self.sources:
             return False

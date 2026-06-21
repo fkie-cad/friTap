@@ -148,8 +148,11 @@ def test_owned_inner_layer_roundtrip():
     ))
     chunk_blob_len = len(b"chunk-bytes")
 
+    # Use a name that is NOT a registered transport protocol so the layer keeps
+    # its owned data source on round-trip (a registered name like "signal" would
+    # be reconstructed as a typed, chunks-backed transport layer).
     inner = AppLayer()
-    inner._name = "signal"
+    inner._name = "customproto"
     inner.data.set_owned(read=b"DEC-READ", write=b"DEC-WRITE")
     inner.set_parsed(ParseResult(
         protocol="HTTP/1.1", is_request=False, status_code=200,
@@ -159,7 +162,7 @@ def test_owned_inner_layer_roundtrip():
     payload = encode_flow(flow)
     decoded = decode_flow(payload)
 
-    sig = decoded.layer("signal")
+    sig = decoded.layer("customproto")
     assert sig is not None
     assert sig.data.data_source == "owned"
     assert sig.data.read == b"DEC-READ"

@@ -582,12 +582,21 @@ to any iterable of `Finding` objects:
 from friTap import FindingFilter
 
 flt = FindingFilter(
-    min_severity="info",
+    min_severity="info",                 # floor: this severity and above
     min_confidence=0.8,
     sources={"credentials", "privacy"},
     categories={"secret", "pii"},
 )
 kept = [f for f in report.findings if flt.matches(f)]
+```
+
+Use `severities` for an exact-bucket match instead of the `min_severity` floor —
+`FindingFilter(severities={"high"})` keeps only `high` findings (this is what the
+TUI's per-severity dashboard chips use, so a chip's count matches its result):
+
+```python
+high_only = [f for f in report.findings
+             if FindingFilter(severities={"high"}).matches(f)]
 ```
 
 !!! note "PrivacyAnalyzer import path"
@@ -605,11 +614,51 @@ capture contains sensitive findings.
 
 ### Discovery helpers
 
-- `list_analyzers()` → built-in analyzer names.
+- `list_analyzers()` → analyzer **names** (built-in plus any discovered).
+- `list_analyzers_detailed()` → richer `AnalyzerInfo` records (name, source/origin,
+  description) for every analyzer, including discovered ones. Use this to render an
+  analyzer catalog in your own tooling.
 - `list_report_formats()` → available report formats (`json`, `csv`, `md`, `table`).
 
+```python
+from friTap import list_analyzers, list_analyzers_detailed
+
+print(list_analyzers())              # ['credentials', 'ioc', 'privacy', 'protobuf', ...]
+for info in list_analyzers_detailed():
+    print(info.name, "-", info.description)
+```
+
 Custom analyzers can be loaded via the CLI `--analyzer-path module:Class`
-(the `module:Class` form skips the `is_fritap_analyzer` marker requirement).
+(the `module:Class` form skips the `is_fritap_analyzer` marker requirement), or
+made ambiently discoverable through the drop-in directory, the `fritap.analyzers`
+entry-points group, or a plugin's `register_analyzers()` hook — see
+[Traffic Analysis → Ship it everywhere](../advanced/traffic-analysis.md#ship-it-everywhere-discovery).
+
+!!! danger "Discovery executes code"
+    Discovered analyzers (drop-in directory, `fritap.analyzers` entry points, plugin
+    bridge) **execute** as soon as `list_analyzers()`/`list_analyzers_detailed()` or
+    any resolution runs. Set `FRITAP_DISABLE_ANALYZER_DISCOVERY=1` to disable ambient
+    discovery; explicit `--analyzer-path` / `.analyzer_path()` references still work.
+
+### Live scan from the builder
+
+The `FriTap` builder exposes live passive analysis directly. `scan()` enables it,
+`analyzer_path()` is repeatable, and `scan_report()`, `scan_min_severity()`, and
+`scan_show_pii()` set the corresponding `--scan-*` options:
+
+```python
+from friTap import FriTap
+
+session = (
+    FriTap("com.example.app")
+    .mobile()
+    .scan("all")                                  # or "credentials,ioc"
+    .analyzer_path("my_analyzer:InternalHostAnalyzer")
+    .scan_report("table")
+    .scan_min_severity("medium")
+    .start()
+)
+```
 
 ---
 

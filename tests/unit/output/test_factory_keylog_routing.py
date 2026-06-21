@@ -3,9 +3,12 @@
 
 """Tests for the keylog routing branch of :class:`OutputHandlerFactory`."""
 
+import importlib.util
 import logging
 
 import pytest
+
+_SIGNAL_AVAILABLE = importlib.util.find_spec("friTap.offline.signal") is not None
 
 from friTap.config import FriTapConfig, OutputConfig
 from friTap.events import EventBus, KeylogEvent
@@ -36,14 +39,20 @@ class TestActiveKeylogFormatters:
         formatters = _active_keylog_formatters("ssh", reg)
         assert [f.protocol for f in formatters] == ["ssh"]
 
-    def test_all_includes_both(self):
+    def test_all_includes_every_keylog_protocol(self):
         reg = create_default_registry()  # full registry
         formatters = _active_keylog_formatters("all", reg)
-        assert sorted(f.protocol for f in formatters) == ["ssh", "tls"]
+        expected = ["mtproto", "ssh", "telegram", "tls"]
+        if _SIGNAL_AVAILABLE:
+            expected = sorted(expected + ["signal"])
+        assert sorted(f.protocol for f in formatters) == expected
 
     def test_auto_matches_all(self):
         reg = create_default_registry()
-        assert sorted(f.protocol for f in _active_keylog_formatters("auto", reg)) == ["ssh", "tls"]
+        expected = ["mtproto", "ssh", "telegram", "tls"]
+        if _SIGNAL_AVAILABLE:
+            expected = sorted(expected + ["signal"])
+        assert sorted(f.protocol for f in _active_keylog_formatters("auto", reg)) == expected
 
     def test_unknown_protocol_returns_empty(self):
         reg = create_default_registry()
@@ -91,9 +100,9 @@ class TestFactoryKeylogRouting:
         assert keylog_h[0]._path == keylog
         assert isinstance(keylog_h[0]._formatter, SshKeylogFormatter)
 
-    def test_protocol_all_splits_into_two(self, silent_logger, tmp_path):
+    def test_protocol_all_splits_per_protocol(self, silent_logger, tmp_path):
         keylog = str(tmp_path / "mykeys.log")
-        reg = create_default_registry()  # tls + ssh
+        reg = create_default_registry()  # tls + ssh + mtproto
         config = self._config(keylog, "all")
 
         handlers, _ = OutputHandlerFactory.create_handlers(
@@ -103,10 +112,15 @@ class TestFactoryKeylogRouting:
 
         keylog_h = _keylog_handlers(handlers)
         paths = {h._formatter.protocol: h._path for h in keylog_h}
-        assert paths == {
+        expected = {
             "tls": str(tmp_path / "mykeys.tls.log"),
             "ssh": str(tmp_path / "mykeys.ssh.log"),
+            "mtproto": str(tmp_path / "mykeys.mtproto.log"),
+            "telegram": str(tmp_path / "mykeys.telegram.log"),
         }
+        if _SIGNAL_AVAILABLE:
+            expected["signal"] = str(tmp_path / "mykeys.signal.log")
+        assert paths == expected
 
     def test_protocol_auto_same_as_all(self, silent_logger, tmp_path):
         keylog = str(tmp_path / "mykeys.log")
@@ -118,10 +132,15 @@ class TestFactoryKeylogRouting:
             protocol_registry=reg,
         )
         paths = {h._formatter.protocol: h._path for h in _keylog_handlers(handlers)}
-        assert paths == {
+        expected = {
             "tls": str(tmp_path / "mykeys.tls.log"),
             "ssh": str(tmp_path / "mykeys.ssh.log"),
+            "mtproto": str(tmp_path / "mykeys.mtproto.log"),
+            "telegram": str(tmp_path / "mykeys.telegram.log"),
         }
+        if _SIGNAL_AVAILABLE:
+            expected["signal"] = str(tmp_path / "mykeys.signal.log")
+        assert paths == expected
 
     def test_no_keylog_means_no_keylog_handler(self, silent_logger):
         reg = create_default_registry(["tls"])
@@ -179,6 +198,79 @@ class TestFactoryKeylogRouting:
             with open(tmp_path / "mykeys.ssh.log") as f:
                 contents = f.read()
             assert f"{'aa' * 16} SHARED_SECRET {'bb' * 32}" in contents
+        finally:
+            for h in _keylog_handlers(handlers):
+                h.close()
+
+    @pytest.mark.skipif(not _SIGNAL_AVAILABLE, reason="signal protocol is private/stripped in public build")
+    def test_signal_splits_tls_and_signal_files(self, silent_logger, tmp_path):
+        """``--protocol signal`` implies tls, so both split files exist."""
+        keylog = str(tmp_path / "keys.log")
+        reg = create_default_registry(["signal"])
+        config = self._config(keylog, "signal")
+
+        handlers, _ = OutputHandlerFactory.create_handlers(
+            config, None, reg.get("signal"), {}, silent_logger,
+            protocol_registry=reg,
+        )
+        paths = {h._formatter.protocol: h._path for h in _keylog_handlers(handlers)}
+        assert paths == {
+            "tls": str(tmp_path / "keys.tls.log"),
+            "signal": str(tmp_path / "keys.signal.log"),
+        }
+
+    @pytest.mark.skipif(not _SIGNAL_AVAILABLE, reason="signal protocol is private/stripped in public build")
+    def test_signal_tls_keylog_routes_to_tls_file(self, silent_logger, tmp_path):
+        """Regression for the keylog mis-tagging bug: under ``--protocol signal``
+        the TLS hooks emit NSS keylog lines tagged ``protocol="tls"`` (the agent's
+        sendKeylog now always tags "tls"). Those must materialize ``keys.tls.log``,
+        not be dropped — previously they were tagged "signal", the Signal formatter
+        could not parse the raw NSS line, and the .tls.log was never opened.
+
+        Conversely a structured ``signal``-tagged event must land in keys.signal.log.
+        """
+        keylog = str(tmp_path / "keys.log")
+        reg = create_default_registry(["signal"])
+        config = self._config(keylog, "signal")
+
+        handlers, _ = OutputHandlerFactory.create_handlers(
+            config, None, reg.get("signal"), {}, silent_logger,
+            protocol_registry=reg,
+        )
+
+        bus = EventBus()
+        try:
+            for h in _keylog_handlers(handlers):
+                h.setup(bus)
+
+            assert not (tmp_path / "keys.tls.log").exists()
+
+            # TLS hook emits an NSS keylog line tagged "tls" (post-fix behavior).
+            bus.emit(KeylogEvent(
+                key_data=f"CLIENT_RANDOM {'ab' * 32} {'cd' * 48}",
+                protocol="tls",
+            ))
+
+            tls_file = tmp_path / "keys.tls.log"
+            assert tls_file.exists(), \
+                "TLS keylog tagged 'tls' under --protocol signal must reach keys.tls.log"
+            assert "CLIENT_RANDOM" in tls_file.read_text()
+
+            # A structured Signal key still routes to the signal file.
+            from friTap.protocols import signal_keylog_spec as spec
+            bus.emit(KeylogEvent(
+                protocol="signal",
+                payload={
+                    "chat_type": spec.CHAT_1TO1,
+                    "eph_pub": "05" + "ab" * 32,
+                    "static_cipher": "11" * 32,
+                    "static_mac": "22" * 32,
+                    "cipher": "33" * 32,
+                    "mac": "44" * 32,
+                    "iv": "55" * 16,
+                },
+            ))
+            assert (tmp_path / "keys.signal.log").exists()
         finally:
             for h in _keylog_handlers(handlers):
                 h.close()

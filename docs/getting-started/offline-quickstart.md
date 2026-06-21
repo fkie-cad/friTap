@@ -40,6 +40,29 @@ Wrote out.tap
 That's the whole conversion. The `.tap` is now a self-contained, decrypted
 record you can analyze and replay anywhere — no keys or tshark needed from here.
 
+!!! tip "Telegram / MTProto capture? Use `--mtproto-keylog`"
+    `--keylog` above is the NSS/TLS key log consumed by **tshark**. Telegram's
+    MTProto is **not** decrypted by tshark — friTap decrypts it itself from a
+    **separate** key log passed with `--mtproto-keylog`:
+
+    ```bash
+    fritap --from-pcap tg.pcapng --mtproto-keylog tg.keys --tap tg.tap
+    ```
+
+    The two flags are distinct and can be combined on one capture. Offline MTProto
+    decryption uses the crypto backend that ships in friTap's base install (no
+    extra needed); on a lean install it is skipped with a `pip install cryptography`
+    hint. See [Telegram (MTProto)](../protocols/telegram.md).
+
+    To decrypt **both** Telegram cloud chats **and** end-to-end secret chats from one
+    combined keylog (written by `--protocol telegram`), use `--telegram-keylog`
+    instead — secret chats are decrypted into a `telegram_e2e` flow layer:
+
+    ```bash
+    fritap --from-pcap tg.pcapng --telegram-keylog tg.keys --tap tg.tap
+    ```
+
+
 ---
 
 ## Step 2 — Analyze it

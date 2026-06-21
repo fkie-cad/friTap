@@ -127,6 +127,11 @@ class FlowSummary:
     state: str = "complete"
     started: float = 0.0
     ended: float = 0.0
+    # Transport/encryption protocol of the underlying connection ("tls", "quic",
+    # "signal", "mtproto", ...). Mirrors Flow.transport so the flow list and the
+    # Signal conversation-merge can group connections from the cheap summary
+    # without decoding the full Flow. Persisted in FLOW meta when non-default.
+    transport: str = "tls"
     # From ParseResult (request)
     protocol: str = "unknown"
     method: str = ""
@@ -151,6 +156,30 @@ class FlowSummary:
     tag_count: int = 0
     finding_count: int = 0
     has_notes: bool = False
+    # Layered protocol-display scalars (offline/live parity with
+    # friTap.flow.models.FlowSummary). See display.display_protocol_layered.
+    outer_app_protocol: str = ""
+    inner_e2e_protocol: str = ""
+    inner_summary: str = ""
+    # Primary TL operation derived from the flow's message-bearing layers (e.g.
+    # "sendMessage", "users"). See friTap.flow.display.method_from_messages.
+    flow_method: str = ""
+
+    @property
+    def display_method(self) -> str:
+        """Method-column string: the derived TL method, else the HTTP method."""
+        from friTap.flow import display as _display
+        return _display.display_method_layered(self)
+
+    @property
+    def display_protocol_layered(self) -> str:
+        """Layered ``outer-app[inner-E2E]`` protocol string.
+
+        Mirrors :attr:`friTap.flow.models.FlowSummary.display_protocol_layered`.
+        Imported locally to avoid a module import cycle (display -> models).
+        """
+        from friTap.flow import display as _display
+        return _display.display_protocol_layered(self)
 
     @staticmethod
     def from_flow(flow: "Flow") -> "FlowSummary":
@@ -166,6 +195,9 @@ class FlowSummary:
         req = flow.request
         resp = flow.response
         tls = flow.layer("tls")
+        from friTap.flow import display as _display
+        outer_app, inner_e2e, inner_summary = _display.layered_scalars_from_flow(flow)
+        flow_method = getattr(flow, "flow_method", "") or _display.method_from_messages(flow)
         total = getattr(flow, "_total_bytes", 0) or sum(len(c.data) for c in flow.chunks)
         state = flow.state.value if hasattr(flow.state, "value") else str(flow.state)
         return FlowSummary(
@@ -179,6 +211,7 @@ class FlowSummary:
             state=state,
             started=flow.started,
             ended=flow.ended,
+            transport=getattr(flow, "transport", "tls") or "tls",
             protocol=(req.protocol if req else "") or (resp.protocol if resp else "") or "unknown",
             method=req.method if req else "",
             url=req.url if req else "",
@@ -196,6 +229,10 @@ class FlowSummary:
             tag_count=len(getattr(flow, "tags", []) or []),
             finding_count=len(getattr(flow, "findings", []) or []),
             has_notes=bool(getattr(flow, "notes", "")),
+            outer_app_protocol=outer_app,
+            inner_e2e_protocol=inner_e2e,
+            inner_summary=inner_summary,
+            flow_method=flow_method,
         )
 
     def to_dict(self) -> dict:
@@ -218,6 +255,7 @@ class FlowSummary:
             "started": self.started,
             "ended": self.ended,
             "duration": duration,
+            "transport": self.transport,
             "protocol": self.detected_protocol or self.protocol or "unknown",
             "method": self.method,
             "url": self.url,
@@ -231,6 +269,10 @@ class FlowSummary:
             "tag_count": self.tag_count,
             "finding_count": self.finding_count,
             "has_notes": self.has_notes,
+            "outer_app_protocol": self.outer_app_protocol,
+            "inner_e2e_protocol": self.inner_e2e_protocol,
+            "inner_summary": self.inner_summary,
+            "flow_method": self.flow_method,
         }
 
 
@@ -469,13 +511,33 @@ def encode_flow(flow: "Flow") -> bytes:
     # layers (decryptor output) serialize their directional bytes, once, via
     # register_blob. Empty layers are skipped (mirrors the meta["tls"] discipline
     # and avoids persisting the lazily-created never-None stubs). ---
+    # Empty layers are skipped EXCEPT deliberate metadata-only markers (e.g. the
+    # HTTP/2/WebSocket encapsulation markers on an offline Signal flow): they
+    # carry no bytes and no parsed result by design, but their presence in the
+    # stack is itself the information, so they must survive serialization.
     layers_meta = [
         _encode_layer(ly, register_blob)
         for ly in getattr(flow, "layers", [])
-        if not ly.is_empty()
+        if not ly.is_empty() or ly.metadata_only
     ]
     if layers_meta:
         meta["layers"] = layers_meta
+
+    # --- Layered protocol-display scalars (offline parity). Computed from the
+    # full layer stack so the summary fast path (decode_flow_summary) can
+    # round-trip WebSocket[Signal]/HTTP/2[Signal] without re-walking layers.
+    # Written only when non-empty to keep records lean (mirrors meta["tls"]). ---
+    from friTap.flow import display as _display
+    _outer_app, _inner_e2e, _inner_summary = _display.layered_scalars_from_flow(flow)
+    if _outer_app:
+        meta["outer_app_protocol"] = _outer_app
+    if _inner_e2e:
+        meta["inner_e2e_protocol"] = _inner_e2e
+    if _inner_summary:
+        meta["inner_summary"] = _inner_summary
+    _flow_method = getattr(flow, "flow_method", "") or _display.method_from_messages(flow)
+    if _flow_method:
+        meta["flow_method"] = _flow_method
 
     meta_bytes = json.dumps(meta, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     blob_bytes = b"".join(blobs)
@@ -746,7 +808,11 @@ def _decode_layers(flow: "Flow", layers_meta: list, read_blob) -> None:
         layer_cls = desc.layer_cls if desc is not None else AppLayer
         layer = layer_cls.from_dict(lm)
         layer._name = name
-        if lm.get("data_from_chunks"):
+        if lm.get("metadata_only"):
+            # Metadata-only marker: keep its default empty (data_source="none")
+            # LayerData and re-flag it so a re-encode stays metadata-only.
+            layer.metadata_only = True
+        elif lm.get("data_from_chunks"):
             layer.data = LayerData(data_source="chunks", _owner=flow)
         elif "data_owned" in lm:
             owned = lm["data_owned"]
@@ -805,6 +871,7 @@ def decode_flow_summary(payload: bytes, file_offset: int = 0) -> FlowSummary:
         state=meta.get("state", "complete"),
         started=meta.get("started", 0.0),
         ended=meta.get("ended", 0.0),
+        transport=meta.get("transport", "tls"),
         protocol=protocol,
         method=req.get("method", "") if req else "",
         url=req.get("url", "") if req else "",
@@ -822,6 +889,10 @@ def decode_flow_summary(payload: bytes, file_offset: int = 0) -> FlowSummary:
         tag_count=len(meta.get("tags", [])),
         finding_count=0,  # findings live in separate REC_FINDING records; TapReader fills this in
         has_notes=bool(meta.get("notes", "")),
+        outer_app_protocol=meta.get("outer_app_protocol", ""),
+        inner_e2e_protocol=meta.get("inner_e2e_protocol", ""),
+        inner_summary=meta.get("inner_summary", ""),
+        flow_method=meta.get("flow_method", ""),
     )
 
 
@@ -860,22 +931,32 @@ def _encode_layer(layer, register_blob) -> dict:
     from friTap.flow.layer_registry import get_registry
 
     d = layer.to_dict()  # name, depth, + typed metadata fields
-    # The registry is the authority on whether a protocol's data is a chunks
-    # view (transport tls/quic + app layers) — mark it so regardless of how the
-    # instance was built, so the view is never serialized as bytes. Only genuine
-    # owned-data layers (decryptor output, unregistered names) blob their bytes.
-    desc = get_registry().get(layer.name)
-    if (desc is not None and desc.data_source == "chunks") \
-            or layer.data.data_source == "chunks":
-        d["data_from_chunks"] = True
-    elif layer.data.data_source == "owned":
-        read = layer.data.read
-        write = layer.data.write
-        r_off, r_len = register_blob(read) if read else (0, 0)
-        w_off, w_len = register_blob(write) if write else (0, 0)
-        d["data_owned"] = {
-            "r_off": r_off, "r_len": r_len, "w_off": w_off, "w_len": w_len,
-        }
+    # Decide how this layer's DATA is represented; the parsed-result tail below
+    # is shared by every branch.
+    if layer.metadata_only:
+        # Metadata-only marker (e.g. the TLS/HTTP-2/WebSocket encapsulation layers
+        # on an offline-decrypted Signal flow): typed metadata but NONE of its own
+        # bytes — the decrypted bytes belong to the innermost layer. Opt out of the
+        # chunks-view default so a round-trip never rebinds it to the flow's chunks
+        # (which are the INNER protocol's plaintext, not this layer's).
+        d["metadata_only"] = True
+    else:
+        # The registry is the authority on whether a protocol's data is a chunks
+        # view (transport tls/quic + app layers) — mark it so regardless of how
+        # the instance was built, so the view is never serialized as bytes. Only
+        # genuine owned-data layers (decryptor output, unregistered names) blob.
+        desc = get_registry().get(layer.name)
+        if (desc is not None and desc.data_source == "chunks") \
+                or layer.data.data_source == "chunks":
+            d["data_from_chunks"] = True
+        elif layer.data.data_source == "owned":
+            read = layer.data.read
+            write = layer.data.write
+            r_off, r_len = register_blob(read) if read else (0, 0)
+            w_off, w_len = register_blob(write) if write else (0, 0)
+            d["data_owned"] = {
+                "r_off": r_off, "r_len": r_len, "w_off": w_off, "w_len": w_len,
+            }
     if layer._parsed_field:
         d["parsed_field"] = layer._parsed_field
     elif layer._inner_parsed is not None:

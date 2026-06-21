@@ -103,7 +103,11 @@ def test_list_report_formats_values():
     assert list_report_formats() == ["csv", "json", "md", "table"]
 
 
-def test_list_analyzers_values():
+def test_list_analyzers_values(monkeypatch):
+    # Isolate from any ambient external-analyzer discovery (drop-in dir /
+    # entry points) so the built-in contract is asserted deterministically.
+    monkeypatch.setattr("friTap.analysis.registry._DISCOVERED", {})
+    monkeypatch.setattr("friTap.analysis.registry._DISCOVERY_DONE", True)
     assert list_analyzers() == ["credentials", "ioc", "privacy", "protobuf"]
 
 

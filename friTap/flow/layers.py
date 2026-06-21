@@ -123,6 +123,12 @@ class ProtocolLayer:
     # which serves every application protocol from one class) carry their name
     # here. Set by ``Flow._create_layer`` from the registry/descriptor name.
     _name: str = field(default="", repr=False)
+    # Metadata-only marker: this layer carries typed metadata (e.g. a TLS SNI or
+    # the HTTP/2/WebSocket encapsulation markers on an offline-decrypted Signal
+    # flow) but NONE of its own bytes — the decrypted bytes belong to the
+    # innermost layer. Such a layer is "empty of bytes" yet meaningful, so it is
+    # NOT skipped at serialization and never rebinds to the flow's chunks view.
+    metadata_only: bool = False
 
     @property
     def name(self) -> str:
@@ -325,6 +331,168 @@ class IpsecLayer(ProtocolLayer):
         layer.enc = d.get("enc", "")
         layer.integ = d.get("integ", "")
         layer.dh = d.get("dh", "")
+        return layer
+
+
+@dataclass
+class MtprotoLayer(ProtocolLayer):
+    """Telegram MTProto protocol layer.
+
+    The decrypted MTProto *message* bytes ride the flow's chunks (the registry
+    descriptor registers this layer with ``data_source="chunks"``, like tls/quic),
+    fed by the agent's datalog hook (Phase A) or the offline decryptor (Phase B).
+    TL parsing of those bytes is intentionally left to a downstream parser, so this
+    layer carries only transport/identity metadata.
+    """
+
+    NAME: ClassVar[str] = "mtproto"
+
+    transport: str = ""        # "abridged" / "intermediate" / "padded_intermediate" / "full"
+    obfuscated: bool = False
+    fake_tls: bool = False
+    dc_id: int = 0
+    auth_key_id: str = ""      # hex of the auth_key_id that decrypted this flow
+    message_count: int = 0
+    # Parsed per-message metadata; each entry is a JSON-native dict:
+    # {direction, kind, body, sender_id, peer_id, has_media}. Populated by the
+    # offline TL parser (friTap.offline.mtproto.content) at emit time.
+    messages: list = field(default_factory=list)
+
+    def is_empty(self) -> bool:
+        return not (
+            self.transport or self.obfuscated or self.fake_tls
+            or self.dc_id or self.auth_key_id or self.message_count
+            or self.messages
+        ) and self.data.is_empty()
+
+    def to_dict(self) -> dict:
+        d = super().to_dict()
+        d.update({
+            "transport": self.transport,
+            "obfuscated": self.obfuscated,
+            "fake_tls": self.fake_tls,
+            "dc_id": self.dc_id,
+            "auth_key_id": self.auth_key_id,
+            "message_count": self.message_count,
+            "messages": self.messages,
+        })
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "MtprotoLayer":
+        layer = cls()
+        layer.depth = d.get("depth", 0)
+        layer.transport = d.get("transport", "")
+        layer.obfuscated = d.get("obfuscated", False)
+        layer.fake_tls = d.get("fake_tls", False)
+        layer.dc_id = d.get("dc_id", 0)
+        layer.auth_key_id = d.get("auth_key_id", "")
+        layer.message_count = d.get("message_count", 0)
+        layer.messages = d.get("messages", []) or []
+        return layer
+
+
+@dataclass
+class TelegramE2ELayer(ProtocolLayer):
+    """Telegram secret-chat (end-to-end) protocol layer.
+
+    A secret-chat layer rides INSIDE the MTProto transport: its decrypted inner
+    payload bytes ride the flow's chunks (the registry descriptor registers this
+    layer with ``data_source="chunks"``, like mtproto/signal), fed by the offline
+    secret-chat decryptor (``origin="decrypted"``) or a future plaintext agent
+    hook (``origin="plaintext_hook"``). TL parsing of those bytes is intentionally
+    left to a downstream parser, so this layer carries only identity metadata.
+    """
+
+    NAME: ClassVar[str] = "telegram_e2e"
+
+    chat_id: int = 0
+    key_fingerprint: str = ""   # hex of the key_fingerprint that decrypted this flow
+    message_count: int = 0
+    origin: str = "decrypted"   # "decrypted" / "plaintext_hook"
+    layer_version: int = 0
+    # Parsed per-message metadata; each entry is a JSON-native dict:
+    # {direction, kind, body, sender_id, peer_id, has_media}. Populated by the
+    # offline TL parser (friTap.offline.mtproto.content) at emit time.
+    messages: list = field(default_factory=list)
+
+    def is_empty(self) -> bool:
+        return not (
+            self.chat_id or self.key_fingerprint or self.message_count
+            or self.layer_version or self.messages
+        ) and self.data.is_empty()
+
+    def to_dict(self) -> dict:
+        d = super().to_dict()
+        d.update({
+            "chat_id": self.chat_id,
+            "key_fingerprint": self.key_fingerprint,
+            "message_count": self.message_count,
+            "origin": self.origin,
+            "layer_version": self.layer_version,
+            "messages": self.messages,
+        })
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "TelegramE2ELayer":
+        layer = cls()
+        layer.depth = d.get("depth", 0)
+        layer.chat_id = d.get("chat_id", 0)
+        layer.key_fingerprint = d.get("key_fingerprint", "")
+        layer.message_count = d.get("message_count", 0)
+        layer.origin = d.get("origin", "decrypted")
+        layer.layer_version = d.get("layer_version", 0)
+        layer.messages = d.get("messages", []) or []
+        return layer
+
+
+@dataclass
+class SignalLayer(ProtocolLayer):
+    """Signal protocol layer.
+
+    The decrypted inner Signal ``Content`` bytes ride the flow's chunks (the
+    registry descriptor registers this layer with ``data_source="chunks"``, like
+    tls/quic/mtproto), fed by the offline Signal decryptor. Protobuf parsing of
+    those bytes is intentionally left to a downstream parser, so this layer
+    carries only identity metadata.
+    """
+
+    NAME: ClassVar[str] = "signal"
+
+    chat_type: str = ""        # "one_to_one" / "group"
+    identifier: str = ""       # hex of the eph_pub (1:1) or auth_tag (group)
+    message_count: int = 0
+    # Parsed per-message metadata; each entry is a JSON-native dict:
+    # {sender, direction, timestamp, kind, body, attachments, quote, reaction}.
+    # Plaintext WS/REST metadata records (kind in {rest, ws-request, ws-response,
+    # profile, device-list, prekey}) additionally carry the optional keys
+    # {verb, path, status, request_id, meta} — all backward-compatible (.get).
+    messages: list = field(default_factory=list)
+
+    def is_empty(self) -> bool:
+        return not (
+            self.chat_type or self.identifier or self.message_count or self.messages
+        ) and self.data.is_empty()
+
+    def to_dict(self) -> dict:
+        d = super().to_dict()
+        d.update({
+            "chat_type": self.chat_type,
+            "identifier": self.identifier,
+            "message_count": self.message_count,
+            "messages": self.messages,
+        })
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "SignalLayer":
+        layer = cls()
+        layer.depth = d.get("depth", 0)
+        layer.chat_type = d.get("chat_type", "")
+        layer.identifier = d.get("identifier", "")
+        layer.message_count = d.get("message_count", 0)
+        layer.messages = d.get("messages", []) or []
         return layer
 
 

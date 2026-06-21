@@ -1,6 +1,41 @@
-/* In this file we store global variables and structures */
+/* In this file we store global variables and structures, including the process-
+ * wide runtime state shared across ALL protocol hooks (TLS and any messenger
+ * protocol). This module is side-effect-free: importing it never installs hooks.
+ *
+ * fritap_agent.ts SETS these via the setters during the config handshake and
+ * re-exports them, so the many modules that read them from `fritap_agent` keep
+ * working unchanged — while optional protocol units (e.g. agent/signal/) read
+ * them from HERE without importing the agent entry (importing the entry would
+ * run its top-level install, which must happen AFTER such units register).
+ *
+ * General rule when adding a new protocol: keep protocol-specific state inside
+ * that protocol's own module; put anything reusable by other protocols here.
+ */
 
-import { keylog_enabled, _isShuttingDown } from "../fritap_agent.js";
+// --- Shared runtime state (live ESM bindings; set once at config-handshake) ---
+// Reads are live, taken at hook-INSTALL time (well after config parse), so the
+// defaults below are only ever observed transiently during module import.
+
+// `offsets` may transiently hold the un-replaced "{OFFSETS}" placeholder string
+// (legacy string-replace build), a raw JSON string (--offsets handshake), or a
+// parsed offsets object keyed by library name; callers treat it structurally.
+export let offsets: any = "{OFFSETS}";
+export let pcap_enabled: boolean = false;
+export let keylog_enabled: boolean = true;   // default ON; friTap.py sets it explicitly
+export let _isShuttingDown: boolean = false; // set true at gracefulDetach start
+export let ohttp_enabled: boolean = true;
+// Generic, protocol-agnostic passthrough bag from the host (config_batch.extensions).
+// Carries opt-in feature config such as { scan_region: "<module|base,size|heap>" }
+// for the public memory-scan engine (agent/shared/scan/). A private protocol unit
+// reads its own sub-keys from here; the public core never names a private key.
+export let config_extensions: Record<string, any> = {};
+
+export function setOffsets(value: any): void { offsets = value; }
+export function setPcapEnabled(value: boolean): void { pcap_enabled = value; }
+export function setKeylogEnabled(value: boolean): void { keylog_enabled = value; }
+export function setIsShuttingDown(value: boolean): void { _isShuttingDown = value; }
+export function setOhttpEnabled(value: boolean): void { ohttp_enabled = value; }
+export function setConfigExtensions(value: Record<string, any>): void { config_extensions = value ?? {}; }
 
 export type ModuleHookingType = (moduleName: string, is_base_hook: boolean) => void;
 
@@ -12,7 +47,10 @@ export type LibraryType =
     | "gotls" | "matrixssl" | "sspi" | "lsass" | "nss_hpke"
     | "quiche" | "msquic" | "google_quiche" | "neqo"
     | "ssh_openssh" | "ssh_libssh"
-    | "ipsec_strongswan";
+    | "ipsec_strongswan"
+    | "mtproto_tgnet"
+    | "signal_libsignal"
+    | "telegram_e2e";
 export const PLATFORM_LINUX: Platform = "linux";
 export const PLATFORM_DARWIN: Platform = "darwin";
 export const PLATFORM_WINDOWS: Platform = "windows";
@@ -33,17 +71,19 @@ export const AddressFamilyMapping: { [key: number]: string } = {
     // Add other address families as needed
 };
 
-// Module-level protocol cache — avoids require() on every TLS packet
-let _selectedProtocol: string = "tls";
+// Active protocol selected on the CLI — shared across all protocol hooks (read
+// by sendWithProtocol for message tagging and by the per-platform hook loaders
+// for hook filtering). Avoids require() on every TLS packet.
+export let selected_protocol: string = "tls";
 
 /**
- * Set the active protocol used by sendWithProtocol.
+ * Set the active protocol used by sendWithProtocol and hook filtering.
  * Called once from fritap_agent.ts after the recv handshake completes.
  *
  * @param protocol  The protocol string (e.g., "tls", "ssh", "ipsec")
  */
 export function setSelectedProtocol(protocol: string): void {
-    _selectedProtocol = protocol;
+    selected_protocol = protocol;
 }
 
 /**
@@ -53,7 +93,23 @@ export function setSelectedProtocol(protocol: string): void {
  * @param data     Optional binary data to attach
  */
 export function sendWithProtocol(message: { [key: string]: any }, data?: ArrayBuffer | number[] | null): void {
-    message["protocol"] = _selectedProtocol;
+    message["protocol"] = selected_protocol;
+    if (data !== undefined && data !== null) {
+        send(message, data);
+    } else {
+        send(message);
+    }
+}
+
+/**
+ * Like sendWithProtocol, but stamps an explicit protocol tag instead of the
+ * active `selected_protocol`. Used for key material that is definitionally
+ * bound to one protocol regardless of which protocol the user selected on the
+ * CLI (e.g. NSS keylog lines are always TLS, even under `--protocol signal`,
+ * which IMPLIES tls and runs the TLS hooks alongside the Signal hooks).
+ */
+function sendWithProtocolTag(message: { [key: string]: any }, protocol: string, data?: ArrayBuffer | number[] | null): void {
+    message["protocol"] = protocol;
     if (data !== undefined && data !== null) {
         send(message, data);
     } else {
@@ -66,7 +122,14 @@ export function sendKeylog(keylogLine: string): void {
     // keylog_enabled gate at install time, no KeylogEvent leaves the agent
     // when the user requested plaintext-only mode.
     if (!keylog_enabled) return;
-    sendWithProtocol({ contentType: "keylog", keylog: keylogLine });
+    // NSS keylog lines (CLIENT_RANDOM / EXPORTER_SECRET / TLS 1.3 secrets, and
+    // their QUIC_ duplicates) are always TLS key material. They are emitted by
+    // the TLS/QUIC hooks, which run whenever a composite protocol implies "tls"
+    // (e.g. signal → [signal, tls]). Tag them "tls" explicitly so they route to
+    // the TLS keylog formatter/file rather than being mis-tagged with the
+    // active protocol (which would drop them — the Signal formatter can't parse
+    // raw NSS lines, and the TLS handler never sees a "tls" event otherwise).
+    sendWithProtocolTag({ contentType: "keylog", keylog: keylogLine }, "tls");
 }
 
 /**

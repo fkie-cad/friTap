@@ -26,7 +26,7 @@ from ..events import (
     HookBreadcrumbEvent,
 )
 from ..config import FriTapConfig
-from ..constants import SSL_READ, SSL_WRITE
+from ..constants import SSL_READ, SSL_WRITE, AGENT_ABI_VERSION
 from dataclasses import dataclass
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -166,7 +166,7 @@ class SSL_Logger():
 
         # Message router (extracted for file length management)
         from ..message_router import MessageRouter
-        self._message_router = MessageRouter(self._event_bus)
+        self._message_router = MessageRouter(self._event_bus, active_protocol=self._config.protocol)
 
         # Wire display filter if configured
         if self._config.output.filter_expression:
@@ -372,6 +372,13 @@ class SSL_Logger():
 
     def init_fritap(self):
         self.agent_script = "fritap_agent.js"
+        # Optional bundle override (see _resolve_agent_bundle_path). Logged once here so a
+        # full-build run visibly confirms which bundle was loaded; generic, names
+        # no protocol.
+        _bundle_override = os.environ.get("FRITAP_AGENT_BUNDLE")
+        if _bundle_override:
+            self.logger.info("Loading agent bundle from FRITAP_AGENT_BUNDLE override: %s",
+                             os.path.abspath(os.path.expanduser(_bundle_override)))
 
         if self.pcap_name:
             self.pcap_obj =  PCAP(self.pcap_name,SSL_READ,SSL_WRITE,self.full_capture, self.mobile,self.debug_output)
@@ -442,8 +449,12 @@ class SSL_Logger():
                 # Propagate the keylog file path into the pcap object so the
                 # capture manifest ('keylog' branch in PCAP._write_capture_manifest)
                 # is actually populated; PCAP.keylog_path is otherwise never set.
+                # Also propagate the active protocol so the manifest can record a
+                # protocol-specific keylog field (e.g. "mtproto_keylog") and the
+                # offline pipeline routes the keys to the right decryptor.
                 if self.pcap_obj is not None:
                     self.pcap_obj.keylog_path = handler._path
+                    self.pcap_obj.capture_protocol = self.protocol
             if isinstance(handler, (LivePcapngHandler, LiveAutoDecryptHandler, LiveWiresharkHandler)):
                 self._live_handler = handler
 
@@ -650,6 +661,17 @@ class SSL_Logger():
                     # the pattern-scan budget on connections we don't care about. In -f mode
                     # this stays driven by -k: keys are needed to decrypt the full capture.
                     'keylog_enabled': bool(self.keylog),
+                    # Generic, protocol-agnostic feature-config passthrough. Keys
+                    # are opt-in feature names (never a protocol literal): e.g.
+                    # 'scan_region' drives the public memory-scan engine
+                    # (agent/shared/scan/), and a private protocol binding reads
+                    # its own sub-keys from the same bag. Empty unless a feature
+                    # was requested, so the default wire shape is unchanged.
+                    'extensions': (
+                        {'scan_region': self._config.hooking.scan_keys_region}
+                        if getattr(self._config.hooking, 'scan_keys_region', None)
+                        else {}
+                    ),
                 }
                 self._backend.post_message(self.script, 'config_batch', batch)
                 return
@@ -797,6 +819,10 @@ class SSL_Logger():
         else:
             self._backend.on_message(self.script, self._internal_callback_wrapper())
         self._backend.load_script(self.script)
+
+        # Best-effort JS<->Python ABI sanity check (non-fatal; warns on a stale
+        # or mismatched bundle). Only meaningful on the Frida backend.
+        self._check_agent_abi()
 
         # Emit ScriptLoadedEvent for main friTap script
         self._event_bus.emit(ScriptLoadedEvent(
@@ -1121,9 +1147,12 @@ class SSL_Logger():
             # --scan-show-pii is set; other analyzers ignore the opt. Redaction
             # is still enforced at the reporter layer in _finalize_live_scan.
             reveal_pii = getattr(self._config.output, "scan_show_pii", False)
+            analyzer_path = getattr(self._config.output, "scan_analyzer_path", None)
             self._scan_plugins = [
                 AnalyzerPlugin(a)
-                for a in resolve_analyzers(scan_spec, reveal_pii=reveal_pii)
+                for a in resolve_analyzers(
+                    scan_spec, analyzer_path=analyzer_path, reveal_pii=reveal_pii
+                )
             ]
             if not self._scan_plugins:
                 return
@@ -1416,8 +1445,14 @@ class SSL_Logger():
             except Exception as e:
                 self.logger.error(f"Error while detaching: {e}")
 
-        # Create a thread to run the detach method
-        detach_thread = threading.Thread(target=detach)
+        # Create a thread to run the detach method.
+        # daemon=True: detach is best-effort cleanup guarded by a join timeout
+        # below; if it times out the thread is abandoned. Without daemon=True an
+        # abandoned (still-running) detach thread blocks interpreter shutdown in
+        # threading._shutdown(), which manifests as the host process hanging
+        # after the session summary until a second Ctrl+C. The OS reclaims the
+        # Frida session when the process exits anyway, so cutting it short is safe.
+        detach_thread = threading.Thread(target=detach, daemon=True)
         detach_thread.start()
 
         # Wait for the thread to complete
@@ -1578,8 +1613,101 @@ class SSL_Logger():
         while not self._done_event.wait(timeout=0.5):
             pass
 
+    def _resolve_agent_bundle_path(self):
+        """Resolve the agent bundle path to load (Frida backend).
+
+        NOTE: distinct from the `self._agent_script_path` *instance attribute*,
+        which holds the non-Frida-backend processor bundle path (see init).
+
+        Precedence (all generic — none names a protocol):
+          1. ``FRITAP_AGENT_BUNDLE`` env var — an arbitrary bundle path
+             (absolute, or relative to the current working directory; ``~`` is
+             expanded). Explicit operator override; always wins.
+          2. A ``fritap.agent_bundle`` entry point whose declared ABI matches
+             AGENT_ABI_VERSION (see _discover_agent_bundle). This lets a
+             full/extended install auto-select its own bundle without the env
+             var; ABI-filtered so a stale contribution is skipped.
+          3. The shipped bundle next to this module (``here/self.agent_script``).
+        """
+        override = os.environ.get("FRITAP_AGENT_BUNDLE")
+        if override:
+            return os.path.abspath(os.path.expanduser(override))
+        discovered = self._discover_agent_bundle()
+        if discovered:
+            return discovered
+        return os.path.join(here, self.agent_script)
+
+    def _discover_agent_bundle(self):
+        """Return an agent bundle path contributed via a ``fritap.agent_bundle``
+        entry point whose declared ABI matches AGENT_ABI_VERSION, else ``None``.
+
+        Generic by design — names no protocol. A full/extended build registers
+        such an entry point (a module/object exposing ``AGENT_ABI_VERSION`` and
+        either ``agent_bundle_path()`` or ``AGENT_BUNDLE_PATH``) so that install
+        auto-selects its own bundle. ABI-mismatched, unloadable, or missing-file
+        contributions are skipped; the first valid match wins.
+        """
+        try:
+            from importlib.metadata import entry_points
+        except ImportError:  # pragma: no cover - py<3.8
+            return None
+        try:
+            eps = entry_points(group="fritap.agent_bundle")  # py>=3.10 selection API
+        except TypeError:  # pragma: no cover - py3.8/3.9 fallback
+            eps = entry_points().get("fritap.agent_bundle", [])
+        for ep in eps:
+            try:
+                obj = ep.load()
+            except Exception as e:  # noqa: BLE001 - a broken contribution must not abort the load
+                if self.debug_output or self.debug:
+                    self.logger.debug("agent bundle entry point %r failed to load: %s", ep.name, e)
+                continue
+            abi = getattr(obj, "AGENT_ABI_VERSION", None)
+            if abi != AGENT_ABI_VERSION:
+                if self.debug_output or self.debug:
+                    self.logger.debug(
+                        "agent bundle entry point %r ABI %s != host %s; skipping",
+                        ep.name, abi, AGENT_ABI_VERSION)
+                continue
+            getter = getattr(obj, "agent_bundle_path", None)
+            path = getter() if callable(getter) else getattr(obj, "AGENT_BUNDLE_PATH", None)
+            if not path:
+                continue
+            path = os.path.abspath(os.path.expanduser(path))
+            if os.path.isfile(path):
+                self.logger.info("Loading agent bundle from entry point %r: %s", ep.name, path)
+                return path
+            if self.debug_output or self.debug:
+                self.logger.debug("agent bundle entry point %r path not found: %s", ep.name, path)
+        return None
+
+    def _check_agent_abi(self):
+        """Best-effort: compare the loaded bundle's reported ABI to the host's
+        AGENT_ABI_VERSION and warn on mismatch. Versions the JS<->Python
+        boundary (config_batch fields, ContentTypes, rpc.exports). Non-fatal and
+        defensive: only the blocking ``exports_sync`` proxy is used (the async
+        proxy would return a coroutine, not a value), and older / standalone
+        bundles without the export are silently tolerated.
+        """
+        exports_sync = getattr(self.script, "exports_sync", None)
+        reporter = getattr(exports_sync, "agent_abi_version", None) if exports_sync is not None else None
+        if not callable(reporter):
+            return  # async-only proxy or older bundle — skip
+        try:
+            bundle_abi = reporter()
+        except Exception as e:  # noqa: BLE001 - never let a version probe break capture
+            if self.debug_output or self.debug:
+                self.logger.debug("agent_abi_version RPC failed: %s", e)
+            return
+        if bundle_abi != AGENT_ABI_VERSION:
+            self.logger.warning(
+                "Agent bundle ABI %s does not match host ABI %s — the loaded "
+                "bundle may be stale or built against a different JS<->Python "
+                "boundary; rebuild the agent (./dev/compile_agent.sh) if hooks "
+                "misbehave.", bundle_abi, AGENT_ABI_VERSION)
+
     def get_agent_script(self):
-        with open(os.path.join(here, self.agent_script), encoding='utf-8', newline='\n') as f:
+        with open(self._resolve_agent_bundle_path(), encoding='utf-8', newline='\n') as f:
             return f.read()
 
     def inspect_libraries(self):
@@ -1594,7 +1722,7 @@ class SSL_Logger():
             self._config, self.logger, output_dir)
 
     def get_agent_script_path(self):
-        return os.path.join(here, self.agent_script)
+        return self._resolve_agent_bundle_path()
 
     def install_signal_handler(self):
         self._session_manager.install_signal_handler()

@@ -193,6 +193,93 @@ def list_analyzers() -> list[str]:
     return available_analyzers()
 
 
+@dataclass(frozen=True)
+class AnalyzerInfo:
+    """A single analyzer's listing metadata (built-in or externally discovered)."""
+
+    name: str
+    source: str  # "builtin" or a discovery source like "dir:/path/file.py"
+    description: str
+
+
+def _builtin_description(name: str) -> str:
+    """Best-effort one-line description for a built-in analyzer.
+
+    Instantiates the analyzer via its registry factory and prefers a
+    ``.description`` attribute, falling back to the first line of the class
+    docstring. Any failure yields an empty string — listing must never break.
+    """
+    from friTap.analysis.registry import ANALYZER_REGISTRY
+
+    try:
+        factory = ANALYZER_REGISTRY[name]
+        instance = factory()
+        desc = getattr(instance, "description", "")
+        if desc:
+            return str(desc).strip().splitlines()[0]
+        doc = getattr(type(instance), "__doc__", "") or ""
+        return doc.strip().splitlines()[0] if doc.strip() else ""
+    except Exception:  # noqa: BLE001 — listing is best-effort, never fatal
+        return ""
+
+
+def list_analyzers_detailed() -> list[AnalyzerInfo]:
+    """Return detailed listing of all analyzers: built-ins first, then externals.
+
+    Built-ins are sourced from :data:`ANALYZER_REGISTRY` with ``source="builtin"``
+    and a best-effort description; externals come from
+    :func:`discover_external_analyzers` carrying their discovery ``.source`` and
+    ``.description`` (if any). Each group is sorted by name.
+    """
+    from friTap.analysis.registry import ANALYZER_REGISTRY
+
+    builtins = [
+        AnalyzerInfo(name=name, source="builtin", description=_builtin_description(name))
+        for name in sorted(ANALYZER_REGISTRY)
+    ]
+
+    externals: list[AnalyzerInfo] = []
+    try:
+        from friTap.analysis.discovery import discover_external_analyzers
+
+        discovered = discover_external_analyzers()
+    except Exception:  # noqa: BLE001 — discovery is best-effort
+        discovered = {}
+    for name in sorted(discovered):
+        # A built-in always wins a name collision (mirrors the registry's
+        # shadow rule), so don't also list it as an external.
+        if name in ANALYZER_REGISTRY:
+            continue
+        found = discovered[name]
+        externals.append(
+            AnalyzerInfo(
+                name=name,
+                source=found.source,
+                description=getattr(found.instance, "description", "") or "",
+            )
+        )
+
+    return builtins + externals
+
+
+def _format_analyzer_listing(infos: list["AnalyzerInfo"]) -> str:
+    """Render :class:`AnalyzerInfo` entries as a grouped, readable listing."""
+    builtins = [i for i in infos if i.source == "builtin"]
+    externals = [i for i in infos if i.source != "builtin"]
+
+    def _column(items: list["AnalyzerInfo"], detail: Callable[["AnalyzerInfo"], str]) -> list[str]:
+        if not items:
+            return ["  (none)"]
+        width = max(len(i.name) for i in items)
+        return [f"  {i.name.ljust(width)}  {detail(i)}".rstrip() for i in items]
+
+    lines = ["Built-in analyzers:"]
+    lines += _column(builtins, lambda i: i.description)
+    lines.append("External analyzers:")
+    lines += _column(externals, lambda i: i.source)
+    return "\n".join(lines)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     """Build the standalone argument parser for the analyze sub-command."""
     parser = argparse.ArgumentParser(
@@ -202,7 +289,17 @@ def _build_parser() -> argparse.ArgumentParser:
             "Runs friTap analyzers offline; no network activity is generated."
         ),
     )
-    parser.add_argument("tap_file", help="Path to the .tap capture file to analyze.")
+    parser.add_argument(
+        "tap_file",
+        nargs="?",
+        default=None,
+        help="Path to the .tap capture file to analyze.",
+    )
+    parser.add_argument(
+        "--list-analyzers",
+        action="store_true",
+        help="List available analyzers (built-in + discovered externals) and exit.",
+    )
     parser.add_argument(
         "--scanners",
         default=None,
@@ -279,6 +376,15 @@ def run_analyze_cli(argv: list[str]) -> int:
     """
     parser = _build_parser()
     args = parser.parse_args(argv)
+
+    # --list-analyzers is an informational mode: print the grouped listing and
+    # return 0 without requiring a tap_file.
+    if args.list_analyzers:
+        print(_format_analyzer_listing(list_analyzers_detailed()))
+        return 0
+
+    if not args.tap_file:
+        parser.error("the following arguments are required: tap_file")
 
     if not os.path.isfile(args.tap_file):
         logger.error("tap file not found: %s", args.tap_file)
@@ -358,6 +464,9 @@ __all__ = [
     "analyze_tap_report",
     "list_report_formats",
     "list_analyzers",
+    "list_analyzers_detailed",
+    "AnalyzerInfo",
+    "_format_analyzer_listing",
     "_REPORTER_REGISTRY",
     "_SEVERITY_ORDER",
     "_filter_min_severity",

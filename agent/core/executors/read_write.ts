@@ -8,6 +8,7 @@ import { sendDatalog } from "../../shared/shared_structures.js";
 import { pcap_enabled } from "../../fritap_agent.js";
 import { hookBreadcrumb, devlog } from "../../util/log.js";
 import { installSocketFdTracker, recoverSocketFd } from "../../shared/socket_fd_tracker.js";
+import { recoverTls13Secrets } from "../../shared/tls13_secret_recovery.js";
 
 // One-time observability: emit a single devlog the first time fd-less peer recovery
 // (the BIO-path, e.g. Conscrypt) is actually exercised, so a capture log makes it
@@ -117,6 +118,11 @@ export function installWriteHook(
             onEnter: function (args: any) {
                 hookBreadcrumb(breadcrumb);
                 const sslCtx = args[hook.args.sslCtxArgIndex];
+                // M2 spike (internally gated/one-shot): for an attached process
+                // whose handshake we missed, recover TLS 1.3 traffic secrets from
+                // the live ssl->s3 and emit them as keylog lines. No-op unless a
+                // witnessed handshake on this module has taught us the offsets.
+                recoverTls13Secrets(moduleName, sslCtx);
                 const message = buildMessage(sslCtx, false, def, resolvedFns, methodAddresses, enableDefaultFd, label);
                 if (message === null) return;
                 this.message = message;
@@ -135,6 +141,11 @@ export function installWriteHook(
             onEnter: function (args: any) {
                 hookBreadcrumb(breadcrumb);
                 const sslCtx = args[hook.args.sslCtxArgIndex];
+                // M2 spike (internally gated/one-shot): for an attached process
+                // whose handshake we missed, recover TLS 1.3 traffic secrets from
+                // the live ssl->s3 and emit them as keylog lines. No-op unless a
+                // witnessed handshake on this module has taught us the offsets.
+                recoverTls13Secrets(moduleName, sslCtx);
                 const message = buildMessage(sslCtx, false, def, resolvedFns, methodAddresses, enableDefaultFd, label);
                 if (message === null) return;
                 const buf = args[hook.args.bufferArgIndex];

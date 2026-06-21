@@ -343,6 +343,36 @@ fritap -m --anti_root -k bank_keys.log com.example.bankapp
 fritap -m -s --pcap bank_auth.pcap com.example.bankapp
 ```
 
+### Telegram (MTProto)
+
+friTap can decrypt Telegram's MTProto 2.0 cloud-chat traffic on Android via
+`--protocol mtproto` (tshark cannot — friTap ships its own decryptor):
+
+```bash
+# Live: decrypted MTProto straight into a .tap
+fritap -m --protocol mtproto org.telegram.messenger
+
+# Live full capture: pcap + MTProto keylog (for later offline re-analysis)
+fritap -m --protocol mtproto -f -p tg.pcapng -k tg.keys org.telegram.messenger
+```
+
+To cover **both** Telegram encryption layers in one run, use the umbrella
+`--protocol telegram`: cloud chats (MTProto **transport** — not end-to-end) plus
+**secret chats** (MTProto 2.0 **end-to-end**). It writes one combined keylog
+(`MTPROTO_AUTH_KEY` + `MTPROTO_E2E_KEY`) consumed offline via `--telegram-keylog`;
+secret-chat plaintext can also be captured live with `-p`:
+
+```bash
+# Live full capture: pcap + combined (cloud + secret) Telegram keylog
+fritap -m --protocol telegram -f -p tg.pcapng -k tg.keys org.telegram.messenger
+```
+
+See [Telegram (MTProto)](../protocols/telegram.md) for the keylog format, the
+offline `--mtproto-keylog` / `--telegram-keylog` workflows, the crypto backend
+(which ships in friTap's base install, no extra needed), and scope/limitations
+(cloud-chat live plaintext is future work — use the keylog → offline path).
+
+
 
 ## Troubleshooting Android Issues
 

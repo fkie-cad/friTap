@@ -2,8 +2,9 @@ import { log, devlog, devlog_error } from "../util/log.js";
 import { AF_INET, AF_INET6, AddressFamilyMapping, unwantedFDs, Platform } from "./shared_structures.js";
 import { HookRegistration, HookRegistry } from "./registry.js";
 import { Java, JavaWrapper } from "./javalib.js";
-import { offsets, ohttp_enabled, selected_protocol } from "../fritap_agent.js";
+import { offsets, ohttp_enabled, selected_protocol } from "./shared_structures.js";
 import { announceSiblingCoverage, isModuleHooked, markModuleHooked } from "./library_scanner.js";
+import { warnAntiTamper } from "../util/anti_tamper.js";
 
 /*
  * Tracks which (platform, loader-function, protocol) triples already have a
@@ -79,6 +80,10 @@ function wait_for_library_loaded(module_name: string){
  */
 export function ssl_library_loader(platform: Platform, hookRegistry: HookRegistry, moduleNames: Array<string>, platformOs: string, is_base_hook: boolean, protocol?: string): void {
     for (let module_name of moduleNames) {
+        // Anti-tamper libraries (e.g. PairIP's libpairipcore.so) detect inline
+        // hooks and crash the process; warn the user and never hook/scan them.
+        if (warnAntiTamper(module_name)) continue;
+
         // Get module info for path filtering
         let modulePath: string | undefined;
         try {
@@ -234,6 +239,11 @@ export function hookDynamicLoader(
                 }
 
                 if (moduleName != undefined) {
+                    // Anti-tamper libraries (e.g. PairIP's libpairipcore.so)
+                    // detect inline hooks and crash the process; warn the user
+                    // and never hook/scan them.
+                    if (warnAntiTamper(moduleName)) return;
+
                     // Optionally resolve module path for registry filtering
                     let modulePath: string | undefined;
                     if (config.extractModulePath) {

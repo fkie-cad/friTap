@@ -28,18 +28,14 @@ export interface DatalogMessage {
     stream_id?: number | null;
     quic_scid?: string;
     quic_dcid?: string;
+    http3_headers?: string[][] | null;
+    quic_stream_type?: string | null;
 }
 
 export function isDatalogMessage(msg: unknown): msg is DatalogMessage {
     return (msg as any)?.contentType === "datalog";
 }
 
-// METADATA IS OFFLINE-ONLY: this message carries connection IDENTITY + lifecycle
-// only — no TLS handshake metadata (cipher suite, TLS version, SNI, ALPN). That
-// metadata is produced solely by friTap's offline pcap+keys -> .tap pipeline
-// (which has the full handshake). Do NOT add cipher_suite/protocol_version/
-// server_name/alpn here or emit them from the agent: the Python MessageRouter
-// deliberately drops any such fields so live and offline metadata cannot drift.
 export interface ConnectionLifecycleMessage {
     contentType: "connection_lifecycle";
     protocol?: string;

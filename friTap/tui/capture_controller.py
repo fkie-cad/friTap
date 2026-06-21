@@ -51,6 +51,62 @@ def _get_file_size(path: str) -> int | None:
         return None
 
 
+def _pcapng_has_packets(f) -> bool:
+    """Return True if a pcapng stream contains >=1 packet block."""
+    import struct
+
+    head = f.read(12)  # block type (4) + block length (4) + byte-order magic (4)
+    if len(head) < 12:
+        return False
+    bom = head[8:12]
+    if bom == b"\x1a\x2b\x3c\x4d":
+        endian = ">"
+    elif bom == b"\x4d\x3c\x2b\x1a":
+        endian = "<"
+    else:
+        return True  # unknown byte order -> fail open, don't hide a real capture
+    packet_block_types = {0x00000006, 0x00000003, 0x00000002}  # EPB, SPB, obsolete PB
+    f.seek(0)
+    while True:
+        block_hdr = f.read(8)
+        if len(block_hdr) < 8:
+            break
+        block_type, block_len = struct.unpack(endian + "II", block_hdr)
+        if block_len < 12:
+            break  # malformed
+        if block_type in packet_block_types:
+            return True
+        f.seek(block_len - 8, 1)  # advance past the rest of this block
+    return False
+
+
+def _pcap_has_packets(path: str) -> bool:
+    """Best-effort check whether a capture file holds >=1 packet.
+
+    Supports pcapng and classic pcap. Fails open (returns True) on any parsing
+    uncertainty so a real capture is never hidden; returns False only when the
+    file is confidently empty (header only, no packet records).
+    """
+    try:
+        with open(path, "rb") as f:
+            magic = f.read(4)
+            if len(magic) < 4:
+                return False
+            if magic == b"\x0a\x0d\x0d\x0a":  # pcapng Section Header Block
+                f.seek(0)
+                return _pcapng_has_packets(f)
+            classic_magics = {
+                b"\xa1\xb2\xc3\xd4", b"\xd4\xc3\xb2\xa1",  # microsecond
+                b"\xa1\xb2\x3c\x4d", b"\x4d\x3c\xb2\xa1",  # nanosecond
+            }
+            if magic in classic_magics:
+                f.seek(24)  # skip 24-byte global header
+                return len(f.read(16)) == 16  # one full record header present
+    except OSError:
+        return True
+    return True
+
+
 class CaptureController:
     """Manages capture lifecycle -- extracted from MainScreen."""
 
@@ -77,6 +133,13 @@ class CaptureController:
         # remain ``None`` for legacy/unknown error sources.
         self._session_error_category: str | None = None
         self._session_error_original: BaseException | None = None
+        # Set when the EventBus reports the target process crashed/terminated
+        # (fatal ErrorEvent or process-terminated DetachEvent). The capture
+        # worker loop exits NORMALLY on a target crash — no Python exception is
+        # raised — so without this flag the results modal would falsely claim
+        # the capture "completed". See _run_session / _on_session_ended.
+        self._session_crashed: bool = False
+        self._session_crash_message: str = ""
         # UI update batching to prevent call_from_thread() storm
         import threading
         self._ui_lock = threading.Lock()
@@ -417,8 +480,16 @@ class CaptureController:
         device = DeviceConfig(spawn=state.spawn)
         if state.device_id:
             device.device_id = state.device_id  # Use Frida device ID for pre-enumerated devices
-        if state.device_type == "usb" and not state.device_id:
-            device.mobile = True  # Fallback: auto-detect first USB device
+        if state.device_type == "usb":
+            # Mark the target as mobile so a full capture routes to the on-device
+            # tcpdump path (PCAP.FullCaptureThread.full_mobile_capture) instead of
+            # the host-side Scapy /dev/bpf path, which both needs root and cannot
+            # see the phone's traffic. Carry the concrete Frida/ADB device id so
+            # tcpdump targets the right phone; fall back to True (auto-detect the
+            # first USB device). Device selection itself still prefers device_id
+            # (see session_manager: the `elif logger.mobile` branch only runs when
+            # no device_id is set), so this does not change which device is used.
+            device.mobile = state.device_id or True
 
         output = OutputConfig(
             pcap=state.pcap_path or None,
@@ -481,6 +552,15 @@ class CaptureController:
         mode_action = "Spawning" if state.spawn else "Attaching to"
         log.log_info(f"{mode_action}: [bold {c('target')}]{state.target_display or state.target}[/]...")
 
+        # MTProto/Telegram's obfuscated transport can only be decrypted offline
+        # when each connection is captured from byte 0. Attaching to a running app
+        # misses that on already-open connections, so warn the user to prefer spawn.
+        if not state.spawn and getattr(state, "protocol", "tls") in ("telegram", "mtproto"):
+            log.log_warning(
+                "Attach mode: connections already open won't decrypt — use spawn mode "
+                "for byte-0 capture, or force-stop + relaunch the app first."
+            )
+
         # CRITICAL: Do NOT call install_signal_handler() -- it calls os._exit(0)
         self._screen.run_worker(self._run_session, thread=True)
 
@@ -494,6 +574,8 @@ class CaptureController:
         self._session_error = ""
         self._session_error_category = None
         self._session_error_original = None
+        self._session_crashed = False
+        self._session_crash_message = ""
         try:
             from friTap.ssl_logger import SSL_Logger
             debug_output_enabled = self._pending_config.debug_output
@@ -512,6 +594,14 @@ class CaptureController:
             # so it receives LiveReadyEvent and can launch Wireshark
             self._tui_handler.setup(self._ssl_logger._event_bus)
             self._ssl_logger._output_handlers.append(self._tui_handler)
+
+            # Detect a target-process crash. On crash the session emits a fatal
+            # ErrorEvent + a process-terminated DetachEvent and stops `running`,
+            # so the worker loop below exits normally (no exception). Record it
+            # here so _on_session_ended reports failure instead of "completed".
+            from friTap.events import ErrorEvent as _ErrorEvent, DetachEvent as _DetachEvent
+            self._ssl_logger._event_bus.subscribe(_ErrorEvent, self._on_session_error_event)
+            self._ssl_logger._event_bus.subscribe(_DetachEvent, self._on_session_detach_event)
 
             # Wire FlowCollector to event bus for data events
             if self._flow_collector is not None:
@@ -570,6 +660,15 @@ class CaptureController:
             self._ssl_logger.start_fritap_session()
             while self._ssl_logger.running:
                 time.sleep(0.2)
+            # The loop exits normally on a target crash (running flipped to
+            # False by the detach/error handler). Promote the recorded crash to
+            # a fatal session error so _on_session_ended surfaces it.
+            if self._session_crashed and not self._session_error:
+                self._session_error = (
+                    self._session_crash_message
+                    or "Target process crashed during capture."
+                )
+                self._session_error_severity = ERROR_SEVERITY_FATAL
         except (Exception, SystemExit) as e:
             # Prefer the rich BackendError diagnostic (includes the original
             # frida exception class + euid/SIP/target/server context) when
@@ -628,6 +727,36 @@ class CaptureController:
                 self._on_session_ended(stats)
             self._screen.app.call_from_thread(_finalize)
 
+    def _on_session_error_event(self, event) -> None:
+        """Record a fatal target-process error reported on the EventBus.
+
+        Runs on the friTap message-consumer thread. Only fatal errors mark the
+        session as crashed; recovered/parser warnings are left to the activity
+        log + debug file.
+        """
+        try:
+            if getattr(event, "severity", None) == ERROR_SEVERITY_FATAL:
+                self._session_crashed = True
+                desc = getattr(event, "description", None) or getattr(event, "error", None)
+                if desc and not self._session_crash_message:
+                    self._session_crash_message = str(desc)
+        except Exception:
+            logger.debug("Failed to handle session ErrorEvent", exc_info=True)
+
+    def _on_session_detach_event(self, event) -> None:
+        """Mark the session crashed when the target process terminates."""
+        try:
+            reason = getattr(event, "reason", "")
+            if reason in ("process-terminated", "process-replaced"):
+                self._session_crashed = True
+                if not self._session_crash_message:
+                    self._session_crash_message = (
+                        "Target process terminated unexpectedly — it most "
+                        "likely crashed inside an instrumented hook."
+                    )
+        except Exception:
+            logger.debug("Failed to handle session DetachEvent", exc_info=True)
+
     def _on_flow_update(self, flow, event_type: str) -> None:
         """Batch flow updates to avoid overwhelming Textual's event loop.
 
@@ -680,21 +809,107 @@ class CaptureController:
                 stats["PCAP"] = format_byte_size(size)
         return stats
 
+    def _show_modals_sequentially(self, items: list) -> None:
+        """Show queued ``(screen, on_result)`` modals one at a time.
+
+        Each modal is pushed only after the previous one is dismissed, so the
+        post-capture dialogs never render on top of each other (textual's
+        ``push_screen`` is non-blocking). ``on_result`` (if not None) receives
+        the dismissed screen's result before the next modal is shown. Mirrors
+        the callback-chaining pattern used in wizard.py.
+        """
+        if not items:
+            return
+        screen, on_result = items[0]
+        rest = items[1:]
+
+        def _advance(result, _on_result=on_result, _rest=rest) -> None:
+            if _on_result is not None:
+                try:
+                    _on_result(result)
+                except Exception:
+                    logger.exception("post-capture modal callback failed")
+            self._show_modals_sequentially(_rest)
+
+        self._screen.app.push_screen(screen, callback=_advance)
+
+    def _resolve_keylog_files(self, base_keylog: str, protocol: str) -> dict[str, str]:
+        """Resolve the keylog file(s) actually written this capture, that exist.
+
+        A single-protocol run writes the base ``-k`` path directly; a
+        multi-protocol run (e.g. ``--protocol signal``, which also emits TLS
+        keys) splits it into ``<stem>.<proto>.log`` per protocol. Returns
+        ``{protocol: path}`` for files present on disk so the results modal and
+        the decrypt-to-flow offer reflect what is on disk — not the base path,
+        which a split run never writes verbatim.
+        """
+        if not base_keylog:
+            return {}
+        registry = getattr(self._ssl_logger, "_protocol_registry", None)
+        try:
+            from friTap.output.factory import active_keylog_paths
+            candidates = active_keylog_paths(base_keylog, protocol, registry)
+        except Exception:
+            candidates = {protocol: base_keylog}
+        existing = {proto: path for proto, path in candidates.items()
+                    if path and os.path.isfile(path)}
+        if not existing and os.path.isfile(base_keylog):
+            existing = {protocol: base_keylog}
+        return existing
+
     def _on_session_ended(self, result_stats: dict[str, str] | None = None) -> None:
         """Called when the capture session ends (on Textual thread)."""
         if result_stats is None:
             result_stats = {}
         state = self._screen._get_state()
 
+        # Capture paths/flags for an optional post-capture decrypt offer
+        # (a full capture writes both a pcap and a keylog) BEFORE the reset.
+        decrypt_pcap = getattr(state, "pcap_path", "")
+        decrypt_keylog = getattr(state, "keylog_path", "")
+        decrypt_protocol = getattr(state, "protocol", "tls")
+        decrypt_was_full = getattr(state, "full_capture", False)
+
+        # The base -k path may never be written verbatim: a multi-protocol run
+        # (e.g. --protocol signal, which also emits TLS keys) splits it into
+        # <stem>.<proto>.log per protocol. Resolve the real files so the results
+        # modal and the decrypt offer below reflect what is on disk. Done BEFORE
+        # the reset (and while self._ssl_logger is still set for its registry).
+        keylog_files = self._resolve_keylog_files(decrypt_keylog, decrypt_protocol)
+
         # Save paths BEFORE resetting
         result_paths = {}
-        if state.keylog_path:
-            result_paths["Key log"] = state.keylog_path
+        if keylog_files:
+            multi = len(keylog_files) > 1
+            for proto, path in keylog_files.items():
+                label = f"Key log ({proto})" if multi else "Key log"
+                result_paths[label] = path
+        elif decrypt_keylog:
+            result_paths["Key log"] = decrypt_keylog
         if state.pcap_path:
             result_paths["PCAP"] = state.pcap_path
         target_display = state.target_display or state.target or "unknown"
         saved_live_mode = state.live_mode
         is_mobile = state.device_type == "usb"
+
+        # Did the capture actually record any traffic? A full capture can finish
+        # with only the empty pcapng header (e.g. tcpdump unavailable, no traffic).
+        # Resolve the real file, mirroring _gather_result_stats' "_"-temp fallback.
+        pcap_expected = bool(decrypt_pcap)
+        pcap_has_packets = True
+        if pcap_expected:
+            pcap_check_path = decrypt_pcap
+            if not os.path.isfile(pcap_check_path):
+                _d, _b = os.path.split(decrypt_pcap)
+                _alt = os.path.join(_d, f"_{_b}")
+                if os.path.isfile(_alt):
+                    pcap_check_path = _alt
+            pcap_has_packets = (
+                _pcap_has_packets(pcap_check_path)
+                if os.path.isfile(pcap_check_path)
+                else False
+            )
+        pcap_empty = pcap_expected and not pcap_has_packets
 
         # Reset AppState (preserve device info)
         state.target = ""
@@ -772,29 +987,59 @@ class CaptureController:
         if not result_paths and flow_count == 0:
             self._screen._activate_legacy_view()
 
+        # Build the ordered queue of post-capture dialogs and show them one at a
+        # time (textual push_screen is non-blocking, so pushing several inline
+        # makes them overlap). Order: results/live/no-libs summary -> error ->
+        # decrypt offer (last), matching the "results first, decrypt after" flow.
+        modal_queue: list = []
+
         # Suggest library scan if no libraries detected
         if self._ssl_logger and not self._ssl_logger._detected_libraries:
             if not result_paths:
-                self._screen.app.push_screen(
+                modal_queue.append((
                     AlertModal(
                         message="No TLS libraries were detected.\n\n"
                                 "Consider enabling [bold]Library Scan[/] (press [bold]l[/] in the start screen) "
                                 "to discover renamed or statically linked libraries.",
                         title="No Libraries Found",
                         severity="warning",
-                    )
-                )
+                    ),
+                    None,
+                ))
 
         # Show results summary with pre-computed statistics
         if result_paths:
-            lines = [f"Capture of [bold]{target_display}[/] completed.\n"]
+            if self._session_crashed:
+                lines = [
+                    f"Capture of [bold]{target_display}[/] did NOT complete — "
+                    "the target process crashed.\n",
+                    "Any files below are partial and may be empty:\n",
+                ]
+                results_severity = "warning"
+            elif pcap_empty:
+                lines = [
+                    f"Capture of [bold]{target_display}[/] finished, but "
+                    "[bold]no traffic was captured[/].\n",
+                    "The PCAP is empty (0 packets).\n",
+                ]
+                if is_mobile and decrypt_was_full:
+                    lines.append(
+                        "On Android, full capture records traffic with on-device "
+                        "[bold]tcpdump[/] — ensure the device is rooted and tcpdump "
+                        "is available.\n"
+                    )
+                results_severity = "warning"
+            else:
+                lines = [f"Capture of [bold]{target_display}[/] completed.\n"]
+                results_severity = "info"
             for label, path in result_paths.items():
                 stat = result_stats.get(label)
                 suffix = f" ({stat})" if stat else ""
                 lines.append(f"  {label}: [bold]{path}[/]{suffix}")
-            self._screen.app.push_screen(
-                AlertModal(message="\n".join(lines), title="Capture Results", severity="info")
-            )
+            modal_queue.append((
+                AlertModal(message="\n".join(lines), title="Capture Results", severity=results_severity),
+                None,
+            ))
 
         # Mode 5: live auto-decrypt has no file output — show save instructions
         elif saved_live_mode == "live_pcapng":
@@ -816,9 +1061,10 @@ class CaptureController:
                 lines.append("")
                 lines.append(f"[bold {c('success')}]Filter out Frida/ADB traffic:[/]")
                 lines.append(f"  Display filter: [bold]{display_filter}[/]")
-            self._screen.app.push_screen(
-                AlertModal(message="\n".join(lines), title="Live Capture Complete", severity="info")
-            )
+            modal_queue.append((
+                AlertModal(message="\n".join(lines), title="Live Capture Complete", severity="info"),
+                None,
+            ))
 
         # Mode 4: plaintext Wireshark — also no file output
         elif saved_live_mode == "wireshark":
@@ -827,14 +1073,15 @@ class CaptureController:
                 f"[bold {c('warning-amber')}]Save your capture:[/]",
                 "  In Wireshark: [bold]File → Save As[/]",
             ]
-            self._screen.app.push_screen(
-                AlertModal(message="\n".join(lines), title="Live Capture Complete", severity="info")
-            )
+            modal_queue.append((
+                AlertModal(message="\n".join(lines), title="Live Capture Complete", severity="info"),
+                None,
+            ))
 
-        # Show error modal LAST so it's on top of any session modals (shown first to user)
-        # Only fatal/error session failures pop a blocking modal. Recovered
-        # parser-level warnings reach the activity log + debug file via
-        # ErrorEvent(severity="warning") and never set _session_error.
+        # Error modal, queued after the results summary so the user sees the
+        # capture context first. Only fatal/error session failures pop a blocking
+        # modal. Recovered parser-level warnings reach the activity log + debug
+        # file via ErrorEvent(severity="warning") and never set _session_error.
         if self._session_error and self._session_error_severity in (
             ERROR_SEVERITY_FATAL, ERROR_SEVERITY_ERROR,
         ):
@@ -853,16 +1100,49 @@ class CaptureController:
                     "Please attach when reporting at "
                     "https://github.com/fkie-cad/friTap/issues"
                 )
-            self._screen.app.push_screen(
+            modal_queue.append((
                 AlertModal(
                     message=body,
                     title="Capture Error",
                     severity="error",
-                )
-            )
+                ),
+                None,
+            ))
 
         self._session_error = ""
         self._session_error_severity = ERROR_SEVERITY_FATAL
         self._session_error_category = None
         self._session_error_original = None
         self._ssl_logger = None
+
+        # Offer to decrypt the captured pcap into a layered flow view, but only
+        # for full captures that produced both a pcap and a keylog on disk AND
+        # that actually captured traffic. Plaintext-hook captures (no keylog) and
+        # empty pcaps (which would decrypt to 0 flows) get no prompt. This is
+        # protocol-agnostic: ``keylog_files`` resolves the real (possibly split)
+        # keylog files for ANY supported protocol — Signal, MTProto/Telegram,
+        # plain TLS, and future plugins — so the offer is no longer skipped just
+        # because a split run never wrote the base ``-k`` path verbatim.
+        if (
+            decrypt_was_full
+            and keylog_files
+            and decrypt_pcap and os.path.isfile(decrypt_pcap)
+            and pcap_has_packets
+        ):
+            from .modals.decrypt_confirm_modal import DecryptConfirmModal
+
+            def _on_decrypt_choice(ok: bool) -> None:
+                if ok:
+                    # Pass the AUTHORITATIVE per-protocol keylog map resolved above
+                    # (same source as the results modal), NOT the raw base keylog.
+                    # Re-resolving a single path inside start_decrypt_to_flow can
+                    # misroute a split capture's protocol keylog to the TLS log
+                    # (Signal then decrypts 0 messages).
+                    self._screen.start_decrypt_to_flow_multi(
+                        decrypt_pcap, keylog_files
+                    )
+
+            modal_queue.append((DecryptConfirmModal(), _on_decrypt_choice))
+
+        # Present every queued dialog sequentially — never overlapping.
+        self._show_modals_sequentially(modal_queue)

@@ -1,5 +1,6 @@
 import { devlog, devlog_error, devlog_debug, log, devlog_info } from "../../util/log.js";
 import { isAndroid, isiOS,isMacOS } from "../../util/process_infos.js"
+import { isFunctionPrologueWord } from "../../shared/arm64.js";
 
 const IS_ARM64 = Process.arch === "arm64";
 
@@ -23,22 +24,14 @@ function isLikelyArm64Prologue(address: NativePointer): boolean {
 
     if (insn === 0x00000000 || insn === 0xFFFFFFFF) return false;
 
-    // paciasp / pacibsp — PAC landing pads, strong function-entry signal
-    if (insn === 0xD503233F) return true;
-    if (insn === 0xD503237F) return true;
-
-    // bti {c|j|jc} — branch target identification, function-entry hint
-    if ((insn & 0xFFFFFF1F) === 0xD503241F) return true;
-
-    // stp x29, x30, [sp, #imm] — frame setup, signed offset
-    if ((insn & 0xFFC07FFF) === 0xA9007BFD) return true;
-    // stp x29, x30, [sp, #-imm]! — frame setup, pre-indexed
-    if ((insn & 0xFFC07FFF) === 0xA9807BFD) return true;
-
-    // sub sp, sp, #imm — stack pointer adjustment, typical prologue start
-    if ((insn & 0xFF8003FF) === 0xD10003FF) return true;
-
-    return false;
+    // Delegate to the shared, unit-tested predicate. It recognizes PAC landing
+    // pads (paciasp/pacibsp), BTI guards, STP x29,x30 / STP-to-sp frame setup,
+    // and SUB sp prologues. Crucially it coerces every masked compare to unsigned
+    // (`>>> 0`): the previous inline `(insn & MASK) === 0x...` checks for bti/stp/
+    // sub were ALWAYS false because JS `&` returns a signed int32 for bit-31-set
+    // results, so those prologues were silently rejected and their hooks never
+    // installed (severe on non-PAC arm64, where almost every prologue is stp/sub).
+    return isFunctionPrologueWord(insn);
 }
 
 /*
@@ -48,10 +41,51 @@ function isLikelyArm64Prologue(address: NativePointer): boolean {
  * the fallback pattern chain still has a chance.
  */
 function acceptPrologueMatch(address: NativePointer, patternName: string, moduleName?: string): boolean {
-    if (isLikelyArm64Prologue(address)) return true;
     const where = moduleName ? ` on ${moduleName}` : "";
-    devlog_debug(`Pattern match at ${address} (${patternName})${where} skipped: not a function prologue`);
-    return false;
+    if (!isLikelyArm64Prologue(address)) {
+        devlog_debug(`Pattern match at ${address} (${patternName})${where} skipped: not a function prologue`);
+        return false;
+    }
+    // A prologue-LOOKING word is not proof of code. A loose ssl_log_secret
+    // pattern can also match read-only DATA whose bytes coincidentally encode a
+    // stp/sub prologue — notably libsignal_jni.so, which statically links
+    // BoringSSL, so a fallback pattern matched in its .rodata/.eh_frame at a
+    // NON-executable address. Interceptor.attach there makes Frida relocate
+    // "instructions" that are really data and write a trampoline over it,
+    // corrupting bytes libsignal reads moments later — the app then dies ~1s on
+    // with "crashed inside an instrumented hook" (Signal spawn, 2026-06-16).
+    // Require the match to live in an executable (r-x) mapping before attaching.
+    if (IS_ARM64) {
+        let prot: string | null = null;
+        try {
+            prot = Process.findRangeByAddress(address)?.protection ?? null;
+        } catch (_) {
+            prot = null;
+        }
+        if (prot === null || prot.indexOf("x") < 0) {
+            devlog_debug(`Pattern match at ${address} (${patternName})${where} skipped: not in an executable range (${prot ?? "unmapped"})`);
+            return false;
+        }
+    }
+    return true;
+}
+
+/*
+ * Re-validate, against the live page table, that a range is still mapped and
+ * readable right before we hand it to Memory.scan. Ranges enumerated earlier
+ * can be unmapped by another thread (e.g. libringrtc_rffi.so's WebRTC/calls
+ * subsystem), after which Memory.scan faults hard inside frida-agent — a
+ * SIGSEGV that neither onError nor a surrounding try/catch can recover from
+ * (tombstone_12, 2026-06-15). Conservative: any throw or a non-readable
+ * protection means "skip this range".
+ */
+function isRangeStillReadable(range: MemoryRange): boolean {
+    try {
+        const live = Process.findRangeByAddress(range.base);
+        return !!live && live.protection.indexOf("r") === 0;
+    } catch (_) {
+        return false;
+    }
 }
 
 type Pattern = {
@@ -504,6 +538,21 @@ export class PatternBasedHooking {
             // second_fallback passes still get to scan ranges the primary touched.
             try { this.rescannedRanges?.add(rangeKey); } catch { /* noop */ }
 
+            // Re-validate the range is still mapped & readable immediately before
+            // scanning. Libraries whose pages are churned by another thread (e.g.
+            // libringrtc_rffi.so's WebRTC/calls subsystem) can unmap a range
+            // between enumeration and scan; Memory.scan then faults hard inside
+            // frida-agent (SIGSEGV, uncatchable by onError) — tombstone_12.
+            // findRangeByAddress reflects the live page table, closing most of
+            // that window. Wrapping the scan in try/catch additionally absorbs
+            // synchronous setup throws.
+            if (!isRangeStillReadable(range)) {
+                completed++;
+                if (completed === ranges.length && !patternFound && !callbackDone) done();
+                continue;
+            }
+
+            try {
             Memory.scan(range.base, range.size, pattern, {
                 onMatch: (address: NativePointer, _size: number) => {
                 if (patternFound || callbackDone) return "stop";
@@ -536,6 +585,11 @@ export class PatternBasedHooking {
                 }
                 }
             });
+            } catch (e) {
+                devlog_error(`Memory.scan setup failed on ${moduleName} range ${range.base}: ${e}`);
+                completed++;
+                if (completed === ranges.length && !patternFound && !callbackDone) done();
+            }
             }
         };
 
@@ -636,6 +690,16 @@ export class PatternBasedHooking {
             }
             try { this.rescannedRanges?.add(rangeKey); } catch {}
 
+            // See scanRanges in hookByPatternOnlyReadableParts: re-validate the
+            // range is still mapped before scanning to avoid faulting on a
+            // concurrently-unmapped page (tombstone_12).
+            if (!isRangeStillReadable(range)) {
+                completed++;
+                if (completed === ranges.length && !patternFound && !callbackDone) done();
+                continue;
+            }
+
+            try {
             Memory.scan(range.base, range.size, pattern, {
                 onMatch: (address: NativePointer) => {
                 if (patternFound || callbackDone) return "stop";
@@ -687,6 +751,11 @@ export class PatternBasedHooking {
                 }
                 }
             });
+            } catch (e) {
+                devlog_error(`Memory.scan setup failed on ${moduleName} range ${range.base}: ${e}`);
+                completed++;
+                if (completed === ranges.length && !patternFound && !callbackDone) done();
+            }
             }
         };
 

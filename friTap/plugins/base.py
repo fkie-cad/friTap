@@ -133,6 +133,15 @@ class FriTapPlugin(ABC):
         """Called when the plugin is unloaded. Release resources here."""
         pass
 
+    def register_analyzers(self) -> list:
+        """Optional: return a list of BaseAnalyzer instances this plugin provides.
+
+        Called by analyzer discovery independently of the on_load/Session
+        lifecycle, so analyzers are available offline, for --list-analyzers, and in
+        the TUI. Default returns an empty list (plugins expose no analyzers).
+        """
+        return []
+
 
 @runtime_checkable
 class ColumnProvider(Protocol):

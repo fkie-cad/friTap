@@ -251,6 +251,40 @@ class OhttpEvent(FriTapEvent):
     source: str = ""
 
 
+@dataclass
+class MessageEvent(FriTapEvent):
+    """A single decrypted, structured chat message (Signal/Telegram), live.
+
+    Higher-level than :class:`DatalogEvent` (raw decrypted bytes) and
+    :class:`FlowEvent` (flow-lifecycle granular): one instance is emitted per
+    fully-decrypted-and-parsed chat message so third-party consumers can render
+    conversations without re-deriving them from bytes.
+
+    The field set is deliberately a union of the offline
+    ``friTap.offline.signal.records.DecryptedMessage``, the ``SignalLayer``
+    per-message dict shape, and ``friTap.offline.signal.content.ParsedContent`` —
+    it does not invent a parallel schema. ``protocol`` (inherited from
+    :class:`FriTapEvent`) is ``"signal"`` for the live path; Telegram/MTProto is
+    offline-only (see ``friTap.offline.pcap_to_tap.convert_pcap_to_tap``).
+    """
+    direction: str = ""          # "read" (server->client) | "write" (client->server)
+    src_addr: str = ""
+    src_port: int = 0
+    dst_addr: str = ""
+    dst_port: int = 0
+    ss_family: str = "AF_INET"
+    chat_type: str = ""          # "one_to_one" | "group" (Signal)
+    identifier: str = ""         # eph_pub (1:1) or auth_tag (group) hex that decrypted it
+    sender: str = ""             # sender UUID/E164 (1:1 best-effort), else ""
+    kind: str = ""               # "data" | "receipt" | "typing" | "sync" | "unparsed"
+    body: str = ""               # decoded chat text, else ""
+    timestamp: int = 0           # DataMessage timestamp (ms), else 0
+    has_attachments: bool = False
+    has_quote: bool = False
+    has_reaction: bool = False
+    raw: bytes = b""             # inner Content protobuf bytes (padding stripped)
+
+
 # ---------------------------------------------------------------------------
 # Event Bus
 # ---------------------------------------------------------------------------

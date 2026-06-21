@@ -107,8 +107,50 @@ class TuiOutputHandler(OutputHandler):
     def _update_keylog_ui(self, event: KeylogEvent) -> None:
         log = self._get_activity_log()
         if log:
-            preview = event.key_data[:60]
-            log.log_key(f"{preview}...")
+            log.log_key(self._keylog_preview(event))
+
+    @staticmethod
+    def _keylog_preview(event: KeylogEvent) -> str:
+        """Build a readable one-line preview of an extracted key for the console.
+
+        TLS/SSH events carry a pre-formatted ``key_data`` line; protocol events
+        (MTProto/Telegram/Signal) instead carry a structured ``payload`` and an
+        empty ``key_data`` (the canonical keylog line is rendered downstream by a
+        protocol formatter). For the latter we surface the key type/identifier and
+        the FIRST BYTES of the key material so the user can see keys arriving
+        instead of a bare ``...``.
+        """
+        if event.key_data:
+            line = event.key_data.strip()
+            return line if len(line) <= 80 else f"{line[:80]}…"
+
+        payload = event.payload or {}
+
+        def _pfx(hexstr: str, nbytes: int = 8) -> str:
+            hexstr = hexstr or ""
+            return f"{hexstr[: nbytes * 2]}…" if len(hexstr) > nbytes * 2 else hexstr
+
+        # MTProto / Telegram cloud auth key.
+        if "auth_key" in payload or "auth_key_id" in payload:
+            return (
+                f"MTPROTO dc={payload.get('dc_id', '')} "
+                f"{payload.get('key_type', '')} id={payload.get('auth_key_id', '') or '?'} "
+                f"key={_pfx(payload.get('auth_key', ''))}"
+            ).strip()
+        # Telegram Secret-Chat (E2E) shared key.
+        if "shared_key" in payload or "key_fingerprint" in payload:
+            return (
+                f"TG-E2E fp={payload.get('key_fingerprint', '') or '?'} "
+                f"key={_pfx(payload.get('shared_key', ''))}"
+            )
+        # Signal key material.
+        if "cipher" in payload or "eph_pub" in payload:
+            material = payload.get("cipher") or payload.get("eph_pub") or ""
+            return f"SIGNAL {payload.get('chat_type', '')} key={_pfx(material)}".strip()
+        # Unknown structured payload — show a compact summary rather than nothing.
+        if payload:
+            return ", ".join(f"{k}={_pfx(str(v), 6)}" for k, v in list(payload.items())[:3])
+        return "(key)"
 
     def _update_console_ui(self, event: ConsoleEvent) -> None:
         log = self._get_activity_log()

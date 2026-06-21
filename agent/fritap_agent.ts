@@ -8,8 +8,21 @@ import { isWindows, isLinux, isWine, isAndroid, isiOS, isMacOS, getDetailedPlatf
 import { anti_root_execute } from "./util/anti_root.js";
 import { socket_trace_execute } from "./misc/socket_tracer.js"
 import { devlog, log } from "./util/log.js";
-import { setSelectedProtocol } from "./shared/shared_structures.js";
 import { initializePipeline } from "./shared/pipeline_utils.js";
+import { AGENT_ABI_VERSION } from "./shared/generated_constants.js";
+// Process-wide runtime state lives in the side-effect-free shared_structures
+// module so that optional protocol units (e.g. agent/signal/) can read these
+// flags without importing this entry (which would run the top-level install).
+// We import them + their setters here, set them during config parsing, and
+// re-export them so the many modules that read these from `fritap_agent` keep
+// working unchanged.
+import {
+    setSelectedProtocol,
+    offsets, pcap_enabled, keylog_enabled, _isShuttingDown, ohttp_enabled, selected_protocol, config_extensions,
+    setOffsets, setPcapEnabled, setKeylogEnabled, setIsShuttingDown, setOhttpEnabled, setConfigExtensions,
+} from "./shared/shared_structures.js";
+export { offsets, pcap_enabled, keylog_enabled, _isShuttingDown, ohttp_enabled, selected_protocol, config_extensions };
+import { maybeRunRegionScan } from "./shared/scan/scan_engine.js";
 
 // global address which stores the addresses of the hooked modules which aren't loaded via the dynamic loader
 (globalThis as any).init_addresses = {};
@@ -124,11 +137,15 @@ interface IOffsets {
         getsockname?: IAddress,
         ntohs?: IAddress,
         ntohl?: IAddress
+    },
+    // Signal's native HKDF stack (libsignal_jni.so). Same per-library schema as
+    // every other entry; consumed by the Signal path via offsets["libsignal_jni"].
+    libsignal_jni?:{
+        HKDF_Extract?: IAddress,
+        HKDF_Expand?: IAddress
     }
 }
 
-//@ts-ignore
-export let offsets: IOffsets = "{OFFSETS}";
 //@ts-ignore
 export let experimental: boolean = false;
 //@ts-ignore
@@ -138,19 +155,9 @@ export let anti_root: boolean = false;
 //@ts-ignore
 export let enable_default_fd: boolean = false;
 //@ts-ignore
-export let pcap_enabled: boolean = false;
-// Default true so a config_batch from an older host (one that doesn't yet ship the
-// keylog_enabled field) keeps producing keys — current friTap.py always sets this
-// flag explicitly from bool(parsed.keylog), so the default only ever matters for
-// standalone Frida integrations that haven't been updated for the new field.
-//@ts-ignore
-export let keylog_enabled: boolean = true;
-//@ts-ignore
 export let use_modern: boolean = false;
 //@ts-ignore
 export let install_lsass_hook: boolean = true;
-//@ts-ignore
-export let selected_protocol: string = "tls";
 // Sentinel detected at the handshake boundary; renaming this literal
 // no longer changes gate behavior the way the previous `length > 10`
 // heuristic did.
@@ -162,8 +169,6 @@ let parsedPatterns: any = null;
 export let scan_results: string = "{SCAN_RESULTS}";
 //@ts-ignore
 export let library_scan_enabled: boolean = false;
-//@ts-ignore
-export let ohttp_enabled: boolean = true;
 //@ts-ignore
 export let quic_capture_mode: string = "stream";
 // Force-mode override for the HTTP/3 egress-headers chain. "auto" keeps the
@@ -192,8 +197,7 @@ export let debug_output: boolean = false;
 // and under heavy Chrome HTTP/3 traffic that drain takes >30s. Per Frida's
 // own design (single-threaded JS message loop, unbounded queue), this is the
 // canonical user-level workaround documented in frida-gum#474 and related.
-//@ts-ignore
-export let _isShuttingDown: boolean = false;
+// (declared in ./shared/shared_structures.ts; imported + re-exported above.)
 // When --quic-only is set, install ONLY the Google QUICHE hooks and skip every TLS-
 // library hook + Java hooks + OHTTP + keylog scan-result hooks. Useful when the
 // user only wants HTTP/3 capture: the attach is much lighter (no multi-megabyte
@@ -201,6 +205,13 @@ export let _isShuttingDown: boolean = false;
 // an already-busy target during attach.
 //@ts-ignore
 export let quic_only: boolean = false;
+
+// Telegram (Secret-Chat E2E + tgnet/mtproto transport) capture. Gated under
+// `--protocol telegram`. When true the android hook table installs the Telegram
+// Secret-Chat Java hooks (and, via registry.protocolMatches, the tgnet/mtproto
+// transport hooks). Selection is keyed off `selected_protocol`/`keylog_enabled`.
+//@ts-ignore
+export let telegram_enabled: boolean = false;
 
 /**
  * Perform a send/recv handshake with the Python host to receive a configuration value.
@@ -221,7 +232,21 @@ function recvHandshake<T>(sendChannel: string, defaultValue: T, recvChannel?: st
 
 /* Batch config handshake: receive all config values in a single IPC round-trip */
 const config_batch = recvHandshake<Record<string, any>>("config_batch", {});
-offsets = config_batch.offsets ?? offsets;
+setOffsets(config_batch.offsets ?? offsets);
+// `--offsets` is delivered over config_batch as the raw JSON *string* (the file
+// contents / json argument), so parse it once here into the object that
+// resolveOffsets() and the Signal path index by library name. Legacy builds
+// that string-replace the "{OFFSETS}" placeholder already deliver an object
+// (typeof !== "string"), and the un-replaced placeholder sentinel is left as-is
+// so resolveOffsets()'s `offsets == "{OFFSETS}"` short-circuit still fires.
+if (typeof offsets === "string" && offsets !== "{OFFSETS}" && (offsets as string).length > 0) {
+    try {
+        setOffsets(JSON.parse(offsets as unknown as string) as IOffsets);
+    } catch (e: any) {
+        log(`[offsets] handshake delivered invalid JSON: ${e && e.message ? e.message : e} - ignoring offsets`);
+        setOffsets("{OFFSETS}" as any);
+    }
+}
 // Parse pattern data once at the boundary. On failure, `patterns` stays
 // at the placeholder so isPatternReplaced() and the raw string export
 // remain consistent.
@@ -238,20 +263,24 @@ if (typeof config_batch.patterns === "string"
 }
 enable_socket_tracing = config_batch.socket_tracing ?? enable_socket_tracing;
 enable_default_fd = config_batch.defaultFD ?? enable_default_fd;
-pcap_enabled = config_batch.pcap_enabled ?? pcap_enabled;
-keylog_enabled = config_batch.keylog_enabled ?? keylog_enabled;
+setPcapEnabled(config_batch.pcap_enabled ?? pcap_enabled);
+setKeylogEnabled(config_batch.keylog_enabled ?? keylog_enabled);
 experimental = config_batch.experimental ?? experimental;
-selected_protocol = config_batch.protocol_select ?? selected_protocol;
-setSelectedProtocol(selected_protocol);
+setSelectedProtocol(config_batch.protocol_select ?? selected_protocol);
 install_lsass_hook = config_batch.install_lsass_hook ?? install_lsass_hook;
 use_modern = config_batch.use_modern ?? use_modern;
 scan_results = config_batch.library_scan ?? scan_results;
 library_scan_enabled = config_batch.library_scan_enabled ?? library_scan_enabled;
-ohttp_enabled = config_batch.ohttp_enabled ?? ohttp_enabled;
+setOhttpEnabled(config_batch.ohttp_enabled ?? ohttp_enabled);
 quic_capture_mode = config_batch.quic_capture_mode ?? quic_capture_mode;
 quic_only = config_batch.quic_only ?? quic_only;
 quic_egress_headers_layer = config_batch.quic_egress_headers_layer ?? quic_egress_headers_layer;
 debug_output = config_batch.debug_output ?? debug_output;
+telegram_enabled = config_batch.telegram_enabled ?? telegram_enabled;
+// Generic feature-config passthrough (e.g. { scan_region } for the public
+// memory-scan engine). Protocol-agnostic: the public core never inspects a
+// private sub-key; private units read their own keys from config_extensions.
+setConfigExtensions(config_batch.extensions ?? {});
 
 // "anti" handshake must be LAST in the startup sequence to prevent deadlock
 anti_root = recvHandshake("anti", anti_root, "antiroot");
@@ -354,6 +383,13 @@ function load_os_specific_agent() {
 
 load_os_specific_agent();
 
+// Optional generic memory-region key scan (PUBLIC engine, agent/shared/scan/).
+// Runs only when the host passed --scan-keys-region (carried via
+// config_batch.extensions) and/or a private scan provider registered. Async and
+// fire-and-forget so it never blocks hook installation; emission is gated by
+// keylog_enabled inside sendKeyMaterial (so the host must also pass -k).
+maybeRunRegionScan(config_extensions).catch((e) => log(`[scan] failed: ${e}`));
+
 // Best-effort graceful detach. Python calls this from
 // ssl_logger_core.detach_with_timeout() BEFORE script.unload() /
 // session.detach() so the JS thread isn't held draining in-flight
@@ -385,13 +421,21 @@ load_os_specific_agent();
 // "unable to find method 'gracefulDetach'" at detach time.
 rpc.exports = {
     //@ts-ignore
+    agentAbiVersion(): number {
+        // Reports the ABI this bundle was compiled against so the Python host
+        // can detect a stale / mismatched bundle (see AGENT_ABI_VERSION in
+        // friTap/constants.py, mirrored here via generated_constants). Frida 17+
+        // maps this to Python `script.exports_sync.agent_abi_version()`.
+        return AGENT_ABI_VERSION;
+    },
+    //@ts-ignore
     gracefulDetach(): void {
         // Set the shutdown flag BEFORE Interceptor.detachAll so any callback
         // already mid-execution (or queued on the JS message loop) sees the
         // flag at sendDatalog/emit and short-circuits. Order matters: if we
         // detached first and then set the flag, callbacks already queued
         // between the two statements would still pay the full IPC cost.
-        _isShuttingDown = true;
+        setIsShuttingDown(true);
         try {
             Interceptor.detachAll();
         } catch (e) {

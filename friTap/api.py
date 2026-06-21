@@ -24,6 +24,15 @@ Usage:
         .on_data(lambda e: print(f"{e.src_addr}:{e.src_port} -> {e.dst_addr}:{e.dst_port}"))
         .start()
     )
+
+    # Live decrypted Signal messages (structured, no byte-wrangling)
+    session = (
+        FriTap("org.thoughtcrime.securesms")
+        .mobile()
+        .protocol("signal")
+        .on_message(lambda m: print(f"{m.sender}: {m.body}"))
+        .start()
+    )
 """
 
 from __future__ import annotations
@@ -31,7 +40,10 @@ import logging
 from typing import Callable, List, Optional, TYPE_CHECKING
 
 from .config import FriTapConfig, DeviceConfig, OutputConfig, HookingConfig
-from .events import EventBus, KeylogEvent, DatalogEvent, LibraryDetectedEvent, SessionEvent, FlowEvent
+from .events import (
+    EventBus, KeylogEvent, DatalogEvent, LibraryDetectedEvent, SessionEvent,
+    FlowEvent, OhttpEvent, MessageEvent,
+)
 
 if TYPE_CHECKING:
     from .ssl_logger import SSL_Logger
@@ -97,6 +109,7 @@ class FriTap:
         self._library_callbacks: List[Callable] = []
         self._session_callbacks: List[Callable] = []
         self._flow_callbacks: List[Callable] = []
+        self._message_callbacks: List[Callable] = []
 
         self._logger = logging.getLogger("friTap.api")
 
@@ -193,6 +206,48 @@ class FriTap:
     def full_capture(self, enable: bool = True) -> "FriTap":
         """Do a full network capture (not just decrypted payload)."""
         self._output.full_capture = enable
+        return self
+
+    # ------------------------------------------------------------------
+    # Live traffic analysis ("scan")
+    # ------------------------------------------------------------------
+
+    def scan(self, spec: str = "all") -> "FriTap":
+        """Enable live passive analysis of captured flows.
+
+        ``spec`` is an analyzer selection: ``"all"`` (default) runs every
+        built-in analyzer, or a comma-separated list of analyzer names
+        (e.g. ``"credentials,ioc"``) selects a subset.
+        """
+        self._output.scan = spec
+        return self
+
+    def analyzer_path(self, path: str) -> "FriTap":
+        """Load an external analyzer for live scanning. Repeatable.
+
+        ``path`` is a ``module`` (auto-discover classes marked
+        ``is_fritap_analyzer = True``) or ``module:Class`` reference. Each
+        call appends another path to the analyzer search list.
+        """
+        self._output.scan_analyzer_path = (self._output.scan_analyzer_path or []) + [path]
+        return self
+
+    def scan_report(self, fmt: str) -> "FriTap":
+        """Set the end-of-capture scan report format: json, csv, md, table."""
+        self._output.scan_report = fmt
+        return self
+
+    def scan_min_severity(self, sev: str) -> "FriTap":
+        """Only report scan findings at or above this severity.
+
+        One of: critical, high, medium, low, info.
+        """
+        self._output.scan_min_severity = sev
+        return self
+
+    def scan_show_pii(self, enable: bool = True) -> "FriTap":
+        """Reveal PII/secret values in the scan report instead of redacting them."""
+        self._output.scan_show_pii = enable
         return self
 
     # ------------------------------------------------------------------
@@ -327,8 +382,30 @@ class FriTap:
         The callback receives a :class:`~friTap.events.FlowEvent` with
         ``flow`` (a :class:`~friTap.flow.models.Flow` object) and
         ``flow_event_type`` (``"created"``, ``"updated"``, or ``"completed"``).
+
+        Signal-over-OHTTP decrypted inner request/response payloads are attached
+        to the flow (``flow.ohttp_inner_request`` / ``ohttp_inner_response``) at
+        parity with friTap's own TUI.
         """
         self._flow_callbacks.append(callback)
+        return self
+
+    def on_message(self, callback: Callable) -> "FriTap":
+        """Register a callback for decrypted, structured chat messages.
+
+        The callback receives a :class:`~friTap.events.MessageEvent` per
+        decrypted message (``sender``, ``direction``, ``kind``, ``body``,
+        ``timestamp``, attachment/quote/reaction flags, and the raw inner
+        ``Content`` bytes), so a third-party UI can render conversations without
+        re-deriving them from raw bytes.
+
+        Live coverage is **Signal only** — Telegram/MTProto is not TLS-wrapped
+        and is decrypted offline via
+        :func:`friTap.offline.pcap_to_tap.convert_pcap_to_tap`. A message's key
+        is assumed to arrive before (or with) its bytes (the common live
+        ordering); otherwise it is recovered offline, not live.
+        """
+        self._message_callbacks.append(callback)
         return self
 
     # ------------------------------------------------------------------
@@ -382,17 +459,30 @@ class FriTap:
         for plugin in self._script_plugins:
             ssl_log._plugin_loader.register_builtin(plugin, event_bus)
 
-        # Wire FlowCollector if on_flow callbacks are registered
+        # Wire FlowCollector if on_flow or on_message callbacks are registered.
+        # on_message needs the collector to reassemble decrypted bytes and run
+        # the live Signal decryptor (signal_messages=True enables that path).
         flow_collector = None
-        if self._flow_callbacks:
+        if self._flow_callbacks or self._message_callbacks:
             from .flow import FlowCollector
-            flow_collector = FlowCollector(event_bus=event_bus)
+            flow_collector = FlowCollector(
+                event_bus=event_bus,
+                signal_messages=bool(self._message_callbacks),
+            )
             flow_collector.set_capture_target(self._target)
             event_bus.subscribe(DatalogEvent, flow_collector.on_data)
             event_bus.subscribe(LibraryDetectedEvent, flow_collector.on_library_detected)
             event_bus.subscribe(SessionEvent, flow_collector.on_session_event)
+            # OHTTP parity with the TUI: attach Signal-over-OHTTP inner payloads.
+            event_bus.subscribe(OhttpEvent, flow_collector.on_ohttp)
             for cb in self._flow_callbacks:
                 event_bus.subscribe(FlowEvent, cb)
+            if self._message_callbacks:
+                # Feed Signal key material to the live decryptor, then deliver
+                # decrypted structured messages to the user callbacks.
+                event_bus.subscribe(KeylogEvent, flow_collector.on_keylog)
+                for cb in self._message_callbacks:
+                    event_bus.subscribe(MessageEvent, cb)
 
         ssl_log.install_signal_handler()
         ssl_log.start_fritap_session()

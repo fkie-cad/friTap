@@ -45,6 +45,14 @@ it opens in **replay mode** and loads the stored flows.
     If Textual cannot be imported, friTap logs an error and (when launched with
     no arguments) falls back to the command-line interface.
 
+!!! note "Protocol picker includes MTProto"
+    In the capture wizard the protocol picker (also reachable with `p`) now lists
+    **MTProto — Telegram** alongside TLS/SSL, IPSec, and SSH. Selecting it warns in
+    the activity log (and a modal) when the crypto backend is **not** present (e.g.
+    on a lean install) — live key capture still works without it, but offline
+    decryption needs the backend, which ships in friTap's base install (no extra
+    needed). See [Telegram (MTProto)](../protocols/telegram.md).
+
 ## Layout
 
 The TUI uses a single split-pane screen:
@@ -120,31 +128,97 @@ context-sensitive — some apply only in the flow list or detail view.
 | Key | Action |
 |-----|--------|
 | `f` | Toggle console / flow view |
+| `a` | Toggle the Analyzer Panel (run analyzers over the loaded flows) |
 | `Shift+F` | Toggle the Findings Viewer (analyzer findings) |
 | `/` | Open the filter dialog |
 | `Shift+Esc` | Clear the active filter |
+
+### Analyzer Panel
+
+Press `a` to open the **Analyzer Panel** — a docked pane above the flow list (the
+flow list stays visible). Use it to run analyzers over the currently loaded flows
+without leaving the TUI, which is what populates the Findings Viewer for a raw
+`.tap` that has no stored findings yet.
+
+1. Select which analyzers to run from the multi-select list (built-ins plus any
+   discovered external analyzers — see [Traffic analysis](../advanced/traffic-analysis.md)).
+   Optionally type a one-off `module:Class` plugin path.
+2. Press `r` (or **Run**) — analysis runs in the background with a live progress
+   line; the UI stays responsive.
+3. The panel switches to a **summary dashboard** with selectable chips grouped by
+   severity, analyzer, and category, plus a **View all** chip. Each chip's count
+   matches exactly what it filters to (a severity chip shows that severity bucket
+   only, not a floor). Selecting a chip drops into the Findings Viewer pre-filtered,
+   where `Enter` jumps to the flow that produced a finding.
+
+| Key | Action |
+|-----|--------|
+| `a` | Toggle the Analyzer Panel |
+| `r` | Run the selected analyzers |
+| `x` | Clear results / reset the panel |
+| `Esc` | Close the panel |
+
+Re-running replaces the previous results (counts always match the current
+selection). Press `w` to save a `.tap` that now embeds the computed findings, so
+re-opening it shows them directly in the Findings Viewer.
+
+!!! note "`a` is context-aware"
+    In a live capture session `a` keeps its capture meaning (attach to a process).
+    The Analyzer Panel opens only when flows are loaded (replay, or a capture that
+    has produced flows).
 
 ### Findings Viewer
 
 Press `Shift+F` to toggle the **Findings Viewer** — a table of the analyzer
 findings for the current capture (columns: **Severity**, **Source**, **Category**,
-**Conf**, **Title**, **Flow**), with severity-colored rows. Selecting a row drills
-into the flow that produced the finding.
+**Conf**, **Title**, **Flow**), with severity-colored rows. On a wide terminal an
+extra **Preview** column is shown with a short snippet of each finding's matched
+value. Pressing `Enter` on a row opens the [analyzer finding detail](#analyzer-finding-detail)
+for that finding.
 
 | Key | Action |
 |-----|--------|
 | `Shift+F` | Toggle the Findings Viewer on/off |
+| `Enter` | Open the selected finding (analyzer finding detail) |
 | `c` | Quick filter: credentials only |
 | `p` | Quick filter: PII only |
 | `1` | Quick filter: critical only |
 | `/` | Open the filter dialog |
 | `Shift+Esc` | Clear the active filter |
+| `Esc` | Step back: a filtered (category) view clears to all findings; all findings backs out to the flow list |
+| `w` | Save a `.tap` embedding the current findings |
+
+`Esc` walks back up the navigation hierarchy one level at a time:
+
+```
+all findings ──Enter on chip/quick-filter──► category (filtered) ──Enter──► finding detail
+     ▲                                              ▲                              │
+     └──────────────── Esc ─────────────────────────┴────────────── Esc ──────────┘
+```
 
 !!! warning "PII is redacted in the viewer"
     PII and secret values are **redacted by default** in the Findings Viewer, just
     as in the report and sidecar. There is no in-TUI reveal toggle; use
     `fritap analyze <file>.tap --show-pii` (or `--scan-show-pii` during capture) to
     see raw values in a report.
+
+### Analyzer finding detail
+
+Pressing `Enter` on a finding opens a **finding-centric** detail view (distinct
+from the flow-centric [flow detail view](#flow-detail-view)). It leads with the
+finding — the matched value, evidence (location/header/field), and the
+surrounding request context, with the matched value highlighted in the request
+headers.
+
+| Key | Action |
+|-----|--------|
+| `b` | Toggle base64 decoding of candidate values (e.g. decode an HTTP `Authorization: Basic …` header to `user:pass`) |
+| `d` | Switch to the regular (flow-centric) flow detail view for the same flow |
+| `Esc` | Back to the findings list (the category filter you came from is preserved) |
+
+When you switch to the full flow detail with `d`, pressing `Esc` there returns you
+to the analyzer finding detail (not the flow list), so the back-stack stays
+consistent.
 
 ### Flow detail view
 

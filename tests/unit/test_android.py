@@ -526,3 +526,38 @@ class TestUtilityMethods:
         assert not adb._validate_package_name("invalid")
         assert not adb._validate_package_name("")
         assert not adb._validate_package_name(None)
+
+
+class TestADBElevatorAndFind:
+    """Regression guard for the non-rooted full-capture crash.
+
+    The base (non-rooted) ADB._elevator must pass commands through rather than
+    raising: raising made every ADB.find() candidate fail and produced a
+    misleading '[-] No ADB ...' on perfectly working, just-unrooted devices.
+    """
+
+    def test_base_elevator_passes_command_through(self):
+        # Must NOT raise — this was the root cause of the spurious "No ADB".
+        assert ADB()._elevator("id -u") == "id -u"
+
+    def test_subclass_elevators_elevate(self):
+        from friTap.android import RootADB, SuADB, MagiskADB
+        assert RootADB()._elevator("id -u") == "id -u"
+        assert SuADB()._elevator("id -u") == "su 0 id -u"
+        assert MagiskADB()._elevator("id -u") == "su -c 'id -u'"
+
+    @patch('subprocess.run')
+    def test_find_selects_base_adb_on_nonrooted(self, mock_subprocess):
+        # uid != 0 -> rooted candidates fail; the base ADB must match and be
+        # returned (instead of find() raising Failure).
+        mock_subprocess.return_value = MagicMock(stdout="2000\n")
+        adb = ADB.find()
+        assert type(adb) is ADB
+        assert adb.is_rooted is False
+
+    @patch('subprocess.run')
+    def test_find_selects_rooted_adb_when_uid0(self, mock_subprocess):
+        # uid == 0 -> a rooted subclass matches first.
+        mock_subprocess.return_value = MagicMock(stdout="0\n")
+        adb = ADB.find()
+        assert adb.is_rooted is True

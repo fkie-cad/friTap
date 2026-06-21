@@ -14,7 +14,7 @@ must stay in sync with that document and with `__all__` below.
     - Configuration: FriTapConfig, DeviceConfig, OutputConfig, HookingConfig
     - Event types: KeylogEvent, DatalogEvent, LibraryDetectedEvent,
       SessionEvent, ConsoleEvent, ErrorEvent, SocketTraceEvent, DetachEvent,
-      FlowEvent, FriTapEvent (base), EventBus
+      FlowEvent, MessageEvent, FriTapEvent (base), EventBus
     - Flow analysis: Flow, FlowChunk, FlowState, FlowEventType, FlowSummary,
       TapReader, TapMeta, Severity, Finding, BaseAnalyzer, analyze_tap,
       analyze_tap_multi, AnalyzerPlugin, severity_rank
@@ -89,6 +89,7 @@ from .events import (
     SocketTraceEvent,
     DetachEvent,
     FlowEvent,
+    MessageEvent,
 )
 
 # Pipeline — kept importable but NOT in __all__; see module docstring
@@ -130,6 +131,7 @@ from .commands.analyze import (
     AnalyzeReport,
     analyze_tap_report,
     list_analyzers,
+    list_analyzers_detailed,
     list_report_formats,
 )
 
@@ -167,6 +169,7 @@ __all__ = [
     "SocketTraceEvent",
     "DetachEvent",
     "FlowEvent",
+    "MessageEvent",
     # Flow models
     "Flow",
     "FlowChunk",
@@ -191,6 +194,7 @@ __all__ = [
     "analyze_tap_report",
     "AnalyzeReport",
     "list_analyzers",
+    "list_analyzers_detailed",
     "list_report_formats",
     "severity_rank",
     "FindingFilter",

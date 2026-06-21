@@ -18,6 +18,8 @@ SSL_READ = frozenset({
     "neqo_read_response_data",
     # SSH plaintext receive (OpenSSH packet layer)
     "ssh_packet_read_poll2",
+    # Telegram MTProto: decrypted inbound server response (post AES-IGE decrypt)
+    "mtproto_decrypt",
 })
 
 SSL_WRITE = frozenset({
@@ -31,6 +33,8 @@ SSL_WRITE = frozenset({
     "neqo_send_request_body",
     # SSH plaintext send (OpenSSH packet layer)
     "ssh_packet_send2",
+    # Telegram MTProto: plaintext outbound message (pre AES-IGE encrypt)
+    "mtproto_encrypt",
 })
 
 
@@ -42,6 +46,34 @@ PROTOCOL_QUIC = "quic"
 PROTOCOL_QUIC_UNPROCESSED = "quic_unprocessed"
 PROTOCOL_WEBSOCKET = "WebSocket"
 PROTOCOL_TLS = "TLS"
+PROTOCOL_SIGNAL = "Signal"
+PROTOCOL_MTPROTO = "MTProto"
+PROTOCOL_TELEGRAM_E2E = "Telegram-E2E"
+
+
+# Agent ABI version — the contract between this Python host and the compiled
+# Frida agent bundle: the config_batch field names, the ContentType values, and
+# the rpc.exports surface (gracefulDetach, agentAbiVersion, ...). Bump this
+# whenever that JS<->Python boundary changes in a way an older bundle would
+# mis-handle. It is mirrored into the agent via dev/generate_agent_types.py so
+# the loaded bundle can report its own ABI back (rpc agentAbiVersion); the host
+# warns on mismatch and uses it to ABI-filter discoverable agent bundles
+# (the ``fritap.agent_bundle`` entry-point group). Generic — names no protocol.
+AGENT_ABI_VERSION = 1
+
+
+# Maps a protocol-layer NAME (see friTap.flow.layers) to its human display
+# string. Used by the layered protocol-display path so a Signal-bearing flow
+# can render as e.g. "HTTP/2[Signal]" / "WebSocket[Signal]".
+LAYER_DISPLAY_NAMES = {
+    "http1": PROTOCOL_HTTP1,
+    "http2": PROTOCOL_HTTP2,
+    "http3": PROTOCOL_HTTP3,
+    "websocket": PROTOCOL_WEBSOCKET,
+    "signal": PROTOCOL_SIGNAL,
+    "mtproto": PROTOCOL_MTPROTO,
+    "telegram_e2e": PROTOCOL_TELEGRAM_E2E,
+}
 
 
 class ContentType:
@@ -60,6 +92,15 @@ class ContentType:
     SSH_KEYLOG = "ssh_keylog"
     SSH_NEWKEYS = "ssh_newkeys"
     IPSEC_CHILD_SA = "ipsec_child_sa_keys"
+    MTPROTO_KEY = "mtproto_key"
+    TELEGRAM_E2E_KEY = "telegram_e2e_key"
+    TELEGRAM_E2E_PLAINTEXT = "telegram_e2e_plaintext"
+    # Generic key-material + plaintext channel for registry-driven / private
+    # protocols. The agent tags each message with a ``classifier`` (= protocol
+    # name); the public router carries no per-protocol field knowledge, so any
+    # protocol (public or private) reuses this without naming it in the core.
+    PRIVATE_KEY_MATERIAL = "private_key_material"
+    PRIVATE_PLAINTEXT = "private_plaintext"
     NETLOG = "netlog"
     ERROR = "error"
 

@@ -101,6 +101,10 @@ class FlowSummary:
     state: FlowState = FlowState.ACTIVE
     started: float = 0.0
     ended: float = 0.0
+    # Transport/encryption protocol of the underlying connection ("tls", "quic",
+    # "signal", ...). Mirrors Flow.transport so consumers can group/filter from
+    # the cheap summary without materializing the full Flow.
+    transport: str = "tls"
     request: Optional[_ParseStub] = None
     response: Optional[_ParseStub] = None
     has_ohttp: bool = False
@@ -115,6 +119,15 @@ class FlowSummary:
     tag_count: int = 0
     finding_count: int = 0
     has_notes: bool = False
+    # Layered protocol-display scalars (so the layered display works without a
+    # live layer stack). See friTap.flow.display.display_protocol_layered.
+    outer_app_protocol: str = ""
+    inner_e2e_protocol: str = ""
+    inner_summary: str = ""
+    # Primary TL operation derived from the flow's message-bearing layers (e.g.
+    # "sendMessage", "users", "updates"). Surfaced in the Method column without
+    # loading full messages. See friTap.flow.display.method_from_messages.
+    flow_method: str = ""
 
     @property
     def duration(self) -> float:
@@ -127,8 +140,12 @@ class FlowSummary:
         return _display.display_protocol(self)
 
     @property
+    def display_protocol_layered(self) -> str:
+        return _display.display_protocol_layered(self)
+
+    @property
     def display_method(self) -> str:
-        return _display.display_method(self.request)
+        return _display.display_method_layered(self)
 
     @property
     def display_host(self) -> str:
@@ -193,6 +210,18 @@ class FlowSummary:
         # Non-mutating lookup: a summary is a pure read, so use layer() (None if
         # absent) rather than flow.tls, which would attach an empty layer.
         tls_layer = flow.layer("tls")
+        # Prefer a scalar already set on the flow (e.g. a synthetic, layerless
+        # flow rebuilt from a .tap summary in the TUI flow list), since
+        # layered_scalars_from_flow returns "" for a flow with no layer stack.
+        # Live flows have layers and no preset scalars, so they fall through to
+        # the computed values and keep working unchanged.
+        s_outer, s_inner, s_summary = _display.layered_scalars_from_flow(flow)
+        outer_app = getattr(flow, "outer_app_protocol", "") or s_outer
+        inner_e2e = getattr(flow, "inner_e2e_protocol", "") or s_inner
+        inner_summary = getattr(flow, "inner_summary", "") or s_summary
+        # Primary TL operation from the message-bearing layers; falls back to a
+        # preset scalar (synthetic flows rebuilt from a .tap have no live layers).
+        flow_method = getattr(flow, "flow_method", "") or _display.method_from_messages(flow)
         return FlowSummary(
             flow_id=flow.flow_id,
             connection_id=flow.connection_id,
@@ -204,6 +233,7 @@ class FlowSummary:
             state=flow.state,
             started=flow.started,
             ended=flow.ended,
+            transport=getattr(flow, "transport", "tls") or "tls",
             request=req_stub,
             response=resp_stub,
             has_ohttp=(flow.ohttp_inner_request is not None
@@ -218,6 +248,10 @@ class FlowSummary:
             tag_count=len(flow.tags),
             finding_count=len(flow.findings),
             has_notes=bool(flow.notes),
+            outer_app_protocol=outer_app,
+            inner_e2e_protocol=inner_e2e,
+            inner_summary=inner_summary,
+            flow_method=flow_method,
         )
 
     def to_dict(self) -> dict:
@@ -240,6 +274,7 @@ class FlowSummary:
             "state": self.state.value if isinstance(self.state, FlowState) else str(self.state),
             "started": self.started,
             "ended": self.ended,
+            "transport": self.transport,
             # Deterministic and parity-matched with tap_format.FlowSummary.to_dict:
             # the `duration` property returns wall-clock `time.time() - started`
             # for in-progress flows (ended == 0), which is non-deterministic and
@@ -262,6 +297,10 @@ class FlowSummary:
             "tag_count": self.tag_count,
             "finding_count": self.finding_count,
             "has_notes": self.has_notes,
+            "outer_app_protocol": self.outer_app_protocol,
+            "inner_e2e_protocol": self.inner_e2e_protocol,
+            "inner_summary": self.inner_summary,
+            "flow_method": self.flow_method,
         }
 
 
@@ -489,7 +528,7 @@ class Flow:
 
     @property
     def display_method(self) -> str:
-        return _display.display_method(self.request)
+        return _display.display_method_layered(self)
 
     @property
     def display_host(self) -> str:

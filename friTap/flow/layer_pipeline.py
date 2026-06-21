@@ -60,6 +60,34 @@ _APP_NAME_BY_PROTOCOL: dict[str, str] = {
     PROTOCOL_WEBSOCKET: "websocket",
 }
 
+# Transports whose decrypted bytes are a self-contained non-HTTP protocol
+# (MTProto cloud TL, Telegram Secret-Chat TL). Generic application-protocol
+# detection must NOT run on them: the HTTP/3 parser's varint heuristic
+# false-positives on MTProto records and would graft a bogus ``http3`` layer on
+# top of the real ``mtproto`` transport (mislabelling the flow ``HTTP/3`` / ``???``
+# instead of ``MTProto``). These transports own their decrypted chunks and their
+# payload is parsed by the protocol's own offline decryptor, not the app parsers.
+# (Signal is unaffected: it rides inside real HTTP/2, so its transport is ``tls``
+# and ``signal`` is an inner owned layer — not a transport in this set.)
+_NON_HTTP_E2E_TRANSPORTS = frozenset({"mtproto", "telegram_e2e"})
+
+
+def _is_transport_descriptor(descriptor) -> bool:
+    """True when *descriptor* describes a layer-0 transport that owns the chunks.
+
+    Replaces the old hardcoded ``{"tls","quic","mtproto","signal"}`` frozenset
+    with a registry-driven test so plugin transport decryptors join without an
+    edit here. A transport layer is one whose descriptor (a) owns the flow's
+    decrypted bytes (``data_source == "chunks"``) and (b) declares a non-empty
+    typed ``layer_cls.NAME``. This excludes the generic application layer
+    (``AppLayer.NAME == ""``, which rides on top of a transport) and the
+    synthetic/marker SSH and IPsec layers (``data_source == "none"``) — exactly
+    the set the frozenset enumerated, for every ``transport`` value that occurs.
+    """
+    if descriptor is None or descriptor.data_source != "chunks":
+        return False
+    return bool(getattr(descriptor.layer_cls, "NAME", ""))
+
 
 def app_layer_name(protocol: str) -> Optional[str]:
     """Return the registry layer name for a parser *protocol* string, or None.
@@ -108,12 +136,21 @@ class LayerPipeline:
     def ensure_transport(self, flow: "Flow") -> Optional[ProtocolLayer]:
         """Ensure the flow's layer-0 transport layer exists (idempotent).
 
-        Picks ``quic`` for QUIC-over-UDP flows and ``tls`` otherwise, based on
-        the stamped :attr:`Flow.transport`. The layer's data is the flow's
-        decrypted-chunk view (``data_source="chunks"`` from its descriptor) —
-        zero copy, never serialized.
+        The transport name comes from the stamped :attr:`Flow.transport` when it
+        names a known transport-layer protocol with a registry descriptor
+        (``quic``/``mtproto``/…); everything else defaults to ``tls``. The layer's
+        data is the flow's decrypted-chunk view (``data_source="chunks"`` from its
+        descriptor) — zero copy, never serialized. New transport-level decryptors
+        join purely by registering a ``data_source="chunks"`` descriptor (no edit
+        here): a transport layer is one whose descriptor owns the flow's decrypted
+        chunks. Non-transport registry entries — synthetic/marker layers like SSH
+        and IPsec (``data_source="none"``) and application layers that ride on top
+        of a transport — are excluded, so they default to ``tls`` as before.
         """
-        name = "quic" if flow.transport == "quic" else "tls"
+        if _is_transport_descriptor(self._registry.get(flow.transport)):
+            name = flow.transport
+        else:
+            name = "tls"
         if self._registry.get(name) is None:  # pragma: no cover - defensive
             return None
         existing = flow.layer(name)
@@ -239,7 +276,14 @@ class LayerPipeline:
 
         Prefers a concrete protocol from the parsed request, then the response,
         then the flow's ``detected_protocol`` display fallback.
+
+        Returns "" for a non-HTTP E2E transport (``mtproto``/``telegram_e2e``):
+        those own their decrypted bytes and must never receive a coincidental
+        HTTP application layer (e.g. an HTTP/3 varint false-positive), which would
+        mislabel the flow. See :data:`_NON_HTTP_E2E_TRANSPORTS`.
         """
+        if flow.transport in _NON_HTTP_E2E_TRANSPORTS:
+            return ""
         for parsed in (flow.request, flow.response):
             if parsed is not None:
                 protocol = getattr(parsed, "protocol", "")

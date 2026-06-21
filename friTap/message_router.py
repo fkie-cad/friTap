@@ -35,10 +35,14 @@ class MessageRouter:
     Keylog, lifecycle, and meta events always pass through.
     """
 
-    def __init__(self, event_bus: "EventBus") -> None:
+    def __init__(self, event_bus: "EventBus", active_protocol: str | None = None) -> None:
         self._event_bus = event_bus
         self._logger = logging.getLogger("friTap.router")
         self._data_filter = None  # Optional FilterEngine for network-level filtering
+        # The user-selected --protocol. When it is "telegram", MTProto cloud keys
+        # AND Secret-Chat E2E keys are routed into ONE combined keylog file (both
+        # emitted as protocol="telegram"); otherwise behaviour is unchanged.
+        self._active_protocol = active_protocol
 
     def set_filter(self, filter_engine) -> None:
         """Set a display filter engine. Only network-level fields are checked."""
@@ -64,6 +68,16 @@ class MessageRouter:
             self._emit_ssh_keylog(payload)
         elif content_type == ContentType.SSH_NEWKEYS:
             self._emit_ssh_newkeys(payload)
+        elif content_type == ContentType.MTPROTO_KEY:
+            self._emit_mtproto_key(payload)
+        elif content_type == ContentType.TELEGRAM_E2E_KEY:
+            self._emit_telegram_e2e_key(payload)
+        elif content_type == ContentType.PRIVATE_KEY_MATERIAL:
+            self._emit_private_key_material(payload)
+        elif content_type == ContentType.PRIVATE_PLAINTEXT and data:
+            self._emit_private_plaintext(payload, data)
+        elif content_type == ContentType.TELEGRAM_E2E_PLAINTEXT and data:
+            self._emit_telegram_e2e_plaintext(payload, data)
         elif content_type == "console":
             self._emit_console(payload, level="info")
         elif content_type == "console_dev":
@@ -190,6 +204,135 @@ class MessageRouter:
                 "direction": str(payload.get("direction", "")),
                 "session_tag": str(payload.get("session_tag", "")),
             },
+        ))
+
+    def _emit_mtproto_key(self, payload: dict) -> None:
+        """Emit a structured MTProto auth-key KeylogEvent.
+
+        Routed to the unified :class:`KeylogOutputHandler` bound to the
+        :class:`MtprotoKeylogFormatter`, which renders the canonical
+        ``MTPROTO_AUTH_KEY <dc_id> <auth_key_id> <auth_key> <key_type>`` line.
+
+        Under ``--protocol telegram`` these cloud keys are emitted as
+        ``protocol="telegram"`` so they land in the single combined Telegram
+        keylog (alongside the Secret-Chat E2E keys); otherwise they keep their
+        historical ``protocol="mtproto"`` routing.
+        """
+        protocol = "telegram" if self._active_protocol == "telegram" else "mtproto"
+        auth_key = str(payload.get("auth_key", ""))
+        auth_key_id = str(payload.get("auth_key_id", ""))
+        # Datacenter::getAuthKey does not always populate the auth_key_id
+        # out-param, but the id is by definition the low 64 bits of SHA1(auth_key).
+        # Derive it here when absent so every captured temp/PFS key produces a
+        # usable keylog line (the offline decryptor looks records up by this id).
+        if len(auth_key_id) != 16 and len(auth_key) == 512:
+            try:
+                import hashlib
+                auth_key_id = hashlib.sha1(bytes.fromhex(auth_key)).digest()[-8:].hex()
+            except ValueError:
+                pass
+        self._event_bus.emit(KeylogEvent(
+            protocol=protocol,
+            payload={
+                "auth_key_id": auth_key_id,
+                "auth_key": auth_key,
+                "dc_id": payload.get("dc_id", 0),
+                "key_type": str(payload.get("key_type", "perm")),
+            },
+        ))
+
+    def _emit_telegram_e2e_key(self, payload: dict) -> None:
+        """Emit a structured Telegram Secret-Chat (E2E) key-material KeylogEvent.
+
+        Routed to the unified :class:`KeylogOutputHandler` bound to the
+        :class:`TelegramKeylogFormatter`, which renders the canonical
+        ``MTPROTO_E2E_KEY <key_fingerprint> <shared_key> <chat_id>`` line into the
+        SAME combined Telegram keylog as the MTProto cloud keys. Always emitted as
+        ``protocol="telegram"`` (the E2E keys only exist under the Telegram
+        protocol selection).
+        """
+        self._event_bus.emit(KeylogEvent(
+            protocol="telegram",
+            payload={
+                "shared_key": str(payload.get("shared_key", "")),
+                "key_fingerprint": str(payload.get("key_fingerprint", "")),
+                "chat_id": payload.get("chat_id", 0),
+            },
+        ))
+
+    def _emit_private_key_material(self, payload: dict) -> None:
+        """Emit a key-material KeylogEvent for a registry-driven protocol.
+
+        The agent tags the message with ``classifier`` (= the protocol name) and
+        carries the protocol's keylog fields as plain payload entries. The router
+        stays protocol-agnostic — it forwards those fields verbatim and the
+        protocol's :class:`KeylogFormatter` (resolved by ``protocol``) renders the
+        keylog line. Reusable by any protocol; nothing here is protocol-specific.
+        """
+        classifier = str(payload.get("classifier", ""))
+        if not classifier:
+            return
+        fields = {
+            k: v for k, v in payload.items()
+            if k not in ("contentType", "classifier")
+        }
+        self._event_bus.emit(KeylogEvent(protocol=classifier, payload=fields))
+
+    def _emit_private_plaintext(self, payload: dict, data: bytes) -> None:
+        """Emit decrypted app-layer plaintext as a DatalogEvent tagged with the
+        payload's ``classifier`` (= protocol name).
+
+        Generic counterpart of :meth:`_emit_telegram_e2e_plaintext`: content
+        captured out-of-band at a decrypt hook, so socket metadata is best-effort
+        (the call site may not carry the 5-tuple). Protocol-agnostic.
+        """
+        classifier = str(payload.get("classifier", ""))
+        if not classifier:
+            return
+        src_addr_str, src_port, dst_addr_str, dst_port, ss_family, src_addr, dst_addr = self._resolve_addresses(payload)
+        self._event_bus.emit(DatalogEvent(
+            data=data,
+            function=str(payload.get("function", "decrypt")),
+            direction=payload.get("direction", "read"),
+            src_addr=src_addr_str,
+            src_port=src_port,
+            dst_addr=dst_addr_str,
+            dst_port=dst_port,
+            src_addr_raw=src_addr,
+            dst_addr_raw=dst_addr,
+            ss_family=ss_family,
+            transport=payload.get("transport", "tcp"),
+            protocol=classifier,
+        ))
+
+    def _emit_telegram_e2e_plaintext(self, payload: dict, data: bytes) -> None:
+        """Emit decrypted Telegram Secret-Chat plaintext as a ``telegram_e2e``
+        DatalogEvent.
+
+        Sourced from the agent's Java-layer Secret-Chat hooks
+        (``SecretChatHelper.processDecryptedObject`` /
+        ``performSendEncryptedRequest``). Like the Signal path, this is
+        out-of-band content captured at the SecretChatHelper boundary rather than
+        by decrypting the pcap; socket metadata is best-effort (the call site may
+        not carry the 5-tuple). The ``ssl_session_id`` keys live plaintext into
+        its own ``telegram_e2e`` flow per Secret-Chat id — the same approach the
+        offline path uses.
+        """
+        src_addr_str, src_port, dst_addr_str, dst_port, ss_family, src_addr, dst_addr = self._resolve_addresses(payload)
+        self._event_bus.emit(DatalogEvent(
+            data=data,
+            function=str(payload.get("function", "")),
+            direction=str(payload.get("direction", "read")),
+            src_addr=src_addr_str,
+            src_port=src_port,
+            dst_addr=dst_addr_str,
+            dst_port=dst_port,
+            src_addr_raw=src_addr,
+            dst_addr_raw=dst_addr,
+            ss_family=ss_family,
+            transport="tcp",
+            protocol="telegram_e2e",
+            ssl_session_id=f"telegram_e2e:{payload.get('chat_id', '')}",
         ))
 
     def _emit_ssh_newkeys(self, payload: dict) -> None:

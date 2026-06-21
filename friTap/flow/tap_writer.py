@@ -200,22 +200,32 @@ class TapWriter:
     def _close_locked(self) -> None:
         """Internal close — must be called under self._lock."""
         try:
+            # Collapse duplicate flow_ids to the LAST-written record. A flow may be
+            # written twice — once when it "completes" mid-collection, then again
+            # after post-collection metadata attachment — so without this the header
+            # count and FLOW_INDEX would over-count and carry stale duplicate entries.
+            # This matches the reader, which already keeps the last offset per id.
+            deduped: dict[str, dict] = {}
+            for entry in self._flow_index:
+                deduped[entry["flow_id"]] = entry  # last wins
+            flow_index = list(deduped.values())
+
             # Write FLOW_INDEX record
             index_offset = self._file.tell()
-            index_payload = encode_flow_index(self._flow_index)
+            index_payload = encode_flow_index(flow_index)
             self._file.write(encode_record(REC_FLOW_INDEX, index_payload))
 
             # Write footer
             self._file.write(encode_footer(index_offset))
 
-            # Update header: flow_count, flags, and preserve capture_target.
+            # Update header: distinct flow_count, flags, and preserve capture_target.
             # Record finding presence so readers can skip the findings scan.
             flags = FLAG_HAS_INDEX
             if self._wrote_findings:
                 flags |= FLAG_HAS_FINDINGS
             header_bytes = encode_header(
                 capture_start=self._capture_start,
-                flow_count=self._flow_count,
+                flow_count=len(flow_index),
                 flags=flags,
                 capture_target=self._capture_target,
             )

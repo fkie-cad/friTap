@@ -18,8 +18,11 @@ from typing import Callable, Optional
 from friTap.flow.layers import (
     AppLayer,
     IpsecLayer,
+    MtprotoLayer,
     QuicLayer,
+    SignalLayer,
     SshLayer,
+    TelegramE2ELayer,
     TlsLayer,
 )
 
@@ -113,6 +116,9 @@ def _register_builtins(registry: ProtocolRegistry) -> None:
     registry.register(ProtocolDescriptor("quic", QuicLayer, data_source="chunks"))
     registry.register(ProtocolDescriptor("ssh", SshLayer, data_source="none"))
     registry.register(ProtocolDescriptor("ipsec", IpsecLayer, data_source="none"))
+    registry.register(ProtocolDescriptor("mtproto", MtprotoLayer, data_source="chunks"))
+    registry.register(ProtocolDescriptor("telegram_e2e", TelegramE2ELayer, data_source="chunks"))
+    registry.register(ProtocolDescriptor("signal", SignalLayer, data_source="chunks"))
     for app_name in APP_PROTOCOL_NAMES:
         registry.register(
             ProtocolDescriptor(app_name, AppLayer, data_source="chunks")

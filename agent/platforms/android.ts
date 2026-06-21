@@ -1,5 +1,6 @@
 import { hookRegistry, HookRegistry } from "../shared/registry.js";
 import { getModuleNames, ssl_library_loader, hookDynamicLoader, installOhttpHooks } from "../shared/shared_functions.js";
+import { matchAntiTamper, warnAntiTamper, scanForAntiTamper } from "../util/anti_tamper.js";
 import { Platform, PLATFORM_LINUX } from "../shared/shared_structures.js";
 import { log, devlog } from "../util/log.js";
 import { findModulesWithSSLKeyLogCallback } from "../tls/shared/library_identification.js";
@@ -36,6 +37,9 @@ import { strongswan_execute_modern } from "../ipsec/platforms/android/strongswan
 import { ssh_detect_execute } from "../ssh/platforms/linux/ssh_linux.js";
 import { openssh_execute_modern } from "../ssh/platforms/android/openssh_android.js";
 import { libssh_execute_modern } from "../ssh/platforms/android/libssh_android.js";
+import { tgnet_execute_modern } from "../mtproto/platforms/android/tgnet_android.js";
+import { collectContributedHooks } from "../shared/hook_contributors.js";
+import { telegram_execute_modern } from "../telegram/platforms/android/telegram_android.js";
 import { nss_hpke_execute_android } from "../ohttp/platforms/android/nss_hpke_android.js";
 import { quiche_execute } from "../quic/platforms/android/quiche_android.js";
 import { google_quiche_execute } from "../quic/platforms/android/google_quiche_android.js";
@@ -88,6 +92,9 @@ function install_pattern_based_hooks(){
             const matcher = new RegExp(patternKey);
             for (const candidate of moduleNames) {
                 if (!matcher.test(candidate)) continue;
+                // Never Memory.scan an anti-tamper lib (PairIP) even if a
+                // user-supplied pattern would match it; it crashes the target.
+                if (matchAntiTamper(candidate)) { warnAntiTamper(candidate); continue; }
                 if (isModuleHooked(candidate, "tls")) continue;
                 try {
                     Process.getModuleByName(candidate).ensureInitialized();
@@ -160,7 +167,12 @@ export function load_android_hooking_agent() {
         // BoringSSL .so files that export SSL_* (e.g. stable_cronet_libssl.so).
         // Cronet-derived hosts are claimed by the named-out entries below.
         { platform: plattform_name, pattern: /^libcronet([_.]|\.\d).*\.so$/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet", libraryType: "boringssl", protocol: "tls" },
-        { platform: plattform_name, pattern: /.*libringrtc_rffi.*\.so/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet (RingRTC)", libraryType: "boringssl", protocol: "tls" },
+        // libringrtc_rffi.so is Signal's WebRTC/calls BoringSSL — it carries no
+        // chat-TLS keys, and its ranges are churned by the call subsystem, which
+        // makes the recursive readable-parts pattern scan fault the target
+        // (tombstone_12, 2026-06-15: SIGSEGV inside frida-agent Memory.scan).
+        // Exclude it under `--protocol signal`; still scanned for generic TLS.
+        { platform: plattform_name, pattern: /.*libringrtc_rffi.*\.so/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet (RingRTC)", libraryType: "boringssl", protocol: "tls", excludeProtocols: ["signal"] },
         { platform: plattform_name, pattern: /.*libsignal_jni.*\.so/, excludePattern: /_testing\.so$/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet (Signal)", libraryType: "boringssl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*monochrome.*\.so/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet (Monochrome)", libraryType: "boringssl", protocol: "tls" },
         // Android System WebView monolith — full Chromium with BoringSSL statically linked
@@ -183,6 +195,16 @@ export function load_android_hooking_agent() {
         { platform: plattform_name, pattern: /^(\/.+\/)?(ssh|sshd|sshd-session|scp|sftp-server)$/, hookFn: (use_modern ? openssh_execute_modern : ssh_detect_execute), library: "OpenSSH", protocol: "ssh" },
         // Dropbear stays on the legacy executor; no modern-path wrapper exists yet
         { platform: plattform_name, pattern: /^(\/.+\/)?dropbear$/, hookFn: ssh_detect_execute, library: "Dropbear", protocol: "ssh" },
+        // Telegram MTProto (tgnet) — gated under `--protocol mtproto`. Hook bodies
+        // are Phase-0 structured stubs (offsets require on-device RE).
+        { platform: plattform_name, pattern: /libtmessages\.tmessages\.so/, hookFn: tgnet_execute_modern, library: "Telegram tgnet", libraryType: "mtproto_tgnet", protocol: "mtproto" },
+        { platform: plattform_name, pattern: /libtmessages.*\.so/, hookFn: tgnet_execute_modern, library: "Telegram tgnet", libraryType: "mtproto_tgnet", protocol: "mtproto" },
+        // Telegram Secret-Chat (Java E2E) — gated under `--protocol telegram`.
+        // The Secret-Chat key + plaintext live in the Java layer
+        // (SecretChatHelper / TLRPC$EncryptedChat); the native lib load is the
+        // install trigger. `--protocol telegram` ALSO pulls in the tgnet/mtproto
+        // transport hooks via registry.protocolMatches (telegram -> mtproto).
+        { platform: plattform_name, pattern: /libtmessages.*\.so/, hookFn: telegram_execute_modern, library: "Telegram Secret Chat (Java E2E)", libraryType: "telegram_e2e", protocol: "telegram" },
         // OHTTP (NSS HPKE) — gated under the TLS family for `--protocol tls`
         { platform: plattform_name, pattern: /.*libnss3?\.so/, hookFn: nss_hpke_execute_android, library: "NSS HPKE (OHTTP)", protocol: "tls", libraryType: "nss_hpke" },
         // QUIC libraries — gated under the TLS family for `--protocol tls`
@@ -194,6 +216,10 @@ export function load_android_hooking_agent() {
         { platform: plattform_name, pattern: /^libmainlinecronet\.[\d.]+\.so$/, hookFn: google_quiche_execute, library: "Google QUICHE (Mainline Cronet APEX)", libraryType: "google_quiche", protocol: "tls" },
         { platform: plattform_name, pattern: /.*monochrome.*\.so/, hookFn: google_quiche_execute, library: "Google QUICHE (Monochrome)", libraryType: "google_quiche", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libxul\.so/, hookFn: neqo_execute, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo", protocol: "tls" },
+        // Hooks contributed by optional, separately bundled units (empty in the
+        // public build; a full build's private unit registers its rows before the
+        // agent entry runs, so they are present here at registration time).
+        ...collectContributedHooks(),
     ];
     // --quic-only: install ONLY the Google QUICHE hooks (skip every TLS-library
     // hook and its keylog pattern scans). Faster attach, no Java VM sync, less
@@ -228,6 +254,11 @@ export function load_android_hooking_agent() {
     phases.push({
         label: "loader+patterns",
         fn: () => {
+            // Fresh-enumerate and warn about anti-tamper libs (e.g. PairIP's
+            // libpairipcore.so) BEFORE installing the inline dlopen trampoline
+            // that such protections detect and crash on — getModuleNames() above
+            // is stale for spawned apps, so this re-scans the live module list.
+            scanForAntiTamper();
             hookDynamicLoader(androidLoaderConfig, hookRegistry, moduleNames, false, selected_protocol);
             if (isPatternReplaced()) install_pattern_based_hooks();
         },

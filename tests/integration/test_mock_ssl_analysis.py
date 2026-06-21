@@ -1,606 +1,333 @@
 """
-Mock integration tests for SSL analysis workflow.
+Mock integration tests for the SSL analysis workflow.
 
-Tests the complete SSL analysis workflow using mocked Frida
-components and simulated SSL library interactions.
+These tests drive the *real* ``SSL_Logger`` API
+(``friTap/legacy/ssl_logger_core.py``, re-exported from ``friTap.ssl_logger``),
+which is EventBus-based. ``SSL_Logger`` wires a set of modular output handlers
+(JSON / keylog / pcap) onto an internal :class:`EventBus` at construction time;
+agent messages are turned into events via the message router and consumed by
+those handlers. No real Frida device or running process is required to exercise
+constructor wiring, output-handler setup, event handling, library detection,
+session-data accounting and JSON finalization — that is what these tests cover.
+
+Scenarios that genuinely need a live device/frida-server (attach, spawn,
+script load) are exercised at their observable boundary (event emission / state)
+rather than by calling non-existent private helpers.
+
+The ``mock_integration`` marker is preserved so ``tests/conftest.py`` keeps
+skipping the module on CI machines without Frida installed; on a Frida-present
+machine these tests run and pass.
 """
 
-import pytest
-import tempfile
+import json
 import os
-from unittest.mock import patch, MagicMock
+import tempfile
+
+import pytest
 
 from friTap.ssl_logger import SSL_Logger
 from friTap.android import Android
+from friTap.events import (
+    LibraryDetectedEvent,
+    SessionEvent,
+    DatalogEvent,
+    ErrorEvent,
+    SESSION_STARTED,
+)
+from friTap.output.json_handler import JsonOutputHandler
+from friTap.output.keylog_handler import KeylogOutputHandler
+
+
+def _json_handler(logger):
+    """Return the JsonOutputHandler wired onto the logger, or None."""
+    for handler in logger._output_handlers:
+        if isinstance(handler, JsonOutputHandler):
+            return handler
+    return None
 
 
 @pytest.mark.mock_integration
 class TestMockSSLAnalysisWorkflow:
-    """Test complete SSL analysis workflow with mocked components."""
-    
-    @patch('friTap.ssl_logger.frida')
-    @patch('builtins.open', create=True)
-    def test_desktop_ssl_analysis_workflow(self, mock_open, mock_frida):
-        """Test complete desktop SSL analysis workflow."""
-        # Setup mock Frida components
-        mock_device = MagicMock()
-        mock_process = MagicMock()
-        mock_script = MagicMock()
-        mock_module = MagicMock()
-        
-        # Configure mock objects
-        mock_frida.get_local_device.return_value = mock_device
-        mock_device.attach.return_value = mock_process
-        mock_process.create_script.return_value = mock_script
-        mock_process.enumerate_modules.return_value = [mock_module]
-        
-        # Mock SSL module
-        mock_module.name = "libssl.so.1.1"
-        mock_module.base = 0x7f0000000000
-        mock_module.path = "/usr/lib/x86_64-linux-gnu/libssl.so.1.1"
-        
-        # Create SSL logger
-        logger = SSL_Logger("firefox", verbose=True, json_output="test_output.json")
-        
-        # Simulate SSL analysis workflow
-        logger._attach_to_target()
-        logger._load_agent()
-        logger._setup_hooks()
-        
-        # Verify Frida interactions
-        mock_frida.get_local_device.assert_called_once()
-        mock_device.attach.assert_called_with("firefox")
-        mock_process.create_script.assert_called()
-        mock_script.load.assert_called()
-        
-    @patch('friTap.ssl_logger.frida')
-    @patch('friTap.android.Android')
-    @patch('builtins.open', create=True)
-    def test_android_ssl_analysis_workflow(self, mock_open, mock_android, mock_frida):
-        """Test complete Android SSL analysis workflow."""
-        # Setup mock Android
-        mock_android_instance = MagicMock()
-        mock_android.return_value = mock_android_instance
-        mock_android_instance.check_adb_availability.return_value = True
-        mock_android_instance.adb_check_root.return_value = True
-        mock_android_instance.get_app_pid.return_value = 1234
-        
-        # Setup mock Frida
-        mock_device = MagicMock()
-        mock_process = MagicMock()
-        mock_script = MagicMock()
-        
-        mock_frida.get_usb_device.return_value = mock_device
-        mock_device.attach.return_value = mock_process
-        mock_process.create_script.return_value = mock_script
-        
-        # Create SSL logger for Android
+    """Constructor wiring + EventBus-driven analysis workflow."""
+
+    def test_desktop_ssl_analysis_workflow(self):
+        """Desktop logger constructs, wires handlers, and is ready to run."""
+        with tempfile.TemporaryDirectory() as tmp:
+            json_path = os.path.join(tmp, "test_output.json")
+            logger = SSL_Logger("firefox", verbose=True, json_output=json_path)
+
+            # Real constructor wiring (no _attach_to_target/_load_agent exist).
+            assert logger.target_app == "firefox"
+            assert logger.verbose is True
+            assert logger.json_output == json_path
+            assert logger.running is True
+            # The JSON output handler must have been created and registered.
+            assert _json_handler(logger) is not None
+            assert logger._handlers_active is True
+            # The agent script the logger will load is resolvable.
+            assert logger.agent_script == "fritap_agent.js"
+
+    def test_android_ssl_analysis_workflow(self):
+        """Android logger reflects mobile config and shares the EventBus path."""
         logger = SSL_Logger("com.example.app", mobile=True, verbose=True)
-        
-        # Simulate Android SSL analysis
-        logger._get_android_helper()
-        logger._attach_to_target()
-        logger._load_agent()
-        
-        # Verify Android setup
-        mock_android_instance.check_adb_availability.assert_called()
-        mock_android_instance.adb_check_root.assert_called()
-        
-        # Verify Frida setup
-        mock_frida.get_usb_device.assert_called()
-        mock_device.attach.assert_called()
-        
-    @patch('friTap.ssl_logger.frida')
-    @patch('builtins.open', create=True)
-    def test_ssl_library_detection_workflow(self, mock_open, mock_frida):
-        """Test SSL library detection workflow."""
-        # Setup mock modules for different SSL libraries
-        openssl_module = MagicMock()
-        openssl_module.name = "libssl.so.1.1"
-        openssl_module.base = 0x7f0000000000
-        
-        boringssl_module = MagicMock()
-        boringssl_module.name = "libssl.so"
-        boringssl_module.base = 0x7f1000000000
-        
-        nss_module = MagicMock()
-        nss_module.name = "libnss3.so"
-        nss_module.base = 0x7f2000000000
-        
-        # Setup mock Frida
-        mock_device = MagicMock()
-        mock_process = MagicMock()
-        mock_script = MagicMock()
-        
-        mock_frida.get_local_device.return_value = mock_device
-        mock_device.attach.return_value = mock_process
-        mock_process.create_script.return_value = mock_script
-        mock_process.enumerate_modules.return_value = [
-            openssl_module, boringssl_module, nss_module
-        ]
-        
-        # Create logger and detect libraries
-        logger = SSL_Logger("test_app", json_output="test.json")
-        detected_libraries = logger._detect_ssl_libraries()
-        
-        # Verify library detection
-        assert len(detected_libraries) >= 1
-        library_names = [lib.name for lib in detected_libraries]
-        assert any("ssl" in name.lower() for name in library_names)
-        
-    @patch('friTap.ssl_logger.frida')
-    @patch('builtins.open', create=True)
-    def test_ssl_key_extraction_workflow(self, mock_open, mock_frida):
-        """Test SSL key extraction workflow."""
-        # Setup mock Frida components
-        mock_device = MagicMock()
-        mock_process = MagicMock()
-        mock_script = MagicMock()
-        
-        mock_frida.get_local_device.return_value = mock_device
-        mock_device.attach.return_value = mock_process
-        mock_process.create_script.return_value = mock_script
-        
-        # Mock key extraction data
-        mock_key_data = {
-            'type': 'key_extraction',
-            'client_random': '0123456789abcdef' * 4,
-            'master_secret': 'fedcba9876543210' * 8,
-            'cipher_suite': 'TLS_AES_256_GCM_SHA384'
-        }
-        
-        # Create logger with key output
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.log', delete=False) as tmp:
-            key_file = tmp.name
-            
-        try:
-            logger = SSL_Logger("test_app", key_output=key_file)
-            
-            # Simulate key extraction
-            logger._handle_key_extraction(mock_key_data)
-            
-            # Verify key was processed
+
+        assert logger.mobile is True
+        assert logger.target_app == "com.example.app"
+        # session_info records the mobile flag — observable, real state.
+        assert logger.session_data["session_info"]["mobile"] is True
+        assert logger.session_data["session_info"]["target_app"] == "com.example.app"
+        # An Android helper can be constructed without a device (lazy ADB).
+        android = Android()
+        assert android is not None
+
+    def test_ssl_library_detection_workflow(self):
+        """A LibraryDetectedEvent is tracked on the logger's real state."""
+        logger = SSL_Logger("test_app")
+
+        logger._event_bus.emit(LibraryDetectedEvent(library="libssl.so.1.1",
+                                                     path="/usr/lib/libssl.so.1.1"))
+
+        # _on_library_detected records every library seen (used for exit hint).
+        assert "libssl.so.1.1" in logger._detected_libraries
+
+    def test_ssl_key_extraction_workflow(self):
+        """A keylog file is created and key material is written via the handler.
+
+        The keylog handler opens its file lazily on the first matching
+        KeylogEvent, so we drive a real TLS CLIENT_RANDOM key line through the
+        EventBus and assert it lands on disk.
+        """
+        from friTap.events import KeylogEvent
+
+        with tempfile.TemporaryDirectory() as tmp:
+            key_file = os.path.join(tmp, "keys.log")
+            logger = SSL_Logger("test_app", keylog=key_file)
+
+            handler = next(
+                (h for h in logger._output_handlers
+                 if isinstance(h, KeylogOutputHandler)),
+                None,
+            )
+            assert handler is not None
+
+            client_random = "0123456789abcdef" * 4
+            master_secret = "fedcba9876543210" * 8
+            logger._event_bus.emit(KeylogEvent(
+                protocol="tls",
+                key_data=f"CLIENT_RANDOM {client_random} {master_secret}",
+            ))
+
             assert os.path.exists(key_file)
-            
-        finally:
-            if os.path.exists(key_file):
-                os.unlink(key_file)
-                
-    @patch('friTap.ssl_logger.frida')
-    @patch('friTap.pcap.PCAP')
-    @patch('builtins.open', create=True)
-    def test_pcap_capture_workflow(self, mock_open, mock_pcap, mock_frida):
-        """Test PCAP capture workflow."""
-        # Setup mock PCAP
-        mock_pcap_instance = MagicMock()
-        mock_pcap.return_value = mock_pcap_instance
-        
-        # Setup mock Frida
-        mock_device = MagicMock()
-        mock_process = MagicMock()
-        mock_script = MagicMock()
-        
-        mock_frida.get_local_device.return_value = mock_device
-        mock_device.attach.return_value = mock_process
-        mock_process.create_script.return_value = mock_script
-        
-        # Create logger with PCAP output
-        logger = SSL_Logger("test_app", pcap_output="test_capture.pcap")
-        
-        # Simulate SSL data capture
-        ssl_data = b'\\x16\\x03\\x03\\x00\\x50'  # TLS Application Data
-        connection_info = {
-            'src_ip': '192.168.1.100',
-            'dst_ip': '93.184.216.34',
-            'src_port': 54321,
-            'dst_port': 443
-        }
-        
-        logger._handle_ssl_data(ssl_data, connection_info)
-        
-        # Verify PCAP operations
-        mock_pcap.assert_called_with("test_capture.pcap")
-        mock_pcap_instance.write_ssl_packet.assert_called()
-        
-    @patch('friTap.ssl_logger.frida')
-    @patch('builtins.open', create=True)
-    def test_json_output_workflow(self, mock_open, mock_frida):
-        """Test JSON output workflow."""
-        # Setup mock file operations
-        mock_file_handle = MagicMock()
-        mock_open.return_value.__enter__.return_value = mock_file_handle
-        
-        # Setup mock Frida
-        mock_device = MagicMock()
-        mock_process = MagicMock()
-        mock_script = MagicMock()
-        
-        mock_frida.get_local_device.return_value = mock_device
-        mock_device.attach.return_value = mock_process
-        mock_process.create_script.return_value = mock_script
-        
-        # Create logger with JSON output
-        logger = SSL_Logger("test_app", json_output="test_output.json")
-        
-        # Simulate analysis session
-        logger._add_ssl_session({
-            'id': 'session_123',
-            'cipher': 'TLS_AES_256_GCM_SHA384',
-            'protocol': 'TLSv1.3'
-        })
-        
-        logger._add_connection({
-            'src_ip': '192.168.1.100',
-            'dst_ip': '93.184.216.34',
-            'src_port': 54321,
-            'dst_port': 443
-        })
-        
-        logger._update_statistics('connections', 1)
-        logger._add_detected_library('OpenSSL')
-        
-        # Finalize JSON output
-        logger.finalize_json_output()
-        
-        # Verify JSON structure
-        session_data = logger.session_data
-        assert 'ssl_sessions' in session_data
-        assert 'connections' in session_data
-        assert 'statistics' in session_data
-        assert len(session_data['ssl_sessions']) == 1
-        assert len(session_data['connections']) == 1
+            with open(key_file) as fh:
+                contents = fh.read()
+            assert client_random in contents
+
+    def test_pcap_capture_workflow(self):
+        """Requesting a pcap builds a real PCAP object on the logger."""
+        with tempfile.TemporaryDirectory() as tmp:
+            pcap_path = os.path.join(tmp, "test_capture.pcap")
+            logger = SSL_Logger("test_app", pcap_name=pcap_path)
+
+            assert logger.pcap_obj is not None
+            assert logger.pcap_name == pcap_path
+
+    def test_json_output_workflow(self):
+        """Session/data/library events flow into JSON output and finalize to disk."""
+        with tempfile.TemporaryDirectory() as tmp:
+            json_path = os.path.join(tmp, "test_output.json")
+            logger = SSL_Logger("test_app", json_output=json_path)
+
+            handler = _json_handler(logger)
+            assert handler is not None
+
+            # Drive the real EventBus the way agent messages would.
+            logger._event_bus.emit(SessionEvent(
+                session_id="session_123",
+                event_type=SESSION_STARTED,
+                cipher_suite="TLS_AES_256_GCM_SHA384",
+                protocol_version="TLS 1.3",
+            ))
+            logger._event_bus.emit(DatalogEvent(
+                src_addr="192.168.1.100", src_port=54321,
+                dst_addr="93.184.216.34", dst_port=443,
+                data=b"hello",
+            ))
+            logger._event_bus.emit(LibraryDetectedEvent(library="OpenSSL"))
+
+            # Handler in-memory state reflects the events.
+            assert len(handler._data["ssl_sessions"]) == 1
+            assert len(handler._data["connections"]) == 1
+            assert any(lib["name"] == "OpenSSL"
+                       for lib in handler._data["libraries_detected"])
+            assert handler._data["statistics"]["total_connections"] == 1
+            assert handler._data["statistics"]["total_bytes_captured"] == len(b"hello")
+
+            # Finalize: close() writes the JSON document to disk.
+            handler.close()
+            assert os.path.exists(json_path)
+            with open(json_path) as fh:
+                written = json.load(fh)
+            assert written["ssl_sessions"][0]["session_id"] == "session_123"
+            assert written["connections"][0]["dst_port"] == 443
+            assert "statistics" in written
 
 
 @pytest.mark.mock_integration
 class TestMockLibrarySpecificWorkflows:
-    """Test library-specific analysis workflows."""
-    
-    @patch('friTap.ssl_logger.frida')
-    def test_openssl_analysis_workflow(self, mock_frida):
-        """Test OpenSSL-specific analysis workflow."""
-        # Setup OpenSSL module mock
-        openssl_module = MagicMock()
-        openssl_module.name = "libssl.so.1.1"
-        openssl_module.exports = {
-            'SSL_read': 0x7f0000001000,
-            'SSL_write': 0x7f0000001100,
-            'SSL_get_cipher': 0x7f0000001200
-        }
-        
-        # Setup mock Frida
-        mock_device = MagicMock()
-        mock_process = MagicMock()
-        mock_script = MagicMock()
-        
-        mock_frida.get_local_device.return_value = mock_device
-        mock_device.attach.return_value = mock_process
-        mock_process.create_script.return_value = mock_script
-        mock_process.enumerate_modules.return_value = [openssl_module]
-        
-        # Create logger and analyze
-        logger = SSL_Logger("openssl_app")
-        libraries = logger._detect_ssl_libraries()
-        
-        # Verify OpenSSL detection
-        assert len(libraries) == 1
-        assert "ssl" in libraries[0].name.lower()
-        
-    @patch('friTap.ssl_logger.frida')
-    def test_boringssl_analysis_workflow(self, mock_frida):
-        """Test BoringSSL-specific analysis workflow."""
-        # Setup BoringSSL module mock
-        boringssl_module = MagicMock()
-        boringssl_module.name = "libssl.so"
-        boringssl_module.base = 0x7f0000000000
-        
-        # Setup mock Frida
-        mock_device = MagicMock()
-        mock_process = MagicMock()
-        mock_script = MagicMock()
-        
-        mock_frida.get_local_device.return_value = mock_device
-        mock_device.attach.return_value = mock_process
-        mock_process.create_script.return_value = mock_script
-        mock_process.enumerate_modules.return_value = [boringssl_module]
-        
-        # Create logger and analyze
-        logger = SSL_Logger("chrome")
-        libraries = logger._detect_ssl_libraries()
-        
-        # Verify BoringSSL detection
-        assert len(libraries) == 1
-        assert libraries[0].name == "libssl.so"
-        
-    @patch('friTap.ssl_logger.frida')
-    def test_nss_analysis_workflow(self, mock_frida):
-        """Test NSS-specific analysis workflow."""
-        # Setup NSS modules mock
-        nss_modules = [
-            MagicMock(name="libnss3.so"),
-            MagicMock(name="libssl3.so"),
-            MagicMock(name="libplc4.so")
-        ]
-        
-        # Setup mock Frida
-        mock_device = MagicMock()
-        mock_process = MagicMock()
-        mock_script = MagicMock()
-        
-        mock_frida.get_local_device.return_value = mock_device
-        mock_device.attach.return_value = mock_process
-        mock_process.create_script.return_value = mock_script
-        mock_process.enumerate_modules.return_value = nss_modules
-        
-        # Create logger and analyze
+    """Library-specific detection via real LibraryDetectedEvent routing."""
+
+    @pytest.mark.parametrize("library", [
+        "libssl.so.1.1",   # OpenSSL
+        "libssl.so",       # BoringSSL
+        "libnss3.so",      # NSS
+    ])
+    def test_library_detection_records_library(self, library):
+        """Each TLS library kind is tracked when its detection event fires."""
+        logger = SSL_Logger("some_app")
+        logger._event_bus.emit(LibraryDetectedEvent(library=library))
+        assert library in logger._detected_libraries
+
+    def test_multiple_libraries_detected(self):
+        """Several libraries detected in one session are all retained."""
         logger = SSL_Logger("firefox")
-        libraries = logger._detect_ssl_libraries()
-        
-        # Verify NSS detection
-        nss_libraries = [lib for lib in libraries if "nss" in lib.name.lower()]
-        assert len(nss_libraries) >= 1
+        for lib in ("libnss3.so", "libssl3.so", "libplc4.so"):
+            logger._event_bus.emit(LibraryDetectedEvent(library=lib))
+        assert {"libnss3.so", "libssl3.so", "libplc4.so"} <= logger._detected_libraries
+
+    def test_auto_protocol_switch_on_detection(self):
+        """In --protocol auto, a detected library can swap the active handler.
+
+        With the default ``auto`` registry the handler starts as TLS; detecting
+        a TLS library keeps it on the TLS handler (real auto_detect behavior).
+        """
+        logger = SSL_Logger("chrome")
+        assert logger.protocol in ("auto", "tls", "all")
+        start_handler = logger._protocol_handler
+        logger._event_bus.emit(LibraryDetectedEvent(library="libssl.so",
+                                                     protocol="tls"))
+        # Handler remains valid (TLS for a TLS library); never becomes None.
+        assert logger._protocol_handler is not None
+        assert logger._protocol_handler.name == start_handler.name
 
 
 @pytest.mark.mock_integration
 class TestMockPlatformSpecificWorkflows:
-    """Test platform-specific integration workflows."""
-    
-    @patch('friTap.ssl_logger.frida')
-    @patch('friTap.android.subprocess')
-    def test_android_integration_workflow(self, mock_subprocess, mock_frida):
-        """Test Android integration workflow."""
-        # Setup mock ADB commands
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = "package:com.example.app\npackage:com.test.app"
-        mock_subprocess.run.return_value = mock_result
-        
-        # Setup mock Frida
-        mock_device = MagicMock()
-        mock_process = MagicMock()
-        mock_script = MagicMock()
-        
-        mock_frida.get_usb_device.return_value = mock_device
-        mock_device.attach.return_value = mock_process
-        mock_process.create_script.return_value = mock_script
-        
-        # Create Android helper and logger
+    """Platform-specific construction. Real attach needs a device, so we assert
+    on construction/config rather than calling non-existent attach helpers."""
+
+    def test_android_integration_workflow(self):
+        """Android helper constructs and an Android-targeted logger is mobile."""
         android = Android()
         logger = SSL_Logger("com.example.app", mobile=True)
-        
-        # Test Android workflow
-        assert android.check_adb_availability()
-        packages = android.list_installed_packages()
-        assert "com.example.app" in packages
-        
-        # Test Frida attachment
-        logger._attach_to_target()
-        mock_device.attach.assert_called()
-        
-    @patch('friTap.ssl_logger.frida')
-    @patch('platform.system')
-    def test_windows_integration_workflow(self, mock_platform, mock_frida):
-        """Test Windows integration workflow."""
-        # Mock Windows platform
-        mock_platform.return_value = "Windows"
-        
-        # Setup mock Frida for Windows
-        mock_device = MagicMock()
-        mock_process = MagicMock()
-        mock_script = MagicMock()
-        
-        # Mock Windows SSL library (Schannel)
-        schannel_module = MagicMock()
-        schannel_module.name = "secur32.dll"
-        schannel_module.exports = {
-            'EncryptMessage': 0x7ff800001000,
-            'DecryptMessage': 0x7ff800001100
-        }
-        
-        mock_frida.get_local_device.return_value = mock_device
-        mock_device.attach.return_value = mock_process
-        mock_process.create_script.return_value = mock_script
-        mock_process.enumerate_modules.return_value = [schannel_module]
-        
-        # Create logger for Windows
+        assert logger.mobile is True
+        # Android helper exposes the real ADB-availability check.
+        assert hasattr(android, "check_adb_availability")
+        assert callable(android.check_adb_availability)
+
+    def test_windows_integration_workflow(self):
+        """A .exe target constructs cleanly with default (TLS) protocol."""
         logger = SSL_Logger("application.exe")
-        libraries = logger._detect_ssl_libraries()
-        
-        # Verify Windows-specific detection
-        assert len(libraries) >= 1
-        
-    @patch('friTap.ssl_logger.frida')
-    @patch('platform.system')
-    def test_macos_integration_workflow(self, mock_platform, mock_frida):
-        """Test macOS integration workflow."""
-        # Mock macOS platform
-        mock_platform.return_value = "Darwin"
-        
-        # Setup mock Frida for macOS
-        mock_device = MagicMock()
-        mock_process = MagicMock()
-        mock_script = MagicMock()
-        
-        # Mock macOS SSL libraries
-        macos_modules = [
-            MagicMock(name="libssl.dylib"),
-            MagicMock(name="Security.framework")
-        ]
-        
-        mock_frida.get_local_device.return_value = mock_device
-        mock_device.attach.return_value = mock_process
-        mock_process.create_script.return_value = mock_script
-        mock_process.enumerate_modules.return_value = macos_modules
-        
-        # Create logger for macOS
-        logger = SSL_Logger("/Applications/App.app/Contents/MacOS/App")
-        libraries = logger._detect_ssl_libraries()
-        
-        # Verify macOS-specific detection
-        assert len(libraries) >= 1
+        assert logger.target_app == "application.exe"
+        assert logger.mobile is False
+        assert logger._protocol_handler is not None
+
+    def test_macos_integration_workflow(self):
+        """A macOS app-bundle path target constructs cleanly."""
+        path = "/Applications/App.app/Contents/MacOS/App"
+        logger = SSL_Logger(path)
+        assert logger.target_app == path
+        assert logger._handlers_active is True
 
 
 @pytest.mark.mock_integration
 class TestMockErrorHandlingWorkflows:
-    """Test error handling in integration workflows."""
-    
-    @patch('friTap.ssl_logger.frida')
-    def test_frida_connection_error_workflow(self, mock_frida):
-        """Test workflow when Frida connection fails."""
-        # Mock Frida connection failure
-        mock_frida.get_local_device.side_effect = Exception("Frida daemon not running")
-        
-        # Test error handling
-        with pytest.raises(Exception, match="Frida daemon not running"):
-            logger = SSL_Logger("test_app")
-            logger._get_device()
-            
-    @patch('friTap.ssl_logger.frida')
-    def test_target_not_found_workflow(self, mock_frida):
-        """Test workflow when target application not found."""
-        # Setup mock Frida
-        mock_device = MagicMock()
-        mock_frida.get_local_device.return_value = mock_device
-        mock_device.attach.side_effect = Exception("Process not found")
-        
-        # Test error handling
-        with pytest.raises(Exception, match="Process not found"):
-            logger = SSL_Logger("nonexistent_app")
-            logger._attach_to_target()
-            
-    @patch('friTap.ssl_logger.frida')
-    def test_no_ssl_libraries_workflow(self, mock_frida):
-        """Test workflow when no SSL libraries found."""
-        # Setup mock Frida with no SSL libraries
-        mock_device = MagicMock()
-        mock_process = MagicMock()
-        mock_script = MagicMock()
-        
-        # Mock modules without SSL libraries
-        non_ssl_modules = [
-            MagicMock(name="libc.so.6"),
-            MagicMock(name="libpthread.so.0"),
-            MagicMock(name="libm.so.6")
-        ]
-        
-        mock_frida.get_local_device.return_value = mock_device
-        mock_device.attach.return_value = mock_process
-        mock_process.create_script.return_value = mock_script
-        mock_process.enumerate_modules.return_value = non_ssl_modules
-        
-        # Test SSL library detection
-        logger = SSL_Logger("test_app")
-        libraries = logger._detect_ssl_libraries()
-        
-        # Should return empty list
-        ssl_libraries = [lib for lib in libraries if "ssl" in lib.name.lower()]
-        assert len(ssl_libraries) == 0
-        
-    @patch('friTap.android.subprocess')
-    def test_adb_not_available_workflow(self, mock_subprocess):
-        """Test Android workflow when ADB not available."""
-        # Mock ADB not found
-        mock_subprocess.run.side_effect = FileNotFoundError("adb not found")
-        
-        # Test error handling
+    """Error handling that is observable without a device."""
+
+    def test_missing_app_and_config_raises(self):
+        """Constructing with neither app nor config is a hard error."""
+        with pytest.raises(ValueError, match="Either 'app' or 'config'"):
+            SSL_Logger()
+
+    def test_unknown_protocol_raises(self):
+        """Requesting an unregistered protocol fails fast at construction."""
+        from friTap.config import FriTapConfig
+        config = FriTapConfig.from_legacy_params(
+            app="test_app", protocol="definitely_not_a_protocol",
+        )
+        with pytest.raises((RuntimeError, ValueError),
+                           match="protocol"):
+            SSL_Logger(config=config)
+
+    def test_error_event_recorded_in_json(self):
+        """An ErrorEvent is captured by the JSON handler's error list."""
+        with tempfile.TemporaryDirectory() as tmp:
+            json_path = os.path.join(tmp, "errs.json")
+            logger = SSL_Logger("test_app", json_output=json_path)
+            handler = _json_handler(logger)
+            assert handler is not None
+            logger._event_bus.emit(ErrorEvent(error="boom",
+                                              description="something failed"))
+            assert any(e["error"] == "boom" for e in handler._data["errors"])
+
+    def test_adb_not_available_workflow(self):
+        """Android.check_adb_availability returns False when adb is missing."""
+        from unittest.mock import patch
         android = Android()
-        assert android.check_adb_availability() is False
-        
-    @patch('builtins.open')
-    def test_file_permission_error_workflow(self, mock_open):
-        """Test workflow when file permissions prevent output."""
-        # Mock file permission error
-        mock_open.side_effect = PermissionError("Permission denied")
-        
-        # Test error handling
-        with pytest.raises(PermissionError):
-            SSL_Logger("test_app", json_output="/root/no_permission.json")
+        with patch("friTap.android.subprocess.run",
+                   side_effect=FileNotFoundError("adb not found")):
+            assert android.check_adb_availability() is False
 
 
 @pytest.mark.mock_integration
 class TestMockPerformanceWorkflows:
-    """Test performance-related integration workflows."""
-    
-    @patch('friTap.ssl_logger.frida')
-    def test_high_throughput_workflow(self, mock_frida):
-        """Test workflow with high SSL data throughput."""
-        # Setup mock Frida
-        mock_device = MagicMock()
-        mock_process = MagicMock()
-        mock_script = MagicMock()
-        
-        mock_frida.get_local_device.return_value = mock_device
-        mock_device.attach.return_value = mock_process
-        mock_process.create_script.return_value = mock_script
-        
-        # Create logger
-        logger = SSL_Logger("high_throughput_app")
-        
-        # Simulate high-throughput SSL data
-        for i in range(1000):
-            ssl_data = f"ssl_packet_{i}".encode() * 100  # Large packets
-            connection_info = {
-                'src_ip': '192.168.1.100',
-                'dst_ip': '93.184.216.34',
-                'src_port': 54321 + i,
-                'dst_port': 443
-            }
-            logger._handle_ssl_data(ssl_data, connection_info)
-        
-        # Performance should remain reasonable
-        # (In real implementation, would measure timing)
-        assert len(logger.session_data['connections']) <= 1000
-        
-    @patch('friTap.ssl_logger.frida')
-    def test_memory_usage_workflow(self, mock_frida):
-        """Test workflow memory usage patterns."""
-        # Setup mock Frida
-        mock_device = MagicMock()
-        mock_process = MagicMock()
-        mock_script = MagicMock()
-        
-        mock_frida.get_local_device.return_value = mock_device
-        mock_device.attach.return_value = mock_process
-        mock_process.create_script.return_value = mock_script
-        
-        # Create logger and simulate memory-intensive operations
-        logger = SSL_Logger("memory_test_app", json_output="test.json")
-        
-        # Simulate many SSL sessions
-        for i in range(100):
-            logger._add_ssl_session({
-                'id': f'session_{i}',
-                'cipher': 'TLS_AES_256_GCM_SHA384',
-                'protocol': 'TLSv1.3',
-                'data': 'x' * 1000  # Large session data
-            })
-        
-        # Memory usage should be reasonable
-        assert len(logger.session_data['ssl_sessions']) == 100
-        
-    @patch('friTap.ssl_logger.frida')
-    def test_concurrent_analysis_workflow(self, mock_frida):
-        """Test workflow with concurrent analysis operations."""
-        # Setup mock Frida
-        mock_device = MagicMock()
-        mock_process = MagicMock()
-        mock_script = MagicMock()
-        
-        mock_frida.get_local_device.return_value = mock_device
-        mock_device.attach.return_value = mock_process
-        mock_process.create_script.return_value = mock_script
-        
-        # Create multiple loggers (simulating concurrent analysis)
-        loggers = []
-        for i in range(5):
-            logger = SSL_Logger(f"app_{i}")
-            loggers.append(logger)
-        
-        # Simulate concurrent operations
-        for logger in loggers:
-            logger._attach_to_target()
-            logger._load_agent()
-        
-        # All loggers should be properly initialized
+    """Throughput / volume handling through the real EventBus."""
+
+    def test_high_throughput_workflow(self):
+        """Many DatalogEvents are all accounted for by the JSON handler."""
+        with tempfile.TemporaryDirectory() as tmp:
+            json_path = os.path.join(tmp, "tp.json")
+            logger = SSL_Logger("high_throughput_app", json_output=json_path)
+            handler = _json_handler(logger)
+            assert handler is not None
+
+            total_bytes = 0
+            for i in range(1000):
+                payload = (f"ssl_packet_{i}".encode()) * 100
+                total_bytes += len(payload)
+                logger._event_bus.emit(DatalogEvent(
+                    src_addr="192.168.1.100", src_port=54321 + i,
+                    dst_addr="93.184.216.34", dst_port=443,
+                    data=payload,
+                ))
+
+            assert handler._data["statistics"]["total_connections"] == 1000
+            assert handler._data["statistics"]["total_bytes_captured"] == total_bytes
+
+    def test_memory_usage_workflow(self):
+        """Many SessionEvents accumulate without loss."""
+        with tempfile.TemporaryDirectory() as tmp:
+            json_path = os.path.join(tmp, "mem.json")
+            logger = SSL_Logger("memory_test_app", json_output=json_path)
+            handler = _json_handler(logger)
+            assert handler is not None
+
+            for i in range(100):
+                logger._event_bus.emit(SessionEvent(
+                    session_id=f"session_{i}",
+                    event_type=SESSION_STARTED,
+                    cipher_suite="TLS_AES_256_GCM_SHA384",
+                    protocol_version="TLS 1.3",
+                ))
+
+            assert len(handler._data["ssl_sessions"]) == 100
+            assert handler._data["statistics"]["total_sessions"] == 100
+
+    def test_concurrent_analysis_workflow(self):
+        """Multiple independent loggers each wire their own EventBus + handlers."""
+        loggers = [SSL_Logger(f"app_{i}") for i in range(5)]
         assert len(loggers) == 5
         for logger in loggers:
             assert logger.running is True
+            # Each logger owns a distinct EventBus (no shared global state).
+            assert logger._event_bus is not None
+        assert len({id(l._event_bus) for l in loggers}) == 5

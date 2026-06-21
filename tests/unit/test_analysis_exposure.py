@@ -116,7 +116,12 @@ SENDGRID_API_KEY = "SG." + "C" * 22 + "." + "D" * 43
 # 1. Registry resolution
 # ---------------------------------------------------------------------------
 
-def test_registry_resolution():
+def test_registry_resolution(monkeypatch):
+    # Isolate from any ambient external-analyzer discovery (drop-in dir /
+    # entry points) so the built-in resolution contract is deterministic.
+    monkeypatch.setattr("friTap.analysis.registry._DISCOVERED", {})
+    monkeypatch.setattr("friTap.analysis.registry._DISCOVERY_DONE", True)
+
     builtin = len(ANALYZER_REGISTRY)
     assert builtin == 4
     assert "privacy" in ANALYZER_REGISTRY

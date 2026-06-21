@@ -85,7 +85,11 @@ def _make_screen_stub():
     state_obj = _State()
 
     class _App:
-        def push_screen(self, screen):
+        def push_screen(self, screen, callback=None):
+            # Mirrors textual's App.push_screen(screen, callback=...). The
+            # controller presents post-capture modals via a sequential queue
+            # (_show_modals_sequentially), which always supplies a callback;
+            # record the screen so tests can assert what the user would see.
             pushed_screens.append(screen)
         def call_from_thread(self, fn, *a, **kw):
             # Run inline so test assertions see effects synchronously.

@@ -191,7 +191,12 @@ class SessionManager:
                 if not logger.pcap_obj.android_Instance.is_tcpdump_available:
                     self._logger.error("tcpdump is not available on the device.")
                     return
-                logger.pcap_obj.android_Instance.pull_pcap_from_device()
+                # Pull into the directory that holds the host-side output pcap
+                # so the finalize step (PCAP._temp_pcap_path) finds it. Without
+                # this the file lands in the CWD and is dropped whenever the
+                # output pcap lives elsewhere (e.g. an absolute path).
+                pull_dest_dir = os.path.dirname(logger.pcap_obj.pcap_file_name) or "."
+                logger.pcap_obj.android_Instance.pull_pcap_from_device(pull_dest_dir)
             self._logger.info(f"full {capture_type} capture saved to _{pcap_name}")
             if logger.keylog_file is None:
                 self._logger.info("remember that the full capture won't contain any decrypted TLS traffic.")

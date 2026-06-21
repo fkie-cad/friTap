@@ -53,6 +53,24 @@ pip install -e .
 pip install -e .[dev]
 ```
 
+### Optional extras
+
+friTap's crypto backend now ships in the base install, so offline protocol
+decryption works out of the box with `pip install friTap` (no extra needed). On
+platforms with a wheel, the optional `tgcrypto` accelerator is pulled in
+automatically too; the only remaining extra is `dev`. See
+[Telegram (MTProto)](../protocols/telegram.md) for details.
+
+If you want a lean install that skips the crypto backend, install without
+dependencies and use the minimal requirements:
+
+```bash
+pip install friTap --no-deps && pip install -r requirements-minimal.txt
+```
+
+In that lean mode offline decryption simply prints a `pip install cryptography`
+hint and skips (no crash); live key capture works regardless.
+
 
 ## Platform-Specific Setup
 

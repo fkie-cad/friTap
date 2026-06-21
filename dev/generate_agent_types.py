@@ -67,11 +67,13 @@ SHARED_CONSTANTS_HEADER = """\
 # ImportError at load time is better than getattr at generation time.
 from friTap.connection_index import DUMMY_SESSION_ID_BASE as _DUMMY_SESSION_ID_BASE  # noqa: E402
 from friTap.constants import INFRASTRUCTURE_PORTS as _INFRASTRUCTURE_PORTS  # noqa: E402
+from friTap.constants import AGENT_ABI_VERSION as _AGENT_ABI_VERSION  # noqa: E402
 
 # (ts_export_name, python_value)
 SHARED_CONSTANTS: list[tuple[str, object]] = [
     ("DUMMY_SESSION_ID_BASE", _DUMMY_SESSION_ID_BASE),
     ("INFRASTRUCTURE_PORTS", _INFRASTRUCTURE_PORTS),
+    ("AGENT_ABI_VERSION", _AGENT_ABI_VERSION),
 ]
 
 # Map Python types to TypeScript types
@@ -214,6 +216,11 @@ def generate_shared_constants_ts() -> str:
     for ts_name, value in SHARED_CONSTANTS:
         if isinstance(value, str):
             lines.append(f'export const {ts_name} = "{value}";')
+        elif isinstance(value, bool):
+            # bool is a subclass of int — must precede the int branch.
+            lines.append(f"export const {ts_name} = {str(value).lower()};")
+        elif isinstance(value, int):
+            lines.append(f"export const {ts_name} = {value};")
         elif isinstance(value, (frozenset, set)):
             # Emit ReadonlySet for O(1) .has() — preserves Python frozenset semantics.
             if all(isinstance(v, int) for v in value):

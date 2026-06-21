@@ -15,9 +15,14 @@ the stub pattern from ``test_pcap_dsb_defensive`` and bind the unbound methods
 to a minimal namespace instead.
 """
 
+import importlib.util
 import json
 import logging
 import types
+
+import pytest
+
+_SIGNAL_AVAILABLE = importlib.util.find_spec("friTap.offline.signal") is not None
 
 from friTap.constants import SSL_READ, SSL_WRITE
 from friTap.pcap import PCAP
@@ -104,6 +109,29 @@ class TestKeylogManifest:
             manifest = json.load(fh)
         assert manifest["keylog"] == str(tmp_path / "keys.log")
         assert manifest["tls_ports"] == [443]
+
+    @pytest.mark.skipif(not _SIGNAL_AVAILABLE, reason="signal protocol is private/stripped in public build")
+    def test_split_keylog_routes_to_per_protocol_field(self, tmp_path):
+        """Regression: for a multi-protocol (signal) capture the per-protocol
+        cli_dest field (signal_keylog) must be the SPLIT path, not the base/TLS
+        keylog. Writing the base path there pointed Signal decrypt at the TLS log
+        -> 0 Signal messages."""
+        out = tmp_path / "s.pcap"
+        stub = _make_stub(pcap_file_name=str(out))
+        stub.keylog_path = str(tmp_path / "skeys.tls.log")   # base holds TLS keys
+        stub.capture_protocol = "signal"
+        stub.active_keylogs = {
+            "signal": str(tmp_path / "skeys.signal.log"),
+            "tls": str(tmp_path / "skeys.tls.log"),
+        }
+
+        stub._write_capture_manifest()
+
+        with open(f"{out}.fritap.json", encoding="utf-8") as fh:
+            manifest = json.load(fh)
+        # The signal-specific field must carry the SIGNAL split, not the TLS base.
+        assert manifest["signal_keylog"] == str(tmp_path / "skeys.signal.log")
+        assert manifest["keylogs"]["signal"] == str(tmp_path / "skeys.signal.log")
 
     def test_no_keylog_omits_branch(self, tmp_path):
         out = tmp_path / "capture.pcap"

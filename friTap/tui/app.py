@@ -97,13 +97,20 @@ if TEXTUAL_AVAILABLE:
             Binding("question_mark", "show_help", "Help", show=True),
             Binding("y", "copy_log", "Copy Log", show=False),
             Binding("w", "save_tap", "Save .tap", show=False),
+            Binding("o", "open_pcap", "Open PCAP", show=False),
         ]
 
         _THEME_CONFIG_PATH = Path(platformdirs.user_config_dir("friTap")) / "tui_prefs.json"
 
-        def __init__(self, replay_file: str | None = None, **kwargs) -> None:
+        def __init__(
+            self,
+            replay_file: str | None = None,
+            pcap_to_tap_file: str | None = None,
+            **kwargs,
+        ) -> None:
             super().__init__(**kwargs)
             self._replay_file = replay_file
+            self._pcap_to_tap_file = pcap_to_tap_file
             # Register themes before CSS is parsed so $fritap-* variables resolve
             self.register_theme(FRITAP_DARK)
             self.register_theme(FRITAP_LIGHT)
@@ -118,7 +125,10 @@ if TEXTUAL_AVAILABLE:
         def on_mount(self) -> None:
             """Start with the main screen."""
             self.app_state = AppState()
-            self.push_screen(MainScreen(replay_file=self._replay_file))
+            self.push_screen(MainScreen(
+                replay_file=self._replay_file,
+                pcap_to_tap_file=self._pcap_to_tap_file,
+            ))
 
         def action_toggle_theme(self) -> None:
             """Toggle between dark and light themes."""
@@ -263,6 +273,9 @@ if TEXTUAL_AVAILABLE:
         def action_save_tap(self) -> None:
             self._delegate("action_save_tap")
 
+        def action_open_pcap(self) -> None:
+            self._delegate("action_open_pcap")
+
         def action_quit(self) -> None:
             """Show quit confirmation modal before exiting."""
             if isinstance(self.screen, QuitConfirmModal):
@@ -280,12 +293,18 @@ if TEXTUAL_AVAILABLE:
             super().action_quit()
 
 
-    def run_tui(replay_file: str | None = None) -> None:
+    def run_tui(
+        replay_file: str | None = None,
+        pcap_to_tap_file: str | None = None,
+    ) -> None:
         """Entry point to launch the TUI.
 
         Args:
             replay_file: If set, open this .tap file in replay mode
                          instead of starting a live capture wizard.
+            pcap_to_tap_file: If set, launch the guided pcap-to-tap wizard for
+                         this pcap/pcapng (convert -> open .tap) instead of the
+                         live capture wizard.
 
         SSL_Logger configures console logging when the capture session
         starts; we don't pre-configure it here. While Textual owns the
@@ -299,7 +318,10 @@ if TEXTUAL_AVAILABLE:
             print("Install it with: pip install fritap[tui]  or  pip install textual>=0.80.0")
             sys.exit(1)
         from friTap.fritap_utility import mute_console_handlers
-        app = FriTapApp(replay_file=replay_file)
+        app = FriTapApp(
+            replay_file=replay_file,
+            pcap_to_tap_file=pcap_to_tap_file,
+        )
         try:
             with mute_console_handlers():
                 app.run()
@@ -307,7 +329,10 @@ if TEXTUAL_AVAILABLE:
             pass
 
 else:
-    def run_tui(replay_file: str | None = None) -> None:
+    def run_tui(
+        replay_file: str | None = None,
+        pcap_to_tap_file: str | None = None,
+    ) -> None:
         import sys
         print("Error: The TUI requires the 'textual' package.")
         print("Install it with: pip install fritap[tui]  or  pip install textual>=0.80.0")

@@ -4,6 +4,7 @@ import { devlog, devlog_debug, devlog_error, log } from "../../util/log.js";
 import { safeKeyLenLogged } from "../../shared/keylog_length.js";
 import { pcap_enabled, patterns as patternsJson, isPatternReplaced, enable_default_fd } from "../../fritap_agent.js";
 import { hasUsablePatternsFor } from "../shared/cronet_patterns.js";
+import { noteHandshakeLogged, observeHandshakeSecret } from "../../shared/tls13_secret_recovery.js";
 import { openSslSessionIdDecoder } from "../definitions/openssl.js";
 import { isWindows, isiOS, isMacOS } from "../../util/process_infos.js";
 
@@ -209,6 +210,7 @@ export class Cronet {
             devlog("[Error] Argument 'sslStructPtr' is NULL");
         }
 
+        let secretU8: Uint8Array | null = null;
         if (!keyPtr.isNull()) {
             const { len: KEY_LENGTH } = safeKeyLenLogged(
                 keyLen,
@@ -223,6 +225,7 @@ export class Cronet {
             const hexKey = get_hex_string_from_byte_array(keyData);
 
             secret_key = hexKey;
+            if (keyData) secretU8 = new Uint8Array(keyData as ArrayBuffer);
         } else {
             devlog("[Error] Argument 'key' is NULL");
         }
@@ -230,6 +233,16 @@ export class Cronet {
         //devlog("invoking ssl_log_secret() from BoringSSL statically linked into Cronet");
         devlog("invoking shadow keylog_callback from Cronet (" + this.module_name + ")");
         sendKeylog(labelStr+" "+client_random+" "+secret_key);
+
+        // M2 spike: libsignal's BoringSSL keys flow through THIS Cronet path
+        // (not boringSslDumpKeys). Mark the SSL* as keyed, and learn where the
+        // traffic secrets live in s3 (ground truth for attach-mode recovery).
+        if (!sslStructPtr.isNull()) {
+            noteHandshakeLogged(sslStructPtr);
+            if (secretU8) {
+                observeHandshakeSecret(this.module_name, sslStructPtr, labelStr, secretU8);
+            }
+        }
     }
 
     // Cronet plaintext capture. Two code paths:

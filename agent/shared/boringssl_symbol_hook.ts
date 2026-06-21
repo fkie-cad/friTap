@@ -7,6 +7,10 @@ import {
     CLIENT_RANDOM_CACHE_MAX,
     tryReadClientRandomAt,
 } from "./ssl_struct_walk.js";
+import {
+    noteHandshakeLogged,
+    observeHandshakeSecret,
+} from "./tls13_secret_recovery.js";
 import { keylog_enabled } from "../fritap_agent.js";
 
 /*
@@ -350,20 +354,25 @@ export function boringSslDumpKeys(
     labelPtr: NativePointer,
     sslStructPtr: NativePointer,
     keyPtr: NativePointer,
-    keyLen: number
+    keyLen: number,
+    moduleName: string = ""
 ): void {
     const labelStr = labelPtr.isNull() ? "" : labelPtr.readCString() ?? "";
     const clientRandom = readClientRandom(sslStructPtr);
 
     let secretHex = "";
     let loggedLen = keyLen;
+    let secretU8: Uint8Array | null = null;
     if (!keyPtr.isNull()) {
         // No class-level byte-walk available here; default closure returns 32.
         const { len } = safeKeyLenLogged(keyLen, labelStr, keyPtr, () => 32);
         loggedLen = len;
         try {
             const buf = keyPtr.readByteArray(len);
-            secretHex = get_hex_string_from_byte_array(buf);
+            if (buf) {
+                secretU8 = new Uint8Array(buf as ArrayBuffer);
+                secretHex = get_hex_string_from_byte_array(secretU8);
+            }
         } catch (e) {
             devlog_debug(`[boringssl-sym] secret read failed: ${e}`);
         }
@@ -376,6 +385,17 @@ export function boringSslDumpKeys(
     );
 
     sendKeylog(`${labelStr} ${clientRandom} ${secretHex}`);
+
+    // M2 spike: this SSL*'s keys are now logged the normal way, and (for the
+    // traffic-secret labels) this handshake is ground truth for learning where
+    // BoringSSL retains the secrets in s3 — used to recover keys on ATTACH for
+    // connections whose handshake we never witnessed.
+    if (!sslStructPtr.isNull()) {
+        noteHandshakeLogged(sslStructPtr);
+        if (secretU8) {
+            observeHandshakeSecret(moduleName, sslStructPtr, labelStr, secretU8);
+        }
+    }
 }
 
 /**
@@ -393,6 +413,6 @@ export function makeBoringSslDumpKeys(moduleName: string): DumpKeysCb {
         keyLen: number,
     ): void {
         devlog(`invoking ssl_log_secret hook for module ${moduleName}`);
-        return boringSslDumpKeys(labelPtr, sslStructPtr, keyPtr, keyLen);
+        return boringSslDumpKeys(labelPtr, sslStructPtr, keyPtr, keyLen, moduleName);
     };
 }

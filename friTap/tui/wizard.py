@@ -203,6 +203,56 @@ class CaptureWizard:
             state.protocol = protocol
             if protocol != "tls":
                 self._screen._get_activity_log().log_info(f"Protocol: {protocol.upper()}")
+            # Telegram/MTProto: offline decryption of the captured pcap needs the
+            # optional crypto backend. Warn now if it is missing (live key capture
+            # still works without it).
+            if protocol == "mtproto":
+                from friTap.offline.mtproto import (
+                    MTPROTO_DEPENDENCY_HINT,
+                    mtproto_backend_available,
+                )
+                if not mtproto_backend_available():
+                    self._screen._get_activity_log().log_warning(MTPROTO_DEPENDENCY_HINT)
+                    try:
+                        self._screen.app.notify(
+                            MTPROTO_DEPENDENCY_HINT,
+                            title="MTProto dependency missing",
+                            severity="warning",
+                        )
+                    except Exception:
+                        pass
+            # Telegram (combined cloud + Secret-Chat E2E) shares the MTProto
+            # offline crypto backend; warn the same way if it is missing.
+            if protocol == "telegram":
+                from friTap.offline.mtproto import (
+                    MTPROTO_DEPENDENCY_HINT,
+                    mtproto_backend_available,
+                )
+                if not mtproto_backend_available():
+                    self._screen._get_activity_log().log_warning(MTPROTO_DEPENDENCY_HINT)
+                    try:
+                        self._screen.app.notify(
+                            MTPROTO_DEPENDENCY_HINT,
+                            title="Telegram dependency missing",
+                            severity="warning",
+                        )
+                    except Exception:
+                        pass
+            if protocol == "signal":
+                from friTap.offline.signal import (
+                    SIGNAL_DEPENDENCY_HINT,
+                    signal_backend_available,
+                )
+                if not signal_backend_available():
+                    self._screen._get_activity_log().log_warning(SIGNAL_DEPENDENCY_HINT)
+                    try:
+                        self._screen.app.notify(
+                            SIGNAL_DEPENDENCY_HINT,
+                            title="Signal dependency missing",
+                            severity="warning",
+                        )
+                    except Exception:
+                        pass
             # Keys-only mode skips encapsulated protocols and view mode
             if self._capture_mode_id == "keys":
                 self._step_6_configure(self._capture_mode_id)
@@ -371,3 +421,257 @@ class CaptureWizard:
         state = self._screen._get_state()
         self._screen._get_activity_log().log_success("Wizard complete -- starting capture!")
         self._screen._start_capture(state)
+
+
+class PcapToTapWizard:
+    """Guided pcap-to-tap conversion wizard for the friTap TUI.
+
+    Launched when the user runs ``fritap -r <file>.pcap`` /
+    ``fritap <file>.pcapng``. Mirrors :class:`CaptureWizard`'s callback-chained,
+    back-navigable step structure but drives the offline conversion flow:
+
+    1. Confirm the pcap input, choose the output ``.tap``, and supply an
+       optional TLS keylog (:meth:`_step_1_paths`).
+    2. Add one OR MORE per-protocol (layered) keylogs — Signal / MTProto-Telegram
+       / plugins — looping until the user is done (:meth:`_step_2_protocol_keylogs`).
+    3. Show a summary and confirm (:meth:`_step_3_confirm`).
+
+    On confirm it assembles the ``convert_pcap_to_tap`` kwargs (via
+    ``MainScreen._build_convert_args_multi``) and reuses the screen's existing
+    decrypt-worker pipeline, which opens the produced ``.tap`` in the replay view.
+    """
+
+    def __init__(self, screen) -> None:
+        self._screen = screen
+        self._active: bool = False
+        self._pcap_path: str = ""
+        self._tap_path: str = ""
+        self._tls_keylog: str = ""
+        # protocol_name -> keylog path (one entry per added layered keylog)
+        self._protocol_keylogs: dict[str, str] = {}
+
+    # ----------------------------------------------------------
+    # Public API
+    # ----------------------------------------------------------
+
+    @property
+    def active(self) -> bool:
+        return self._active
+
+    @active.setter
+    def active(self, value: bool) -> None:
+        self._active = value
+
+    def guard(self) -> bool:
+        """Return True if wizard is active (blocks manual actions)."""
+        return self._active
+
+    def start(self, pcap_path: str) -> None:
+        """Launch the guided pcap-to-tap conversion wizard."""
+        self._active = True
+        self._pcap_path = pcap_path or ""
+        self._screen._get_activity_log().log_info(
+            "Starting pcap-to-tap conversion wizard..."
+        )
+        self._step_1_paths()
+
+    def finish_cancelled(self) -> None:
+        """Cancel the wizard and leave the (empty) flow view in place."""
+        self._active = False
+        msg = "Conversion wizard cancelled. Use 'o' to open a pcap manually."
+        self._screen._get_activity_log().log_info(msg)
+        # In ``fritap -r`` mode the activity log is hidden behind the empty flow
+        # view, so also surface the cancellation as a toast.
+        try:
+            self._screen.app.notify(msg, severity="information")
+        except Exception:
+            pass
+
+    # ----------------------------------------------------------
+    # Wizard steps
+    # ----------------------------------------------------------
+
+    def _default_tap_for(self, pcap: str) -> str:
+        """Default output ``.tap`` path: the pcap path with a ``.tap`` suffix."""
+        import os
+        if not pcap:
+            return ""
+        return os.path.splitext(pcap)[0] + ".tap"
+
+    def _offline_protocol_names(self) -> list[str]:
+        """Selectable keylog protocols: ``tls`` plus every offline decryptor.
+
+        TLS is offered like any other protocol (its keylog strips the transport
+        so TLS-wrapped protocols such as Signal can be decrypted), followed by
+        the friTap-owned offline decryptors (signal, mtproto, telegram, ...).
+        """
+        try:
+            from friTap.offline.registry import get_offline_decryptor_registry
+            names = get_offline_decryptor_registry().names()
+        except Exception:
+            names = []
+        return ["tls", *names]
+
+    def _step_1_paths(self) -> None:
+        """Step 1: confirm the pcap input and the output ``.tap`` path."""
+        from .modals.pcap_to_tap_modals import PcapPathsModal
+
+        def _on_result(result: Optional[dict]) -> None:
+            if result is None:
+                self.finish_cancelled()
+                return
+            self._pcap_path = result.get("pcap", "") or self._pcap_path
+            self._tap_path = result.get("tap", "")
+            self._step_2_protocol_keylogs()
+
+        self._screen.app.push_screen(
+            PcapPathsModal(
+                default_pcap=self._pcap_path,
+                default_tap=self._tap_path or self._default_tap_for(self._pcap_path),
+            ),
+            callback=_on_result,
+        )
+
+    def _step_2_protocol_keylogs(self) -> None:
+        """Step 2: collect one or more per-protocol (layered) keylogs.
+
+        Re-shows itself after each added entry so several keylogs can be
+        supplied. ``Done`` proceeds to confirm; ``Cancel`` (Esc) goes back to
+        step 1.
+        """
+        from .modals.pcap_to_tap_modals import ProtocolKeylogModal
+
+        def _on_result(result: Optional[dict]) -> None:
+            if result is None:
+                # Back -> step 1
+                self._step_1_paths()
+                return
+            action = result.get("action")
+            if action == "add":
+                protocol = result.get("protocol", "")
+                keylog = result.get("keylog", "")
+                if protocol and keylog:
+                    self._protocol_keylogs[protocol] = keylog
+                    self._screen._get_activity_log().log_info(
+                        f"Added {protocol} keylog: {keylog}"
+                    )
+                # Loop: ask for another keylog.
+                self._step_2_protocol_keylogs()
+                return
+            # action == "done"
+            self._step_3_confirm()
+
+        self._screen.app.push_screen(
+            ProtocolKeylogModal(
+                protocol_names=self._offline_protocol_names(),
+                added=self._protocol_keylogs,
+            ),
+            callback=_on_result,
+        )
+
+    def _tls_strip_protocols(self) -> list[str]:
+        """Selected protocols (excluding ``tls``) that require a TLS strip.
+
+        These ride inside TLS (e.g. Signal) and so need a TLS keylog in addition
+        to their own keylog; read from the offline registry's
+        ``requires_tls_strip`` flag.
+        """
+        try:
+            from friTap.offline.registry import get_offline_decryptor_registry
+            reg = get_offline_decryptor_registry()
+        except Exception:
+            return []
+        out: list[str] = []
+        for name in self._protocol_keylogs:
+            if name == "tls":
+                continue
+            entry = reg.get(name)
+            if entry is not None and entry.requires_tls_strip:
+                out.append(name)
+        return out
+
+    def _capture_has_dsb(self) -> bool:
+        """True if the pcap is a pcapng carrying embedded TLS keys (DSB)."""
+        try:
+            from friTap.offline.tshark import capture_has_dsb
+            return capture_has_dsb(self._pcap_path)
+        except Exception:
+            return False
+
+    def _tls_feedback(self) -> dict:
+        """Note/warning for the confirm summary about TLS-key availability.
+
+        Signal (any ``requires_tls_strip`` protocol) needs BOTH a TLS keylog and
+        its own keylog. TLS keys may instead be embedded in a pcapng's DSB. When
+        a TLS-wrapped protocol is selected but no TLS keys are available, warn
+        that it won't decrypt; when they're embedded as a DSB, note that. The
+        DSB check only runs when it could matter, to avoid walking a huge pcapng.
+        """
+        needs_tls = self._tls_strip_protocols()
+        if not needs_tls:
+            return {}
+        if self._protocol_keylogs.get("tls"):
+            return {}  # TLS keylog supplied explicitly — nothing to flag.
+        if self._capture_has_dsb():
+            return {"tls_note": "TLS keys: embedded in capture (DSB)"}
+
+        names = ", ".join(sorted(needs_tls))
+        return {
+            "warning": (
+                f"{names} ride inside TLS and need BOTH a TLS keylog and their "
+                f"own keylog. No TLS keys were provided and the capture has no "
+                f"embedded DSB keys, so {names} traffic will NOT be decrypted "
+                f"— add a 'tls' keylog on the previous screen."
+            )
+        }
+
+    def _step_3_confirm(self) -> None:
+        """Step 3: show a summary and confirm the conversion."""
+        from .modals.pcap_to_tap_modals import PcapToTapConfirmModal
+
+        summary = {
+            "pcap": self._pcap_path,
+            "tap": self._tap_path or self._default_tap_for(self._pcap_path),
+            "protocol_keylogs": dict(self._protocol_keylogs),
+        }
+        summary.update(self._tls_feedback())
+
+        def _on_result(confirmed: Optional[bool]) -> None:
+            if confirmed is None:
+                # Back -> step 2 (edit the protocol keylogs)
+                self._step_2_protocol_keylogs()
+                return
+            self._finish_and_convert()
+
+        self._screen.app.push_screen(
+            PcapToTapConfirmModal(summary=summary), callback=_on_result,
+        )
+
+    # ----------------------------------------------------------
+    # Finish helpers
+    # ----------------------------------------------------------
+
+    def _finish_and_convert(self) -> None:
+        """Assemble convert args and launch the decrypt-to-flow worker."""
+        self._active = False
+        # TLS was collected like any other protocol; split it back out into the
+        # dedicated tls_keylog kwarg (TLS rides on keylog_path, not the layered
+        # protocol_keylogs map that convert_pcap_to_tap feeds to its decryptors).
+        self._tls_keylog = self._protocol_keylogs.get("tls", "")
+        protocol_keylogs = {
+            name: path for name, path in self._protocol_keylogs.items()
+            if name != "tls"
+        }
+        args = self._screen._build_convert_args_multi(
+            pcap=self._pcap_path,
+            tls_keylog=self._tls_keylog,
+            protocol_keylogs=protocol_keylogs,
+            tap=self._tap_path,
+        )
+        if args is None:
+            # Missing pcap was already reported via notify; nothing to convert.
+            return
+        self._screen._get_activity_log().log_success(
+            "Conversion wizard complete -- converting pcap to .tap!"
+        )
+        self._screen._launch_decrypt_worker(args)

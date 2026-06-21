@@ -15,7 +15,15 @@ try:
 except ImportError:
     TEXTUAL_AVAILABLE = False
 
-from friTap.constants import PROTOCOL_HTTP1, PROTOCOL_HTTP2, PROTOCOL_HTTP3, PROTOCOL_WEBSOCKET
+from friTap.constants import (
+    PROTOCOL_HTTP1,
+    PROTOCOL_HTTP2,
+    PROTOCOL_HTTP3,
+    PROTOCOL_WEBSOCKET,
+    PROTOCOL_SIGNAL,
+    PROTOCOL_MTPROTO,
+    PROTOCOL_TELEGRAM_E2E,
+)
 from friTap.tui.themes import c
 
 if TEXTUAL_AVAILABLE:
@@ -53,9 +61,24 @@ if TEXTUAL_AVAILABLE:
             self._row_cache: dict[str, list] = {}
             self._toggle_engine: "FilterEngine | None" = None
             self._filter_bar_ref = None  # cached FilterBar reference
+            # Content-aware Proto/Method widths: start compact, grow only when a
+            # row actually needs it (e.g. HTTP/2[Signal], "1:1 · 4 msgs").
+            self._proto_w = self._BASE_PROTO_WIDTH
+            self._method_w = self._BASE_METHOD_WIDTH
 
-        # Total space for all columns except Connection: column widths (61) + cell padding (8×2) + scrollbar (2).
-        _FIXED_COLS_WIDTH = 79
+        # Compact defaults — fit plain protos (HTTP/2, WS) and short methods.
+        _BASE_PROTO_WIDTH = 10
+        _BASE_METHOD_WIDTH = 8
+        # Caps so a long layered label can't starve the Connection column.
+        # 24 fits "WebSocket[Telegram-E2E]" (23); 16 fits "group · 12 msgs" (15).
+        _MAX_PROTO_WIDTH = 24
+        _MAX_METHOD_WIDTH = 16
+        # Fixed width of the non-flexible columns (# + Time + Status + Size +
+        # Duration = 43) and the per-table overhead (8 cols × 2 padding + 2
+        # scrollbar = 18). Proto/Method are added dynamically; Connection fills
+        # the rest. With base widths this reproduces the former constant 79.
+        _NONFLEX_BASE = 43
+        _PADDING_AND_SCROLLBAR = 18
 
         def register_column(self, provider) -> None:
             """Register a plugin ColumnProvider for an extra column."""
@@ -63,16 +86,18 @@ if TEXTUAL_AVAILABLE:
 
         @property
         def _connection_col_width(self) -> int:
-            """Width for the Connection column — fills remaining space."""
-            available = self.size.width - self._FIXED_COLS_WIDTH
-            return max(available, 30)
+            """Width for the Connection column — fills the space left after the
+            (possibly widened) Proto/Method columns."""
+            fixed = (self._NONFLEX_BASE + self._proto_w + self._method_w
+                     + self._PADDING_AND_SCROLLBAR)
+            return max(self.size.width - fixed, 30)
 
         def on_mount(self) -> None:
             """Set up columns with explicit widths so Connection fills remaining space."""
             self.add_column("#", width=5)
             self.add_column("Time", width=10)
-            self.add_column("Proto", width=10)
-            self.add_column("Method", width=8)
+            self.add_column("Proto", width=self._proto_w)
+            self.add_column("Method", width=self._method_w)
             self.add_column("Connection", width=self._connection_col_width)
             self.add_column("Status", width=8)
             self.add_column("Size", width=10)
@@ -81,13 +106,51 @@ if TEXTUAL_AVAILABLE:
                 self.add_column(col_provider.name)
 
         def on_resize(self, event) -> None:
-            """Update Connection column width when terminal is resized."""
+            """Reflow Proto/Method/Connection widths when the terminal resizes."""
+            self._apply_column_widths()
+
+        def _apply_column_widths(self) -> None:
+            """Push the current Proto/Method widths to the table and refill the
+            Connection column. Cheap and idempotent; safe to call on every change."""
             try:
                 cols = list(self.columns.keys())
-                if len(cols) >= 5:
-                    self.columns[cols[4]].width = self._connection_col_width
+                if len(cols) < 5:
+                    return
+                self.columns[cols[2]].width = self._proto_w
+                self.columns[cols[3]].width = self._method_w
+                self.columns[cols[4]].width = self._connection_col_width
+                self.refresh(layout=True)
             except Exception:
                 pass
+
+        def _consider_row_widths(self, flow) -> None:
+            """Grow Proto/Method (capped) if THIS row needs more than the current
+            width. Growth-only and O(1): plain HTTP captures never trigger it;
+            only longer labels (HTTP/2[Signal], "1:1 · 4 msgs") expand a column."""
+            proto_need = min(len(self._format_proto(flow)), self._MAX_PROTO_WIDTH)
+            method_need = min(self._method_plain_len(flow), self._MAX_METHOD_WIDTH)
+            new_proto = max(self._proto_w, proto_need)
+            new_method = max(self._method_w, method_need)
+            if new_proto != self._proto_w or new_method != self._method_w:
+                self._proto_w = new_proto
+                self._method_w = new_method
+                self._apply_column_widths()
+
+        def _recompute_proto_method_widths(self) -> None:
+            """Full recompute over all visible flows (can shrink back to base when
+            wide rows are filtered out). Used on rebuild/filter, not per-row."""
+            proto_w = self._BASE_PROTO_WIDTH
+            method_w = self._BASE_METHOD_WIDTH
+            for summary in self._all_flow_data.values():
+                if not self._passes_filter(summary):
+                    continue
+                proto_w = max(proto_w, min(len(self._format_proto(summary)),
+                                           self._MAX_PROTO_WIDTH))
+                method_w = max(method_w, min(self._method_plain_len(summary),
+                                             self._MAX_METHOD_WIDTH))
+            self._proto_w = proto_w
+            self._method_w = method_w
+            self._apply_column_widths()
 
         # -- Filter API -------------------------------------------------------
 
@@ -159,26 +222,62 @@ if TEXTUAL_AVAILABLE:
             PROTOCOL_HTTP2: "H2",
             PROTOCOL_HTTP3: "H3",
             PROTOCOL_WEBSOCKET: "WS",
+            PROTOCOL_SIGNAL: "SIG",
+            PROTOCOL_MTPROTO: "MTP",
+            PROTOCOL_TELEGRAM_E2E: "TG-E2E",
         }
+
+        @staticmethod
+        def _format_proto(flow) -> str:
+            """Format the protocol column, preserving nested layered labels.
+
+            For a layered label like ``HTTP/2[Signal]`` the casing is preserved
+            verbatim; otherwise the plain protocol is upper-cased as before.
+            """
+            label = flow.display_protocol_layered
+            if label and "[" in label:
+                return label
+            return label.upper() if label and label != "unknown" else "???"
+
+        @staticmethod
+        def _method_parts(flow) -> tuple[str, str]:
+            """Return ``(method, badge)`` — the plain method text plus an optional
+            trailing-data badge (e.g. ``+WS``), both markup-free for measurement."""
+            method = flow.display_method or "-"
+            # Fall back to the E2E inner summary (e.g. "1:1 · 3 msgs") when there's no method.
+            if method == "-":
+                inner = getattr(flow, "inner_summary", "") or ""
+                if inner:
+                    method = inner
+            badge = ""
+            if flow.has_trailing_data:
+                short = FlowListWidget._SHORT_PROTO.get(flow.trailing_protocol, "")
+                badge = f"+{short}" if short else "+data"
+            return method, badge
 
         @staticmethod
         def _format_method(flow) -> str:
             """Format method column, appending protocol badge if trailing data exists."""
-            method = flow.display_method or "-"
-            if flow.has_trailing_data:
-                short = FlowListWidget._SHORT_PROTO.get(flow.trailing_protocol, "")
-                badge = f"+{short}" if short else "+data"
-                method = f"{method} [{c('warning')}]{badge}[/]"
+            method, badge = FlowListWidget._method_parts(flow)
+            if badge:
+                return f"{method} [{c('warning')}]{badge}[/]"
             return method
+
+        @staticmethod
+        def _method_plain_len(flow) -> int:
+            """Visible width of the method cell (markup excluded) for column sizing."""
+            method, badge = FlowListWidget._method_parts(flow)
+            return len(method) + (len(badge) + 1 if badge else 0)
 
         def _add_row(self, flow: "Flow") -> None:
             self._flow_counter += 1
+            self._consider_row_widths(flow)
             ts = datetime.fromtimestamp(flow.started).strftime("%H:%M:%S")
 
             values = [
                 str(self._flow_counter),
                 ts,
-                flow.display_protocol.upper() if flow.display_protocol != "unknown" else "???",
+                self._format_proto(flow),
                 self._format_method(flow),
                 flow.display_connection or "-",
                 self._format_status(flow),
@@ -207,8 +306,12 @@ if TEXTUAL_AVAILABLE:
                 if len(cols) < 8:
                     return
 
+                # A flow that just became Signal (e.g. after re-parse) may now
+                # need a wider Proto/Method column.
+                self._consider_row_widths(flow)
+
                 new_vals = [
-                    flow.display_protocol.upper() if flow.display_protocol != "unknown" else "???",
+                    self._format_proto(flow),
                     self._format_method(flow),
                     flow.display_connection or "-",
                     self._format_status(flow),
@@ -249,6 +352,9 @@ if TEXTUAL_AVAILABLE:
                 if self._passes_filter(flow):
                     self._add_row(flow)
 
+            # Full recompute so columns can shrink back to base when the wide
+            # (Signal/E2E) rows were filtered out.
+            self._recompute_proto_method_widths()
             self._notify_match_count()
 
         def _notify_match_count(self) -> None:
@@ -276,6 +382,10 @@ if TEXTUAL_AVAILABLE:
             self._flow_row_keys.clear()
             self._flow_counter = 0
             self._all_flow_data.clear()
+            # Reset Proto/Method back to compact defaults.
+            self._proto_w = self._BASE_PROTO_WIDTH
+            self._method_w = self._BASE_METHOD_WIDTH
+            self._apply_column_widths()
 
         def _format_status(self, flow: "Flow") -> str:
             status = flow.display_status

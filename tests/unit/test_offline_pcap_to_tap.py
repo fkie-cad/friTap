@@ -16,12 +16,15 @@ tshark or the fixture is unavailable.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import logging
 import os
 import struct
 
 import pytest
+
+_SIGNAL_AVAILABLE = importlib.util.find_spec("friTap.offline.signal") is not None
 
 from friTap.offline import tshark as tshark_mod
 from friTap.offline import pcap_to_tap as p2t
@@ -223,6 +226,36 @@ def test_parse_node_endpoint_ipv6_splits_on_last_colon():
     addr, port = tshark_mod._parse_node_endpoint("2606:2800:220::1:443")
     assert addr == "2606:2800:220::1"
     assert port == 443
+
+
+def test_parse_node_endpoint_strips_ipv6_brackets():
+    # tshark brackets IPv6 endpoints in follow output; the address must come back
+    # unbracketed so its 4-tuple key matches the (unbracketed) ipv6.src field path.
+    addr, port = tshark_mod._parse_node_endpoint(
+        "[2600:9000:a507:ab6d:575d:9d9f:64af:7a5a]:443"
+    )
+    assert addr == "2600:9000:a507:ab6d:575d:9d9f:64af:7a5a"
+    assert port == 443
+
+
+def test_parse_node_endpoint_ipv4_unchanged():
+    addr, port = tshark_mod._parse_node_endpoint("10.0.0.5:8443")
+    assert addr == "10.0.0.5"
+    assert port == 8443
+
+
+def test_parse_follow_output_bracketed_ipv6_endpoints_unbracketed():
+    text = (
+        "Node 0: [2600:9000:a507:ab6d:575d:9d9f:64af:7a5a]:443\n"
+        "Node 1: [2a01:599:327:4bae:55d4:8c51:f36c:ab6d]:60306\n"
+        "\t0011\n"   # Node 1 (client) writes first -> client identified
+        "2233\n"     # Node 0 (server) responds
+    )
+    endpoints, _ = tshark_mod._parse_follow_output(text, tls_ports=[443])
+    client_addr, client_port, server_addr, server_port = endpoints
+    assert client_addr == "2a01:599:327:4bae:55d4:8c51:f36c:ab6d"
+    assert server_addr == "2600:9000:a507:ab6d:575d:9d9f:64af:7a5a"
+    assert (client_port, server_port) == (60306, 443)
 
 
 # ---------------------------------------------------------------------------
@@ -766,6 +799,44 @@ def test_manifest_cli_flags_take_precedence(tmp_path):
 
     assert merged["tls_ports"] == (9999,)
     assert merged["keylog_path"] == "/tmp/cli_keys.log"
+
+
+@pytest.mark.skipif(not _SIGNAL_AVAILABLE, reason="signal protocol is private/stripped in public build")
+def test_manifest_keylogs_map_wins_over_wrong_toplevel(tmp_path):
+    """Regression: a multi-protocol (signal) capture splits the -k keylog, but the
+    manifest's top-level ``signal_keylog`` historically held the BASE/TLS path.
+    The authoritative ``keylogs`` map must win so Signal decrypt gets its own keys
+    (the bug: signal_keylog pointed at the TLS log -> 0 Signal messages)."""
+    pcap = tmp_path / "s.pcap"
+    pcap.write_bytes(b"\x00")
+    manifest = tmp_path / "s.pcap.fritap.json"
+    manifest.write_text(json.dumps({
+        "keylog": "skeys.tls.log",
+        "signal_keylog": "skeys.tls.log",          # WRONG top-level (base/TLS path)
+        "keylogs": {"signal": "skeys.signal.log", "tls": "skeys.tls.log"},
+    }))
+
+    loaded = offline_cli.load_manifest(str(pcap))
+    merged = offline_cli.merge_manifest(_ns(), loaded)
+
+    assert merged["signal_keylog"] == "skeys.signal.log"
+    assert merged["protocol_keylogs"]["signal"] == "skeys.signal.log"
+
+
+@pytest.mark.skipif(not _SIGNAL_AVAILABLE, reason="signal protocol is private/stripped in public build")
+def test_manifest_explicit_signal_keylog_beats_keylogs_map(tmp_path):
+    """Explicit --signal-keylog still wins over the manifest keylogs map."""
+    pcap = tmp_path / "s.pcap"
+    pcap.write_bytes(b"\x00")
+    manifest = tmp_path / "s.pcap.fritap.json"
+    manifest.write_text(json.dumps({
+        "keylogs": {"signal": "skeys.signal.log"},
+    }))
+
+    loaded = offline_cli.load_manifest(str(pcap))
+    merged = offline_cli.merge_manifest(_ns(signal_keylog="/cli/explicit.log"), loaded)
+
+    assert merged["signal_keylog"] == "/cli/explicit.log"
 
 
 def test_manifest_missing_returns_empty(tmp_path):
@@ -1428,7 +1499,12 @@ def test_convert_symbols_identity_from_top_level_package():
 
 
 def test_convert_result_to_dict_roundtrips_all_fields():
-    """ConvertResult.to_dict() exposes all 8 fields and is JSON-serializable."""
+    """ConvertResult.to_dict() exposes all fields and is JSON-serializable.
+
+    The generic ``per_protocol`` map is the cross-protocol counter view; the
+    only legacy named counters that survive are the public MTProto ones (any
+    other protocol's counters live solely under ``per_protocol``).
+    """
     result = _p2t_mod.ConvertResult(
         tap_path="out.tap",
         flow_count=3,
@@ -1450,9 +1526,17 @@ def test_convert_result_to_dict_roundtrips_all_fields():
         "dropped_stream_count": 4,
         "findings_count": 5,
         "encrypted_streams_skipped": 6,
+        # MTProto counters (default 0 here; exercised in the MTProto e2e tests).
+        "mtproto_messages": 0,
+        "mtproto_streams": 0,
+        "mtproto_records_undecryptable": 0,
+        "mtproto_streams_degraded": 0,
+        # Protocol-generic counters (empty here; populated by registry-driven
+        # decryptors via ConvertResult.record_protocol).
+        "per_protocol": {},
     }
     assert d == expected
-    assert len(d) == 8
+    assert len(d) == 13
     # Round-trips through JSON cleanly.
     assert json.loads(json.dumps(d)) == expected
 

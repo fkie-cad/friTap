@@ -6,6 +6,7 @@
  */
 
  import { ModuleHookingType, Platform, LibraryType } from "./shared_structures";
+ import { contributedImplications } from "./hook_contributors.js";
 
  // ---------------------------------------------------------------------------
  // Types
@@ -28,6 +29,16 @@
      pathFilter?: string;
      /** Regex pattern to exclude modules that match the main pattern */
      excludePattern?: RegExp;
+     /**
+      * Requested protocols for which this hook must NOT install, even though
+      * `protocolMatches` would otherwise select it. Used to suppress a
+      * companion-protocol library that is irrelevant (and unsafe to scan) for a
+      * specific capture intent — e.g. `libringrtc_rffi.so` (Signal's WebRTC/calls
+      * BoringSSL) carries no chat keys and crashes the recursive readable-parts
+      * scan, so it is excluded for `--protocol signal` while still scanned under
+      * generic `--protocol tls`.
+      */
+     excludeProtocols?: string[];
      /** tlsLibHunter library_type for scan-based matching */
      libraryType?: LibraryType;
      /**
@@ -57,7 +68,29 @@
  // ---------------------------------------------------------------------------
  // Registry
  // ---------------------------------------------------------------------------
- 
+
+/**
+ * Whether a hook registered for `hookProtocol` should install when the user
+ * selected `requested`. Beyond the exact match, this encodes companion-protocol
+ * implications. Some app-layer protocols are transported over TLS, so selecting
+ * one also installs the TLS hooks (to capture the SSLKEYLOGFILE used to strip
+ * TLS before app-layer decryption). These implications are contributed
+ * generically by optional units via `registerProtocolImplication(...)`; the
+ * public core hardcodes only the public Telegram→MTProto implication. Mirrors
+ * PROTOCOL_IMPLIES on the Python side (friTap/protocols/registry.py).
+ */
+function protocolMatches(hookProtocol: string, requested: string): boolean {
+    if (hookProtocol === requested) return true;
+    // Contributed implications (e.g. a private messenger E2E unit declaring that
+    // its traffic is TLS-wrapped). Empty in the public build.
+    if (contributedImplications()[requested]?.includes(hookProtocol)) return true;
+    // `--protocol telegram` ALSO installs the existing tgnet/mtproto transport
+    // hooks (cloud-chat keys live in the MTProto transport, Secret-Chat keys in
+    // the Java layer). The exact-match rule above handles the telegram Java entry.
+    if (requested === "telegram" && hookProtocol === "mtproto") return true;
+    return false;
+}
+
  export class HookRegistry {
      private _hooks: HookRegistration[] = [];
      private _cache = new Map<string, HookRegistration[]>();
@@ -101,7 +134,8 @@
          if (cached) return cached;
          let result = this._hooks.filter(h => h.platform === platform);
          if (protocol) {
-             result = result.filter(h => h.protocol === protocol);
+             result = result.filter(h => protocolMatches(h.protocol, protocol));
+             result = result.filter(h => !(h.excludeProtocols && h.excludeProtocols.includes(protocol)));
          }
          result = result.sort((a, b) => b.priority - a.priority);
          this._cache.set(key, result);

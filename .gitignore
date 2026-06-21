@@ -13,6 +13,7 @@ site/
 *.sh
 *.yml
 *.js
+*.json
 dev/changelog_backfill.py
 research/
 
@@ -28,8 +29,16 @@ research/
 # part of the maintainer toolchain (compile_agent.sh is invoked by the
 # agent-build-check CI job; entrypoint.sh is referenced by dev/Dockerfile).
 !dev/*.sh
+# scripts/ shell tooling (the public/private tiering leak guards): verify_public_build.sh
+# and check_public_denylist.sh (CI leak-guard job) must be tracked despite *.sh above.
+!scripts/*.sh
 !CHANGELOG.md
 !README.md
+# requirements-minimal.txt (the lean-install pin set) is a NEW *.txt file the
+# broad *.txt rule above would hide; it must ship (MANIFEST.in includes it and
+# the docs reference it). Existing tracked *.txt (requirements.txt, private.txt,
+# scripts/private_terms.txt) predate the rule, so they need no negation.
+!requirements-minimal.txt
 # docs/ markdown pages: the broad *.md rule above hides newly-added pages from
 # CI's fresh checkout, which breaks `mkdocs build --strict` (nav references not
 # found). Keep the whole docs/ tree trackable.
@@ -114,6 +123,13 @@ ExampleLinux/wolfssl/*
 .externalNativeBuild
 .cxx/
 *.log
+
+# Committed test fixtures (small, synthetic) — these MUST be tracked so the
+# offline-decrypt regression tests actually run in CI; the *.pcapng / *.log rules
+# above would otherwise exclude them.
+!tests/fixtures/*.pcapng
+!tests/fixtures/*.tls.log
+!tests/fixtures/*.signal.log
 
 # Generated files
 *.apk

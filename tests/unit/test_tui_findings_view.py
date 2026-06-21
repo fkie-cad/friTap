@@ -180,3 +180,42 @@ def test_findings_view_empty_shows_scan_hint(tmp_path):
             assert "--scan" in rendered
 
     asyncio.run(_run())
+
+
+def test_findings_list_renders_markup_metachars_without_crash():
+    """A finding whose data contains Rich markup (e.g. a stray ``[/]``) must not
+    crash the markup-rendered DataTable — every user-derived cell is escaped."""
+    from textual.app import App, ComposeResult
+    from friTap.tui.widgets.findings_list import FindingsListWidget
+
+    class _Harness(App):
+        def compose(self) -> ComposeResult:
+            yield FindingsListWidget(id="fl")
+
+    findings = [
+        Finding(
+            severity=Severity.CRITICAL,
+            title="token leak [/] here",
+            description="d",
+            source="cred[x]",
+            flow_id="flow-aaaa",
+            evidence={"matched_data": "Basic [/] dXNlcjpwYXNz"},
+            metadata={"category": "sec[t]"},
+        ),
+        Finding(
+            severity=Severity.LOW, title="ok", description="ok",
+            source="ioc", flow_id="flow-bbbb", evidence={"value": "1.2.3.4"},
+        ),
+    ]
+
+    async def _run() -> None:
+        app = _Harness()
+        async with app.run_test(size=(170, 55)) as pilot:
+            fl = app.query_one("#fl", FindingsListWidget)
+            fl.add_findings(findings)
+            await pilot.pause()
+            await pilot.pause()  # forces a full row render; pre-fix raised MarkupError
+            assert fl.total_count == 2
+            assert fl.row_count == 2
+
+    asyncio.run(_run())

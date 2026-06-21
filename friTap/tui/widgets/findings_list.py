@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 try:
     from textual.widgets import DataTable
     from textual.message import Message
+    from rich.markup import escape as _escape_markup
     TEXTUAL_AVAILABLE = True
 except ImportError:
     TEXTUAL_AVAILABLE = False
@@ -24,7 +25,7 @@ except ImportError:
 from friTap.tui.themes import c
 
 if TEXTUAL_AVAILABLE:
-    from friTap.analysis import Severity
+    from friTap.analysis import Severity, primary_evidence_value
 
     class FindingsListWidget(DataTable):
         """Interactive findings list displayed as a DataTable.
@@ -52,26 +53,39 @@ if TEXTUAL_AVAILABLE:
             # Row key (str index) -> nothing; we track visible indices in order.
             self._visible_indices: list[int] = []
             self._filter_bar_ref = None  # cached FindingsFilterBar reference
+            # A trailing "Preview" column is added only when the terminal is wide
+            # enough that it won't crowd the Title column (decided once at mount).
+            self._preview = False
 
         # Fixed column widths (Severity..Conf..Flow) + cell padding + scrollbar.
         # Severity(9)+Source(13)+Category(11)+Conf(6)+Flow(14) = 53 cols
         # + padding (5 cols × 2) + scrollbar (2) = 65
         _FIXED_COLS_WIDTH = 65
+        _PREVIEW_WIDTH = 30
+        # Minimum overall width before the Preview column is worth showing.
+        _WIDE_THRESHOLD = 120
 
         @property
         def _title_col_width(self) -> int:
             """Width for the Title column — fills remaining space."""
-            available = self.size.width - self._FIXED_COLS_WIDTH
+            reserved = self._FIXED_COLS_WIDTH + (self._PREVIEW_WIDTH if self._preview else 0)
+            available = self.size.width - reserved
             return max(available, 20)
 
         def on_mount(self) -> None:
             """Set up columns with explicit widths so Title fills remaining space."""
+            try:
+                self._preview = self.app.size.width >= self._WIDE_THRESHOLD
+            except Exception:
+                self._preview = False
             self.add_column("Severity", width=9)
             self.add_column("Source", width=13)
             self.add_column("Category", width=11)
             self.add_column("Conf", width=6)
             self.add_column("Title", width=self._title_col_width)
             self.add_column("Flow", width=14)
+            if self._preview:
+                self.add_column("Preview", width=self._PREVIEW_WIDTH)
 
         def on_resize(self, event) -> None:
             """Update Title column width when terminal is resized."""
@@ -109,6 +123,22 @@ if TEXTUAL_AVAILABLE:
             return self._filter.matches(finding)
 
         @property
+        def has_filter(self) -> bool:
+            """True when a non-empty display filter is currently applied.
+
+            An all-default ``FindingFilter()`` (e.g. the dashboard "View all"
+            chip) is treated as *no* filter, so Esc steps straight back to the
+            flow list instead of needing a redundant clear-filter press first.
+            """
+            return self._filter is not None and self._filter.is_active()
+
+        def finding_at(self, index: int) -> "Finding | None":
+            """Return the finding at *index* in the backing store, or None."""
+            if 0 <= index < len(self._all_findings):
+                return self._all_findings[index]
+            return None
+
+        @property
         def visible_count(self) -> int:
             return len(self._visible_indices)
 
@@ -140,15 +170,30 @@ if TEXTUAL_AVAILABLE:
             except Exception:
                 return "-"
 
+        @staticmethod
+        def _preview_text(finding: "Finding") -> str:
+            """Short snippet of the matched value (or description) for the Preview column."""
+            text = primary_evidence_value(finding) or finding.description or ""
+            text = " ".join(text.split())  # collapse whitespace/newlines
+            if not text:
+                return "-"
+            return text[:27] + "…" if len(text) > 28 else text
+
         def _add_row(self, index: int, finding: "Finding") -> None:
+            # DataTable renders str cells as Rich markup. Only the severity cell
+            # is intentionally markup; every other cell is user-derived data and
+            # must be escaped or a stray '[' / '[/]' (e.g. in an evidence value)
+            # raises MarkupError and crashes the table render.
             values = [
                 self._format_severity(finding),
-                finding.source or "-",
-                finding.category or "-",
+                _escape_markup(finding.source or "-"),
+                _escape_markup(finding.category or "-"),
                 self._format_conf(finding),
-                finding.title or "-",
-                (finding.flow_id[:12] if finding.flow_id else "-"),
+                _escape_markup(finding.title or "-"),
+                _escape_markup(finding.flow_id[:12] if finding.flow_id else "-"),
             ]
+            if self._preview:
+                values.append(_escape_markup(self._preview_text(finding)))
             self.add_row(*values, key=str(index))
             self._visible_indices.append(index)
 

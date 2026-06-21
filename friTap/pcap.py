@@ -100,6 +100,16 @@ class PCAP:
         # Keylog file path, if friTap is also exporting an SSLKEYLOGFILE.
         # Populated externally; recorded in the manifest when present.
         self.keylog_path = None
+        # Active capture protocol (e.g. "mtproto", "telegram", "signal", "tls").
+        # Populated externally; used to record a protocol-specific keylog field
+        # in the manifest so offline decrypt routes the keys to the right
+        # decryptor (not just the generic TLS SSLKEYLOGFILE).
+        self.capture_protocol = None
+        # Per-protocol split keylog paths, populated externally when multiple
+        # protocol formatters are active (``--protocol all|auto``). Recorded in
+        # the manifest under "keylogs" alongside the single "keylog" field so
+        # the offline pipeline can locate every split keylog. {protocol: path}.
+        self.active_keylogs = {}
 
         if doFullCapture:
             if isMobile:
@@ -214,7 +224,12 @@ class PCAP:
                 
             def run(self):
                 if self.is_Mobile:
-                    self.mobile_subprocess = self.full_mobile_capture()
+                    try:
+                        self.mobile_subprocess = self.full_mobile_capture()
+                    except Exception as e:
+                        pcap_class.logger.error(f"Full mobile capture unavailable: {e}")
+                        pcap_class.logger.debug(traceback.format_exc())
+                        self.mobile_subprocess = -1
                 else:
                     self.full_local_capture()
             
@@ -247,6 +262,12 @@ class PCAP:
                 
             def full_mobile_capture(self):
                 if pcap_class.android_Instance.is_Android:
+                    if not pcap_class.android_Instance.adb_check_root():
+                        pcap_class.logger.error(
+                            "Full packet capture (-f) on Android requires a rooted device "
+                            "(tcpdump must run as root). Continuing without full capture; "
+                            "plaintext/keylog capture is unaffected.")
+                        return -1
                     if not pcap_class.android_Instance.is_tcpdump_available:
                         pcap_class.android_Instance.install_tcpdump()
                     self.android_capture_process = pcap_class.android_Instance.run_tcpdump_capture("_"+self._get_pcap_base_name())
@@ -297,6 +318,22 @@ class PCAP:
         """
 
         t = time.time()
+
+        # Plaintext captured at an application decrypt boundary (Signal / Telegram
+        # Secret-Chat E2E and other out-of-band-content hooks) frequently has no
+        # socket 5-tuple, so src/dst addr+port arrive as "" (or None). The
+        # synthetic IP/TCP(/UDP) header below packs them as integers, so normalize
+        # any non-integer to 0 — a 0.0.0.0:0 placeholder. The addresses are purely
+        # cosmetic for these content-only packets; this keeps the pcap writer from
+        # raising struct.error and dropping the payload.
+        if not isinstance(src_addr, int):
+            src_addr = 0
+        if not isinstance(dst_addr, int):
+            dst_addr = 0
+        if not isinstance(src_port, int):
+            src_port = 0
+        if not isinstance(dst_port, int):
+            dst_port = 0
 
         # Record the server-side port for the manifest. On a read the server is
         # the source; on a write it is the destination.
@@ -694,6 +731,15 @@ class PCAP:
         except Exception:
             self.logger.debug("Could not seed server ports from sockets", exc_info=True)
 
+    def set_active_keylogs(self, mapping: dict) -> None:
+        """Record the per-protocol split keylog paths for the manifest.
+
+        Called externally when multiple protocol formatters are active and the
+        single ``-k`` path has been split per protocol. Stored defensively (a
+        shallow copy) and surfaced in the manifest under the "keylogs" field.
+        """
+        self.active_keylogs = dict(mapping or {})
+
     def _write_capture_manifest(self):
         """Write a best-effort ``<pcap>.fritap.json`` sidecar manifest.
 
@@ -720,8 +766,40 @@ class PCAP:
                 "tls_ports": sorted(self._observed_server_ports.get("tcp", set())),
                 "quic_ports": sorted(self._observed_server_ports.get("udp", set())),
             }
+            # When multiple protocol formatters are active (e.g. --protocol signal
+            # also emits TLS keys) the single -k path is split per protocol into
+            # <base>.<proto>.log siblings; the authoritative per-protocol paths
+            # live in active_keylogs.
+            active_keylogs = getattr(self, "active_keylogs", None) or {}
             if self.keylog_path:
                 manifest["keylog"] = str(self.keylog_path)
+                # Also record the keylog under the active protocol's offline
+                # decryptor field (its registry cli_dest, e.g. "mtproto_keylog" /
+                # "signal_keylog") so the manifest-driven offline pipeline routes
+                # the keys to friTap's own decryptor instead of treating them as a
+                # generic TLS SSLKEYLOGFILE (which yields 0 flows for MTProto/Signal).
+                # CRITICAL: use the per-protocol SPLIT path when one exists — for a
+                # multi-protocol capture the base -k path holds the TLS keys, NOT
+                # the protocol's keys, so writing it here would point e.g.
+                # signal_keylog at the TLS log and decrypt 0 Signal messages.
+                try:
+                    from friTap.offline.registry import get_offline_decryptor_registry
+                    for entry in get_offline_decryptor_registry().list():
+                        if entry.protocol_name == self.capture_protocol:
+                            proto_keylog = active_keylogs.get(
+                                entry.protocol_name, self.keylog_path
+                            )
+                            manifest[entry.cli_dest] = str(proto_keylog)
+                            break
+                except Exception as e:
+                    self.logger.debug(f"manifest protocol-keylog mapping skipped: {e}")
+            # Record every per-protocol split path so the offline pipeline can
+            # locate each keylog. The single "keylog" field above is preserved
+            # for back-compat.
+            if active_keylogs:
+                manifest["keylogs"] = {
+                    proto: str(path) for proto, path in active_keylogs.items()
+                }
             manifest_path = f"{self.pcap_file_name}.fritap.json"
             with open(manifest_path, "w", encoding="utf-8") as fh:
                 _json.dump(manifest, fh, indent=2)
@@ -756,12 +834,18 @@ class PCAP:
                 or self._observed_server_ports.get("udp")):
             # No reliable per-connection port/transport data was available at
             # finalize time (the common case for pure --full_capture without
-            # --socket_trace). Don't fake ports — tell the user how to record
-            # them explicitly for the offline Decode-As convenience.
-            self.logger.info(
-                "No server ports recorded for this full capture; offline "
-                "custom-port auto-detection may be unavailable. Pass "
-                "--tls-port/--quic-port (or --socket_trace) to record them."
+            # --socket_trace). Don't fake ports — but this is harmless for
+            # standard-port protocols (e.g. Signal/HTTPS on 443), where offline
+            # decryption needs no custom-port hint. Only matters for non-standard
+            # server ports; the user can record them with --tls-port/--quic-port
+            # (or --socket_trace) when needed. Keep at debug to avoid alarming the
+            # common case.
+            self.logger.debug(
+                "No server ports recorded for this full capture. This is "
+                "informational and harmless for standard-port protocols "
+                "(e.g. Signal/HTTPS on 443). For non-standard server ports, "
+                "pass --tls-port/--quic-port (or --socket_trace) so offline "
+                "custom-port auto-detection works."
             )
         self._write_capture_manifest()
 

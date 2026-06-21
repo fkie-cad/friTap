@@ -27,11 +27,18 @@ if TEXTUAL_AVAILABLE:
     from friTap.tui.themes import c
     from .base import FriTapModal
 
-    # Built-in protocols (always present, fixed order)
+    # User-visible built-in protocols (always PUBLIC; fixed order). Version-
+    # specific or not-yet-announced ("upcoming") protocols are deliberately NOT
+    # hardcoded here: they are surfaced via the ProtocolRegistry and filtered by
+    # `handler.upcoming` in _build_entries(). So a protocol that is stripped from
+    # this build (absent from the registry) or marked upcoming (e.g. a code-only
+    # feature) never appears in the TUI — the picker stays in step with the build
+    # and reveals nothing about a non-shipped protocol.
     _BUILTIN_PROTOCOLS = [
         ("tls", "TLS/SSL — TLS/SSL interception (default)"),
-        ("ipsec", "IPSec — IPSec/IKE key extraction"),
         ("ssh", "SSH — SSH session key extraction"),
+        ("mtproto", "MTProto — Telegram key extraction (Android)"),
+        ("telegram", "Telegram — MTProto + E2E key extraction (Android)"),
     ]
 
     # Auto-detect always last among built-ins
@@ -42,7 +49,7 @@ if TEXTUAL_AVAILABLE:
 
         DEFAULT_CSS = """
         ProtocolSelectModal > #modal-container {
-            width: 60;
+            width: 65;
             height: auto;
             max-height: 70%;
             background: $fritap-bg-modal;
@@ -70,14 +77,22 @@ if TEXTUAL_AVAILABLE:
             """Build the protocol entry list from built-ins + registry."""
             self._protocol_entries = list(_BUILTIN_PROTOCOLS)
 
-            # Add custom protocols from registry (if any)
+            # Add any further registered protocols (custom plugins, or future
+            # built-ins that ship in this build). Hidden: anything already shown
+            # as a built-in, and any "upcoming" (code-only) protocol whose handler
+            # is registered but not yet meant to be user-visible (e.g. the full
+            # build's not-yet-announced protocols). The public build simply has no
+            # such handler registered, so this loop never sees it.
             if registry is not None:
                 builtin_names = {name for name, _ in _BUILTIN_PROTOCOLS}
                 builtin_names.add("auto")
                 for handler in registry.get_all():
-                    if handler.name not in builtin_names:
-                        label = f"{handler.display_name} (plugin)"
-                        self._protocol_entries.append((handler.name, label))
+                    if handler.name in builtin_names:
+                        continue
+                    if getattr(handler, "upcoming", False):
+                        continue
+                    label = f"{handler.display_name} (plugin)"
+                    self._protocol_entries.append((handler.name, label))
 
             # Auto-detect always at the end
             self._protocol_entries.append(_AUTO_ENTRY)

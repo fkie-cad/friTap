@@ -38,6 +38,11 @@ setup(
     packages=find_packages(),
     python_requires=">=3.10",
     install_requires=install_requires,
+    # The runtime crypto backend ships in the BASE install (requirements.txt):
+    # `cryptography` (the floor — transport AES-CTR + AES-IGE + AES-GCM-SIV) plus
+    # the optional `TgCrypto-pyrofork` AES-IGE accelerator wherever a wheel exists.
+    # No crypto extra is needed; only the dev toolchain is an extra. For a lean
+    # install that skips the crypto backend, see requirements-minimal.txt.
     extras_require={
         "dev": [
             "pytest>=7.0",
@@ -82,6 +87,27 @@ setup(
         "console_scripts": [
             "fritap=friTap.friTap:main",
         ],
+        # Third-party packages can expose analyzers by declaring this group:
+        #     [fritap.analyzers]
+        #     my-analyzer = my_pkg.analyzers:MyAnalyzer
+        # friTap ships no analyzers via entry points itself; this declares the
+        # group as a known, documented discovery target.
+        "fritap.analyzers": [],
+        # Third-party packages can expose offline protocol decryptors here:
+        #     [fritap.offline_decryptors]
+        #     my-proto = my_pkg.offline_decryptors
+        # The target module sets ``is_fritap_offline_decryptor = True`` and
+        # defines one or more ``OfflineDecryptorEntry`` instances at module level
+        # (see friTap.offline.discovery). Declared here as a documented target.
+        "fritap.offline_decryptors": [],
+        # Full/extended builds expose their compiled Frida agent bundle here so
+        # the host auto-selects it (ABI-filtered) without FRITAP_AGENT_BUNDLE:
+        #     [fritap.agent_bundle]
+        #     full = my_pkg.agent_bundle
+        # The target exposes ``AGENT_ABI_VERSION`` plus ``agent_bundle_path()``
+        # (or ``AGENT_BUNDLE_PATH``); see SSL_Logger._discover_agent_bundle.
+        # friTap ships none publicly. Generic — names no protocol.
+        "fritap.agent_bundle": [],
     },
     project_urls={
         "Source": "https://github.com/fkie-cad/friTap",

@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+#
+# pre-push hook (friTap tiering §F) — refuse pushing anything but the scrubbed
+# public snapshot to GitHub. Convenience guard only; the authoritative guarantee
+# is the public-repo CI required check + GitHub push-protection/secret-scanning.
+#
+# Install:  git config core.hooksPath scripts/hooks
+# Git passes the remote name as $1 and the remote URL as $2, and the pushed refs
+# on stdin as: <local_ref> <local_sha> <remote_ref> <remote_sha>.
+set -euo pipefail
+
+remote_url="${2:-}"
+
+# Only police pushes to the public GitHub mirror; gitlab (full source of truth)
+# and any other remote are unrestricted.
+case "$remote_url" in
+  *github.com*[Ff]ri[Tt]ap*) ;;
+  *) exit 0 ;;
+esac
+
+refused=0
+while read -r local_ref _local_sha remote_ref _remote_sha; do
+  [ -z "${local_ref:-}" ] && continue
+  if [ "$local_ref" != "refs/heads/public-main" ] || [ "$remote_ref" != "refs/heads/main" ]; then
+    echo "pre-push: refusing $local_ref -> $remote_ref on GitHub." >&2
+    refused=1
+  fi
+done
+
+if [ "$refused" -ne 0 ]; then
+  echo "Only 'public-main -> main' may be pushed to GitHub (run 'make publish-public')." >&2
+  echo "Pushing any other branch risks leaking the full (private) tree." >&2
+  exit 1
+fi
+exit 0

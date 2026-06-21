@@ -169,6 +169,60 @@ Button.-primary:hover {
     content-align: right middle;
 }
 
+/* Analyzer panel (docked between the filter bar and the flow list).
+   Kept compact so it never crowds the flow list — the analyzer list scrolls
+   internally rather than the panel growing tall. */
+#analyzer-panel {
+    height: auto;
+    max-height: 12;
+    background: $surface;
+    border: round $fritap-border-default;
+    padding: 0 1;
+    display: none;
+}
+
+#analyzer-panel:focus-within {
+    border: round $primary;
+}
+
+#analyzer-panel #analyzer-select {
+    height: auto;
+    max-height: 5;
+    background: $surface;
+}
+
+#analyzer-panel #analyzer-progress {
+    color: $fritap-text-muted;
+}
+
+#analyzer-panel .analyzer-chip {
+    background: $fritap-border-default;
+}
+
+#analyzer-panel .analyzer-chip:hover {
+    background: $fritap-bg-selected;
+}
+
+/* Analyzer finding-detail view (opened with Enter on a finding) */
+#finding-detail {
+    height: 1fr;
+    display: none;
+    background: $surface;
+}
+
+#finding-detail-header {
+    height: auto;
+    padding: 0 1;
+    background: $fritap-bg-header;
+    color: $text;
+}
+
+#finding-detail-body {
+    height: auto;
+    padding: 0 1;
+    background: $surface;
+}
+
 /* Flow list */
 #flow-list {
     height: 1fr;

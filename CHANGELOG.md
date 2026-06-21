@@ -7,6 +7,112 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Telegram support: cloud + secret chats (Android).** A new umbrella
+  `--protocol telegram` covers **both** of Telegram's encryption layers in one run:
+  - **Cloud chats (MTProto transport, not end-to-end)** — the client↔server
+    transport key is extracted live from the native `libtmessages.*.so`
+    (`Datacenter::getAuthKey`) and emitted as `MTPROTO_AUTH_KEY` lines. Telegram
+    holds this key and can read cloud chats; it is **not** an end-to-end key.
+  - **Secret chats (MTProto 2.0 end-to-end)** — the per-chat device↔device DH key
+    is extracted live from Java (`SecretChatHelper` / `TLRPC$EncryptedChat.auth_key`)
+    and emitted as `MTPROTO_E2E_KEY` lines. Secret-chat **plaintext** can also be
+    captured live via the same Java hooks (`-p`).
+  - **Combined keylog** — `--protocol telegram` writes ONE keylog file containing
+    both `MTPROTO_AUTH_KEY` and `MTPROTO_E2E_KEY` lines. The live model mirrors
+    Signal: `-k` extracts keys for offline decrypt, `-p` captures live plaintext,
+    and the two are independent. `--protocol mtproto` remains a separate lower-level
+    selector (cloud transport only) for reuse.
+  - **Offline decryption** — `fritap --from-pcap <pcap> --telegram-keylog
+    <combined.keylog> --tap <out.tap>` decrypts **both** cloud chats (MTProto
+    transport decryptor) and secret chats (a new **`telegram_e2e`** flow layer).
+    Needs the `cryptography` backend, which ships in friTap's base install (the
+    optional `tgcrypto` accelerator installs automatically where a wheel exists).
+  - **TUI** — a "Telegram" entry appears in the protocol picker.
+  Device-validated on `org.telegram.messenger` 12.8.1 (Android, arm64): cloud-chat
+  key extraction (multiple datacenters), secret-chat E2E key extraction, and offline
+  decryption of real captured cloud traffic. See `docs/protocols/telegram.md`. (The
+  native **cloud-chat live-plaintext** hook is future work — use the keylog →
+  offline path for cloud chats; non-Android platforms are also future work.)
+
+## [2.2.0]
+
+### Added
+## [2.1.0] - 2026-06-13
+
+### Added
+- **Telegram / MTProto support (Android).** A new `--protocol mtproto` selects a
+  Telegram key/decryption path that mirrors the TLS/SSH protocol modules:
+  - **MTProto 2.0 crypto core** — SHA256 KDF + AES-256-IGE + msg_key verification,
+    with an optional `tgcrypto` fast path.
+  - **Offline `pcap → .tap` decryptor** — because tshark cannot decrypt MTProto,
+    friTap ships its own (TCP reassembly → AES-CTR transport de-obfuscation →
+    AES-IGE), wired into `fritap --from-pcap … --mtproto-keylog …`.
+  - **Canonical keylog format** (`MTPROTO_AUTH_KEY <dc_id> <auth_key_id> <auth_key>
+    <key_type>`) shared by the live writer and the offline reader.
+  - **`MtprotoLayer`** that round-trips through the `.tap`, plus pluggable **parser
+    discovery** (drop-in dir + `fritap.parsers` entry points) so a user's Telegram
+    TL parser plugs in with no core edits.
+  - **Optional dependency** — offline decryption needs the `cryptography` backend
+    (it does the transport AES-CTR de-obfuscation *and* the AES-IGE records),
+    shipped as the `friTap[mtproto]` extra. `tgcrypto` is an optional AES-IGE
+    speed-up only (it cannot do the transport CTR) and is available via the
+    `friTap[mtproto-fast]` extra. When the backend is missing, the CLI (live
+    `--protocol mtproto` and offline `--mtproto-keylog`) and the TUI protocol
+    picker print an actionable install hint instead of failing obscurely.
+  - **Phase-0 experiment scripts** (`research/mtproto_phase0/`) to derive the
+    on-device hook offsets/byte-patterns that the bundled agent module needs.
+  See `docs/protocols/telegram.md`. (End-to-end secret chats and non-Android
+  platforms are future work.)
+- **Analyzer finding-detail view in the replay TUI.** Pressing `Enter` on a row
+  in the Findings Viewer now opens a finding-centric detail view (distinct from
+  the flow-centric flow detail): it leads with the matched value and evidence,
+  highlights the match in the request headers, and offers a one-key **base64
+  decode** (`b`) for values like HTTP `Authorization: Basic …`. Press `d` to
+  switch to the regular flow detail, and `Esc` to walk back up the navigation
+  hierarchy (finding → category findings → all findings → flow list). The
+  Findings Viewer also gains an optional **Preview** column (matched-value
+  snippet, shown on wide terminals). New widget
+  `friTap/tui/widgets/analyzer_finding_detail.py`.
+- **Interactive Analyzer Panel in the replay TUI** (key `a`). Opening a `.tap`
+  with `fritap -r <file>.tap` now exposes a docked panel above the flow list to
+  run analyzers over the loaded flows from inside the TUI — previously the
+  Findings Viewer (`Shift+F`) could only *show* findings already stored in the
+  `.tap`. Multi-select the analyzers (built-ins plus auto-discovered externals)
+  or type a one-off `module:Class` path, press `r` to run (background worker,
+  live progress, UI stays responsive), then a summary **dashboard** of selectable
+  chips (by severity, analyzer, category, plus *View all*) drops into the Findings
+  Viewer pre-filtered. `x` clears, `Esc` closes. `a` is context-aware — it still
+  means *attach* during a live capture that has no flows. Findings computed in the
+  session are written into the `.tap` on save (`w`). New widget
+  `friTap/tui/widgets/analyzer_panel.py`.
+- **Zero-config analyzer discovery** (`friTap/analysis/discovery.py`) — a custom
+  analyzer is now available across the Python API, the CLI (`--scan` and the
+  `analyze` subcommand) and the TUI without re-passing `--analyzer-path`.
+  Discovery scans three sources: a drop-in directory
+  (`~/.local/share/friTap/analyzers/` on Linux,
+  `~/Library/Application Support/friTap/analyzers/` on macOS,
+  `C:\Users\<user>\AppData\Local\friTap\analyzers\` on Windows), the
+  `fritap.analyzers` setuptools entry-point group, and a new optional
+  `FriTapPlugin.register_analyzers()` hook. Discovery is lazy + cached and feeds
+  the analyzer registry. **Security:** discovered code executes when analyzers are
+  first listed/resolved (same trust model as the plugin directory); set
+  `FRITAP_DISABLE_ANALYZER_DISCOVERY=1` to disable ambient discovery (explicit
+  `--analyzer-path` still works). Embedders also get public
+  `friTap.analysis.registry.register_analyzer(name, factory)` (programmatic
+  registration) and `refresh_discovered()` (force a re-scan).
+- **`--list-analyzers`** (top-level and `fritap analyze --list-analyzers`) — prints
+  every available analyzer (built-ins plus discovered externals, with their source)
+  and exits; needs no target. New public `list_analyzers_detailed()` (alongside
+  `list_analyzers()`) returns `AnalyzerInfo(name, source, description)` records.
+- **`--analyzer-path <module[:Class]>` for the live `--scan`** (repeatable;
+  previously only the offline `analyze` subcommand accepted it). Plumbed through
+  `OutputConfig.scan_analyzer_path` → `from_legacy_params` → `_setup_live_scan`.
+- **Python-API scan builder** on `friTap.FriTap`: `.scan([spec])`,
+  `.analyzer_path(path)` (repeatable), `.scan_report(fmt)`, `.scan_min_severity(sev)`,
+  `.scan_show_pii(enable)` — fluent setters mirroring the `--scan*` CLI flags.
+- **`FindingFilter.severities`** — an exact-severity-bucket criterion (a frozenset,
+  symmetric with `sources`/`categories`), complementing the existing `min_severity`
+  floor. The TUI severity chips use it so a chip's count matches its filtered result.
 - **Google QUICHE Phase-2 egress-headers chain** in
   `agent/quic/definitions/google_quiche.ts`. The HTTP/3 request-header
   capture path is now a winner-takes-all fallback chain:
@@ -140,6 +246,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   solely by the offline `pcap + keys → .tap` pipeline.
 
 ### Fixed
+- **The dashboard "View all" chip no longer costs an extra `Esc` press.** It
+  applies an empty (no-op) `FindingFilter`, which previously registered as an
+  active filter, so the first `Esc` cleared a filter that filtered nothing
+  before the second `Esc` returned to the flow list. `FindingFilter.is_active()`
+  now distinguishes a real filter from "show all", so a single `Esc` steps back.
+- **`--list-analyzers` no longer lists a built-in twice** when a discovered
+  external analyzer shares a built-in's name (the built-in wins the collision,
+  matching the registry's shadow rule).
+- **Findings Viewer no longer crashes on findings whose data contains Rich
+  markup.** A matched value / title / source containing a stray `[` or `[/]`
+  (plausible in captured HTML/JSON payloads, and reachable via the new Preview
+  column) previously raised `MarkupError` and aborted the table render; every
+  user-derived cell is now escaped (only the severity cell is intentional markup).
+- **TUI analyzer runs no longer cancel an active capture, and a superseded run
+  can't clobber newer results.** The analyzer worker runs in its own worker group
+  (so `exclusive` no longer cancels the live-capture session / server-check
+  workers) and carries a monotonic run token; a re-run or *Clear* mid-run
+  invalidates the prior run's late completion (thread workers cannot be
+  force-killed, so the token plus a cancellation check are both required).
+- **Saving a `.tap` after an in-TUI analyzer run no longer drops the file's
+  originally stored findings.** Export now merges the `.tap`'s existing findings
+  with the session's results (de-duplicated) rather than writing only the
+  replace-per-run display cache.
+- **A discovered analyzer with an invalid (`None`/empty) `name` no longer crashes
+  analyzer enumeration** (`--list-analyzers`, the TUI panel) — it is logged and
+  skipped.
+- **Analyzer discovery is now thread-safe** — the discovery cache and registry are
+  guarded by locks and the "discovery complete" flag is published only after the
+  registry is fully populated, so a concurrent (e.g. TUI worker-thread) resolution
+  can no longer observe a partial, built-ins-only set.
+- Opening the Analyzer Panel from the Findings Viewer now returns to the flow view
+  first instead of stacking the panel over the findings list.
+- Analyzer dashboard chips use index-based widget ids, so an analyzer or category
+  name containing a space or `.` no longer breaks the dashboard.
 - **Auto-loaded `default_patterns.json` no longer suppresses shipped hardcoded
   patterns** — a throw-safe `hasUsablePatternsFor()` gate requires a real,
   non-empty pattern for the current platform/arch before taking the JSON path,

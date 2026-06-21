@@ -142,9 +142,18 @@ class Android:
         return True
             
     @assure_android
-    def pull_pcap_from_device(self):
+    def pull_pcap_from_device(self, dest_dir="."):
+        """Pull the on-device tcpdump capture to ``dest_dir``.
+
+        ``dest_dir`` must be the directory that holds the host-side output pcap,
+        because the finalize step (PCAP._temp_pcap_path) reads the pulled file
+        from ``<output_dir>/_<output_basename>``. Defaulting to "." only works
+        when the output pcap lives in the current working directory; callers
+        with an output path elsewhere (e.g. an absolute path) must pass the
+        output directory or the pulled capture is silently dropped.
+        """
         pcap_path = self.dst_path + self.pcap_name
-        return_Value = self._adb_pull_file(pcap_path,".")
+        return_Value = self._adb_pull_file(pcap_path, dest_dir or ".")
         self.logger.info(f"pulling capture from device: {return_Value.stdout.strip()}")
         self.logger.debug("---------------------------------\n%s", return_Value)
         if return_Value.returncode !=0:
@@ -294,9 +303,13 @@ class ADB:
         return type(self) is not ADB
 
     def _elevator(self, cmd):
-        # if we reach this, no elevator has been found and we are not rooted.
-        self.logger.error("none rooted device. Please root it before trying a full-capture with friTap and ensure that you are able to run commands with the su-binary....")
-        raise ValueError
+        # Base (non-rooted) ADB: run the command as the plain shell user.
+        # Do NOT raise here. Raising makes the non-rooted candidate unreachable in
+        # ADB.find()/detect() — every candidate then fails and find() reports a
+        # misleading "[-] No ADB ..." even though plain `adb` works fine. Root is
+        # enforced where it actually matters (full_mobile_capture gates on
+        # adb_check_root() before attempting tcpdump).
+        return cmd
 
     @property
     def _adb_base(self):

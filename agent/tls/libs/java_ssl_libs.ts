@@ -60,7 +60,7 @@ export class SSL_Java {
                         }
                     }
                     //Same for addProvider
-                    Security.insertProviderAt.implementation = function (provider: any) {
+                    Security.addProvider.implementation = function (provider: any) {
                         if (provider.getName().includes("Conscrypt") || provider.getName().includes("Ssl_Guard") || provider.getName().includes("GmsCore_OpenSSL") || provider.getName().includes("WolfSSLProvider")) {
                             log("Blocking provider registration (addProvider) of " + provider.getName())
                             return 1

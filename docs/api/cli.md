@@ -351,10 +351,13 @@ Run passive analysis during capture. Optionally pass a comma-separated analyzer
 list (e.g. `credentials,ioc`).
 
 - **Absent: analysis is off** (default `None`).
-- **Bare `--scan` (no value): runs all built-in analyzers** (`const="all"`).
+- **Bare `--scan` (no value): runs all available analyzers** (`const="all"`) —
+  built-ins plus any auto-discovered external analyzers.
 - `--scan credentials,ioc`: runs just those analyzers.
 
-Built-in analyzers: `credentials`, `ioc`, `privacy`, `protobuf`.
+Built-in analyzers: `credentials`, `ioc`, `privacy`, `protobuf`. Externally
+discovered analyzers (see `--analyzer-path` and `--list-analyzers`) are also
+selectable by name.
 
 #### `--scan-report {json,csv,md,table}`
 Format for the passive-analysis report printed at the end of capture (default: table).
@@ -382,9 +385,22 @@ default: all).
 Reveal PII/secret values in the passive-analysis report instead of redacting them
 (default: redacted).
 
+#### `--analyzer-path <module[:Class]>`
+Load an external analyzer for the live `--scan` (`module` to auto-discover
+classes marked `is_fritap_analyzer = True`, or `module:Class`). **Repeatable** to
+load several. Mirrors the offline `analyze --analyzer-path`. Analyzers placed in
+the drop-in analyzers directory or exposed via the `fritap.analyzers` entry-point
+group are discovered automatically and need no `--analyzer-path`.
+
+#### `--list-analyzers`
+Print all available analyzers — built-ins plus discovered externals (with their
+source) — and exit. Needs no target. Also available as `fritap analyze --list-analyzers`.
+
 ```bash
 fritap --scan --scan-report md --scan-min-severity medium -k keys.log target
 fritap --scan --scan-category pii --scan-min-confidence 0.8 -k keys.log target
+fritap --scan --analyzer-path my_pkg.scanner:JwtAnalyzer -k keys.log target
+fritap --list-analyzers
 ```
 
 ---

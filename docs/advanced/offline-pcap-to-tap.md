@@ -135,6 +135,51 @@ falling through to the plaintext path and producing a misleading `.tap`.
 
 ---
 
+## MTProto (Telegram)
+
+tshark **cannot** decrypt Telegram's MTProto, so friTap ships its own decryptor
+(TCP reassembly → AES-CTR transport de-obfuscation → AES-IGE record decryption).
+It runs alongside the TLS/QUIC passes when you pass `--mtproto-keylog`:
+
+```bash
+fritap --from-pcap tg.pcapng --mtproto-keylog tg.keys --tap tg.tap
+```
+
+* `--mtproto-keylog` is **separate** from `--keylog` — the latter is the NSS/TLS
+  key log handed to tshark; the former is friTap's MTProto key log
+  (`MTPROTO_AUTH_KEY` lines) consumed by friTap's own decryptor. They can be
+  combined on a mixed capture.
+* Offline decryption needs the AES backend, which ships in friTap's base install
+  (no extra needed); the optional `tgcrypto` fast path is pulled in automatically
+  where a wheel exists. On a lean install the backend is absent and the CLI prints
+  `Warning: Telegram/MTProto decryption needs an extra dependency …` and **skips**
+  the MTProto streams — the TLS/QUIC passes still complete.
+* Decrypted MTProto message bytes land in an `MtprotoLayer` in the `.tap`. friTap
+  does not parse the Telegram TL schema; that is left to a pluggable parser (see
+  [Telegram (MTProto)](../protocols/telegram.md)).
+
+### Graceful-degradation counters
+
+When MTProto streams are present, the summary adds counters that tell you what
+could **not** be decrypted (the decryptor never emits garbage — it skips and
+tallies):
+
+```text
+  mtproto messages:  128
+  mtproto undecryptable records: 4 (no matching auth_key — temp/perm key mismatch?)
+  mtproto degraded streams: 1 (capture started mid-stream / unsupported transport)
+```
+
+* **`mtproto undecryptable records`** — a record's `auth_key_id` matched no key in
+  the keylog. Usually a **temp/perm key mismatch**: the keylog was not recorded
+  during the same session as the pcap (Telegram's PFS rotates the temp key).
+* **`mtproto degraded streams`** — a stream could not be processed end-to-end:
+  the capture **started mid-stream** (de-obfuscation needs the first 64 bytes) or
+  used a transport friTap does not yet support (e.g. Fake-TLS, padded
+  intermediate).
+
+---
+
 ## Caveats (read before you trust the output)
 
 !!! danger "Keyless captures have hard, silent limits"
@@ -252,6 +297,7 @@ their native exceptions.
 ## See also
 
 - [Offline quickstart](../getting-started/offline-quickstart.md) — the 5-minute happy path.
+- [Telegram (MTProto)](../protocols/telegram.md) — offline `--mtproto-keylog` decryption.
 - [Traffic analysis](traffic-analysis.md) — `fritap analyze` / `--scan`.
 - [Replay TUI](../getting-started/tui.md) — open a `.tap` interactively.
 - [.tap format spec](../api/tap-format.md) — the on-disk format.

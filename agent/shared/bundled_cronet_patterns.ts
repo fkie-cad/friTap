@@ -81,6 +81,14 @@ const SIGNAL: ArchPatternMap = {
     arm64: {
         primary:  "FF 43 02 D1 FD 7B 05 A9 F? ?? 0? ?9 F6 57 07 A9 F4 4F 08 A9 FD 43 01 91 5? D0 3B D5 ?8 1? 40 F9 A8 83 1F F8 08 34 40 F9 08 11 41 F9 ?8 0? 00 B4",
         fallback: "3F 23 03 D5 FF 43 02 D1 FD 7B 05 A9 F8 5F 06 A9 F6 57 07 A9 F4 4F 08 A9 FD 43 01 91 08 34 40 F9 08 21 41 F9 C8 11 00 B4",
+        // ssl_log_secret prologue for modern libsignal-net's statically-linked
+        // BoringSSL (Signal Android >= ~7.52.0; mined with BoringSecretHunter on
+        // libsignal_jni.so 8.14.3, arm64). The older two prologues above no
+        // longer match because libsignal-net moved chat TLS into this in-tree
+        // BoringSSL fork, whose ssl_log_secret prologue differs only in the
+        // stack-canary read region. Without this, Signal chat TLS keys (needed
+        // to strip TLS before Signal-protocol decryption) are not captured.
+        second_fallback: "FF 83 02 D1 FD 7B 05 A9 F9 33 00 F9 F8 5F 07 A9 F6 57 08 A9 F4 4F 09 A9 FD 43 01 91 59 D0 3B D5 28 17 40 F9 A8 83 1F F8 08 34 40 F9 08 21 41",
     },
 };
 

@@ -25,17 +25,53 @@ def _active_keylog_formatters(protocol: str, protocol_registry):
         return []
     if protocol in ("all", "auto"):
         handlers = protocol_registry.get_all()
-    elif protocol in ("tls", "ssh", "ipsec"):
-        h = protocol_registry.get(protocol)
-        handlers = [h] if h is not None else []
     else:
-        handlers = []
+        # Any single named protocol: use its handler's formatter if registered,
+        # plus any companion protocols it implies (a TLS-wrapped protocol also
+        # emits TLS keys, so its keylog is split into <stem>.<proto><ext> +
+        # <stem>.tls<ext>). Registry-driven (not a hardcoded tuple) so new
+        # protocols need no edit here; an unknown name resolves to no formatter.
+        from ..protocols.registry import implied_protocols
+        names = [protocol] + implied_protocols(protocol)
+        handlers = [protocol_registry.get(n) for n in names]
+        handlers = [h for h in handlers if h is not None]
     formatters = []
     for h in handlers:
         fmt = h.keylog_formatter()
         if fmt is not None:
             formatters.append(fmt)
     return formatters
+
+
+def active_keylog_paths(base_keylog, protocol, protocol_registry, protocol_handler=None):
+    """Return ``{protocol_name: keylog_path}`` for every keylog file that
+    :meth:`OutputHandlerFactory.create_handlers` writes for this run.
+
+    Mirrors that method's keylog branch: a single active formatter writes the
+    base path directly; multiple active formatters (e.g. ``--protocol signal``,
+    which also emits TLS keys) split it into ``<stem>.<proto><ext>`` per
+    protocol (``keys.log`` -> ``keys.tls.log`` + ``keys.signal.log``). Empty when
+    no active protocol emits key material.
+
+    Lets post-capture callers (the results modal, the decrypt-to-flow offer)
+    locate the real keylog files instead of the possibly-never-written base path.
+    Shares ``_active_keylog_formatters`` + ``split_keylog_path`` with
+    ``create_handlers`` so the two cannot drift on naming or the active-set rule.
+    """
+    from .keylog_paths import split_keylog_path
+    if not base_keylog:
+        return {}
+    active = _active_keylog_formatters(protocol, protocol_registry)
+    if not active and protocol_handler is not None \
+            and hasattr(protocol_handler, "keylog_formatter"):
+        fmt = protocol_handler.keylog_formatter()
+        if fmt is not None:
+            active = [fmt]
+    if not active:
+        return {}
+    if len(active) == 1:
+        return {active[0].protocol: base_keylog}
+    return {f.protocol: split_keylog_path(base_keylog, f.protocol) for f in active}
 
 
 class OutputHandlerFactory:
@@ -70,6 +106,10 @@ class OutputHandlerFactory:
 
         handlers = []
         live_info = {}
+        # Per-protocol split keylog paths, populated below when multiple
+        # protocol formatters are active. Used to record all split keylogs in
+        # the capture manifest while preserving the single "keylog" field.
+        split_paths = None
 
         # Console always active
         handlers.append(ConsoleOutputHandler(verbose=config.output.verbose))
@@ -110,6 +150,15 @@ class OutputHandlerFactory:
                 fmt = protocol_handler.keylog_formatter()
                 if fmt is not None:
                     active = [fmt]
+            # The generic memory-scan engine (--scan-keys-region) emits candidates
+            # under the protocol-agnostic "scan_candidate" classifier regardless of
+            # the selected --protocol, so wire its formatter whenever a scan region
+            # is configured. It gets its own split keylog file when other protocols
+            # are also active; on its own it writes straight to the -k path.
+            if getattr(config.hooking, "scan_keys_region", None):
+                from .scan_candidate_formatter import ScanCandidateKeylogFormatter
+                if not any(getattr(f, "protocol", None) == "scan_candidate" for f in active):
+                    active = list(active) + [ScanCandidateKeylogFormatter()]
             if not active:
                 logger.warning(
                     "--keylog set but no active protocol emits key material; "
@@ -124,10 +173,20 @@ class OutputHandlerFactory:
                     "keylog split: %s",
                     ", ".join(f"{p} → {path}" for p, path in split_paths.items()),
                 )
+                # Surface all split keylogs so callers (and the capture manifest)
+                # can record every protocol's keylog, not just the single -k path.
+                live_info["keylogs"] = split_paths
                 for fmt in active:
                     handlers.append(KeylogOutputHandler(
                         split_paths[fmt.protocol], formatter=fmt,
                     ))
+
+        # In the multi-format case, hand the split keylog paths to the PCAP
+        # object so its capture manifest records every protocol's keylog under
+        # "keylogs" (the single "keylog" field is set elsewhere and preserved).
+        if split_paths and pcap_obj is not None \
+                and hasattr(pcap_obj, "set_active_keylogs"):
+            pcap_obj.set_active_keylogs(split_paths)
 
         # JSON / JSONL
         json_output = config.output.json_output

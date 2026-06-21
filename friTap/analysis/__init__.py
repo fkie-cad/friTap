@@ -150,6 +150,29 @@ class Finding:
         return cls(**kwargs)
 
 
+# Evidence keys, in priority order, that typically hold a finding's matched
+# value. Shared so the TUI's finding-detail view and findings-list preview agree
+# on what counts as "the value" (avoids the two drifting out of sync).
+EVIDENCE_VALUE_KEYS = (
+    "matched_data", "match", "value", "secret", "token", "credential", "data",
+)
+
+
+def primary_evidence_value(finding: "Finding") -> "str | None":
+    """Return the finding's matched value from its evidence, or ``None``.
+
+    Picks the first present string value among :data:`EVIDENCE_VALUE_KEYS`
+    (by priority). Used for the finding-detail "Matched value" line and the
+    findings-list preview snippet.
+    """
+    evidence = getattr(finding, "evidence", None) or {}
+    for key in EVIDENCE_VALUE_KEYS:
+        val = evidence.get(key)
+        if isinstance(val, str) and val:
+            return val
+    return None
+
+
 @runtime_checkable
 class BaseAnalyzer(Protocol):
     """Protocol for flow-level analyzers.

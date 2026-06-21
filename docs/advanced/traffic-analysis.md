@@ -84,6 +84,87 @@ fritap analyze capture.tap \
       module* that set `is_fritap_analyzer = True`. The marker stops the registry
       from blindly instantiating every class it finds.
 
+### Ship it everywhere: discovery
+
+Beyond the one-off `--analyzer-path`, an analyzer can be made **ambiently
+available** — picked up automatically by every `fritap` run, including
+`--list-analyzers`, the TUI, and offline analysis — through three discovery
+channels.
+
+#### 1. Drop-in analyzers directory
+
+Drop a `.py` file containing a class with `is_fritap_analyzer = True` into the
+platform analyzers directory and it is auto-discovered everywhere:
+
+| Platform | Path |
+|----------|------|
+| Linux | `~/.local/share/friTap/analyzers/` |
+| macOS | `~/Library/Application Support/friTap/analyzers/` |
+| Windows | `C:\Users\<user>\AppData\Local\friTap\analyzers\` |
+
+No `--analyzer-path` needed — friTap scans this directory the first time analyzers
+are listed or run (discovery is lazy, then cached). This mirrors the existing
+[plugins directory](../development/plugins.md) trust model.
+
+#### 2. Packaged analyzers (entry points)
+
+Third-party packages distribute analyzers by declaring the **`fritap.analyzers`**
+entry-points group in their `setup.py` / `pyproject.toml`:
+
+```python
+entry_points={
+    "fritap.analyzers": [
+        "my-analyzer = my_pkg.analyzers:MyAnalyzer",
+    ],
+}
+```
+
+Once the package is `pip install`-ed, the analyzer is discovered automatically.
+
+#### 3. Plugin bridge
+
+A [`FriTapPlugin`](../development/plugins.md) can expose analyzers by implementing the optional
+`register_analyzers()` hook, which returns a list of `BaseAnalyzer` instances.
+This runs independently of the `on_load`/Session lifecycle, so the analyzers are
+available offline, for `--list-analyzers`, and in the TUI:
+
+```python
+from friTap.plugins.base import FriTapPlugin
+
+
+class MyPlugin(FriTapPlugin):
+    name = "my-plugin"
+    version = "1.0.0"
+
+    def register_analyzers(self):
+        return [MyAnalyzer()]
+```
+
+#### Listing discovered analyzers
+
+Both commands list every analyzer — built-in **and** discovered:
+
+```bash
+fritap --list-analyzers           # top-level flag
+fritap analyze --list-analyzers   # under the analyze subcommand
+```
+
+!!! danger "Security: discovery executes code"
+    Dropping a `.py` file in the analyzers directory, installing a package that
+    declares a `fritap.analyzers` entry point, or installing such a plugin causes
+    **that code to execute** on the next `fritap` run that lists or resolves
+    analyzers — even for `--list-analyzers`. This is the same trust model as the
+    existing plugin directory: only place analyzers you trust there.
+
+    To disable all ambient discovery (drop-in directory, entry points, and the
+    plugin bridge), set the environment variable:
+
+    ```bash
+    export FRITAP_DISABLE_ANALYZER_DISCOVERY=1
+    ```
+
+    Explicit `--analyzer-path` references still work when discovery is disabled.
+
 ### Watch the CI gate trip
 
 The `MEDIUM` severity above is deliberate. The default CI gate trips at **medium or
@@ -169,6 +250,16 @@ built-in analyzers (the argument is `nargs="?"` with a default of `all`).
 | `--scan-source <names>` | all | Comma-separated analyzer source names to include in the report. |
 | `--scan-category <categories>` | all | Comma-separated finding categories to include (`secret,pii,network,protocol`). |
 | `--scan-show-pii` | off (redacted) | Reveal PII/secret values in the report instead of redacting them. |
+| `--analyzer-path <module[:Class]>` | — | Load an external analyzer for the live scan. **Repeatable.** |
+
+Loading custom analyzers during a live capture now works the same as offline —
+`--analyzer-path` is repeatable, so you can stack several:
+
+```bash
+fritap --scan all -m com.example.app \
+    --analyzer-path my_analyzer:InternalHostAnalyzer \
+    --analyzer-path another_pkg.analyzers
+```
 
 The live `--scan-*` filters mirror the offline `analyze` filters one-for-one
 (`--scan-min-confidence` ≙ `--min-confidence`, `--scan-source` ≙ `--source`,

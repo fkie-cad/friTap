@@ -1204,11 +1204,17 @@ def _parse_node_endpoint(text: str) -> tuple[str, int]:
     """Parse a ``Node N:`` ``addr:port`` value, splitting on the LAST colon.
 
     IPv6 addresses contain colons, so the port is everything after the final
-    colon and the address is the remainder.
+    colon and the address is the remainder. tshark brackets IPv6 endpoints in
+    follow output (``[2001:db8::1]:443``); we strip the brackets so the address
+    matches friTap's canonical unbracketed form (the same form tshark's
+    ``ipv6.src``/``ipv6.dst`` fields use), keeping the 4-tuple key consistent
+    across the follow-stream and field-based paths.
     """
     addr, _, port = text.rpartition(":")
     if not addr:  # no colon at all — treat the whole token as the address
         addr, port = text, "0"
+    if addr.startswith("[") and addr.endswith("]"):  # bracketed IPv6: [::1]:443
+        addr = addr[1:-1]
     try:
         return addr, int(port)
     except ValueError:

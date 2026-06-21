@@ -350,6 +350,12 @@ Offline (read / analyze .tap):
     args.add_argument("--scan-show-pii", required=False, action="store_true", default=False,
                       dest="scan_show_pii",
                       help="Reveal PII/secret values in the passive-analysis report instead of redacting them (default: redacted).")
+    args.add_argument("--analyzer-path", required=False, action="append", default=None,
+                      dest="scan_analyzer_path", metavar="MODULE[:CLASS]",
+                      help="Load an external analyzer for the live --scan ('module' or "
+                           "'module:Class'). Repeatable to load several analyzers.")
+    args.add_argument("--list-analyzers", required=False, action="store_true", default=False,
+                      help="List available analyzers (built-in + discovered externals) and exit.")
     args.add_argument('--version', action='version',version='friTap v{version}'.format(version=__version__))
     args.add_argument("--enable_spawn_gating", required=False, action="store_const", const=True,
                       help="Catch newly spawned processes matching the target app (useful for Android multi-process apps)")
@@ -382,6 +388,13 @@ Offline (read / analyze .tap):
                            "Readv). 'app-api' captures at the application-API "
                            "Boundary-4 with decoded HTTP/3 headers "
                            "(Chrome/Android Google QUICHE only).")
+    args.add_argument("--scan-keys-region", required=False, default=None,
+                      metavar="<module|base,size|heap>", dest="scan_keys_region",
+                      help="Scan a memory region for cryptographic key material "
+                           "with the generic key-scan engine and emit ranked, "
+                           "anonymous candidates to the keylog (requires -k). "
+                           "Value is a module name, an explicit '0xADDR,SIZE' "
+                           "region, or 'heap' (all writable ranges).")
     args.add_argument("--quic-egress-headers-layer", required=False,
                       choices=["auto", "quiche-internal", "chrome-shim", "session-level"],
                       default="auto",
@@ -433,11 +446,15 @@ Offline (read / analyze .tap):
                       help="Set a timeout in seconds for the process. After the timeout, the process will be resumed automatically. If not set, the process will resume immediately.")
     args.add_argument("--backend", choices=[b.value for b in BackendName], default=BackendName.FRIDA,
                       help="Instrumentation backend to use (default: frida)")
+    from friTap.protocols.registry import available_protocol_names
     args.add_argument("--protocol", type=str, default="tls",
-                      choices=["tls", "ipsec", "ssh", "all", "auto"],
+                      choices=available_protocol_names() + ["all", "auto"],
                       help="Protocol to intercept (default: tls). "
                            "'tls' covers the TLS family — TLS, QUIC, and OHTTP. "
-                           "'ssh' and 'ipsec' are exclusive (only their hooks install). "
+                           "'ssh', 'ipsec' and 'mtproto' (Telegram) are exclusive (only their hooks install). "
+                           "'telegram' extracts MTProto cloud-chat keys AND Secret-Chat E2E keys into one keylog. "
+                           "Some protocols are TLS-wrapped and additionally extract TLS keys; their -k "
+                           "keylog is then split into <stem>.<proto><ext> + <stem>.tls<ext>. "
                            "'all' hooks every supported protocol and asks for confirmation "
                            "(skip with -y/--yes). 'auto' is a script-friendly alias for 'all' "
                            "that does NOT prompt.")
@@ -572,6 +589,86 @@ Offline (read / analyze .tap):
             logger.info("[ipsec] --protocol ipsec auto-enables use_modern=true (legacy path has no IPSec support)")
             parsed.use_modern = True
 
+    # Telegram MTProto lives only in the modern agent (no legacy hooks exist).
+    if parsed.protocol == "mtproto":
+        if not getattr(parsed, "use_modern", False):
+            logger.info("[mtproto] --protocol mtproto auto-enables use_modern=true (legacy path has no MTProto support)")
+            parsed.use_modern = True
+        # MTProto's obfuscated transport can only be decrypted offline when each
+        # TCP stream is captured from its first 64 bytes. Attaching to an already
+        # running Telegram misses that init block on connections opened earlier
+        # (they come back "degraded" and decrypt to nothing), so nudge toward spawn.
+        if not getattr(parsed, "spawn", False):
+            logger.info(
+                "[mtproto] attach mode: connections opened before capture can't be "
+                "decrypted (obfuscated-transport init bytes are missed). Use -s (spawn) "
+                "so every connection is captured from the start, or force-stop + relaunch "
+                "the app before attaching."
+            )
+        # Live capture only needs to extract keys/plaintext (no Python-side crypto),
+        # but offline decryption of the resulting pcap does. Nudge the user early so
+        # a later `--mtproto-keylog` run does not surprise them.
+        from friTap.offline.mtproto import MTPROTO_DEPENDENCY_HINT, mtproto_backend_available
+        if not mtproto_backend_available():
+            logger.warning(
+                "[mtproto] %s  (live key capture works without it; that backend is "
+                "needed to decrypt the captured pcap offline.)",
+                MTPROTO_DEPENDENCY_HINT,
+            )
+
+    # Telegram (combined MTProto cloud + Secret-Chat E2E) lives only in the
+    # modern agent. Both key kinds land in ONE combined keylog file.
+    if parsed.protocol == "telegram":
+        if not getattr(parsed, "use_modern", False):
+            logger.info("[telegram] --protocol telegram auto-enables use_modern=true (legacy path has no Telegram support)")
+            parsed.use_modern = True
+        # Same byte-0 caveat as mtproto (cloud transport is the obfuscated MTProto):
+        # attaching to a running Telegram misses the init block on already-open
+        # connections, so those streams can't be decrypted offline. Nudge to spawn.
+        if not getattr(parsed, "spawn", False):
+            logger.info(
+                "[telegram] attach mode: connections opened before capture can't be "
+                "decrypted (obfuscated-transport init bytes are missed). Use -s (spawn) "
+                "so every connection is captured from the start, or force-stop + relaunch "
+                "the app before attaching."
+            )
+        # Require an explicit capture intent: -k extracts the combined Telegram
+        # keys for offline decrypt, -p captures live plaintext, -f captures a raw
+        # pcap for offline decrypt. Bare `--protocol telegram` would install hooks
+        # that produce no output, so reject it with an actionable message.
+        if not (parsed.keylog or parsed.pcap or parsed.full_capture):
+            parser.error(
+                "--protocol telegram requires a capture intent: -k (extract the "
+                "combined MTProto cloud + Secret-Chat E2E keys for offline "
+                "decryption) and/or -p (capture live plaintext); -f -p -k captures "
+                "a raw pcap plus keys for offline decryption."
+            )
+            raise Failure
+        # Live capture only extracts keys/plaintext (no Python-side crypto), but
+        # offline decryption of the resulting pcap does. Nudge the user early so
+        # a later `--telegram-keylog` run does not surprise them.
+        from friTap.offline.mtproto import MTPROTO_DEPENDENCY_HINT, mtproto_backend_available
+        if not mtproto_backend_available():
+            logger.warning(
+                "[telegram] %s  (live key capture works without it; the extra is "
+                "needed to decrypt the captured pcap offline.)",
+                MTPROTO_DEPENDENCY_HINT,
+            )
+
+    # Let the selected protocol's handler validate/adjust CLI intent. This keeps
+    # protocol-specific rules (e.g. a TLS-wrapped E2E protocol that needs a
+    # capture intent and the modern agent path) with the handler, out of the
+    # generic parser and out of the public core. Meta values ('all'/'auto') and
+    # unknown names have no single handler -> skipped.
+    from friTap.protocols.registry import available_protocol_names, create_default_registry
+    if parsed.protocol in available_protocol_names():
+        try:
+            _selected_handler = create_default_registry([parsed.protocol]).get(parsed.protocol)
+        except Exception:
+            _selected_handler = None
+        if _selected_handler is not None:
+            _selected_handler.validate_cli_intent(parsed, parser, logger)
+
     if parsed.use_modern:
         logger.warning(
             f"friTap modern hooks active (experimental). Known regressions vs legacy: "
@@ -677,6 +774,7 @@ Offline (read / analyze .tap):
             quic_capture_mode=getattr(parsed, 'quic_capture_mode', 'stream'),
             quic_only=getattr(parsed, 'quic_only', False),
             quic_egress_headers_layer=getattr(parsed, 'quic_egress_headers_layer', 'auto'),
+            scan_keys_region=getattr(parsed, 'scan_keys_region', None),
             scan=getattr(parsed, 'scan', None),
             scan_report=getattr(parsed, 'scan_report', 'table'),
             scan_report_out=getattr(parsed, 'scan_report_out', None),
@@ -685,6 +783,7 @@ Offline (read / analyze .tap):
             scan_source=getattr(parsed, 'scan_source', None),
             scan_category=getattr(parsed, 'scan_category', None),
             scan_show_pii=getattr(parsed, 'scan_show_pii', False),
+            scan_analyzer_path=getattr(parsed, 'scan_analyzer_path', None),
         )
 
         # Validate filter expression early (before session starts)
@@ -808,6 +907,19 @@ def _looks_like_tap_input(token):
     return bool(token) and not token.startswith("-") and token.endswith(".tap")
 
 
+def _looks_like_pcap_input(token):
+    """Return True when ``token`` looks like a pcap/pcapng capture file argument.
+
+    Used by :func:`_dispatch_special_mode` to route ``fritap -r capture.pcap``
+    (and the bare trailing-path form) into the guided pcap-to-tap wizard rather
+    than the ``.tap`` replay path. A token qualifies only if it is a non-flag
+    argument ending in ``.pcap`` or ``.pcapng``.
+    """
+    return bool(token) and not token.startswith("-") and (
+        token.endswith(".pcap") or token.endswith(".pcapng")
+    )
+
+
 def _dispatch_special_mode(argv):
     """Resolve the pre-argparse "special mode" from a raw ``argv`` list.
 
@@ -819,6 +931,9 @@ def _dispatch_special_mode(argv):
 
     Returns a ``(mode, payload)`` tuple where ``mode`` is one of:
 
+    * ``"list-analyzers"``  — ``fritap --list-analyzers``: print the available
+      analyzers (built-in + discovered externals) and exit. ``payload`` is
+      ``None``; needs no target.
     * ``"install-backend"`` — ``fritap install-backend <name>``: install an
       external integration (currently only the Wireshark extcap). ``payload``
       is the backend name (``argv[2]``).
@@ -832,6 +947,11 @@ def _dispatch_special_mode(argv):
       capture.tap`` or ``fritap capture.tap``: open the capture in the TUI.
       ``payload`` is the ``.tap`` path, or ``None`` when ``-r`` was given
       without a file (caller prints usage).
+    * ``"pcap-wizard"``     — ``fritap -r capture.pcap``, ``fritap --replay
+      capture.pcapng`` or ``fritap capture.pcap``: launch the guided pcap-to-tap
+      wizard (confirm input, choose output ``.tap``, supply TLS + per-protocol
+      keylogs, convert, then open the result in the replay TUI). ``payload`` is
+      the pcap/pcapng path.
     * ``None``              — no special mode; fall through to normal capture.
 
     Disambiguation rule for the bare ``analyze`` subcommand: ``analyze`` is only
@@ -841,6 +961,11 @@ def _dispatch_special_mode(argv):
     process literally named ``analyze`` — e.g. ``fritap analyze`` or
     ``fritap analyze -m`` — is *not* hijacked and falls through to capture.
     """
+    # --list-analyzers: informational mode that needs no target. May appear
+    # anywhere in the argument list (mirrors --from-pcap detection).
+    if len(argv) >= 2 and "--list-analyzers" in argv[1:]:
+        return ("list-analyzers", None)
+
     # install-backend: requires a following backend name.
     if len(argv) >= 3 and argv[1] == "install-backend":
         return ("install-backend", argv[2])
@@ -857,9 +982,16 @@ def _dispatch_special_mode(argv):
             and _looks_like_tap_input(argv[2])):
         return ("analyze", argv[2:])
 
-    # Replay: -r/--replay <file>, or a single trailing .tap path.
+    # Replay / pcap-wizard: -r/--replay <file>, or a single trailing path.
+    # A .pcap/.pcapng input opens the guided pcap-to-tap wizard (convert +
+    # replay); a .tap input opens the replay TUI directly.
     if len(argv) >= 2 and argv[1] in ("-r", "--replay"):
-        return ("replay", argv[2] if len(argv) >= 3 else None)
+        target = argv[2] if len(argv) >= 3 else None
+        if _looks_like_pcap_input(target):
+            return ("pcap-wizard", target)
+        return ("replay", target)
+    if len(argv) == 2 and _looks_like_pcap_input(argv[1]):
+        return ("pcap-wizard", argv[1])
     if len(argv) == 2 and argv[1].endswith(".tap"):
         return ("replay", argv[1])
 
@@ -885,12 +1017,36 @@ def main():
             from .offline.cli import run_offline_pcap_to_tap
             return run_offline_pcap_to_tap(payload)
 
+        if kind == "list-analyzers":
+            from .commands.analyze import (
+                _format_analyzer_listing,
+                list_analyzers_detailed,
+            )
+            print(_format_analyzer_listing(list_analyzers_detailed()))
+            return
+
         if kind == "analyze":
             from .commands.analyze import run_analyze_cli
             return run_analyze_cli(payload)
 
         if kind == "replay" and payload is None:
             print("Usage: fritap -r <capture.tap>")
+            return
+
+        # pcap-wizard mode: fritap -r capture.pcap  or  fritap capture.pcapng
+        # Launch the guided pcap-to-tap wizard inside the TUI, which converts
+        # the pcap to a .tap (with optional TLS + per-protocol keylogs) and
+        # then opens the result in the replay view.
+        if kind == "pcap-wizard":
+            try:
+                from .tui.app import run_tui
+            except ImportError as e:
+                logging.getLogger('friTap').error(
+                    f"Could not load the interactive TUI: {e}. "
+                    "Ensure friTap's TUI dependencies are installed (pip install -e . / pip install textual)."
+                )
+            else:
+                run_tui(pcap_to_tap_file=payload)
             return
 
     # Replay mode: fritap -r capture.tap  or  fritap capture.tap
