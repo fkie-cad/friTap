@@ -33,14 +33,16 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PRIVATE_TXT="$REPO_ROOT/private.txt"
 
 DRY_RUN=0
+STATUS_ONLY=0
 NO_RELEASE=0
 PUBLIC_MSG=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run)    DRY_RUN=1; shift ;;
+    --status)     STATUS_ONLY=1; DRY_RUN=1; shift ;;   # fast preview: skip gates, full file list, no writes
     --no-release) NO_RELEASE=1; shift ;;
     -m|--message) PUBLIC_MSG="${2:?-m needs a commit message}"; shift 2 ;;
-    *) echo "usage: publish_public.sh [--dry-run] [-m \"<commit message>\"] [--no-release]" >&2; exit 2 ;;
+    *) echo "usage: publish_public.sh [--dry-run|--status] [-m \"<commit message>\"] [--no-release]" >&2; exit 2 ;;
   esac
 done
 
@@ -69,6 +71,16 @@ echo "  stripped private.txt paths"
 # --- 3. scrub substantive reveals (setup.py extra, mkdocs nav, CHANGELOG) ------
 python3 "$SCRIPT_DIR/scrub_public_tree.py" "$TREE"
 
+# Snapshot the INTENDED publish set NOW — a clean tree, before the gates below
+# create any __pycache__/.git scratch. The completeness guard (step 4.9) checks
+# the committed snapshot against this list, so a tracked file silently dropped by
+# .gitignore can never again be deleted from the public repo unnoticed.
+( cd "$TREE" && find . -type f | sed 's#^\./##' | LC_ALL=C sort ) > "$TMP/expected.txt"
+
+# Gates 4 / 4.5 / 4.6 below (leak guard, mkdocs --strict, pytest) are the slow
+# checks. --status skips them for a fast file-level preview (still zero writes);
+# --dry-run and the real publish always run them.
+if [ "$STATUS_ONLY" -ne 1 ]; then
 # --- 4. leak guard (HARD rules must pass; exit 2 = accepted residuals) ---------
 echo "  running leak guard on the scrubbed tree…"
 set +e
@@ -127,12 +139,7 @@ if python3 -m pytest --version >/dev/null 2>&1; then
 else
   echo "  WARNING: pytest not installed — skipping scrubbed-tree test gate (install dev deps to enforce)."
 fi
-
-if [ "$DRY_RUN" -eq 1 ]; then
-  echo "== dry-run complete: scrubbed tree validated. No git objects/refs written. =="
-  echo "   (scrubbed tree was at $TREE — removed on exit)"
-  exit 0
-fi
+fi   # end slow gates (skipped by --status)
 
 # --- 4.7 optional: keep friTap/about.py at the published version (--no-release) -
 # publish.yml (on GitHub) uploads to PyPI when friTap/about.py's __version__
@@ -151,20 +158,58 @@ if [ "$NO_RELEASE" -eq 1 ]; then
   fi
 fi
 
-# --- 5. commit-tree the scrubbed tree onto local public-main (maintainer path) --
-# Uses a TEMP index so the working index/HEAD/checked-out branch are untouched.
-SRC_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+# --- 4.8 build the snapshot tree (TEMP index; real index/HEAD/branch untouched) -
+# git add -A WITHOUT -f: the .gitignore public-mirror allowlist makes the tracked
+# files stageable while scratch (__pycache__, etc.) stays excluded.
 GIT_INDEX_FILE="$TEMP_INDEX" git -C "$REPO_ROOT" --work-tree="$TREE" add -A
 TREE_SHA="$(GIT_INDEX_FILE="$TEMP_INDEX" git -C "$REPO_ROOT" write-tree)"
-# Parent = the previous public snapshot if we have one, else the EXISTING public
-# github/main — so the very FIRST publish is a normal CHILD of the live public
-# history and the push fast-forwards (preserving every existing commit/tag/branch,
-# never a history-destroying --force). A true rootless orphan is correct ONLY for
-# a brand-new EMPTY public repo and must be an explicit opt-in, never the silent
-# default (silently orphaning here is the force-push footgun).
+# Parent = previous public snapshot, else the EXISTING github/main, so the first
+# publish is a fast-forward CHILD (never a history-destroying force). A rootless
+# orphan is only for a brand-new EMPTY public repo (explicit FRITAP_PUBLIC_ORPHAN).
 PREV="$(git -C "$REPO_ROOT" rev-parse -q --verify refs/heads/public-main \
         || git -C "$REPO_ROOT" rev-parse -q --verify refs/remotes/github/main \
         || true)"
+
+# --- 4.9 completeness guard: snapshot MUST contain every intended file ---------
+# Catches a tracked file silently dropped by .gitignore — the failure mode that
+# would otherwise DELETE files from the public repo on push.
+git -C "$REPO_ROOT" ls-tree -r --name-only "$TREE_SHA" | LC_ALL=C sort > "$TMP/actual.txt"
+MISSING="$(comm -23 "$TMP/expected.txt" "$TMP/actual.txt")"
+if [ -n "$MISSING" ]; then
+  echo "ERROR: the snapshot is MISSING tracked files from the public tree —" >&2
+  echo "       publishing would DELETE them from github:main. Add a '!negation' in" >&2
+  echo "       .gitignore for each (public-mirror allowlist block), then re-run:" >&2
+  echo "$MISSING" | sed 's/^/         /' >&2
+  exit 1
+fi
+
+# --- 4.10 publish preview: what 'public-main -> main' would change -------------
+echo "  === publish preview (snapshot vs $( [ -n "$PREV" ] && git -C "$REPO_ROOT" rev-parse --short "$PREV" || echo "EMPTY repo" )) ==="
+if [ -n "$PREV" ]; then
+  git -C "$REPO_ROOT" diff --name-status "$PREV" "$TREE_SHA" > "$TMP/preview.txt" || true
+  awk '{c[substr($1,1,1)]++} END{printf "    +%d added   ~%d modified   -%d deleted   »%d renamed   (%d files total)\n", c["A"], c["M"], c["D"], c["R"], NR}' "$TMP/preview.txt"
+  if [ "$STATUS_ONLY" -eq 1 ]; then
+    echo "    --- changed files (A added · M modified · D deleted · R renamed) ---"
+    LC_ALL=C sort "$TMP/preview.txt" | sed 's/^/      /'
+  elif grep -q '^D' "$TMP/preview.txt"; then
+    echo "    ⚠ DELETIONS — these files would be REMOVED from github:main (review!):"
+    grep '^D' "$TMP/preview.txt" | sed 's/^D[[:space:]]*/        - /'
+  fi
+else
+  echo "    first publish to an empty repo — all $(wc -l < "$TMP/actual.txt" | tr -d ' ') files added"
+fi
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  if [ "$STATUS_ONLY" -eq 1 ]; then
+    echo "== status preview: $(wc -l < "$TMP/actual.txt" | tr -d ' ') files in the snapshot. Gates skipped, nothing written. (Use 'make publish-public-dry' for full validation.) =="
+  else
+    echo "== dry-run complete: snapshot built + verified ($(wc -l < "$TMP/actual.txt" | tr -d ' ') files). No commit/ref/branch written. =="
+  fi
+  exit 0
+fi
+
+# --- 5. commit-tree the verified snapshot onto local public-main (maintainer) ---
+SRC_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 # Default is intentionally neutral — a public commit message must NOT name the
 # private tier. Pass -m "<message>" for a real release.
 MSG="${PUBLIC_MSG:-Public snapshot from $SRC_SHA}"

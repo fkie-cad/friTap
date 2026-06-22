@@ -1,0 +1,6 @@
+# Era pin for friTap 1.3.0.0 - 1.3.3.3 (frida 15.x line).
+# frida-tools 10.x (last: 10.8.0) and 11.x (>=15.2.0) both work with
+# frida 15.x; pip will pick the highest available.
+# Use via: pip install fritap==1.3.3.3 -c constraints/frida15.txt
+frida>=15.0.0,<16.0.0
+frida-tools>=10.0.0,<12.0.0

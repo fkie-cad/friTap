@@ -1,0 +1,55 @@
+{
+    "openssl":{
+        "SSL_read": {
+            "address":"0x572115b4",
+            "absolute":true
+        },
+        "SSL_write":{
+            "address":"0x144c",
+            "absolute": false
+        },
+        "SSL_SESSION_get_id":{
+            "address": "0x1195",
+            "absolute": false
+        },
+        "SSL_get_session":{
+            "address": "0x572113ed",
+            "absolute": true
+        }
+    },
+    "wolfssl":{
+        "wolfSSL_read":{
+            "address": "0x2aae",
+            "absolute": false
+        }
+    },
+    "gnutls":{
+        ...
+    },
+    "mbedtls":{
+        ...
+    },
+    "nss":{
+        ...
+    },
+    "sspi":{
+        DecryptMessage:{...},
+        EncryptMessage: {...}
+    },
+    "sockets":{
+        "getpeername":{
+            ...
+        },
+        "getsockname":{
+            ...
+        },
+        "ntohs":{
+            ...         
+        },
+        "ntohl":{
+            ...
+        }
+    }
+
+    
+}

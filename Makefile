@@ -3,13 +3,14 @@
 # The full tree lives on the `gitlab` remote (source of truth). The public
 # GitHub/PyPI build is a regenerated snapshot = the full tree minus private.txt
 # paths, with the substantive Signal-E2E reveals scrubbed. See TIERING_HANDOFF.md.
-.PHONY: publish-public publish-public-dry leak-guard verify-public help
+.PHONY: publish-public publish-public-dry publish-status leak-guard verify-public help
 
 help:
 	@echo "friTap maintainer targets:"
 	@echo "  make verify-public       — preview the public strip + token scan (scripts/verify_public_build.sh)"
 	@echo "  make leak-guard          — §F leak guard on the stripped public tree (scripts/check_public_denylist.sh)"
-	@echo "  make publish-public-dry  — §E dry-run: strip + scrub + leak guard, NO git writes"
+	@echo "  make publish-status      — fast preview: file-by-file A/M/D the publish would make (no gates, no writes)"
+	@echo "  make publish-public-dry  — §E dry-run: strip + scrub + leak guard + mkdocs + pytest + preview, NO git writes"
 	@echo "  make publish-public      — §E: the above, then commit-tree onto local public-main (maintainer)"
 	@echo "                             vars: MSG=\"<commit message>\"  NORELEASE=1 (freeze about.py → no PyPI)"
 
@@ -19,9 +20,14 @@ help:
 publish-public:
 	bash scripts/publish_public.sh $(if $(MSG),-m "$(MSG)") $(if $(NORELEASE),--no-release)
 
-# §E dry-run — strip + scrub + leak guard only (no git objects/refs written).
+# §E dry-run — strip + scrub + all gates + preview (no git objects/refs written).
 publish-public-dry:
 	bash scripts/publish_public.sh --dry-run
+
+# Fast preview — the file-by-file A/M/D the publish would apply to github:main.
+# Skips the slow gates (leak/mkdocs/pytest); writes nothing. Your "git status".
+publish-status:
+	bash scripts/publish_public.sh --status
 
 # §F — name-free leak guard (structural rules + denylist token scan).
 leak-guard:

@@ -1,0 +1,19 @@
+frida>=17.0.0,<18.0.0
+frida-tools>=14.0.0,<15.0.0
+AndroidFridaManager
+hexdump
+scapy
+watchdog
+psutil
+rich>=13.0.0
+textual>=0.80.0
+tlsLibHunter
+platformdirs>=3.0
+pydantic>=2.0
+h11
+hpack
+pylsqpack
+zstandard>=0.19
+brotli>=1.0
+cryptography>=42
+TgCrypto-pyrofork; sys_platform != "darwin"

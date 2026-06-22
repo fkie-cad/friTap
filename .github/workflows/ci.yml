@@ -1,0 +1,199 @@
+name: CI            # shows as “CI” in the Actions tab
+
+on:
+  push:
+    branches: [main]
+  pull_request:      # runs on every PR
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e .[dev]            # adjust extras as needed
+      - run: pytest tests/unit -q             # unit tests only; integration tests need a frida-server
+
+  # Cross-file version-guard. Prevents the silent frida-major bump bug
+  # described in issue #63: any PR that bumps the frida major in
+  # requirements.txt without bumping the friTap major in friTap/about.py
+  # fails this job. See RELEASING.md and dev/check_compat.py.
+  version-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2          # need HEAD~1 for the drift diff
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install pyyaml
+      - run: python dev/check_compat.py
+
+  # Legacy-install resolution check. Verifies each constraints/<era>.txt
+  # file resolves cleanly against its top-of-era PyPI release without
+  # backtracking. Uses --dry-run so no actual install happens; this is
+  # pure resolver work and runs in well under a minute per cell. Catches:
+  # a constraints file being deleted, a top-of-era PyPI version being
+  # yanked, or a new frida release breaking the era's lower bound.
+  legacy-constraints-check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # python-version × era cross product; `include` only maps each era
+        # to its top-of-era PyPI version (matched by `era` key, expansion only).
+        python-version: ["3.11", "3.13"]
+        era: ["frida15", "frida16", "frida17-legacy"]
+        include:
+          - era: frida15
+            version: "1.3.3.3"
+          - era: frida16
+            version: "1.4.3.0"
+          - era: frida17-legacy
+            version: "1.6.3.1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install --upgrade pip
+      - run: |
+          pip install --dry-run \
+            "fritap==${{ matrix.version }}" \
+            -c "constraints/${{ matrix.era }}.txt"
+
+  # Reproducible agent rebuild. Asserts that running ./dev/compile_agent.sh
+  # against the pinned toolchain (npm ci honors package-lock.json,
+  # frida-compile/typescript/@types/frida-gum exact-pinned in package.json)
+  # produces a byte-identical friTap/fritap_agent.js. If it diverges, either
+  # the committed agent is stale (run dev/compile_agent.sh and commit the
+  # result) or the toolchain pin needs tightening.
+  agent-build-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pinned toolchain (lockfile-enforced)
+        # --ignore-scripts skips package.json::prepare (which re-runs
+        # frida-compile). The explicit `./dev/compile_agent.sh` step below
+        # is the one we diff against, so building twice is pure waste.
+        run: npm ci --ignore-scripts
+
+      - name: Install frida-tools (provides frida-pm)
+        run: |
+          python -m pip install --upgrade pip
+          pip install "frida-tools>=14.0.0,<15.0.0"
+
+      - name: Rebuild agent
+        run: ./dev/compile_agent.sh
+
+      - name: Verify committed agent matches rebuild
+        run: |
+          if ! git diff --exit-code -- friTap/fritap_agent.js; then
+            echo "::error ::friTap/fritap_agent.js does not match a fresh rebuild from agent/. Run ./dev/compile_agent.sh locally and commit the result."
+            exit 1
+          fi
+
+      - name: Build manifest
+        run: |
+          {
+            echo "## Agent build manifest"
+            echo "frida-compile: $(npx --no -- frida-compile --version 2>&1 | head -1)"
+            echo "node: $(node --version)"
+            echo "agent SHA-256: $(sha256sum friTap/fritap_agent.js | awk '{print $1}')"
+            echo "agent size: $(wc -c < friTap/fritap_agent.js) bytes"
+          } | tee BUILD_MANIFEST.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-build-manifest
+          path: BUILD_MANIFEST.txt
+
+  # Public-tree leak guard (tiering §F, L1). Reproduces the §E publish strip
+  # (private.txt) and asserts the result carries nothing private: no agent/signal,
+  # no private protocol selectable via --protocol, no public module importing a
+  # stripped path, and a NAME-FREE SHA-256 denylist scan (scripts/denylist.hashes;
+  # the cleartext terms never ship). HARD failures fail the build immediately;
+  # the accepted bare-'signal' reveal-token residuals (api.py/TUI functional
+  # coupling + the shared SIGNALKEYLOG format string) keep the scan at exit 2.
+  # DECISION (§F-strict, 2026-06): exit 2 is the intended steady state, NOT a
+  # TODO — the HARD structural/dist rules are the contract; the token scan is a
+  # guide (operational-privacy stance). rc==2 passes the job by design.
+  leak-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e .[dev]
+
+      - name: Public-tree leak guard
+        run: |
+          set +e
+          bash scripts/check_public_denylist.sh
+          rc=$?
+          set -e
+          if [ "$rc" -eq 1 ]; then
+            echo "::error ::Leak guard HARD violation: private code/protocol present in the public tree."
+            exit 1
+          elif [ "$rc" -eq 2 ]; then
+            echo "::notice ::Leak guard PASS-structural: accepted bare-'signal' reveal-token residuals remain (operational-privacy stance; the HARD structural/dist rules are the contract). Exit 2 is the intended steady state."
+            exit 0
+          elif [ "$rc" -ne 0 ]; then
+            echo "::error ::Leak guard errored (rc=$rc)."
+            exit 1
+          fi
+          echo "Leak guard clean."
+
+  # friTap-import smoke test against the supported frida version(s).
+  # Today the matrix is length-1 (frida 17.x is the only supported major
+  # per compat.yml). When the next frida MAJOR ships AND friTap bumps to
+  # match (RELEASING.md / version-guard enforce the pairing), add a row
+  # here. Keep the OLD frida version in the matrix for one minor cycle as
+  # a deprecation window.
+  smoke-import:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        frida-version: ["17.9.6"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install "frida==${{ matrix.frida-version }}"
+
+      - name: Import smoke test
+        run: |
+          python -c "import friTap; print('friTap', friTap.__version__)"
+          python -c "from friTap.backends.frida_backend import FridaBackend; FridaBackend()"

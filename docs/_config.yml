@@ -1,0 +1,6 @@
+title: "friTap - Decrypting TLS Traffic On The Fly"
+description: "Powerful SSL/TLS traffic decryption tool"
+theme: jekyll-theme-slate
+plugins:
+  - jekyll-feed
+
