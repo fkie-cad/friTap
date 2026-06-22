@@ -27,8 +27,8 @@ import pytest
 
 _SIGNAL_AVAILABLE = importlib.util.find_spec("friTap.offline.signal") is not None
 
-from friTap.flow.models import Flow, FlowChunk
-from friTap.offline.pcap_to_tap import _attach_transport_metadata_layers
+from friTap.flow.models import Flow, FlowChunk  # noqa: E402
+from friTap.offline.pcap_to_tap import _attach_transport_metadata_layers  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

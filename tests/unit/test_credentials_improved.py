@@ -22,7 +22,7 @@ from friTap.analysis.credentials import (
     _API_KEY_PATTERNS,
     _SECRET_RULES,
 )
-from friTap.flow.models import Flow, FlowChunk, FlowState
+from friTap.flow.models import Flow, FlowState
 from friTap.parsers.base import ParseResult
 
 

@@ -38,7 +38,7 @@ if TEXTUAL_AVAILABLE:
     from ..widgets.findings_filter_bar import FindingsFilterBar
     from ..widgets.analyzer_panel import AnalyzerPanel
     from ..widgets.analyzer_finding_detail import AnalyzerFindingDetailWidget
-    from ..modals.findings_filter_modal import FindingsFilterModal, FindingFilterResult
+    from ..modals.findings_filter_modal import FindingsFilterModal
     from friTap.analysis import Finding, Severity  # noqa: F401
     from friTap.analysis.filtering import FindingFilter, summarize
     from friTap.analysis.registry import available_analyzers, resolve_analyzers

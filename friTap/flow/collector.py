@@ -102,8 +102,20 @@ class FlowCollector:
         self._signal_messages = signal_messages
         self._signal_decryptor = None
         if signal_messages:
-            from .signal_live import LiveSignalDecryptor
-            self._signal_decryptor = LiveSignalDecryptor()
+            try:
+                from .signal_live import LiveSignalDecryptor
+                self._signal_decryptor = LiveSignalDecryptor()
+            except ImportError:
+                # Live Signal decoding is an optional component that may be
+                # absent from some builds. When it is, the decryptor stays None
+                # and every signal path below no-ops (see on_data /
+                # _collect_signal_messages), so on_message() still works for all
+                # other flows instead of crashing the capture.
+                logger.debug(
+                    "Live Signal decoder unavailable; Signal message decoding "
+                    "disabled (other flows unaffected)",
+                    exc_info=True,
+                )
 
     def _wrap_parser(
         self,

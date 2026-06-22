@@ -330,4 +330,4 @@ class TestMockPerformanceWorkflows:
             assert logger.running is True
             # Each logger owns a distinct EventBus (no shared global state).
             assert logger._event_bus is not None
-        assert len({id(l._event_bus) for l in loggers}) == 5
+        assert len({id(ln._event_bus) for ln in loggers}) == 5

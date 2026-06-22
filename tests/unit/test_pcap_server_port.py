@@ -24,8 +24,8 @@ import pytest
 
 _SIGNAL_AVAILABLE = importlib.util.find_spec("friTap.offline.signal") is not None
 
-from friTap.constants import SSL_READ, SSL_WRITE
-from friTap.pcap import PCAP
+from friTap.constants import SSL_READ, SSL_WRITE  # noqa: E402
+from friTap.pcap import PCAP  # noqa: E402
 
 
 def _make_stub(pcap_file_name="capture.pcap"):

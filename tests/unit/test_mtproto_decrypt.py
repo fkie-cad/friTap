@@ -53,7 +53,7 @@ def _obfuscate_stream(init: bytes, client_payload: bytes, server_payload: bytes)
     key_out, iv_out, key_in, iv_in = derive_obfuscation_keys(init)
     # Client wire = encrypted(init || client_payload); init's own bytes are wire.
     out_ks = _ctr(key_out, iv_out)
-    enc_init_keystream = out_ks.update(init)  # advances counter over the 64 init bytes
+    out_ks.update(init)  # advances counter over the 64 init bytes
     client_wire = init + out_ks.update(client_payload)
     server_wire = _ctr(key_in, iv_in).update(server_payload)
     return client_wire, server_wire

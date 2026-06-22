@@ -10,13 +10,13 @@ import pytest
 
 _SIGNAL_AVAILABLE = importlib.util.find_spec("friTap.offline.signal") is not None
 
-from friTap.config import FriTapConfig, OutputConfig
-from friTap.events import EventBus, KeylogEvent
-from friTap.output.factory import OutputHandlerFactory, _active_keylog_formatters
-from friTap.output.keylog_handler import KeylogOutputHandler
-from friTap.protocols.registry import create_default_registry
-from friTap.protocols.tls_handler import TlsKeylogFormatter
-from friTap.protocols.ssh_handler import SshKeylogFormatter
+from friTap.config import FriTapConfig, OutputConfig  # noqa: E402
+from friTap.events import EventBus, KeylogEvent  # noqa: E402
+from friTap.output.factory import OutputHandlerFactory, _active_keylog_formatters  # noqa: E402
+from friTap.output.keylog_handler import KeylogOutputHandler  # noqa: E402
+from friTap.protocols.registry import create_default_registry  # noqa: E402
+from friTap.protocols.tls_handler import TlsKeylogFormatter  # noqa: E402
+from friTap.protocols.ssh_handler import SshKeylogFormatter  # noqa: E402
 
 
 @pytest.fixture

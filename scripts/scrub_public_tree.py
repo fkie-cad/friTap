@@ -97,7 +97,7 @@ def scrub_setup_py(tree: str) -> str:
     lines = _read(path)
     if lines is None:
         return "setup.py: absent (skip)"
-    sig = next((i for i, l in enumerate(lines) if re.match(r'\s*"signal"\s*:\s*\[', l)), None)
+    sig = next((i for i, ln in enumerate(lines) if re.match(r'\s*"signal"\s*:\s*\[', ln)), None)
     if sig is None:
         return "setup.py: no signal extra (already clean)"
     end = sig
@@ -117,7 +117,7 @@ def scrub_mkdocs(tree: str) -> str:
     lines = _read(path)
     if lines is None:
         return "mkdocs.yml: absent (skip)"
-    kept = [l for l in lines if "protocols/signal.md" not in l]
+    kept = [ln for ln in lines if "protocols/signal.md" not in ln]
     if len(kept) == len(lines):
         return "mkdocs.yml: no signal.md nav entry (already clean)"
     _write(path, kept)
@@ -141,9 +141,12 @@ def scrub_changelog(tree: str) -> str:
     while i < len(lines):
         m = bullet.match(lines[i])
         if not m:
-            out.append(lines[i]); i += 1; continue
+            out.append(lines[i])
+            i += 1
+            continue
         indent = len(m.group(1))
-        block = [lines[i]]; j = i + 1
+        block = [lines[i]]
+        j = i + 1
         while j < len(lines):
             if bullet.match(lines[j]):
                 nxt = bullet.match(lines[j])
@@ -151,7 +154,8 @@ def scrub_changelog(tree: str) -> str:
                     break
             elif lines[j].strip() and (len(lines[j]) - len(lines[j].lstrip())) <= indent:
                 break
-            block.append(lines[j]); j += 1
+            block.append(lines[j])
+            j += 1
         if _has_reveal_token("".join(block)):
             removed += 1
         else:
@@ -218,10 +222,12 @@ def scrub_doc_markers(tree: str) -> str:
 
 def main(argv: list[str]) -> int:
     if len(argv) != 2:
-        print(__doc__); return 1
+        print(__doc__)
+        return 1
     tree = argv[1]
     if not os.path.isdir(tree):
-        print(f"ERROR: not a directory: {tree}", file=sys.stderr); return 2
+        print(f"ERROR: not a directory: {tree}", file=sys.stderr)
+        return 2
     for report in (scrub_setup_py(tree), scrub_mkdocs(tree), scrub_changelog(tree), scrub_doc_markers(tree)):
         print(f"  scrub: {report}")
     return 0

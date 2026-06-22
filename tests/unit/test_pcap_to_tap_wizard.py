@@ -32,7 +32,7 @@ import pytest
 
 _SIGNAL_AVAILABLE = importlib.util.find_spec("friTap.offline.signal") is not None
 
-from friTap.friTap import _dispatch_special_mode, _looks_like_pcap_input
+from friTap.friTap import _dispatch_special_mode, _looks_like_pcap_input  # noqa: E402
 
 
 def _argv(*rest):
@@ -541,7 +541,6 @@ class TestPcapReadShowsEmptyFlowView:
     def test_empty_flow_view_backdrop_and_paths_modal_without_tls_field(self):
         import asyncio
         from textual.widgets import Input
-        from friTap.tui.screens.main_screen import MainScreen
         from friTap.tui.modals.pcap_to_tap_modals import PcapPathsModal
 
         async def _run() -> None:

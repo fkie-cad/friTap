@@ -58,7 +58,7 @@ def test_rewrite_after_attach_wins(tmp_path):
     flows = reader.read_all_flows()
     assert len(flows) == 1                       # duplicate flow_id collapsed
     assert reader.flow_count == 1
-    sig = next(l for l in flows[0].layers if getattr(l, "name", "") == "signal")
+    sig = next(ln for ln in flows[0].layers if getattr(ln, "name", "") == "signal")
     bodies = [m["body"] for m in sig.messages]
     assert bodies == ["Tesla", "Tesla"]          # mutated (v2) state won, dup kept
     assert sig.chat_type == "one_to_one"

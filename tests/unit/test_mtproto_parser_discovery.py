@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from friTap.parsers import registry as preg
-from friTap.parsers.base import BaseParser, ParseResult
+from friTap.parsers.base import BaseParser
 
 
 _PARSER_FILE = '''

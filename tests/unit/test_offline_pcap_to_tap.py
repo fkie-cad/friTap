@@ -26,10 +26,10 @@ import pytest
 
 _SIGNAL_AVAILABLE = importlib.util.find_spec("friTap.offline.signal") is not None
 
-from friTap.offline import tshark as tshark_mod
-from friTap.offline import pcap_to_tap as p2t
-from friTap.offline import cli as offline_cli
-from friTap.flow.tap_reader import TapReader
+from friTap.offline import tshark as tshark_mod  # noqa: E402
+from friTap.offline import pcap_to_tap as p2t  # noqa: E402
+from friTap.offline import cli as offline_cli  # noqa: E402
+from friTap.flow.tap_reader import TapReader  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

@@ -13,9 +13,9 @@ import pytest
 
 _SIGNAL_AVAILABLE = importlib.util.find_spec("friTap.offline.signal") is not None
 
-import friTap.offline.discovery as discovery
-from friTap.flow.layers import AppLayer
-from friTap.offline.registry import (
+import friTap.offline.discovery as discovery  # noqa: E402
+from friTap.flow.layers import AppLayer  # noqa: E402
+from friTap.offline.registry import (  # noqa: E402
     OfflineDecryptorEntry,
     OfflineDecryptorRegistry,
     get_offline_decryptor_registry,

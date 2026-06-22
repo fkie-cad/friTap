@@ -10,7 +10,6 @@ pytest.importorskip("cryptography")  # CTR backend
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from friTap.offline.mtproto import transport
 from friTap.offline.mtproto.transport import (
     ABRIDGED,
     INTERMEDIATE,

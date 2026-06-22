@@ -18,8 +18,8 @@ import pytest
 
 _SIGNAL_AVAILABLE = importlib.util.find_spec("friTap.offline.signal") is not None
 
-from friTap.output.factory import active_keylog_paths
-from friTap.protocols.registry import create_default_registry
+from friTap.output.factory import active_keylog_paths  # noqa: E402
+from friTap.protocols.registry import create_default_registry  # noqa: E402
 
 
 def _registry(protocol):

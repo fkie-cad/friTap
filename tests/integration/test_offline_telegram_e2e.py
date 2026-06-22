@@ -28,7 +28,7 @@ from scapy.packet import Raw
 from scapy.utils import wrpcap
 
 import friTap.offline.pcap_to_tap as p2t
-from friTap.flow.layers import MtprotoLayer, TelegramE2ELayer
+from friTap.flow.layers import TelegramE2ELayer
 from friTap.flow.tap_reader import TapReader
 from friTap.offline.mtproto import crypto
 from friTap.offline.mtproto.transport import derive_obfuscation_keys

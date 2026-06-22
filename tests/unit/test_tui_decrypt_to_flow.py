@@ -45,8 +45,8 @@ _SIGNAL_AVAILABLE = importlib.util.find_spec("friTap.offline.signal") is not Non
 
 pytest.importorskip("textual")
 
-from friTap.output.keylog_paths import split_keylog_path
-from friTap.tui.app import FriTapApp
+from friTap.output.keylog_paths import split_keylog_path  # noqa: E402
+from friTap.tui.app import FriTapApp  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -773,7 +773,6 @@ class TestActionOpenPcap:
         captured: dict = {}
 
         async def body(app, screen, pilot):
-            from friTap.tui.modals.open_pcap_modal import OpenPcapModal
             pushed = []
             screen.app.push_screen = MagicMock(
                 side_effect=lambda s, callback=None: pushed.append((s, callback))

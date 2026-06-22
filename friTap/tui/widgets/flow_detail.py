@@ -1559,7 +1559,7 @@ if TEXTUAL_AVAILABLE:
                     bits.append(f"[dim]{len(devices)} device(s)[/]")
                 if on:
                     bits.append(f"[dim]caps: {self._esc(on)}[/]")
-                log.write(f"  [dim]•[/] " + "  ".join(bits))
+                log.write("  [dim]•[/] " + "  ".join(bits))
 
         @staticmethod
         def _rest_label(entry) -> str:

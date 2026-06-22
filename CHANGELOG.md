@@ -6,37 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Added
-- **Telegram support: cloud + secret chats (Android).** A new umbrella
-  `--protocol telegram` covers **both** of Telegram's encryption layers in one run:
-  - **Cloud chats (MTProto transport, not end-to-end)** — the client↔server
-    transport key is extracted live from the native `libtmessages.*.so`
-    (`Datacenter::getAuthKey`) and emitted as `MTPROTO_AUTH_KEY` lines. Telegram
-    holds this key and can read cloud chats; it is **not** an end-to-end key.
-  - **Secret chats (MTProto 2.0 end-to-end)** — the per-chat device↔device DH key
-    is extracted live from Java (`SecretChatHelper` / `TLRPC$EncryptedChat.auth_key`)
-    and emitted as `MTPROTO_E2E_KEY` lines. Secret-chat **plaintext** can also be
-    captured live via the same Java hooks (`-p`).
-  - **Combined keylog** — `--protocol telegram` writes ONE keylog file containing
-    both `MTPROTO_AUTH_KEY` and `MTPROTO_E2E_KEY` lines. The live model mirrors
-    Signal: `-k` extracts keys for offline decrypt, `-p` captures live plaintext,
-    and the two are independent. `--protocol mtproto` remains a separate lower-level
-    selector (cloud transport only) for reuse.
-  - **Offline decryption** — `fritap --from-pcap <pcap> --telegram-keylog
-    <combined.keylog> --tap <out.tap>` decrypts **both** cloud chats (MTProto
-    transport decryptor) and secret chats (a new **`telegram_e2e`** flow layer).
-    Needs the `cryptography` backend, which ships in friTap's base install (the
-    optional `tgcrypto` accelerator installs automatically where a wheel exists).
-  - **TUI** — a "Telegram" entry appears in the protocol picker.
-  Device-validated on `org.telegram.messenger` 12.8.1 (Android, arm64): cloud-chat
-  key extraction (multiple datacenters), secret-chat E2E key extraction, and offline
-  decryption of real captured cloud traffic. See `docs/protocols/telegram.md`. (The
-  native **cloud-chat live-plaintext** hook is future work — use the keylog →
-  offline path for cloud chats; non-Android platforms are also future work.)
+
 
 ## [2.2.0]
 
 ### Added
+  - **Offline `pcap → .tap` decryption** — `fritap --from-pcap … --keylog
+    <tls> --telegram-keylog <telegram> --tap …` strips TLS and natively decrypts the
+     layer into MTProto transport decryptor
+  - **Generic memory-region key-scan engine** (`--scan-keys-region
+    <module|base,size|heap>`). A new protocol-agnostic scanner (`agent/shared/scan/`)
+    walks a CLI-selected memory region — a module name, an explicit `0xADDR,SIZE`
+    range, or `heap` (all writable ranges) — runs content heuristics inside hardened
+    guard rails (chunked, shutdown-aware), and emits the **top-ranked anonymous
+    candidates** to the keylog (requires `-k`). Each candidate is reveal-free (score
+    / signals / region / offset / length / bytes — no protocol identity, no decrypted
+    content): the agent tags them `classifier="scan_candidate"` and
+    `friTap/output/scan_candidate_formatter.py` renders them. The engine names no
+    protocol and runs standalone; an optional binding can narrow the region and add
+    its own classifier through the `scan_extension` provider seam without touching the
+    engine. Useful for locating key material in stripped/obfuscated builds where no
+    library-specific hook exists.
+  - **TUI** — a "Signal" entry now appears in the protocol picker.
+  - **Restored Signal chat-TLS key capture for modern libsignal** (>= 7.52 / 8.x)
+    via a new `ssl_log_secret` pattern.
+
 ## [2.1.0] - 2026-06-13
 
 ### Added

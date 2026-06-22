@@ -239,20 +239,26 @@ class CaptureWizard:
                     except Exception:
                         pass
             if protocol == "signal":
-                from friTap.offline.signal import (
-                    SIGNAL_DEPENDENCY_HINT,
-                    signal_backend_available,
-                )
-                if not signal_backend_available():
-                    self._screen._get_activity_log().log_warning(SIGNAL_DEPENDENCY_HINT)
-                    try:
-                        self._screen.app.notify(
-                            SIGNAL_DEPENDENCY_HINT,
-                            title="Signal dependency missing",
-                            severity="warning",
-                        )
-                    except Exception:
-                        pass
+                try:
+                    from friTap.offline.signal import (
+                        SIGNAL_DEPENDENCY_HINT,
+                        signal_backend_available,
+                    )
+                    if not signal_backend_available():
+                        self._screen._get_activity_log().log_warning(SIGNAL_DEPENDENCY_HINT)
+                        try:
+                            self._screen.app.notify(
+                                SIGNAL_DEPENDENCY_HINT,
+                                title="Signal dependency missing",
+                                severity="warning",
+                            )
+                        except Exception:
+                            pass
+                except ImportError:
+                    # Signal decode is an optional build component; when it is
+                    # absent there is no backend hint to surface — skip quietly
+                    # (matches MainScreen._warn_if_backend_missing's guarding).
+                    pass
             # Keys-only mode skips encapsulated protocols and view mode
             if self._capture_mode_id == "keys":
                 self._step_6_configure(self._capture_mode_id)
