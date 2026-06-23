@@ -14,9 +14,10 @@ import { log, devlog, devlog_debug, devlog_error, hookBreadcrumb, _isShuttingDow
 import { pcap_enabled, getParsedPatterns, offsets, quic_capture_mode, quic_egress_headers_layer, debug_output } from "../../fritap_agent.js";
 import { MANGLED_SYMBOLS, LABEL_TO_KEY, KEY_TO_LABEL } from "../shared/google_quiche_offsets.js";
 import { quicConnectionTracker, buildQuicMessage, QuicConnectionInfo, ObservedPeer } from "../shared/quic_connection_tracker.js";
-import { findNonExportedSymbols, getBaseAddress, decodeSockaddr } from "../../shared/shared_functions.js";
+import { findNonExportedSymbols, getBaseAddress, decodeSockaddr, readSockaddrFamily } from "../../shared/shared_functions.js";
 import { PatternStrategy } from "../../shared/strategies/pattern_strategy.js";
 import { isReadable, safeReadPointer, safeReadU8, safeReadULong, safeReadUtf8, resetReadableCache } from "../../util/safe_memory.js";
+import { currentPlatformKey, normalizeArchKey } from "../../util/process_infos.js";
 
 /**
  * Build the datalog message for a stream-level QUIC hook. Resolves the stream
@@ -39,12 +40,18 @@ function parseObservedPeer(sa: NativePointer): ObservedPeer | null {
     // try/catch. decodeSockaddr reads through offset 7 for AF_INET (8 bytes) and offset 23 for
     // AF_INET6 (24 bytes); a 2-byte family check alone is insufficient.
     if (sa.isNull() || !isReadable(sa, 2)) return null;
-    const family = sa.readU16();
+    // BSD sockaddr: on macOS/iOS the family is a single byte at offset 1 (after
+    // sa_len) and AF_INET6 is 30. readSockaddrFamily(…, true) normalizes both to
+    // the Linux AF_* values; on Linux/Android it is a plain readU16 (unchanged).
+    // Without this, a macOS connect() sockaddr never matched AF_INET/AF_INET6, so
+    // the QUIC real-peer recovery silently dropped every observed peer there.
+    const family = readSockaddrFamily(sa, true);
     const needed = family === AF_INET ? 8 : family === AF_INET6 ? 24 : 0;
     if (needed === 0 || !isReadable(sa, needed)) return null;
     // Byte math (no libc ntoh* available inside this connect() hook). The shared
     // decoder folds v4-mapped IPv6 to AF_INET, so a single loopback check covers both.
-    const decoded = decodeSockaddr(sa);
+    // bsdSockaddr=true so decodeSockaddr reads the family the same darwin-aware way.
+    const decoded = decodeSockaddr(sa, false, undefined, true);
     if (!decoded || decoded.port === 0) return null;
     if (decoded.family === "AF_INET" &&
         ((decoded.addr as number) >>> 24) === 127) return null; // loopback, not a server
@@ -710,8 +717,10 @@ async function dumpChainCandidatesDebug(
         let patternMatchCount = 0;
         const patternMatches: NativePointer[] = [];
         if (parsed && label && ranges.length > 0) {
+            // Mirror PatternStrategy's Schema-A resolution: library -> os -> arch.
             const lib = parsed[moduleName] || parsed["google_quiche"];
-            const arch = lib && (lib[Process.arch] || lib["default"]);
+            const osEntry = lib && lib[currentPlatformKey()];
+            const arch = osEntry && (osEntry[normalizeArchKey()] || osEntry["default"]);
             const labelPatterns = arch && arch[label];
             const patternsList = Array.isArray(labelPatterns) ? labelPatterns : (labelPatterns ? [labelPatterns] : []);
             for (const pattern of patternsList) {

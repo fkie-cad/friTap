@@ -13,6 +13,7 @@ Pure Python — no device/Frida/tshark.
 
 import base64
 import json
+import re
 import uuid
 
 from friTap.analysis import Severity
@@ -110,7 +111,7 @@ def test_api_key_patterns_alias_preserved():
 
 
 def test_secret_rule_dataclass_shape():
-    r = SecretRule("x", __import__("re").compile("x"), Severity.HIGH)
+    r = SecretRule("x", re.compile("x"), Severity.HIGH)
     assert r.confidence == 0.9
     assert r.cwe is None
     assert r.entropy_min is None

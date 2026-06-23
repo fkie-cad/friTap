@@ -50,6 +50,21 @@ def term_hash(term: str) -> str | None:
     return _sha("".join(atoms))
 
 
+def load_denylist(path: str) -> set[str]:
+    """Load denylist SHA-256 digests from a .hashes file (skip comments/blanks).
+
+    Shared by the scanner (cmd_scan) and the publish scrubber so both read the
+    digest file with identical semantics.
+    """
+    deny: set[str] = set()
+    with open(path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                deny.add(line.split()[0])
+    return deny
+
+
 def load_terms(path: str) -> list[str]:
     """Enforceable terms = lines above EXCLUDE_MARKER, minus comments/blanks."""
     terms: list[str] = []
@@ -109,12 +124,7 @@ def _iter_files(tree: str):
 
 
 def cmd_scan(tree: str, hashes_path: str, reveal: bool) -> int:
-    deny: set[str] = set()
-    with open(hashes_path, "r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if line and not line.startswith("#"):
-                deny.add(line.split()[0])
+    deny = load_denylist(hashes_path)
     if not deny:
         print("[denylist] no hashes loaded — refusing to pass vacuously", file=sys.stderr)
         return 3

@@ -1,8 +1,8 @@
 {
     "_meta": {
         "description": "Default pattern database for friTap",
-        "version": "1.1.0",
-        "format": "friTap pattern format v1"
+        "version": "2.0.0",
+        "format": "friTap pattern format v2"
     },
     "_docs": {
         "categories": {
@@ -12,313 +12,567 @@
             "Install-Key-Log-Callback": "Function that sets up keylog callback",
             "KeyLogCallback-Function": "The actual keylog callback code"
         },
-        "architectures": ["x64", "arm64", "arm", "x86"],
-        "notes": "Patterns should be contributed per library per architecture. See CONTRIBUTING.md for format."
+        "architectures": [
+            "x64",
+            "arm64",
+            "arm",
+            "x86"
+        ],
+        "operating_systems": [
+            "android",
+            "ios",
+            "linux",
+            "macos",
+            "windows"
+        ],
+        "notes": "Patterns are contributed per library per operating system per architecture (library -> os -> arch -> function). See CONTRIBUTING.md for format."
     },
     "openssl": {
-        "x64": {
-            "ssl_log_secret": [
-                "F3 0F 1E FA 48 89 F8 49 89 D0 48 89 F7 49 89 C9 48 8D 90 40 01 00 00 B9 20 00 00 00 48 89 C6 E9 8C 63 FF FF",
-                "55 41 57 41 56 41 54 53 48 83 EC 30 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84"
-            ]
+        "linux": {
+            "x64": {
+                "ssl_log_secret": [
+                    "F3 0F 1E FA 48 89 F8 49 89 D0 48 89 F7 49 89 C9 48 8D 90 40 01 00 00 B9 20 00 00 00 48 89 C6 E9 8C 63 FF FF",
+                    "55 41 57 41 56 41 54 53 48 83 EC 30 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84"
+                ]
+            },
+            "arm64": {
+                "ssl_log_secret": [
+                    "3F 23 03 D5 FD 7B BF A9 E4 03 01 AA FD 03 00 91 FD 7B C1 A8 BF 23 03 D5 E1 03 00 AA E5 03 03 AA E0 03 04 AA 03 04 80 D2 E4 03 02 AA 22 80 05 91",
+                    "3F 23 03 D5 FF ?3 02 D1 FD 7B 0? A9 F? ?? 0? ?9 F6 57 0? A9 F4 4F 0? A9 FD ?3 01 91 08 34 40 F9 08 ?? 41 F9 ?8 ?? 00 B4"
+                ]
+            },
+            "arm": {
+                "ssl_log_secret": [
+                    "2D E9 F0 43 89 B0 04 46 40 6B D0 F8 2C 01 00 28 49 D0",
+                    "2D E9 F0 41 86 B0 04 46 40 6B D0 F8 30 01 00 28 53 D0"
+                ]
+            },
+            "x86": {
+                "ssl_log_secret": [
+                    "55 53 57 56 83 EC 4C E8 00 00 00 00 5B 81 C3 A9 CB 13 00 8B 44 24 60 8B 40 34",
+                    "55 53 57 56 83 EC 4C E8 00 00 00 00 5B 81 C3 A9 CB 13 00 8B 44 24 60"
+                ]
+            }
         },
-        "arm64": {
-            "ssl_log_secret": [
-                "3F 23 03 D5 FD 7B BF A9 E4 03 01 AA FD 03 00 91 FD 7B C1 A8 BF 23 03 D5 E1 03 00 AA E5 03 03 AA E0 03 04 AA 03 04 80 D2 E4 03 02 AA 22 80 05 91",
-                "3F 23 03 D5 FF ?3 02 D1 FD 7B 0? A9 F? ?? 0? ?9 F6 57 0? A9 F4 4F 0? A9 FD ?3 01 91 08 34 40 F9 08 ?? 41 F9 ?8 ?? 00 B4"
-            ]
-        },
-        "arm": {
-            "ssl_log_secret": [
-                "2D E9 F0 43 89 B0 04 46 40 6B D0 F8 2C 01 00 28 49 D0",
-                "2D E9 F0 41 86 B0 04 46 40 6B D0 F8 30 01 00 28 53 D0"
-            ]
-        },
-        "x86": {
-            "ssl_log_secret": [
-                "55 53 57 56 83 EC 4C E8 00 00 00 00 5B 81 C3 A9 CB 13 00 8B 44 24 60 8B 40 34",
-                "55 53 57 56 83 EC 4C E8 00 00 00 00 5B 81 C3 A9 CB 13 00 8B 44 24 60"
-            ]
+        "android": {
+            "x64": {
+                "ssl_log_secret": [
+                    "F3 0F 1E FA 48 89 F8 49 89 D0 48 89 F7 49 89 C9 48 8D 90 40 01 00 00 B9 20 00 00 00 48 89 C6 E9 8C 63 FF FF",
+                    "55 41 57 41 56 41 54 53 48 83 EC 30 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84"
+                ]
+            },
+            "arm64": {
+                "ssl_log_secret": [
+                    "3F 23 03 D5 FD 7B BF A9 E4 03 01 AA FD 03 00 91 FD 7B C1 A8 BF 23 03 D5 E1 03 00 AA E5 03 03 AA E0 03 04 AA 03 04 80 D2 E4 03 02 AA 22 80 05 91",
+                    "3F 23 03 D5 FF ?3 02 D1 FD 7B 0? A9 F? ?? 0? ?9 F6 57 0? A9 F4 4F 0? A9 FD ?3 01 91 08 34 40 F9 08 ?? 41 F9 ?8 ?? 00 B4"
+                ]
+            },
+            "arm": {
+                "ssl_log_secret": [
+                    "2D E9 F0 43 89 B0 04 46 40 6B D0 F8 2C 01 00 28 49 D0",
+                    "2D E9 F0 41 86 B0 04 46 40 6B D0 F8 30 01 00 28 53 D0"
+                ]
+            },
+            "x86": {
+                "ssl_log_secret": [
+                    "55 53 57 56 83 EC 4C E8 00 00 00 00 5B 81 C3 A9 CB 13 00 8B 44 24 60 8B 40 34",
+                    "55 53 57 56 83 EC 4C E8 00 00 00 00 5B 81 C3 A9 CB 13 00 8B 44 24 60"
+                ]
+            }
         }
     },
     "openssh": {
         "_comment": "Patterns for OpenSSH key derivation. Empty until extracted from target binaries.",
-        "x64": {
-            "kex_derive_keys": [],
-            "ssh_set_newkeys": []
+        "linux": {
+            "x64": {
+                "kex_derive_keys": [],
+                "ssh_set_newkeys": []
+            },
+            "arm64": {
+                "kex_derive_keys": [],
+                "ssh_set_newkeys": []
+            }
         },
-        "arm64": {
-            "kex_derive_keys": [],
-            "ssh_set_newkeys": []
+        "android": {
+            "x64": {
+                "kex_derive_keys": [],
+                "ssh_set_newkeys": []
+            },
+            "arm64": {
+                "kex_derive_keys": [],
+                "ssh_set_newkeys": []
+            }
         }
     },
     "strongswan": {
         "_comment": "Patterns for strongSwan IKE key derivation. Empty until extracted from target binaries.",
-        "x64": {
-            "ikev2_derive_child_sa_keys": [],
-            "derive_ike_keys": []
+        "linux": {
+            "x64": {
+                "ikev2_derive_child_sa_keys": [],
+                "derive_ike_keys": []
+            },
+            "arm64": {
+                "ikev2_derive_child_sa_keys": [],
+                "derive_ike_keys": []
+            }
         },
-        "arm64": {
-            "ikev2_derive_child_sa_keys": [],
-            "derive_ike_keys": []
+        "android": {
+            "x64": {
+                "ikev2_derive_child_sa_keys": [],
+                "derive_ike_keys": []
+            },
+            "arm64": {
+                "ikev2_derive_child_sa_keys": [],
+                "derive_ike_keys": []
+            }
         }
     },
     "gnutls": {
         "_comment": "Patterns for GnuTLS. Empty until extracted from target binaries.",
-        "x64": {
-            "gnutls_record_recv": [],
-            "gnutls_record_send": [],
-            "gnutls_session_set_keylog_function": [],
-            "gnutls_transport_get_int": [],
-            "gnutls_session_get_id": [],
-            "gnutls_init": [],
-            "gnutls_handshake": [],
-            "gnutls_session_get_random": []
+        "linux": {
+            "x64": {
+                "gnutls_record_recv": [],
+                "gnutls_record_send": [],
+                "gnutls_session_set_keylog_function": [],
+                "gnutls_transport_get_int": [],
+                "gnutls_session_get_id": [],
+                "gnutls_init": [],
+                "gnutls_handshake": [],
+                "gnutls_session_get_random": []
+            },
+            "arm64": {
+                "gnutls_record_recv": [],
+                "gnutls_record_send": [],
+                "gnutls_session_set_keylog_function": [],
+                "gnutls_transport_get_int": [],
+                "gnutls_session_get_id": [],
+                "gnutls_init": [],
+                "gnutls_handshake": [],
+                "gnutls_session_get_random": []
+            },
+            "arm": {
+                "gnutls_record_recv": [],
+                "gnutls_record_send": [],
+                "gnutls_session_set_keylog_function": [],
+                "gnutls_transport_get_int": [],
+                "gnutls_session_get_id": [],
+                "gnutls_init": [],
+                "gnutls_handshake": [],
+                "gnutls_session_get_random": []
+            },
+            "x86": {
+                "gnutls_record_recv": [],
+                "gnutls_record_send": [],
+                "gnutls_session_set_keylog_function": [],
+                "gnutls_transport_get_int": [],
+                "gnutls_session_get_id": [],
+                "gnutls_init": [],
+                "gnutls_handshake": [],
+                "gnutls_session_get_random": []
+            }
         },
-        "arm64": {
-            "gnutls_record_recv": [],
-            "gnutls_record_send": [],
-            "gnutls_session_set_keylog_function": [],
-            "gnutls_transport_get_int": [],
-            "gnutls_session_get_id": [],
-            "gnutls_init": [],
-            "gnutls_handshake": [],
-            "gnutls_session_get_random": []
-        },
-        "arm": {
-            "gnutls_record_recv": [],
-            "gnutls_record_send": [],
-            "gnutls_session_set_keylog_function": [],
-            "gnutls_transport_get_int": [],
-            "gnutls_session_get_id": [],
-            "gnutls_init": [],
-            "gnutls_handshake": [],
-            "gnutls_session_get_random": []
-        },
-        "x86": {
-            "gnutls_record_recv": [],
-            "gnutls_record_send": [],
-            "gnutls_session_set_keylog_function": [],
-            "gnutls_transport_get_int": [],
-            "gnutls_session_get_id": [],
-            "gnutls_init": [],
-            "gnutls_handshake": [],
-            "gnutls_session_get_random": []
+        "android": {
+            "x64": {
+                "gnutls_record_recv": [],
+                "gnutls_record_send": [],
+                "gnutls_session_set_keylog_function": [],
+                "gnutls_transport_get_int": [],
+                "gnutls_session_get_id": [],
+                "gnutls_init": [],
+                "gnutls_handshake": [],
+                "gnutls_session_get_random": []
+            },
+            "arm64": {
+                "gnutls_record_recv": [],
+                "gnutls_record_send": [],
+                "gnutls_session_set_keylog_function": [],
+                "gnutls_transport_get_int": [],
+                "gnutls_session_get_id": [],
+                "gnutls_init": [],
+                "gnutls_handshake": [],
+                "gnutls_session_get_random": []
+            },
+            "arm": {
+                "gnutls_record_recv": [],
+                "gnutls_record_send": [],
+                "gnutls_session_set_keylog_function": [],
+                "gnutls_transport_get_int": [],
+                "gnutls_session_get_id": [],
+                "gnutls_init": [],
+                "gnutls_handshake": [],
+                "gnutls_session_get_random": []
+            },
+            "x86": {
+                "gnutls_record_recv": [],
+                "gnutls_record_send": [],
+                "gnutls_session_set_keylog_function": [],
+                "gnutls_transport_get_int": [],
+                "gnutls_session_get_id": [],
+                "gnutls_init": [],
+                "gnutls_handshake": [],
+                "gnutls_session_get_random": []
+            }
         }
     },
     "wolfssl": {
         "_comment": "Patterns for WolfSSL. Empty until extracted from target binaries.",
-        "x64": {
-            "wolfSSL_read": [],
-            "wolfSSL_write": [],
-            "wolfSSL_get_fd": [],
-            "wolfSSL_get_session": [],
-            "wolfSSL_connect": [],
-            "wolfSSL_SESSION_get_master_key": [],
-            "wolfSSL_get_client_random": [],
-            "wolfSSL_get_server_random": []
+        "linux": {
+            "x64": {
+                "wolfSSL_read": [],
+                "wolfSSL_write": [],
+                "wolfSSL_get_fd": [],
+                "wolfSSL_get_session": [],
+                "wolfSSL_connect": [],
+                "wolfSSL_SESSION_get_master_key": [],
+                "wolfSSL_get_client_random": [],
+                "wolfSSL_get_server_random": []
+            },
+            "arm64": {
+                "wolfSSL_read": [],
+                "wolfSSL_write": [],
+                "wolfSSL_get_fd": [],
+                "wolfSSL_get_session": [],
+                "wolfSSL_connect": [],
+                "wolfSSL_SESSION_get_master_key": [],
+                "wolfSSL_get_client_random": [],
+                "wolfSSL_get_server_random": []
+            },
+            "arm": {
+                "wolfSSL_read": [],
+                "wolfSSL_write": [],
+                "wolfSSL_get_fd": [],
+                "wolfSSL_get_session": [],
+                "wolfSSL_connect": [],
+                "wolfSSL_SESSION_get_master_key": [],
+                "wolfSSL_get_client_random": [],
+                "wolfSSL_get_server_random": []
+            },
+            "x86": {
+                "wolfSSL_read": [],
+                "wolfSSL_write": [],
+                "wolfSSL_get_fd": [],
+                "wolfSSL_get_session": [],
+                "wolfSSL_connect": [],
+                "wolfSSL_SESSION_get_master_key": [],
+                "wolfSSL_get_client_random": [],
+                "wolfSSL_get_server_random": []
+            }
         },
-        "arm64": {
-            "wolfSSL_read": [],
-            "wolfSSL_write": [],
-            "wolfSSL_get_fd": [],
-            "wolfSSL_get_session": [],
-            "wolfSSL_connect": [],
-            "wolfSSL_SESSION_get_master_key": [],
-            "wolfSSL_get_client_random": [],
-            "wolfSSL_get_server_random": []
-        },
-        "arm": {
-            "wolfSSL_read": [],
-            "wolfSSL_write": [],
-            "wolfSSL_get_fd": [],
-            "wolfSSL_get_session": [],
-            "wolfSSL_connect": [],
-            "wolfSSL_SESSION_get_master_key": [],
-            "wolfSSL_get_client_random": [],
-            "wolfSSL_get_server_random": []
-        },
-        "x86": {
-            "wolfSSL_read": [],
-            "wolfSSL_write": [],
-            "wolfSSL_get_fd": [],
-            "wolfSSL_get_session": [],
-            "wolfSSL_connect": [],
-            "wolfSSL_SESSION_get_master_key": [],
-            "wolfSSL_get_client_random": [],
-            "wolfSSL_get_server_random": []
+        "android": {
+            "x64": {
+                "wolfSSL_read": [],
+                "wolfSSL_write": [],
+                "wolfSSL_get_fd": [],
+                "wolfSSL_get_session": [],
+                "wolfSSL_connect": [],
+                "wolfSSL_SESSION_get_master_key": [],
+                "wolfSSL_get_client_random": [],
+                "wolfSSL_get_server_random": []
+            },
+            "arm64": {
+                "wolfSSL_read": [],
+                "wolfSSL_write": [],
+                "wolfSSL_get_fd": [],
+                "wolfSSL_get_session": [],
+                "wolfSSL_connect": [],
+                "wolfSSL_SESSION_get_master_key": [],
+                "wolfSSL_get_client_random": [],
+                "wolfSSL_get_server_random": []
+            },
+            "arm": {
+                "wolfSSL_read": [],
+                "wolfSSL_write": [],
+                "wolfSSL_get_fd": [],
+                "wolfSSL_get_session": [],
+                "wolfSSL_connect": [],
+                "wolfSSL_SESSION_get_master_key": [],
+                "wolfSSL_get_client_random": [],
+                "wolfSSL_get_server_random": []
+            },
+            "x86": {
+                "wolfSSL_read": [],
+                "wolfSSL_write": [],
+                "wolfSSL_get_fd": [],
+                "wolfSSL_get_session": [],
+                "wolfSSL_connect": [],
+                "wolfSSL_SESSION_get_master_key": [],
+                "wolfSSL_get_client_random": [],
+                "wolfSSL_get_server_random": []
+            }
         }
     },
     "mbedtls": {
         "_comment": "Patterns for mbedTLS. Empty until extracted from target binaries.",
-        "x64": {
-            "mbedtls_ssl_read": [],
-            "mbedtls_ssl_write": []
+        "linux": {
+            "x64": {
+                "mbedtls_ssl_read": [],
+                "mbedtls_ssl_write": []
+            },
+            "arm64": {
+                "mbedtls_ssl_read": [],
+                "mbedtls_ssl_write": []
+            },
+            "arm": {
+                "mbedtls_ssl_read": [],
+                "mbedtls_ssl_write": []
+            },
+            "x86": {
+                "mbedtls_ssl_read": [],
+                "mbedtls_ssl_write": []
+            }
         },
-        "arm64": {
-            "mbedtls_ssl_read": [],
-            "mbedtls_ssl_write": []
-        },
-        "arm": {
-            "mbedtls_ssl_read": [],
-            "mbedtls_ssl_write": []
-        },
-        "x86": {
-            "mbedtls_ssl_read": [],
-            "mbedtls_ssl_write": []
+        "android": {
+            "x64": {
+                "mbedtls_ssl_read": [],
+                "mbedtls_ssl_write": []
+            },
+            "arm64": {
+                "mbedtls_ssl_read": [],
+                "mbedtls_ssl_write": []
+            },
+            "arm": {
+                "mbedtls_ssl_read": [],
+                "mbedtls_ssl_write": []
+            },
+            "x86": {
+                "mbedtls_ssl_read": [],
+                "mbedtls_ssl_write": []
+            }
         }
     },
     "nss": {
         "_comment": "Patterns for NSS (Network Security Services). Empty until extracted from target binaries.",
-        "x64": {
-            "PR_Write": [],
-            "PR_Read": [],
-            "PR_FileDesc2NativeHandle": [],
-            "SSL_ImportFD": [],
-            "PK11_ExtractKeyValue": [],
-            "PK11_GetKeyData": []
+        "linux": {
+            "x64": {
+                "PR_Write": [],
+                "PR_Read": [],
+                "PR_FileDesc2NativeHandle": [],
+                "SSL_ImportFD": [],
+                "PK11_ExtractKeyValue": [],
+                "PK11_GetKeyData": []
+            },
+            "arm64": {
+                "PR_Write": [],
+                "PR_Read": [],
+                "PR_FileDesc2NativeHandle": [],
+                "SSL_ImportFD": [],
+                "PK11_ExtractKeyValue": [],
+                "PK11_GetKeyData": []
+            },
+            "arm": {
+                "PR_Write": [],
+                "PR_Read": [],
+                "PR_FileDesc2NativeHandle": [],
+                "SSL_ImportFD": [],
+                "PK11_ExtractKeyValue": [],
+                "PK11_GetKeyData": []
+            },
+            "x86": {
+                "PR_Write": [],
+                "PR_Read": [],
+                "PR_FileDesc2NativeHandle": [],
+                "SSL_ImportFD": [],
+                "PK11_ExtractKeyValue": [],
+                "PK11_GetKeyData": []
+            }
         },
-        "arm64": {
-            "PR_Write": [],
-            "PR_Read": [],
-            "PR_FileDesc2NativeHandle": [],
-            "SSL_ImportFD": [],
-            "PK11_ExtractKeyValue": [],
-            "PK11_GetKeyData": []
-        },
-        "arm": {
-            "PR_Write": [],
-            "PR_Read": [],
-            "PR_FileDesc2NativeHandle": [],
-            "SSL_ImportFD": [],
-            "PK11_ExtractKeyValue": [],
-            "PK11_GetKeyData": []
-        },
-        "x86": {
-            "PR_Write": [],
-            "PR_Read": [],
-            "PR_FileDesc2NativeHandle": [],
-            "SSL_ImportFD": [],
-            "PK11_ExtractKeyValue": [],
-            "PK11_GetKeyData": []
+        "android": {
+            "x64": {
+                "PR_Write": [],
+                "PR_Read": [],
+                "PR_FileDesc2NativeHandle": [],
+                "SSL_ImportFD": [],
+                "PK11_ExtractKeyValue": [],
+                "PK11_GetKeyData": []
+            },
+            "arm64": {
+                "PR_Write": [],
+                "PR_Read": [],
+                "PR_FileDesc2NativeHandle": [],
+                "SSL_ImportFD": [],
+                "PK11_ExtractKeyValue": [],
+                "PK11_GetKeyData": []
+            },
+            "arm": {
+                "PR_Write": [],
+                "PR_Read": [],
+                "PR_FileDesc2NativeHandle": [],
+                "SSL_ImportFD": [],
+                "PK11_ExtractKeyValue": [],
+                "PK11_GetKeyData": []
+            },
+            "x86": {
+                "PR_Write": [],
+                "PR_Read": [],
+                "PR_FileDesc2NativeHandle": [],
+                "SSL_ImportFD": [],
+                "PK11_ExtractKeyValue": [],
+                "PK11_GetKeyData": []
+            }
         }
     },
     "s2n": {
         "_comment": "Patterns for s2n-tls. Empty until extracted from target binaries.",
-        "x64": {
-            "s2n_send": [],
-            "s2n_recv": [],
-            "s2n_connection_get_read_fd": [],
-            "s2n_connection_get_write_fd": [],
-            "s2n_connection_new": [],
-            "s2n_config_set_key_log_cb": []
+        "linux": {
+            "x64": {
+                "s2n_send": [],
+                "s2n_recv": [],
+                "s2n_connection_get_read_fd": [],
+                "s2n_connection_get_write_fd": [],
+                "s2n_connection_new": [],
+                "s2n_config_set_key_log_cb": []
+            },
+            "arm64": {
+                "s2n_send": [],
+                "s2n_recv": [],
+                "s2n_connection_get_read_fd": [],
+                "s2n_connection_get_write_fd": [],
+                "s2n_connection_new": [],
+                "s2n_config_set_key_log_cb": []
+            },
+            "arm": {
+                "s2n_send": [],
+                "s2n_recv": [],
+                "s2n_connection_get_read_fd": [],
+                "s2n_connection_get_write_fd": [],
+                "s2n_connection_new": [],
+                "s2n_config_set_key_log_cb": []
+            },
+            "x86": {
+                "s2n_send": [],
+                "s2n_recv": [],
+                "s2n_connection_get_read_fd": [],
+                "s2n_connection_get_write_fd": [],
+                "s2n_connection_new": [],
+                "s2n_config_set_key_log_cb": []
+            }
         },
-        "arm64": {
-            "s2n_send": [],
-            "s2n_recv": [],
-            "s2n_connection_get_read_fd": [],
-            "s2n_connection_get_write_fd": [],
-            "s2n_connection_new": [],
-            "s2n_config_set_key_log_cb": []
-        },
-        "arm": {
-            "s2n_send": [],
-            "s2n_recv": [],
-            "s2n_connection_get_read_fd": [],
-            "s2n_connection_get_write_fd": [],
-            "s2n_connection_new": [],
-            "s2n_config_set_key_log_cb": []
-        },
-        "x86": {
-            "s2n_send": [],
-            "s2n_recv": [],
-            "s2n_connection_get_read_fd": [],
-            "s2n_connection_get_write_fd": [],
-            "s2n_connection_new": [],
-            "s2n_config_set_key_log_cb": []
+        "android": {
+            "x64": {
+                "s2n_send": [],
+                "s2n_recv": [],
+                "s2n_connection_get_read_fd": [],
+                "s2n_connection_get_write_fd": [],
+                "s2n_connection_new": [],
+                "s2n_config_set_key_log_cb": []
+            },
+            "arm64": {
+                "s2n_send": [],
+                "s2n_recv": [],
+                "s2n_connection_get_read_fd": [],
+                "s2n_connection_get_write_fd": [],
+                "s2n_connection_new": [],
+                "s2n_config_set_key_log_cb": []
+            },
+            "arm": {
+                "s2n_send": [],
+                "s2n_recv": [],
+                "s2n_connection_get_read_fd": [],
+                "s2n_connection_get_write_fd": [],
+                "s2n_connection_new": [],
+                "s2n_config_set_key_log_cb": []
+            },
+            "x86": {
+                "s2n_send": [],
+                "s2n_recv": [],
+                "s2n_connection_get_read_fd": [],
+                "s2n_connection_get_write_fd": [],
+                "s2n_connection_new": [],
+                "s2n_config_set_key_log_cb": []
+            }
         }
     },
     "quiche": {
         "_comment": "Patterns for Cloudflare quiche. All symbols are exported so patterns are rarely needed.",
-        "x64": {},
-        "arm64": {},
-        "arm": {},
-        "x86": {}
+        "linux": {
+            "x64": {},
+            "arm64": {},
+            "arm": {},
+            "x86": {}
+        },
+        "android": {
+            "x64": {},
+            "arm64": {},
+            "arm": {},
+            "x86": {}
+        }
     },
     "google_quiche": {
         "_comment": "Patterns for Google QUICHE (Chrome/Cronet). Mangled C++ symbols, pattern scanning for stripped binaries (e.g. libmonochrome_64.so). Labels match LABEL_TO_KEY in agent/quic/shared/google_quiche_offsets.ts. Filled per-build by BoringSecretHunter. Per-target patterns can be overridden by passing --patterns <user.json>; user entries replace the matching key (loader.deep_merge replaces leaf lists, does not append).",
         "_chain_comment": "QuicChromiumClientStream_WriteHeaders and QuicSpdySession_WriteHeadersOnHeadersStream are Phase-2 chain fallbacks that activate when QuicSpdyStream::WriteHeaders is inlined out of a release build. The arm64 patterns shipped below are runtime-verified on Chrome 148 / libmonochrome_64.so and Cronet 148.0.7778.167; cross-verified against libmainlinecronet.141.0.7340.3 (where the symbol-table strategy is available and produces matching addresses). See docs/protocols/quic.md and SEEING_THROUGH_CHROME_HTTP3.md.",
-        "x64": {
-            "QuicSpdyStream_Readv": [],
-            "QuicStream_Readv": [],
-            "QuicStreamSequencer_Readv": [],
-            "QuicSpdyStream_OnDataFramePayload": [],
-            "QuicSpdyStream_WriteOrBufferBody": [],
-            "QuicStream_WriteOrBufferData": [],
-            "QuicStreamSequencer_OnStreamFrame": [],
-            "QuicSpdyStream_OnBodyAvailable": [],
-            "QuicSpdyStream_OnHeadersDecoded": [],
-            "QuicSpdyStream_WriteHeaders": [],
-            "QuicChromiumClientStream_WriteHeaders": [],
-            "QuicSpdySession_WriteHeadersOnHeadersStream": []
-        },
-        "arm64": {
-            "QuicSpdyStream_Readv": [],
-            "QuicStream_Readv": [],
-            "QuicStreamSequencer_Readv": [
-                "3F 23 03 D5 FF 03 05 D1 FD 7B 10 A9 FC 8B 00 F9 F6 57 12 A9 F4 4F 13 A9 FD 03 04 91 56 D0 3B D5 F3 03 00 AA 00 20 00 91 C8 16 40 F9 E3 63 00 91 E4 83 00 91 A8 83 1F F8 FF 7F 02 A9 FF 1B 00 F9 ?? ?? ?? ?? ?? ?? ?? ?? F4 03 00 2A"
-            ],
-            "QuicSpdyStream_OnDataFramePayload": [
-                "3F 23 03 D5 FD 7B BF A9 FD 03 00 91 08 04 40 F9 00 ?? ?? 91 ?? ?? ?? ?? 20 00 80 52 FD 7B C1 A8 BF 23 03 D5 C0 03 5F D6"
-            ],
-            "QuicSpdyStream_WriteOrBufferBody": [
-                "3F 23 03 D5 FF 43 01 D1 FD 7B 02 A9 F6 57 03 A9 F4 4F 04 A9 FD 83 00 91 F3 03 02 AA F4 03 01 AA ?? ?? ?? ?? ?? ?? ?? ?? 22 02 80 52 F6 03 03 2A F5 03 00 AA"
-            ],
-            "QuicStream_WriteOrBufferData": [],
-            "QuicStreamSequencer_OnStreamFrame": [
-                "3F 23 03 D5 FF C3 05 D1 FD 7B 12 A9 FC 67 13 A9 F8 5F 14 A9 F6 57 15 A9 F4 4F 16 A9 FD 83 04 91 58 D0 3B D5 F4 03 01 AA F3 03 00 AA 08 17 40 F9 A8 83 1F F8 08 6C 40 B9 08 05 00 11 08 6C 00 B9 28 04 40 39 37 08 40 F9 36 04 40 79 1F 05 00 71 ?? ?? ?? ?? 68 2E 40 F9"
-            ],
-            "QuicSpdyStream_OnBodyAvailable": [],
-            "QuicSpdyStream_OnHeadersDecoded": [
-                "FF 83 05 D1 FD 7B 13 A9 FC 57 14 A9 F4 4F 15 A9 FD C3 04 91 F3 03 00 AA 00 A0 41 F9 F4 03 01 AA 62 2A 0A 39 7F A2 01 F9 40 00 00 B4 60 2B 00 94"
-            ],
-            "QuicSpdyStream_WriteHeaders": [
-                "F6 03 01 AA ?? ?? ?? ?? ?? ?? ?? ?? E2 01 80 52 ?? ?? ?? ?? F3 03 00 AA"
-            ],
-            "QuicChromiumClientStream_WriteHeaders": [
-                "F3 03 00 AA ?? ?? ?? ?? F5 03 03 AA F4 03 02 2A F6 03 01 AA"
-            ],
-            "QuicSpdySession_WriteHeadersOnHeadersStream": [
-                "F3 03 01 2A F4 03 00 AA ?? ?? ?? ?? E1 03 02 AA F6 03 05 AA F7 03 04 AA F5 03 03 2A"
-            ]
-        },
-        "arm": {
-            "QuicSpdyStream_Readv": [],
-            "QuicStream_Readv": [],
-            "QuicStreamSequencer_Readv": [],
-            "QuicSpdyStream_OnDataFramePayload": [],
-            "QuicSpdyStream_WriteOrBufferBody": [],
-            "QuicStream_WriteOrBufferData": [],
-            "QuicStreamSequencer_OnStreamFrame": [],
-            "QuicSpdyStream_OnBodyAvailable": [],
-            "QuicSpdyStream_OnHeadersDecoded": [],
-            "QuicSpdyStream_WriteHeaders": [],
-            "QuicChromiumClientStream_WriteHeaders": [],
-            "QuicSpdySession_WriteHeadersOnHeadersStream": []
-        },
-        "x86": {
-            "QuicSpdyStream_Readv": [],
-            "QuicStream_Readv": [],
-            "QuicStreamSequencer_Readv": [],
-            "QuicSpdyStream_OnDataFramePayload": [],
-            "QuicSpdyStream_WriteOrBufferBody": [],
-            "QuicStream_WriteOrBufferData": [],
-            "QuicStreamSequencer_OnStreamFrame": [],
-            "QuicSpdyStream_OnBodyAvailable": [],
-            "QuicSpdyStream_OnHeadersDecoded": [],
-            "QuicSpdyStream_WriteHeaders": [],
-            "QuicChromiumClientStream_WriteHeaders": [],
-            "QuicSpdySession_WriteHeadersOnHeadersStream": []
+        "android": {
+            "x64": {
+                "QuicSpdyStream_Readv": [],
+                "QuicStream_Readv": [],
+                "QuicStreamSequencer_Readv": [],
+                "QuicSpdyStream_OnDataFramePayload": [],
+                "QuicSpdyStream_WriteOrBufferBody": [],
+                "QuicStream_WriteOrBufferData": [],
+                "QuicStreamSequencer_OnStreamFrame": [],
+                "QuicSpdyStream_OnBodyAvailable": [],
+                "QuicSpdyStream_OnHeadersDecoded": [],
+                "QuicSpdyStream_WriteHeaders": [],
+                "QuicChromiumClientStream_WriteHeaders": [],
+                "QuicSpdySession_WriteHeadersOnHeadersStream": []
+            },
+            "arm64": {
+                "QuicSpdyStream_Readv": [],
+                "QuicStream_Readv": [],
+                "QuicStreamSequencer_Readv": [
+                    "3F 23 03 D5 FF 03 05 D1 FD 7B 10 A9 FC 8B 00 F9 F6 57 12 A9 F4 4F 13 A9 FD 03 04 91 56 D0 3B D5 F3 03 00 AA 00 20 00 91 C8 16 40 F9 E3 63 00 91 E4 83 00 91 A8 83 1F F8 FF 7F 02 A9 FF 1B 00 F9 ?? ?? ?? ?? ?? ?? ?? ?? F4 03 00 2A"
+                ],
+                "QuicSpdyStream_OnDataFramePayload": [
+                    "3F 23 03 D5 FD 7B BF A9 FD 03 00 91 08 04 40 F9 00 ?? ?? 91 ?? ?? ?? ?? 20 00 80 52 FD 7B C1 A8 BF 23 03 D5 C0 03 5F D6"
+                ],
+                "QuicSpdyStream_WriteOrBufferBody": [
+                    "3F 23 03 D5 FF 43 01 D1 FD 7B 02 A9 F6 57 03 A9 F4 4F 04 A9 FD 83 00 91 F3 03 02 AA F4 03 01 AA ?? ?? ?? ?? ?? ?? ?? ?? 22 02 80 52 F6 03 03 2A F5 03 00 AA"
+                ],
+                "QuicStream_WriteOrBufferData": [],
+                "QuicStreamSequencer_OnStreamFrame": [
+                    "3F 23 03 D5 FF C3 05 D1 FD 7B 12 A9 FC 67 13 A9 F8 5F 14 A9 F6 57 15 A9 F4 4F 16 A9 FD 83 04 91 58 D0 3B D5 F4 03 01 AA F3 03 00 AA 08 17 40 F9 A8 83 1F F8 08 6C 40 B9 08 05 00 11 08 6C 00 B9 28 04 40 39 37 08 40 F9 36 04 40 79 1F 05 00 71 ?? ?? ?? ?? 68 2E 40 F9"
+                ],
+                "QuicSpdyStream_OnBodyAvailable": [],
+                "QuicSpdyStream_OnHeadersDecoded": [
+                    "FF 83 05 D1 FD 7B 13 A9 FC 57 14 A9 F4 4F 15 A9 FD C3 04 91 F3 03 00 AA 00 A0 41 F9 F4 03 01 AA 62 2A 0A 39 7F A2 01 F9 40 00 00 B4 60 2B 00 94"
+                ],
+                "QuicSpdyStream_WriteHeaders": [
+                    "F6 03 01 AA ?? ?? ?? ?? ?? ?? ?? ?? E2 01 80 52 ?? ?? ?? ?? F3 03 00 AA"
+                ],
+                "QuicChromiumClientStream_WriteHeaders": [
+                    "F3 03 00 AA ?? ?? ?? ?? F5 03 03 AA F4 03 02 2A F6 03 01 AA"
+                ],
+                "QuicSpdySession_WriteHeadersOnHeadersStream": [
+                    "F3 03 01 2A F4 03 00 AA ?? ?? ?? ?? E1 03 02 AA F6 03 05 AA F7 03 04 AA F5 03 03 2A"
+                ]
+            },
+            "arm": {
+                "QuicSpdyStream_Readv": [],
+                "QuicStream_Readv": [],
+                "QuicStreamSequencer_Readv": [],
+                "QuicSpdyStream_OnDataFramePayload": [],
+                "QuicSpdyStream_WriteOrBufferBody": [],
+                "QuicStream_WriteOrBufferData": [],
+                "QuicStreamSequencer_OnStreamFrame": [],
+                "QuicSpdyStream_OnBodyAvailable": [],
+                "QuicSpdyStream_OnHeadersDecoded": [],
+                "QuicSpdyStream_WriteHeaders": [],
+                "QuicChromiumClientStream_WriteHeaders": [],
+                "QuicSpdySession_WriteHeadersOnHeadersStream": []
+            },
+            "x86": {
+                "QuicSpdyStream_Readv": [],
+                "QuicStream_Readv": [],
+                "QuicStreamSequencer_Readv": [],
+                "QuicSpdyStream_OnDataFramePayload": [],
+                "QuicSpdyStream_WriteOrBufferBody": [],
+                "QuicStream_WriteOrBufferData": [],
+                "QuicStreamSequencer_OnStreamFrame": [],
+                "QuicSpdyStream_OnBodyAvailable": [],
+                "QuicSpdyStream_OnHeadersDecoded": [],
+                "QuicSpdyStream_WriteHeaders": [],
+                "QuicChromiumClientStream_WriteHeaders": [],
+                "QuicSpdySession_WriteHeadersOnHeadersStream": []
+            }
         }
     }
 }

@@ -1,4 +1,4 @@
-import { readAddresses, resolveOffsets, dumpMemory, decodeSockaddr } from "../../../shared/shared_functions.js";
+import { readAddresses, resolveOffsets, dumpMemory, decodeSockaddr, readSockaddrFamily } from "../../../shared/shared_functions.js";
 import { pointerSize, sendKeylog, sendDatalog } from "../../../shared/shared_structures.js";
 import { log, devlog, devlog_error } from "../../../util/log.js";
 import { enable_default_fd, pcap_enabled, keylog_enabled } from "../../../fritap_agent.js";
@@ -1511,12 +1511,17 @@ typedef union PRNetAddr PRNetAddr;
                     }
                     //devlog("The results of NSS and its PR_Read is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys")
 
-                    var addr = Memory.alloc(8);
+                    // PRNetAddr is up to 28 bytes (IPv6 variant); 32 covers it safely.
+                    var addr = Memory.alloc(32);
                     var res = NSS.getpeername(this.fd, addr);
                     // peername return -1 this is due to the fact that a PIPE descriptor is used to read from the SSL socket
 
 
-                    if (addr.readU16() == 2 || addr.readU16() == 10 || addr.readU16() == 100) {
+                    // PRNetAddr family@0 (not a BSD sockaddr, so bsdSockaddr=false); on
+                    // macOS NSPR stores AF_INET6 as 30, which readSockaddrFamily normalizes
+                    // to 10 so the IPv6 gate below matches.
+                    var family = readSockaddrFamily(addr, false);
+                    if (family == 2 || family == 10 || family == 100) {
                         var message = NSS.getPortsAndAddressesFromNSS(this.fd as NativePointer, true, lib_addesses[current_module_name], enable_default_fd)
                         //devlog("Session ID: " + NSS.getSslSessionIdFromFD(this.fd))
                         message["ssl_session_id"] = NSS.getSslSessionIdFromFD(this.fd)
@@ -1562,11 +1567,14 @@ typedef union PRNetAddr PRNetAddr;
                         return
                     }
 
-                    var addr = Memory.alloc(8);
+                    // PRNetAddr is up to 28 bytes (IPv6 variant); 32 covers it safely.
+                    var addr = Memory.alloc(32);
 
                     NSS.getsockname(this.fd, addr);
 
-                    if (addr.readU16() == 2 || addr.readU16() == 10 || addr.readU16() == 100) {
+                    // PRNetAddr family@0 (bsdSockaddr=false); macOS AF_INET6 30 -> 10.
+                    var family = readSockaddrFamily(addr, false);
+                    if (family == 2 || family == 10 || family == 100) {
                         var message = NSS.getPortsAndAddressesFromNSS(this.fd as NativePointer, false, lib_addesses[current_module_name], enable_default_fd)
                         message["ssl_session_id"] = NSS.getSslSessionIdFromFD(this.fd)
                         message["function"] = "NSS_write"

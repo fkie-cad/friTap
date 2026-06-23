@@ -589,71 +589,10 @@ Offline (read / analyze .tap):
             logger.info("[ipsec] --protocol ipsec auto-enables use_modern=true (legacy path has no IPSec support)")
             parsed.use_modern = True
 
-    # Telegram MTProto lives only in the modern agent (no legacy hooks exist).
-    if parsed.protocol == "mtproto":
-        if not getattr(parsed, "use_modern", False):
-            logger.info("[mtproto] --protocol mtproto auto-enables use_modern=true (legacy path has no MTProto support)")
-            parsed.use_modern = True
-        # MTProto's obfuscated transport can only be decrypted offline when each
-        # TCP stream is captured from its first 64 bytes. Attaching to an already
-        # running Telegram misses that init block on connections opened earlier
-        # (they come back "degraded" and decrypt to nothing), so nudge toward spawn.
-        if not getattr(parsed, "spawn", False):
-            logger.info(
-                "[mtproto] attach mode: connections opened before capture can't be "
-                "decrypted (obfuscated-transport init bytes are missed). Use -s (spawn) "
-                "so every connection is captured from the start, or force-stop + relaunch "
-                "the app before attaching."
-            )
-        # Live capture only needs to extract keys/plaintext (no Python-side crypto),
-        # but offline decryption of the resulting pcap does. Nudge the user early so
-        # a later `--mtproto-keylog` run does not surprise them.
-        from friTap.offline.mtproto import MTPROTO_DEPENDENCY_HINT, mtproto_backend_available
-        if not mtproto_backend_available():
-            logger.warning(
-                "[mtproto] %s  (live key capture works without it; that backend is "
-                "needed to decrypt the captured pcap offline.)",
-                MTPROTO_DEPENDENCY_HINT,
-            )
-
-    # Telegram (combined MTProto cloud + Secret-Chat E2E) lives only in the
-    # modern agent. Both key kinds land in ONE combined keylog file.
-    if parsed.protocol == "telegram":
-        if not getattr(parsed, "use_modern", False):
-            logger.info("[telegram] --protocol telegram auto-enables use_modern=true (legacy path has no Telegram support)")
-            parsed.use_modern = True
-        # Same byte-0 caveat as mtproto (cloud transport is the obfuscated MTProto):
-        # attaching to a running Telegram misses the init block on already-open
-        # connections, so those streams can't be decrypted offline. Nudge to spawn.
-        if not getattr(parsed, "spawn", False):
-            logger.info(
-                "[telegram] attach mode: connections opened before capture can't be "
-                "decrypted (obfuscated-transport init bytes are missed). Use -s (spawn) "
-                "so every connection is captured from the start, or force-stop + relaunch "
-                "the app before attaching."
-            )
-        # Require an explicit capture intent: -k extracts the combined Telegram
-        # keys for offline decrypt, -p captures live plaintext, -f captures a raw
-        # pcap for offline decrypt. Bare `--protocol telegram` would install hooks
-        # that produce no output, so reject it with an actionable message.
-        if not (parsed.keylog or parsed.pcap or parsed.full_capture):
-            parser.error(
-                "--protocol telegram requires a capture intent: -k (extract the "
-                "combined MTProto cloud + Secret-Chat E2E keys for offline "
-                "decryption) and/or -p (capture live plaintext); -f -p -k captures "
-                "a raw pcap plus keys for offline decryption."
-            )
-            raise Failure
-        # Live capture only extracts keys/plaintext (no Python-side crypto), but
-        # offline decryption of the resulting pcap does. Nudge the user early so
-        # a later `--telegram-keylog` run does not surprise them.
-        from friTap.offline.mtproto import MTPROTO_DEPENDENCY_HINT, mtproto_backend_available
-        if not mtproto_backend_available():
-            logger.warning(
-                "[telegram] %s  (live key capture works without it; the extra is "
-                "needed to decrypt the captured pcap offline.)",
-                MTPROTO_DEPENDENCY_HINT,
-            )
+    # MTProto and Telegram CLI rules (modern-path auto-enable, spawn nudge,
+    # capture-intent gate, offline-backend warning) now live with their handlers
+    # in MTProtoHandler/TelegramHandler.validate_cli_intent, dispatched below —
+    # same protocol-agnostic seam the Signal handler already uses.
 
     # Let the selected protocol's handler validate/adjust CLI intent. This keeps
     # protocol-specific rules (e.g. a TLS-wrapped E2E protocol that needs a

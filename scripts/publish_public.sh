@@ -32,6 +32,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PRIVATE_TXT="$REPO_ROOT/private.txt"
 
+# shellcheck source=lib.sh
+. "$SCRIPT_DIR/lib.sh"
+
 DRY_RUN=0
 STATUS_ONLY=0
 NO_RELEASE=0
@@ -55,17 +58,10 @@ mkdir -p "$TREE"
 echo "== §E publish ($([ "$DRY_RUN" -eq 1 ] && echo dry-run || echo FULL)) =="
 
 # --- 1. publishable set (tracked + non-ignored), into the throwaway tree -------
-( cd "$REPO_ROOT" && git ls-files --cached --others --exclude-standard -z ) \
-  | rsync -a --files-from=- --from0 "$REPO_ROOT/" "$TREE/"
+fritap_assemble_public_tree "$REPO_ROOT" "$TREE"
 
 # --- 2. strip private.txt paths ------------------------------------------------
-shopt -s nullglob
-while IFS= read -r raw || [ -n "$raw" ]; do
-  line="${raw%%#*}"; line="${line#"${line%%[![:space:]]*}"}"; line="${line%"${line##*[![:space:]]}"}"
-  [ -z "$line" ] && continue
-  for m in $TREE/$line; do rm -rf "$m"; done
-done < "$PRIVATE_TXT"
-shopt -u nullglob
+fritap_strip_private_paths "$TREE" "$PRIVATE_TXT"
 echo "  stripped private.txt paths"
 
 # --- 3. scrub substantive reveals (setup.py extra, mkdocs nav, CHANGELOG) ------

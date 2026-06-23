@@ -1,10 +1,16 @@
 import { log, devlog, devlog_error } from "../util/log.js";
+import { toHexString } from "../util/hex.js";
 import { AF_INET, AF_INET6, AddressFamilyMapping, unwantedFDs, Platform } from "./shared_structures.js";
 import { HookRegistration, HookRegistry } from "./registry.js";
 import { Java, JavaWrapper } from "./javalib.js";
 import { offsets, ohttp_enabled, selected_protocol } from "./shared_structures.js";
 import { announceSiblingCoverage, isModuleHooked, markModuleHooked } from "./library_scanner.js";
 import { warnAntiTamper } from "../util/anti_tamper.js";
+// Pure sockaddr/PRNetAddr decoders live in sockaddr.ts so they can be unit-tested
+// under Node without this module's heavy Frida import graph. Imported for internal
+// use (getPortsAndAddresses) and re-exported below for existing importers.
+import { decodeSockaddr, readSockaddrFamily } from "./sockaddr.js";
+import type { DecodedSockaddr, ByteOrderFns } from "./sockaddr.js";
 
 /*
  * Tracks which (platform, loader-function, protocol) triples already have a
@@ -416,71 +422,10 @@ export function readAddresses(moduleName: string, library_method_mapping: { [key
 }
 
 
-/** Decoded sockaddr/PRNetAddr tuple in the pcap-writer address encoding. */
-export interface DecodedSockaddr {
-    family: "AF_INET" | "AF_INET6";
-    port: number;            // host-order
-    addr: number | string;   // AF_INET -> host-order int; AF_INET6 -> 32-char uppercase hex
-}
-
-/** libc byte-order conversion functions, used only when the native path is requested. */
-export interface ByteOrderFns {
-    ntohs: NativeFunction<number, [number]>;
-    ntohl: NativeFunction<number, [number]>;
-}
-
-/**
- * Decode a sockaddr (or NSS PRNetAddr, which shares the field layout) at `sa`
- * into { family, port, addr }. Layout: family@0, port@2, IPv4@4, IPv6@8.
- * Folds IPv4-mapped IPv6 (::ffff:a.b.c.d) down to AF_INET. Returns null for
- * unsupported families. Does NOT filter loopback / port 0 — callers decide.
- *
- * By default uses platform-independent manual byte math, which is numerically
- * identical to libc ntohs/ntohl on both little- and big-endian hosts and needs
- * no native functions. Set `useNativeByteOrder = true` (and pass `fns`) to route
- * port/address conversion through libc ntohs/ntohl instead.
- *
- * @param sa Pointer to the sockaddr structure.
- * @param useNativeByteOrder When true, use `fns.ntohs`/`fns.ntohl` instead of byte math.
- * @param fns The ntohs/ntohl wrappers (required when `useNativeByteOrder` is true).
- */
-export function decodeSockaddr(sa: NativePointer, useNativeByteOrder?: false, fns?: ByteOrderFns): DecodedSockaddr | null;
-export function decodeSockaddr(sa: NativePointer, useNativeByteOrder: true, fns: ByteOrderFns): DecodedSockaddr | null;
-export function decodeSockaddr(
-    sa: NativePointer,
-    useNativeByteOrder: boolean = false,
-    fns?: ByteOrderFns,
-): DecodedSockaddr | null {
-    if (sa.isNull()) return null;
-    const family = sa.readU16();
-
-    const readPort = (): number =>
-        (useNativeByteOrder && fns)
-            ? (fns.ntohs(sa.add(2).readU16()) as number)
-            : (((sa.add(2).readU8() << 8) | sa.add(3).readU8()) >>> 0);
-
-    const readV4 = (p: NativePointer): number =>
-        (useNativeByteOrder && fns)
-            ? (fns.ntohl(p.readU32()) as number)
-            : (((p.readU8() << 24) | (p.add(1).readU8() << 16) |
-                (p.add(2).readU8() << 8) | p.add(3).readU8()) >>> 0);
-
-    if (family === AF_INET) {
-        return { family: "AF_INET", port: readPort(), addr: readV4(sa.add(4)) };
-    }
-    if (family === AF_INET6) {
-        const base = sa.add(8); // sin6_addr
-        let hex = "";
-        for (let i = 0; i < 16; i++) {
-            hex += ("0" + base.add(i).readU8().toString(16).toUpperCase()).slice(-2);
-        }
-        if (hex.indexOf("00000000000000000000FFFF") === 0) { // v4-mapped -> AF_INET
-            return { family: "AF_INET", port: readPort(), addr: readV4(base.add(12)) };
-        }
-        return { family: "AF_INET6", port: readPort(), addr: hex };
-    }
-    return null;
-}
+// Re-export the sockaddr decoders (imported at top) so existing importers of
+// shared_functions.js (nss.ts, quiche.ts, google_quiche.ts) keep working unchanged.
+export { decodeSockaddr, readSockaddrFamily };
+export type { DecodedSockaddr, ByteOrderFns };
 
 
 // Cache for NativeFunction wrappers (created once, reused per call)
@@ -564,7 +509,9 @@ export function getPortsAndAddresses(sockfd: number, isRead: boolean, methodAddr
         }
 
         // Byte math by default; flip to `true` to route through the cached ntohs/ntohl.
-        const decoded = decodeSockaddr(addr, false, _cachedSocketFns);
+        // addr is a real OS sockaddr from libc getpeername/getsockname — BSD layout on
+        // darwin (sa_len@0, AF_INET6=30). bsdSockaddr=true is a no-op on Linux/Windows.
+        const decoded = decodeSockaddr(addr, false, _cachedSocketFns, true);
         if (!decoded) {
             // only uncomment this if you really need to debug this
             //const familyName = AddressFamilyMapping[addr.readU16()] || `UNKNOWN`;
@@ -645,18 +592,11 @@ export function byteArrayToString(byteArray: any) {
     }).join('')
 }
 
-// Pre-built lookup table: byte value -> two-char hex string (built once at module load)
-const byteToHex: string[] = [];
-for (let n = 0; n <= 0xff; ++n) {
-    byteToHex.push(n.toString(16).padStart(2, "0"));
-}
-
-export function toHexString (byteArray: any) {
-    return Array.prototype.map.call(
-        new Uint8Array(byteArray),
-        n => byteToHex[n]
-    ).join("");
-  }
+// toHexString now lives in the side-effect-free util/hex module (so the scan
+// engine and other pure callers can use it without importing this heavy module).
+// Imported at the top and re-exported here so every existing caller — and this
+// module's own format_key_for_wireshark below — keeps working unchanged.
+export { toHexString };
 
 /**
  * Convert a Java Reflection array to string

@@ -13,6 +13,7 @@
 
 import { HookingStrategy, HookResult } from "../hooking_pipeline";
 import { _isShuttingDownNow } from "../../util/log.js";
+import { toHexPattern } from "../../util/hex.js";
 
 /** Known string indicators for TLS libraries */
 const TLS_INDICATORS = [
@@ -70,7 +71,7 @@ export class MemoryScanStrategy implements HookingStrategy {
 
             for (const indicator of TLS_INDICATORS) {
                 if (_isShuttingDownNow()) break;
-                const pattern = this._stringToHexPattern(indicator);
+                const pattern = toHexPattern(indicator);
                 if (await this._scanHasMatchAsync(mod.base, mod.size, pattern)) {
                     foundIndicators.push(indicator);
                 }
@@ -83,7 +84,7 @@ export class MemoryScanStrategy implements HookingStrategy {
 
             for (const funcName of functions) {
                 if (_isShuttingDownNow()) break;
-                const pattern = this._stringToHexPattern(funcName);
+                const pattern = toHexPattern(funcName);
                 if (await this._scanHasMatchAsync(mod.base, mod.size, pattern)) {
                     hooked.push(funcName);
                 }
@@ -118,7 +119,7 @@ export class MemoryScanStrategy implements HookingStrategy {
             const indicators: string[] = [];
             for (const indicator of TLS_INDICATORS) {
                 if (_isShuttingDownNow()) break;
-                const pattern = this._stringToHexPattern(indicator);
+                const pattern = toHexPattern(indicator);
                 if (await this._scanHasMatchAsync(mod.base, mod.size, pattern)) {
                     indicators.push(indicator);
                 }
@@ -134,12 +135,5 @@ export class MemoryScanStrategy implements HookingStrategy {
 
     isAvailable(): boolean {
         return true; // Always available as a last resort
-    }
-
-    private _stringToHexPattern(str: string): string {
-        return str
-            .split("")
-            .map(c => c.charCodeAt(0).toString(16).padStart(2, "0"))
-            .join(" ");
     }
 }

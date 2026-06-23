@@ -1,4 +1,4 @@
-import { readAddresses, resolveOffsets, dumpMemory, decodeSockaddr } from "../../shared/shared_functions.js";
+import { readAddresses, resolveOffsets, dumpMemory, decodeSockaddr, readSockaddrFamily } from "../../shared/shared_functions.js";
 import { pointerSize, sendKeylog, sendDatalog } from "../../shared/shared_structures.js";
 import { log, devlog, devlog_debug, devlog_error } from "../../util/log.js";
 import { enable_default_fd, pcap_enabled } from "../../fritap_agent.js";
@@ -1596,7 +1596,10 @@ typedef union PRNetAddr PRNetAddr;
                     // getpeername returns -1 for PIPE descriptors; the family check below
                     // filters those out.
 
-                    var family = addr.readU16();
+                    // PRNetAddr family@0 (not a BSD sockaddr, so bsdSockaddr=false); on
+                    // macOS NSPR stores AF_INET6 as 30, which readSockaddrFamily normalizes
+                    // to 10 so the IPv6 gate below matches.
+                    var family = readSockaddrFamily(addr, false);
                     if (family == 2 || family == 10 || family == 100) {
                         if (NSS.isLoopbackSockaddr(addr, family)) {
                             // Drop Firefox internal NSS IPC before touching the expensive
@@ -1641,7 +1644,8 @@ typedef union PRNetAddr PRNetAddr;
                     var addr = Memory.alloc(32);
                     NSS.getsockname(this.fd, addr);
 
-                    var family = addr.readU16();
+                    // PRNetAddr family@0 (bsdSockaddr=false); macOS AF_INET6 30 -> 10.
+                    var family = readSockaddrFamily(addr, false);
                     if (family == 2 || family == 10 || family == 100) {
                         if (NSS.isLoopbackSockaddr(addr, family)) {
                             return;

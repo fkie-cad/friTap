@@ -133,6 +133,33 @@ class TestKeylogManifest:
         assert manifest["signal_keylog"] == str(tmp_path / "skeys.signal.log")
         assert manifest["keylogs"]["signal"] == str(tmp_path / "skeys.signal.log")
 
+    @pytest.mark.skipif(not _SIGNAL_AVAILABLE, reason="signal protocol is private/stripped in public build")
+    def test_generic_keylog_field_is_deterministically_tls_split(self, tmp_path):
+        """C19: in a multi-protocol split capture the generic manifest["keylog"]
+        (the SSLKEYLOGFILE a back-compat consumer feeds to tshark to strip TLS)
+        must be the TLS split DETERMINISTICALLY — even when self.keylog_path was
+        left pointing at the protocol split by whichever KeylogOutputHandler
+        iterated last. The old code wrote self.keylog_path verbatim, so a
+        consumer could get the Signal keys as the SSLKEYLOGFILE and strip nothing."""
+        out = tmp_path / "s.pcap"
+        stub = _make_stub(pcap_file_name=str(out))
+        # Simulate last-handler-wins leaving the SIGNAL split in keylog_path.
+        stub.keylog_path = str(tmp_path / "skeys.signal.log")
+        stub.capture_protocol = "signal"
+        stub.active_keylogs = {
+            "signal": str(tmp_path / "skeys.signal.log"),
+            "tls": str(tmp_path / "skeys.tls.log"),
+        }
+
+        stub._write_capture_manifest()
+
+        with open(f"{out}.fritap.json", encoding="utf-8") as fh:
+            manifest = json.load(fh)
+        assert manifest["keylog"] == str(tmp_path / "skeys.tls.log"), \
+            "generic keylog must be the TLS split, not the protocol split"
+        # The protocol field still carries the signal split (unaffected).
+        assert manifest["signal_keylog"] == str(tmp_path / "skeys.signal.log")
+
     def test_no_keylog_omits_branch(self, tmp_path):
         out = tmp_path / "capture.pcap"
         stub = _make_stub(pcap_file_name=str(out))

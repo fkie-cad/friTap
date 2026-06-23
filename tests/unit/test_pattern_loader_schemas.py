@@ -3,8 +3,9 @@
 friTap has two byte-pattern engines, each with its own valid schema (the
 codebase calls them Schema A and Schema B — see test_pattern_fallback_gate.py):
 
-* **Schema A** (modern ``PatternStrategy``; the ``--modern`` path) — a flat map
-  ``{<library>: {<arch>: {<function>: [pattern_str, ...]}}}``. This is what
+* **Schema A** (modern ``PatternStrategy``; the ``--modern`` path) — a nested map
+  ``{<library>: {<os>: {<arch>: {<function>: [pattern_str, ...]}}}}`` where the
+  ``os`` key is one of android/ios/linux/macos/windows. This is what
   ``friTap/patterns/default_patterns.json`` uses.
 * **Schema B** (legacy ``PatternBasedHooking``; the DEFAULT when ``--modern`` is
   off) — an object form under a top-level ``modules`` key:
@@ -81,8 +82,8 @@ def test_minimal_schema_b_object_form_validates(logger):
     assert PatternLoader.validate(patterns, logger) is True
 
 
-def test_minimal_schema_a_list_form_validates(logger):
-    patterns = {"openssl": {"x64": {"ssl_log_secret": ["55 48 89 E5 48"]}}}
+def test_minimal_schema_a_os_layer_validates(logger):
+    patterns = {"openssl": {"android": {"x64": {"ssl_log_secret": ["55 48 89 E5 48"]}}}}
     assert PatternLoader.validate(patterns, logger) is True
 
 
@@ -130,7 +131,23 @@ def test_non_dict_is_rejected(logger):
 
 def test_modern_non_list_leaf_is_rejected(logger):
     # Schema A: function leaf must be a list.
-    assert PatternLoader.validate({"openssl": {"x64": {"ssl_log_secret": 123}}}, logger) is False
+    assert PatternLoader.validate({"openssl": {"android": {"x64": {"ssl_log_secret": 123}}}}, logger) is False
+
+
+def test_modern_flat_no_os_layer_is_rejected(logger):
+    # Breaking change: the modern schema now REQUIRES an OS layer.
+    # A flat library -> arch -> function file is rejected.
+    assert PatternLoader.validate({"openssl": {"x64": {"ssl_log_secret": ["55 48 89 E5"]}}}, logger) is False
+
+
+def test_modern_arch_key_at_os_level_is_rejected(logger):
+    # An arch name (x64) where an OS key belongs triggers the migration hint and fails.
+    assert PatternLoader.validate({"openssl": {"arm64": {"x64": {"ssl_log_secret": ["55 48"]}}}}, logger) is False
+
+
+def test_modern_non_dict_os_is_rejected(logger):
+    # OS-level value must be a dict.
+    assert PatternLoader.validate({"openssl": {"android": "should-be-a-dict"}}, logger) is False
 
 
 def test_schema_b_scalar_leaf_is_rejected(logger):

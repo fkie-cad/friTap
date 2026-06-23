@@ -90,9 +90,12 @@ class TestUserOverrideMerge:
         defaults_parsed = json.loads(default_payload)
 
         user_file = tmp_path / "user.json"
+        # Modern Schema A requires an OS layer: library -> os -> arch -> function.
         user_file.write_text(json.dumps({
             "my_custom_lib": {
-                "x64": {"my_func": ["48 89 E5"]},
+                "android": {
+                    "x64": {"my_func": ["48 89 E5"]},
+                }
             }
         }))
 
@@ -101,7 +104,7 @@ class TestUserOverrideMerge:
         merged_parsed = json.loads(merged)
 
         assert "my_custom_lib" in merged_parsed
-        assert merged_parsed["my_custom_lib"]["x64"]["my_func"] == ["48 89 E5"]
+        assert merged_parsed["my_custom_lib"]["android"]["x64"]["my_func"] == ["48 89 E5"]
 
         for k in defaults_parsed:
             if k.startswith("_"):

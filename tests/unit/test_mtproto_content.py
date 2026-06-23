@@ -148,6 +148,24 @@ def test_gzip_packed_unwrap():
     assert msgs[0].body == "fritapP3CLOUD2026FRESH"
 
 
+def test_gzip_packed_inflate_is_bounded(monkeypatch):
+    """C15: gzip_packed must inflate at most _MAX_GZIP_INFLATE bytes. A payload
+    that would inflate past the cap is refused (decompression-bomb guard) rather
+    than expanded into memory unbounded. Distinguished from the no-cap bug by
+    using an inner that DOES parse under the normal cap but is refused once the
+    cap is lowered below its inflated size."""
+    import friTap.offline.mtproto.content as content
+
+    inner = _verified_send_message()
+    packed = _u32(_GZIP_PACKED) + _tl_bytes(zlib.compress(inner))
+    # Normal cap: inflates and parses to the inner message.
+    assert len(parse_mtproto_message(packed)) == 1
+    # Cap below the inflated size: the inflate is refused, so nothing is parsed
+    # (an unbounded zlib.decompress would still have inflated and parsed it).
+    monkeypatch.setattr(content, "_MAX_GZIP_INFLATE", len(inner) - 1)
+    assert parse_mtproto_message(packed) == []
+
+
 # --------------------------------------------------------------------------- #
 # Inbound updates
 # --------------------------------------------------------------------------- #

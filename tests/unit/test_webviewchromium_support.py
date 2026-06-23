@@ -61,7 +61,7 @@ def test_shipped_wildcard_matches_webview_prologue(fritap_root):
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    patterns = data["openssl"]["arm64"]["ssl_log_secret"]
+    patterns = data["openssl"]["android"]["arm64"]["ssl_log_secret"]
     assert any(_wildcard_matches(p, WEBVIEW_ARM64_PROLOGUE) for p in patterns), (
         "No shipped openssl arm64 ssl_log_secret pattern matches the verified "
         "libwebviewchromium.so prologue. If the wildcard was tightened, WebView "

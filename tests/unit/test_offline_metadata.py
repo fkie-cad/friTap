@@ -221,6 +221,19 @@ def _tls_stream_dispatch(packets):
     return fake
 
 
+def _write_pcap_inputs(tmp_path, *, pcap_name="cap.pcapng"):
+    """Create the existence-only pcap + empty keylog the mocked tshark path needs.
+
+    Returns ``(pcap_path, keylog_path)`` as strings. tshark is always
+    monkeypatched in these wiring tests, so the file *contents* are irrelevant —
+    only their presence (the decryptable precondition) matters."""
+    pcap = tmp_path / pcap_name
+    pcap.write_bytes(b"\x00")
+    keylog = tmp_path / "keys.log"
+    keylog.write_text("")
+    return str(pcap), str(keylog)
+
+
 def test_convert_stamps_tls_metadata_onto_flow(tmp_path, monkeypatch):
     request = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"
     response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi"
@@ -241,13 +254,10 @@ def test_convert_stamps_tls_metadata_onto_flow(tmp_path, monkeypatch):
     monkeypatch.setattr(p2t, "stream_packets",
                         _tls_stream_dispatch(_tls_ek_packets(endpoints, segments)))
 
-    pcap = tmp_path / "cap.pcapng"
-    pcap.write_bytes(b"\x00")
-    keylog = tmp_path / "keys.log"
-    keylog.write_text("")
+    pcap, keylog = _write_pcap_inputs(tmp_path)
     tap = tmp_path / "cap.tap"
 
-    p2t.convert_pcap_to_tap(str(pcap), keylog_path=str(keylog), tap_path=str(tap))
+    p2t.convert_pcap_to_tap(pcap, keylog_path=keylog, tap_path=str(tap))
 
     with TapReader(str(tap)) as reader:
         flows = reader.read_all_flows()
@@ -275,14 +285,11 @@ def test_convert_without_tls_metadata_still_produces_flow(tmp_path, monkeypatch)
                         _tls_stream_dispatch(_tls_ek_packets(
                             endpoints, [("write", request)])))
 
-    pcap = tmp_path / "cap.pcapng"
-    pcap.write_bytes(b"\x00")
-    keylog = tmp_path / "keys.log"
-    keylog.write_text("")
+    pcap, keylog = _write_pcap_inputs(tmp_path)
     tap = tmp_path / "cap.tap"
 
     result = p2t.convert_pcap_to_tap(
-        str(pcap), keylog_path=str(keylog), tap_path=str(tap))
+        pcap, keylog_path=keylog, tap_path=str(tap))
     assert result.flow_count >= 1
     with TapReader(str(tap)) as reader:
         flows = reader.read_all_flows()
@@ -311,13 +318,10 @@ def test_convert_creates_ssh_synthetic_flow(tmp_path, monkeypatch):
     monkeypatch.setattr(p2t, "extract_ssh_connections", lambda *a, **k: [ssh_conn])
     monkeypatch.setattr(p2t, "stream_packets", lambda cmd: iter(()))
 
-    pcap = tmp_path / "cap.pcapng"
-    pcap.write_bytes(b"\x00")
-    keylog = tmp_path / "keys.log"
-    keylog.write_text("")
+    pcap, keylog = _write_pcap_inputs(tmp_path)
     tap = tmp_path / "cap.tap"
 
-    p2t.convert_pcap_to_tap(str(pcap), keylog_path=str(keylog), tap_path=str(tap))
+    p2t.convert_pcap_to_tap(pcap, keylog_path=keylog, tap_path=str(tap))
 
     with TapReader(str(tap)) as reader:
         flows = reader.read_all_flows()
@@ -345,13 +349,10 @@ def test_ssh_extraction_failure_does_not_abort_conversion(tmp_path, monkeypatch)
     monkeypatch.setattr(p2t, "extract_ssh_connections", boom)
     monkeypatch.setattr(p2t, "stream_packets", lambda cmd: iter(()))
 
-    pcap = tmp_path / "cap.pcapng"
-    pcap.write_bytes(b"\x00")
-    keylog = tmp_path / "keys.log"
-    keylog.write_text("")
+    pcap, keylog = _write_pcap_inputs(tmp_path)
     # Must not raise — SSH failure is swallowed.
     result = p2t.convert_pcap_to_tap(
-        str(pcap), keylog_path=str(keylog), tap_path=str(tmp_path / "out.tap"))
+        pcap, keylog_path=keylog, tap_path=str(tmp_path / "out.tap"))
     assert result.flow_count == 0
 
 
@@ -370,12 +371,9 @@ def test_tls_metadata_failure_does_not_abort_conversion(tmp_path, monkeypatch):
                         _tls_stream_dispatch(_tls_ek_packets(
                             endpoints, [("write", request)])))
 
-    pcap = tmp_path / "cap.pcapng"
-    pcap.write_bytes(b"\x00")
-    keylog = tmp_path / "keys.log"
-    keylog.write_text("")
+    pcap, keylog = _write_pcap_inputs(tmp_path)
     result = p2t.convert_pcap_to_tap(
-        str(pcap), keylog_path=str(keylog), tap_path=str(tmp_path / "out.tap"))
+        pcap, keylog_path=keylog, tap_path=str(tmp_path / "out.tap"))
     # Decrypted-bytes path unaffected: the flow still exists.
     assert result.flow_count >= 1
 

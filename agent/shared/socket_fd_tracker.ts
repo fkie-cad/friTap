@@ -69,13 +69,27 @@ function classifyStream(fd: number): boolean {
         try {
             _optlenBuf.writeU32(4);
             const ret = _getsockopt(fd, SOL_SOCKET, SO_TYPE, _optvalBuf, _optlenBuf) as number;
-            if (ret === 0 && _optvalBuf.readU32() === SOCK_STREAM) {
-                streamFds.add(fd);
-                return true;
+            if (ret === 0) {
+                const sockType = _optvalBuf.readU32();
+                if (sockType === SOCK_STREAM) {
+                    streamFds.add(fd);
+                    return true;
+                }
+                // Definitive answer: a real socket that is NOT a stream (datagram,
+                // raw, …). Safe to cache as non-stream permanently.
+                nonStreamFds.add(fd);
+                return false;
             }
-        } catch (e) { /* fall through: treat as non-stream */ }
+            // ret != 0 (e.g. EBADF on a since-closed fd): NOT definitive that this
+            // is a non-stream socket — fall through WITHOUT caching so a later
+            // probe (or socket()/connect() typing) can still classify a genuine
+            // stream fd. Caching here would latch a stream fd out of recovery.
+        } catch (e) { /* getsockopt threw — also non-definitive; do not cache */ }
+        return false;
     }
-    nonStreamFds.add(fd);
+    // getsockopt unavailable on this platform: we can never classify a
+    // pre-existing fd. Don't poison the cache as "non-stream" (a real stream fd
+    // would then be permanently un-recoverable); just report unknown-as-false.
     return false;
 }
 

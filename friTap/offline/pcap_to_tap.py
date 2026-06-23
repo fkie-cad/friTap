@@ -18,6 +18,13 @@ import importlib
 import logging
 import os
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Type-only import: the factories below annotate this return type, but import
+    # it lazily inside their bodies to defer the registry import. Binding the name
+    # here resolves the forward reference for ruff/type-checkers at no runtime cost.
+    from friTap.offline.registry import OfflineDecryptorEntry
 
 from friTap.connection_index import resolve_connection_key
 from friTap.events import DatalogEvent, EventBus, SESSION_STARTED, SessionEvent
@@ -1368,20 +1375,17 @@ def _discover_offline_decryptor_extensions() -> None:
             logger.debug("skipping offline-decryptor subpackage %r: %s", info.name, exc)
 
 
-def _register_builtin_offline_decryptors() -> None:
-    """Register the built-in MTProto/Telegram offline decryptors (idempotent).
+def build_mtproto_offline_decryptor_entry() -> "OfflineDecryptorEntry":
+    """Build the MTProto :class:`OfflineDecryptorEntry`.
 
-    TLS-riding decryptors ship as self-registering in-tree subpackages and are
-    picked up by :func:`_discover_offline_decryptor_extensions` (called at the
-    end), so the public core never names them.
+    Named factory mirroring ``build_signal_offline_decryptor_entry`` (see
+    :mod:`friTap.offline.signal.offline_decryptor`): the layer class and registry
+    type are imported lazily so this is cheap to call at registration time.
     """
-    from friTap.flow.layers import MtprotoLayer, TelegramE2ELayer
-    from friTap.offline.registry import (
-        OfflineDecryptorEntry,
-        register_offline_decryptor,
-    )
+    from friTap.flow.layers import MtprotoLayer
+    from friTap.offline.registry import OfflineDecryptorEntry
 
-    register_offline_decryptor(OfflineDecryptorEntry(
+    return OfflineDecryptorEntry(
         protocol_name="mtproto",
         cli_flag="--mtproto-keylog",
         cli_dest="mtproto_keylog",
@@ -1394,8 +1398,19 @@ def _register_builtin_offline_decryptors() -> None:
             "Decrypted by friTap's own MTProto decryptor (not tshark); distinct "
             "from --keylog."
         ),
-    ))
-    register_offline_decryptor(OfflineDecryptorEntry(
+    )
+
+
+def build_telegram_offline_decryptor_entry() -> "OfflineDecryptorEntry":
+    """Build the Telegram (cloud + Secret-Chat E2E) :class:`OfflineDecryptorEntry`.
+
+    Named factory mirroring ``build_signal_offline_decryptor_entry``; lazy imports
+    as above.
+    """
+    from friTap.flow.layers import TelegramE2ELayer
+    from friTap.offline.registry import OfflineDecryptorEntry
+
+    return OfflineDecryptorEntry(
         protocol_name="telegram",
         cli_flag="--telegram-keylog",
         cli_dest="telegram_keylog",
@@ -1407,7 +1422,20 @@ def _register_builtin_offline_decryptors() -> None:
             "friTap Telegram keylog (combined MTProto cloud auth keys + Secret-Chat "
             "E2E keys) — decrypts cloud chats and secret chats."
         ),
-    ))
+    )
+
+
+def _register_builtin_offline_decryptors() -> None:
+    """Register the built-in MTProto/Telegram offline decryptors (idempotent).
+
+    TLS-riding decryptors ship as self-registering in-tree subpackages and are
+    picked up by :func:`_discover_offline_decryptor_extensions` (called at the
+    end), so the public core never names them.
+    """
+    from friTap.offline.registry import register_offline_decryptor
+
+    register_offline_decryptor(build_mtproto_offline_decryptor_entry())
+    register_offline_decryptor(build_telegram_offline_decryptor_entry())
 
     # Pick up in-tree TLS-riding / plugin decryptors that self-register on import
     # (the public core never names them). Done LAST so any built-in stays the

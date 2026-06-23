@@ -6,6 +6,10 @@ and event plumbing, not decryption).
 
 from __future__ import annotations
 
+import hashlib
+
+import pytest
+
 from friTap.events import EventBus, KeylogEvent
 from friTap.message_router import MessageRouter
 from friTap.protocols import mtproto_keylog_spec as spec
@@ -41,7 +45,6 @@ def test_format_line_rejects_bad_lengths():
 def test_format_line_derives_empty_id_from_key():
     """An EMPTY auth_key_id with a valid key is rescued: the id is derived as
     sha1(auth_key)[-8:] rather than the (usable) key being silently dropped."""
-    import hashlib
     expected_id = hashlib.sha1(bytes.fromhex(_AK)).digest()[-8:].hex()
     line = spec.format_line(dc_id=2, auth_key_id="", auth_key=_AK, key_type="temp")
     assert line == f"{spec.LABEL} 2 {expected_id} {_AK} temp"
@@ -105,8 +108,6 @@ def test_registry_default_includes_mtproto():
 
 
 def test_registry_rejects_unknown():
-    import pytest
-
     with pytest.raises(ValueError):
         create_default_registry(["nope"])
 

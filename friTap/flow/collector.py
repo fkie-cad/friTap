@@ -68,6 +68,14 @@ class FlowCollector:
         # on each session/synthetic event (O(flows) -> O(1) lookup, turning an
         # O(streams x flows) offline conversion back into O(streams)).
         self._flow_index: dict[str, list[str]] = {}
+        # conn_id -> next flow sequence number. The flow-id counter lives HERE
+        # (on the collector), not on _ConnectionState, so it survives an
+        # idle-reset that rebuilds the connection state: re-minting "conn_id:0"
+        # after a reset would otherwise overwrite an already-completed flow still
+        # held in _flows. It is also the single id source shared by _make_flow
+        # and add_synthetic_flow, so those two paths can never collide on the
+        # "conn_id:N" namespace. Monotonic per conn_id; only cleared in clear().
+        self._flow_seq: dict[str, int] = {}
         self._connections: dict[str, _ConnectionState] = {}  # conn_id -> state
         # Owns the *vertical* layer-stack structure (transport -> app -> inner).
         # Invoked at flow finalize (inside the lock, before the COMPLETE flip).
@@ -747,6 +755,7 @@ class FlowCollector:
         with self._lock:
             self._flows.clear()
             self._flow_index.clear()
+            self._flow_seq.clear()
             self._connections.clear()
             self._h2_stream_flows.clear()
             self._orphan_requests.clear()
@@ -783,9 +792,12 @@ class FlowCollector:
         pending: list = []
         with self._lock:
             # Sequence within this connection so repeated synthetic flows for
-            # the same endpoints get distinct ids (mirrors _make_flow's scheme).
-            # The index length is the count the old full scan produced, in O(1).
-            seq = len(self._flow_index.get(conn_id, ()))
+            # the same endpoints get distinct ids. Drawn from the SAME monotonic
+            # allocator _make_flow uses, so a synthetic flow and a data flow on
+            # the same conn_id can never mint the same "conn_id:N" (the old
+            # len(_flow_index) scheme could: it counts current entries, which
+            # diverges from _make_flow's sequence after any reset/unindex).
+            seq = self._next_flow_sequence(conn_id)
             flow_id = f"{conn_id}:{seq}"
             flow = Flow(
                 flow_id=flow_id,
@@ -897,37 +909,47 @@ class FlowCollector:
         self._emit_errors(errors_to_emit)
 
     def _merge_remaining_orphans(self) -> list[Flow]:
-        """Match request-only with response-only flows by destination. Must be called under lock.
+        """Pair leftover request-only and response-only flows. Under lock.
+
+        Two passes, most-precise first:
+
+        1. By ``connection_id`` — a request half and its response half of one
+           logical exchange share the (endpoint-derived) connection key, so this
+           pairs the two halves of the SAME connection unambiguously.
+        2. By destination ``host:port``, but ONLY when exactly one request-only
+           flow remains for that destination. This keeps the original
+           single-connection-per-host heuristic (a request and response that
+           ended up with different connection keys still merge) while refusing to
+           graft a response onto an arbitrary request when several concurrent
+           connections to the same host compete — the old "first request wins"
+           behaviour silently mis-attributed the response to the wrong exchange
+           and left the true owner response-less.
 
         Returns list of removed Flow objects (for REMOVED notifications).
         """
-        request_only: list[tuple[str, str]] = []   # (flow_id, dst_key)
-        response_only: list[tuple[str, str]] = []   # (flow_id, dst_key)
-
+        request_only: list[str] = []
+        response_only: list[str] = []
         for fid, flow in self._flows.items():
             if flow.request is not None and flow.response is None:
-                request_only.append((fid, f"{flow.dst_addr}:{flow.dst_port}"))
+                request_only.append(fid)
             elif flow.response is not None and flow.request is None:
-                response_only.append((fid, f"{flow.dst_addr}:{flow.dst_port}"))
+                response_only.append(fid)
 
-        # Build lookup: dst_key -> first request-only flow_id
-        req_by_dst: dict[str, str] = {}
-        for fid, dst_key in request_only:
-            if dst_key not in req_by_dst:
-                req_by_dst[dst_key] = fid
-
-        # Merge: attach response to request flow, remove response-only flow
         removed: list[Flow] = []
-        for resp_fid, dst_key in response_only:
-            if dst_key not in req_by_dst:
-                continue
-            req_fid = req_by_dst.pop(dst_key)
+        if not request_only or not response_only:
+            return removed
+
+        # Request-only flows still available to absorb a response, consumed as
+        # they are matched so one request is never claimed by two responses.
+        avail_req: set[str] = set(request_only)
+
+        def _merge(resp_fid: str, req_fid: str) -> bool:
             req_flow = self._flows.get(req_fid)
             resp_flow = self._flows.get(resp_fid)
             if not req_flow or not resp_flow:
-                continue
+                return False
             if abs(resp_flow.started - req_flow.started) > IDLE_THRESHOLD:
-                continue
+                return False
             req_flow.response = resp_flow.response
             req_flow.chunks.extend(resp_flow.chunks)
             req_flow._total_bytes += resp_flow._total_bytes
@@ -936,6 +958,38 @@ class FlowCollector:
             del self._flows[resp_fid]
             self._unindex_flow(resp_flow)
             removed.append(resp_flow)
+            avail_req.discard(req_fid)
+            return True
+
+        # Pass 1: exact pairing by connection_id (same-connection halves).
+        req_by_conn: dict[str, list[str]] = {}
+        for fid in request_only:
+            f = self._flows.get(fid)
+            if f is not None:
+                req_by_conn.setdefault(f.connection_id, []).append(fid)
+        unmatched_resp: list[str] = []
+        for resp_fid in response_only:
+            resp_flow = self._flows.get(resp_fid)
+            if resp_flow is None:
+                continue
+            candidates = [r for r in req_by_conn.get(resp_flow.connection_id, ())
+                          if r in avail_req]
+            if not (candidates and _merge(resp_fid, candidates[0])):
+                unmatched_resp.append(resp_fid)
+
+        # Pass 2: dst-keyed fallback, only when unambiguous (one candidate).
+        for resp_fid in unmatched_resp:
+            resp_flow = self._flows.get(resp_fid)
+            if resp_flow is None:
+                continue
+            dst_key = f"{resp_flow.dst_addr}:{resp_flow.dst_port}"
+            matches = []
+            for r in avail_req:
+                rf = self._flows.get(r)
+                if rf is not None and f"{rf.dst_addr}:{rf.dst_port}" == dst_key:
+                    matches.append(r)
+            if len(matches) == 1:  # 0 = nothing; >1 = ambiguous, refuse to guess
+                _merge(resp_fid, matches[0])
 
         return removed
 
@@ -1229,7 +1283,6 @@ class FlowCollector:
             flow.request = result
             self._append_chunk(flow, chunk)
             conn.active_flow_id = flow.flow_id
-            conn.flow_sequence += 1
             # Index by HTTP/2 stream_id for response correlation
             if stream_id > 0:
                 self._h2_stream_flows[(conn.conn_id, stream_id)] = flow.flow_id
@@ -1252,13 +1305,24 @@ class FlowCollector:
                         self._h2_stream_flows.pop(stream_key, None)
                     return self._flows[matched_flow_id]
 
-            # Fall back to active flow on this connection
+            # Fall back to the active flow on this connection — but ONLY while it
+            # is still ACTIVE. Once a flow has COMPLETED (e.g. a Content-Length
+            # response already finalized it), conn.active_flow_id still points at
+            # it; attaching a second response there would overwrite flow.response
+            # and be silently swallowed (_complete_flow no-ops on a non-ACTIVE
+            # flow, so no COMPLETED fires and the TapWriter never sees it). Mirror
+            # the request branch's `state == FlowState.ACTIVE` guard and let a
+            # post-completion response fall through to orphan-match / new-flow.
+            active = None
             if conn.active_flow_id and conn.active_flow_id in self._flows:
-                flow = self._flows[conn.active_flow_id]
-                self._attach_response(flow, result, chunk, event.timestamp, pending)
-                return flow
+                candidate = self._flows[conn.active_flow_id]
+                if candidate.state == FlowState.ACTIVE:
+                    active = candidate
+            if active is not None:
+                self._attach_response(active, result, chunk, event.timestamp, pending)
+                return active
             else:
-                # Response without request — try orphan index match
+                # Response without an active request flow — try orphan index match
                 matched = self._match_orphan_request(event)
                 if matched:
                     self._attach_response(matched, result, chunk, event.timestamp, pending)
@@ -1270,7 +1334,6 @@ class FlowCollector:
                 # flow_id whose CREATED they have not seen yet.
                 flow = self._make_flow(conn, event)
                 conn.active_flow_id = flow.flow_id
-                conn.flow_sequence += 1
                 pending.append((FlowEventType.CREATED, flow))
                 self._attach_response(flow, result, chunk, event.timestamp, pending)
                 return flow
@@ -1304,12 +1367,23 @@ class FlowCollector:
                 return flow
         flow = self._make_flow(conn, event)
         conn.active_flow_id = flow.flow_id
-        conn.flow_sequence += 1
         pending.append((FlowEventType.CREATED, flow))
         return flow
 
+    def _next_flow_sequence(self, conn_id: str) -> int:
+        """Allocate the next monotonic flow sequence for *conn_id*. Under lock.
+
+        Single id source for both :meth:`_make_flow` and
+        :meth:`add_synthetic_flow`. Monotonic and collector-owned (see
+        ``self._flow_seq``) so it never restarts at 0 on an idle-reset and the
+        two minting paths never collide on the shared ``conn_id:N`` namespace.
+        """
+        seq = self._flow_seq.get(conn_id, 0)
+        self._flow_seq[conn_id] = seq + 1
+        return seq
+
     def _make_flow(self, conn, event) -> Flow:
-        flow_id = f"{conn.conn_id}:{conn.flow_sequence}"
+        flow_id = f"{conn.conn_id}:{self._next_flow_sequence(conn.conn_id)}"
         flow = Flow(
             flow_id=flow_id,
             connection_id=conn.conn_id,
@@ -1405,7 +1479,10 @@ class _ConnectionState:
         self.conn_id = conn_id
         self.parser = None  # BaseParser instance
         self.active_flow_id: Optional[str] = None
-        self.flow_sequence: int = 0
+        # Flow-id sequencing lives on FlowCollector._flow_seq (keyed by conn_id),
+        # not here: a per-connection counter resets to 0 when this state object is
+        # rebuilt on idle-reset, which would re-mint an existing flow id and
+        # overwrite a completed flow. See FlowCollector._next_flow_sequence.
         self.last_activity: float = 0.0
         self.pending_chunks: list[FlowChunk] = []  # buffered before parser committed
         self.pending_bytes: int = 0  # total bytes in pending_chunks

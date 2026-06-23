@@ -3,7 +3,7 @@
  * x64 patterns are platform-agnostic; arm64 patterns vary by platform.
  */
 
-import { isAndroid, isiOS, isMacOS } from "../../util/process_infos.js";
+import { currentPlatformKey, normalizeArchKey } from "../../util/process_infos.js";
 
 export const CRONET_X64_PATTERNS = {
     primary:  "41 57 41 56 41 55 41 54 53 48 83 EC ?? 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84",
@@ -58,20 +58,6 @@ export function hasModulePatterns(jsonString: string, moduleName: string, fallba
     return false;
 }
 
-/** Current Frida platform mapped onto the keys used in the Schema-B pattern files. */
-function currentPlatformKey(): string {
-    if (isAndroid()) return "android";
-    if (isiOS()) return "ios";
-    if (isMacOS()) return "macos";
-    return Process.platform.toString(); // "linux", "windows"
-}
-
-/** Current Frida arch mapped onto the keys used in the pattern files ("ia32" -> "x86"). */
-function currentArchKey(): string {
-    const arch = Process.arch.toString();
-    return arch === "ia32" ? "x86" : arch;
-}
-
 /**
  * True when an action value carries at least one non-empty byte-pattern string.
  * Accepts the Schema-B `{primary, fallback, second_fallback?}` object as well as a
@@ -112,6 +98,6 @@ export function hasUsablePatternsFor(jsonString: string, moduleName: string, fal
     if (!modules) return false;
     const moduleEntry = modules[moduleName] ?? modules[fallbackName];
     if (!moduleEntry) return false;
-    const archEntry = moduleEntry?.[currentPlatformKey()]?.[currentArchKey()];
+    const archEntry = moduleEntry?.[currentPlatformKey()]?.[normalizeArchKey()];
     return isNonEmptyActionPattern(archEntry?.[actionType]);
 }

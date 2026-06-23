@@ -66,12 +66,10 @@ _MSGS_STATE_INFO = 0x04DEB57D       # msgs_state_info
 _MSG_DETAILED_INFO = 0x276D3EC6     # msg_detailed_info
 _MSG_NEW_DETAILED_INFO = 0x809DB6DF  # msg_new_detailed_info
 _RPC_ERROR = 0x2144CA19             # rpc_error: error_code:int, error_message:string
-_GZIP_PACKED_TAG = _GZIP_PACKED     # alias for the name table
 
 # --- RPC result inner types (stable enough to name) ------------------------ #
 # These let rpc_result name itself after the INNER result type.
 _CONFIG = 0x232D5905                # config (verify per layer; named "config")
-_USER_FULL_RESULT_HINT = 0x1F4661B9  # users.userFull-ish (schema-derived)
 _BOOL_TRUE = 0x997275B5
 _BOOL_FALSE = 0xBC799737
 
@@ -348,7 +346,7 @@ def _skip_input_peer(reader: _Reader) -> None:
     if ctor in _INPUT_PEER_FIXED_LEN:
         reader.skip(_INPUT_PEER_FIXED_LEN[ctor])
         return
-    if ctor == _INPUT_PEER_USER_FROM_MSG or ctor == _INPUT_PEER_CHANNEL_FROM_MSG:
+    if ctor in (_INPUT_PEER_USER_FROM_MSG, _INPUT_PEER_CHANNEL_FROM_MSG):
         _skip_input_peer(reader)   # peer:InputPeer
         reader.int32()             # msg_id:int
         reader.int64()             # user_id / channel_id:long
@@ -793,9 +791,9 @@ def _parse_user_tolerant(reader: _Reader, ctor: int) -> Optional[ParsedMtprotoMe
     # a trailing alnum/no-space token before the phone is the username. This
     # matches the spec's tolerant heuristic without trusting layer-versioned
     # flag bit positions.
+    # ``phone``, when set, was already captured separately above and is excluded
+    # from ``non_phone`` by the comprehension; the remaining tokens are name parts.
     non_phone = [s for s in strings if _classify_user_string(s) != "phone"]
-    if phone and strings and strings[-1] == phone:
-        pass  # phone already captured separately
     if len(non_phone) >= 1:
         first = non_phone[0]
     if len(non_phone) == 2:
@@ -848,6 +846,12 @@ def _mostly_printable(text: str) -> bool:
 # misaligned record can decode a wildly large count; cap it so the parse loop
 # can't spin on attacker-controlled input.
 _MAX_TL_COUNT = 100_000
+
+# Upper bound on the INFLATED size of a gzip_packed body. The packed bytes are
+# peer-supplied wire data, so an unbounded zlib.decompress() is a decompression
+# bomb: a few KB can expand to gigabytes and OOM the offline driver. 16 MiB is
+# far above any real Telegram TL payload while keeping a hostile record cheap.
+_MAX_GZIP_INFLATE = 16 * 1024 * 1024
 
 
 def _parse_typed_vector(
@@ -919,8 +923,17 @@ def _dispatch_object(
 
     if ctor == _GZIP_PACKED:
         packed = reader.tl_bytes()
+        # Bounded inflate: decompress at most _MAX_GZIP_INFLATE bytes. If the
+        # decompressor still has unconsumed input, the output would exceed the
+        # cap, so this is a (possibly malicious) oversized/bomb payload — reject
+        # rather than inflating it unbounded into memory.
         try:
-            inflated = zlib.decompress(packed)
+            dobj = zlib.decompressobj()
+            inflated = dobj.decompress(packed, _MAX_GZIP_INFLATE)
+            if dobj.unconsumed_tail:
+                raise _TLError(
+                    f"gzip_packed inflate exceeds {_MAX_GZIP_INFLATE} bytes"
+                )
         except zlib.error as exc:
             raise _TLError("gzip_packed inflate failed") from exc
         _parse_into(inflated, out, depth + 1)
@@ -984,7 +997,7 @@ def _dispatch_object(
     # the two and is flag-free, but the trailing Vectors of Chat are not safely
     # skippable. We SCAN for the embedded Vector<Update> and Vector<User> by
     # searching for vector constructors, parsing each tolerantly.
-    if ctor == _UPDATES or ctor == _UPDATES_COMBINED:
+    if ctor in (_UPDATES, _UPDATES_COMBINED):
         _scan_for_vectors(reader, out, depth + 1)
         return
 

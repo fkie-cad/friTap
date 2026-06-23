@@ -392,8 +392,9 @@ def test_stamp_reaches_all_flows_on_one_connection():
 
 
 def test_synthetic_flow_sequence_numbers_via_index():
-    """#8: add_synthetic_flow now derives its per-connection sequence from the
-    index length (O(1)) instead of an O(n) scan; numbering must be unchanged."""
+    """#8: add_synthetic_flow draws its per-connection sequence from the shared
+    monotonic allocator (FlowCollector._flow_seq); per-connection numbering must
+    stay 0,1,2,... and reset independently per distinct connection."""
     fc = FlowCollector()
     a = fc.add_synthetic_flow(src_addr=_IDX_SRC, src_port=51000,
                               dst_addr=_IDX_DST, dst_port=443)
@@ -429,4 +430,145 @@ def test_flow_index_consistent_across_create_and_orphan_merge():
 
     fc.flush()  # orphan merge removes the response-only flow
     assert len(fc._flows) == 1, "orphan merge should have collapsed the two flows"
+    _assert_index_mirrors_flows(fc)
+
+
+# ===========================================================================
+# Collector flow-attribution / flow-id bugs (code-review batch 2)
+#   C22 flow-id reuse on idle-reset · C24 synthetic/data id collision ·
+#   C23 second response swallowed · C25 orphan merge mis-attribution
+# ===========================================================================
+
+_REQUEST = b"GET /a HTTP/1.1\r\nHost: h\r\n\r\n"
+
+
+def test_idle_reset_does_not_reuse_flow_id():
+    """C22: after an idle-reset rebuilds the connection state, the next flow must
+    get a FRESH id — re-minting 'conn:0' would overwrite the already-completed
+    flow still held in _flows and double-index it. The flow-sequence counter
+    lives on the collector (survives the reset), not on the connection state."""
+    fc = FlowCollector()
+    fc.on_data(DatalogEvent(
+        data=_REQUEST, function="SSL_write", direction="write",
+        src_addr=_IDX_SRC, src_port=44001, dst_addr=_IDX_DST, dst_port=443,
+        timestamp=1000.0))
+    first_ids = list(fc._flows)
+    assert len(first_ids) == 1 and first_ids[0].endswith(":0")
+
+    # Same 4-tuple, but > IDLE_THRESHOLD (30s) later -> idle reset + fresh state.
+    fc.on_data(DatalogEvent(
+        data=_REQUEST, function="SSL_write", direction="write",
+        src_addr=_IDX_SRC, src_port=44001, dst_addr=_IDX_DST, dst_port=443,
+        timestamp=1000.0 + 31.0))
+
+    assert len(fc._flows) == 2, "reconnect overwrote the prior flow instead of minting a new id"
+    assert first_ids[0] in fc._flows, "the completed pre-reset flow was clobbered"
+    new_ids = [fid for fid in fc._flows if fid != first_ids[0]]
+    assert len(new_ids) == 1 and new_ids[0].endswith(":1")
+    _assert_index_mirrors_flows(fc)
+
+
+def test_synthetic_then_data_flow_same_connection_no_id_collision():
+    """C24: a synthetic flow and a data flow that resolve to the SAME connection
+    must get distinct ids. The old scheme (synthetic seq = len(_flow_index),
+    data seq = conn.flow_sequence) collided at 'conn:0', overwriting the
+    synthetic flow; both paths now share one monotonic allocator."""
+    fc = FlowCollector()
+    syn = fc.add_synthetic_flow(
+        src_addr=_IDX_SRC, src_port=55000, dst_addr=_IDX_DST, dst_port=22,
+        detected_protocol="ssh", transport="tcp")
+    assert syn.flow_id.endswith(":0")
+
+    # Precondition: a tcp data event on the same endpoints keys to syn's conn.
+    assert resolve_connection_key(
+        _IDX_SRC, 55000, _IDX_DST, 22, protocol="tcp") == syn.connection_id
+
+    fc.on_data(DatalogEvent(
+        data=_REQUEST, function="SSL_write", direction="write",
+        src_addr=_IDX_SRC, src_port=55000, dst_addr=_IDX_DST, dst_port=22,
+        protocol="tcp", timestamp=1000.0))
+
+    assert len(fc._flows) == 2, "data flow reused the synthetic flow's id"
+    assert syn.flow_id in fc._flows, "synthetic flow was overwritten by the data flow"
+    data_ids = [fid for fid in fc._flows if fid != syn.flow_id]
+    assert len(data_ids) == 1 and data_ids[0].endswith(":1")
+    _assert_index_mirrors_flows(fc)
+
+
+def test_second_complete_response_not_swallowed():
+    """C23: a second self-contained response on a connection whose active flow
+    has already COMPLETED must not be silently merged into that finished flow
+    (where _complete_flow no-ops and the TapWriter never sees it). It becomes
+    its own flow and emits its own COMPLETED."""
+    fc = FlowCollector()
+    events: list[tuple[str, str]] = []
+    fc.subscribe(lambda flow, et: events.append((et.value, flow.flow_id)))
+
+    resp = dict(data=_COMPLETE_RESPONSE, function="SSL_read", direction="read",
+                src_addr="10.0.0.9", src_port=53000,
+                dst_addr=_IDX_DST, dst_port=443)
+    fc.on_data(DatalogEvent(**resp, timestamp=1000.0))
+    fc.on_data(DatalogEvent(**resp, timestamp=1000.1))
+
+    completed_ids = {fid for et, fid in events if et == "completed"}
+    assert len(completed_ids) == 2, \
+        "the second response was swallowed into the already-completed flow"
+    assert len(fc._flows) == 2
+    _assert_index_mirrors_flows(fc)
+
+
+def _orphan_response(src_port, ts):
+    return DatalogEvent(
+        data=b"HTTP/1.1 204 No Content\r\n\r\n", function="SSL_read",
+        direction="read", src_addr=_IDX_SRC, src_port=src_port,
+        dst_addr=_IDX_DST, dst_port=443, timestamp=ts)
+
+
+def _orphan_request(src_port, ts, path=b"/a"):
+    return DatalogEvent(
+        data=b"GET " + path + b" HTTP/1.1\r\nHost: h\r\n\r\n",
+        function="SSL_write", direction="write", src_addr=_IDX_SRC,
+        src_port=src_port, dst_addr=_IDX_DST, dst_port=443, timestamp=ts)
+
+
+def test_orphan_merge_refuses_ambiguous_same_dst_concurrent_connections():
+    """C25: when several concurrent connections to the same host:port each have
+    a request-only flow, a response-only flow on yet another connection must NOT
+    be grafted onto an arbitrary one — the destination is ambiguous, so the
+    merge is refused (old dst-keyed 'first request wins' mis-attributed it)."""
+    fc = FlowCollector()
+    # Responses BEFORE requests so the live orphan path can't pre-match them.
+    fc.on_data(_orphan_response(40003, 1000.0))   # connC: response-only
+    fc.on_data(_orphan_request(40001, 1000.1))    # connA: request-only
+    fc.on_data(_orphan_request(40002, 1000.2, b"/b"))  # connB: request-only
+    assert len(fc._flows) == 3
+
+    fc.flush()
+
+    assert len(fc._flows) == 3, "an ambiguous same-dst response was wrongly merged"
+    reqs = [f for f in fc._flows.values() if f.request is not None]
+    assert reqs and all(f.response is None for f in reqs), \
+        "a request flow was given a response it does not own"
+    _assert_index_mirrors_flows(fc)
+
+
+def test_orphan_merge_prefers_same_connection_over_other_same_dst():
+    """C25: when a response-only flow shares a connection_id with one request-only
+    flow, it must merge with THAT one even though another connection to the same
+    host also has a request-only flow waiting."""
+    fc = FlowCollector()
+    fc.on_data(_orphan_response(40001, 1000.0))        # connA: response-only
+    fc.on_data(_orphan_request(40001, 1000.1))         # connA: request-only (same conn)
+    fc.on_data(_orphan_request(40002, 1000.2, b"/b"))  # connB: request-only (same dst)
+    conn_a = resolve_connection_key(_IDX_SRC, 40001, _IDX_DST, 443)
+    conn_b = resolve_connection_key(_IDX_SRC, 40002, _IDX_DST, 443)
+
+    fc.flush()
+
+    a_flows = [f for f in fc._flows.values() if f.connection_id == conn_a]
+    b_flows = [f for f in fc._flows.values() if f.connection_id == conn_b]
+    assert any(f.request is not None and f.response is not None for f in a_flows), \
+        "the response did not merge with its own connection's request"
+    assert all(f.response is None for f in b_flows), \
+        "the other connection's request was wrongly given the response"
     _assert_index_mirrors_flows(fc)

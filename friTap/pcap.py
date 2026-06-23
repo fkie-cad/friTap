@@ -772,7 +772,16 @@ class PCAP:
             # live in active_keylogs.
             active_keylogs = getattr(self, "active_keylogs", None) or {}
             if self.keylog_path:
-                manifest["keylog"] = str(self.keylog_path)
+                # Generic "keylog" = the TLS keylog (the SSLKEYLOGFILE a back-compat
+                # consumer feeds to tshark to strip TLS first). In a multi-protocol
+                # split capture (e.g. --protocol signal also emits TLS keys),
+                # active_keylogs carries a per-protocol "tls" entry — prefer it so
+                # this field is DETERMINISTICALLY the TLS split, not whichever
+                # KeylogOutputHandler happened to set self.keylog_path last (the
+                # protocol split would point a TLS consumer at the wrong keys and
+                # decrypt nothing). Single-protocol captures have no "tls" split and
+                # fall back to self.keylog_path unchanged.
+                manifest["keylog"] = str(active_keylogs.get("tls", self.keylog_path))
                 # Also record the keylog under the active protocol's offline
                 # decryptor field (its registry cli_dest, e.g. "mtproto_keylog" /
                 # "signal_keylog") so the manifest-driven offline pipeline routes

@@ -2,8 +2,9 @@
  * Pattern-based hooking strategy.
  *
  * Scans binary memory for known byte sequences to find function
- * addresses when symbols are stripped. Supports architecture-specific
- * patterns with primary/fallback chains.
+ * addresses when symbols are stripped. Patterns are resolved by OS
+ * layer first, then architecture (library → os → arch → function),
+ * with primary/fallback chains.
  *
  * Scanning is asynchronous (Frida's non-blocking Memory.scan) so the JS
  * thread can service a gracefulDetach RPC mid-scan — important for large
@@ -14,6 +15,7 @@
 
 import { HookingStrategy, HookResult } from "../hooking_pipeline";
 import { devlog, _isShuttingDownNow } from "../../util/log.js";
+import { currentPlatformKey, normalizeArchKey } from "../../util/process_infos.js";
 
 export class PatternStrategy implements HookingStrategy {
     name = "pattern";
@@ -78,11 +80,19 @@ export class PatternStrategy implements HookingStrategy {
                 return { success: false, strategy: this.name, hookedFunctions: hooked, errors, resolvedAddresses: new Map() };
             }
 
-            const arch = Process.arch;
-            const archPatterns = modulePatterns[arch] || modulePatterns["default"];
+            const platform = currentPlatformKey();
+            const osPatterns = modulePatterns[platform];
+
+            if (!osPatterns) {
+                errors.push(`No patterns for OS ${platform} in ${moduleName}`);
+                return { success: false, strategy: this.name, hookedFunctions: hooked, errors, resolvedAddresses: new Map() };
+            }
+
+            const arch = normalizeArchKey(Process.arch);
+            const archPatterns = osPatterns[arch] || osPatterns["default"];
 
             if (!archPatterns) {
-                errors.push(`No patterns for architecture ${arch}`);
+                errors.push(`No patterns for architecture ${arch} (OS ${platform}) in ${moduleName}`);
                 return { success: false, strategy: this.name, hookedFunctions: hooked, errors, resolvedAddresses: new Map() };
             }
 

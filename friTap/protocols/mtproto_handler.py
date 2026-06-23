@@ -86,3 +86,37 @@ class MTProtoHandler(ProtocolHandler):
     @property
     def supported_backends(self) -> dict[str, str]:
         return {BackendName.FRIDA: BackendSupport.FULL}
+
+    def validate_cli_intent(self, parsed, parser, logger) -> None:
+        """MTProto needs the modern agent; nudge spawn and warn on missing backend.
+
+        Moved here from the generic CLI parser so the public core stays
+        protocol-agnostic. ``--protocol mtproto`` auto-enables the modern path
+        (legacy has no MTProto support); attach mode misses the obfuscated-
+        transport init bytes so we nudge toward spawn; and we warn early if the
+        offline-decrypt backend is missing.
+        """
+        if not getattr(parsed, "use_modern", False):
+            logger.info("[mtproto] --protocol mtproto auto-enables use_modern=true (legacy path has no MTProto support)")
+            parsed.use_modern = True
+        # MTProto's obfuscated transport can only be decrypted offline when each
+        # TCP stream is captured from its first 64 bytes. Attaching to an already
+        # running Telegram misses that init block on connections opened earlier
+        # (they come back "degraded" and decrypt to nothing), so nudge toward spawn.
+        if not getattr(parsed, "spawn", False):
+            logger.info(
+                "[mtproto] attach mode: connections opened before capture can't be "
+                "decrypted (obfuscated-transport init bytes are missed). Use -s (spawn) "
+                "so every connection is captured from the start, or force-stop + relaunch "
+                "the app before attaching."
+            )
+        # Live capture only needs to extract keys/plaintext (no Python-side crypto),
+        # but offline decryption of the resulting pcap does. Nudge the user early so
+        # a later `--mtproto-keylog` run does not surprise them.
+        from ..offline.mtproto import MTPROTO_DEPENDENCY_HINT, mtproto_backend_available
+        if not mtproto_backend_available():
+            logger.warning(
+                "[mtproto] %s  (live key capture works without it; that backend is "
+                "needed to decrypt the captured pcap offline.)",
+                MTPROTO_DEPENDENCY_HINT,
+            )

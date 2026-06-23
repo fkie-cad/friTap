@@ -557,6 +557,14 @@ if TEXTUAL_AVAILABLE:
                 self._on_decrypt_done, args["tap_path"], result
             )
 
+        @staticmethod
+        def _degraded_stream_count(result) -> int:
+            """Streams skipped because capture began mid-connection (MTProto+Signal)."""
+            return (
+                getattr(result, "mtproto_streams_degraded", 0)
+                + getattr(result, "signal_streams_degraded", 0)
+            )
+
         def _on_decrypt_done(self, tap_path: str, result) -> None:
             """UI-thread handler: load the produced .tap into the flow view."""
             import os
@@ -574,10 +582,7 @@ if TEXTUAL_AVAILABLE:
                 # transports (MTProto/Signal). Warn so the user knows messages on
                 # those streams are absent and how to recover them — otherwise the
                 # "Decrypted N flows" success message hides the gap.
-                degraded = (
-                    getattr(result, "mtproto_streams_degraded", 0)
-                    + getattr(result, "signal_streams_degraded", 0)
-                )
+                degraded = self._degraded_stream_count(result)
                 if degraded > 0:
                     self.app.notify(
                         f"{degraded} stream{'s' if degraded != 1 else ''} started "
@@ -594,10 +599,7 @@ if TEXTUAL_AVAILABLE:
             # for non-TLS protocols whose obfuscated transport needs the
             # connection-start bytes; undecryptable records mean the matching key
             # was not in the keylog.
-            degraded = (
-                getattr(result, "mtproto_streams_degraded", 0)
-                + getattr(result, "signal_streams_degraded", 0)
-            )
+            degraded = self._degraded_stream_count(result)
             undecryptable = (
                 getattr(result, "mtproto_records_undecryptable", 0)
                 + getattr(result, "signal_records_undecryptable", 0)
@@ -627,13 +629,6 @@ if TEXTUAL_AVAILABLE:
         def _on_decrypt_error(self, message: str) -> None:
             """UI-thread handler: report a conversion failure."""
             self.app.notify(f"Decrypt failed: {message}", severity="error")
-
-        def _all_flows(self) -> list:
-            """Every flow in the current view (replay file or live collector)."""
-            if self._replay_ctrl is not None:
-                return self._replay_ctrl.get_flows()
-            collector = self._capture.flow_collector
-            return collector.get_flows() if collector else []
 
         @staticmethod
         def _signal_server_endpoint(flow):

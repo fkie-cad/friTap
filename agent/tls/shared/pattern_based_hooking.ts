@@ -1,5 +1,5 @@
 import { devlog, devlog_error, devlog_debug, log, devlog_info } from "../../util/log.js";
-import { isAndroid, isiOS,isMacOS } from "../../util/process_infos.js"
+import { currentPlatformKey, normalizeArchKey } from "../../util/process_infos.js"
 import { isFunctionPrologueWord } from "../../shared/arm64.js";
 
 const IS_ARM64 = Process.arch === "arm64";
@@ -115,11 +115,8 @@ export { hasModulePatterns, hasUsablePatternsFor } from "./cronet_patterns.js";
 export function get_CPU_specific_pattern(
     default_pattern: { [arch: string]: { primary: string; fallback: string; second_fallback?: string } }
 ): { primary: string; fallback: string; second_fallback?: string } | null {
-    let arch = Process.arch.toString(); // Get architecture, e.g., "x64", "arm64"
+    const arch = normalizeArchKey(Process.arch); // Get architecture, e.g., "x64", "arm64"
 
-    if (arch === "ia32") {
-        arch = "x86";
-    }
     devlog("Trying Pattern: " + JSON.stringify(default_pattern[arch]));
 
     if (default_pattern[arch]) {
@@ -328,13 +325,9 @@ export class PatternBasedHooking {
     ): void {
         this.loadPatternsFromJSON(jsonContent);
 
-        let platform = Process.platform.toString(); // e.g., "linux", "android"
-        if (isAndroid()) platform = "android";
-        else if (isiOS()) platform = "ios";
-        else if (isMacOS()) platform = "macos";
+        const platform = currentPlatformKey(); // e.g., "linux", "android"
 
-        let arch = Process.arch.toString(); // e.g., "x64", "arm64"
-        if (arch === "ia32") arch = "x86";
+        const arch = normalizeArchKey(Process.arch); // e.g., "x64", "arm64"
 
         const regex = this.createRegexFromModule(module_name);
 
@@ -920,18 +913,8 @@ export class PatternBasedHooking {
         // Load patterns from the JSON file
         this.loadPatternsFromJSON(jsonContent);
 
-        let platform = Process.platform.toString(); // e.g., linux, android
-        if (isAndroid()){
-            platform = "android";
-        }else if(isiOS()){
-            platform = "ios";
-        }else if(isMacOS()){
-            platform = "macos";
-        }
-        let arch = Process.arch.toString(); // e.g., x64, arm64
-        if(arch == "ia32"){
-            arch = "x86"
-        }
+        const platform = currentPlatformKey(); // e.g., linux, android
+        const arch = normalizeArchKey(Process.arch); // e.g., x64, arm64
         const regex = this.createRegexFromModule(module_name);
 
         // Access the relevant pattern for the module based on platform and architecture

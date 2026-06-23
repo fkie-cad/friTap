@@ -30,7 +30,7 @@ from friTap.flow.models import Flow
 def _get_fritap_version() -> str:
     """Get the friTap version string, with fallback."""
     try:
-        from friTap.ssl_logger import VERSION
+        from friTap import __version__ as VERSION
         return VERSION
     except Exception:
         return "unknown"

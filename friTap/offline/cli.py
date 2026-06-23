@@ -130,7 +130,7 @@ def merge_manifest(args: argparse.Namespace, manifest: dict) -> dict:
 
     tls_ports = list(args.tls_ports) or list(manifest.get("tls_ports", []))
     quic_ports = list(args.quic_ports) or list(manifest.get("quic_ports", []))
-    keylog = args.keylog if args.keylog else manifest.get("keylog") or None
+    keylog = args.keylog or manifest.get("keylog") or None
 
     # Per-protocol keylogs are registry-driven: each entry's dest (CLI value or
     # manifest fallback) feeds the generic protocol_keylogs map. Back-compat named

@@ -24,6 +24,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# shellcheck source=lib.sh
+. "$SCRIPT_DIR/lib.sh"
+
 HASHES="$SCRIPT_DIR/denylist.hashes"
 TOKENS_TOOL="$SCRIPT_DIR/denylist_tokens.py"
 PRIVATE_TXT="$REPO_ROOT/private.txt"
@@ -51,15 +55,8 @@ if [ -z "$TREE" ]; then
     CLEANUP_TMP="$(mktemp -d)"
     TREE="$CLEANUP_TMP/public_tree"
     mkdir -p "$TREE"
-    ( cd "$REPO_ROOT" && git ls-files --cached --others --exclude-standard -z ) \
-      | rsync -a --files-from=- --from0 "$REPO_ROOT/" "$TREE/"
-    shopt -s nullglob
-    while IFS= read -r raw || [ -n "$raw" ]; do
-      line="${raw%%#*}"; line="${line#"${line%%[![:space:]]*}"}"; line="${line%"${line##*[![:space:]]}"}"
-      [ -z "$line" ] && continue
-      for m in $TREE/$line; do rm -rf "$m"; done
-    done < "$PRIVATE_TXT"
-    shopt -u nullglob
+    fritap_assemble_public_tree "$REPO_ROOT" "$TREE"
+    fritap_strip_private_paths "$TREE" "$PRIVATE_TXT"
     echo "[check] built stripped public tree at $TREE"
   else
     # Already-published public repo (no private.txt): check the tree as-is.

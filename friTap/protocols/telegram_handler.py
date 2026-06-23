@@ -123,3 +123,48 @@ class TelegramHandler(ProtocolHandler):
     @property
     def supported_backends(self) -> dict[str, str]:
         return {BackendName.FRIDA: BackendSupport.FULL}
+
+    def validate_cli_intent(self, parsed, parser, logger) -> None:
+        """Telegram needs the modern agent and an explicit capture intent.
+
+        Moved here from the generic CLI parser so the public core stays
+        protocol-agnostic. ``--protocol telegram`` auto-enables the modern path
+        (legacy has no Telegram support); attach mode misses the obfuscated-
+        transport init bytes so we nudge toward spawn; a bare invocation that
+        would produce no output is rejected; and we warn early if the
+        offline-decrypt backend is missing.
+        """
+        if not getattr(parsed, "use_modern", False):
+            logger.info("[telegram] --protocol telegram auto-enables use_modern=true (legacy path has no Telegram support)")
+            parsed.use_modern = True
+        # Same byte-0 caveat as mtproto (cloud transport is the obfuscated MTProto):
+        # attaching to a running Telegram misses the init block on already-open
+        # connections, so those streams can't be decrypted offline. Nudge to spawn.
+        if not getattr(parsed, "spawn", False):
+            logger.info(
+                "[telegram] attach mode: connections opened before capture can't be "
+                "decrypted (obfuscated-transport init bytes are missed). Use -s (spawn) "
+                "so every connection is captured from the start, or force-stop + relaunch "
+                "the app before attaching."
+            )
+        # Require an explicit capture intent: -k extracts the combined Telegram
+        # keys for offline decrypt, -p captures live plaintext, -f captures a raw
+        # pcap for offline decrypt. Bare `--protocol telegram` would install hooks
+        # that produce no output, so reject it with an actionable message.
+        if not (parsed.keylog or parsed.pcap or parsed.full_capture):
+            parser.error(
+                "--protocol telegram requires a capture intent: -k (extract the "
+                "combined MTProto cloud + Secret-Chat E2E keys for offline "
+                "decryption) and/or -p (capture live plaintext); -f -p -k captures "
+                "a raw pcap plus keys for offline decryption."
+            )
+        # Live capture only extracts keys/plaintext (no Python-side crypto), but
+        # offline decryption of the resulting pcap does. Nudge the user early so
+        # a later `--telegram-keylog` run does not surprise them.
+        from ..offline.mtproto import MTPROTO_DEPENDENCY_HINT, mtproto_backend_available
+        if not mtproto_backend_available():
+            logger.warning(
+                "[telegram] %s  (live key capture works without it; the extra is "
+                "needed to decrypt the captured pcap offline.)",
+                MTPROTO_DEPENDENCY_HINT,
+            )

@@ -11,10 +11,21 @@ import pytest
 import friTap.offline.mtproto as mt
 
 
+def _simulate_missing_backend_and_tshark(monkeypatch):
+    """Backend "missing" + find_tshark raising, so the CLI hint prints before
+    any tshark work is attempted (the two CLI tests share this setup)."""
+    from friTap.offline import cli
+
+    monkeypatch.setattr(mt, "mtproto_backend_available", lambda: False)
+    monkeypatch.setattr(
+        cli, "find_tshark",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no tshark")),
+    )
+    return cli
+
+
 def test_backend_available_true_in_ci():
     # cryptography is a test/runtime dep here.
-    import pytest
-
     pytest.importorskip("cryptography")
     assert mt.mtproto_backend_available() is True
 
@@ -29,12 +40,7 @@ def test_backend_unavailable_when_probe_fails(monkeypatch):
 
 
 def test_offline_cli_prints_hint_when_backend_missing(tmp_path, monkeypatch, capsys):
-    from friTap.offline import cli
-
-    # Backend "missing".
-    monkeypatch.setattr(mt, "mtproto_backend_available", lambda: False)
-    # Stop before tshark work (the hint prints earlier); avoid needing tshark.
-    monkeypatch.setattr(cli, "find_tshark", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no tshark")))
+    cli = _simulate_missing_backend_and_tshark(monkeypatch)
 
     pcap = tmp_path / "cap.pcapng"
     pcap.write_bytes(b"\x00" * 8)  # isfile() true; content irrelevant (we bail at tshark)
@@ -51,10 +57,7 @@ def test_offline_cli_prints_hint_when_backend_missing(tmp_path, monkeypatch, cap
 
 
 def test_offline_cli_no_hint_without_mtproto_keylog(tmp_path, monkeypatch, capsys):
-    from friTap.offline import cli
-
-    monkeypatch.setattr(mt, "mtproto_backend_available", lambda: False)
-    monkeypatch.setattr(cli, "find_tshark", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no tshark")))
+    cli = _simulate_missing_backend_and_tshark(monkeypatch)
     pcap = tmp_path / "cap.pcapng"
     pcap.write_bytes(b"\x00" * 8)
 
@@ -96,8 +99,6 @@ def test_transport_ctr_raises_clean_error_without_cryptography(monkeypatch):
 
 
 def test_tui_protocol_modal_lists_mtproto():
-    import pytest
-
     pytest.importorskip("textual")
     from friTap.tui.modals import protocol_modal
 

@@ -9,6 +9,7 @@ import { log, devlog, devlog_error } from "../../util/log.js";
 import { pcap_enabled, keylog_enabled } from "../../fritap_agent.js";
 import { quicConnectionTracker, buildQuicMessage, QuicConnectionInfo } from "../shared/quic_connection_tracker.js";
 import { readHexFromPointer } from "../../tls/decoders/hex_utils.js";
+import { readSockaddrFamily } from "../../shared/shared_functions.js";
 
 /** Mutable ref to resolved NativeFunctions, shared by ExtraHookDef closures. */
 interface ResolvedRef {
@@ -30,7 +31,10 @@ function parseSockaddr(ptr: NativePointer, len: number): { addr: string | number
     if (ptr.isNull() || len < 4) {
         return { addr: 0, port: 0, family: "AF_INET" };
     }
-    const family = ptr.readU16();
+    // Real struct sockaddr* arg from quiche_connect/accept; darwin-aware read
+    // (BSD sa_len@0, AF_INET6 30->10). Offsets @2/@4/@8 below are identical
+    // across BSD/Linux, so only the family read needs platform handling.
+    const family = readSockaddrFamily(ptr, true);
     if (family === 2 && len >= 16) {
         // AF_INET: { u16 family, u16 port(network), u8[4] addr(network) }
         const port = ptr.add(2).readU16();

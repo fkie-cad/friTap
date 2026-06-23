@@ -243,21 +243,25 @@ function emitTelegramPlaintext(
 function extractIncomingText(obj: any): any {
     try {
         if (obj === null || obj === undefined) return null;
-        let candidate = obj;
-        // If it is the layer wrapper, descend into its `message` field which
-        // carries the DecryptedMessage.
-        try {
-            const layerMsg = obj[FIELDS.MESSAGE];
-            if (layerMsg !== null && layerMsg !== undefined && layerMsg.value !== undefined && layerMsg.value !== null) {
-                candidate = layerMsg.value;
-            }
-        } catch (_e) { /* not a layer wrapper — fall through to direct read */ }
-
-        // candidate should now be a DecryptedMessage carrying a `message` String.
-        const textField = candidate[FIELDS.MESSAGE];
-        if (textField === null || textField === undefined) return null;
-        const value = textField.value;
+        // Follow the `.message.value` chain to the text String. The object is
+        // either a TL_decryptedMessageLayer wrapper (one extra hop: its
+        // message.value is the DecryptedMessage, whose message.value is the text)
+        // or a bare DecryptedMessage (its message.value IS the text). Read the
+        // first hop, then descend ONE more level ONLY when that value is itself a
+        // message-bearing object (the wrapper case). The previous code descended
+        // unconditionally whenever obj.message existed, which for a bare
+        // DecryptedMessage turned the text String into the candidate and then
+        // read candidate.message -> undefined, silently dropping inbound text.
+        const first = obj[FIELDS.MESSAGE];
+        if (first === null || first === undefined) return null;
+        let value = first.value;
         if (value === null || value === undefined) return null;
+        try {
+            const nested = value[FIELDS.MESSAGE];
+            if (nested !== null && nested !== undefined && nested.value !== undefined && nested.value !== null) {
+                value = nested.value;  // wrapper case: descend to the inner text String
+            }
+        } catch (_e) { /* `value` is already the text String — keep it */ }
         return value;
     } catch (e) {
         devlog(`[telegram_java] incoming text extract error: ${e}`);

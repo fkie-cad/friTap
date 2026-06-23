@@ -14,9 +14,10 @@
  * require("fritap_agent"), which would run the top-level install.
  */
 import { _isShuttingDownNow, devlog, log } from "../../util/log.js";
+import { toHexString } from "../../util/hex.js";
 import { sendKeyMaterial, keylog_enabled } from "../shared_structures.js";
 import {
-    ScanRegionSpec, ScanCandidate, collectScanProviders,
+    ScanRegionSpec, ScanCandidate, ScanProvider, collectScanProviders,
 } from "./scan_extension.js";
 import {
     OwnedRange, buildAgentOwnedRanges, isScanSafeRange,
@@ -39,11 +40,6 @@ function yieldToLoop(): Promise<void> {
     return new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
-function toHex(bytes: number[]): string {
-    let s = "";
-    for (const b of bytes) s += (b < 16 ? "0" : "") + b.toString(16);
-    return s;
-}
 
 /**
  * Parse the public --scan-keys-region value into region specs:
@@ -140,7 +136,20 @@ async function scanRange(
 
         for (let off = 0; off + WINDOW_LEN <= chunkLen; off += SCAN_STEP) {
             const cs = scoreCandidate(buf, off);
-            if (cs.score <= 0 || cs.signals.length < 2) continue; // entropy-only → skip
+            // Keep every window that clears the entropy gate (scoreCandidate
+            // returns score 0 below it). We deliberately do NOT require a
+            // structural signal here: this is a GENERIC scanner whose whole job
+            // is to surface plausible-width high-entropy windows so providers can
+            // classify them — e.g. the Signal binding tags structureless 32-byte
+            // keys (no AES schedule / x25519 clamp) via candidate.length === 32.
+            // Gating those out would blind the protocol scanners. Discrimination
+            // happens downstream: per-region score ranking (rankAndDedup, AES/
+            // x25519 score far above bare entropy) plus a provider's own region
+            // narrowing keep the bounded output meaningful.
+            // (A prior `cs.signals.length < 2` "corroboration" guard here was
+            // dead — secret_width fires on every plausible-width window, so it
+            // never skipped anything — and making it real would break the above.)
+            if (cs.score <= 0) continue;
             const len = Math.min(Math.max(cs.length, EMIT_BYTES), buf.length - off);
             const bytes: number[] = [];
             for (let i = 0; i < len; i++) bytes.push(buf[off + i]);
@@ -224,12 +233,14 @@ export async function maybeRunRegionScan(extensions: Record<string, any>): Promi
     const ranked = rankAndDedup(all, MAX_EMIT);
     log(`[scan] scanned ${budget.scanned} bytes; emitting ${ranked.length} candidate(s).`);
     for (const c of ranked) {
-        emitCandidate(c, extensions);
+        emitCandidate(c, extensions, providers);
     }
 }
 
 /** Emit one candidate: always the public scan_candidate, plus any private classifier. */
-function emitCandidate(c: ScanCandidate, extensions: Record<string, any>): void {
+function emitCandidate(
+    c: ScanCandidate, extensions: Record<string, any>, providers: ScanProvider[],
+): void {
     sendKeyMaterial({
         contentType: "private_key_material",
         classifier: "scan_candidate",
@@ -238,11 +249,11 @@ function emitCandidate(c: ScanCandidate, extensions: Record<string, any>): void 
         region: c.region,
         offset: c.offset,
         length: c.length,
-        bytes: toHex(c.bytes),
+        bytes: toHexString(c.bytes),
     });
     // Let any registered provider claim the candidate for its own (private)
     // confirmation path. Additive — never replaces the scan_candidate emission.
-    for (const p of collectScanProviders()) {
+    for (const p of providers) {
         try {
             const claim = p.classify ? p.classify(c, extensions) : null;
             if (claim && claim.classifier) {
@@ -252,7 +263,7 @@ function emitCandidate(c: ScanCandidate, extensions: Record<string, any>): void 
                     region: c.region,
                     offset: c.offset,
                     length: c.length,
-                    bytes: toHex(c.bytes),
+                    bytes: toHexString(c.bytes),
                     ...(claim.fields ?? {}),
                 });
             }

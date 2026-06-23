@@ -12,9 +12,8 @@ import { log } from "./log.js";
  * TLS libraries load; PairIP observes that modified linker prologue and tears
  * the process down with a SIGSEGV (see fkie-cad/friTap#64).
  *
- * Plain `frida -U -f` with no script patches no code and survives, which is why
- * the crash is specific to a hooking tool like friTap. There is no in-tool
- * bypass: capturing from a PairIP-protected app requires neutralizing PairIP
+ * There is no in-tool bypass: 
+ * Capturing from a PairIP-protected app requires neutralizing PairIP
  * first, which is out of scope. The most useful thing friTap can do is
  *   1. warn the user clearly *before* the likely crash, and
  *   2. never hand such a library to a Memory.scan / hook executor itself.

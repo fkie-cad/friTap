@@ -190,6 +190,49 @@ class CaptureWizard:
 
         self._screen.app.push_screen(CaptureSelectModal(), callback=_on_result)
 
+    # Protocols whose offline decryption needs an optional crypto backend. Each
+    # maps to (offline module, availability fn, hint constant, notify title,
+    # import_optional). mtproto and telegram share the MTProto backend.
+    # ``import_optional`` is True only for components that may be stripped from a
+    # build (signal): a missing module is then swallowed and surfaces no hint.
+    # Live key capture works without any of these; this only warns about offline
+    # pcap decryption.
+    _OFFLINE_BACKEND_WARNINGS = {
+        "mtproto": ("friTap.offline.mtproto", "mtproto_backend_available",
+                    "MTPROTO_DEPENDENCY_HINT", "MTProto dependency missing", False),
+        "telegram": ("friTap.offline.mtproto", "mtproto_backend_available",
+                     "MTPROTO_DEPENDENCY_HINT", "Telegram dependency missing", False),
+        "signal": ("friTap.offline.signal", "signal_backend_available",
+                   "SIGNAL_DEPENDENCY_HINT", "Signal dependency missing", True),
+    }
+
+    def _warn_if_offline_backend_missing(self, protocol: str) -> None:
+        """Warn (activity log + toast) if a protocol's offline backend is absent.
+
+        No-op for protocols without an optional backend. For an optional build
+        component (see ``import_optional``) a missing module surfaces no hint —
+        matches MainScreen._warn_if_backend_missing's guarding.
+        """
+        spec = self._OFFLINE_BACKEND_WARNINGS.get(protocol)
+        if spec is None:
+            return
+        module_name, available_fn, hint_name, title, import_optional = spec
+        import importlib
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            if import_optional:
+                return
+            raise
+        hint = getattr(module, hint_name)
+        if getattr(module, available_fn)():
+            return
+        self._screen._get_activity_log().log_warning(hint)
+        try:
+            self._screen.app.notify(hint, title=title, severity="warning")
+        except Exception:
+            pass
+
     def _step_5b_protocol(self) -> None:
         """Step 5b: Select protocol."""
         from .modals.protocol_modal import ProtocolSelectModal
@@ -203,62 +246,10 @@ class CaptureWizard:
             state.protocol = protocol
             if protocol != "tls":
                 self._screen._get_activity_log().log_info(f"Protocol: {protocol.upper()}")
-            # Telegram/MTProto: offline decryption of the captured pcap needs the
-            # optional crypto backend. Warn now if it is missing (live key capture
-            # still works without it).
-            if protocol == "mtproto":
-                from friTap.offline.mtproto import (
-                    MTPROTO_DEPENDENCY_HINT,
-                    mtproto_backend_available,
-                )
-                if not mtproto_backend_available():
-                    self._screen._get_activity_log().log_warning(MTPROTO_DEPENDENCY_HINT)
-                    try:
-                        self._screen.app.notify(
-                            MTPROTO_DEPENDENCY_HINT,
-                            title="MTProto dependency missing",
-                            severity="warning",
-                        )
-                    except Exception:
-                        pass
-            # Telegram (combined cloud + Secret-Chat E2E) shares the MTProto
-            # offline crypto backend; warn the same way if it is missing.
-            if protocol == "telegram":
-                from friTap.offline.mtproto import (
-                    MTPROTO_DEPENDENCY_HINT,
-                    mtproto_backend_available,
-                )
-                if not mtproto_backend_available():
-                    self._screen._get_activity_log().log_warning(MTPROTO_DEPENDENCY_HINT)
-                    try:
-                        self._screen.app.notify(
-                            MTPROTO_DEPENDENCY_HINT,
-                            title="Telegram dependency missing",
-                            severity="warning",
-                        )
-                    except Exception:
-                        pass
-            if protocol == "signal":
-                try:
-                    from friTap.offline.signal import (
-                        SIGNAL_DEPENDENCY_HINT,
-                        signal_backend_available,
-                    )
-                    if not signal_backend_available():
-                        self._screen._get_activity_log().log_warning(SIGNAL_DEPENDENCY_HINT)
-                        try:
-                            self._screen.app.notify(
-                                SIGNAL_DEPENDENCY_HINT,
-                                title="Signal dependency missing",
-                                severity="warning",
-                            )
-                        except Exception:
-                            pass
-                except ImportError:
-                    # Signal decode is an optional build component; when it is
-                    # absent there is no backend hint to surface — skip quietly
-                    # (matches MainScreen._warn_if_backend_missing's guarding).
-                    pass
+            # Offline decryption of the captured pcap may need an optional crypto
+            # backend (MTProto/Telegram/Signal). Warn now if it is missing; live
+            # key capture still works without it.
+            self._warn_if_offline_backend_missing(protocol)
             # Keys-only mode skips encapsulated protocols and view mode
             if self._capture_mode_id == "keys":
                 self._step_6_configure(self._capture_mode_id)

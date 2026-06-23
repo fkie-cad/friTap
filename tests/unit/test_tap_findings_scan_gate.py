@@ -62,6 +62,19 @@ def _write_tap(path: str, *, with_findings: bool) -> None:
     writer.close()
 
 
+def _clear_header_flags(path: str, mask: int) -> None:
+    """Clear the given header flag bits in-place to force a reader code path.
+
+    ``flags`` is a u16 at header offset 6 (after magic(4)+version(2)); these
+    tests only touch the low byte, so clearing ``raw[6] & ~mask`` is sufficient
+    to drop FLAG_HAS_INDEX / FLAG_HAS_FINDINGS and exercise the linear-scan and
+    findings-scan fallbacks."""
+    raw = bytearray(open(path, "rb").read())
+    raw[6] = raw[6] & ~mask
+    with open(path, "wb") as fh:
+        fh.write(bytes(raw))
+
+
 # ---------------------------------------------------------------------------
 # (a) Correctness: a file WITH findings still returns them after the change.
 # ---------------------------------------------------------------------------
@@ -143,10 +156,7 @@ def test_linear_scan_records_finding_offsets(tmp_path):
 
     # Simulate a partial capture: clear FLAG_HAS_INDEX so the reader takes the
     # linear-scan path instead of the footer path.
-    raw = bytearray((tmp_path / "partial.tap").read_bytes())
-    # flags is a u16 at header offset 6 (after magic(4)+version(2)).
-    raw[6] = raw[6] & ~(FLAG_HAS_INDEX | FLAG_HAS_FINDINGS)
-    (tmp_path / "partial.tap").write_bytes(bytes(raw))
+    _clear_header_flags(tap_file, FLAG_HAS_INDEX | FLAG_HAS_FINDINGS)
 
     reader = TapReader(tap_file)
     reader.open()
@@ -166,9 +176,7 @@ def test_linear_scan_findings_free_sets_false(tmp_path):
     tap_file = str(tmp_path / "partial_clean.tap")
     _write_tap(tap_file, with_findings=False)
 
-    raw = bytearray((tmp_path / "partial_clean.tap").read_bytes())
-    raw[6] = raw[6] & ~FLAG_HAS_INDEX
-    (tmp_path / "partial_clean.tap").write_bytes(bytes(raw))
+    _clear_header_flags(tap_file, FLAG_HAS_INDEX)
 
     reader = TapReader(tap_file)
     reader.open()
@@ -265,9 +273,7 @@ def test_shared_iterator_roundtrip_with_findings(tmp_path):
 
     # Force the linear-scan + findings-scan fallback paths (both consume the
     # shared _iter_records) by clearing the index/findings header flags.
-    raw = bytearray((tmp_path / "rt_with.tap").read_bytes())
-    raw[6] = raw[6] & ~(FLAG_HAS_INDEX | FLAG_HAS_FINDINGS)
-    (tmp_path / "rt_with.tap").write_bytes(bytes(raw))
+    _clear_header_flags(tap_file, FLAG_HAS_INDEX | FLAG_HAS_FINDINGS)
 
     reader = TapReader(tap_file)
     reader.open()
@@ -292,9 +298,7 @@ def test_shared_iterator_roundtrip_with_findings_footer_fallback(tmp_path):
     tap_file = str(tmp_path / "rt_fallback.tap")
     _write_tap(tap_file, with_findings=True)
 
-    raw = bytearray((tmp_path / "rt_fallback.tap").read_bytes())
-    raw[6] = raw[6] & ~FLAG_HAS_FINDINGS  # keep index, drop findings flag
-    (tmp_path / "rt_fallback.tap").write_bytes(bytes(raw))
+    _clear_header_flags(tap_file, FLAG_HAS_FINDINGS)  # keep index, drop findings flag
 
     reader = TapReader(tap_file)
     reader.open()
@@ -319,9 +323,7 @@ def test_shared_iterator_roundtrip_findings_free(tmp_path):
     tap_file = str(tmp_path / "rt_clean.tap")
     _write_tap(tap_file, with_findings=False)
 
-    raw = bytearray((tmp_path / "rt_clean.tap").read_bytes())
-    raw[6] = raw[6] & ~FLAG_HAS_INDEX
-    (tmp_path / "rt_clean.tap").write_bytes(bytes(raw))
+    _clear_header_flags(tap_file, FLAG_HAS_INDEX)
 
     reader = TapReader(tap_file)
     reader.open()

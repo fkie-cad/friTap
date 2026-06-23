@@ -134,8 +134,10 @@ function protocolMatches(hookProtocol: string, requested: string): boolean {
          if (cached) return cached;
          let result = this._hooks.filter(h => h.platform === platform);
          if (protocol) {
-             result = result.filter(h => protocolMatches(h.protocol, protocol));
-             result = result.filter(h => !(h.excludeProtocols && h.excludeProtocols.includes(protocol)));
+             result = result.filter(h =>
+                 protocolMatches(h.protocol, protocol) &&
+                 !h.excludeProtocols?.includes(protocol)
+             );
          }
          result = result.sort((a, b) => b.priority - a.priority);
          this._cache.set(key, result);

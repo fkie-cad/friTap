@@ -32,6 +32,9 @@ done
 SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" >/dev/null 2>&1 && pwd)"
 REPO_ROOT="$(cd -P "$SCRIPT_DIR/.." >/dev/null 2>&1 && pwd)"
 
+# shellcheck source=lib.sh
+. "$SCRIPT_DIR/lib.sh"
+
 PRIVATE_TXT="$REPO_ROOT/private.txt"
 PRIVATE_TERMS="$REPO_ROOT/scripts/private_terms.txt"
 
@@ -89,8 +92,7 @@ echo "--- Step 2: copying repo into throwaway public tree ---"
 # .pytest_cache, research scratch dirs, *.fritap.json, __pycache__) without us
 # enumerating them, while still including not-yet-committed source under review.
 mkdir -p "$PUBLIC_TREE"
-( cd "$REPO_ROOT" && git ls-files --cached --others --exclude-standard -z ) \
-  | rsync -a --files-from=- --from0 "$REPO_ROOT/" "$PUBLIC_TREE/"
+fritap_assemble_public_tree "$REPO_ROOT" "$PUBLIC_TREE"
 echo "Copied to: $PUBLIC_TREE"
 echo
 
@@ -104,39 +106,8 @@ echo
 #   - Matching nothing is NOT an error (forward-looking entries may be absent).
 # ---------------------------------------------------------------------------
 echo "--- Step 3: stripping private paths ---"
-# Enable nullglob so non-matching globs expand to nothing instead of literal text.
-shopt -s nullglob
-
-while IFS= read -r raw_line || [ -n "$raw_line" ]; do
-  # Strip inline trailing comment (everything from the first '#').
-  # This also turns a pure comment line into an empty string.
-  line="${raw_line%%#*}"
-  # Trim leading and trailing whitespace.
-  line="${line#"${line%%[![:space:]]*}"}"
-  line="${line%"${line##*[![:space:]]}"}"
-
-  # Skip empty lines (blank, or were full-line comments).
-  [ -z "$line" ] && continue
-
-  # Resolve the pattern relative to the public tree.
-  pattern="$PUBLIC_TREE/$line"
-
-  # Expand the glob. With nullglob, no match => empty array.
-  matches=( $pattern )
-
-  if [ "${#matches[@]}" -eq 0 ]; then
-    echo "  (no match)   $line"
-    continue
-  fi
-
-  for match in "${matches[@]}"; do
-    rm -rf "$match"
-    # Report the removed path relative to the public tree for readability.
-    echo "  removed      ${match#"$PUBLIC_TREE/"}"
-  done
-done < "$PRIVATE_TXT"
-
-shopt -u nullglob
+# Verbose: report "(no match)" / "removed <relpath>" per private.txt entry.
+fritap_strip_private_paths "$PUBLIC_TREE" "$PRIVATE_TXT" verbose
 echo
 
 # ---------------------------------------------------------------------------

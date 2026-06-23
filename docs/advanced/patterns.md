@@ -34,13 +34,13 @@ engine you are targeting:
 | Engine | Active when | Schema | Shape | Example file |
 |--------|-------------|--------|-------|--------------|
 | **Legacy** (`PatternBasedHooking`) | **default** | **Schema B** | `modules → module → platform → arch → function → {primary, fallback, second_fallback?}` | repo-root `pattern.json` |
-| **Modern** (`PatternStrategy`) | opt-in via `--modern` | **Schema A** | `library → arch → function → [hex, …]` | `friTap/patterns/default_patterns.json` |
+| **Modern** (`PatternStrategy`) | opt-in via `--modern` | **Schema A** | `library → os → arch → function → [hex, …]` | `friTap/patterns/default_patterns.json` |
 
 !!! tip "Which schema should I write?"
     The **legacy engine is the default** (the modern engine only runs with `--modern`), and
     it is what the Cronet / Flutter / Android key-extraction hooks use today. So for most
     real targets you write **Schema B** — the object form, exactly like the repo-root
-    `pattern.json`. Write **Schema A** (the flat list form) only when you run with
+    `pattern.json`. Write **Schema A** (the nested list form) only when you run with
     `--modern`. The loader accepts both, and they can even coexist in one file: Schema B
     lives under the top-level `modules` key while Schema A uses top-level library keys.
 
@@ -113,18 +113,20 @@ are allowed as placeholders (the engine skips them and falls back to symbol hook
 
 ### Schema A — modern engine (`--modern`)
 
-A flat map **library → arch → function → list of hex strings**. Each function maps to a
-**list** of candidate patterns, tried in order. This is the form `default_patterns.json`
+A nested map **library → os → arch → function → list of hex strings**. Each function maps to
+a **list** of candidate patterns, tried in order. This is the form `default_patterns.json`
 uses. The list itself is the primary/fallback chain.
 
 ```json
 {
   "openssl": {
-    "x64": {
-      "ssl_log_secret": [
-        "55 48 89 E5 48 83 EC 20 48 89 7D F8",
-        "55 41 57 41 56 41 54 53 48 83 EC 30 48 8B 47 68"
-      ]
+    "android": {
+      "x64": {
+        "ssl_log_secret": [
+          "55 48 89 E5 48 83 EC 20 48 89 7D F8",
+          "55 41 57 41 56 41 54 53 48 83 EC 30 48 8B 47 68"
+        ]
+      }
     }
   }
 }
@@ -132,8 +134,14 @@ uses. The list itself is the primary/fallback chain.
 
 Both examples validate `True` against `friTap.patterns.loader.PatternLoader.validate`. In
 Schema A the top-level library key is matched against the **module name** first, then the
-library type (`pattern_strategy.ts:74`); the arch key is compared against `Process.arch`,
-falling back to `"default"` if present (`pattern_strategy.ts:81-82`).
+library type; then the `os` key is matched against the **current platform**
+(`android` / `ios` / `linux` / `macos` / `windows`); then the arch key is compared against
+`Process.arch`, falling back to `"default"` if present (see `pattern_strategy.ts`).
+
+The `<os>` key uses the **same enum as Schema B** (`android` / `ios` / `linux` / `macos` /
+`windows`) and is matched against the OS friTap is running on. If the current OS has **no
+entry** under a library, the modern engine finds no pattern for that library and falls
+through to symbol hooking.
 
 ### Structure hierarchy at a glance
 
@@ -142,7 +150,7 @@ Schema B (legacy, default):
 modules/<module>/<platform>/<arch>/<function> → { "primary": "<hex>", "fallback": "<hex>" }
 
 Schema A (modern, --modern):
-<library>/<arch>/<function> → [ "<hex>", "<hex>", … ]
+<library>/<os>/<arch>/<function> → [ "<hex>", "<hex>", … ]
 ```
 
 In both, `<arch>` is `x64` / `arm64` / `arm` / `x86` (or `default`), and `<function>` is a
@@ -197,7 +205,7 @@ These are **different** features and must not be mixed in one file:
 
 | Feature      | Flag         | File shape                                        | Use when                                  |
 |--------------|--------------|---------------------------------------------------|-------------------------------------------|
-| Byte scanning| `--patterns` | Schema B `modules → … → {primary, fallback}` (default) or Schema A `library → arch → function → [hex]` (`--modern`) | You have a signature but no fixed address |
+| Byte scanning| `--patterns` | Schema B `modules → … → {primary, fallback}` (default) or Schema A `library → os → arch → function → [hex]` (`--modern`) | You have a signature but no fixed address |
 | Offsets      | `--offsets`  | `module → function → {address, absolute}`         | You know the exact address/offset already |
 
 **Offsets file** (`offsets_example.json`):
@@ -275,7 +283,7 @@ For the **default (legacy) engine**, use Schema B — put the signature in `prim
 ```
 
 If you run with `--modern`, use Schema A instead — the same signature as one element of a
-list: `{ "libflutter": { "arm64": { "ssl_log_secret": ["55 48 89 E5 ?? ?? ?? ?? 48 83 EC ?? 48 89 7D F8"] } } }`.
+list: `{ "libflutter": { "android": { "arm64": { "ssl_log_secret": ["55 48 89 E5 ?? ?? ?? ?? 48 83 EC ?? 48 89 7D F8"] } } } }`.
 
 !!! note "Function label naming"
     Use the label friTap expects for the strategy you are extending. The shipped defaults
@@ -333,7 +341,7 @@ The "Byte pattern for frida (friTap)" line drops in with no reformatting. For th
 ```
 
 Under `--modern`, drop the same string into a Schema-A list instead:
-`{ "libsignal_jni": { "arm64": { "ssl_log_secret": ["3F 23 03 D5 …"] } } }`.
+`{ "libsignal_jni": { "android": { "arm64": { "ssl_log_secret": ["3F 23 03 D5 …"] } } } }`.
 
 !!! tip "Why Docker?"
     The Docker image bundles a pre-configured Ghidra, eliminating setup and giving
@@ -441,10 +449,12 @@ Chrome's Cronet (Google QUICHE / BoringSSL) is the canonical pattern target. Two
 ```json
 {
   "google_quiche": {
-    "arm64": {
-      "QuicSpdyStream_OnDataFramePayload": [
-        "3F 23 03 D5 FD 7B BF A9 FD 03 00 91 08 04 40 F9 00 ?? ?? 91 ?? ?? ?? ?? 20 00 80 52 FD 7B C1 A8 BF 23 03 D5 C0 03 5F D6"
-      ]
+    "android": {
+      "arm64": {
+        "QuicSpdyStream_OnDataFramePayload": [
+          "3F 23 03 D5 FD 7B BF A9 FD 03 00 91 08 04 40 F9 00 ?? ?? 91 ?? ?? ?? ?? 20 00 80 52 FD 7B C1 A8 BF 23 03 D5 C0 03 5F D6"
+        ]
+      }
     }
   }
 }
@@ -471,7 +481,7 @@ fritap --list-libraries target_app
 
 If the run is silent, the most common causes are: wrong architecture key
 (`x86_64`/`armv7` instead of `x64`/`arm64`), using the **wrong schema for the active
-engine** (a Schema-A flat list while on the default legacy engine, or a Schema-B `modules`
+engine** (a Schema-A nested list while on the default legacy engine, or a Schema-B `modules`
 object while on `--modern`), or a leading/trailing `??`.
 
 **False positives / ambiguous-match warning**

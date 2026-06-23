@@ -1018,11 +1018,11 @@ if TEXTUAL_AVAILABLE:
             return bool(getattr(layer, "messages", None))
 
         def _default_layer_view(self, layer) -> str:
-            """Default view for a layer: parsed for signal layers with messages, else hex."""
-            is_signal = getattr(layer, "name", "") == "signal" or self._layer_has_messages(layer)
-            if is_signal and self._layer_has_messages(layer):
-                return "parsed"
-            return "hex"
+            """Default view for a layer: parsed for layers with messages, else hex."""
+            # `(name=="signal" or has_messages) and has_messages` reduces to
+            # `has_messages` (boolean absorption); a signal layer without messages
+            # has no parsed view to show anyway.
+            return "parsed" if self._layer_has_messages(layer) else "hex"
 
         def _signal_layer(self, flow: "Flow"):
             """Return *flow*'s parsed Signal layer (non-mutating), or None."""
@@ -1792,21 +1792,6 @@ if TEXTUAL_AVAILABLE:
             table.add_row(*cells)
             log.write(table)
 
-        # Kind -> (icon/label, is_chat) for the Message-tab row heading. Chat
-        # kinds render the body prominently in quotes; others stay muted.
-        _KIND_LABELS = {
-            "text": ("💬 message", True),
-            "data": ("💬 message", True),
-            "message": ("💬 message", True),
-            "user": ("👤 user", False),
-            "service": ("[dim]service[/]", False),
-            "ack": ("[dim]ack[/]", False),
-            "rpc": ("[dim]rpc[/]", False),
-            "update": ("[dim]update[/]", False),
-            "receipt": ("[dim]receipt[/]", False),
-            "unparsed": ("[dim]unparsed[/]", False),
-        }
-
         def _message_chat_descriptor(self, layer) -> tuple[str, str]:
             """Return ``(protocol_label, chat_descriptor)`` for the transcript header.
 
@@ -1827,111 +1812,6 @@ if TEXTUAL_AVAILABLE:
                 return "MTProto", "cloud"
             from friTap.constants import LAYER_DISPLAY_NAMES
             return LAYER_DISPLAY_NAMES.get(name, name or "Messages"), ""
-
-        def _render_layer_transcript(self, log: RichLog, flow: "Flow", layer) -> None:
-            """Render a message-bearing layer's entries as a chat transcript.
-
-            Mirrors :meth:`_render_signal_messages` so MTProto / Telegram-E2E
-            flows present identically. Reads the shared message-dict contract
-            (``direction``, ``timestamp``, ``kind``, ``body``, ``method``,
-            ``sender``) defensively so partly-enriched dicts still render.
-            """
-            messages = list(getattr(layer, "messages", None) or [])
-            protocol, chat = self._message_chat_descriptor(layer)
-
-            # Split meaningful content (chat text, identities, updates) from the
-            # high-volume transport chatter (acks, rpc acks, pings, …). The
-            # transcript surfaces the former in full and collapses the latter into
-            # one summary line, so a busy flow's dozens of msgs_acks never bury the
-            # actual messages (Signal's transcript stays clean because it has only a
-            # handful of receipts; MTProto carries far more service records).
-            meaningful = [m for m in messages
-                          if (m.get("kind") or "") in self._MEANINGFUL_KINDS]
-            noise = [m for m in messages
-                     if (m.get("kind") or "") not in self._MEANINGFUL_KINDS]
-
-            count = len(meaningful)
-            count_label = (f"{count} message" + ("" if count == 1 else "s")
-                           if count else "no messages")
-            head = f"[bold {c('accent')}]{protocol}"
-            if chat:
-                head += f" · {chat}"
-            head += f"[/]    [dim]{count_label}[/]"
-            log.write(head)
-            log.write(f"[dim]{'─' * 54}[/]")
-
-            for entry in meaningful:
-                self._render_transcript_entry(log, entry)
-
-            if noise:
-                breakdown = Counter((m.get("kind") or "other") for m in noise)
-                summary = " · ".join(f"{n} {k}" for k, n in breakdown.most_common())
-                if meaningful:
-                    log.write("")
-                plural = "" if len(noise) == 1 else "s"
-                log.write(
-                    f"[dim]+ {len(noise)} transport record{plural} "
-                    f"({summary}) — press l for the raw layer view[/]"
-                )
-            elif not meaningful:
-                log.write("[dim]no messages[/]")
-
-        # Kinds shown in full in the Message transcript; everything else
-        # (ack/rpc/service/receipt/unparsed) is transport chatter, collapsed.
-        _MEANINGFUL_KINDS = frozenset({"text", "data", "message", "user", "update"})
-
-        def _render_transcript_entry(self, log: RichLog, entry) -> None:
-            """Render one message-dict as a transcript row (heading + optional body)."""
-            try:
-                direction = entry.get("direction", "") or ""
-                sender = entry.get("sender", "") or ""
-                timestamp = entry.get("timestamp", 0)
-                kind = entry.get("kind", "") or ""
-                body = entry.get("body", "") or ""
-                method = entry.get("method", "") or ""
-            except AttributeError:
-                return
-
-            outgoing = direction in ("write", "outgoing", "sent")
-            arrow = "→" if outgoing else "←"
-            ts = self._format_msg_time_secs(timestamp)
-            label, is_chat = self._KIND_LABELS.get(kind, (kind or "message", False))
-
-            head_parts = [arrow]
-            if ts:
-                head_parts.append(f"[dim]{ts}[/]")
-            head_parts.append(label)
-            # Show the TL method only when it adds information (not for chat rows,
-            # and not when it merely repeats the kind label, e.g. a "user" item).
-            if method and not is_chat and method.lower() != kind.lower():
-                head_parts.append(f"[dim]{method}[/]")
-            # "from <sender>" only on received chat rows — for a user/identity row
-            # the sender id is the user's own id and just repeats the body.
-            if not outgoing and sender and kind != "user":
-                head_parts.append(f"[dim]from {sender}[/]")
-            log.write(f"[bold {c('primary')}]{'  '.join(head_parts)}[/]")
-
-            # Render any body (chat text, or a user/identity summary) in quotes when
-            # it's a chat kind; otherwise show it indented and muted.
-            text = (body or "").strip()
-            if text:
-                limit = self._TEXT_RENDER_LIMIT
-                shown = text[:limit].replace("[", r"\[")
-                if is_chat:
-                    quote = c("success")
-                    lines = shown.split("\n")
-                    if len(lines) == 1:
-                        log.write(f'      [bold {quote}]“{lines[0]}”[/]')
-                    else:
-                        log.write(f'      [bold {quote}]“[/]')
-                        for ln in lines:
-                            log.write(f'        [bold {quote}]{ln}[/]')
-                        log.write(f'      [bold {quote}]”[/]')
-                else:
-                    for ln in shown.split("\n"):
-                        log.write(f"      [dim]{ln}[/]")
-                if len(text) > limit:
-                    log.write(f"      [dim]… {len(text) - limit:,} more chars[/]")
 
         @classmethod
         def _format_msg_time_secs(cls, ts) -> str:

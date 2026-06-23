@@ -6,6 +6,28 @@ export function get_process_architecture() : string{
         return Process.arch;
 }
 
+/**
+ * Current Frida platform mapped onto the OS keys used in friTap's pattern files
+ * (Schema A: library -> os -> arch; Schema B: modules -> module -> os -> arch).
+ * Returns one of: "android" | "ios" | "macos" | "linux" | "windows".
+ */
+export function currentPlatformKey(): string {
+    if (isAndroid()) return "android";
+    if (isiOS()) return "ios";
+    if (isMacOS()) return "macos";
+    return Process.platform.toString(); // "linux", "windows"
+}
+
+/**
+ * Current Frida arch mapped onto the arch keys used in the pattern files.
+ * Frida reports "ia32" for 32-bit x86; the pattern files use "x86".
+ * Pass an explicit arch string to normalize it, or omit to use Process.arch.
+ */
+export function normalizeArchKey(arch?: string): string {
+    const a = (arch ?? Process.arch).toString();
+    return a === "ia32" ? "x86" : a;
+}
+
 
 export function isAndroid(): boolean{
     if(typeof Java !== "undefined" && Java.available && Process.platform == "linux"){

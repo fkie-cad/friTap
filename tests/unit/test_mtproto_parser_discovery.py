@@ -48,6 +48,14 @@ def _write_parser(tmp_path):
     return d
 
 
+def _enable_dropin_discovery(monkeypatch, parser_dir):
+    """Discovery ON: env opt-out cleared, drop-in dir redirected, entry points
+    stubbed empty (so only the drop-in parser is found)."""
+    monkeypatch.delenv("FRITAP_DISABLE_PARSER_DISCOVERY", raising=False)
+    monkeypatch.setattr(preg, "_resolve_parser_dir", lambda: parser_dir)
+    monkeypatch.setattr(preg, "_get_parser_entry_points", lambda: [])
+
+
 def test_discovery_disabled_via_env(monkeypatch, tmp_path):
     monkeypatch.setenv("FRITAP_DISABLE_PARSER_DISCOVERY", "1")
     monkeypatch.setattr(preg, "_resolve_parser_dir", lambda: _write_parser(tmp_path))
@@ -55,9 +63,7 @@ def test_discovery_disabled_via_env(monkeypatch, tmp_path):
 
 
 def test_dropin_parser_discovered(monkeypatch, tmp_path):
-    monkeypatch.delenv("FRITAP_DISABLE_PARSER_DISCOVERY", raising=False)
-    monkeypatch.setattr(preg, "_resolve_parser_dir", lambda: _write_parser(tmp_path))
-    monkeypatch.setattr(preg, "_get_parser_entry_points", lambda: [])
+    _enable_dropin_discovery(monkeypatch, _write_parser(tmp_path))
     found = preg.discover_external_parsers()
     assert len(found) == 1
     cls, priority = found[0]
@@ -67,16 +73,12 @@ def test_dropin_parser_discovered(monkeypatch, tmp_path):
 
 
 def test_discovered_parser_wins_detection(monkeypatch, tmp_path):
-    monkeypatch.delenv("FRITAP_DISABLE_PARSER_DISCOVERY", raising=False)
-    monkeypatch.setattr(preg, "_resolve_parser_dir", lambda: _write_parser(tmp_path))
-    monkeypatch.setattr(preg, "_get_parser_entry_points", lambda: [])
+    _enable_dropin_discovery(monkeypatch, _write_parser(tmp_path))
     reg = preg.get_default_registry()
     parser = reg.detect(b"TG\x01\x02")
     assert getattr(parser, "name", "") == "telegram"
 
 
 def test_no_dropin_dir_is_noop(monkeypatch, tmp_path):
-    monkeypatch.delenv("FRITAP_DISABLE_PARSER_DISCOVERY", raising=False)
-    monkeypatch.setattr(preg, "_resolve_parser_dir", lambda: tmp_path / "nonexistent")
-    monkeypatch.setattr(preg, "_get_parser_entry_points", lambda: [])
+    _enable_dropin_discovery(monkeypatch, tmp_path / "nonexistent")
     assert preg.discover_external_parsers() == []

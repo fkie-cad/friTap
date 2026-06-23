@@ -53,12 +53,7 @@ def _load_denylist_matcher():
         "denylist_tokens", os.path.join(_SCRIPT_DIR, "denylist_tokens.py"))
     dt = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(dt)
-    deny: set[str] = set()
-    with open(os.path.join(_SCRIPT_DIR, "denylist.hashes"), "r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if line and not line.startswith("#"):
-                deny.add(line.split()[0])
+    deny = dt.load_denylist(os.path.join(_SCRIPT_DIR, "denylist.hashes"))
     return dt.candidate_hashes, deny
 
 

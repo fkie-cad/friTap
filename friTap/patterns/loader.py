@@ -18,6 +18,11 @@ import logging
 # allowed (used by both the modern list schema and the legacy object schema).
 _HEX_PATTERN_RE = re.compile(r'^([0-9A-Fa-f?]{2}\s)*[0-9A-Fa-f?]{2}$')
 
+# Architecture keys recognized at the arch layer of the modern schema. Used to
+# detect legacy flat Schema-A files (no OS layer) that put an arch where an OS
+# key is now expected.
+_KNOWN_ARCH_KEYS = {"x64", "arm64", "arm", "x86", "default"}
+
 
 class PatternLoader:
     """Loads, validates, and merges pattern data for friTap hooking."""
@@ -83,8 +88,10 @@ class PatternLoader:
                   {"primary": "..", "fallback": "..", "second_fallback": ".."}}}}}}
 
           Leaves may also be a bare hex string or a list of hex strings.
-        * **Modern** engine (``PatternStrategy``; the ``--modern`` path) — a flat
-          map ``{<library>: {<arch>: {<function>: [pattern_str, ...]}}}``.
+        * **Modern** engine (``PatternStrategy``; the ``--modern`` path) — a
+          nested map
+          ``{<library>: {<os>: {<arch>: {<function>: [pattern_str, ...]}}}}``,
+          where ``<os>`` is one of android/ios/linux/macos/windows.
 
         A file is valid when it matches *either* schema; only files matching
         neither are rejected. (Historically this validator accepted only the
@@ -115,7 +122,7 @@ class PatternLoader:
 
     @staticmethod
     def _validate_modern(patterns: dict, logger) -> bool:
-        """Validate the modern flat schema: {lib: {arch: {func: [pattern, ...]}}}."""
+        """Validate the modern schema: {lib: {os: {arch: {func: [pattern, ...]}}}}."""
         valid = True
         for lib_name, lib_data in patterns.items():
             if lib_name.startswith("_"):
@@ -124,27 +131,50 @@ class PatternLoader:
                 logger.warning("Pattern library '%s' must be a dictionary", lib_name)
                 valid = False
                 continue
-            for arch_name, arch_data in lib_data.items():
-                if arch_name.startswith("_"):
+            for os_name, os_data in lib_data.items():
+                if os_name.startswith("_"):
                     continue
-                if not isinstance(arch_data, dict):
-                    logger.warning("Pattern arch '%s/%s' must be a dictionary", lib_name, arch_name)
+                if os_name.lower() in _KNOWN_ARCH_KEYS:
+                    logger.warning(
+                        "Pattern '%s/%s' looks like the legacy flat Schema A "
+                        "(key '%s' is an architecture, not an OS). The modern "
+                        "schema now requires an OS layer: library -> os -> arch "
+                        "-> function. Use one of: android/ios/linux/macos/windows.",
+                        lib_name, os_name, os_name
+                    )
                     valid = False
                     continue
-                for func_name, pattern_list in arch_data.items():
-                    if func_name.startswith("_"):
+                if not isinstance(os_data, dict):
+                    logger.warning("Pattern OS '%s/%s' must be a dictionary", lib_name, os_name)
+                    valid = False
+                    continue
+                for arch_name, arch_data in os_data.items():
+                    if arch_name.startswith("_"):
                         continue
-                    if not isinstance(pattern_list, list):
-                        logger.warning("Pattern '%s/%s/%s' must be a list", lib_name, arch_name, func_name)
+                    if not isinstance(arch_data, dict):
+                        logger.warning(
+                            "Pattern arch '%s/%s/%s' must be a dictionary",
+                            lib_name, os_name, arch_name
+                        )
                         valid = False
                         continue
-                    for i, pat in enumerate(pattern_list):
-                        if not isinstance(pat, str) or not _HEX_PATTERN_RE.match(pat):
+                    for func_name, pattern_list in arch_data.items():
+                        if func_name.startswith("_"):
+                            continue
+                        if not isinstance(pattern_list, list):
                             logger.warning(
-                                "Invalid hex pattern at %s/%s/%s[%d]: %r",
-                                lib_name, arch_name, func_name, i, pat
+                                "Pattern '%s/%s/%s/%s' must be a list",
+                                lib_name, os_name, arch_name, func_name
                             )
                             valid = False
+                            continue
+                        for i, pat in enumerate(pattern_list):
+                            if not isinstance(pat, str) or not _HEX_PATTERN_RE.match(pat):
+                                logger.warning(
+                                    "Invalid hex pattern at %s/%s/%s/%s[%d]: %r",
+                                    lib_name, os_name, arch_name, func_name, i, pat
+                                )
+                                valid = False
         return valid
 
     @staticmethod
