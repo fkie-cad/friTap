@@ -87,6 +87,7 @@ class ContentType:
     CONSOLE_WARN = "console_warn"
     CONSOLE_ERROR = "console_error"
     LIBRARY_DETECTED = "library_detected"
+    ANTI_TAMPER_DETECTED = "anti_tamper_detected"
     SOCKET_TRACE = "socket_trace"
     SSH_KEY = "ssh_key"
     SSH_KEYLOG = "ssh_keylog"

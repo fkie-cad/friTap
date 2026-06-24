@@ -4,9 +4,57 @@ All notable changes to friTap will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [2.2.2]
 
+### Added
+  - **`--no-loader-hook` / `-nlh` (Android).** Skips the inline `android_dlopen_ext`
+    loader trampoline. Only already-loaded / explicitly-selected (`--offsets`) TLS
+    libraries are then hooked. Intended for apps protected by Google PairIP and other
+    anti-tamper runtimes, where the loader hook is detected during the spawn-time
+    integrity scan and the app self-terminates with SIGSEGV (fkie-cad/friTap#64).
+  - **`--experimental-stealth-loader` (Android, arm64) — EXPERIMENTAL.** Watches
+    `android_dlopen_ext` via a **hardware breakpoint** (ARM64 debug registers — no
+    linker code patch) instead of the inline trampoline, then hooks each newly
+    loaded TLS library directly. The goal is spawn-mode capture on PairIP-protected
+    apps without tripping the anti-tamper scan. **Unvalidated on-device**; needs
+    root `frida-server`, and may miss loads on threads created after attach. New
+    `agent/util/hw_breakpoint.ts`. See fkie-cad/friTap#64.
 
+### Fixed
+  - **`--no-loader-hook` now also gates the OHTTP loader hook.** `installOhttpHooks`
+    installed its own `android_dlopen_ext` trampoline, so `--no-loader-hook` did not
+    actually prevent the PairIP SIGSEGV — the linker was still patched. All three
+    Android loader-hook sites (OHTTP, loader+patterns, library-scan) now honour a
+    single skip decision (fkie-cad/friTap#64).
+  - **Clean exit when the target crashes.** After a `process-terminated` detach, the
+    teardown could wedge on a Frida callback thread and friTap hung until the user
+    pressed Ctrl+C. The main thread now owns the final exit once all data is flushed.
+
+### Changed
+  - **Crash attribution for anti-tamper self-destructs.** The agent now emits
+    crash breadcrumbs at install time (`install-tls-hooks: <lib>`, `pattern-scan:
+    <lib>`), and on a `process-terminated` death in spawn mode friTap prints an
+    explicit diagnosis: the inline TLS-library hooks (not just the loader hook)
+    are present during the startup integrity scan, so spawn capture is unreliable
+    on PairIP-protected apps even with `--no-loader-hook` — use attach mode. A
+    late-loading `libpairipcore.so` is now also re-scanned for after instrument so
+    the red banner appears even when it loads after the initial gate (friTap#64).
+  - **Readable, de-duplicated anti-tamper banner.** The detection/skip notice is now
+    rendered once as a single blank-line-padded, red (on a TTY) banner on the host
+    side, instead of several interleaved `[*] [!] …` / `[-] [!!!] …` lines emitted
+    from multiple agent code paths. The agent emits only the structured signal; the
+    Python side owns presentation.
+  - **Anti-tamper auto-protection (Android).** When friTap detects a known
+    anti-tamper library (e.g. Google PairIP / `libpairipcore.so`) **in spawn mode**,
+    it now automatically skips the `android_dlopen_ext` loader hook instead of
+    installing it and crashing the target. friTap prints an unmissable banner
+    explaining that spawn-mode capture is not possible and that the app should be
+    started and then **attached** to (without `-s`). Already-loaded TLS libraries are
+    still hooked. Attach mode and non-protected apps are unaffected. Applies to both
+    the default (legacy) and `--modern` hooking paths.
+  - The detection is now surfaced as a structured `anti_tamper_detected` event
+    (`AntiTamperDetectedEvent`) on the Python event bus / API, in addition to the
+    console banner — previously the agent's signal was dropped.
 
 ## [2.2.0]
 

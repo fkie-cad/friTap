@@ -1,4 +1,4 @@
-import { devlog, devlog_error, devlog_debug, log, devlog_info } from "../../util/log.js";
+import { devlog, devlog_error, devlog_debug, log, devlog_info, hookBreadcrumb } from "../../util/log.js";
 import { currentPlatformKey, normalizeArchKey } from "../../util/process_infos.js"
 import { isFunctionPrologueWord } from "../../shared/arm64.js";
 
@@ -390,6 +390,11 @@ export class PatternBasedHooking {
     ): void {
         const moduleName = this.module?.name;
         devlog(`Trying to scan ${moduleName} ...`);
+        // Crash-attribution: a Memory.scan over a module's executable range is a
+        // common point for an anti-tamper runtime (e.g. PairIP) to self-destruct
+        // (or for a scan to fault on a churned range). Record it so on_detach can
+        // name the scanned module as the crash suspect (fkie-cad/friTap#64).
+        hookBreadcrumb(`pattern-scan: ${moduleName}`);
         const moduleBase = this.module.base;
         const moduleSize = this.module.size;
         this.found_ssl_log_secret = false;

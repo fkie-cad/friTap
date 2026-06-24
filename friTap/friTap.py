@@ -421,6 +421,22 @@ Offline (read / analyze .tap):
                            "Filter scope: Android = Google QUICHE (Cronet) only; "
                            "Linux = Cloudflare quiche, Google QUICHE (Cronet), Mozilla "
                            "Neqo (Firefox).")
+    args.add_argument("--no-loader-hook", "-nlh", required=False, action="store_const",
+                      const=True, default=False, dest="no_loader_hook",
+                      help="Android: do not install the android_dlopen_ext loader hook. "
+                           "Avoids PairIP / anti-tamper SIGSEGV crashes (fkie-cad/friTap#64); "
+                           "only already-loaded / explicitly-selected (--offsets) TLS libraries "
+                           "are hooked. Recommended together with attach mode (no -s). friTap "
+                           "also auto-skips this hook in spawn mode when it detects a known "
+                           "anti-tamper library such as Google PairIP (libpairipcore.so).")
+    args.add_argument("--experimental-stealth-loader", required=False, action="store_const",
+                      const=True, default=False, dest="stealth_loader",
+                      help="EXPERIMENTAL (Android, arm64). Watch android_dlopen_ext via a "
+                           "hardware breakpoint (CPU debug registers — no linker code patch) "
+                           "instead of the inline trampoline, so late-loaded TLS libraries can "
+                           "be hooked on PairIP-protected apps without tripping the anti-tamper "
+                           "scan (fkie-cad/friTap#64). UNVALIDATED on-device; needs root "
+                           "frida-server and may not catch loads on threads created after attach.")
     args.add_argument("--library-scan", "-ls", required=False, action="store_const",
                       const=True, default=False,
                       help="Pre-scan for TLS libraries using tlsLibHunter before hooking. "
@@ -712,6 +728,8 @@ Offline (read / analyze .tap):
             force_scan_modules=getattr(parsed, 'force_scan_modules', None),
             quic_capture_mode=getattr(parsed, 'quic_capture_mode', 'stream'),
             quic_only=getattr(parsed, 'quic_only', False),
+            no_loader_hook=getattr(parsed, 'no_loader_hook', False),
+            stealth_loader=getattr(parsed, 'stealth_loader', False),
             quic_egress_headers_layer=getattr(parsed, 'quic_egress_headers_layer', 'auto'),
             scan_keys_region=getattr(parsed, 'scan_keys_region', None),
             scan=getattr(parsed, 'scan', None),

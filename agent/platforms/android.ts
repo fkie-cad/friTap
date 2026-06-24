@@ -1,6 +1,6 @@
 import { hookRegistry, HookRegistry } from "../shared/registry.js";
-import { getModuleNames, ssl_library_loader, hookDynamicLoader, installOhttpHooks } from "../shared/shared_functions.js";
-import { matchAntiTamper, warnAntiTamper, scanForAntiTamper } from "../util/anti_tamper.js";
+import { getModuleNames, ssl_library_loader, hookDynamicLoader, installOhttpHooks, installStealthDynamicLoader } from "../shared/shared_functions.js";
+import { matchAntiTamper, warnAntiTamper, scanForAntiTamper, bannerAntiTamper } from "../util/anti_tamper.js";
 import { Platform, PLATFORM_LINUX } from "../shared/shared_structures.js";
 import { log, devlog } from "../util/log.js";
 import { findModulesWithSSLKeyLogCallback } from "../tls/shared/library_identification.js";
@@ -26,7 +26,7 @@ import { s2ntls_execute } from "../legacy/tls/platforms/android/s2ntls_android.j
 import { java_execute } from "../tls/platforms/android/android_java_tls_libs.js";
 import { flutter_execute, flutter_execute_modern } from "../tls/platforms/android/flutter_android.js";
 import { mono_btls_execute, mono_btls_execute_modern } from "../tls/platforms/android/mono_btls_android.js";
-import { patterns, isPatternReplaced, selected_protocol, use_modern, scan_results, library_scan_enabled, quic_only } from "../fritap_agent.js"
+import { patterns, isPatternReplaced, selected_protocol, use_modern, scan_results, library_scan_enabled, quic_only, no_loader_hook, spawned, stealth_loader } from "../fritap_agent.js"
 import { processScanResults, isModuleHooked, markModuleHooked } from "../shared/library_scanner.js";
 import { pattern_execute } from "../tls/platforms/android/pattern_android.js"
 import { rustls_execute, rustls_execute_modern } from "../tls/platforms/android/rustls_android.js";
@@ -241,25 +241,68 @@ export function load_android_hooking_agent() {
     // preventing the cascading stall that drops the QUIC session. The host's
     // script.load() promise still resolves promptly after the synchronous part
     // (registerAll above) — actual hook installation completes within a few ticks.
+    // Decide ONCE — before any phase runs — whether to install the inline
+    // android_dlopen_ext loader hook. PairIP / anti-tamper runtimes detect that
+    // linker trampoline and SIGSEGV the process during their spawn-time scan
+    // (fkie-cad/friTap#64). Skip it when forced (--no-loader-hook) or, auto, in
+    // spawn mode when a known anti-tamper lib is already present. This single
+    // decision MUST gate EVERY loader-hook site — the OHTTP phase, the
+    // loader+patterns phase, and the library-scan phase — because OHTTP installs
+    // its OWN android_dlopen_ext hook (shared_functions.ts:installOhttpHooks),
+    // which previously still crashed protected apps even with --no-loader-hook.
+    // scanForAntiTamper() re-enumerates the live module list (getModuleNames()
+    // captured at agent load is stale for spawned apps). Note: auto-detection is
+    // best-effort — PairIP that loads AFTER this point can't be pre-detected, so
+    // --no-loader-hook (or attach mode) remains the reliable control.
+    const antiTamperPresent = scanForAntiTamper();
+    // EXPERIMENTAL stealth loader (Part C, friTap#64): watch android_dlopen_ext
+    // via a hardware breakpoint (no linker code patch) instead of the inline
+    // trampoline. It REPLACES the inline hook but, unlike the plain skip, still
+    // captures late-loaded TLS libs — so it is its own mode, not a "disable".
+    const useStealthLoader = stealth_loader;
+    // Skip the inline loader hook when forced (--no-loader-hook) or, auto, in
+    // spawn + anti-tamper. Stealth mode supplies its own (HW-bp) watcher, so the
+    // inline hook is neither installed nor reported as a capture-disabling skip.
+    const loaderHookSkipped = !useStealthLoader && (no_loader_hook || (spawned && antiTamperPresent));
+    // The single gate for the inline android_dlopen_ext trampoline across ALL
+    // sites (OHTTP, loader+patterns, library-scan).
+    const installInlineLoaderHook = !loaderHookSkipped && !useStealthLoader;
+    if (loaderHookSkipped) {
+        // Pass the matched module name when auto-detected so the host banner
+        // names the protection; pass null for an explicit --no-loader-hook skip
+        // with nothing detected (yet) so the banner reads as an info notice.
+        bannerAntiTamper(antiTamperPresent ? "libpairipcore.so" : null, true);
+    }
+
+    // Attach-time freeze mitigation: break the heavy install into setTimeout(0)-
+    // yielded phases. Each yield releases the Frida runtime so the target's hot
+    // threads can make progress between bursts of Interceptor.attach work.
     const phases: Array<{ label: string; fn: () => void }> = [];
     if (!quic_only) phases.push({ label: "java", fn: () => install_java_hooks() });
     phases.push({ label: "ssl-libs", fn: () => hook_native_Android_SSL_Libs(hookRegistry, true) });
     if (!quic_only) phases.push({
         label: "ohttp+scan-results",
         fn: () => {
-            installOhttpHooks(plattform_name, hookRegistry, moduleNames, "Android", androidLoaderConfig);
+            // Skip OHTTP's own android_dlopen_ext trampoline whenever the inline
+            // loader hook is gated (plain skip OR stealth mode) — it only hooks
+            // already-loaded modules then.
+            installOhttpHooks(plattform_name, hookRegistry, moduleNames, "Android", androidLoaderConfig, !installInlineLoaderHook);
             processScanResults(scan_results, plattform_name, true, selected_protocol);
         },
     });
     phases.push({
         label: "loader+patterns",
         fn: () => {
-            // Fresh-enumerate and warn about anti-tamper libs (e.g. PairIP's
-            // libpairipcore.so) BEFORE installing the inline dlopen trampoline
-            // that such protections detect and crash on — getModuleNames() above
-            // is stale for spawned apps, so this re-scans the live module list.
-            scanForAntiTamper();
-            hookDynamicLoader(androidLoaderConfig, hookRegistry, moduleNames, false, selected_protocol);
+            if (useStealthLoader) {
+                log("[!] EXPERIMENTAL: stealth loader enabled — watching android_dlopen_ext via hardware");
+                log("[!] breakpoint (no linker code patch). Unvalidated against PairIP; see friTap#64.");
+                if (!installStealthDynamicLoader(androidLoaderConfig, hookRegistry, getModuleNames, selected_protocol)) {
+                    log("[-] Stealth loader failed to arm — TLS libraries loaded later will NOT be hooked.");
+                    log("[-] Re-run in attach mode (no -s) or with root frida-server. See friTap#64.");
+                }
+            } else if (installInlineLoaderHook) {
+                hookDynamicLoader(androidLoaderConfig, hookRegistry, moduleNames, false, selected_protocol);
+            }
             if (isPatternReplaced()) install_pattern_based_hooks();
         },
     });
@@ -284,7 +327,13 @@ export function load_android_hooking_agent() {
                     });
                 }
                 hook_native_Android_SSL_Libs(hookRegistry, false);
-                hookDynamicLoader(androidLoaderConfig, hookRegistry, moduleNames, false, selected_protocol);
+                // Honour the single loader-hook gate: don't re-introduce the
+                // android_dlopen_ext trampoline that the skip / stealth path
+                // avoided (fkie-cad/friTap#64). Stealth mode's HW-bp watcher
+                // already covers future loads.
+                if (installInlineLoaderHook) {
+                    hookDynamicLoader(androidLoaderConfig, hookRegistry, moduleNames, false, selected_protocol);
+                }
                 log("[*] Hooked additional modules with SSL_CTX_set_keylog_callback.");
             }
         },
@@ -298,4 +347,15 @@ export function load_android_hooking_agent() {
         }, 0);
     };
     runPhase(0);
+
+    // Late-load anti-tamper surfacing (fkie-cad/friTap#64). PairIP's
+    // libpairipcore.so frequently loads AFTER our synchronous scan above, so the
+    // initial gate can't see it. Re-check a couple of times so the user still
+    // gets the red anti-tamper banner — and the host records it for crash
+    // attribution — even when we couldn't skip the loader hook in time. Cheap
+    // module enumeration; the per-library warning is throttled to once.
+    if (!antiTamperPresent) {
+        setTimeout(() => scanForAntiTamper(), 500);
+        setTimeout(() => scanForAntiTamper(), 2000);
+    }
 }

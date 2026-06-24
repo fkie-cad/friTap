@@ -87,6 +87,17 @@ class HookingConfig:
     # passes, no Java VM safepoint sync), which also helps fritap attach to a
     # target that is already in the middle of active QUIC traffic.
     quic_only: bool = False
+    # When True, the agent skips the inline android_dlopen_ext loader hook. This
+    # is the hook PairIP / anti-tamper runtimes detect and SIGSEGV on during a
+    # spawn-time integrity scan (fkie-cad/friTap#64). Only already-loaded /
+    # explicitly-selected TLS libraries are then hooked. The agent also auto-
+    # skips it in spawn mode when an anti-tamper library is detected.
+    no_loader_hook: bool = False
+    # EXPERIMENTAL (Android). Watch android_dlopen_ext via a hardware breakpoint
+    # (ARM64 debug registers, no linker code patch) instead of the inline
+    # trampoline, so late-loaded TLS libs can be hooked on PairIP-protected apps
+    # without tripping the anti-tamper scan. Unvalidated on-device; default OFF.
+    stealth_loader: bool = False
     # Override which layer of the HTTP/3 egress-headers fallback chain the
     # agent actually attaches to. "auto" (default) keeps the winner-takes-all
     # logic: quiche-internal QuicSpdyStream::WriteHeaders preferred, then
@@ -221,6 +232,8 @@ class FriTapConfig:
         force_scan_modules: Optional[List[str]] = None,
         quic_capture_mode: str = "stream",
         quic_only: bool = False,
+        no_loader_hook: bool = False,
+        stealth_loader: bool = False,
         quic_egress_headers_layer: str = "auto",
         scan_keys_region: Optional[str] = None,
         scan: Optional[str] = None,
@@ -280,6 +293,8 @@ class FriTapConfig:
                 force_scan_modules=list(force_scan_modules or []),
                 quic_capture_mode=quic_capture_mode,
                 quic_only=quic_only,
+                no_loader_hook=no_loader_hook,
+                stealth_loader=stealth_loader,
                 quic_egress_headers_layer=quic_egress_headers_layer,
                 scan_keys_region=scan_keys_region,
             ),

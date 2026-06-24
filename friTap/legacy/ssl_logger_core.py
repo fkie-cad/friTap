@@ -24,6 +24,7 @@ from ..events import (
     InstrumentEvent,
     ScriptLoadedEvent,
     HookBreadcrumbEvent,
+    AntiTamperDetectedEvent,
 )
 from ..config import FriTapConfig
 from ..constants import SSL_READ, SSL_WRITE, AGENT_ABI_VERSION
@@ -191,6 +192,10 @@ class SSL_Logger():
         self._last_hook_breadcrumb = ""
         self._crash_reported = False
         self._event_bus.subscribe(HookBreadcrumbEvent, self._on_hook_breadcrumb)
+        # Remember if a known anti-tamper runtime (e.g. PairIP) was reported, so a
+        # later process-terminated crash can be attributed to it (fkie-cad/friTap#64).
+        self._anti_tamper_seen = ""
+        self._event_bus.subscribe(AntiTamperDetectedEvent, self._on_anti_tamper_detected)
 
         # FlowCollector created lazily — only when a plugin or TUI accesses it.
         # The TUI creates its own FlowCollector in capture_controller.py.
@@ -476,6 +481,11 @@ class SSL_Logger():
         if event.marker:
             self._last_hook_breadcrumb = event.marker
 
+    def _on_anti_tamper_detected(self, event: "AntiTamperDetectedEvent") -> None:
+        """Remember a detected anti-tamper runtime so a later process-terminated
+        crash can be attributed to it (fkie-cad/friTap#64)."""
+        self._anti_tamper_seen = event.name or event.library or "anti-tamper protection"
+
     def _report_target_crash(self, reason: str) -> None:
         """Surface an unexpected target-process death clearly to the user.
 
@@ -491,8 +501,31 @@ class SSL_Logger():
         msg = "Target process terminated unexpectedly — it most likely crashed " \
               "inside an instrumented hook"
         if crumb:
-            msg += f" (last hook entered: {crumb})"
+            msg += f" (last instrumented: {crumb})"
         self.logger.error(msg)
+        # Anti-tamper diagnosis. A process-terminated death during/just after
+        # instrumentation in SPAWN mode is the classic signature of an integrity
+        # protection (e.g. Google PairIP) self-destructing in response to friTap's
+        # hooks while the app is still starting. Spell that out and point at the
+        # one thing that reliably works — attach mode (fkie-cad/friTap#64).
+        if reason == "process-terminated" and self.spawn:
+            if self._anti_tamper_seen:
+                self.logger.error(
+                    f"Anti-tamper protection was detected in this process "
+                    f"({self._anti_tamper_seen}). It self-destructs when friTap's hooks "
+                    f"are present during startup.")
+            else:
+                self.logger.error(
+                    "This is the typical signature of an anti-tamper protection "
+                    "(e.g. Google PairIP / libpairipcore.so) self-destructing in "
+                    "response to friTap's hooks during app startup.")
+            self.logger.error(
+                "  -> Spawn (-s) capture is unreliable on such apps even with "
+                "--no-loader-hook, because the TLS-library hooks themselves are "
+                "present during the startup integrity scan.")
+            self.logger.error(
+                "  -> Start the app first, then ATTACH friTap (run WITHOUT -s). "
+                "See fkie-cad/friTap#64.")
         try:
             from ..fritap_utility import get_debug_log_path
             log_path = get_debug_log_path()
@@ -639,6 +672,14 @@ class SSL_Logger():
                     'ohttp_enabled': getattr(self._config.hooking, 'ohttp_enabled', True),
                     'quic_capture_mode': getattr(self._config.hooking, 'quic_capture_mode', 'stream'),
                     'quic_only': getattr(self._config.hooking, 'quic_only', False),
+                    # --no-loader-hook: skip the inline android_dlopen_ext loader
+                    # trampoline (PairIP/anti-tamper SIGSEGV avoidance, friTap#64).
+                    'no_loader_hook': getattr(self._config.hooking, 'no_loader_hook', False),
+                    # Spawn state lets the agent auto-skip the loader hook only in
+                    # spawn mode (where it trips PairIP's startup scan); attach keeps it.
+                    'spawned': bool(self._config.device.spawn),
+                    # EXPERIMENTAL: hardware-breakpoint loader watch (no linker patch).
+                    'stealth_loader': getattr(self._config.hooking, 'stealth_loader', False),
                     # Override for the HTTP/3 egress-headers chain layer. "auto" keeps
                     # the winner-takes-all fallback; anything else forces a specific
                     # layer so chain validation tests can exercise lower tiers on
@@ -1612,6 +1653,17 @@ class SSL_Logger():
         """Block until the session ends. Responds to KeyboardInterrupt."""
         while not self._done_event.wait(timeout=0.5):
             pass
+        # _done_event is set by _run_cleanup_steps AFTER pcap/keys are flushed.
+        # On the crash / on_detach path, cleanup() runs on a Frida *callback*
+        # thread that can wedge in the post-flush detach/unload teardown (the
+        # script is already destroyed, so the detach RPC/join stalls) — and
+        # os._exit(0) in cleanup()'s finally is then never reached, leaving the
+        # process alive until the user hits Ctrl+C (see fkie-cad/friTap#64 logs).
+        # The main thread is reliably awake here and all data is already flushed,
+        # so it owns the final exit. TUI manages its own lifecycle (mirrors the
+        # cleanup() guard), so skip there.
+        if not self._tui_mode:
+            os._exit(0)
 
     def _resolve_agent_bundle_path(self):
         """Resolve the agent bundle path to load (Frida backend).

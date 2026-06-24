@@ -206,6 +206,27 @@ export let debug_output: boolean = false;
 //@ts-ignore
 export let quic_only: boolean = false;
 
+// --no-loader-hook: skip the inline android_dlopen_ext loader trampoline. Set
+// automatically (spawn + anti-tamper) or forced via the flag. Avoids the PairIP
+// SIGSEGV in spawn mode; only already-loaded / explicitly-selected TLS libs are
+// hooked. See agent/platforms/android.ts loader-hook gating and friTap#64.
+//@ts-ignore
+export let no_loader_hook: boolean = false;
+
+// True when friTap spawned the target (-s) rather than attaching. The
+// android_dlopen_ext loader hook only trips PairIP when resident during the
+// spawn-time integrity scan, so the anti-tamper auto-skip is gated on this.
+//@ts-ignore
+export let spawned: boolean = false;
+
+// EXPERIMENTAL (--experimental-stealth-loader, Part C / friTap#64). When true,
+// the Android loader is watched via a hardware breakpoint (ARM64 debug
+// registers, no linker code patch) instead of the inline android_dlopen_ext
+// trampoline, so late-loaded TLS libs can be hooked on PairIP-protected apps
+// without tripping the anti-tamper scan. Unvalidated on-device; defaults OFF.
+//@ts-ignore
+export let stealth_loader: boolean = false;
+
 // Telegram (Secret-Chat E2E + tgnet/mtproto transport) capture. Gated under
 // `--protocol telegram`. When true the android hook table installs the Telegram
 // Secret-Chat Java hooks (and, via registry.protocolMatches, the tgnet/mtproto
@@ -274,6 +295,9 @@ library_scan_enabled = config_batch.library_scan_enabled ?? library_scan_enabled
 setOhttpEnabled(config_batch.ohttp_enabled ?? ohttp_enabled);
 quic_capture_mode = config_batch.quic_capture_mode ?? quic_capture_mode;
 quic_only = config_batch.quic_only ?? quic_only;
+no_loader_hook = config_batch.no_loader_hook ?? no_loader_hook;
+spawned = config_batch.spawned ?? spawned;
+stealth_loader = config_batch.stealth_loader ?? stealth_loader;
 quic_egress_headers_layer = config_batch.quic_egress_headers_layer ?? quic_egress_headers_layer;
 debug_output = config_batch.debug_output ?? debug_output;
 telegram_enabled = config_batch.telegram_enabled ?? telegram_enabled;

@@ -11,7 +11,7 @@ Routes agent message payloads to the EventBus as typed events.
 from __future__ import annotations
 import logging
 
-from .events import EventBus, KeylogEvent, DatalogEvent, LibraryDetectedEvent, ConsoleEvent, SessionEvent, OhttpEvent, HookBreadcrumbEvent
+from .events import EventBus, KeylogEvent, DatalogEvent, LibraryDetectedEvent, AntiTamperDetectedEvent, ConsoleEvent, SessionEvent, OhttpEvent, HookBreadcrumbEvent
 from .constants import SSL_READ, ContentType
 from .connection_index import resolve_connection_key
 from .ssl_logger import get_addr_string
@@ -39,6 +39,10 @@ class MessageRouter:
         self._event_bus = event_bus
         self._logger = logging.getLogger("friTap.router")
         self._data_filter = None  # Optional FilterEngine for network-level filtering
+        # Render the anti-tamper banner at most once per session, even though
+        # several agent code paths may emit `anti_tamper_detected` (detection +
+        # loader-hook skip). Subsequent events still flow to API consumers.
+        self._anti_tamper_bannered = False
         # The user-selected --protocol. When it is "telegram", MTProto cloud keys
         # AND Secret-Chat E2E keys are routed into ONE combined keylog file (both
         # emitted as protocol="telegram"); otherwise behaviour is unchanged.
@@ -58,6 +62,8 @@ class MessageRouter:
             self._emit_datalog(payload, data)
         elif content_type == "library_detected":
             self._emit_library_detected(payload)
+        elif content_type == ContentType.ANTI_TAMPER_DETECTED:
+            self._emit_anti_tamper_detected(payload)
         elif content_type == "connection_lifecycle":
             self._emit_lifecycle(payload)
         elif content_type == "ohttp_plaintext":
@@ -145,6 +151,27 @@ class MessageRouter:
             library=payload.get("library", ""),
             path=payload.get("path", ""),
             protocol=payload.get("protocol", "tls"),
+        ))
+
+    def _emit_anti_tamper_detected(self, payload: dict) -> None:
+        """Surface a detected anti-tamper runtime (e.g. PairIP). Renders ONE
+        blank-line-padded red banner to the CLI (the single presentation point;
+        the agent emits only the structured signal) and emits a structured event
+        so API consumers (friTap/api.py) can react programmatically."""
+        name = payload.get("name") or payload.get("library", "")
+        note = payload.get("note", "")
+        skipped = bool(payload.get("skippedLoaderHook", False))
+        reason = payload.get("reason", "detected")
+        if not self._anti_tamper_bannered:
+            self._anti_tamper_bannered = True
+            from .fritap_utility import build_anti_tamper_banner
+            banner = build_anti_tamper_banner(name, note, skipped, reason)
+            # ERROR maps to red in CustomFormatter; _colorize opts this record in.
+            self._logger.error(banner, extra={"_colorize": True})
+        self._event_bus.emit(AntiTamperDetectedEvent(
+            library=payload.get("library", ""),
+            name=name,
+            skipped_loader_hook=skipped,
         ))
 
     def _emit_console(self, payload: dict, level: str = "info") -> None:

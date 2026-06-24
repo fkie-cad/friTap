@@ -1,4 +1,4 @@
-import { log, devlog, devlog_error } from "../util/log.js";
+import { log, devlog, devlog_error, hookBreadcrumb } from "../util/log.js";
 import { toHexString } from "../util/hex.js";
 import { AF_INET, AF_INET6, AddressFamilyMapping, unwantedFDs, Platform } from "./shared_structures.js";
 import { HookRegistration, HookRegistry } from "./registry.js";
@@ -6,6 +6,7 @@ import { Java, JavaWrapper } from "./javalib.js";
 import { offsets, ohttp_enabled, selected_protocol } from "./shared_structures.js";
 import { announceSiblingCoverage, isModuleHooked, markModuleHooked } from "./library_scanner.js";
 import { warnAntiTamper } from "../util/anti_tamper.js";
+import { watchFunctionEntries } from "../util/hw_breakpoint.js";
 // Pure sockaddr/PRNetAddr decoders live in sockaddr.ts so they can be unit-tested
 // under Node without this module's heavy Frida import graph. Imported for internal
 // use (getPortsAndAddresses) and re-exported below for existing importers.
@@ -45,6 +46,12 @@ export function shouldInstallOhttpHooks(): boolean {
  *
  * Passes the TLS protocol filter because OHTTP entries live under the TLS
  * family in the registry (`protocol: "tls"` with `libraryType: "nss_hpke"`).
+ *
+ * @param skipLoaderHook When true, hook only already-loaded modules and do NOT
+ *   install the inline `android_dlopen_ext`/`dlopen` loader trampoline. This is
+ *   the same trampoline PairIP / anti-tamper runtimes detect and SIGSEGV on
+ *   (fkie-cad/friTap#64); the Android caller gates it behind --no-loader-hook /
+ *   spawn+anti-tamper. Defaults to false so every other platform is unchanged.
  */
 export function installOhttpHooks(
     platform: Platform,
@@ -52,10 +59,13 @@ export function installOhttpHooks(
     moduleNames: Array<string>,
     platformLabel: string,
     loaderConfig: DynamicLoaderConfig,
+    skipLoaderHook: boolean = false,
 ): void {
     if (!shouldInstallOhttpHooks()) return;
     ssl_library_loader(platform, hookRegistry, moduleNames, platformLabel, true, "tls");
-    hookDynamicLoader(loaderConfig, hookRegistry, moduleNames, false, "tls");
+    if (!skipLoaderHook) {
+        hookDynamicLoader(loaderConfig, hookRegistry, moduleNames, false, "tls");
+    }
 }
 
 function wait_for_library_loaded(module_name: string){
@@ -120,6 +130,12 @@ export function ssl_library_loader(platform: Platform, hookRegistry: HookRegistr
                 } catch (error) {
                     wait_for_library_loaded(module_name);
                 }
+
+                // Crash-attribution: record which library we are about to
+                // inline-hook. If an anti-tamper runtime (e.g. PairIP) tears the
+                // process down in response, on_detach can name this as the last
+                // instrumented library instead of an empty breadcrumb (#64).
+                hookBreadcrumb(`install-tls-hooks: ${module_name}`);
 
                 // Invoke the hook function
                 match.hookFn(module_name, is_base_hook);
@@ -300,6 +316,68 @@ export function hookDynamicLoader(
         devlog("Dynamic loader error: " + error);
         log(`No dynamic loader present for hooking on ${config.platformLabel}.`);
     }
+}
+
+/**
+ * EXPERIMENTAL — Part C of fkie-cad/friTap#64. A code-patch-free alternative to
+ * {@link hookDynamicLoader}: instead of `Interceptor.attach`-ing an inline
+ * trampoline onto `android_dlopen_ext` (which PairIP detects and SIGSEGVs on),
+ * arm a hardware breakpoint on the loader entry (ARM64 debug registers, no byte
+ * changes) and, on each call, rescan the live module list and hook any newly
+ * loaded TLS library directly via {@link ssl_library_loader} (whose registry
+ * dedup + anti-tamper skip we reuse). Hooking the app's own TLS lib is outside
+ * PairIP's documented detection set, so this aims to enable spawn-mode capture
+ * on protected apps without crashing them.
+ *
+ * Must be validated on-device (see friTap#64 experiment matrix); see
+ * {@link watchFunctionEntries} for the per-thread / coverage caveats.
+ *
+ * @returns true if the hardware-breakpoint watcher was armed.
+ */
+export function installStealthDynamicLoader(
+    config: DynamicLoaderConfig,
+    hookRegistry: HookRegistry,
+    getFreshModuleNames: () => Array<string>,
+    protocol?: string
+): boolean {
+    let loaderAddr: NativePointer;
+    try {
+        const loaderRegex = config.loaderLibrary instanceof RegExp
+            ? config.loaderLibrary
+            : new RegExp(config.loaderLibrary as string);
+        const loaderModule = getFreshModuleNames().find(n => n.match(loaderRegex));
+        if (loaderModule === undefined) {
+            log(`[-] stealth loader: ${config.platformLabel} dynamic loader module not found`);
+            return false;
+        }
+        let funcName = config.functionName;
+        if (config.preferFunction) {
+            for (const ex of Process.getModuleByName(loaderModule).enumerateExports()) {
+                if (ex.name === config.preferFunction) { funcName = config.preferFunction; break; }
+            }
+        }
+        loaderAddr = Process.getModuleByName(loaderModule).getExportByName(funcName);
+    } catch (e) {
+        log("[-] stealth loader: failed to resolve loader entry: " + e);
+        return false;
+    }
+
+    // Coalesce bursts of dlopen calls into a single deferred rescan on the JS
+    // thread (the breakpoint fires on the target's thread; do the hooking work
+    // off the exception handler).
+    let rescanScheduled = false;
+    const armed = watchFunctionEntries(loaderAddr, () => {
+        if (rescanScheduled) return;
+        rescanScheduled = true;
+        setTimeout(() => {
+            rescanScheduled = false;
+            try {
+                ssl_library_loader(config.platform, hookRegistry, getFreshModuleNames(), config.platformLabel, false, protocol);
+            } catch (e) { devlog("[stealth loader] rescan failed: " + e); }
+        }, 0);
+    });
+    if (armed) log(`[*] ${config.platformLabel} stealth loader watch armed (hardware breakpoint, no linker patch).`);
+    return armed;
 }
 
 export function getSocketLibrary(){

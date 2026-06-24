@@ -1,6 +1,6 @@
 {
     "name": "friTap",
-    "version": "2.2.1",
+    "version": "2.2.2",
     "description": "Frida agent for logging encrypted traffic as plaintext and extracting its encryption keys",
     "private": true,
     "main": "agent/fritap_agent.ts",
@@ -8,7 +8,7 @@
         "prepare": "npm run build",
         "build": "frida-compile agent/fritap_agent.ts -o friTap/fritap_agent.js",
         "watch": "frida-compile agent/fritap_agent.ts -o friTap/_fritap_agent.js -w",
-        "test:agent": "node --import tsx --test agent/shared/arm64.test.ts agent/shared/sockaddr.test.ts"
+        "test:agent": "node --import tsx --test agent/shared/arm64.test.ts agent/shared/sockaddr.test.ts agent/util/anti_tamper.test.ts"
     },
     "keywords": [
         "frida",

@@ -181,6 +181,36 @@ class CustomFormatter(logging.Formatter):
                 return f"{color}{text}{self.RESET}"
         return text
 
+
+def build_anti_tamper_banner(name: str, note: str, skipped_loader_hook: bool,
+                             reason: str = "detected") -> str:
+    """Build the multi-line anti-tamper banner message (blank-line padded).
+
+    Returns a single string with leading/trailing blank lines and a boxed body
+    so the message stands out from the surrounding hook logs. Color is applied
+    by ``CustomFormatter`` when this is logged at ERROR with
+    ``extra={"_colorize": True}`` (red on a TTY, plain when piped / NO_COLOR).
+    """
+    rule = "=" * 60
+    lines = ["", rule]
+    if reason == "flag" and not name:
+        lines.append("  [!!!] LOADER HOOK DISABLED (--no-loader-hook)")
+    else:
+        lines.append(f"  [!!!] ANTI-TAMPER PROTECTION DETECTED: {name or 'unknown'}")
+    if note:
+        lines.append(f"  {note}")
+    if skipped_loader_hook:
+        lines.append("  -> Skipped the android_dlopen_ext loader hook to avoid a SIGSEGV.")
+        lines.append("  -> Spawn-mode key capture is not possible here. Start the app, then")
+        lines.append("     ATTACH friTap (run WITHOUT -s). Already-loaded TLS libs stay hooked.")
+    else:
+        lines.append("  -> friTap's inline hooks may be detected; the app may crash (SIGSEGV).")
+    lines.append("  See fkie-cad/friTap#64. There is no in-tool PairIP bypass.")
+    lines.append(rule)
+    lines.append("")
+    return "\n".join(lines)
+
+
 class FriTapExit(Exception):
     """
     Base exception for controlled friTap exits.

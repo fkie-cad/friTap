@@ -97,6 +97,19 @@ class LibraryDetectedEvent(FriTapEvent):
     path: str = ""
 
 
+@dataclass
+class AntiTamperDetectedEvent(FriTapEvent):
+    """Emitted when a known anti-tamper / integrity-protection runtime (e.g.
+    Google PairIP, libpairipcore.so) is detected in the target process.
+
+    ``skipped_loader_hook`` is True when friTap responded by skipping the inline
+    android_dlopen_ext loader hook to avoid a SIGSEGV (fkie-cad/friTap#64).
+    """
+    library: str = ""
+    name: str = ""
+    skipped_loader_hook: bool = False
+
+
 # Session lifecycle event type constants
 SESSION_STARTED = "started"
 SESSION_RESUMED = "resumed"
