@@ -16,7 +16,7 @@ import { installBoringSSLSymbolHook, makeBoringSslDumpKeys, attemptSymbolFallbac
 import { installBoringSSLPatternHook } from "./boringssl_pattern_hook.js";
 import { detectBoringSSLFamily } from "./boringssl_family_detect.js";
 import { devlog, devlog_debug, devlog_error, log } from "../util/log.js";
-import { keylog_enabled } from "../fritap_agent.js";
+import { keylog_enabled, pairip_safe } from "../fritap_agent.js";
 
 export type BoringSSLHookOutcome = "callback" | "symbol" | "pattern" | "none";
 
@@ -74,6 +74,16 @@ export function installBoringSSLKeylogChain(
             }
             return tier;
         }
+    }
+
+    // --pairip-safe: HARD-DISABLE the pattern (Memory.scan) tier. PairIP's
+    // integrity check SIGSEGVs the process on a Memory.scan of a protected lib,
+    // so an unresolved boring lib must degrade to "no hook", never scan. (Tier 3
+    // otherwise fires even with no --patterns via the bundled ssl_log_secret
+    // floor at 3d — see boringssl_pattern_hook.ts.)
+    if (pairip_safe) {
+        devlog(`[bssl-chain] ${moduleName}: pattern tier disabled (--pairip-safe); exports/offsets only`);
+        return "none";
     }
 
     // Tier 3: byte-pattern scan with a 4-sub-tier cascade

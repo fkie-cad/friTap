@@ -680,6 +680,9 @@ class SSL_Logger():
                     'spawned': bool(self._config.device.spawn),
                     # EXPERIMENTAL: hardware-breakpoint loader watch (no linker patch).
                     'stealth_loader': getattr(self._config.hooking, 'stealth_loader', False),
+                    # --pairip-safe: minimal symbol-only keylog on BoringSSL libs;
+                    # skip loader hook, pattern scan, Java & OHTTP (friTap#64).
+                    'pairip_safe': getattr(self._config.hooking, 'pairip_safe', False),
                     # Override for the HTTP/3 egress-headers chain layer. "auto" keeps
                     # the winner-takes-all fallback; anything else forces a specific
                     # layer so chain validation tests can exercise lower tiers on

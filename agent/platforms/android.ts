@@ -1,6 +1,7 @@
 import { hookRegistry, HookRegistry } from "../shared/registry.js";
-import { getModuleNames, ssl_library_loader, hookDynamicLoader, installOhttpHooks, installStealthDynamicLoader } from "../shared/shared_functions.js";
+import { getModuleNames, ssl_library_loader, hookDynamicLoader, installOhttpHooks, installStealthDynamicLoader, installPairipSafeWatcher } from "../shared/shared_functions.js";
 import { matchAntiTamper, warnAntiTamper, scanForAntiTamper, bannerAntiTamper } from "../util/anti_tamper.js";
+import { matchNonTLSLibrary, noteNonTLSLibrary } from "../util/non_tls_libs.js";
 import { Platform, PLATFORM_LINUX } from "../shared/shared_structures.js";
 import { log, devlog } from "../util/log.js";
 import { findModulesWithSSLKeyLogCallback } from "../tls/shared/library_identification.js";
@@ -9,12 +10,12 @@ import { gnutls_execute_modern } from "../tls/platforms/android/gnutls_android.j
 import { wolfssl_execute_modern } from "../tls/platforms/android/wolfssl_android.js";
 import { nss_execute_modern } from "../tls/platforms/android/nss_android.js";
 import { mbedTLS_execute_modern } from "../tls/platforms/android/mbedTLS_android.js";
-import { boring_execute_modern } from "../tls/platforms/android/openssl_boringssl_android.js";
+import { boring_execute_modern, httpengine_execute_modern } from "../tls/platforms/android/openssl_boringssl_android.js";
 import { conscrypt_execute_modern } from "../tls/platforms/android/conscrypt.js";
 import { s2ntls_execute_modern } from "../tls/platforms/android/s2ntls_android.js";
 import { cronet_execute_modern } from "../tls/platforms/android/cronet_modern_android.js";
 // Legacy (class-based) executors
-import { boring_execute } from "../legacy/tls/platforms/android/openssl_boringssl_android.js";
+import { boring_execute, httpengine_execute } from "../legacy/tls/platforms/android/openssl_boringssl_android.js";
 import { gnutls_execute } from "../legacy/tls/platforms/android/gnutls_android.js";
 import { wolfssl_execute } from "../legacy/tls/platforms/android/wolfssl_android.js";
 import { nss_execute } from "../legacy/tls/platforms/android/nss_android.js";
@@ -26,8 +27,9 @@ import { s2ntls_execute } from "../legacy/tls/platforms/android/s2ntls_android.j
 import { java_execute } from "../tls/platforms/android/android_java_tls_libs.js";
 import { flutter_execute, flutter_execute_modern } from "../tls/platforms/android/flutter_android.js";
 import { mono_btls_execute, mono_btls_execute_modern } from "../tls/platforms/android/mono_btls_android.js";
-import { patterns, isPatternReplaced, selected_protocol, use_modern, scan_results, library_scan_enabled, quic_only, no_loader_hook, spawned, stealth_loader } from "../fritap_agent.js"
+import { patterns, isPatternReplaced, selected_protocol, use_modern, scan_results, library_scan_enabled, quic_only, no_loader_hook, spawned, stealth_loader, pairip_safe } from "../fritap_agent.js"
 import { processScanResults, isModuleHooked, markModuleHooked } from "../shared/library_scanner.js";
+import { buildPairipSafeRegistrations, matchPairipSafeLib } from "../shared/pairip_safe_libs.js";
 import { pattern_execute } from "../tls/platforms/android/pattern_android.js"
 import { rustls_execute, rustls_execute_modern } from "../tls/platforms/android/rustls_android.js";
 import { gotls_execute, gotls_execute_modern } from "../tls/platforms/android/gotls_android.js";
@@ -95,6 +97,9 @@ function install_pattern_based_hooks(){
                 // Never Memory.scan an anti-tamper lib (PairIP) even if a
                 // user-supplied pattern would match it; it crashes the target.
                 if (matchAntiTamper(candidate)) { warnAntiTamper(candidate); continue; }
+                // Skip known non-TLS libraries (e.g. WebView plat_support/loader)
+                // even if a user-supplied pattern would match them; no keys live there.
+                if (matchNonTLSLibrary(candidate)) { noteNonTLSLibrary(candidate); continue; }
                 if (isModuleHooked(candidate, "tls")) continue;
                 try {
                     Process.getModuleByName(candidate).ensureInitialized();
@@ -138,6 +143,15 @@ export function load_android_hooking_agent() {
         // TLS libraries (TLS protocol family — also covers QUIC and OHTTP below)
         { platform: plattform_name, pattern: /.*libssl_sb.so/, hookFn: (use_modern ? boring_execute_modern : boring_execute), library: "OpenSSL/BoringSSL", libraryType: "openssl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libssl\.so/, hookFn: (use_modern ? boring_execute_modern : boring_execute), library: "OpenSSL/BoringSSL", libraryType: "openssl", protocol: "tls" },
+        // libhttpengine.so statically links BoringSSL and exports the SSL_* surface
+        // (possibly only in .symtab). httpengine_execute* opts the module into deep
+        // symbol resolution, then runs the standard BoringSSL chain.
+        { platform: plattform_name, pattern: /.*libhttpengine\.so/, hookFn: (use_modern ? httpengine_execute_modern : httpengine_execute), library: "httpengine (BoringSSL)", libraryType: "boringssl", protocol: "tls" },
+        // libcommerce_http_client.so is com.blizzard.arc's statically-linked BoringSSL
+        // (curl + BoringSSL). It exports SSL_CTX_set_keylog_callback but may keep the
+        // SSL_* surface in .symtab; httpengine_execute* opts it into deep symbol
+        // resolution, then runs the standard BoringSSL chain — same as libhttpengine.so.
+        { platform: plattform_name, pattern: /.*libcommerce_http_client\.so/, hookFn: (use_modern ? httpengine_execute_modern : httpengine_execute), library: "Blizzard commerce (BoringSSL)", libraryType: "boringssl", protocol: "tls" },
         { platform: plattform_name, pattern: /libconscrypt_gmscore_jni.so/, hookFn: (use_modern ? conscrypt_execute_modern : conscrypt_native_execute), library: "Conscrypt", libraryType: "boringssl", protocol: "tls" },
         { platform: plattform_name, pattern: /libconscrypt_jni.so/, hookFn: (use_modern ? conscrypt_execute_modern : conscrypt_native_execute), library: "Conscrypt", libraryType: "boringssl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*flutter.*\.so/, hookFn: (use_modern ? flutter_execute_modern : flutter_execute), library: "Flutter BoringSSL", libraryType: "boringssl", protocol: "tls" },
@@ -221,10 +235,21 @@ export function load_android_hooking_agent() {
         // agent entry runs, so they are present here at registration time).
         ...collectContributedHooks(),
     ];
+    // --pairip-safe (friTap#64): restrict to the curated, scan-free TLS-library
+    // allowlist (PAIRIP_SAFE_LIBS — the single source of truth, also consumed by
+    // the spawn watcher and the blink loop). PairIP's periodic integrity check
+    // SIGSEGVs the process when friTap pattern-scans/hooks the WebView/Chromium
+    // (Cronet) libs or installs the dynamic-loader hook, so every cronet/webview/
+    // pattern/quic entry is excluded and the pattern (Memory.scan) tier is
+    // hard-disabled elsewhere. Add a library by adding ONE entry to PAIRIP_SAFE_LIBS.
+    const pairipSafeHooks = buildPairipSafeRegistrations(plattform_name, use_modern);
     // --quic-only: install ONLY the Google QUICHE hooks (skip every TLS-library
     // hook and its keylog pattern scans). Faster attach, no Java VM sync, less
     // risk of stalling an already-busy target.
-    hookRegistry.registerAll(quic_only ? __androidHooks.filter(e => (e as any).libraryType === "google_quiche") : __androidHooks);
+    hookRegistry.registerAll(
+        pairip_safe ? (pairipSafeHooks as typeof __androidHooks)
+        : quic_only ? __androidHooks.filter(e => (e as any).libraryType === "google_quiche")
+        : __androidHooks);
 
     const androidLoaderConfig = {
         platform: plattform_name,
@@ -255,15 +280,24 @@ export function load_android_hooking_agent() {
     // best-effort — PairIP that loads AFTER this point can't be pre-detected, so
     // --no-loader-hook (or attach mode) remains the reliable control.
     const antiTamperPresent = scanForAntiTamper();
+    // --pairip-safe forces the loader hook OFF (the inline android_dlopen_ext
+    // trampoline AND the HW-bp stealth watcher both lead to hooking late-loaded
+    // WebView/Cronet libs, which trips PairIP). Target libs are hooked by symbol/
+    // offset only — already-loaded ones in the ssl-libs phase (attach), and
+    // libs that load later via the non-invasive pairip-safe watcher (spawn).
+    if (pairip_safe && spawned) {
+        log("[!] --pairip-safe spawn: deferring hooks past PairIP's startup integrity window, then hooking on load.");
+        log("[!] Note: spawn is best-effort and may miss the app's earliest (startup) handshakes; attach is the proven path.");
+    }
     // EXPERIMENTAL stealth loader (Part C, friTap#64): watch android_dlopen_ext
     // via a hardware breakpoint (no linker code patch) instead of the inline
     // trampoline. It REPLACES the inline hook but, unlike the plain skip, still
     // captures late-loaded TLS libs — so it is its own mode, not a "disable".
-    const useStealthLoader = stealth_loader;
+    const useStealthLoader = stealth_loader && !pairip_safe;
     // Skip the inline loader hook when forced (--no-loader-hook) or, auto, in
     // spawn + anti-tamper. Stealth mode supplies its own (HW-bp) watcher, so the
     // inline hook is neither installed nor reported as a capture-disabling skip.
-    const loaderHookSkipped = !useStealthLoader && (no_loader_hook || (spawned && antiTamperPresent));
+    const loaderHookSkipped = pairip_safe || (!useStealthLoader && (no_loader_hook || (spawned && antiTamperPresent)));
     // The single gate for the inline android_dlopen_ext trampoline across ALL
     // sites (OHTTP, loader+patterns, library-scan).
     const installInlineLoaderHook = !loaderHookSkipped && !useStealthLoader;
@@ -278,9 +312,14 @@ export function load_android_hooking_agent() {
     // yielded phases. Each yield releases the Frida runtime so the target's hot
     // threads can make progress between bursts of Interceptor.attach work.
     const phases: Array<{ label: string; fn: () => void }> = [];
-    if (!quic_only) phases.push({ label: "java", fn: () => install_java_hooks() });
+    // --pairip-safe: ONLY the symbol-based ssl-libs phase. Skip Java hooks
+    // (ART instrumentation), OHTTP+scan-results, the loader+patterns phase
+    // (pattern scan of WebView/Cronet libs is what trips PairIP), and the
+    // library-scan pass.
+    if (pairip_safe) log("[*] --pairip-safe: symbol-only keylog on libssl/libjavacrypto/conscrypt; loader hook, pattern scan, Java & OHTTP hooks disabled.");
+    if (!quic_only && !pairip_safe) phases.push({ label: "java", fn: () => install_java_hooks() });
     phases.push({ label: "ssl-libs", fn: () => hook_native_Android_SSL_Libs(hookRegistry, true) });
-    if (!quic_only) phases.push({
+    if (!quic_only && !pairip_safe) phases.push({
         label: "ohttp+scan-results",
         fn: () => {
             // Skip OHTTP's own android_dlopen_ext trampoline whenever the inline
@@ -290,7 +329,7 @@ export function load_android_hooking_agent() {
             processScanResults(scan_results, plattform_name, true, selected_protocol);
         },
     });
-    phases.push({
+    if (!pairip_safe) phases.push({
         label: "loader+patterns",
         fn: () => {
             if (useStealthLoader) {
@@ -309,7 +348,7 @@ export function load_android_hooking_agent() {
     // --library-scan is the auto-detect-extra-BoringSSL pass. Deferred to the
     // last phase so it runs AFTER the base hooks (preserving the original
     // synchronous ordering) and inherits the same per-phase yield budget.
-    if (library_scan_enabled) phases.push({
+    if (library_scan_enabled && !pairip_safe) phases.push({
         label: "library-scan",
         fn: () => {
             let matchedModules = findModulesWithSSLKeyLogCallback();
@@ -347,6 +386,24 @@ export function load_android_hooking_agent() {
         }, 0);
     };
     runPhase(0);
+
+    // --pairip-safe: spawn + attach late-load watcher. The ssl-libs phase above
+    // hooked already-loaded targets (attach). This non-invasive watcher hooks
+    // targets that load LATER — the spawn case (TLS libs load after resume) and
+    // any late dlopen in attach — without a loader hook or Memory.scan. Hooking
+    // is deferred past PairIP's startup integrity window in spawn mode.
+    if (pairip_safe) {
+        // ~8s past agent-load (≈resume) clears PairIP's startup gate before any
+        // inline keylog hook lands; attach is already past startup so use a short
+        // delay there. Tunable starting points (see plan); device-validated.
+        const PAIRIP_SAFE_HOOK_DELAY_MS = spawned ? 8000 : 1500;
+        const PAIRIP_SAFE_POLL_MS = 1000;
+        installPairipSafeWatcher(
+            plattform_name, hookRegistry, getModuleNames, selected_protocol,
+            (n) => matchPairipSafeLib(n) !== undefined,
+            PAIRIP_SAFE_HOOK_DELAY_MS, PAIRIP_SAFE_POLL_MS,
+        );
+    }
 
     // Late-load anti-tamper surfacing (fkie-cad/friTap#64). PairIP's
     // libpairipcore.so frequently loads AFTER our synchronous scan above, so the

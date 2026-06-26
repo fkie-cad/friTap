@@ -7,18 +7,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [2.2.2]
 
 ### Added
+  - **`--pairip-safe` (Android).** Minimal, scan-free capture mode for Google
+    PairIP-protected apps. Hooks only a curated TLS-library allowlist
+    (`agent/shared/pairip_safe_libs.ts`) resolved without any `Memory.scan`
+    (exports → `.symtab` → offsets), and disables the loader hook, Java/ART hooks,
+    the WebView/Cronet pattern scan and OHTTP — the broad footprint that trips
+    PairIP's integrity check and `SIGSEGV`s the app. Keys persist via "blink"
+    (hooks toggled so `.text` stays pristine between scans). Works with attach and
+    spawn (`-s`). Captures the System WebView (Chromium) login by offset-hooking
+    `bssl::ssl_log_secret`; `dev/find_ssl_log_secret_offset.py` derives the
+    (target-specific) offset from a stripped `.so`. Unity's `libunity.so` MbedTLS
+    hook is opt-in via `--offsets` (inline `.text` on an app-bundled lib carries a
+    PairIP-detection risk). Full guide: `docs/advanced/pairip-safe.md`.
+    (fkie-cad/friTap#64)
   - **`--no-loader-hook` / `-nlh` (Android).** Skips the inline `android_dlopen_ext`
     loader trampoline. Only already-loaded / explicitly-selected (`--offsets`) TLS
     libraries are then hooked. Intended for apps protected by Google PairIP and other
     anti-tamper runtimes, where the loader hook is detected during the spawn-time
     integrity scan and the app self-terminates with SIGSEGV (fkie-cad/friTap#64).
-  - **`--experimental-stealth-loader` (Android, arm64) — EXPERIMENTAL.** Watches
-    `android_dlopen_ext` via a **hardware breakpoint** (ARM64 debug registers — no
-    linker code patch) instead of the inline trampoline, then hooks each newly
-    loaded TLS library directly. The goal is spawn-mode capture on PairIP-protected
-    apps without tripping the anti-tamper scan. **Unvalidated on-device**; needs
-    root `frida-server`, and may miss loads on threads created after attach. New
-    `agent/util/hw_breakpoint.ts`. See fkie-cad/friTap#64.
+
 
 ### Fixed
   - **`--no-loader-hook` now also gates the OHTTP loader hook.** `installOhttpHooks`

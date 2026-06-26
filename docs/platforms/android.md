@@ -143,6 +143,17 @@ When socket information cannot be determined:
 fritap -m --enable_default_fd --pcap traffic.pcap com.example.app
 ```
 
+### PairIP-Protected Apps (anti-tamper)
+
+Apps hardened with Google **PairIP** (`libpairipcore.so`) crash with a `SIGSEGV`
+under friTap's default inline hooks. Use the scan-free `--pairip-safe` mode:
+
+```bash
+fritap -m -k keys.log --pairip-safe -v com.example.app
+```
+
+See the dedicated guide: **[PairIP-Protected Apps](../advanced/pairip-safe.md)**.
+
 ## SSL/TLS Libraries on Android
 
 ### Supported Libraries

@@ -9,7 +9,8 @@ import { log, devlog, devlog_error, devlog_debug } from "../../util/log.js";
 import { sendKeylog, sendDatalog } from "../../shared/shared_structures.js";
 import { getPortsAndAddresses } from "../../shared/shared_functions.js";
 import { readHexFromPointer } from "../decoders/hex_utils.js";
-import { enable_default_fd, pcap_enabled } from "../../fritap_agent.js";
+import { enable_default_fd, pcap_enabled, pairip_safe } from "../../fritap_agent.js";
+import { registerBlinkTarget, PAIRIP_BLINK_ENABLED } from "../../shared/pairip_blink.js";
 import { STANDARD_SOCKET_SYMBOLS, DUMMY_SESSION_ID_OPENSSL } from "./shared_constants.js";
 import { createLifecycleHook, createBufferedClientRandomDecoder } from "./shared_factories.js";
 import { installBoringSSLSymbolHook, makeBoringSslDumpKeys, DumpKeysCb } from "../../shared/boringssl_symbol_hook.js";
@@ -130,55 +131,64 @@ export function createBoringSSLKeylogApproach(): KeylogApproach {
             );
 
             const setKeylogOn = resolvedFns["SSL_CTX_set_keylog_callback"];
-            const tryAttach = (sym: string, handler: InvocationListenerCallbacks): boolean => {
-                const a = addresses[modName]?.[sym];
-                if (!a || a.isNull() || !setKeylogOn) return false;
-                Interceptor.attach(a, handler);
-                return true;
+            const sslNewAddr = addresses[modName]?.["SSL_new"];
+            const ctxNewAddr = addresses[modName]?.["SSL_CTX_new"];
+            const canSslNew = !!(sslNewAddr && !sslNewAddr.isNull() && setKeylogOn);
+            const canCtxNew = !!(ctxNewAddr && !ctxNewAddr.isNull() && setKeylogOn);
+
+            // Tier 1 success requires at least one of SSL_new / SSL_CTX_new — the
+            // set_keylog_callback intercept only fires when the app installs its own
+            // callback, which isn't a reliable trigger.
+            if (!canSslNew && !canCtxNew) return false;
+
+            // (Re-)attach the inline keylog hooks; returns the listeners so the
+            // pairip-safe blink loop can detach/re-attach them (keeping .text
+            // pristine between blinks while the heap-resident keylog callback
+            // keeps firing). In normal mode this just attaches once.
+            const attachAll = (): InvocationListener[] => {
+                const ls: InvocationListener[] = [];
+                if (canSslNew) {
+                    ls.push(Interceptor.attach(sslNewAddr!, {
+                        onEnter: function (args: any) {
+                            try { setKeylogOn!(args[0], keylogCb); }
+                            catch (e) { devlog_error(`[modern] Error in SSL_new keylog hook: ${e}`); }
+                        },
+                    }));
+                }
+                if (canCtxNew) {
+                    ls.push(Interceptor.attach(ctxNewAddr!, {
+                        onLeave: function (retval: any) {
+                            if (retval.isNull()) return;
+                            try { setKeylogOn!(retval, keylogCb); }
+                            catch (e) { devlog_error(`[modern] Error in SSL_CTX_new keylog hook: ${e}`); }
+                        },
+                    }));
+                }
+                ls.push(Interceptor.attach(setKeylogAddr, {
+                    onEnter: function (args: any) {
+                        const userCb = args[1];
+                        if (!userCb.isNull()) {
+                            Interceptor.attach(userCb, {
+                                onEnter: function (innerArgs: any) {
+                                    devlog(`invoking user-installed keylog_callback from OpenSSL_BoringSSL (${modName})`);
+                                    sendKeylog(innerArgs[1].readCString());
+                                },
+                            });
+                        }
+                    },
+                }));
+                return ls;
             };
 
-            // Tier 1 success requires at least one of SSL_new / SSL_CTX_new to
-            // have attached — the set_keylog_callback intercept only fires when
-            // the app installs its own callback, which isn't a reliable trigger.
-            const sslNewAttached = tryAttach("SSL_new", {
-                onEnter: function (args: any) {
-                    try {
-                        setKeylogOn(args[0], keylogCb);
-                    } catch (e) {
-                        devlog_error(`[modern] Error in SSL_new keylog hook: ${e}`);
-                    }
-                },
-            });
-            const ctxNewAttached = tryAttach("SSL_CTX_new", {
-                onLeave: function (retval: any) {
-                    if (retval.isNull()) return;
-                    try {
-                        setKeylogOn(retval, keylogCb);
-                    } catch (e) {
-                        devlog_error(`[modern] Error in SSL_CTX_new keylog hook: ${e}`);
-                    }
-                },
-            });
-
-            Interceptor.attach(setKeylogAddr, {
-                onEnter: function (args: any) {
-                    const userCb = args[1];
-                    if (!userCb.isNull()) {
-                        Interceptor.attach(userCb, {
-                            onEnter: function (innerArgs: any) {
-                                devlog(`invoking user-installed keylog_callback from OpenSSL_BoringSSL (${modName})`);
-                                sendKeylog(innerArgs[1].readCString());
-                            },
-                        });
-                    }
-                },
-            });
-
-            if (sslNewAttached || ctxNewAttached) {
-                log(`[*] ${modName}: keylog hooks installed via SSL_CTX_set_keylog_callback (SSL_new=${sslNewAttached}, SSL_CTX_new=${ctxNewAttached})`);
+            if (pairip_safe && PAIRIP_BLINK_ENABLED) {
+                // Blink: register (roots keylogCb, first BRIGHT attach, schedules toggling).
+                registerBlinkTarget(modName, keylogCb, attachAll);
+            } else {
+                attachAll();
             }
 
-            return sslNewAttached || ctxNewAttached;
+            log(`[*] ${modName}: keylog hooks installed via SSL_CTX_set_keylog_callback (SSL_new=${canSslNew}, SSL_CTX_new=${canCtxNew})`);
+            return true;
         },
     };
 }

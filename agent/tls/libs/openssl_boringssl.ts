@@ -1,4 +1,5 @@
 import { readAddresses, getPortsAndAddresses, resolveOffsets, isSymbolAvailable, checkNumberOfExports, calculateZeroBytePercentage } from "../../shared/shared_functions.js";
+import { isDeepSymbolResolutionEnabled } from "../../shared/deep_symbol_resolution.js";
 import { enable_default_fd, pcap_enabled } from "../../fritap_agent.js";
 import { devlog, devlog_error, log, devlog_info } from "../../util/log.js";
 import { initializePipeline as sharedInitializePipeline, resolveWithPipelineAsync as sharedResolveWithPipelineAsync } from "../../shared/pipeline_utils.js";
@@ -89,10 +90,20 @@ export class OpenSSL_BoringSSL {
             OpenSSL_BoringSSL.modReceiver = new ModifyReceiver();
         }
 
+        // A module exposes a usable SSL surface either via enough dynamic exports
+        // (.dynsym) or, for deep-resolution opt-ins (e.g. libhttpengine.so), via
+        // .symtab — where readAddresses' symbol-table fallback resolves SSL_*.
+        // Computed once: the export count is invariant for this install, so this
+        // also avoids a second checkNumberOfExports() (enumerateExports) pass below.
+        const sslSurfaceResolvable = checkNumberOfExports(moduleName) > 2 || isDeepSymbolResolutionEnabled(moduleName);
+
         if(typeof passed_library_method_mapping !== 'undefined'){
             this.library_method_mapping = passed_library_method_mapping;
         }else{
-            if(checkNumberOfExports(moduleName) > 2 ){
+            // Build the mapping when the SSL surface is resolvable. Deep modules
+            // qualify even with few/no dynamic exports; this also avoids the
+            // .push-on-undefined below when the mapping key would never be created.
+            if(sslSurfaceResolvable){
                 this.library_method_mapping[`*${moduleName}*`] = ["SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_keylog_callback"]
             }
             this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
@@ -141,7 +152,7 @@ export class OpenSSL_BoringSSL {
 
 
 
-        if(!ObjC.available && checkNumberOfExports(moduleName) > 2){
+        if(!ObjC.available && sslSurfaceResolvable){
             try{
                 this.SSL_SESSION_get_id = new NativeFunction(this.addresses[this.moduleName]["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
                 this.SSL_get_fd = ObjC.available ? new NativeFunction(this.addresses[this.moduleName]["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(this.addresses[this.moduleName]["SSL_get_fd"], "int", ["pointer"]);

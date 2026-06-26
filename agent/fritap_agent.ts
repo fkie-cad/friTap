@@ -23,6 +23,7 @@ import {
 } from "./shared/shared_structures.js";
 export { offsets, pcap_enabled, keylog_enabled, _isShuttingDown, ohttp_enabled, selected_protocol, config_extensions };
 import { maybeRunRegionScan } from "./shared/scan/scan_engine.js";
+import { stopBlink } from "./shared/pairip_blink.js";
 
 // global address which stores the addresses of the hooked modules which aren't loaded via the dynamic loader
 (globalThis as any).init_addresses = {};
@@ -227,6 +228,20 @@ export let spawned: boolean = false;
 //@ts-ignore
 export let stealth_loader: boolean = false;
 
+// --pairip-safe (friTap#64): minimal, scan-free capture mode for PairIP-
+// protected apps (works with both attach and spawn). PairIP runs a PERIODIC
+// code-integrity check that SIGSEGVs the
+// process when it finds inline hooks. Empirically (on com.blizzard.arc) the
+// trigger is friTap's broad footprint — the dynamic-loader hook AND the
+// pattern-scan/hooking of the WebView/Chromium (Cronet) libs. A minimal
+// symbol-only keylog on the exported-symbol BoringSSL libs (libssl.so,
+// libjavacrypto.so, libconscrypt*) survives the check's window and captures
+// keys. When true the android agent restricts the hook registry to those libs
+// and runs ONLY the ssl-libs phase (no loader hook, no pattern scan, no Java,
+// no OHTTP, no library-scan). Attach mode only.
+//@ts-ignore
+export let pairip_safe: boolean = false;
+
 // Telegram (Secret-Chat E2E + tgnet/mtproto transport) capture. Gated under
 // `--protocol telegram`. When true the android hook table installs the Telegram
 // Secret-Chat Java hooks (and, via registry.protocolMatches, the tgnet/mtproto
@@ -298,6 +313,7 @@ quic_only = config_batch.quic_only ?? quic_only;
 no_loader_hook = config_batch.no_loader_hook ?? no_loader_hook;
 spawned = config_batch.spawned ?? spawned;
 stealth_loader = config_batch.stealth_loader ?? stealth_loader;
+pairip_safe = config_batch.pairip_safe ?? pairip_safe;
 quic_egress_headers_layer = config_batch.quic_egress_headers_layer ?? quic_egress_headers_layer;
 debug_output = config_batch.debug_output ?? debug_output;
 telegram_enabled = config_batch.telegram_enabled ?? telegram_enabled;
@@ -460,6 +476,7 @@ rpc.exports = {
         // detached first and then set the flag, callbacks already queued
         // between the two statements would still pay the full IPC cost.
         setIsShuttingDown(true);
+        try { stopBlink(); } catch (_e) { /* blink not active */ }
         try {
             Interceptor.detachAll();
         } catch (e) {

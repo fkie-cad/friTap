@@ -52,6 +52,14 @@ fritap -k keys.log target_app
 fritap --patterns boringssl_patterns.json -k keys.log target_app
 ```
 
+!!! note "Anti-tamper (PairIP) targets"
+    When `Memory.scan` is unsafe (e.g. under [`--pairip-safe`](../advanced/pairip-safe.md)),
+    friTap falls back to a scan-free hook on the internal
+    `bssl::ssl_log_secret`. For a fully-stripped host with no symbols (such as
+    the Android System WebView's `libwebviewchromium.so`), derive its offset with
+    `dev/find_ssl_log_secret_offset.py` and pass it via `--offsets`. See
+    [PairIP-Protected Apps](../advanced/pairip-safe.md#capturing-a-stripped-webview-chromium-login).
+
 ### 3. Module-Based Detection
 
 BoringSSL is often found in these modules:
@@ -59,6 +67,8 @@ BoringSSL is often found in these modules:
 - `libboringssl.so` (standalone)
 - `libflutter.so` (Flutter apps)
 - `libcronet.so` (Chrome/Android)
+- `libhttpengine.so` (statically linked; `SSL_*` may live only in `.symtab`)
+- `libcommerce_http_client.so` (Blizzard commerce SDK — curl + statically-linked BoringSSL; also covered by [`--pairip-safe`](../advanced/pairip-safe.md))
 
 ## Usage Examples
 

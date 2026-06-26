@@ -1,5 +1,5 @@
 import { socket_library } from "../../../platforms/android.js";
-import { enable_default_fd } from "../../../fritap_agent.js";
+import { enable_default_fd, pairip_safe } from "../../../fritap_agent.js";
 import { devlog_error } from "../../../util/log.js";
 import { executeFromDefinition } from "../../../core/loader.js";
 import { createOpenSslDefinition, createBoringSSLKeylogApproach } from "../../definitions/openssl.js";
@@ -11,18 +11,22 @@ export function conscrypt_execute_modern(moduleName: string, is_base_hook: boole
     // Use shared BoringSSL keylog approach (SSL_new + SSL_CTX_new + SSL_CTX_set_keylog_callback)
     def.keylog = createBoringSSLKeylogApproach();
 
-    // Java interop as extraHook: block ProviderInstaller updates
-    def.extraHooks = [
-        {
-            install: () => {
-                try {
-                    blockProviderInstaller();
-                } catch (e) {
-                    devlog_error(`[modern] Java interop error: ${e}`);
-                }
+    // Java interop as extraHook: block ProviderInstaller updates.
+    // SKIP under --pairip-safe: ART/Java instrumentation is a separate
+    // PairIP-detectable footprint (we keep the pairip-safe path native-only).
+    if (!pairip_safe) {
+        def.extraHooks = [
+            {
+                install: () => {
+                    try {
+                        blockProviderInstaller();
+                    } catch (e) {
+                        devlog_error(`[modern] Java interop error: ${e}`);
+                    }
+                },
             },
-        },
-    ];
+        ];
+    }
 
     // Tag as BoringSSL so the loader auto-installs the bssl::ssl_log_secret
     // symbol fallback when SSL_CTX_set_keylog_callback can't be resolved.

@@ -98,6 +98,17 @@ class HookingConfig:
     # trampoline, so late-loaded TLS libs can be hooked on PairIP-protected apps
     # without tripping the anti-tamper scan. Unvalidated on-device; default OFF.
     stealth_loader: bool = False
+    # --pairip-safe (Android; attach and spawn). Minimal, scan-free capture mode
+    # for PairIP-protected apps: hook only a curated TLS-library allowlist
+    # (libssl.so, libhttpengine.so, libjavacrypto.so, libconscrypt*,
+    # libcommerce_http_client.so, offset-based libwebviewchromium.so; libunity.so
+    # is opt-in via --offsets), resolved WITHOUT any Memory.scan (exports ->
+    # symbols -> offsets). Skips the loader hook, WebView/Cronet pattern scan,
+    # Java hooks, OHTTP and the library-scan pass — the broad footprint that trips
+    # PairIP's periodic integrity check (an in-process SIGSEGV). Keys persist via
+    # "blink" (hooks toggled so .text stays pristine between scans).
+    # (fkie-cad/friTap#64). Default OFF.
+    pairip_safe: bool = False
     # Override which layer of the HTTP/3 egress-headers fallback chain the
     # agent actually attaches to. "auto" (default) keeps the winner-takes-all
     # logic: quiche-internal QuicSpdyStream::WriteHeaders preferred, then
@@ -234,6 +245,7 @@ class FriTapConfig:
         quic_only: bool = False,
         no_loader_hook: bool = False,
         stealth_loader: bool = False,
+        pairip_safe: bool = False,
         quic_egress_headers_layer: str = "auto",
         scan_keys_region: Optional[str] = None,
         scan: Optional[str] = None,
@@ -295,6 +307,7 @@ class FriTapConfig:
                 quic_only=quic_only,
                 no_loader_hook=no_loader_hook,
                 stealth_loader=stealth_loader,
+                pairip_safe=pairip_safe,
                 quic_egress_headers_layer=quic_egress_headers_layer,
                 scan_keys_region=scan_keys_region,
             ),

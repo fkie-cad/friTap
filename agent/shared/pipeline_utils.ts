@@ -10,6 +10,7 @@
  import { SymbolStrategy } from "./strategies/symbol_strategy.js";
  import { PatternStrategy } from "./strategies/pattern_strategy.js";
  import { MemoryScanStrategy } from "./strategies/memory_scan_strategy.js";
+ import { pairip_safe } from "../fritap_agent.js";
  
  /**
   * Initialize the singleton pipeline with available strategies.
@@ -24,16 +25,23 @@
      // Priority 100: Symbol resolution (always)
      defaultPipeline.addStrategy(new SymbolStrategy());
  
-     // Priority 80: Pattern-based — registered only when host delivered data.
-     if (patternData) {
-         const ps = new PatternStrategy();
-         ps.setPatternData(patternData);
-         defaultPipeline.addStrategy(ps);
-     }
- 
-     // Priority 40: Memory scan (only when user explicitly enables --experimental)
-     if (experimentalMode) {
-         defaultPipeline.addStrategy(new MemoryScanStrategy());
+     // --pairip-safe: NEVER register a Memory.scan strategy. PairIP SIGSEGVs the
+     // process on a scan of a protected lib, so resolution is symbol+offset only;
+     // an unresolved function degrades to "no hook" rather than "scan → crash".
+     if (pairip_safe) {
+         devlog(`[Pipeline] --pairip-safe: pattern/memory-scan strategies disabled (symbol+offset only)`);
+     } else {
+         // Priority 80: Pattern-based — registered only when host delivered data.
+         if (patternData) {
+             const ps = new PatternStrategy();
+             ps.setPatternData(patternData);
+             defaultPipeline.addStrategy(ps);
+         }
+
+         // Priority 40: Memory scan (only when user explicitly enables --experimental)
+         if (experimentalMode) {
+             defaultPipeline.addStrategy(new MemoryScanStrategy());
+         }
      }
  
      // NOTE: OffsetStrategy is NOT registered here.
@@ -68,7 +76,7 @@ export async function resolveWithPipelineAsync(
     );
     if (missing.length === 0) return;
 
-    devlog(`[Pipeline] ${missing.length} unresolved in ${libraryType}: ${missing.join(", ")}`);
+    devlog(`[Pipeline] ${moduleName} (${libraryType}): ${missing.length} unresolved: ${missing.join(", ")}`);
     const result = await defaultPipeline.hookModuleAsync(moduleName, libraryType, missing);
 
     if (result.resolvedAddresses.size > 0) {
@@ -81,6 +89,13 @@ export async function resolveWithPipelineAsync(
                 devlog(`[Pipeline] Resolved ${fn} via ${result.strategy}: ${addr}`);
             }
         }
+    } else if (pairip_safe) {
+        // Expected under symbol-only --pairip-safe: pattern/memory-scan tiers are
+        // disabled, so a lib that doesn't export these symbols (e.g. Conscrypt's
+        // libjavacrypto.so, or inlined SSL_get_fd/SSL_SESSION_get_id in libhttpengine.so)
+        // simply gets no read/write hooks. Keylog still flows via the callback /
+        // ssl_log_secret path — this is not an error.
+        devlog(`[Pipeline] ${moduleName}: ${missing.join(", ")} not exported (expected under --pairip-safe; keylog via callback/ssl_log_secret, no read/write hooks for this lib)`);
     } else {
         devlog(`[Pipeline] Could not resolve any of: ${missing.join(", ")}`);
     }

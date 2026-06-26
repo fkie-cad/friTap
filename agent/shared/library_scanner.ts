@@ -1,6 +1,7 @@
 import { log, devlog } from "../util/log.js";
 import { hookRegistry } from "./registry.js";
 import { Platform } from "./shared_structures.js";
+import { matchNonTLSLibrary, noteNonTLSLibrary } from "../util/non_tls_libs.js";
 
 interface ScanResultEntry {
     name: string;
@@ -70,6 +71,14 @@ export function processScanResults(
         // Skip already-hooked modules (for this protocol)
         if (isModuleHooked(entry.name, protocol || "tls")) {
             devlog(`[Scanner] ${entry.name} already hooked for ${protocol || "tls"}, skipping`);
+            continue;
+        }
+
+        // Skip known non-TLS libraries (e.g. WebView plat_support/loader). The
+        // registry's findMatch below applies this same guard, but the
+        // findByLibraryType fallback does not — so filter explicitly here.
+        if (matchNonTLSLibrary(entry.name)) {
+            noteNonTLSLibrary(entry.name);
             continue;
         }
 

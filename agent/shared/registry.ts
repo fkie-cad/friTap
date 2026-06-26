@@ -7,6 +7,7 @@
 
  import { ModuleHookingType, Platform, LibraryType } from "./shared_structures";
  import { contributedImplications } from "./hook_contributors.js";
+ import { matchNonTLSLibrary } from "../util/non_tls_libs.js";
 
  // ---------------------------------------------------------------------------
  // Types
@@ -285,6 +286,13 @@ function protocolMatches(hookProtocol: string, requested: string): boolean {
       * Check whether a matched hook should be skipped due to excludePattern or pathFilter.
       */
      private _isExcluded(hook: HookRegistration, moduleName: string, modulePath?: string): boolean {
+         // Known non-TLS libraries (OS-aware) are never hooked, regardless of
+         // which hook's pattern matched them. Resolve the OS via the denylist's
+         // own (memoized) detection — the registry `platform` is "linux" for
+         // both Android and desktop Linux and so cannot scope correctly here.
+         if (matchNonTLSLibrary(moduleName)) {
+             return true;
+         }
          if (hook.excludePattern && hook.excludePattern.test(moduleName)) {
              return true;
          }

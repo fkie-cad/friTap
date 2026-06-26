@@ -5,6 +5,7 @@ import { HookRegistration, HookRegistry } from "./registry.js";
 import { Java, JavaWrapper } from "./javalib.js";
 import { offsets, ohttp_enabled, selected_protocol } from "./shared_structures.js";
 import { announceSiblingCoverage, isModuleHooked, markModuleHooked } from "./library_scanner.js";
+import { isDeepSymbolResolutionEnabled } from "./deep_symbol_resolution.js";
 import { warnAntiTamper } from "../util/anti_tamper.js";
 import { watchFunctionEntries } from "../util/hw_breakpoint.js";
 // Pure sockaddr/PRNetAddr decoders live in sockaddr.ts so they can be unit-tested
@@ -152,6 +153,65 @@ export function ssl_library_loader(platform: Platform, hookRegistry: HookRegistr
             }
         }
     }
+}
+
+/**
+ * --pairip-safe spawn + attach watcher (friTap#64). Hooks the allowlisted TLS
+ * libs (already registered in `hookRegistry`) WITHOUT an inline android_dlopen_ext
+ * loader hook, WITHOUT a HW breakpoint, and WITHOUT any Memory.scan:
+ *   - waits out PairIP's startup integrity window (`firstDelayMs`), then hooks
+ *     any already-loaded targets (the spawn case: TLS libs load AFTER resume),
+ *   - keeps watching for late target loads via Process.attachModuleObserver
+ *     (Frida 17.x; non-invasive — no code patch) with a setInterval poll fallback.
+ * All hooking runs on the JS thread via setTimeout(0) — never inline inside a
+ * loader callback (which fires synchronously mid-dlopen on the app thread and
+ * could perturb PairIP at the worst moment).
+ */
+export function installPairipSafeWatcher(
+    platform: Platform,
+    hookRegistry: HookRegistry,
+    getFreshModuleNames: () => Array<string>,
+    protocol: string,
+    isTarget: (name: string) => boolean,
+    firstDelayMs: number,
+    pollIntervalMs: number,
+): void {
+    let scanScheduled = false;
+    const rescan = () => {
+        if (scanScheduled) return;
+        scanScheduled = true;
+        setTimeout(() => {
+            scanScheduled = false;
+            try {
+                ssl_library_loader(platform, hookRegistry, getFreshModuleNames(), "Android", true, protocol);
+            } catch (e) {
+                devlog_error(`[pairip-safe watcher] rescan error: ${e}`);
+            }
+        }, 0);
+    };
+
+    setTimeout(() => {
+        // Hook targets that became resident during the startup quiet period.
+        rescan();
+        // Event-driven late-load watch (preferred; detachable, no code patch).
+        let observed = false;
+        try {
+            const P: any = Process as any;
+            if (typeof P.attachModuleObserver === "function") {
+                P.attachModuleObserver({
+                    onAdded(m: any) { try { if (m && isTarget(m.name)) rescan(); } catch (e) { /* ignore */ } },
+                });
+                observed = true;
+                devlog("[pairip-safe watcher] late-load watch via Process.attachModuleObserver");
+            }
+        } catch (e) {
+            // fall through to polling
+        }
+        if (!observed) {
+            devlog("[pairip-safe watcher] late-load watch via setInterval poll");
+            setInterval(rescan, pollIntervalMs);
+        }
+    }, firstDelayMs);
 }
 
 
@@ -428,6 +488,12 @@ export function readAddresses(moduleName: string, library_method_mapping: { [key
 
     addresses[moduleName] = {};
 
+    // Symbols belonging to `moduleName` that exports couldn't resolve. When the
+    // module opted into deep resolution (deep_symbol_resolution.ts) these are
+    // retried against the general symbol table (.symtab) in a single
+    // enumerateSymbols() pass AFTER the export loop — see below.
+    const exportMissesForModule: string[] = [];
+
     for (const library_name in library_method_mapping) {
         library_method_mapping[library_name].forEach(function (method) {
             const matches = resolver.enumerateMatches("exports:" + library_name + "!" + method);
@@ -458,6 +524,12 @@ export function readAddresses(moduleName: string, library_method_mapping: { [key
                 } catch (_) {
                     // findGlobalExportByName not available on older Frida versions
                 }
+                // Record the export miss so the symbol-table pass below can try
+                // it — but only for symbols that live in `moduleName` itself
+                // (socket-library symbols are real exports and resolve above).
+                if (library_name.includes(moduleName)) {
+                    exportMissesForModule.push(method_name);
+                }
                 devlog(`[readAddresses] Could not find ${library_name}!${method} (deferring to pipeline)`);
                 return;
             } else if (matches.length == 1) {
@@ -475,6 +547,22 @@ export function readAddresses(moduleName: string, library_method_mapping: { [key
 
             addresses[moduleName][method_name] = matches[match_number].address;
         });
+    }
+
+    // Exports-first, then symbol-table fallback (opt-in, per module). One
+    // enumerateSymbols() pass fills only the entries that exports missed; it
+    // never overwrites an export hit. This lets statically-linked BoringSSL
+    // hosts (e.g. libhttpengine.so) that keep SSL_* in .symtab — not .dynsym —
+    // still resolve SSL_new / SSL_CTX_set_keylog_callback, so the stealthier
+    // heap-write keylog callback can install instead of the .text code patch.
+    if (exportMissesForModule.length > 0 && isDeepSymbolResolutionEnabled(moduleName)) {
+        const fromSymtab = findNonExportedSymbols(moduleName, exportMissesForModule);
+        for (const [name, addr] of fromSymtab) {
+            if (addr && !addr.isNull()) {
+                devlog(`[readAddresses] Resolved ${name} via symbol-table fallback: ${addr}`);
+                addresses[moduleName][name] = addr;
+            }
+        }
     }
 
     return addresses;
@@ -726,13 +814,18 @@ export function isSymbolAvailable(moduleName: string, symbolName: string): boole
     const matches = resolver.enumerateMatches("exports:" + moduleName + "!" + symbolName);
     //devlog(`Matches content: ${matches}`);
 
-    if(matches){
-        return matches.length > 0;
-    }else{
-        return false;
+    if (matches && matches.length > 0) {
+        return true;
     }
 
-    
+    // Exports-first, then symbol-table fallback (opt-in, per module). Mirrors
+    // readAddresses: a module that opted into deep resolution may carry the
+    // symbol only in .symtab, so the export check above misses it.
+    if (isDeepSymbolResolutionEnabled(moduleName)) {
+        return findNonExportedSymbol(moduleName, symbolName) !== null;
+    }
+
+    return false;
 }
 
 

@@ -251,6 +251,19 @@ fritap --offsets offsets.json -k keys.log target
 Pre-scan for TLS libraries using **tlsLibHunter** before hooking. Discovers
 renamed or statically linked libraries.
 
+#### `--pairip-safe`
+**Android only.** Minimal, scan-free capture mode for Google **PairIP**-protected
+apps. Hooks only a curated TLS-library allowlist resolved without any
+`Memory.scan`, and disables the loader hook, Java/ART hooks, the WebView/Cronet
+pattern scan, OHTTP and the library scan — the broad footprint that trips
+PairIP's integrity check and `SIGSEGV`s the app. Works with attach and `-s`
+(spawn). Often combined with `--offsets` (e.g. for the System WebView login or a
+Unity build). Full guide: [PairIP-Protected Apps](../advanced/pairip-safe.md).
+
+```bash
+fritap -m -k keys.log --pairip-safe -v com.example.app
+```
+
 #### `-ll, --list-libraries`
 List the loaded libraries (and TLS/SSL-related exports) to help debug hooking,
 then exit **without** starting capture.

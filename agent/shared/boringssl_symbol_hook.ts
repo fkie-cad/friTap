@@ -11,7 +11,7 @@ import {
     noteHandshakeLogged,
     observeHandshakeSecret,
 } from "./tls13_secret_recovery.js";
-import { keylog_enabled } from "../fritap_agent.js";
+import { keylog_enabled, offsets } from "../fritap_agent.js";
 
 /*
  * Shared BoringSSL ssl_log_secret hook.
@@ -36,6 +36,11 @@ import { keylog_enabled } from "../fritap_agent.js";
 export const BORINGSSL_SSL_LOG_SECRET_MANGLED: string[] = [
     // Span<const uint8_t> form (newer BoringSSL, observed in libwarp_mobile.so)
     "_ZN4bssl14ssl_log_secretEPK6ssl_stPKcNS_4SpanIKhEE",
+    // Span<const uint8_t, SIZE_MAX> form — Span gained an explicit Extent
+    // template param (default SIZE_MAX = 18446744073709551615); observed in
+    // libhttpengine.so. Without this exact entry it only matches the lower-ranked
+    // "log_secret" substring path.
+    "_ZN4bssl14ssl_log_secretEPK6ssl_stPKcNS_4SpanIKhLm18446744073709551615EEE",
     // Older raw-pointer + length form
     "_ZN4bssl14ssl_log_secretEPK6ssl_stPKcPKhm",
 ];
@@ -73,6 +78,32 @@ function scanSymbolsRanked(mod: Module): SymbolResolution | null {
     return exact ?? substr;
 }
 
+/**
+ * Resolve bssl::ssl_log_secret from a user-supplied --offsets entry keyed by
+ * module name, e.g.
+ *   { "libwebviewchromium.so": { "ssl_log_secret": {"address":"0x5adbb60","absolute":false} } }
+ *
+ * This is the ONLY scan-free way to reach the keylog on a fully-stripped
+ * BoringSSL host (no .dynsym/.symtab SSL_* symbols, e.g. Android System
+ * WebView's libwebviewchromium.so) — exactly the case where --pairip-safe
+ * forbids the byte-pattern (Memory.scan) tier. Placed LAST in the strategy
+ * chain: offsets are device/version-fragile, so exports + the (here cheap,
+ * fully-stripped → ~hundreds of symbols) enumerateSymbols() pass are tried
+ * first; the offset is only the explicit-override last resort.
+ */
+function lookupViaOffset(mod: Module): SymbolResolution | null {
+    try {
+        const o: any = (offsets as any)?.[mod.name];
+        const v = o?.["ssl_log_secret"];
+        if (!v || typeof v.address !== "string") return null;
+        const addr = v.absolute ? ptr(v.address) : mod.base.add(ptr(v.address));
+        if (addr.isNull()) return null;
+        return { address: addr, via: "offset(--offsets)", symbolName: "ssl_log_secret" };
+    } catch (_) {
+        return null;
+    }
+}
+
 function lookupViaDebugSymbol(mod: Module): SymbolResolution | null {
     try {
         const d = DebugSymbol.fromName("bssl::ssl_log_secret");
@@ -106,6 +137,7 @@ const strategies: Strategy[] = [
     scanSymbolsRanked,
     lookupViaDebugSymbol,
     scanExports,
+    lookupViaOffset,      // last resort: offsets are device/version-fragile
     // Future strategies (xref scan from SSL_CTX_set_keylog_callback,
     // Capstone-driven prologue match, etc.) go here.
 ];

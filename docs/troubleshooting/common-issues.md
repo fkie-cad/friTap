@@ -361,35 +361,43 @@ fritap --patterns flutter.json -k keys.log com.flutter.app
 ### Anti-Tamper / Integrity-Protected Apps (PairIP)
 
 **Symptom**: the target crashes (`SIGSEGV`) almost immediately after friTap
-attaches — typically right after `[*] Android dynamic loader hooked.` — while
-plain `frida -U -f <package>` (no script) does **not** crash it. friTap now
-prints a warning when it sees the protection:
+attaches, while plain `frida -U -f <package>` (no script) does **not** crash it.
+friTap prints a warning when it sees the protection:
 
 ```
-[!] Anti-tamper protection detected: Google PairIP (libpairipcore.so).
-[!] friTap's inline hooks are likely to be detected and the app may crash (SIGSEGV). See fkie-cad/friTap#64.
-[!] Capturing from a PairIP-protected app is not supported and requires a separate PairIP bypass.
+[!!!] ANTI-TAMPER PROTECTION DETECTED: Google PairIP (libpairipcore.so)
+  VM-based Play-integrity / anti-tamper; checksums loaded code and self-terminates (SIGSEGV) when it detects an inline hook.
+  -> friTap's inline hooks may be detected; the app may crash (SIGSEGV).
+  See fkie-cad/friTap#64. There is no in-tool PairIP bypass.
 ```
 
 **Cause**: Google **PairIP** (`libpairipcore.so`) is a VM-based Play-integrity /
-anti-tamper runtime. It checksums loaded code (the linker and libc included) and
-runs a watchdog over `/proc/self/maps`. friTap installs an inline
-`Interceptor.attach` trampoline on `android_dlopen_ext` to learn when TLS
-libraries load; PairIP detects that modified linker prologue and **deliberately
-terminates the process**. Plain `frida -f` patches no code, so it survives — the
-crash is specific to any tool that places inline hooks.
+anti-tamper runtime. It runs a periodic in-process code-integrity check and
+**self-terminates with a `SIGSEGV`** when it finds an inline hook in a library it
+protects. friTap's default footprint — the `android_dlopen_ext` loader
+trampoline, `Memory.scan` byte-pattern passes, and Java/ART hooks — trips that
+check. Plain `frida -f` patches no code, so it survives.
 
-**Status**: this is an anti-tamper limitation, **not a friTap bug**. friTap
-avoids scanning `libpairipcore.so` itself and warns you, but the core loader
-hook is required for capture and cannot be hidden from PairIP. Capturing from a
-PairIP-protected app requires neutralizing PairIP first (out of scope for
-friTap):
+**Fix — use `--pairip-safe`**: friTap ships a minimal, scan-free Android capture
+mode for exactly this case. It hooks only a curated TLS-library allowlist,
+resolved **without any `Memory.scan`**, and disables the loader hook, Java hooks,
+the WebView/Cronet pattern scan and OHTTP — surviving PairIP's check long enough
+to extract keys.
 
-- Patch out / neutralize the PairIP integrity watchdog (it `clone()`s a child
-  that scans `/proc/self/maps`).
-- Use an LSPosed/Xposed module that forces PairIP integrity checks to pass.
-- Research references: `Solaree/pairipcore`, byterialab's PairIP write-up, and
-  `httptoolkit/frida-interception-and-unpinning` issue #124.
+```bash
+fritap -m -k keys.log --pairip-safe -v com.example.app
+```
+
+See the full guide: **[PairIP-Protected Apps](../advanced/pairip-safe.md)** — it
+covers the allowlist, attach vs spawn, deriving offsets for a stripped WebView
+login, and why `0 keys` usually means *no catchable traffic* (the app was
+network-idle), not a broken hook.
+
+**Status**: `--pairip-safe` is best-effort, not a PairIP bypass. Capture depends
+on where the app's TLS lives; libraries outside the allowlist (or without a
+supplied offset) are not captured. Research references for full neutralization
+(out of scope for friTap): `Solaree/pairipcore`, byterialab's PairIP write-up,
+and `httptoolkit/frida-interception-and-unpinning` issue #124.
 
 ## Debugging Strategies
 

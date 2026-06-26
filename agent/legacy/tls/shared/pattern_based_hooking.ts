@@ -1,5 +1,6 @@
 import { devlog, devlog_error, devlog_debug, log, devlog_info, hookBreadcrumb } from "../../../util/log.js";
 import { currentPlatformKey, normalizeArchKey } from "../../../util/process_infos.js"
+import { matchNonTLSLibrary } from "../../../util/non_tls_libs.js"
 
 type Pattern = {
     primary: string;
@@ -158,6 +159,13 @@ export class PatternBasedHooking {
                 // No usable pattern (missing-arch shipped pattern, or empty JSON entry).
                 // Skip rather than scanning with an empty pattern.
                 devlog_debug("hookModuleByPatternOnReturn: no usable pattern, skipping scan");
+                this.no_hooking_success = true;
+                return;
+            }
+            // Known non-TLS library (OS-aware), e.g. WebView plat_support/loader:
+            // never Memory.scan it — no TLS keys live there.
+            if (matchNonTLSLibrary(this.module?.name)) {
+                devlog_debug(`hookModuleByPatternOnReturn: skipping non-TLS module ${this.module?.name}`);
                 this.no_hooking_success = true;
                 return;
             }
@@ -644,6 +652,13 @@ export class PatternBasedHooking {
             // No usable pattern (missing-arch shipped pattern, or empty JSON entry).
             // Skip rather than scanning the whole module with an empty pattern.
             devlog_debug("hookModuleByPattern: no usable pattern, skipping scan");
+            this.no_hooking_success = true;
+            return;
+        }
+        // Known non-TLS library (OS-aware), e.g. WebView plat_support/loader:
+        // never Memory.scan it — no TLS keys live there.
+        if (matchNonTLSLibrary(this.module?.name)) {
+            devlog_debug(`hookModuleByPattern: skipping non-TLS module ${this.module?.name}`);
             this.no_hooking_success = true;
             return;
         }

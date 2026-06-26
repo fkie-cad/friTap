@@ -437,6 +437,21 @@ Offline (read / analyze .tap):
                            "be hooked on PairIP-protected apps without tripping the anti-tamper "
                            "scan (fkie-cad/friTap#64). UNVALIDATED on-device; needs root "
                            "frida-server and may not catch loads on threads created after attach.")
+    args.add_argument("--pairip-safe", required=False, action="store_const",
+                      const=True, default=False, dest="pairip_safe",
+                      help="Android: minimal capture mode for Google PairIP-protected apps "
+                           "(fkie-cad/friTap#64). Hooks ONLY a curated, scan-free TLS-library "
+                           "allowlist (libssl.so, libhttpengine.so, libcommerce_http_client.so, "
+                           "libjavacrypto.so, libconscrypt*, and offset-based libwebviewchromium.so; "
+                           "libunity.so is opt-in via --offsets), resolved without any Memory.scan "
+                           "(exports -> symbols -> offsets); skips the loader hook, the WebView/Cronet "
+                           "pattern scan, Java hooks, OHTTP and library-scan — the broad footprint "
+                           "that trips PairIP's periodic integrity check and SIGSEGVs the app. Keys "
+                           "persist via 'blink' (hooks toggled so .text stays pristine between scans). "
+                           "Works with BOTH attach and spawn (-s); spawn is best-effort (hooks are "
+                           "deferred past PairIP's startup window, so the earliest handshakes may be "
+                           "missed — attach is the proven path). Trigger fresh TLS handshakes after "
+                           "attach (e.g. toggle wifi). See docs/advanced/pairip-safe.md.")
     args.add_argument("--library-scan", "-ls", required=False, action="store_const",
                       const=True, default=False,
                       help="Pre-scan for TLS libraries using tlsLibHunter before hooking. "
@@ -730,6 +745,7 @@ Offline (read / analyze .tap):
             quic_only=getattr(parsed, 'quic_only', False),
             no_loader_hook=getattr(parsed, 'no_loader_hook', False),
             stealth_loader=getattr(parsed, 'stealth_loader', False),
+            pairip_safe=getattr(parsed, 'pairip_safe', False),
             quic_egress_headers_layer=getattr(parsed, 'quic_egress_headers_layer', 'auto'),
             scan_keys_region=getattr(parsed, 'scan_keys_region', None),
             scan=getattr(parsed, 'scan', None),

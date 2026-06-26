@@ -97,6 +97,7 @@ nav:
     - Wine: platforms/wine.md
   - Advanced Features:
     - Pattern-based Hooking: advanced/patterns.md
+    - PairIP-Protected Apps: advanced/pairip-safe.md
     - Standalone Agent Usage: advanced/standalone-agent.md
     - Traffic Analysis: advanced/traffic-analysis.md
     - Offline pcap to .tap: advanced/offline-pcap-to-tap.md

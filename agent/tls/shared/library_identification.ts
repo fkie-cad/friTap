@@ -1,4 +1,5 @@
 import { devlog } from "../../util/log.js";
+import { matchNonTLSLibrary } from "../../util/non_tls_libs.js";
 
 // Platform-specific excludes for known non-TLS modules (JNI wrappers, etc.)
 const ANDROID_EXCLUDES = [/libjavacrypto\.so/, /_libpki\.so$/, /_libcrypto\.so$/, /_vr_partition\.so$/];
@@ -13,6 +14,12 @@ export function findModulesWithSSLKeyLogCallback(): string[] {
     for (const mod of modules) {
         // Skip modules we are already hooking
         if (/.*libssl_sb\.so/.test(mod.name) || /.*libssl\.so/.test(mod.name) || /ibconscrypt_jni.so/.test(mod.name) || /libconscrypt_gmscore_jni.so/.test(mod.name)) {
+            continue;
+        }
+
+        // Skip known non-TLS libraries (e.g. WebView plat_support/loader); they
+        // carry no TLS surface even if they happened to export the callback.
+        if (matchNonTLSLibrary(mod.name)) {
             continue;
         }
 
