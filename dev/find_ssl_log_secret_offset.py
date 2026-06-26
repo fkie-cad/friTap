@@ -306,7 +306,7 @@ def analyse(binary: lief.ELF.Binary, data: bytes, labels: list[str]) -> Result:
         sys.exit("none of the TLS keylog label strings were found — is this a "
                  "BoringSSL host?")
     print(f"[*] load bias: 0x{bias:x}")
-    print(f"[*] labels found: "
+    print("[*] labels found: "
           + ", ".join(f"{k}@0x{v[0]:x}" for k, v in label_vaddrs.items()))
 
     merged: dict[str, set[int]] = {}

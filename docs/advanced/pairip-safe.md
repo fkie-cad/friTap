@@ -2,46 +2,54 @@
 
 Google **PairIP** (`libpairipcore.so`) is a VM-based Play-Integrity / anti-tamper
 runtime shipped with many Google Play apps (and some large titles such as
-Blizzard's *Warcraft Rumble*). It runs a **periodic in-process code-integrity
-check** and **self-terminates the app with a `SIGSEGV`** the moment it finds an
-inline hook in a library it protects. friTap's normal hooking footprint trips
-that check, so the default capture path crashes the target.
+Blizzard's *Warcraft Rumble* and the Battle.net mobile client). It runs a
+**periodic in-process code-integrity check** and **self-terminates the app with a
+`SIGSEGV`** the moment it finds an inline hook in a library it protects. friTap's
+normal hooking footprint trips that check, so the default capture path crashes the
+target before you see a single key.
 
-`--pairip-safe` is a minimal, **scan-free** Android capture mode designed to
-survive PairIP long enough to extract TLS keys.
+`--pairip-safe` is a minimal, **scan-free** Android capture mode that survives
+PairIP long enough to extract TLS keys — by leaving the app's *code* untouched and
+hiding friTap's footprint in plain sight.
 
 !!! warning "This is not a PairIP bypass"
-    `--pairip-safe` does not defeat or neutralize PairIP. It simply avoids the
-    operations PairIP looks for. Capture is best-effort and depends on *where*
-    the app's TLS lives (see [Limitations](#limitations)).
+    `--pairip-safe` does not defeat, patch, or neutralize PairIP. It simply avoids
+    the operations PairIP looks for, and persists through a trick that lives in
+    heap *data* rather than code. Capture is best-effort and depends on *where*
+    the app's TLS actually lives (see [Limitations](#limitations)). Evading
+    anti-tamper in general is a broad, unsolved Frida-on-Android problem and is
+    **out of scope** for friTap.
 
 ---
 
 ## The PairIP mental model
 
-Understanding three facts explains everything `--pairip-safe` does:
+Three facts explain everything `--pairip-safe` does — and why it has to be built
+the strange way it is.
 
-1. **The kill is an in-process `SIGSEGV`, not a syscall/`ptrace` trick.** PairIP
-   checksums loaded code and, on a mismatch, raises `SIGSEGV` from inside the
-   app's own threads. You cannot defang it by hooking `kill`/`syscall`.
+**1. The kill is an in-process `SIGSEGV`, not a syscall or `ptrace` trick.** PairIP
+checksums loaded code from inside the app's own threads and raises `SIGSEGV` on a
+mismatch. You cannot defang it by hooking `kill` or `syscall` — by the time it
+fires, you've already lost.
 
-2. **What trips it is friTap's *broad footprint*, not the act of attaching.**
-   Plain `frida -U -f <pkg>` (no script) does **not** crash a PairIP app,
-   because it patches no code. The operations PairIP detects are:
+**2. What trips it is friTap's *broad footprint*, not the act of attaching.** Plain
+`frida -U -f <pkg>` with no script does **not** crash a PairIP app, because it
+patches no code. The operations PairIP detects are friTap's heavy machinery:
 
-   - the inline `android_dlopen_ext` **loader hook**,
-   - any **`Memory.scan`** (byte-pattern) over a protected library,
-   - **Java/ART** instrumentation,
-   - the WebView/Cronet **pattern scan** and the OHTTP loader patch.
+```mermaid
+flowchart TD
+    A["friTap (default mode)"] --> B["android_dlopen_ext loader hook<br/>Memory.scan over protected libs<br/>Java / ART instrumentation<br/>WebView / Cronet pattern scan + OHTTP patch"]
+    B --> C{"PairIP periodic<br/>.text integrity check"}
+    C -->|"modified code found"| D["SIGSEGV — app self-terminates"]
+```
 
-3. **In practice, only the app's *own* libraries appear to be in PairIP's
-   checksum scope.** This is an observation, not a documented PairIP spec:
-   inline hooks on system libraries under `/apex` and `/system` (e.g. Conscrypt's
-   `libssl.so`, the mainline `libhttpengine.so`) have been **observed to
-   survive**, while an inline hook on an **app-bundled** library (e.g.
-   `libunity.so`, shipped inside the split APK) was **detected and the app was
-   killed**. That observation is what makes some hooks safe and others risky
-   (see [Unity](#unity-libunity-opt-in)).
+**3. In practice, only the app's *own* libraries appear to be in PairIP's checksum
+scope.** This is an observation, not a documented spec: inline hooks on system
+libraries under `/apex` and `/system` (Conscrypt's `libssl.so`, the mainline
+`libhttpengine.so`) have been **observed to survive**, while an inline hook on an
+**app-bundled** library shipped inside the split APK (e.g. `libunity.so`) was
+**detected and the app was killed**. That asymmetry is what makes some hooks safe
+and others risky (see [Unity](#unity-libunity-opt-in)).
 
 When friTap detects PairIP it prints:
 
@@ -54,7 +62,104 @@ When friTap detects PairIP it prints:
 
 ---
 
-## What `--pairip-safe` does
+## The idea in one picture
+
+PairIP only checksums **code** (`.text`). So `--pairip-safe` puts nothing
+persistent *in* the code. The standard BoringSSL keylog API,
+`SSL_CTX_set_keylog_callback`, stores a callback pointer in a **field of the
+heap-allocated `SSL_CTX` struct** — that's *data*, not a code patch. friTap
+exploits this:
+
+```mermaid
+sequenceDiagram
+    participant F as friTap
+    participant App as App code (.text)
+    participant Ctx as SSL_CTX (heap)
+    participant TLS as BoringSSL handshake
+    participant P as PairIP
+
+    F->>App: 1. briefly hook SSL_CTX_new / SSL_new
+    App->>Ctx: app creates a context
+    F->>Ctx: 2. SSL_CTX_set_keylog_callback(ctx, cb)<br/>writes our callback into a HEAP field
+    F->>App: 3. detach the inline hooks
+    Note over App: .text restored to original bytes
+    P->>App: periodic code-integrity scan
+    App-->>P: .text pristine ✓ — no SIGSEGV
+    TLS->>Ctx: handshake reads the keylog callback (heap data)
+    Ctx-->>F: 4. key material emitted (no live code hook)
+```
+
+The persistent footprint is a **heap data write**; the code hooks exist only for
+the instant it takes to make that write, then they're gone. PairIP's code scan
+never has anything to find.
+
+This is the whole trick. Everything below is about doing it *reliably* and
+*repeatedly* over the lifetime of the app.
+
+---
+
+## Blink: staying invisible over time
+
+Two problems remain. New `SSL_CTX` objects created *after* we detach still need
+tagging. And PairIP scans *periodically* — we must not be holding a code hook when
+a scan lands. **Blink** solves both by toggling the inline hooks on a jittered
+schedule:
+
+```mermaid
+stateDiagram-v2
+    [*] --> WARMUP
+    WARMUP --> BRIGHT: after ~25s
+    BRIGHT --> DARK: after ~0.8s
+    DARK --> BRIGHT: after ~12s ± 4s jitter
+    note right of WARMUP
+        Hooks attached; tag all
+        startup SSL contexts
+    end note
+    note right of BRIGHT
+        Re-attach briefly to
+        tag any NEW contexts
+    end note
+    note right of DARK
+        Hooks detached, .text pristine.
+        A PairIP scan almost always
+        lands HERE. Keylog callback
+        (heap data) keeps firing.
+    end note
+```
+
+- **Warmup (~25 s):** stay BRIGHT so the app's initial contexts are reliably
+  tagged.
+- **BRIGHT (~0.8 s):** a short re-tag window for contexts born during DARK.
+- **DARK (~12 s ± 4 s):** code is pristine. The ± jitter de-syncs friTap from
+  PairIP's scan cadence so the two can't phase-lock.
+
+The keylog callback persists across every state because it lives in heap data, and
+friTap permanently **GC-roots** the callback object — if Frida ever freed it, the
+contexts still pointing at it would crash exactly like a PairIP kill. (Mechanism in
+`agent/shared/pairip_blink.ts`.)
+
+!!! note "Blink shapes *when* you capture"
+    Because the hooks are detached most of the time after warmup, a **lone** new
+    handshake usually lands in a DARK window and is missed. Capture is most
+    reliable for handshakes that happen **during warmup** or that reuse a context
+    tagged earlier. See [Forcing traffic](#forcing-traffic-and-the-0-keys-case).
+
+### Two capture paths
+
+Not every library exports a keylog API. friTap uses one of two paths per library:
+
+| Path | Used for | How keys are read | Survives PairIP because… |
+| --- | --- | --- | --- |
+| **A — keylog callback** (heap write, blinks) | libs that export `SSL_CTX_set_keylog_callback` (`libssl`, `libhttpengine`, `libcommerce_http_client`, Conscrypt) | callback fires during the handshake | persistent footprint is heap data; code hooks blink away |
+| **B — `ssl_log_secret` offset** (inline hook, no blink) | fully-stripped libs with no keylog API (System WebView) | reads `(ssl, label, secret)` from the function's args on entry | the lib is **system-provided**, outside the app's checksum scope (fact #3) |
+
+Path B is a plain inline code hook, so it only works on libraries PairIP doesn't
+checksum — which is why it's reserved for system WebView and why app-bundled libs
+like Unity are opt-in and risky.
+
+---
+
+## What `--pairip-safe` changes
 
 | Aspect | Default friTap | `--pairip-safe` |
 | --- | --- | --- |
@@ -63,127 +168,94 @@ When friTap detects PairIP it prints:
 | `android_dlopen_ext` loader hook | yes | **disabled** |
 | Java / ART hooks (e.g. provider install) | yes | **disabled** |
 | WebView/Cronet pattern scan, OHTTP patch | yes | **disabled** |
-| Hook persistence | static | **"blink"** (see below) |
+| Hook persistence | static | **"blink"** (see above) |
 
-### The allowlist
+Resolution is **scan-free** — friTap never byte-scans a protected library, because
+a `Memory.scan` over its `.text` is itself enough to trip PairIP. The ladder:
 
-`--pairip-safe` hooks only the libraries in a single curated list
-(`agent/shared/pairip_safe_libs.ts`). Adding a library is one entry in that
-array, which automatically extends the registry, the spawn watcher, and the
-blink loop. Current entries:
+```mermaid
+flowchart LR
+    A["need a function address"] --> B["exported symbols (.dynsym)"]
+    B -->|miss| C["full symbol table (.symtab)"]
+    C -->|miss| D["offset via --offsets"]
+    D -. "hard-disabled under --pairip-safe" .-> E["Memory.scan (byte patterns)"]
+```
 
-| Library | Type | Resolution | Notes |
-| --- | --- | --- | --- |
-| `libssl.so` | BoringSSL/OpenSSL | symbol | Conscrypt; system `/apex` (safe) |
-| `libhttpengine.so` | BoringSSL | symbol (`.symtab`) | mainline Cronet; system `/apex` (safe) |
-| `libjavacrypto.so` | BoringSSL | symbol | Conscrypt JNI |
-| `libconscrypt_*jni.so` | BoringSSL | symbol | Conscrypt |
-| `libcommerce_http_client.so` | BoringSSL | symbol | app SDK (loads only when used) |
-| `libwebviewchromium.so` | BoringSSL | **offset** | System WebView (Chromium); login WebView — see [WebView capture](#capturing-a-stripped-webview-chromium-login) |
-| `libunity.so` | MbedTLS (UnityTLS) | **offset, opt-in** | app-bundled; see [Unity](#unity-libunity-opt-in) |
-
-### Scan-free resolution
-
-Under `--pairip-safe` every hook is resolved **without any `Memory.scan`** (the
-byte-pattern tier is hard-disabled). For a BoringSSL library the keylog chain is:
-
-1. **`SSL_CTX_set_keylog_callback`** — the public keylog API, resolved from
-   exported symbols (`.dynsym`) and, if needed, the full symbol table
-   (`.symtab`). The callback it installs is a **heap data field**, not a code
-   patch — which is what lets blink work.
-2. **`bssl::ssl_log_secret`** — a BoringSSL-internal function called on every
-   handshake, used when the callback can't be installed (stripped builds). It is
-   resolved in order: full symbol table (`.symtab`, ranked by mangled/exact/
-   substring name) → debug symbols → exported symbols → and only as a **last
-   resort** an **offset** supplied via `--offsets`.
-
-Offsets are the last resort because they are **fragile across device / library
-versions** (see [WebView capture](#capturing-a-stripped-webview-chromium-login)).
-Exports and the `.symtab` scan are both scan-free and therefore PairIP-safe;
-some `libhttpengine.so` builds, for example, keep `SSL_*` only in `.symtab`.
-
-### Blink persistence
-
-PairIP's integrity check runs *periodically*. Blink exploits the fact that the
-keylog callback survives even after the inline `SSL_new` / `SSL_CTX_new` hooks
-are detached:
-
-- **Warmup** (~25 s): hooks stay attached ("BRIGHT") so the app's initial
-  `SSL`/`SSL_CTX` objects are reliably tagged.
-- then **toggle**: BRIGHT (~0.8 s, re-tag new contexts) / **DARK** (~12 s +
-  jitter, `.text` pristine) so a random PairIP scan almost always lands in a
-  DARK window.
-
-!!! note "Blink shapes *when* you capture"
-    Because hooks are detached most of the time after warmup, a **lone** new
-    handshake usually lands in a DARK window and is missed. Capture is most
-    reliable for handshakes that occur **during the warmup window**. See
-    [Forcing traffic](#forcing-traffic-and-the-0-keys-case).
+Exports and the `.symtab` scan are both scan-free and PairIP-safe (some
+`libhttpengine.so` builds, for example, keep `SSL_*` only in `.symtab`). Offsets
+are the **last resort** because they are fragile across device and library versions
+(see [WebView capture](#capturing-a-stripped-webview-chromium-login)). If nothing
+resolves, the library simply isn't hooked — it is never scanned.
 
 ---
 
-## How it works (internals)
+## What gets hooked (the allowlist)
 
-The flag flows from the CLI (`friTap/friTap.py`) into `HookingConfig.pairip_safe`
-(`friTap/config.py`), is delivered to the agent over the `config_batch`
-handshake, and sets the agent global `pairip_safe` (`agent/fritap_agent.ts`).
-From there it reshapes the Android hook install (`agent/platforms/android.ts`) in
-five ways — these are **structural** decisions made once at install time, not
-scattered per-hook runtime checks:
+`--pairip-safe` hooks only a small, curated set of TLS libraries. Current entries:
 
-1. **Registry replacement, not filtering.** The hook registry is built solely
-   from the allowlist via `buildPairipSafeRegistrations()` instead of the full
-   Android hook set (`__androidHooks`). Every Cronet / WebView / QUIC / pattern
-   entry is therefore never even a candidate — only `PAIRIP_SAFE_LIBS` is
-   registered.
-2. **Loader hook forced off.** `loaderHookSkipped` is forced `true`, so neither
-   the inline `android_dlopen_ext` trampoline nor the experimental
-   hardware-breakpoint "stealth loader" is installed — both would end up hooking
-   late-loaded WebView/Cronet libs and trip PairIP. (`--experimental-stealth-loader`
-   is disabled under `--pairip-safe`.)
-3. **Phases skipped at registration time.** The install is split into yielded
-   phases; under `--pairip-safe` only the `ssl-libs` phase is pushed. The `java`
-   (ART), `ohttp+scan-results`, `loader+patterns`, and `library-scan` phases are
-   gated out (`if (!pairip_safe) phases.push(...)`).
-4. **No `Memory.scan`, ever.** Three guards make the byte-pattern tier
-   unreachable: the modern BoringSSL keylog chain returns `"none"` before the
-   pattern tier (`boringssl_hook_chain.ts`), the pipeline never registers the
-   Pattern / MemoryScan strategies (`pipeline_utils.ts`), and the legacy boring
-   path refuses to scan (`legacy/.../openssl_boringssl_android.ts`). An
-   unresolved library degrades to "no hook" rather than scanning.
-5. **Per-library resolution** then proceeds exports → `.symtab` → offsets
-   (see [Scan-free resolution](#scan-free-resolution)).
+| Library | Type | Path | Notes |
+| --- | --- | --- | --- |
+| `libssl.so` | BoringSSL/OpenSSL | A (symbol) | Conscrypt; system `/apex` (safe) |
+| `libhttpengine.so` | BoringSSL | A (symbol, `.symtab`) | mainline Cronet; system `/apex` (safe) |
+| `libjavacrypto.so` | BoringSSL | A (symbol) | Conscrypt JNI |
+| `libconscrypt_*jni.so` | BoringSSL | A (symbol) | Conscrypt |
+| `libcommerce_http_client.so` | BoringSSL | A (symbol) | app SDK (e.g. Blizzard commerce; loads only when used) |
+| `libwebviewchromium.so` | BoringSSL | B (**offset**) | System WebView (Chromium); login WebView — see [WebView capture](#capturing-a-stripped-webview-chromium-login) |
+| `libunity.so` | MbedTLS (UnityTLS) | **offset, opt-in** | app-bundled; see [Unity](#unity-libunity-opt-in) |
 
-### Catching late-loaded libraries (the watcher)
+Late-loaded libraries (the WebView that appears only when a login page renders, or
+in spawn mode the TLS libs that load after resume) are picked up automatically by a
+non-invasive watcher — no loader hook, no breakpoint, no scan. In spawn mode that
+watcher deliberately waits out PairIP's startup integrity window before hooking.
 
-The `ssl-libs` phase only hooks libraries already resident when it runs (the
-attach case). Libraries that load **later** — the spawn case (TLS libs load after
-resume) and any late `dlopen` (e.g. the WebView when the login page renders) —
-are handled by `installPairipSafeWatcher()` (`agent/shared/shared_functions.ts`),
-which uses **no loader hook, no breakpoint, and no `Memory.scan`**:
+---
 
-- it first waits out PairIP's startup integrity window (`firstDelayMs` =
-  **8 s for spawn, 1.5 s for attach**) and re-scans for already-resident targets;
-- it then watches for new module loads via **`Process.attachModuleObserver`**
-  (Frida 17.x — event-driven, no code patch), with a **`setInterval` poll
-  (~1 s)** fallback when the observer API is unavailable;
-- all hooking runs on the JS thread via `setTimeout(0)`, never synchronously
-  inside a loader callback on the app thread (which could perturb PairIP
-  mid-`dlopen`).
+## Adding a library to scope
 
-The watcher's membership test is the same `matchPairipSafeLib()` predicate that
-built the registry, so registry, watcher, and blink loop always agree on the
-target set — adding one `PAIRIP_SAFE_LIBS` entry extends all three.
+Everything above — the registry, the late-load watcher, and the blink loop — is
+driven from **one array**, `PAIRIP_SAFE_LIBS` in
+`agent/shared/pairip_safe_libs.ts`. Adding a library is a single entry there, and
+all three subsystems pick it up at once. There are two cases.
 
-### Persistence and teardown
+**Symbol-exporting BoringSSL / Conscrypt lib** (the turnkey case — Path A). Reuse an
+existing executor and mark it `resolution: "symbol"`:
 
-Each installed BoringSSL keylog hook registers itself with the
-[blink](#blink-persistence) loop (`registerBlinkTarget()`), which roots the
-keylog `NativeCallback` permanently and toggles the inline `SSL_new` /
-`SSL_CTX_new` hooks. On detach, `gracefulDetach` calls `stopBlink()` before
-`Interceptor.detachAll()` so the toggling stops cleanly. (The Unity
-`ssl_compute_master` scrape is an inline `.text` hook that does **not** blink —
-see [Unity](#unity-libunity-opt-in).)
+```ts
+{
+    pattern: /.*libmytls\.so/, library: "My TLS lib (BoringSSL)",
+    libraryType: "boringssl", protocol: "tls",
+    hookFn: (m) => (m ? httpengine_execute_modern : httpengine_execute),
+    resolution: "symbol",
+}
+```
+
+Use `boring_execute*` if the SSL symbols are exported in `.dynsym`, or
+`httpengine_execute*` if they live only in `.symtab` (it opts the module into deep
+symbol resolution). That's the entire change — rebuild the agent and the library is
+in scope for `--pairip-safe`.
+
+**Hidden-symbol / statically-linked lib** (Path B — offset). Mark it
+`resolution: "offset"` and give it an `offsetKey` (defaults to the module name):
+
+```ts
+{
+    pattern: /.*libmystatic\.so/, library: "My static BoringSSL",
+    libraryType: "boringssl", protocol: "tls",
+    hookFn: (m) => (m ? boring_execute_modern : boring_execute),
+    resolution: "offset", offsetKey: "libmystatic.so",
+}
+```
+
+You then supply the function offset **at runtime**, no rebuild required:
+
+```bash
+--offsets '{"libmystatic.so":{"ssl_log_secret":{"address":"0x...","absolute":false}}}'
+```
+
+Because the pattern (`Memory.scan`) tier is hard-disabled under `--pairip-safe`, an
+offset library that has no offset supplied degrades to "not hooked" rather than
+falling back to a scan. Remember Path B is a non-blinking inline hook — only safe on
+libraries outside PairIP's checksum scope.
 
 ---
 
@@ -199,20 +271,22 @@ fritap -m -k keys.log --pairip-safe -v -s com.example.app
 
 ### Attach vs spawn
 
-- **Attach** is the proven path. Hooks install within ~2 s of attach.
+- **Attach** is the proven path. Already-resident TLS libs are hooked immediately,
+  and the late-load watcher's first sweep follows ~1.5 s later — so you control
+  exactly when (drive traffic right after the `keylog hooks installed` banner).
 - **Spawn** (`-s`) defers hook installation **~8 s past resume** to let PairIP's
   startup integrity sweep finish before any hook lands. The trade-off: the app's
   **earliest** handshakes (which often complete in the first few seconds) are
-  **missed**. Spawn does not magically produce keys — see below.
+  **missed**. Spawn does not magically produce keys.
 
 ---
 
 ## Forcing traffic and the "0 keys" case
 
 !!! tip "0 keys is usually *no catchable traffic*, not a broken hook"
-    If a run captures 0 keys, the hooks almost certainly installed fine — the
-    app just didn't perform a TLS handshake on a hooked library **during the
-    capture window**. Verify with `adb shell` (as root):
+    If a run captures 0 keys, the hooks almost certainly installed fine — the app
+    just didn't perform a TLS handshake on a hooked library **during the capture
+    window**. Verify with `adb shell` (as root):
 
     ```bash
     # the target's own :443 connections (replace <pid>)
@@ -225,10 +299,10 @@ fritap -m -k keys.log --pairip-safe -v -s com.example.app
 To capture, you need a **fresh handshake on a hooked library while hooks are
 attached** (ideally during warmup). Options:
 
-- **Drive the app**: log in, enter a screen that fetches data, start gameplay —
+- **Drive the app**: log in, open a screen that fetches data, start gameplay —
   whatever causes new TLS.
-- **Toggle connectivity** to force reconnect handshakes — but only useful when
-  the app has live connections it will re-establish:
+- **Toggle connectivity** to force reconnect handshakes — useful only when the app
+  has live connections it will re-establish:
 
   ```bash
   adb shell cmd connectivity airplane-mode enable
@@ -243,35 +317,35 @@ attached** (ideally during warmup). Options:
 ## Capturing a stripped WebView / Chromium login
 
 Many apps render their login (e.g. a Battle.net OAuth page) in an in-app WebView
-backed by the **Android System WebView (Chromium)**. Its
-`libwebviewchromium.so`:
+backed by the **Android System WebView (Chromium)**. Its `libwebviewchromium.so`:
 
-- **loads lazily** — only when a WebView is first rendered, so it is absent from
-  an early `Process.enumerateModules()` (you'll see only the
-  `*_loader.so` / `*_plat_support.so` stubs);
+- **loads lazily** — only when a WebView is first rendered, so it is absent from an
+  early `Process.enumerateModules()` (you'll see only the `*_loader.so` /
+  `*_plat_support.so` stubs);
 - statically links BoringSSL and is **fully stripped** — no `SSL_*` symbols in
   `.dynsym` or `.symtab`, and Chromium installs no keylog callback.
 
-Neither `enumerateExports`/`enumerateSymbols` nor (under `--pairip-safe`)
-`Memory.scan` can reach it. The one scan-free hook point is the BoringSSL
-internal **`bssl::ssl_log_secret(ssl, label, secret)`**, which is called on
-every handshake — friTap reads its arguments on entry, so it works even though
-no keylog callback is set. You supply its **offset** via `--offsets`.
+Neither symbol resolution nor (under `--pairip-safe`) `Memory.scan` can reach it.
+The one scan-free hook point is the BoringSSL internal
+**`bssl::ssl_log_secret(ssl, label, secret)`** (Path B above), which is called on
+every handshake — friTap reads its arguments on entry, so it works even though no
+keylog callback is set. You supply its **offset** via `--offsets`. This is safe
+because System WebView is a system package, outside the app's PairIP checksum scope.
 
 ### Finding the offset: `dev/find_ssl_log_secret_offset.py`
 
 !!! danger "The offset is target-specific"
-    A `ssl_log_secret` offset is valid **only** for the exact `.so` it was
-    derived from — a given **WebView version + architecture** (or, for Unity, a
-    given app's `libunity.so` build). System WebView updates roughly monthly,
-    so the offset **will drift**. Re-derive it for *your* device/version; do not
-    hard-code or copy an offset from another device.
+    A `ssl_log_secret` offset is valid **only** for the exact `.so` it was derived
+    from — a given **WebView version + architecture** (or, for Unity, a given app's
+    `libunity.so` build). System WebView updates roughly monthly, so the offset
+    **will drift**. Re-derive it for *your* device/version; do not hard-code or
+    copy an offset from another device.
 
-The helper (`lief` + `capstone`, no symbols required) finds it by locating the
-TLS keylog label strings, following the `ADRP`+`ADD`+`BL` call sites that pass
-each label to `ssl_log_secret`, and **voting**: the `BL` target shared by the
-most labels is the function. It validates the hit with a prologue check and
-prints a ready-to-use `--offsets` JSON.
+The helper (`lief` + `capstone`, no symbols required) finds it by locating the TLS
+keylog label strings, following the `ADRP`+`ADD`+`BL` call sites that pass each
+label to `ssl_log_secret`, and **voting**: the `BL` target shared by the most
+labels is the function. It validates the hit with a prologue check and prints a
+ready-to-use `--offsets` JSON.
 
 ```bash
 # 1. pull the device's exact System WebView .so
@@ -316,29 +390,29 @@ fritap -m -k keys.log --pairip-safe -v \
   <pid|package>
 ```
 
-The library loads lazily, so attach first, then **navigate to the login page**
-(the page load itself is HTTPS — you do not need valid credentials to produce a
-handshake). The spawn/late-load watcher installs the hook the moment
+The library loads lazily, so attach first, then **navigate to the login page** (the
+page load itself is HTTPS — you don't need valid credentials to produce a
+handshake). The late-load watcher installs the hook the moment
 `libwebviewchromium.so` appears.
 
 ---
 
 ## Unity (libunity, opt-in)
 
-Unity games carry a statically-linked **MbedTLS** (UnityTLS) inside
-`libunity.so`, used by native `UnityWebRequest` traffic. It is stripped (no
+Unity games carry a statically-linked **MbedTLS** (UnityTLS) inside `libunity.so`,
+used by native `UnityWebRequest` traffic. It is stripped (no
 `ssl_compute_master`/`mbedtls_*`/`unitytls_*` symbols), so friTap offset-hooks
 `ssl_compute_master` and scrapes the master secret as a TLS 1.2 `CLIENT_RANDOM`
 keylog line.
 
 !!! warning "This hook is opt-in, by design"
     `libunity.so` is **app-bundled** (inside PairIP's checksum scope) and, unlike
-    the BoringSSL keylog callback, the scrape is an **inline `.text` hook that
-    does not blink** — a PairIP sweep can find it and `SIGSEGV` the app
-    (observed death marker: `install-tls-hooks: libunity.so`). On at least one
-    title (Warcraft Rumble) the hook was also measured as **never firing** (the
-    app routes TLS through Conscrypt/Cronet/Chromium, not UnityTLS). So friTap
-    does **not** auto-install it. To force it, pass its offset explicitly:
+    the BoringSSL keylog callback, the scrape is an **inline `.text` hook that does
+    not blink** — a PairIP sweep can find it and `SIGSEGV` the app (observed death
+    marker: `install-tls-hooks: libunity.so`). On at least one title (Warcraft
+    Rumble) the hook was also measured as **never firing** (the app routes TLS
+    through Conscrypt/Cronet/Chromium, not UnityTLS). So friTap does **not**
+    auto-install it. To force it, pass its offset explicitly:
 
     ```bash
     fritap -m -k keys.log --pairip-safe -v \
@@ -346,18 +420,18 @@ keylog line.
     ```
 
     When skipped, friTap prints the known offset for the detected build as a
-    copy-paste hint. The hook also logs a **fire-count** so you can confirm
-    whether Unity's TLS is exercised at all before relying on it.
+    copy-paste hint, and the hook logs a **fire-count** so you can confirm whether
+    Unity's TLS is exercised at all before relying on it.
 
 ---
 
 ## Limitations
 
-- **Best-effort, not a bypass.** A PairIP sweep can still coincide with an
-  attached inline hook (especially the opt-in Unity hook, or during warmup).
+- **Best-effort, not a bypass.** A PairIP sweep can still coincide with an attached
+  inline hook (especially a Path B / opt-in Unity hook, or during warmup).
 - **Offsets are target-specific and fragile** — re-derive per device/version.
-- **Coverage is limited to the allowlist.** TLS that flows through a library not
-  in the list (or one whose offset you haven't supplied) is not captured.
+- **Coverage is limited to the allowlist.** TLS that flows through a library not in
+  the list (or one whose offset you haven't supplied) is not captured.
 - **Spawn misses the earliest handshakes** (deferred hooking); attach is proven.
 - **Android only.**
 
@@ -367,3 +441,5 @@ keylog line.
 - [BoringSSL](../libraries/boringssl.md) — keylog chain & `ssl_log_secret`
 - [Troubleshooting → PairIP](../troubleshooting/common-issues.md#anti-tamper-integrity-protected-apps-pairip)
 - friTap issue [fkie-cad/friTap#64](https://github.com/fkie-cad/friTap/issues/64)
+- Broader Frida-on-Android anti-tamper discussion:
+  [httptoolkit/frida-interception-and-unpinning#124](https://github.com/httptoolkit/frida-interception-and-unpinning/issues/124)
