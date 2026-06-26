@@ -22,7 +22,7 @@ hiding friTap's footprint in plain sight.
 
 ---
 
-## The PairIP mental model
+## The PairIP model
 
 Three facts explain everything `--pairip-safe` does — and why it has to be built
 the strange way it is.
