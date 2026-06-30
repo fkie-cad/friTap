@@ -55,6 +55,7 @@ class AppState:
     protocol: str = "tls"  # "tls", "ipsec", "ssh", "auto"
     view_mode: str = "legacy"  # "legacy", "flow"
     library_scan: bool = False
+    pairip_safe: bool = False  # Android-only: --pairip-safe PairIP workaround
     encapsulated_protocols: dict = field(default_factory=lambda: {"ohttp": True})
     quic_capture_mode: str = "stream"  # "stream" or "app-api"
 

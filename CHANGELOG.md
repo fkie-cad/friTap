@@ -4,6 +4,33 @@ All notable changes to friTap will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.2.4]
+
+### Added
+  - **`--pairip-safe` in the TUI (Android).** The Ready-to-Capture screen now offers a
+    `PairIP Safe` toggle (key `p`), shown only for Android devices, so the PairIP
+    workaround can be enabled from the wizard without dropping to the CLI
+    (fkie-cad/friTap#64).
+  - **Improved Wine TLS hooking.** Pattern-based keylog hook for Wine targets in the
+    Frida agent, improving capture reliability for Windows binaries run under Wine.
+
+### Fixed
+  - **Spawn targets with spaces.** A quoted spawn command (e.g.
+    `wine "/path/Program Files/app.exe"`) is now tokenized shell-style into argv on
+    both the CLI and TUI, so spaced and Windows-style paths survive to
+    `device.spawn()`. Also fixes Wine launch-command parsing.
+
+## [2.2.3]
+
+### Added
+  - **dev/find_ssl_log_secret_offset.py helper script** locate `bssl::ssl_log_secret` in a 
+    stripped BoringSSL/Chromium shared object, for friTap's `--pairip-safe` offset hook as an alternative to BoringSecretHunter (BSH)
+
+### Fixed
+  - **Linter fixes** Fixing linter issues in `dev/find_ssl_log_secret_offset.py`
+  - **updating our documentation** Updated the text on `pairip-safe.md` 
+
+
 ## [2.2.2]
 
 ### Added

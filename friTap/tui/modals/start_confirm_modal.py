@@ -54,12 +54,14 @@ if TEXTUAL_AVAILABLE:
             Binding("v", "toggle_verbose", "Verbose", show=False),
             Binding("e", "toggle_experimental", "Experimental", show=False),
             Binding("l", "toggle_library_scan", "Library Scan", show=False),
+            Binding("p", "toggle_pairip_safe", "PairIP Safe", show=False),
             Binding("d", "toggle_debug_log", "Debug Log", show=False),
         ]
 
         verbose: reactive[bool] = reactive(False)
         experimental: reactive[bool] = reactive(False)
         library_scan: reactive[bool] = reactive(False)
+        pairip_safe: reactive[bool] = reactive(False)
         debug_log: reactive[bool] = reactive(False)
 
         def __init__(self, summary: dict, **kwargs) -> None:
@@ -72,7 +74,13 @@ if TEXTUAL_AVAILABLE:
             self.verbose = summary.get("verbose", False)
             self.experimental = summary.get("experimental", False)
             self.library_scan = summary.get("library_scan", False)
+            self.pairip_safe = summary.get("pairip_safe", False)
             self.debug_log = summary.get("debug_log", False)
+
+        def _is_android(self) -> bool:
+            """PairIP Safe (--pairip-safe) is an Android-only workaround, so its
+            toggle and hint are gated on the selected device being Android."""
+            return (self._summary.get("device_platform") or "").lower() == "android"
 
         def compose(self) -> ComposeResult:
             with Vertical(id="modal-container"):
@@ -81,9 +89,12 @@ if TEXTUAL_AVAILABLE:
                     classes="modal-title",
                 )
                 yield Static("", id="summary-block")
+                # On Android the PairIP Safe hint gets its own line; folding it into
+                # the second line overflows the modal's 65-col width.
+                pairip_line = "\np: PairIP Safe" if self._is_android() else ""
                 yield Static(
                     f"[{c('text-muted')}]Enter: Start  |  v: Verbose  |  e: Experimental\n"
-                    f"l: Library Scan  |  d: Debug Log  |  Esc: Back[/]",
+                    f"l: Library Scan  |  d: Debug Log  |  Esc: Back{pairip_line}[/]",
                     classes="key-hints",
                 )
                 with Horizontal(classes="button-row"):
@@ -124,6 +135,7 @@ if TEXTUAL_AVAILABLE:
             verbose_indicator = "[bold green]ON[/]" if self.verbose else "[dim]off[/]"
             experimental_indicator = "[bold green]ON[/]" if self.experimental else "[dim]off[/]"
             library_scan_indicator = "[bold green]ON[/]" if self.library_scan else "[dim]off[/]"
+            pairip_safe_indicator = "[bold green]ON[/]" if self.pairip_safe else "[dim]off[/]"
             debug_log_indicator = "[bold green]ON[/]" if self.debug_log else "[dim]off[/]"
 
             # Determine display values for keys/output based on mode
@@ -156,6 +168,8 @@ if TEXTUAL_AVAILABLE:
             lines.append(f"  Verbose:       {verbose_indicator}")
             lines.append(f"  Experimental:  {experimental_indicator}")
             lines.append(f"  Library Scan:  {library_scan_indicator}")
+            if self._is_android():
+                lines.append(f"  PairIP Safe:   {pairip_safe_indicator}")
             lines.append(f"  Debug Log:     {debug_log_indicator}")
 
             return "\n".join(lines)
@@ -167,6 +181,9 @@ if TEXTUAL_AVAILABLE:
             self._refresh_summary()
 
         def watch_library_scan(self, value: bool) -> None:
+            self._refresh_summary()
+
+        def watch_pairip_safe(self, value: bool) -> None:
             self._refresh_summary()
 
         def watch_debug_log(self, value: bool) -> None:
@@ -183,6 +200,12 @@ if TEXTUAL_AVAILABLE:
         def action_toggle_library_scan(self) -> None:
             """Toggle library scan flag."""
             self.library_scan = not self.library_scan
+
+        def action_toggle_pairip_safe(self) -> None:
+            """Toggle the Android-only PairIP Safe (--pairip-safe) flag."""
+            if not self._is_android():
+                return
+            self.pairip_safe = not self.pairip_safe
 
         def action_toggle_debug_log(self) -> None:
             """Toggle debug log file creation."""

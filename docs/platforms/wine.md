@@ -73,7 +73,31 @@ sudo fritap --experimental -v -k keys.log wine /path/to/app.exe
 
 # Debug mode for troubleshooting
 sudo fritap --experimental -do -v wine /path/to/app.exe
+
+# Spawn target whose path contains spaces — quote it so the shell passes one
+# token; friTap preserves the argv and spawns it intact (no space-splitting).
+sudo fritap --experimental -s -k keys.log wine "/home/u/.wine/drive_c/Program Files/App/app.exe"
 ```
+
+## Deployment Models
+
+There are two ways to run friTap against a Wine target:
+
+1. **Linux-host Frida (recommended, the default).** Run friTap normally on Linux;
+   it injects native Frida into the Wine process. This gives full memory
+   visibility (so schannel's underlying GnuTLS is reachable) and is what every
+   command in this guide uses. Because the host Frida sees the System V ABI, PE
+   (Windows) code is read via the dual-ABI register technique described below.
+
+   ```bash
+   sudo fritap --experimental -k keys.log wine /path/to/application.exe
+   ```
+
+2. **Frida inside Wine (fallback).** Install friTap as a Windows process inside
+   Wine and run it there (see `research/wine/tls_wine/Installing_fritap_wine.md`).
+   Here `args[]` map to the Win64 ABI natively, but schannel memory is not always
+   visible and packaging is more involved. Use only if the host-side model does
+   not work for your target.
 
 ## How Wine Support Works
 
@@ -119,6 +143,8 @@ friTap detects Wine processes using multiple indicators:
                 │   1. Linux agent    │
                 │   2. LdrLoadDll     │
                 │      hooking        │
+                │   3. Dual-ABI key   │
+                │      pattern scan   │
                 └─────────────────────┘
 ```
 
@@ -137,15 +163,79 @@ Wine support intercepts Windows DLLs by hooking `LdrLoadDll` in Wine's `ntdll.dl
 | mbedTLS | `mbedTLS.dll` |
 | Cronet | `*cronet*.dll` |
 
+### Dual-ABI Keylog Pattern Scanning (Key Extraction)
+
+!!! info "x86-64 only"
+    This capability currently targets **x86-64** Wine targets.
+
+The symbol/export-based DLL hooks above are not enough on their own under Wine,
+for two reasons:
+
+1. **Schannel.** Windows apps that use the native `schannel`/`secur32` API never
+   expose a hookable TLS session — but under Wine, schannel delegates to GnuTLS.
+2. **Mixed ABIs.** friTap injects *native* (Linux-host) Frida into the Wine
+   process. On x86-64 a Wine process runs code in **two calling conventions at
+   once**: Unix-side `.so` libraries use the **System V ABI** (args in
+   `rdi, rsi, rdx, rcx`), while PE-side Windows DLLs use the **Win64 ABI** (args
+   in `rcx, rdx, r8, r9`). Reading arguments through Frida's `args[]` abstraction
+   silently mis-reads PE code.
+
+To solve both, friTap scans loaded modules for the **byte signature of the
+internal keylog/secret-logging function** and, at each match, reads the secret,
+label and `client_random` straight from the CPU registers matching that
+signature's ABI (the same register-reading technique friTap already uses for
+Go's non-System-V ABI). This is adapted from the research proof-of-concept in
+`research/wine/tls_wine/`.
+
+| Function (signature) | ABI | Covers |
+|----------------------|-----|--------|
+| `_gnutls_call_keylog_func` | System V | native `libgnutls.so` **and Windows schannel** (via Wine's GnuTLS) |
+| `_gnutls_call_keylog_func` | Win64 | PE-compiled `libgnutls-*.dll` bundled with an app |
+| `SSL_log_secret` | Win64 | PE-compiled OpenSSL/LibreSSL `libssl` |
+
+The scan runs over already-loaded modules at startup and re-runs on each
+`LdrLoadDll` for freshly loaded DLLs. It is gated behind `--experimental` and
+works on both the legacy (default) and `--modern` agent paths. Extracted secrets
+flow through the normal keylog pipeline, so `-k`/`--pcap` work unchanged.
+
+#### Custom / version-specific signatures via `--patterns`
+
+The bundled signatures match specific library builds. If your target uses a
+different GnuTLS/OpenSSL version, supply your own byte patterns with
+`--patterns pattern.json` under a `wine` platform key:
+
+```json
+{
+  "modules": {
+    "gnutls": {
+      "wine": {
+        "x64": {
+          "gnutls_keylog_sysv":  { "primary": "F3 0F 1E FA ..." },
+          "gnutls_keylog_win64": { "primary": "48 83 EC 38 ..." }
+        }
+      }
+    },
+    "openssl": {
+      "wine": { "x64": { "openssl_log_secret_win64": { "primary": "41 57 41 56 ..." } } }
+    }
+  }
+}
+```
+
+Each signature id (`gnutls_keylog_sysv`, `gnutls_keylog_win64`,
+`openssl_log_secret_win64`) accepts `primary`, `fallback`, and `second_fallback`
+patterns. A user-supplied pattern overrides the bundled default for that id.
+
 ## Supported TLS Libraries
 
 ### Windows DLLs (via Wine)
 
 | Library | Support | Notes |
 |---------|---------|-------|
-| OpenSSL/BoringSSL | Full | Key extraction + traffic |
+| OpenSSL/BoringSSL | Full | Key extraction + traffic; PE builds keyed via Win64 `SSL_log_secret` pattern |
 | WolfSSL | Full | Key extraction + traffic |
-| GnuTLS | Full | Key extraction + traffic |
+| GnuTLS | Full | Key extraction + traffic; dual-ABI keylog pattern (System V + Win64) |
+| Schannel | Keys | Key extraction via Wine's underlying GnuTLS (`_gnutls_call_keylog_func`) |
 | NSS | Full | Key extraction + traffic |
 | mbedTLS | R/W | Traffic hooks only |
 | Cronet | Full | Pattern-based hooking |

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shlex
 import time
 
 from .modals.alert_modal import AlertModal
@@ -29,6 +30,31 @@ except ImportError:
 
 
 from friTap.flow.models import format_byte_size  # noqa: E402
+
+
+def _tokenize_spawn_command(command: str) -> list[str] | None:
+    """Split a free-text spawn command into argv tokens, shell-style.
+
+    Unlike the CLI (where the user's shell already tokenized into argv), the TUI
+    spawn modal receives one raw string. Tokenize it like a shell so a target
+    path with spaces survives when quoted, e.g.
+    ``wine "/.../Program Files/App/app.exe"`` -> ['wine', '/.../Program Files/App/app.exe'].
+
+    Backslashes are treated as literal (escape disabled) so Windows-style paths
+    such as ``wine "C:\\Program Files\\App\\app.exe"`` are NOT mangled — unlike a
+    plain ``shlex.split``, which only preserves them inside quotes.
+
+    Returns the token list, or None on unbalanced quotes (the caller then falls
+    back to the legacy whitespace split).
+    """
+    lex = shlex.shlex(command, posix=True)
+    lex.whitespace_split = True
+    lex.escape = ""  # backslash is a literal path separator, not an escape
+    try:
+        return list(lex)
+    except ValueError:
+        # Unbalanced quotes — let the caller fall back to target.split(" ").
+        return None
 
 
 def _count_keys(path: str) -> int | None:
@@ -501,12 +527,23 @@ class CaptureController:
             full_capture=state.full_capture,
         )
 
+        # In spawn mode, tokenize the typed command into argv so a target path
+        # containing spaces survives to device.spawn() (quoted by the user, as in
+        # a shell). Attach mode uses state.target verbatim as a process name/PID,
+        # so it is never tokenized. None falls back to the legacy split in
+        # session_manager for the simple single-token case.
+        target_argv = None
+        if state.spawn and state.target:
+            target_argv = _tokenize_spawn_command(state.target)
+
         return FriTapConfig(
             target=state.target,
+            target_argv=target_argv,
             device=device,
             output=output,
             hooking=HookingConfig(
                 library_scan=getattr(state, 'library_scan', False),
+                pairip_safe=getattr(state, 'pairip_safe', False),
                 encapsulated_protocols=getattr(
                     state, 'encapsulated_protocols', {"ohttp": True}
                 ),

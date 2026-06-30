@@ -158,6 +158,12 @@ class FriTapConfig:
         )
     """
     target: str
+    # Original argv tokens for spawn mode (e.g. ["wine", "/p/My Game/app.exe"]).
+    # Kept separate from `target` (which stays a single string for attach-by-name
+    # / display) so spawn passes the real argv to device.spawn() instead of
+    # re-splitting the joined string on spaces — which corrupts paths containing
+    # spaces (issue #66 follow-up). None for attach mode / programmatic configs.
+    target_argv: Optional[List[str]] = None
     device: DeviceConfig = field(default_factory=DeviceConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     hooking: HookingConfig = field(default_factory=HookingConfig)
@@ -209,6 +215,7 @@ class FriTapConfig:
         cls,
         app: str,
         pcap_name: Optional[str] = None,
+        spawn_argv: Optional[List[str]] = None,
         verbose: bool = False,
         spawn: bool = False,
         keylog: bool | str = False,
@@ -264,6 +271,7 @@ class FriTapConfig:
         """
         return cls(
             target=app,
+            target_argv=spawn_argv,
             device=DeviceConfig(
                 mobile=mobile,
                 host=host if host else None,

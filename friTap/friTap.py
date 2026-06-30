@@ -294,7 +294,7 @@ Offline (read / analyze .tap):
     args.add_argument("--debug-log", metavar="<path>", required=False, default=None, dest="debug_log",
                       help="Write the friTap debug log to <path> (default: ./fritap_debug_<ts>_<pid>.log). "
                            "Capture session-level errors, warnings, and uncaught exceptions even in non-TUI mode.")
-    args.add_argument("-do", "--debugoutput", required=False, action="store_const", const=True,
+    args.add_argument("-do", "--debug-output", required=False, action="store_const", const=True,
                       help="Activate the debug output only.")
     args.add_argument("-ar", "--anti_root", required=False, action="store_const", const=True, default=False, help="Activate anti root hooks for Android")
     args.add_argument("-ed", "--enable_default_fd", required=False, action="store_const", const=True, default=False, help="Activate the fallback socket information (127.0.0.1:1234-127.0.0.1:2345) whenever the file descriptor (FD) of the socket cannot be determined")
@@ -363,8 +363,10 @@ Offline (read / analyze .tap):
                       help="Catch ALL newly spawned processes without filtering (use with caution)")
     args.add_argument("--enable_child_gating", required=False, action="store_const", const=True,
                       help="Intercept child processes spawned by the target application")
-    args.add_argument("exec", metavar="<executable/app name/pid>",
-                      help="executable/app whose SSL calls to log")
+    args.add_argument("exec", metavar="<executable/app name/pid>", nargs="+",
+                      help="executable/app whose SSL calls to log. Accepts a "
+                           "command with arguments for spawn mode, e.g. "
+                           "'wine /path/to/application.exe' (issue #66).")
     args.add_argument("--offsets", required=False, metavar="<offsets.json>",
                       help="Provide custom offsets for all hooked functions inside a JSON file or a json string containing all offsets. For more details see our example json (offsets_example.json)")
     args.add_argument("--patterns", required=False, metavar="<pattern.json>",
@@ -506,18 +508,30 @@ Offline (read / analyze .tap):
                            "By default loopback traffic is filtered out to reduce noise.")
     parsed = parser.parse_args()
 
+    # The target positional now captures one-or-more tokens (nargs="+") so a
+    # spawn command with arguments parses, e.g. `wine /path/app.exe` (issue #66).
+    # Keep the original token list as parsed.exec_argv so spawn can pass the real
+    # argv to device.spawn() (preserving paths that contain spaces, e.g.
+    # ".../Program Files/app.exe"), and collapse parsed.exec to the single
+    # space-joined string the rest of friTap expects for attach-by-name/display.
+    if isinstance(parsed.exec, list):
+        parsed.exec_argv = list(parsed.exec)
+        parsed.exec = " ".join(parsed.exec)
+    else:
+        parsed.exec_argv = None
+
     # Configure logging after parsing arguments to respect debug flags
     logger, special_logger = setup_fritap_logging(
-        debug=parsed.debug, debug_output=parsed.debugoutput
+        debug=parsed.debug, debug_output=parsed.debug_output
     )
 
     # Bring up the debug-log file subsystem when the user asked for one,
-    # either explicitly via --debug-log or implicitly via --debugoutput.
+    # either explicitly via --debug-log or implicitly via --debug-output.
     # Done immediately after console-logging is configured so init-time
     # errors below this line land in the file. The TUI entry point
     # (run_tui) calls prime_debug_log too — both call sites are idempotent.
     debug_log_path_override = getattr(parsed, "debug_log", None)
-    if debug_log_path_override or parsed.debugoutput:
+    if debug_log_path_override or parsed.debug_output:
         from .fritap_utility import prime_debug_log
         opened = prime_debug_log(debug_log_path_override)
         if opened:
@@ -530,7 +544,7 @@ Offline (read / analyze .tap):
             logger.info("LSASS hooking is disabled. Proceeding without LSASS.")
         else:
             logger.info("Hooking LSASS process for SSL/TLS traffic decryption.")
-            hook_lsass(parsed.pcap, parsed.verbose, parsed.keylog, parsed.live, parsed.debug, parsed.host, parsed.debugoutput, parsed.enable_default_fd, parsed.patterns, parsed.custom_script, parsed.json)
+            hook_lsass(parsed.pcap, parsed.verbose, parsed.keylog, parsed.live, parsed.debug, parsed.host, parsed.debug_output, parsed.enable_default_fd, parsed.patterns, parsed.custom_script, parsed.json)
             atexit.register(cleanup_lsass_hook)
 
     install_lsass_hook = False
@@ -540,7 +554,7 @@ Offline (read / analyze .tap):
             app=parsed.exec, verbose=parsed.verbose, spawn=parsed.spawn,
             mobile=parsed.mobile, environment_file=parsed.environment,
             debug_mode=parsed.debug, host=parsed.host, offsets=parsed.offsets,
-            debug_output=parsed.debugoutput, experimental=parsed.experimental,
+            debug_output=parsed.debug_output, experimental=parsed.experimental,
             anti_root=parsed.anti_root, enable_default_fd=parsed.enable_default_fd,
             patterns=parsed.patterns, custom_hook_script=parsed.custom_script,
             backend=parsed.backend,
@@ -708,6 +722,7 @@ Offline (read / analyze .tap):
         special_logger.info("Press Ctrl+C to stop logging")
         config = FriTapConfig.from_legacy_params(
             app=parsed.exec,
+            spawn_argv=getattr(parsed, "exec_argv", None),
             pcap_name=parsed.pcap,
             verbose=parsed.verbose,
             spawn=parsed.spawn,
@@ -723,7 +738,7 @@ Offline (read / analyze .tap):
             socket_trace=parsed.socket_tracing,
             host=parsed.host,
             offsets=parsed.offsets,
-            debug_output=parsed.debugoutput,
+            debug_output=parsed.debug_output,
             experimental=parsed.experimental,
             anti_root=parsed.anti_root,
             payload_modification=parsed.payload_modification,
@@ -834,7 +849,7 @@ Offline (read / analyze .tap):
             for trace in trace_back
         ]
         
-        if parsed.debug or parsed.debugoutput:
+        if parsed.debug or parsed.debug_output:
             if "NotSupportedError" in ex_type.__name__:
                 logger.error("Backend error:")
             logger.error("Exception type : %s " % ex_type.__name__)
@@ -864,7 +879,7 @@ Offline (read / analyze .tap):
     finally:
         if 'ssl_log' in locals() and isinstance(ssl_log, SSL_Logger):
             ssl_log.pcap_cleanup(parsed.full_capture,parsed.mobile,parsed.pcap)
-            ssl_log.cleanup(parsed.live,parsed.socket_tracing,parsed.full_capture,parsed.debug,parsed.debugoutput)
+            ssl_log.cleanup(parsed.live,parsed.socket_tracing,parsed.full_capture,parsed.debug,parsed.debug_output)
     
     # only reached when error
     raise Failure

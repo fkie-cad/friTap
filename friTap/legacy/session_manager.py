@@ -95,7 +95,12 @@ class SessionManager:
                 if logger.environment_file:
                     with open(logger.environment_file) as json_env_file:
                         used_env = json.load(json_env_file)
-                pid = logger._backend.spawn_raw(logger.device, logger.target_app.split(" "), env=used_env)
+                # Prefer the original argv tokens (preserves paths with spaces,
+                # e.g. ".../Program Files/app.exe"); fall back to splitting the
+                # joined target string for programmatic / TUI configs that don't
+                # supply argv. spawn_raw passes a list straight to device.spawn().
+                spawn_target = logger.target_argv or logger.target_app.split(" ")
+                pid = logger._backend.spawn_raw(logger.device, spawn_target, env=used_env)
                 time.sleep(1)
             logger.process = logger._backend.attach(logger.device, str(pid))
         else:

@@ -1,9 +1,10 @@
 import { hookRegistry } from "../shared/registry.js";
-import { selected_protocol, use_modern } from "../fritap_agent.js";
+import { selected_protocol, use_modern, getParsedPatterns } from "../fritap_agent.js";
 import { log, devlog } from "../util/log.js";
 import { getModuleNames } from "../shared/shared_functions.js";
 import { Platform, PLATFORM_WINE } from "../shared/shared_structures.js";
 import { load_linux_hooking_agent } from "./linux.js";
+import { installWineKeylogPatternHooks } from "../shared/wine_keylog_pattern_hook.js";
 
 // Import Windows-style TLS library hooks (reuse existing implementations)
 // Legacy v1 executors from legacy copies
@@ -110,6 +111,15 @@ function hook_Wine_LdrLoadDll(is_base_hook: boolean): void {
                         }
                         break; // Only hook first matching registration per DLL
                     }
+
+                    // Also scan the freshly-loaded DLL for the dual-ABI keylog
+                    // signatures (catches PE-bundled gnutls/openssl and schannel's
+                    // internal gnutls even when no export-based hook matched).
+                    try {
+                        installWineKeylogPatternHooks(dllBaseName, getParsedPatterns());
+                    } catch (error) {
+                        devlog(`[Wine] keylog pattern scan error for ${dllBaseName}: ${error}`);
+                    }
                 }
             }
         });
@@ -178,6 +188,18 @@ export function load_wine_hooking_agent(): void {
     // Hook existing Windows DLLs that are already loaded
     log("[Wine] Checking for pre-loaded Windows DLLs...");
     hook_Wine_Existing_DLLs(true);
+
+    // Dual-ABI keylog pattern scan over all already-mapped modules. This is the
+    // robust path for Wine: it hooks the internal keylog/secret-logging function
+    // by byte signature and reads arguments from the registers matching that
+    // signature's ABI (System V for native .so, Win64 for PE DLLs). Covers
+    // schannel-via-gnutls, PE-bundled gnutls, and PE OpenSSL/LibreSSL.
+    log("[Wine] Scanning loaded modules for dual-ABI TLS keylog signatures (experimental)...");
+    try {
+        installWineKeylogPatternHooks(undefined, getParsedPatterns());
+    } catch (error) {
+        devlog(`[Wine] keylog pattern scan error: ${error}`);
+    }
 
     // Hook future DLL loads via LdrLoadDll
     log("[Wine] Setting up LdrLoadDll hook for future DLL loads...");

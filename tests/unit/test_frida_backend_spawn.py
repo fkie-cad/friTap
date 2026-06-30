@@ -52,3 +52,20 @@ def test_spawn_raw_env_only():
     backend, device = _backend_with_mock_device()
     backend.spawn_raw(device, "/usr/bin/app", env={"FOO": "bar"})
     device.spawn.assert_called_once_with("/usr/bin/app", env={"FOO": "bar"})
+
+
+def test_spawn_raw_argv_list_passed_verbatim():
+    # A spawn command supplied as argv tokens must reach device.spawn() as a
+    # list, NOT be re-joined/re-split — otherwise a target path containing a
+    # space (common under Wine, e.g. ".../Program Files/...") gets shredded.
+    backend, device = _backend_with_mock_device()
+    argv = ["wine", "/home/u/.wine/drive_c/Program Files/My Game/app.exe"]
+    backend.spawn_raw(device, argv)
+    device.spawn.assert_called_once_with(argv)
+
+
+def test_spawn_raw_argv_list_with_env():
+    backend, device = _backend_with_mock_device()
+    argv = ["wine", "/p/My App/app.exe"]
+    backend.spawn_raw(device, argv, env={"WINEDEBUG": "-all"})
+    device.spawn.assert_called_once_with(argv, env={"WINEDEBUG": "-all"})

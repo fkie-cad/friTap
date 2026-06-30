@@ -1,6 +1,6 @@
 {
     "name": "friTap",
-    "version": "2.2.3",
+    "version": "2.2.4",
     "description": "Frida agent for logging encrypted traffic as plaintext and extracting its encryption keys",
     "private": true,
     "main": "agent/fritap_agent.ts",
@@ -8,7 +8,7 @@
         "prepare": "npm run build",
         "build": "frida-compile agent/fritap_agent.ts -o friTap/fritap_agent.js",
         "watch": "frida-compile agent/fritap_agent.ts -o friTap/_fritap_agent.js -w",
-        "test:agent": "node --import tsx --test agent/shared/arm64.test.ts agent/shared/sockaddr.test.ts agent/util/anti_tamper.test.ts agent/util/non_tls_libs.test.ts agent/shared/deep_symbol_resolution.test.ts"
+        "test:agent": "node --import tsx --test agent/shared/arm64.test.ts agent/shared/sockaddr.test.ts agent/util/anti_tamper.test.ts agent/util/non_tls_libs.test.ts agent/shared/deep_symbol_resolution.test.ts agent/shared/wine_keylog_pattern_hook.test.ts"
     },
     "keywords": [
         "frida",
@@ -29,7 +29,7 @@
     "dependencies": {
         "JSON": "^1.0.0",
         "frida": "^17.8.0",
-        "frida-java-bridge": "^7.0.13",
+        "frida-java-bridge": "git+https://github.com/frida/frida-java-bridge.git#b38a5b647d3e6b72aa19bcf8eb5e41c550a0e622",
         "frida-objc-bridge": "^8.0.5",
         "util": "^0.12.5"
     }

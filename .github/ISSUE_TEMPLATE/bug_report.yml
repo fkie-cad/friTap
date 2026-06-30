@@ -73,8 +73,8 @@ body:
     attributes:
       label: Full friTap output
       description: |
-        Paste the complete output (stdout + stderr). If the output is huge, attach the
-        contents of any `--debug-output` log file as well.
+        Paste the complete terminal output, including both stdout and stderr.
+        If the output is very large, attach the generated debug log instead. You can create one with `-do/--debug-output` or, alternatively, use `--debug-log`.
       render: shell
     validations:
       required: true

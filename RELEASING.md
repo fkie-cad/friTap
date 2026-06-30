@@ -68,6 +68,24 @@ through frida and may need attention if upstream stops maintaining them.
     `agent-build-check` CI job goes red. At that point either pin a
     frida version that still works or contribute the migration upstream.
 
+## Pinned dependencies (revert when upstream releases)
+
+- **`frida-java-bridge` → upstream `main` git commit** (currently
+  `git+https://github.com/frida/frida-java-bridge.git#b38a5b64…` in
+  `package.json`). The published `7.0.13` predates
+  [#398](https://github.com/frida/frida-java-bridge/pull/398), which fixes the
+  Android 17 / API 37 ART crash (`Unable to find copied methods in
+  java/lang/Thread`); the pin also carries
+  [#399](https://github.com/frida/frida-java-bridge/pull/399) (ARM32). The HTTPS
+  `resolved` URL in `package-lock.json` is intentional — npm canonicalizes
+  GitHub deps to `git+ssh://`, which fails keyless clones on CI runners; if you
+  re-run `npm install` and it rewrites `resolved` back to `git+ssh://`, restore
+  the `git+https://` form before committing.
+  - **Trigger to act:** when frida-java-bridge publishes a release `> 7.0.13`
+    that contains #398, revert `package.json` to a semver pin (e.g. `^7.0.14`),
+    run `npm install && ./dev/compile_agent.sh`, re-verify on API 37, and remove
+    this entry plus the temporary note in `CONTRIBUTING.md`.
+
 ## Public API surface
 
 friTap declares two stability tiers:

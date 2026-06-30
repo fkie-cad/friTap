@@ -274,6 +274,12 @@ class SSL_Logger():
         return self._config.target
 
     @property
+    def target_argv(self) -> "list[str] | None":
+        # Original argv tokens for spawn mode (None for attach / programmatic
+        # configs); spawn uses this to avoid re-splitting target_app on spaces.
+        return self._config.target_argv
+
+    @property
     def verbose(self) -> bool:
         return self._config.output.verbose
 

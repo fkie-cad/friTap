@@ -372,6 +372,7 @@ class CaptureWizard:
         summary = {
             "device_name": state.device_name,
             "device_type": state.device_type,
+            "device_platform": state.device_platform,
             "target_name": state.target_display or state.target,
             "target_mode": "spawn" if state.spawn else "attach",
             "capture_mode_display": display,
@@ -383,6 +384,7 @@ class CaptureWizard:
             "protocol": getattr(state, 'protocol', 'tls'),
             "experimental": getattr(state, "_experimental", False),
             "library_scan": getattr(state, "library_scan", False),
+            "pairip_safe": getattr(state, "pairip_safe", False),
             "debug_log": getattr(state, "debug_log", False),
             "encapsulated_protocols": getattr(state, "encapsulated_protocols", {}),
             "quic_capture_mode": getattr(state, "quic_capture_mode", "stream"),
@@ -403,6 +405,7 @@ class CaptureWizard:
             state._experimental = confirm_modal.experimental
             self._screen._get_menu_panel().experimental = state._experimental
             state.library_scan = confirm_modal.library_scan
+            state.pairip_safe = confirm_modal.pairip_safe
             state.debug_log = confirm_modal.debug_log
             self._finish_and_start()
 

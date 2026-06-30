@@ -131,3 +131,22 @@ frida-pm install frida-objc-bridge frida-java-bridge
 For local maintainers building the agent, `npm ci` against the checked-in
 `package-lock.json` installs the bridges via the npm dependency tree
 automatically. See [`RELEASING.md`](./RELEASING.md) for the full agent-rebuild flow.
+
+### Temporary `frida-java-bridge` git pin (API 37 / Android 17)
+
+`frida-java-bridge` is **temporarily pinned to an upstream `main` commit**
+(`git+https://github.com/frida/frida-java-bridge.git#b38a5b64…`) in
+`package.json`/`package-lock.json` instead of a published npm release. The
+latest published release (`7.0.13`) predates
+[frida-java-bridge#398](https://github.com/frida/frida-java-bridge/pull/398),
+which fixes an ART crash on Android 17 / API 37
+(`Unable to find copied methods in java/lang/Thread`); the pinned commit also
+carries the sibling ARM32 fix
+[#399](https://github.com/frida/frida-java-bridge/pull/399). Revert this to a
+normal semver pin once a release `> 7.0.13` containing #398 ships (see
+[`RELEASING.md`](./RELEASING.md)).
+
+> **Note:** the `frida-pm install` command above pulls the *published* `7.0.13`,
+> which lacks the fix. Always build the agent after `npm ci`/`npm install` (which
+> honor the git pin) — not after a bare `frida-pm install` — or the rebuilt agent
+> will silently miss the API 37 fix.
