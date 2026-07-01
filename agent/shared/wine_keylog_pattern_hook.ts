@@ -1,6 +1,10 @@
 // agent/shared/wine_keylog_pattern_hook.ts
 //
-// Dual-ABI, pattern-scanned keylog extraction for Wine targets (x86-64).
+// Byte-pattern-scanned keylog extraction for Wine targets, complementing the
+// symbol-based gnutls_init/callback path in agent/tls/libs/gnutls.ts. This
+// module is the fallback for cases where the callback path missed the session
+// (attach after handshake, session resumption, sessions created via non-init
+// entry points).
 //
 // WHY THIS EXISTS
 // ---------------
@@ -13,6 +17,10 @@
 //   * PE-side Windows DLLs an app bundles — e.g. a PE-compiled libgnutls-30.dll
 //     or a PE libssl — use the Win64 ABI (args in rcx, rdx, r8, r9).
 //
+// AArch64 Wine (mainline since Wine 9) collapses both to AAPCS64
+// (args in x0..x7), a single ABI, but the internal keylog function still needs
+// locating in memory.
+//
 // The export-resolving + args[]-reading Windows TLS executors silently read the
 // wrong registers for PE code, and never catch schannel's internal gnutls use.
 //
@@ -22,17 +30,29 @@
 // `this.context`. This mirrors agent/tls/decoders/gotls_registers.ts, which
 // already reads registers directly for Go's non-System-V ABI.
 //
-// The byte signatures and struct offsets are taken from the research PoC in
-// research/wine/tls_wine/ (combined.py, gdb_hook_forks.py,
+// ARCH COVERAGE
+// -------------
+//   * x86-64: bundled patterns for `_gnutls_call_keylog_func` (SysV + Win64)
+//     and `SSL_log_secret` (Win64). Works out of the box.
+//   * arm64 / x86 / arm: no bundled patterns yet. When the user supplies
+//     `--patterns` with a `wine.<arch>` block, this module scans and hooks
+//     using the register set for the matching ABI. Without a --patterns
+//     override, this module skips its scan on non-x86-64 and lets the
+//     symbol-based path in agent/tls/libs/gnutls.ts capture keys — that
+//     path is fully cross-arch and uses runtime pattern discovery.
+//
+// The bundled x86-64 byte signatures and struct offsets come from the
+// research PoC in research/wine/tls_wine/ (combined.py, gdb_hook_forks.py,
 // magic_bytes_gnutls_vlc.txt).
 //
-// EXPERIMENTAL. x86-64 only.
+// STATUS: experimental.
 
 import { toHexString } from "../util/hex.js";
 import { sendKeylog } from "./shared_structures.js";
 import { log, devlog, devlog_error } from "../util/log.js";
+import { normalizeArchKey } from "../util/process_infos.js";
 
-type WineAbi = "sysv" | "win64";
+type WineAbi = "sysv" | "win64" | "aarch64";
 
 interface WineKeylogSig {
     /** Human-readable id used in logs and as the pattern.json action key. */
@@ -40,7 +60,11 @@ interface WineKeylogSig {
     /** "openssl" also covers LibreSSL. */
     library: "gnutls" | "openssl";
     abi: WineAbi;
-    /** Space-separated hex byte pattern (x86-64). Frida Memory.scan syntax. */
+    /**
+     * Space-separated hex byte pattern. For x64 signatures these are x86-64
+     * bytes (SysV or Win64 ABI); for arm64 signatures they are AArch64
+     * little-endian 4-byte instruction words. Frida Memory.scan syntax.
+     */
     pattern: string;
     /**
      * Offset (bytes) from the session/SSL pointer (the first argument) at which
@@ -96,21 +120,29 @@ function isPlausibleSecretLen(len: number): boolean {
  * signature's ABI. Returns null on any null pointer / implausible length /
  * memory read error.
  *
- *   sysv:  arg0=rdi(session/SSL) arg1=rsi(label) arg2=rdx(secret) arg3=rcx(size)
- *   win64: arg0=rcx(session/SSL) arg1=rdx(label) arg2=r8(secret)  arg3=r9(size)
+ *   sysv    (x86-64 Linux): arg0=rdi(session/SSL) arg1=rsi(label) arg2=rdx(secret) arg3=rcx(size)
+ *   win64   (Wine PE):      arg0=rcx(session/SSL) arg1=rdx(label) arg2=r8(secret)  arg3=r9(size)
+ *   aarch64 (AAPCS64):      arg0=x0 (session/SSL) arg1=x1(label)  arg2=x2(secret)  arg3=x3(size)
  *
  * NOTE: _gnutls_call_keylog_func / SSL_log_secret pass the secret as a raw
  * (pointer, size) pair — NOT a gnutls_datum_t. This differs from the public
  * gnutls keylog callback path; we follow the internal-function contract here.
  */
 export function readWineKeylogLine(
-    ctx: X64CpuContext,
+    ctx: CpuContext,
     sig: WineKeylogSig,
 ): string | null {
-    const [a0, a1, a2, a3] =
-        sig.abi === "win64"
-            ? [ctx.rcx, ctx.rdx, ctx.r8, ctx.r9]
-            : [ctx.rdi, ctx.rsi, ctx.rdx, ctx.rcx];
+    let a0: NativePointer, a1: NativePointer, a2: NativePointer, a3: NativePointer;
+    if (sig.abi === "aarch64") {
+        const c = ctx as Arm64CpuContext;
+        a0 = c.x0; a1 = c.x1; a2 = c.x2; a3 = c.x3;
+    } else if (sig.abi === "win64") {
+        const c = ctx as X64CpuContext;
+        a0 = c.rcx; a1 = c.rdx; a2 = c.r8; a3 = c.r9;
+    } else {
+        const c = ctx as X64CpuContext;
+        a0 = c.rdi; a1 = c.rsi; a2 = c.rdx; a3 = c.rcx;
+    }
 
     if (a0.isNull() || a1.isNull() || a2.isNull()) return null;
 
@@ -138,16 +170,23 @@ export function readWineKeylogLine(
 /**
  * Resolve the byte pattern for a signature, preferring a user-supplied override
  * from --patterns over the bundled research bytes. Schema (legacy pattern.json
- * shape, "wine" platform, "x64" arch):
+ * shape, "wine" platform, current arch):
  *
- *   modules.<library>.wine.x64.<sig.id>.{primary,fallback}
+ *   modules.<library>.wine.<arch>.<sig.id>.{primary,fallback}
+ *
+ *   <arch> is "x64" | "arm64" | "x86" | "arm" — matches Frida's Process.arch
+ *   through normalizeArchKey() in agent/util/process_infos.ts (the canonical
+ *   arch mapping used across the codebase).
  *
  * Returns an ordered list of pattern strings to try (primary, then fallbacks).
+ * On architectures where friTap ships no bundled pattern for a signature,
+ * an empty list tells the caller to skip scanning that signature.
  */
 function resolvePatterns(sig: WineKeylogSig, userPatterns: any): string[] {
+    const archKey = normalizeArchKey(Process.arch);
     try {
         const node =
-            userPatterns?.modules?.[sig.library]?.wine?.x64?.[sig.id];
+            userPatterns?.modules?.[sig.library]?.wine?.[archKey]?.[sig.id];
         if (node) {
             const list: string[] = [];
             for (const key of ["primary", "fallback", "second_fallback"]) {
@@ -155,13 +194,17 @@ function resolvePatterns(sig: WineKeylogSig, userPatterns: any): string[] {
                 if (typeof p === "string" && p.length > 0) list.push(p);
             }
             if (list.length > 0) {
-                devlog(`[Wine] Using --patterns override for ${sig.id}`);
+                devlog(`[Wine] Using --patterns override (arch=${archKey}) for ${sig.id}`);
                 return list;
             }
         }
     } catch (e) {
         devlog_error(`[Wine] Error reading --patterns override for ${sig.id}: ${e}`);
     }
+    // Bundled patterns are x86-64 SysV/Win64 only. On other arches we return
+    // an empty list so the caller skips the scan; the dynamic-discovery
+    // callback path (agent/tls/libs/gnutls.ts) still catches keys.
+    if (archKey !== "x64") return [];
     return [sig.pattern];
 }
 
@@ -177,10 +220,7 @@ function attachKeylogHook(address: NativePointer, sig: WineKeylogSig): void {
     Interceptor.attach(address, {
         onEnter() {
             try {
-                const line = readWineKeylogLine(
-                    this.context as X64CpuContext,
-                    sig,
-                );
+                const line = readWineKeylogLine(this.context, sig);
                 if (line) sendKeylog(line);
             } catch (e) {
                 devlog_error(`[Wine] keylog read error (${sig.id}): ${e}`);
@@ -245,9 +285,18 @@ export function installWineKeylogPatternHooks(
     moduleFilter?: string,
     userPatterns?: any,
 ): void {
-    if (Process.arch !== "x64") {
+    // Bundled byte signatures are x86-64 (System V + Win64 ABIs) only. On
+    // arm64 / arm / x86 the bundled patterns won't match anything, but a
+    // user-supplied --patterns override for the current arch WILL be applied
+    // — resolvePatterns() looks up by normalizeArchKey(Process.arch). Also,
+    // gnutls key extraction still works end-to-end via the symbol-based hook
+    // + NativeCallback path in agent/tls/libs/gnutls.ts, so failing this
+    // gate silently is not a regression — it's just skipping a fallback.
+    const archKey = normalizeArchKey(Process.arch);
+    if (archKey !== "x64" && (!userPatterns || !userPatterns.modules)) {
         devlog(
-            `[Wine] keylog pattern hooking supports x86-64 only (arch=${Process.arch}); skipping.`,
+            `[Wine] keylog pattern hooking: no bundled ${archKey} patterns and no --patterns override; ` +
+            `symbol-based gnutls hooks (native path) still active.`,
         );
         return;
     }

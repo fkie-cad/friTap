@@ -492,6 +492,54 @@ class SSL_Logger():
         crash can be attributed to it (fkie-cad/friTap#64)."""
         self._anti_tamper_seen = event.name or event.library or "anti-tamper protection"
 
+    _WINE_BASENAMES = ("wine", "wine64", "wine32", "wine-preloader", "wine64-preloader")
+
+    def _is_android_target(self) -> bool:
+        """Cached check: is the Frida device an Android target?
+
+        Used to gate the speculative PairIP/libpairipcore.so hypothesis in the
+        crash handler — PairIP is Android-only, so the hint is actively
+        misleading on Linux/Wine/macOS/Windows targets.
+        """
+        cached = getattr(self, "_android_target_cached", None)
+        if cached is not None:
+            return cached
+        result = False
+        try:
+            device = getattr(self, "device", None)
+            if device is not None:
+                params = device.query_system_parameters()
+                result = (params.get("os", {}).get("id", "") or "").lower() == "android"
+        except Exception:
+            result = False
+        self._android_target_cached = result
+        return result
+
+    def _target_is_wine(self) -> bool:
+        """Was the spawn target a Wine launcher binary?
+
+        Inspects argv[0] basename. Falls back to shlex-splitting the
+        space-joined target_app when target_argv is None (older configs).
+        """
+        first = None
+        argv = self.target_argv
+        if argv:
+            first = argv[0]
+        else:
+            app = self.target_app or ""
+            if app:
+                import shlex
+                try:
+                    tokens = shlex.split(app, posix=True)
+                    first = tokens[0] if tokens else None
+                except ValueError:
+                    parts = app.split()
+                    first = parts[0] if parts else None
+        if not first:
+            return False
+        import os as _os
+        return _os.path.basename(first).lower() in self._WINE_BASENAMES
+
     def _report_target_crash(self, reason: str) -> None:
         """Surface an unexpected target-process death clearly to the user.
 
@@ -509,29 +557,64 @@ class SSL_Logger():
         if crumb:
             msg += f" (last instrumented: {crumb})"
         self.logger.error(msg)
-        # Anti-tamper diagnosis. A process-terminated death during/just after
-        # instrumentation in SPAWN mode is the classic signature of an integrity
-        # protection (e.g. Google PairIP) self-destructing in response to friTap's
-        # hooks while the app is still starting. Spell that out and point at the
-        # one thing that reliably works — attach mode (fkie-cad/friTap#64).
+        # Platform-aware crash hypothesis. The previous version printed the
+        # Android-specific PairIP / libpairipcore.so hint for ANY spawn-mode
+        # process-terminated, which actively misled Linux/Wine/macOS/Windows
+        # users (e.g. a Wine target dying because sudo + user-owned WINEPREFIX
+        # was misdiagnosed as PairIP self-destruct). Only emit the anti-tamper
+        # paragraphs when there is evidence (confirmed AntiTamperDetectedEvent),
+        # or when the target is Android (where it is a reasonable hypothesis).
+        # For Wine targets we instead surface the actual common cause.
         if reason == "process-terminated" and self.spawn:
             if self._anti_tamper_seen:
                 self.logger.error(
                     f"Anti-tamper protection was detected in this process "
                     f"({self._anti_tamper_seen}). It self-destructs when friTap's hooks "
                     f"are present during startup.")
-            else:
                 self.logger.error(
-                    "This is the typical signature of an anti-tamper protection "
-                    "(e.g. Google PairIP / libpairipcore.so) self-destructing in "
-                    "response to friTap's hooks during app startup.")
-            self.logger.error(
-                "  -> Spawn (-s) capture is unreliable on such apps even with "
-                "--no-loader-hook, because the TLS-library hooks themselves are "
-                "present during the startup integrity scan.")
-            self.logger.error(
-                "  -> Start the app first, then ATTACH friTap (run WITHOUT -s). "
-                "See fkie-cad/friTap#64.")
+                    "  -> Spawn (-s) capture is unreliable on such apps even with "
+                    "--no-loader-hook, because the TLS-library hooks themselves are "
+                    "present during the startup integrity scan.")
+                self.logger.error(
+                    "  -> Start the app first, then ATTACH friTap (run WITHOUT -s). "
+                    "See fkie-cad/friTap#64.")
+            elif self._is_android_target():
+                self.logger.error(
+                    "This may be an anti-tamper protection (e.g. Google PairIP / "
+                    "libpairipcore.so) self-destructing in response to friTap's hooks "
+                    "during app startup.")
+                self.logger.error(
+                    "  -> Try starting the app first, then ATTACH friTap (run WITHOUT -s). "
+                    "See fkie-cad/friTap#64.")
+            elif self._target_is_wine():
+                import os as _os
+                running_as_root = False
+                try:
+                    running_as_root = _os.geteuid() == 0
+                except Exception:
+                    running_as_root = False
+                if running_as_root:
+                    self.logger.error(
+                        "Hint: target was launched via Wine and friTap is running as "
+                        "root. The most common cause is sudo + a user-owned WINEPREFIX "
+                        "(Wine refuses the prefix and exits before any TLS hook runs).")
+                    self.logger.error(
+                        "  -> Recommended: drop sudo and run friTap as your desktop user "
+                        "(ensure `sysctl kernel.yama.ptrace_scope=0` so Frida can attach).")
+                    self.logger.error(
+                        "  -> Alternative: set WINEPREFIX=/root/.wine so Wine creates a "
+                        "fresh root-owned prefix. See docs/platforms/wine.md.")
+                else:
+                    self.logger.error(
+                        "Hint: Wine target terminated unexpectedly. Common Wine causes: "
+                        "(a) the target is a single-instance app (e.g. VLC) that handed "
+                        "off to an existing instance and exited; (b) the spawned binary "
+                        "needs a prefix init (`wine wineboot`); (c) an early-startup "
+                        "anti-cheat / DRM aborted.")
+                    self.logger.error(
+                        "  -> Try attach mode: start the app yourself with `wine ...`, "
+                        "then `fritap --experimental -p $(pgrep -f your_app.exe)`. See "
+                        "docs/platforms/wine.md.")
         try:
             from ..fritap_utility import get_debug_log_path
             log_path = get_debug_log_path()
