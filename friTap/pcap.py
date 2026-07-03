@@ -73,9 +73,22 @@ def terminate_lingering_processes(parent_pid):
 
 class PCAP:
 
-    def __init__(self,pcap_file_name,SSL_READ,SSL_WRITE, doFullCapture, isMobile, print_debug_infos=False):
+    def __init__(self,pcap_file_name,SSL_READ,SSL_WRITE, doFullCapture, isMobile, print_debug_infos=False,
+                 owner_capture=False, owner_capture_opts=None, target_package=None, target_pid=None):
         self.pcap_file_name = pcap_file_name
         self.logger = logging.getLogger('friTap')
+        # --owner-capture: delegate full capture to the AppTap library to acquire an
+        # app-scoped (UID-scoped) pcap instead of capturing the whole device. These
+        # are intent (config); the *runtime* state lives in apptap_session/
+        # capture_tier/apptap_result, set once a session actually starts.
+        self.owner_capture = owner_capture
+        self.owner_capture_opts = owner_capture_opts or {}
+        self.target_package = target_package
+        self.target_pid = target_pid
+        self.apptap_session = None
+        self.apptap_result = None
+        self.capture_tier = None
+
         if isMobile is True:  # No device ID provided
             self.device_id = None
         else:
@@ -131,8 +144,71 @@ class PCAP:
             
     
 
+    def _build_apptap_session(self, output):
+        """Build an AppTap CaptureSession for owner-capture, or None to fall back.
+
+        Reuses friTap's adb/root plumbing via the executor adapter (Android) or
+        AppTap's LocalExecutor (Linux). Returns None when AppTap is unavailable or
+        no target identity is known, so the caller falls back to whole-device.
+        """
+        from .apptap_adapter import apptap_available, FritapAdbExecutor
+        if not apptap_available():
+            self.logger.warning(
+                "--owner-capture requested but the AppTap library is not installed; "
+                "falling back to whole-device capture.")
+            return None
+        import apptap
+
+        opts = self.owner_capture_opts or {}
+        if opts.get('strict'):
+            breadth = apptap.Breadth.APP_ONLY
+        elif opts.get('no_dns'):
+            breadth = apptap.Breadth.APP_ISOLATED
+        else:
+            breadth = apptap.Breadth.APP_ISOLATED_DNS
+
+        if self.is_Mobile:
+            executor = FritapAdbExecutor(self.android_Instance.adb)
+        else:
+            executor = apptap.LocalExecutor()
+
+        pid = self.target_pid
+        if isinstance(pid, str) and pid.isdigit():
+            pid = int(pid)
+        package = self.target_package if isinstance(self.target_package, str) else None
+        try:
+            target = apptap.Target(package=package, pid=pid if isinstance(pid, int) else None)
+        except ValueError:
+            self.logger.warning(
+                "--owner-capture: no target package/pid available; falling back to "
+                "whole-device capture.")
+            return None
+        return apptap.CaptureSession(
+            target, executor, output,
+            breadth=breadth, tier=apptap.Tier.AUTO,
+            nflog_group=opts.get('nflog_group', 30),
+        )
+
+    def stop_owner_capture(self):
+        """Stop the AppTap session (if any), recording its result. Idempotent."""
+        session = getattr(self, 'apptap_session', None)
+        if session is None:
+            return
+        self.apptap_session = None
+        try:
+            self.apptap_result = session.stop()
+            self.capture_tier = self.apptap_result.tier
+            for warning in (self.apptap_result.warnings or []):
+                self.logger.warning("owner-capture: %s", warning)
+        except Exception as exc:
+            self.logger.error("owner-capture: stopping AppTap failed: %s", exc)
+            try:
+                session.teardown()
+            except Exception:
+                pass
+
     def get_instance_of_FullCaptureThread(self):
-        
+
         pcap_class = self
         
         class FullCaptureThread(Thread):
@@ -174,6 +250,10 @@ class PCAP:
             def clean_up_and_exit(self):
                 """Gracefully exit the FullCaptureThread"""
                 pcap_class.logger.info("Cleaning up FullCaptureThread resources.")
+
+                if getattr(pcap_class, "apptap_session", None) is not None:
+                    pcap_class.stop_owner_capture()
+
                 if self.socket:
                     try:
                         pcap_class.logger.info("Closing network socket.")
@@ -191,6 +271,26 @@ class PCAP:
             
             
             def full_local_capture(self):
+                if getattr(pcap_class, "owner_capture", False):
+                    session = pcap_class._build_apptap_session(self.tmp_pcap_name)
+                    if session is not None:
+                        try:
+                            session.start()
+                            pcap_class.apptap_session = session
+                            pcap_class.capture_tier = getattr(session, "_chosen", None)
+                            pcap_class.logger.info(
+                                "owner-capture: AppTap acquiring app-scoped pcap (tier=%s)",
+                                pcap_class.capture_tier)
+                            return
+                        except Exception as exc:
+                            pcap_class.logger.error(
+                                "owner-capture: AppTap failed to start (%s); falling back "
+                                "to whole-device capture", exc)
+                            try:
+                                session.teardown()
+                            except Exception:
+                                pass
+                    # fall through to the legacy scapy capture below
                 try:
 
                     self.socket = conf.L2listen(
@@ -237,6 +337,12 @@ class PCAP:
             def join(self, timeout=None):
                 self.stop_capture.set()
 
+                # owner-capture: AppTap owns its own capture process + teardown.
+                if getattr(pcap_class, "apptap_session", None) is not None:
+                    pcap_class.stop_owner_capture()
+                    super().join(timeout)
+                    return
+
                 # Terminate the tcpdump process if running
                 #if self.android_capture_process and self.android_capture_process.poll() in {None, -2, -15}:
                 if self.is_Mobile and pcap_class.android_Instance.is_Android:
@@ -268,6 +374,30 @@ class PCAP:
                             "(tcpdump must run as root). Continuing without full capture; "
                             "plaintext/keylog capture is unaffected.")
                         return -1
+
+                    if getattr(pcap_class, "owner_capture", False):
+                        session = pcap_class._build_apptap_session(self.tmp_pcap_name)
+                        if session is not None:
+                            try:
+                                session.start()
+                                pcap_class.apptap_session = session
+                                pcap_class.capture_tier = getattr(session, "_chosen", None)
+                                pcap_class.logger.info(
+                                    "owner-capture: AppTap acquiring app-scoped pcap (tier=%s)",
+                                    pcap_class.capture_tier)
+                                # mobile_subprocess stays -1: AppTap owns its own
+                                # capture process and teardown; legacy tcpdump skipped.
+                                return -1
+                            except Exception as exc:
+                                pcap_class.logger.error(
+                                    "owner-capture: AppTap failed to start (%s); falling back "
+                                    "to whole-device capture", exc)
+                                try:
+                                    session.teardown()
+                                except Exception:
+                                    pass
+                        # fall through to the legacy whole-device capture below
+
                     if not pcap_class.android_Instance.is_tcpdump_available:
                         pcap_class.android_Instance.install_tcpdump()
                     self.android_capture_process = pcap_class.android_Instance.run_tcpdump_capture("_"+self._get_pcap_base_name())

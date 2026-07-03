@@ -102,6 +102,7 @@ class SessionManager:
                 spawn_target = logger.target_argv or logger.target_app.split(" ")
                 pid = logger._backend.spawn_raw(logger.device, spawn_target, env=used_env)
                 time.sleep(1)
+            logger.pid = pid
             logger.process = logger._backend.attach(logger.device, str(pid))
         else:
             logger.process = logger._backend.attach(logger.device, logger.target_app)
@@ -148,6 +149,13 @@ class SessionManager:
             self._logger.info(f'Logging keylog file to {logger.keylog}')
 
         logger._backend.on_detached(logger.process, logger.on_detach)
+        if logger.spawn:
+            # Capture a full native crash report for a spawned target that dies
+            # during instrumented startup (frida's Crash carries the backtrace).
+            try:
+                logger._backend.on_process_crashed(logger.device, logger.on_process_crashed)
+            except Exception:
+                self._logger.debug("on_process_crashed registration failed", exc_info=True)
         if logger.timeout:
             self._logger.info(f"Waiting {logger.timeout} seconds before resuming...")
             time.sleep(logger.timeout)
@@ -171,6 +179,12 @@ class SessionManager:
 
         if logger.script:
             logger._backend.unload_script(logger.script)
+
+        try:
+            if getattr(logger, "spawn", False) and logger.device is not None:
+                logger._backend.off_process_crashed(logger.device, logger.on_process_crashed)
+        except Exception:
+            pass
 
         if hasattr(logger, 'install_lsass_hook') and logger.install_lsass_hook:
             try:

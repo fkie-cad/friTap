@@ -225,6 +225,50 @@ class Android:
         result = self.adb.run('shell', 'nm', '-D', library_path, timeout=15)
         return result.stdout.strip().splitlines()
 
+    # ------------------------------------------------------------------
+    # Crash diagnostics — post-mortem forensics for a crashed target.
+    # These own the device-side shell knowledge (log buffers, tombstone
+    # layout) so callers only handle presentation/parsing. They run on an
+    # already-dead process as best-effort forensics and therefore never raise;
+    # they return empty results when the artifact is unavailable (no root,
+    # nothing found, adb error). Most devices require root for both.
+    # ------------------------------------------------------------------
+    def get_crash_logcat(self, timeout=20):
+        """Return the device ``crash`` logcat buffer (``logcat -b crash -d``).
+
+        This buffer holds the ART ``Fatal signal`` / ``Abort message`` lines
+        almost immediately after a crash (no tombstone-write race). Returns
+        ``""`` when unavailable.
+        """
+        try:
+            return self.adb.shell("logcat -b crash -d", timeout=timeout).stdout or ""
+        except Exception:
+            self.logger.debug("get_crash_logcat failed", exc_info=True)
+            return ""
+
+    def get_latest_tombstone(self, pid=None, cmdline_hint="", list_timeout=15, cat_timeout=30):
+        """Return ``(path, text)`` of the newest ``/data/tombstones`` entry that
+        belongs to the crashed process, or ``(None, "")``.
+
+        Guards against attaching an unrelated app's tombstone by requiring the
+        given *pid* or *cmdline_hint* to appear in the dump (a non-match yields
+        ``(None, "")``). Returns ``(None, "")`` when unavailable.
+        """
+        try:
+            listing = self.adb.shell(
+                "ls -t /data/tombstones/tombstone_*", timeout=list_timeout).stdout or ""
+            newest = listing.splitlines()[0].strip() if listing.strip() else None
+            if not newest:
+                return None, ""
+            text = self.adb.shell(f"cat {newest}", timeout=cat_timeout).stdout or ""
+            matches = (not pid or str(pid) in text) and (not cmdline_hint or cmdline_hint in text)
+            if text.strip() and matches:
+                return newest, text
+            return None, ""
+        except Exception:
+            self.logger.debug("get_latest_tombstone failed", exc_info=True)
+            return None, ""
+
     def send_ctrlC_over_adb(self):
         return self._run_for_pids("kill -INT %s")
 

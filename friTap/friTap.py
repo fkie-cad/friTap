@@ -454,6 +454,25 @@ Offline (read / analyze .tap):
                            "deferred past PairIP's startup window, so the earliest handshakes may be "
                            "missed — attach is the proven path). Trigger fresh TLS handshakes after "
                            "attach (e.g. toggle wifi). See docs/advanced/pairip-safe.md.")
+    args.add_argument("--owner-capture", "-oc", required=False, action="store_const",
+                      const=True, default=False, dest="owner_capture",
+                      help="Android/Linux: scope the full packet capture (-f) to ONLY the target "
+                           "app's traffic using its Linux UID, via the AppTap library. Picks an "
+                           "in-kernel NFLOG pre-filter where the kernel supports it, otherwise a "
+                           "kernel socket-table (SOCK_DIAG) filter — both app-precise and independent "
+                           "of the Frida socket trace. Requires -f and a rooted device; falls back to "
+                           "the legacy whole-device capture if AppTap or kernel support is unavailable.")
+    args.add_argument("--owner-strict", required=False, action="store_const",
+                      const=True, default=False, dest="owner_strict",
+                      help="With --owner-capture: scope to the app's base UID only (exclude isolated/"
+                           "WebView child UIDs and the DNS resolver UID).")
+    args.add_argument("--owner-no-dns", required=False, action="store_const",
+                      const=True, default=False, dest="owner_no_dns",
+                      help="With --owner-capture: include isolated/WebView child UIDs but not the DNS "
+                           "resolver UID.")
+    args.add_argument("--nflog-group", required=False, type=int, default=30, dest="owner_nflog_group",
+                      metavar="N", help="With --owner-capture: NFLOG group for the Tier-2 in-kernel "
+                           "capture (default: 30).")
     args.add_argument("--library-scan", "-ls", required=False, action="store_const",
                       const=True, default=False,
                       help="Pre-scan for TLS libraries using tlsLibHunter before hooking. "
@@ -720,6 +739,12 @@ Offline (read / analyze .tap):
     try:
         special_logger.info("Start logging")
         special_logger.info("Press Ctrl+C to stop logging")
+
+        # --owner-capture produces an app-scoped full pcap; it implies -f.
+        if getattr(parsed, 'owner_capture', False) and not parsed.full_capture:
+            logger.info("--owner-capture implies a full capture; enabling -f/--full_capture.")
+            parsed.full_capture = True
+
         config = FriTapConfig.from_legacy_params(
             app=parsed.exec,
             spawn_argv=getattr(parsed, "exec_argv", None),
@@ -736,6 +761,10 @@ Offline (read / analyze .tap):
             debug_mode=parsed.debug,
             full_capture=parsed.full_capture,
             socket_trace=parsed.socket_tracing,
+            owner_capture=getattr(parsed, 'owner_capture', False),
+            owner_strict=getattr(parsed, 'owner_strict', False),
+            owner_no_dns=getattr(parsed, 'owner_no_dns', False),
+            owner_nflog_group=getattr(parsed, 'owner_nflog_group', 30),
             host=parsed.host,
             offsets=parsed.offsets,
             debug_output=parsed.debug_output,

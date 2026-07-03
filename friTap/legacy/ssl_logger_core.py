@@ -4,6 +4,7 @@
 from ..backends.base import BackendName, ScriptRuntime
 import tempfile
 import os
+import re
 import struct
 import socket
 import time
@@ -112,6 +113,7 @@ class SSL_Logger():
         self.filename = ""
         self.startup = True
         self.process = None
+        self.pid = None
         self.device = None
         self.keylog_file = None
         self.json_file = None
@@ -196,6 +198,11 @@ class SSL_Logger():
         # later process-terminated crash can be attributed to it (fkie-cad/friTap#64).
         self._anti_tamper_seen = ""
         self._event_bus.subscribe(AntiTamperDetectedEvent, self._on_anti_tamper_detected)
+        # Full native crash captured out-of-band via the device 'process-crashed'
+        # signal (carries frida's Crash with a native backtrace/report), so the
+        # later 'detached' handler can report the REAL cause even when the detach
+        # itself has no crash object attached.
+        self._pending_crash = None
 
         # FlowCollector created lazily — only when a plugin or TUI accesses it.
         # The TUI creates its own FlowCollector in capture_controller.py.
@@ -392,7 +399,16 @@ class SSL_Logger():
                              os.path.abspath(os.path.expanduser(_bundle_override)))
 
         if self.pcap_name:
-            self.pcap_obj =  PCAP(self.pcap_name,SSL_READ,SSL_WRITE,self.full_capture, self.mobile,self.debug_output)
+            self.pcap_obj =  PCAP(self.pcap_name,SSL_READ,SSL_WRITE,self.full_capture, self.mobile,self.debug_output,
+                                  owner_capture=self._config.output.owner_capture,
+                                  owner_capture_opts={
+                                      'strict': self._config.output.owner_strict,
+                                      'no_dns': self._config.output.owner_no_dns,
+                                      'nflog_group': self._config.output.owner_nflog_group,
+                                  },
+                                  target_package=self.target_app,
+                                  target_pid=getattr(self, 'pid', None))
+
 
         if self.offsets is not None:
             try:
@@ -492,74 +508,345 @@ class SSL_Logger():
         crash can be attributed to it (fkie-cad/friTap#64)."""
         self._anti_tamper_seen = event.name or event.library or "anti-tamper protection"
 
-    def _report_target_crash(self, reason: str) -> None:
+
+    _WINE_BASENAMES = ("wine", "wine64", "wine32", "wine-preloader", "wine64-preloader")
+
+    def _is_android_target(self) -> bool:
+        """Cached check: is the Frida device an Android target?
+
+        Used to gate the speculative PairIP/libpairipcore.so hypothesis in the
+        crash handler — PairIP is Android-only, so the hint is actively
+        misleading on Linux/Wine/macOS/Windows targets.
+        """
+        cached = getattr(self, "_android_target_cached", None)
+        if cached is not None:
+            return cached
+        result = False
+        try:
+            device = getattr(self, "device", None)
+            if device is not None:
+                params = device.query_system_parameters()
+                result = (params.get("os", {}).get("id", "") or "").lower() == "android"
+        except Exception:
+            result = False
+        self._android_target_cached = result
+        return result
+
+    def _target_is_wine(self) -> bool:
+        """Was the spawn target a Wine launcher binary?
+
+        Inspects argv[0] basename. Falls back to shlex-splitting the
+        space-joined target_app when target_argv is None (older configs).
+        """
+        first = None
+        argv = self.target_argv
+        if argv:
+            first = argv[0]
+        else:
+            app = self.target_app or ""
+            if app:
+                import shlex
+                try:
+                    tokens = shlex.split(app, posix=True)
+                    first = tokens[0] if tokens else None
+                except ValueError:
+                    parts = app.split()
+                    first = parts[0] if parts else None
+        if not first:
+            return False
+        import os as _os
+        return _os.path.basename(first).lower() in self._WINE_BASENAMES
+
+
+    def _parse_crash_cause(self, report, summary):
+        """Best-effort ``(signal, abort_message)`` extraction from a frida
+        ``Crash.report``/``.summary`` or an Android tombstone / logcat crash
+        dump. Either element may be ``None``. The abort message is collapsed to
+        a single line so it is usable in a one-line headline.
+        """
+        text = "\n".join(t for t in (summary, report) if t)
+        if not text:
+            return None, None
+        sig = None
+        m = re.search(r"signal\s+\d+\s+\((SIG[A-Z]+)\)", text)
+        if m:
+            sig = m.group(1)
+        else:
+            # Fallback: match only real fatal signal names, not any SIG* token —
+            # a bare r"\bSIG[A-Z]{3,}\b" also matches the word "SIGNAL" and would
+            # report a bogus cause.
+            m = re.search(
+                r"\b(SIGSEGV|SIGABRT|SIGILL|SIGBUS|SIGFPE|SIGTRAP|SIGSYS|SIGKILL|SIGQUIT)\b",
+                text)
+            if m:
+                sig = m.group(1)
+        abort = None
+        # Capture to end-of-line rather than up to the next apostrophe: ART abort
+        # messages can contain single quotes (e.g. "Check failed: ... 'Lcom/foo;'"),
+        # and [^']* would truncate at the first inner quote.
+        m = re.search(r"Abort message:\s*(.+)", text)
+        if m:
+            abort = m.group(1).strip().strip("'").strip()
+        else:
+            m = re.search(r"(JNI DETECTED ERROR[^\n]*)", text)
+            if m:
+                abort = m.group(1).strip()
+        if abort:
+            abort = " ".join(abort.split())
+        return sig, abort
+
+    @staticmethod
+    def _write_crash_section(writer, title, body):
+        """Append a titled section to the crash debug log; no-op without a
+        writer and never raises (best-effort forensics on a dead process)."""
+        if writer is None or not body.strip():
+            return
+        try:
+            writer.write(f"\n===== {title} =====\n{body}\n")
+        except Exception:
+            pass
+
+    def _enrich_crash_log_android(self, crash, writer):
+        """Pull the on-device tombstone and ``logcat -b crash`` for the crashed
+        process into the debug log, and parse the ART signal / abort message from
+        them (frida's own report often lacks the ART "Abort message"). Returns
+        ``(signal, abort_message)``. No-op (``(None, None)``) off-Android or
+        without root; fully guarded so it never raises into the crash path.
+
+        Device I/O (log buffers, tombstone layout) lives on the :class:`Android`
+        platform class; this method only correlates, records, and parses so the
+        same retrieval helpers stay reusable by any other crash handler.
+        """
+        if not self._is_android_target():
+            return None, None
+        try:
+            existing = getattr(self.pcap_obj, "android_Instance", None) if self.pcap_obj else None
+            if existing is not None:
+                andy = existing
+            else:
+                from ..android import Android
+                serial = self.device_id or getattr(self.device, "id", None)
+                andy = Android(device_id=serial)
+            if not andy.adb_check_root():
+                if writer is not None:
+                    writer.write("\n# Android crash enrichment skipped: device not rooted\n")
+                return None, None
+        except Exception:
+            return None, None
+
+        pid = self.pid or (getattr(crash, "pid", None) if crash is not None else None)
+        keep = (self.target_app or "").split()[-1] if self.target_app else ""
+        sig = abort = None
+
+        # logcat crash buffer: holds the ART 'Fatal signal' + 'Abort message'
+        # almost immediately after the crash (no tombstone-write race).
+        crash_buf = andy.get_crash_logcat()
+        if crash_buf:
+            # The pid filter is only a display aid: keep the log readable by
+            # showing our process's lines. Parse the cause from the FULL buffer —
+            # the `-b crash` buffer is already crash-scoped, and the pid/tid
+            # columns overlap, so over-filtering here could drop the real
+            # 'Fatal signal' / 'Abort message' lines.
+            shown = crash_buf
+            if pid:
+                lines = [l for l in crash_buf.splitlines() if f" {pid} " in l or f"({pid})" in l]
+                shown = "\n".join(lines) or crash_buf
+            self._write_crash_section(writer, "logcat -b crash", shown)
+            s, a = self._parse_crash_cause(crash_buf, None)
+            sig, abort = sig or s, abort or a
+
+        # newest tombstone, correlated to our process (pid / cmdline) by the
+        # Android platform layer so an unrelated app's dump is not attached.
+        tombstone_path, tombstone = andy.get_latest_tombstone(pid, keep)
+        if tombstone:
+            self._write_crash_section(writer, f"tombstone {tombstone_path}", tombstone)
+            s, a = self._parse_crash_cause(tombstone, None)
+            sig, abort = sig or s, abort or a
+
+        if writer is not None:
+            try:
+                writer.flush()
+            except Exception:
+                pass
+        return sig, abort
+
+    def _report_target_crash(self, reason: str, crash=None) -> None:
         """Surface an unexpected target-process death clearly to the user.
 
-        A crash inside an instrumented hook (native SIGSEGV) reaches us as a
-        detach with reason ``process-terminated`` and otherwise only as a
-        cryptic "Backend transport error: the connection is closed". Make it
-        explicit, attribute it to the last hook breadcrumb when known, and point
-        at the debug log. Sets a flag so the synchronous transport-error handler
-        does not also print the cryptic line.
+        A crash inside an instrumented hook, or a native abort in the target's
+        own code during friTap-instrumented startup, reaches us as a detach with
+        reason ``process-terminated`` (and otherwise only as a cryptic "Backend
+        transport error: the connection is closed"). Capture the REAL cause:
+        frida's ``Crash`` object carries a native backtrace/report, and on
+        Android we additionally pull the tombstone + ``logcat -b crash``.
+        Everything is written to a debug log (opened on demand, even without
+        --debug). Sets a flag so the synchronous transport-error handler does
+        not also print the cryptic line.
         """
         self._crash_reported = True
         crumb = self._last_hook_breadcrumb
-        msg = "Target process terminated unexpectedly — it most likely crashed " \
-              "inside an instrumented hook"
-        if crumb:
-            msg += f" (last instrumented: {crumb})"
-        self.logger.error(msg)
-        # Anti-tamper diagnosis. A process-terminated death during/just after
-        # instrumentation in SPAWN mode is the classic signature of an integrity
-        # protection (e.g. Google PairIP) self-destructing in response to friTap's
-        # hooks while the app is still starting. Spell that out and point at the
-        # one thing that reliably works — attach mode (fkie-cad/friTap#64).
+
+        # Arm the debug log up-front so every line below (and the raw crash
+        # report) is persisted, even when the user did not pass --debug.
+        log_path = None
+        writer = None
+        try:
+            from ..fritap_utility import (
+                open_debug_log, attach_file_handlers, get_debug_log_writer,
+            )
+            log_path = open_debug_log()
+            attach_file_handlers()
+            writer = get_debug_log_writer()
+        except Exception:
+            pass
+
+        # Cause from frida's Crash object (cross-platform: Linux/Windows/macOS).
+        crash_report = getattr(crash, "report", None) if crash is not None else None
+        crash_summary = getattr(crash, "summary", None) if crash is not None else None
+        if writer is not None and crash_report:
+            try:
+                writer.write("\n===== NATIVE CRASH REPORT (frida) =====\n")
+                writer.write(str(crash_report) + "\n")
+                writer.write("=======================================\n")
+            except Exception:
+                pass
+        # Never let cause extraction abort this method before the headline is
+        # emitted: _crash_reported is already True, so a raise here would leave
+        # the user with neither the crash headline nor the transport-error hint.
+        try:
+            signal_name, abort_msg = self._parse_crash_cause(crash_report, crash_summary)
+        except Exception:
+            signal_name, abort_msg = None, None
+            self.logger.debug("crash cause parsing failed", exc_info=True)
+
+        # Android enrichment (tombstone + logcat) — also parses the ART abort
+        # message that frida's report may lack. Never raises into this path.
+        try:
+            enrich_sig, enrich_abort = self._enrich_crash_log_android(crash, writer)
+            signal_name = signal_name or enrich_sig
+            abort_msg = abort_msg or enrich_abort
+        except Exception:
+            self.logger.debug("android crash enrichment failed", exc_info=True)
+
+        # Headline: report the real cause when we have one; otherwise fall back
+        # to the (lower-confidence) "crashed inside a hook" hypothesis.
+        have_real_cause = bool(signal_name or abort_msg)
+        if have_real_cause:
+            cause = signal_name or "native crash"
+            if abort_msg:
+                cause += f": {abort_msg}"
+            headline = f"Target process terminated unexpectedly — {cause}"
+        else:
+            headline = ("Target process terminated unexpectedly — it most likely "
+                        "crashed inside an instrumented hook")
+            if crumb:
+                headline += f" (last instrumented: {crumb})"
+        self.logger.error(headline)
+
+        # Platform-aware guidance (spawn crashes only). Only claim anti-tamper
+        # when there is real evidence — never guess PairIP for a normal app.
         if reason == "process-terminated" and self.spawn:
             if self._anti_tamper_seen:
                 self.logger.error(
                     f"Anti-tamper protection was detected in this process "
                     f"({self._anti_tamper_seen}). It self-destructs when friTap's hooks "
                     f"are present during startup.")
-            else:
                 self.logger.error(
-                    "This is the typical signature of an anti-tamper protection "
-                    "(e.g. Google PairIP / libpairipcore.so) self-destructing in "
-                    "response to friTap's hooks during app startup.")
-            self.logger.error(
-                "  -> Spawn (-s) capture is unreliable on such apps even with "
-                "--no-loader-hook, because the TLS-library hooks themselves are "
-                "present during the startup integrity scan.")
-            self.logger.error(
-                "  -> Start the app first, then ATTACH friTap (run WITHOUT -s). "
-                "See fkie-cad/friTap#64.")
-        try:
-            from ..fritap_utility import get_debug_log_path
-            log_path = get_debug_log_path()
-            if log_path:
-                self.logger.error(f"See the debug log for the last hook activity: {log_path}")
-        except Exception:
-            pass
+                    "  -> Spawn (-s) capture is unreliable on such apps even with "
+                    "--no-loader-hook, because the TLS-library hooks themselves are "
+                    "present during the startup integrity scan.")
+                self.logger.error(
+                    "  -> Start the app first, then ATTACH friTap (run WITHOUT -s). "
+                    "See fkie-cad/friTap#64.")
+            elif self._target_is_wine():
+                import os as _os
+                running_as_root = False
+                try:
+                    running_as_root = _os.geteuid() == 0
+                except Exception:
+                    running_as_root = False
+                if running_as_root:
+                    self.logger.error(
+                        "Hint: target was launched via Wine and friTap is running as "
+                        "root. The most common cause is sudo + a user-owned WINEPREFIX "
+                        "(Wine refuses the prefix and exits before any TLS hook runs).")
+                    self.logger.error(
+                        "  -> Recommended: drop sudo and run friTap as your desktop user "
+                        "(ensure `sysctl kernel.yama.ptrace_scope=0` so Frida can attach).")
+                    self.logger.error(
+                        "  -> Alternative: set WINEPREFIX=/root/.wine so Wine creates a "
+                        "fresh root-owned prefix. See docs/platforms/wine.md.")
+                else:
+                    self.logger.error(
+                        "Hint: Wine target terminated unexpectedly. Common Wine causes: "
+                        "(a) the target is a single-instance app (e.g. VLC) that handed "
+                        "off to an existing instance and exited; (b) the spawned binary "
+                        "needs a prefix init (`wine wineboot`); (c) an early-startup "
+                        "anti-cheat / DRM aborted.")
+                    self.logger.error(
+                        "  -> Try attach mode: start the app yourself with `wine ...`, "
+                        "then `fritap --experimental -p $(pgrep -f your_app.exe)`. See "
+                        "docs/platforms/wine.md.")
+            else:
+                # No anti-tamper evidence and not Wine: do NOT guess PairIP. The
+                # breadcrumb is only a weak hint — it may have been recorded on a
+                # different thread than the one that actually crashed (the real
+                # cause is in the headline above and the debug log).
+                if crumb and have_real_cause:
+                    self.logger.error(
+                        f"  Note: the last agent hook activity was '{crumb}', but it may "
+                        f"have run on a different thread and be unrelated to the crash above.")
+                self.logger.error(
+                    "  -> Spawn-time instrumentation can destabilize fragile app startup. "
+                    "Try starting the app first, then ATTACH friTap (run WITHOUT -s). "
+                    "See fkie-cad/friTap#64.")
+
+        if log_path:
+            self.logger.error(f"Full crash report + hook activity written to: {log_path}")
         try:
             from ..events import ErrorEvent, ERROR_SEVERITY_FATAL
             self._event_bus.emit(ErrorEvent(
                 error="Target process crashed",
-                description=msg,
+                description=headline,
                 severity=ERROR_SEVERITY_FATAL,
             ))
         except Exception:
             pass
 
-    def on_detach(self, reason):
+    def on_process_crashed(self, crash) -> None:
+        """Device ``process-crashed`` handler.
+
+        Fires (with frida's full :class:`Crash` — native backtrace/report) when a
+        spawned target crashes. Stash it so the subsequent ``detached`` report
+        can name the real cause even if the detach's own crash argument is None.
+
+        ``process-crashed`` is a *device-wide* signal, so ignore crashes from
+        unrelated processes: only stash when the crash's pid matches our target
+        (both pids known). Otherwise a co-incident crash of another app on the
+        same device would be misattributed to our target — the exact failure
+        this crash-attribution path exists to prevent.
+        """
+        crash_pid = getattr(crash, "pid", None) if crash is not None else None
+        if self.pid is not None and crash_pid is not None and crash_pid != self.pid:
+            return
+        self._pending_crash = crash
+
+    def on_detach(self, reason, crash=None):
         if not self.running:
             return
 
         if reason == "application-requested":
             return
 
-        # A native crash inside a hook arrives as 'process-terminated'. Make it
-        # explicit instead of letting it surface only as a transport error.
+        # A native crash inside a hook (or a native abort in the target during
+        # instrumented startup) arrives as 'process-terminated'. Make it explicit
+        # instead of letting it surface only as a transport error. Prefer the
+        # frida Crash captured out-of-band by on_process_crashed when the detach
+        # itself carries none.
         if reason == "process-terminated":
-            self._report_target_crash(reason)
+            self._report_target_crash(reason, crash or self._pending_crash)
+            # Consumed — do not let a stale Crash leak into a later detach.
+            self._pending_crash = None
 
         self._event_bus.emit(DetachEvent(reason=reason))
 
@@ -1607,21 +1894,33 @@ class SSL_Logger():
                     break
 
             pcap_name = self.pcap_obj.pcap_file_name
+
+            # owner-capture: ensure AppTap has finished writing the app-scoped pcap
+            # before we finalize (idempotent — also called from join/cleanup).
+            if getattr(self.pcap_obj, "apptap_session", None) is not None:
+                self.pcap_obj.stop_owner_capture()
+            owner_active = getattr(self.pcap_obj, "capture_tier", None) is not None
             try:
-                if self.traced_scapy_socket_Set:
+                if self.traced_scapy_socket_Set and not owner_active:
                     self.pcap_obj.create_application_traffic_pcap(
                         self.traced_scapy_socket_Set, self.pcap_obj,
                         formatted_keys=formatted_keys,
                     )
                 else:
-                    suffix = (
-                        f"PCAP {pcap_name} will contain all captured traffic from "
-                        f"the device (frida/adb infrastructure excluded by default)."
-                    )
-                    if socket_trace:
-                        self.logger.warning(f"friTap observed no sockets during capture. The resulting {suffix}")
+                    if owner_active:
+                        self.logger.info(
+                            f"owner-capture: {pcap_name} is already app-scoped by AppTap "
+                            f"(tier={self.pcap_obj.capture_tier}); skipping socket-trace post-filter.")
                     else:
-                        self.logger.info(f"Socket tracing disabled. The resulting {suffix}")
+                        suffix = (
+                            f"PCAP {pcap_name} will contain all captured traffic from "
+                            f"the device (frida/adb infrastructure excluded by default)."
+                        )
+                        if socket_trace:
+                            self.logger.warning(f"friTap observed no sockets during capture. The resulting {suffix}")
+                        else:
+                            self.logger.info(f"Socket tracing disabled. The resulting {suffix}")
+
                     # Seed manifest ports from the socket trace when available
                     # (populated only with --socket_trace). Pure --full_capture
                     # without it leaves this empty and ports stay unrecorded.

@@ -5,7 +5,7 @@
 
 Replaces five nearly identical ``action_set_mode_N`` methods in
 MainScreen with a single data-driven dispatcher that maps a mode
-number (1-5) to a ``CaptureMode`` definition and opens the
+number (1-6) to a ``CaptureMode`` definition and opens the
 corresponding ``CaptureModeModal``.
 """
 
@@ -47,22 +47,28 @@ CAPTURE_MODES = {
         default_pcap="capture.pcapng",
     ),
     2: CaptureMode(
+        "owner",
+        "Per-App (UID) Capture",
+        default_keylog="keys.log",
+        default_pcap="capture.pcapng",
+    ),
+    3: CaptureMode(
         "keys",
         "Key Extraction Only",
         callback_display="Keys Only",
         default_keylog="keys.log",
     ),
-    3: CaptureMode(
+    4: CaptureMode(
         "plaintext",
         "Plaintext PCAP",
         default_pcap="plaintext.pcapng",
     ),
-    4: CaptureMode(
+    5: CaptureMode(
         "wireshark",
         "Live Wireshark",
         is_live=True,
     ),
-    5: CaptureMode(
+    6: CaptureMode(
         "live_pcapng",
         "Live Wireshark (auto-decrypt)",
         is_live=True,
@@ -81,7 +87,7 @@ class ModeController:
         self._screen = screen
 
     def set_mode(self, mode_number: int) -> None:
-        """Open the capture-mode modal for *mode_number* (1-5)."""
+        """Open the capture-mode modal for *mode_number* (1-6)."""
         screen = self._screen
 
         if screen._wizard_guard():
@@ -98,6 +104,15 @@ class ModeController:
         mode = CAPTURE_MODES.get(mode_number)
         if mode is None:
             return
+
+        # Per-app (UID) capture is a kernel-scoped Android/Linux feature; on
+        # other platforms the AppTap delegation has nothing to scope to, so the
+        # direct-key shortcut is a no-op there (it is also hidden in the wizard's
+        # CaptureSelectModal on non-Android/Linux platforms).
+        if mode.mode_id == "owner":
+            platform = (getattr(screen._get_state(), "device_platform", "") or "").lower()
+            if platform not in ("android", "linux"):
+                return
 
         def _on_result(result):
             if result is None:

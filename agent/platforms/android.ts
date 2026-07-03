@@ -251,7 +251,35 @@ export function load_android_hooking_agent() {
         : quic_only ? __androidHooks.filter(e => (e as any).libraryType === "google_quiche")
         : __androidHooks);
 
-    const androidLoaderConfig = {
+    // Prefer the linker's __loader_android_dlopen_ext over libdl's
+    // android_dlopen_ext wrapper. bionic's wrapper derives the caller address via
+    // __builtin_return_address(0) and forwards it to __loader_android_dlopen_ext,
+    // where the linker uses it to pick the CALLER'S linker namespace. An inline
+    // Interceptor trampoline on the wrapper changes the observed return address,
+    // so the linker resolves the wrong/empty namespace; namespaced apps (e.g.
+    // Chrome) then fail to find a class and SIGABRT with "JNI DETECTED ERROR ...
+    // java_class == null" (CheckJNI) during startup (fkie-cad/friTap#64). Hooking
+    // __loader_android_dlopen_ext is safe: it receives caller_addr as an explicit
+    // argument from the still-intact wrapper, so namespace resolution is preserved
+    // — and it observes every load (args[0] is still the filename). Fall back to
+    // the libdl wrapper on old Android that predates the __loader_* export.
+    let hasLoaderDlopen = false;
+    for (const ln of ["linker64", "linker"]) {
+        try {
+            const exp = Process.getModuleByName(ln).findExportByName("__loader_android_dlopen_ext");
+            if (exp && !exp.isNull()) {
+                hasLoaderDlopen = true;
+                break;
+            }
+        } catch (_) { /* linker not present under this name; try the next */ }
+    }
+    const androidLoaderConfig = hasLoaderDlopen ? {
+        platform: plattform_name,
+        platformLabel: "Android",
+        loaderLibrary: /(^|\/)linker(64)?$/,
+        functionName: "__loader_android_dlopen_ext",
+        preferFunction: "__loader_android_dlopen_ext",
+    } : {
         platform: plattform_name,
         platformLabel: "Android",
         loaderLibrary: /.*libdl.*\.so/,

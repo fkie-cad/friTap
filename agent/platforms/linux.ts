@@ -59,7 +59,9 @@ const QUIC_ONLY_LINUX_HOOKS: Parameters<typeof hookRegistry.registerAll>[0] = [
 ];
 
 
-export function load_linux_hooking_agent() {
+
+export function load_linux_hooking_agent(skipLoaderHook: boolean = false) {
+
     if (quic_only) {
         // QUIC-only opt-in path: install ONLY QUIC hooks, phased via
         // setTimeout(0) to release the Frida runtime between Interceptor.attach
@@ -139,7 +141,15 @@ export function load_linux_hooking_agent() {
         functionName: "dlopen",
         extractModulePath: true,
     };
-    installOhttpHooks(plattform_name, hookRegistry, moduleNames, "Linux", linuxLoaderConfig);
+
+    installOhttpHooks(plattform_name, hookRegistry, moduleNames, "Linux", linuxLoaderConfig, skipLoaderHook);
     processScanResults(scan_results, plattform_name, true, selected_protocol);
-    hookDynamicLoader(linuxLoaderConfig, hookRegistry, moduleNames, false, selected_protocol);
+    // Wine callers pass skipLoaderHook=true: Wine uses its own preloader, not
+    // libdl.dlopen, so the inline trampoline only grows the spawn-time footprint
+    // without catching anything Wine actually loads. DLL interception runs via
+    // hook_Wine_LdrLoadDll (see agent/platforms/wine.ts), once ntdll
+    // appears.
+    if (!skipLoaderHook) {
+        hookDynamicLoader(linuxLoaderConfig, hookRegistry, moduleNames, false, selected_protocol);
+    }
 }

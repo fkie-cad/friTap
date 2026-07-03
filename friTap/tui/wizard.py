@@ -18,6 +18,7 @@ class CaptureWizard:
 
     _CAPTURE_MODE_DEFAULTS = {
         "full": ("Full Capture", "full", "keys.log", "capture.pcapng", False),
+        "owner": ("Per-App (UID) Capture","owner", "keys.log", "capture.pcapng", False),
         "keys": ("Key Extraction Only", "keys", "keys.log", "", False),
         "plaintext": ("Plaintext PCAP", "plaintext", "", "plaintext.pcapng", False),
         "wireshark": ("Live Wireshark", "wireshark", "", "", True),
@@ -188,7 +189,12 @@ class CaptureWizard:
             self._capture_mode_id = mode_id
             self._step_5b_protocol()
 
-        self._screen.app.push_screen(CaptureSelectModal(), callback=_on_result)
+        self._screen.app.push_screen(
+            CaptureSelectModal(
+                device_platform=self._screen._get_state().device_platform
+            ),
+            callback=_on_result,
+        )
 
     # Protocols whose offline decryption needs an optional crypto backend. Each
     # maps to (offline module, availability fn, hint constant, notify title,

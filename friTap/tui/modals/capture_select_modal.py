@@ -4,8 +4,13 @@
 """
 Capture mode selection modal for friTap TUI.
 
-Presents four capture modes and returns the selected mode string,
-or None if the user cancels.
+Presents the available capture modes and returns the selected mode
+string, or None if the user cancels.
+
+The "owner" mode (Per-App (UID) Capture) is only offered when the
+target device platform is Android or Linux; on other platforms it is
+omitted and the remaining modes renumber accordingly.
+
 """
 
 from __future__ import annotations
@@ -26,10 +31,25 @@ if TEXTUAL_AVAILABLE:
     from friTap.tui.themes import c
     from .base import FriTapModal
 
-    _MODE_MAP = {0: "full", 1: "keys", 2: "plaintext", 3: "wireshark", 4: "live_pcapng"}
+    # Ordered (mode_id, label) for every capture mode. "owner" sits directly
+    # below "full" and is filtered out at runtime on non-Android/Linux targets.
+    _ALL_MODES = [
+        ("full", "Full Capture — Decryption keys + PCAP file"),
+        (
+            "owner",
+            "Per-App (UID) Capture — Kernel-scoped keys + PCAP",
+        ),
+        ("keys", "Key Extraction Only — Extract decryption keys"),
+        ("plaintext", "Plaintext PCAP — Decrypted traffic to PCAP"),
+        ("wireshark", "Live Wireshark — Stream to Wireshark pipe"),
+        ("live_pcapng", "Live Wireshark (auto-decrypt) — PCAPNG with embedded keys"),
+    ]
+
+    # Platforms on which the per-app (UID) owner capture is available.
+    _OWNER_PLATFORMS = ("android", "linux")
 
     class CaptureSelectModal(FriTapModal[Optional[str]]):
-        """Modal for selecting one of four capture modes."""
+        """Modal for selecting a capture mode."""
 
         DEFAULT_CSS = """
         CaptureSelectModal > #modal-container {
@@ -41,36 +61,56 @@ if TEXTUAL_AVAILABLE:
             padding: 1 2;
         }
         CaptureSelectModal #capture-list {
-            height: 10;
+            height: 12;
             margin: 1 0;
             background: $surface;
         }
         """
 
+        # Number keys 1-6 all dispatch through a single digit handler so the
+        # bindings stay valid regardless of how many modes the platform offers.
         BINDINGS = [
-            Binding("1", "select_full", "Full Capture", show=False),
-            Binding("2", "select_keys", "Key Extraction", show=False),
-            Binding("3", "select_plaintext", "Plaintext PCAP", show=False),
-            Binding("4", "select_wireshark", "Live Wireshark", show=False),
-            Binding("5", "select_live_pcapng", "Live PCAPNG", show=False),
+            Binding("1", "select_index('1')", "Mode 1", show=False),
+            Binding("2", "select_index('2')", "Mode 2", show=False),
+            Binding("3", "select_index('3')", "Mode 3", show=False),
+            Binding("4", "select_index('4')", "Mode 4", show=False),
+            Binding("5", "select_index('5')", "Mode 5", show=False),
+            Binding("6", "select_index('6')", "Mode 6", show=False),
         ]
 
+        def __init__(self, device_platform: str = "", **kwargs) -> None:
+            super().__init__(**kwargs)
+            self._device_platform = (device_platform or "").lower()
+            # Build the visible mode list, dropping "owner" off-platform. The
+            # resulting index order drives both the OptionList and _mode_map.
+            self._modes = [
+                (mode_id, label)
+                for mode_id, label in _ALL_MODES
+                if mode_id != "owner"
+                or self._device_platform in _OWNER_PLATFORMS
+            ]
+            # OptionList row index -> mode_id (kept in sync with compose order).
+            self._mode_map = {
+                index: mode_id for index, (mode_id, _) in enumerate(self._modes)
+            }
+
         def compose(self) -> ComposeResult:
+            count = len(self._modes)
+
             with Vertical(id="modal-container"):
                 yield Static(
                     f"[bold {c('primary')}]Select Capture Mode[/]",
                     classes="modal-title",
                 )
                 yield OptionList(
-                    Option("[1] Full Capture — Decryption keys + PCAP file"),
-                    Option("[2] Key Extraction Only — Extract decryption keys"),
-                    Option("[3] Plaintext PCAP — Decrypted traffic to PCAP"),
-                    Option("[4] Live Wireshark — Stream to Wireshark pipe"),
-                    Option("[5] Live Wireshark (auto-decrypt) — PCAPNG with embedded keys"),
+                    *(
+                        Option(f"[{index + 1}] {label}")
+                        for index, (_, label) in enumerate(self._modes)
+                    ),
                     id="capture-list",
                 )
                 yield Static(
-                    f"[{c('text-muted')}]1-5: Select  |  Enter: Confirm  |  ↑↓: Browse  |  Esc: Back[/]",
+                    f"[{c('text-muted')}]1-{count}: Select  |  Enter: Confirm  |  ↑↓: Browse  |  Esc: Back[/]",
                     classes="key-hints",
                 )
                 with Horizontal(classes="button-row"):
@@ -84,20 +124,13 @@ if TEXTUAL_AVAILABLE:
             except Exception:
                 pass
 
-        def action_select_full(self) -> None:
-            self.dismiss("full")
 
-        def action_select_keys(self) -> None:
-            self.dismiss("keys")
-
-        def action_select_plaintext(self) -> None:
-            self.dismiss("plaintext")
-
-        def action_select_wireshark(self) -> None:
-            self.dismiss("wireshark")
-
-        def action_select_live_pcapng(self) -> None:
-            self.dismiss("live_pcapng")
+        def action_select_index(self, digit: str) -> None:
+            """Dismiss with the mode at the given 1-based number key, if present."""
+            index = int(digit) - 1
+            mode_id = self._mode_map.get(index)
+            if mode_id is not None:
+                self.dismiss(mode_id)
 
         def on_option_list_option_selected(
             self, event: OptionList.OptionSelected
@@ -116,8 +149,10 @@ if TEXTUAL_AVAILABLE:
             option_list = self.query_one("#capture-list", OptionList)
             try:
                 highlighted = option_list.highlighted
-                if highlighted is not None and highlighted in _MODE_MAP:
-                    self.dismiss(_MODE_MAP[highlighted])
+
+                if highlighted is not None and highlighted in self._mode_map:
+                    self.dismiss(self._mode_map[highlighted])
+
                     return
             except Exception:
                 pass

@@ -343,6 +343,15 @@ class FridaBackend(Backend):
     def on_detached(self, process: Any, callback: Callable) -> None:
         process.on('detached', callback)
 
+    def on_process_crashed(self, device: Any, callback: Callable) -> None:
+        device.on('process-crashed', callback)
+
+    def off_process_crashed(self, device: Any, callback: Callable) -> None:
+        try:
+            device.off('process-crashed', callback)
+        except Exception:
+            self._logger.debug("off_process_crashed cleanup error", exc_info=True)
+
     # ------------------------------------------------------------------
     # Script management
     # ------------------------------------------------------------------

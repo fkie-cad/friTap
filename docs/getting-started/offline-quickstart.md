@@ -63,6 +63,8 @@ record you can analyze and replay anywhere — no keys or tshark needed from her
     ```
 
 
+
+
 ---
 
 ## Step 2 — Analyze it
@@ -108,7 +110,7 @@ what a capture actually contained.
 
 ---
 
-## That's it 🎉
+## That's it
 
 In three commands you went from a raw capture to a fully decrypted, searchable,
 replayable record — entirely offline. From here:

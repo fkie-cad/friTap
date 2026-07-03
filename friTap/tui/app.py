@@ -52,6 +52,7 @@ class AppState:
     live: bool = False
     live_mode: str = ""  # "", "wireshark", "live_pcapng"
     full_capture: bool = False
+    owner_capture: bool = False  # Android/Linux: per-app (UID) kernel-scoped keys + PCAP
     protocol: str = "tls"  # "tls", "ipsec", "ssh", "auto"
     view_mode: str = "legacy"  # "legacy", "flow"
     library_scan: bool = False
@@ -83,10 +84,11 @@ if TEXTUAL_AVAILABLE:
             Binding("a", "attach", "Attach", show=False),
             Binding("s", "spawn", "Spawn", show=False),
             Binding("1", "set_mode_1", "Full Capture", show=False),
-            Binding("2", "set_mode_2", "Keys Only", show=False),
-            Binding("3", "set_mode_3", "Plaintext PCAP", show=False),
-            Binding("4", "set_mode_4", "Live Wireshark", show=False),
-            Binding("5", "set_mode_5", "Live PCAPNG", show=False),
+            Binding("2", "set_mode_2", "Per-App (UID) Capture", show=False),
+            Binding("3", "set_mode_3", "Keys Only", show=False),
+            Binding("4", "set_mode_4", "Plaintext PCAP", show=False),
+            Binding("5", "set_mode_5", "Live Wireshark", show=False),
+            Binding("6", "set_mode_6", "Live PCAPNG", show=False),
             Binding("enter", "toggle_capture", "Start/Stop", show=False),
             Binding("escape", "escape_action", "Stop/Close", show=False),
             Binding("c", "clear_log", "Clear Console", show=False),
@@ -241,6 +243,9 @@ if TEXTUAL_AVAILABLE:
 
         def action_set_mode_5(self) -> None:
             self._delegate("action_set_mode_5")
+
+        def action_set_mode_6(self) -> None:
+            self._delegate("action_set_mode_6")
 
         def action_toggle_capture(self) -> None:
             self._delegate("action_toggle_capture")

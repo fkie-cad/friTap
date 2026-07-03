@@ -149,6 +149,26 @@ sudo fritap -k gnutls_keys.log application_using_gnutls
 ldd /usr/bin/application | grep gnutls
 ```
 
+friTap resolves `_gnutls_call_keylog_func` **dynamically** on the running
+gnutls build using a callback-then-backtrace mechanism — no hardcoded byte
+signatures per gnutls version. First time our injected keylog callback fires
+on your target, friTap prints:
+
+```text
+[gnutls dyn] resolved _gnutls_call_keylog_func @ 0x…
+[gnutls dyn] version-specific pattern (32 bytes): …
+[gnutls dyn] --patterns override:  { "modules": { "gnutls": { "wine": { "x64": { … } } } } }
+```
+
+Works on **x86-64, x86, AArch64, and ARM (best-effort)** — the prologue scan
+is architecture-aware (`endbr64` / `push rbp` on x86, `paciasp` / `bti` /
+`stp x29,x30,[sp,#-N]!` on AArch64). The emitted `--patterns` override is a
+copy-paste ready `pattern.json` you can persist to skip the discovery step on
+future runs (useful for attach-after-startup scenarios). See
+[Wine → Dynamic pattern discovery](wine.md#dynamic-pattern-discovery-for-gnutls-new)
+for the full mechanism — the same code path serves both Linux and Wine targets.
+
+
 **BoringSSL/LibreSSL:**
 ```bash
 # Used by Chrome and some modern applications

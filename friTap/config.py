@@ -46,6 +46,15 @@ class OutputConfig:
     verbose: bool = False
     full_capture: bool = False
     socket_trace: bool | str = False
+    # --owner-capture (Android/Linux). Delegate full capture to the AppTap library
+    # to acquire an *app-scoped* pcap (kernel UID-scoped: NFLOG where supported,
+    # else a socket-table filter) instead of capturing the whole device and
+    # post-filtering via the Frida socket trace. owner_strict / owner_no_dns narrow
+    # the capture breadth; owner_nflog_group selects the Tier-2 NFLOG group.
+    owner_capture: bool = False
+    owner_strict: bool = False
+    owner_no_dns: bool = False
+    owner_nflog_group: int = 30
     filter_expression: Optional[str] = None  # Wireshark-like display filter
     # Drop frida/adb infrastructure traffic (ports 5037/5555/27042/27043) by default
     filter_infrastructure: bool = True
@@ -228,6 +237,10 @@ class FriTapConfig:
         debug_mode: bool = False,
         full_capture: bool = False,
         socket_trace: bool | str = False,
+        owner_capture: bool = False,
+        owner_strict: bool = False,
+        owner_no_dns: bool = False,
+        owner_nflog_group: int = 30,
         host: bool | str = False,
         offsets: Optional[str] = None,
         debug_output: bool = False,
@@ -289,6 +302,10 @@ class FriTapConfig:
                 verbose=verbose,
                 full_capture=full_capture,
                 socket_trace=socket_trace,
+                owner_capture=owner_capture,
+                owner_strict=owner_strict,
+                owner_no_dns=owner_no_dns,
+                owner_nflog_group=owner_nflog_group,
                 filter_expression=filter_expression,
                 filter_infrastructure=filter_infrastructure,
                 include_loopback=include_loopback,

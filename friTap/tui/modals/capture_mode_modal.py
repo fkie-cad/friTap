@@ -4,7 +4,8 @@
 """
 Capture mode configuration modal for friTap TUI.
 
-Shown when the user presses 1-5 to select a capture mode.
+Shown when the user presses 1-6 to select a capture mode.
+
 Displays mode info and editable output paths.
 """
 
@@ -26,6 +27,7 @@ if TEXTUAL_AVAILABLE:
 
     _MODE_DESCRIPTIONS = {
         "full": "Capture decryption keys and write a PCAPNG file with decrypted traffic.",
+        "owner": "Per-app (UID) capture: decryption keys + PCAP for the target app only.",
         "keys": "Extract decryption keys only (no traffic capture).",
         "plaintext": "Write decrypted plaintext traffic to a PCAPNG file.",
         "wireshark": "Stream decrypted plaintext traffic live to Wireshark — no keylog needed.",
@@ -151,7 +153,10 @@ if TEXTUAL_AVAILABLE:
             """Collect input values and dismiss with result dict."""
             result = {
                 "live": self._is_live,
-                "full_capture": self._mode_id == "full",
+                # "owner" is a per-app (UID) variant of full capture: it sets
+                # both full_capture and owner_capture so the AppTap delegation runs.
+                "full_capture": self._mode_id in ("full", "owner"),
+                "owner_capture": self._mode_id == "owner",
             }
             if self._is_live:
                 result["live_mode"] = self._mode_id

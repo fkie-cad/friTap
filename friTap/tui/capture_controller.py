@@ -525,6 +525,7 @@ class CaptureController:
             live=state.live,
             live_mode=state.live_mode,
             full_capture=state.full_capture,
+            owner_capture=getattr(state, "owner_capture", False),
         )
 
         # In spawn mode, tokenize the typed command into argv so a target path

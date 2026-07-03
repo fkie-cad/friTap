@@ -1119,20 +1119,24 @@ if TEXTUAL_AVAILABLE:
             self._mode_ctrl.set_mode(1)
 
         def action_set_mode_2(self) -> None:
-            """Key extraction only."""
+            """Per-app (UID) capture: kernel-scoped keys + pcap (Android/Linux)."""
             self._mode_ctrl.set_mode(2)
 
         def action_set_mode_3(self) -> None:
-            """Plaintext pcap."""
+            """Key extraction only."""
             self._mode_ctrl.set_mode(3)
 
         def action_set_mode_4(self) -> None:
-            """Live Wireshark pipe."""
+            """Plaintext pcap."""
             self._mode_ctrl.set_mode(4)
 
         def action_set_mode_5(self) -> None:
-            """Live Wireshark with auto-decrypt (PCAPNG+DSB)."""
+            """Live Wireshark pipe."""
             self._mode_ctrl.set_mode(5)
+
+        def action_set_mode_6(self) -> None:
+            """Live Wireshark with auto-decrypt (PCAPNG+DSB)."""
+            self._mode_ctrl.set_mode(6)
 
         def _apply_mode(self, mode_id: str, display: str, config: dict) -> None:
             """Apply a capture mode from the modal result."""
@@ -1142,6 +1146,7 @@ if TEXTUAL_AVAILABLE:
             state.live = config.get("live", False)
             state.live_mode = config.get("live_mode", "")
             state.full_capture = config.get("full_capture", False)
+            state.owner_capture = config.get("owner_capture", False)
 
             self._capture_mode = mode_id
             self._get_status_bar().update_capture("IDLE", display)

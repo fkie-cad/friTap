@@ -397,6 +397,15 @@ class Backend(ABC):
         """Register a callback for process detach events."""
         ...
 
+    def on_process_crashed(self, device: Any, callback: Callable) -> None:
+        """Register a device-level process-crashed callback (carries a full
+        native crash report). Optional — no-op on backends without the concept."""
+        return None
+
+    def off_process_crashed(self, device: Any, callback: Callable) -> None:
+        """Unregister a process-crashed callback. No-op by default."""
+        return None
+
     @property
     @abstractmethod
     def name(self) -> str:
