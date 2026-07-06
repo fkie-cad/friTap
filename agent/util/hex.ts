@@ -45,7 +45,6 @@ export function toHexPattern(str: string): string {
     return out;
 }
 
-
 /**
  * Byte sequence -> space-separated UPPERCASE hex ("55 48 89 E5 ..."),
  * the format Frida's `Memory.scan` accepts and the format we emit in the
@@ -58,4 +57,3 @@ export function toSpacedHexUpper(byteArray: any): string {
         (n: number) => byteToHex[n].toUpperCase()
     ).join(" ");
 }
-

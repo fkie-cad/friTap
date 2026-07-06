@@ -16,7 +16,10 @@ from types import SimpleNamespace
 
 import pytest
 
-_SIGNAL_AVAILABLE = importlib.util.find_spec("friTap.offline.signal") is not None
+_signal_spec = importlib.util.find_spec("friTap.offline.signal")
+# `.loader is not None` guards against a stale __pycache__ leftover turning the
+# stripped signal dir into an importable namespace package (false positive).
+_SIGNAL_AVAILABLE = _signal_spec is not None and _signal_spec.loader is not None
 
 from friTap.output.factory import active_keylog_paths  # noqa: E402
 from friTap.protocols.registry import create_default_registry  # noqa: E402

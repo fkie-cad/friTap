@@ -508,7 +508,6 @@ class SSL_Logger():
         crash can be attributed to it (fkie-cad/friTap#64)."""
         self._anti_tamper_seen = event.name or event.library or "anti-tamper protection"
 
-
     _WINE_BASENAMES = ("wine", "wine64", "wine32", "wine-preloader", "wine64-preloader")
 
     def _is_android_target(self) -> bool:
@@ -556,7 +555,6 @@ class SSL_Logger():
             return False
         import os as _os
         return _os.path.basename(first).lower() in self._WINE_BASENAMES
-
 
     def _parse_crash_cause(self, report, summary):
         """Best-effort ``(signal, abort_message)`` extraction from a frida
@@ -788,18 +786,35 @@ class SSL_Logger():
                         "then `fritap --experimental -p $(pgrep -f your_app.exe)`. See "
                         "docs/platforms/wine.md.")
             else:
-                # No anti-tamper evidence and not Wine: do NOT guess PairIP. The
-                # breadcrumb is only a weak hint — it may have been recorded on a
-                # different thread than the one that actually crashed (the real
-                # cause is in the headline above and the debug log).
-                if crumb and have_real_cause:
+                # No confirmed anti-tamper and not Wine.
+                if have_real_cause:
+                    # The real cause is in the headline above — do NOT guess
+                    # PairIP. The breadcrumb is only a weak hint (it may have run
+                    # on a different thread than the one that actually crashed).
+                    if crumb:
+                        self.logger.error(
+                            f"  Note: the last agent hook activity was '{crumb}', but it may "
+                            f"have run on a different thread and be unrelated to the crash above.")
                     self.logger.error(
-                        f"  Note: the last agent hook activity was '{crumb}', but it may "
-                        f"have run on a different thread and be unrelated to the crash above.")
-                self.logger.error(
-                    "  -> Spawn-time instrumentation can destabilize fragile app startup. "
-                    "Try starting the app first, then ATTACH friTap (run WITHOUT -s). "
-                    "See fkie-cad/friTap#64.")
+                        "  -> Spawn-time instrumentation can destabilize fragile app startup. "
+                        "Try starting the app first, then ATTACH friTap (run WITHOUT -s). "
+                        "See fkie-cad/friTap#64.")
+                elif self._is_android_target():
+                    # No concrete cause captured on Android — an anti-tamper
+                    # self-destruct (e.g. Google PairIP / libpairipcore.so) is a
+                    # reasonable hypothesis, surfaced only as a possibility.
+                    self.logger.error(
+                        "This may be an anti-tamper protection (e.g. Google PairIP / "
+                        "libpairipcore.so) self-destructing in response to friTap's hooks "
+                        "during app startup.")
+                    self.logger.error(
+                        "  -> Try starting the app first, then ATTACH friTap (run WITHOUT -s). "
+                        "See fkie-cad/friTap#64.")
+                else:
+                    self.logger.error(
+                        "  -> Spawn-time instrumentation can destabilize fragile app startup. "
+                        "Try starting the app first, then ATTACH friTap (run WITHOUT -s). "
+                        "See fkie-cad/friTap#64.")
 
         if log_path:
             self.logger.error(f"Full crash report + hook activity written to: {log_path}")

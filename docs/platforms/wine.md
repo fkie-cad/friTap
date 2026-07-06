@@ -18,7 +18,6 @@ friTap's Wine support allows you to intercept TLS traffic from Windows applicati
 
 - **Linux system** with Wine installed
 - **Wine 5.0+** (recommended Wine 7.0+ for better compatibility)
-- **Root/sudo access** (required for Frida injection)
 - **Python 3.8+** with friTap installed
 - **Frida injection privileges.** On a desktop Linux you almost always want to
   run friTap as your *own* user — `sudo` is the most common source of failure
@@ -39,7 +38,6 @@ friTap's Wine support allows you to intercept TLS traffic from Windows applicati
     pre-flight check for this exact mismatch and bails out clearly instead of
     looking like a hook crash. **Fix:** drop `sudo` (with `ptrace_scope=0`), or
     set `WINEPREFIX=/root/.wine` so Wine creates a fresh root-owned prefix.
-
 
 ### Wine Installation
 
@@ -90,17 +88,17 @@ fritap --experimental -s -k keys.log wine /path/to/application.exe
 
 ```bash
 # Analyze a Windows game
-sudo fritap --experimental -k game_keys.log wine ~/.wine/drive_c/Games/game.exe
+fritap --experimental -k game_keys.log wine ~/.wine/drive_c/Games/game.exe
 
 # Analyze with verbose output
-sudo fritap --experimental -v -k keys.log wine /path/to/app.exe
+fritap --experimental -v -k keys.log wine /path/to/app.exe
 
 # Debug mode for troubleshooting
-sudo fritap --experimental -do -v wine /path/to/app.exe
+fritap --experimental -do -v wine /path/to/app.exe
 
 # Spawn target whose path contains spaces — quote it so the shell passes one
 # token; friTap preserves the argv and spawns it intact (no space-splitting).
-sudo fritap --experimental -s -k keys.log wine "/home/u/.wine/drive_c/Program Files/App/app.exe"
+fritap --experimental -s -k keys.log wine "/home/u/.wine/drive_c/Program Files/App/app.exe"
 ```
 
 ### Attach-mode pattern (most robust for Wine spawn issues)
@@ -127,7 +125,6 @@ sudo WINEPREFIX=/root/.wine -E fritap --experimental -k keys.log \
 Do **not** point a root-running Wine at a user-owned `~/.wine` — Wine will
 refuse the prefix and exit before friTap can hook anything.
 
->>>>>>> a8fe099f667b13ffeb2ea4e67031af5ee8228355
 ## Deployment Models
 
 There are two ways to run friTap against a Wine target:
@@ -295,7 +292,6 @@ version*. On AArch64 the schema arch key becomes `arm64` and the sig id becomes
 If you already have a pattern (from a previous discovery run, from a research
 build, or from a completely different Wine target), supply it with
 `--patterns pattern.json` under the `wine.<arch>` key:
->>>>>>> a8fe099f667b13ffeb2ea4e67031af5ee8228355
 
 ```json
 {
@@ -402,7 +398,6 @@ scan can be pinned for this build:
 [gnutls dyn] --patterns override:  { "modules": { "gnutls": { "wine": { "x64": { … } } } } }
 ```
 
-
 ## Limitations
 
 ### Known Limitations
@@ -437,13 +432,6 @@ wine64 --version
 
 ```bash
 # Enable debug output
-<<<<<<< HEAD
-sudo fritap --experimental -do -v wine /path/to/app.exe
-
-# Check for DLL detection
-sudo fritap --experimental -do wine /path/to/app.exe 2>&1 | grep -i "dll\|library"
-
-# Try enabling default socket info
 fritap --experimental -do -v wine /path/to/app.exe
 
 # Check for DLL detection
@@ -491,6 +479,13 @@ fritap --experimental -k game_keys.log --pcap game_traffic.pcap \
 fritap --experimental -v -k app_keys.log wine /path/to/app.exe
 ```
 
+### Security Research
+
+```bash
+# Analyze Windows malware samples in isolated Wine environment
+fritap --experimental -k malware_keys.log --pcap malware_traffic.pcap \
+    --json malware_metadata.json wine /path/to/suspicious.exe
+```
 
 ## Best Practices
 

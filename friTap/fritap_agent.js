@@ -1,5 +1,5 @@
 📦
-1493372 /agent/fritap_agent.js
+1493387 /agent/fritap_agent.js
 ✄
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
