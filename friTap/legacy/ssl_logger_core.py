@@ -647,7 +647,7 @@ class SSL_Logger():
             # 'Fatal signal' / 'Abort message' lines.
             shown = crash_buf
             if pid:
-                lines = [l for l in crash_buf.splitlines() if f" {pid} " in l or f"({pid})" in l]
+                lines = [line for line in crash_buf.splitlines() if f" {pid} " in line or f"({pid})" in line]
                 shown = "\n".join(lines) or crash_buf
             self._write_crash_section(writer, "logcat -b crash", shown)
             s, a = self._parse_crash_cause(crash_buf, None)

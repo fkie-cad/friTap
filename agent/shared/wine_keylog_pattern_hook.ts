@@ -1,10 +1,12 @@
 // agent/shared/wine_keylog_pattern_hook.ts
-//
+
+
 // Byte-pattern-scanned keylog extraction for Wine targets, complementing the
 // symbol-based gnutls_init/callback path in agent/tls/libs/gnutls.ts. This
 // module is the fallback for cases where the callback path missed the session
 // (attach after handshake, session resumption, sessions created via non-init
 // entry points).
+
 //
 // WHY THIS EXISTS
 // ---------------
@@ -17,10 +19,12 @@
 //   * PE-side Windows DLLs an app bundles — e.g. a PE-compiled libgnutls-30.dll
 //     or a PE libssl — use the Win64 ABI (args in rcx, rdx, r8, r9).
 //
+
 // AArch64 Wine (mainline since Wine 9) collapses both to AAPCS64
 // (args in x0..x7), a single ABI, but the internal keylog function still needs
 // locating in memory.
 //
+
 // The export-resolving + args[]-reading Windows TLS executors silently read the
 // wrong registers for PE code, and never catch schannel's internal gnutls use.
 //
@@ -30,6 +34,7 @@
 // `this.context`. This mirrors agent/tls/decoders/gotls_registers.ts, which
 // already reads registers directly for Go's non-System-V ABI.
 //
+
 // ARCH COVERAGE
 // -------------
 //   * x86-64: bundled patterns for `_gnutls_call_keylog_func` (SysV + Win64)
@@ -61,6 +66,7 @@ interface WineKeylogSig {
     /** "openssl" also covers LibreSSL. */
     library: "gnutls" | "openssl";
     abi: WineAbi;
+
     /**
      * Space-separated hex byte pattern. For x64 signatures these are x86-64
      * bytes (SysV or Win64 ABI); for arm64 signatures they are AArch64
@@ -144,6 +150,7 @@ export function readWineKeylogLine(
         const c = ctx as X64CpuContext;
         a0 = c.rdi; a1 = c.rsi; a2 = c.rdx; a3 = c.rcx;
     }
+
 
     if (a0.isNull() || a1.isNull() || a2.isNull()) return null;
 

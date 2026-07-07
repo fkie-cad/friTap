@@ -53,6 +53,7 @@ function _ntdllPreferenceRank(name: string): number {
 }
 
 /**
+
  * Hook Wine's LdrLoadDll function to intercept Windows DLL loading.
  * Wine loads DLLs through ntdll.dll.so's LdrLoadDll export.
  *
@@ -66,6 +67,7 @@ function _ntdllPreferenceRank(name: string): number {
  *     PWSTR  Buffer;        // Pointer to UTF-16 string
  * }
  */
+
 function hook_Wine_LdrLoadDll(is_base_hook: boolean): boolean {
     try {
         // Re-enumerate modules every call so deferred attempts (after the module
@@ -553,6 +555,7 @@ export function load_wine_hooking_agent(): void {
     log("[Wine] Loading Linux agent for native .so libraries...");
     load_linux_hooking_agent(true);
 
+
     // Then add Wine-specific DLL hooking
     hookRegistry.registerAll([
         { platform: platform_name, pattern: /^(libssl|LIBSSL)-[0-9]+(_[0-9]+)?\.dll$/i, hookFn: (use_modern ? boring_execute_modern_windows : boring_execute_windows), library: "OpenSSL/BoringSSL", libraryType: "openssl" },
@@ -563,6 +566,7 @@ export function load_wine_hooking_agent(): void {
         { platform: platform_name, pattern: /mbedTLS\.dll/i, hookFn: (use_modern ? mbedTLS_execute_modern_windows : mbedTLS_execute_windows), library: "mbedTLS", libraryType: "mbedtls" },
         { platform: platform_name, pattern: /^.*(cronet|CRONET).*\.dll/i, hookFn: cronet_execute_windows, library: "Cronet", libraryType: "boringssl" },
     ]);
+
 
     // Hook existing Windows DLLs that are already loaded. At spawn time this
     // is almost always empty (Wine's preloader hasn't loaded ntdll yet); the
