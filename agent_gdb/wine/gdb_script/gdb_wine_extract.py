@@ -297,7 +297,7 @@ def spawn(config, program_args=None):
     gdb.events.executable_changed.connect(on_executable_changed_handler)
 
     arguments = " ".join([config["spawn"], *(program_args or [])])
-    arguments += f" 1>&{config["stdout-fd"]} 2>&{config["stderr-fd"]}"
+    arguments += f" 1>&{config['stdout-fd']} 2>&{config['stderr-fd']}"
     logging.info(f"Spawning executable {arguments}")
     gdb.execute(f"r {arguments}")
 

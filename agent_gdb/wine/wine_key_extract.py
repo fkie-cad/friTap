@@ -49,10 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="enable debug output",
     )
     parser.add_argument(
-        "-g",
-        "--gdb",
-        action="store_true",
-        help="print gdb output for debugging"
+        "-g", "--gdb", action="store_true", help="print gdb output for debugging"
     )
     parser.add_argument(
         "program_args",
@@ -75,7 +72,6 @@ def main() -> int:
     stdout_fd = os.dup(sys.stdout.fileno())
     stderr_fd = os.dup(sys.stderr.fileno())
 
-
     environment = os.environ.copy()
     arguments = vars(args)
     arguments["log-fd"] = log_fd
@@ -85,11 +81,22 @@ def main() -> int:
 
     try:
         if not args.gdb:
-            subprocess.run(["gdb", "-ex", " set debuginfod enabled off ", "-x", str(script_path)], env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, pass_fds=(log_fd, stdout_fd, stderr_fd))
+            subprocess.run(
+                ["gdb", "-ex", " set debuginfod enabled off ", "-x", str(script_path)],
+                env=environment,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                pass_fds=(log_fd, stdout_fd, stderr_fd),
+            )
         else:
-            subprocess.run(["gdb", "-ex", " set debuginfod enabled off ", "-x", str(script_path)], env=environment, pass_fds=(log_fd, stdout_fd, stderr_fd))
+            subprocess.run(
+                ["gdb", "-ex", " set debuginfod enabled off ", "-x", str(script_path)],
+                env=environment,
+                pass_fds=(log_fd, stdout_fd, stderr_fd),
+            )
     finally:
         os.close(log_fd)
+
 
 if __name__ == "__main__":
     sys.exit(main())
