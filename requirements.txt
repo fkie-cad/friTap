@@ -17,4 +17,5 @@ pylsqpack
 zstandard>=0.19
 brotli>=1.0
 cryptography>=42
+pyghidra>=3.1.0
 TgCrypto-pyrofork; sys_platform != "darwin"
