@@ -121,7 +121,7 @@ class LdrLoadDllWindowsFinishBP(gdb.FinishBreakpoint):
         ranges = get_memory_ranges()
         new_ranges = [x for x in ranges if x not in self.old_ranges]
         find_hookable_functions(new_ranges)
-        logging.debug(f"LdrLoadDll finished")
+        logging.debug("LdrLoadDll finished")
         return False
 
 
