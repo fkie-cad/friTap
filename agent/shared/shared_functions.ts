@@ -1,10 +1,10 @@
 import { log, devlog, devlog_error, hookBreadcrumb } from "../util/log.js";
 import { toHexString } from "../util/hex.js";
 import { AF_INET, AF_INET6, AddressFamilyMapping, unwantedFDs, Platform } from "./shared_structures.js";
-import { HookRegistration, HookRegistry } from "./registry.js";
+import { HookRegistration, HookRegistry, RequestedProtocol, protocolLabel } from "./registry.js";
 import { Java, JavaWrapper } from "./javalib.js";
-import { offsets, ohttp_enabled, selected_protocol } from "./shared_structures.js";
-import { announceSiblingCoverage, isModuleHooked, markModuleHooked } from "./library_scanner.js";
+import { offsets, ohttp_enabled, selected_protocol, selected_protocols } from "./shared_structures.js";
+import { announceSiblingCoverage, isModuleHooked, isSupplementaryHookInstalled, recordHookInstalled } from "./library_scanner.js";
 import { isDeepSymbolResolutionEnabled } from "./deep_symbol_resolution.js";
 import { warnAntiTamper } from "../util/anti_tamper.js";
 import { watchFunctionEntries } from "../util/hw_breakpoint.js";
@@ -34,12 +34,23 @@ const _installedDynamicLoaders = new Set<string>();
  * being installed — that is, on the default `--protocol tls` and on the
  * install-everything modes (`--protocol auto` and `--protocol all`).
  */
+/**
+ * Whether the TLS protocol family is in the active selection. True for the
+ * default `--protocol tls` and the install-everything meta values `auto`/`all`;
+ * false for a non-TLS exclusive selection such as `--protocol mtproto`/`ssh`/
+ * `ipsec`. TLS-only work (the Android TLS Java provider hooks, OHTTP) keys off
+ * this so it is not installed for a purely-native capture. Membership test over
+ * the full selection set so it holds regardless of where tls appears in a
+ * multi-protocol selection.
+ */
+export function isTlsFamilyRequested(): boolean {
+    return selected_protocols.has("tls") ||
+        selected_protocols.has("auto") ||
+        selected_protocols.has("all");
+}
+
 export function shouldInstallOhttpHooks(): boolean {
-    return ohttp_enabled && (
-        selected_protocol === "tls" ||
-        selected_protocol === "auto" ||
-        selected_protocol === "all"
-    );
+    return ohttp_enabled && isTlsFamilyRequested();
 }
 
 /**
@@ -96,7 +107,11 @@ function wait_for_library_loaded(module_name: string){
  * @param platformOs Human-readable platform OS name for logging
  * @param is_base_hook Boolean indicating if this is a base hook or dynamic load
  */
-export function ssl_library_loader(platform: Platform, hookRegistry: HookRegistry, moduleNames: Array<string>, platformOs: string, is_base_hook: boolean, protocol?: string): void {
+export function ssl_library_loader(platform: Platform, hookRegistry: HookRegistry, moduleNames: Array<string>, platformOs: string, is_base_hook: boolean, protocol?: RequestedProtocol): void {
+    // Primary label for the single-value string contexts (dedup keys, message
+    // tags); the raw `protocol` selection still drives multi-protocol registry
+    // filtering via findAllMatchesWithCoverage below.
+    const protocolTag = protocolLabel(protocol);
     for (let module_name of moduleNames) {
         // Anti-tamper libraries (e.g. PairIP's libpairipcore.so) detect inline
         // hooks and crash the process; warn the user and never hook/scan them.
@@ -111,8 +126,8 @@ export function ssl_library_loader(platform: Platform, hookRegistry: HookRegistr
             // Module might not be loaded yet, continue without path
         }
 
-        if (isModuleHooked(module_name, protocol || "tls")) {
-            devlog(`${module_name} already hooked for ${protocol || "tls"}, skipping`);
+        if (isModuleHooked(module_name, protocolTag)) {
+            devlog(`${module_name} already hooked for ${protocolTag}, skipping`);
             continue;
         }
 
@@ -120,10 +135,14 @@ export function ssl_library_loader(platform: Platform, hookRegistry: HookRegistr
             platform, module_name, modulePath, moduleNames, protocol,
         );
         for (const drop of suppressed) {
-            announceSiblingCoverage(drop.moduleName, drop.siblingName, drop.reason, protocol || "tls");
+            announceSiblingCoverage(drop.moduleName, drop.siblingName, drop.reason, protocolTag);
         }
 
         for (let match of matches) {
+            if (isSupplementaryHookInstalled(match, module_name, protocolTag)) {
+                devlog(`${module_name}: ${match.library} already installed, skipping`);
+                continue;
+            }
             try {
                 log(`${module_name} found & will be hooked on ${platformOs}!`)
 
@@ -141,10 +160,12 @@ export function ssl_library_loader(platform: Platform, hookRegistry: HookRegistr
 
                 // Invoke the hook function
                 match.hookFn(module_name, is_base_hook);
-                markModuleHooked(module_name, protocol || "tls");
+                // Supplementary hooks are recorded under their own tag, so
+                // they never mark the module as covered for protocolTag.
+                recordHookInstalled(match, module_name, protocolTag);
 
                 // Notify host that a library was detected
-                send({contentType: "library_detected", library: module_name, path: modulePath || "", protocol: protocol || "tls"});
+                send({contentType: "library_detected", library: module_name, path: modulePath || "", protocol: protocolTag});
 
             } catch (error) {
                 if (checkNumberOfExports(module_name) > 3) {
@@ -172,7 +193,7 @@ export function installPairipSafeWatcher(
     platform: Platform,
     hookRegistry: HookRegistry,
     getFreshModuleNames: () => Array<string>,
-    protocol: string,
+    protocol: RequestedProtocol,
     isTarget: (name: string) => boolean,
     firstDelayMs: number,
     pollIntervalMs: number,
@@ -259,11 +280,14 @@ export function hookDynamicLoader(
     hookRegistry: HookRegistry,
     moduleNames: Array<string>,
     is_base_hook: boolean,
-    protocol?: string
+    protocol?: RequestedProtocol
 ): void {
-    const dedupKey = `${config.platform}:${config.functionName}:${config.preferFunction ?? ""}:${protocol ?? "tls"}`;
+    // Primary label for the single-value string contexts (dedup key, tags); the
+    // raw `protocol` selection still drives multi-protocol registry filtering.
+    const protocolTag = protocolLabel(protocol);
+    const dedupKey = `${config.platform}:${config.functionName}:${config.preferFunction ?? ""}:${protocolTag}`;
     if (_installedDynamicLoaders.has(dedupKey)) {
-        devlog(`${config.platformLabel} dynamic loader already hooked for protocol=${protocol ?? "tls"}; skipping duplicate Interceptor.attach.`);
+        devlog(`${config.platformLabel} dynamic loader already hooked for protocol=${protocolTag}; skipping duplicate Interceptor.attach.`);
         return;
     }
     try {
@@ -338,8 +362,8 @@ export function hookDynamicLoader(
                         }
                     }
 
-                    if (isModuleHooked(moduleName, protocol || "tls")) {
-                        devlog(`${moduleName} already hooked for ${protocol || "tls"}, skipping (dynamic loader)`);
+                    if (isModuleHooked(moduleName, protocolTag)) {
+                        devlog(`${moduleName} already hooked for ${protocolTag}, skipping (dynamic loader)`);
                         return;
                     }
 
@@ -350,16 +374,20 @@ export function hookDynamicLoader(
                         config.platform, moduleName, modulePath, getModuleNames, protocol,
                     );
                     for (const drop of suppressed) {
-                        announceSiblingCoverage(drop.moduleName, drop.siblingName, drop.reason, protocol || "tls");
+                        announceSiblingCoverage(drop.moduleName, drop.siblingName, drop.reason, protocolTag);
                     }
                     for (let match of matches) {
+                        if (isSupplementaryHookInstalled(match, moduleName, protocolTag)) {
+                            devlog(`${moduleName}: ${match.library} already installed, skipping (dynamic loader)`);
+                            continue;
+                        }
                         log(`${moduleName} was loaded & will be hooked on ${config.platformLabel}!`);
                         try {
                             match.hookFn(moduleName, is_base_hook);
-                            markModuleHooked(moduleName, protocol || "tls");
+                            recordHookInstalled(match, moduleName, protocolTag);
 
                             // Notify host that a library was detected
-                            send({contentType: "library_detected", library: moduleName, path: modulePath || "", protocol: protocol || "tls"});
+                            send({contentType: "library_detected", library: moduleName, path: modulePath || "", protocol: protocolTag});
                         } catch (error_msg) {
                             devlog(`${config.platformLabel} dynamic loader error: ${error_msg}`);
                         }
@@ -399,7 +427,7 @@ export function installStealthDynamicLoader(
     config: DynamicLoaderConfig,
     hookRegistry: HookRegistry,
     getFreshModuleNames: () => Array<string>,
-    protocol?: string
+    protocol?: RequestedProtocol
 ): boolean {
     let loaderAddr: NativePointer;
     try {

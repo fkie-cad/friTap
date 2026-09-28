@@ -7,4 +7,8 @@ public registry via
 directory scan. The public core therefore never imports or names them, so a
 filtered build that omits an extension module drops that protocol cleanly while
 the core stays protocol-agnostic.
+
+A new PUBLIC extension must also be added to the protocol allowlist in
+``scripts/check_public_denylist.sh``; otherwise the publish leak guard treats it
+as a private protocol and refuses to publish.
 """

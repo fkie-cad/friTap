@@ -20,6 +20,7 @@
  * dependency on the registry, so importing it never triggers hook installation.
  */
 import type { HookRegistry } from "./registry.js";
+import { Platform, PLATFORM_WINE, PLATFORM_WINDOWS } from "./shared_structures.js";
 
 /**
  * A contributed hook row. Same shape the platform agents pass to
@@ -43,6 +44,47 @@ export function registerHookContributor(rows: HookContribution | HookContributio
 
 /** All contributed hook rows, in registration order. */
 export function collectContributedHooks(): HookContribution[] {
+    return _contributedHooks.slice();
+}
+
+/**
+ * Contributor rows a given platform agent should register, applying
+ * platform-inheritance at the contributor seam.
+ *
+ * Windows-DLL contributor rows (e.g. the `--protocol rc4` unit's BCrypt /
+ * CryptoAPI / OpenSSL RC4 hooks) register under platform "windows". A Wine
+ * target intercepts DLL loads under PLATFORM_WINE and the registry filters
+ * strictly by platform, so those rows would never match on Wine. For
+ * PLATFORM_WINE this returns a copy of each windows-platform contributor row
+ * re-tagged to wine so it becomes reachable — CONTRIBUTOR rows only; the
+ * TLS/QUIC core rows are declared natively by wine.ts. The "windows"-tagged
+ * originals are left untouched for real Windows targets, and protocol
+ * filtering keeps the rc4 rows out of default TLS runs. Every other platform
+ * gets the contributor rows verbatim.
+ *
+ * LSASS/NCrypt is a Windows-service concept only (keys live in lsass.exe, hooked
+ * via a dedicated load_windows_lsass_agent session — never a Wine target), so
+ * such a row must never be re-tagged to wine even if a future contributor unit
+ * registers one. `isLsassOrNcryptRow` excludes those rows from the wine remap
+ * explicitly; today no contributor registers one, so this is purely defensive.
+ */
+function isLsassOrNcryptRow(row: HookContribution): boolean {
+    if (row.libraryType === "lsass") {
+        return true;
+    }
+    const library = (row.library ?? "").toLowerCase();
+    if (library.includes("lsass") || library.includes("ncrypt")) {
+        return true;
+    }
+    return /ncrypt/i.test(row.pattern.source);
+}
+
+export function contributedHooksFor(platform?: Platform): HookContribution[] {
+    if (platform === PLATFORM_WINE) {
+        return _contributedHooks
+            .filter(row => row.platform === PLATFORM_WINDOWS && !isLsassOrNcryptRow(row))
+            .map(row => ({ ...row, platform: PLATFORM_WINE }));
+    }
     return _contributedHooks.slice();
 }
 

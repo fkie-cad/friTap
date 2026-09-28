@@ -58,11 +58,17 @@ setup(
     package_data={
         "friTap": [
             "fritap_agent.js",
+            "fritap_memscan.js",
+            "fritap_agent_full.js",
+            "fritap_agent_full.js.src",
             "assets/tcpdump_binaries/*",
             "tui/css/*.tcss",
             "patterns/*.json",
+            "memory_scanning/*.json",
             "plugins/shared_utility/*.js",
             "plugins/examples/README.md",
+            "offline/mtproto/schema/*.tl",
+            "offline/mtproto/schema/SOURCE.txt",
         ]
     },
     include_package_data=True,

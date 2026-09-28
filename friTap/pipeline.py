@@ -196,7 +196,7 @@ class NormalizeStage:
 
 
 # Known TLS keylog labels (SSLKEYLOGFILE format)
-_TLS_KEYLOG_LABELS = frozenset({
+TLS_KEYLOG_LABELS = frozenset({
     "CLIENT_RANDOM",
     "CLIENT_HANDSHAKE_TRAFFIC_SECRET",
     "SERVER_HANDSHAKE_TRAFFIC_SECRET",
@@ -206,6 +206,7 @@ _TLS_KEYLOG_LABELS = frozenset({
     "RESUMPTION_MASTER_SECRET",
     "CLIENT_EARLY_TRAFFIC_SECRET",
 })
+_TLS_KEYLOG_LABELS = TLS_KEYLOG_LABELS  # backward-compatible private alias
 
 
 def _extract_client_random(key_data: str) -> str:
@@ -385,7 +386,7 @@ class MessagePipeline:
 def create_default_pipeline(
     debug: bool = False,
     filter_infrastructure: bool = True,
-    include_loopback: bool = True,
+    include_loopback: bool = False,
 ) -> MessagePipeline:
     """Create a pipeline with the default stage ordering."""
     pipeline = MessagePipeline()

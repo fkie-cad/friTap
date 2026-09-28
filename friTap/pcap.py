@@ -95,6 +95,92 @@ def _libpcap_hint() -> str:
     return libpcap_provider_hint()
 
 
+DLT_EN10MB = 1
+_ETHERTYPE_IPV4 = 0x0800
+_ETHERTYPE_IPV6 = 0x86DD
+_PCAP_MAGIC_TO_ENDIAN = {
+    b"\xd4\xc3\xb2\xa1": "<", b"\x4d\x3c\xb2\xa1": "<",
+    b"\xa1\xb2\xc3\xd4": ">", b"\xa1\xb2\x3c\x4d": ">",
+}
+
+
+def _packet_linktype(packet):
+    """DLT scapy's pcap writer would record for ``packet`` (Ethernet if unknown)."""
+    return conf.l2types.layer2num.get(type(packet), DLT_EN10MB)
+
+
+def _existing_pcap_linktype(path):
+    """Linktype from the header of an existing classic pcap at ``path``, else None.
+
+    ``wrpcap(append=True)`` keeps an existing file's header, so its linktype —
+    not the first packet of this run — is what every appended packet must match.
+    """
+    try:
+        with open(path, "rb") as fh:
+            header = fh.read(24)
+    except OSError:
+        return None
+    endian = _PCAP_MAGIC_TO_ENDIAN.get(header[:4])
+    if endian is None or len(header) < 24:
+        return None
+    return struct.unpack(endian + "I", header[20:24])[0]
+
+
+def _normalize_to_linktype(packet, target_linktype):
+    """Return ``packet`` framed for a pcap of ``target_linktype``, or None.
+
+    A classic pcap has ONE linktype (fixed by its header), but ``--loopback``
+    merges the primary NIC (Ethernet) with the loopback adapter, which is
+    DLT_NULL on macOS (lo0) and Windows (Npcap loopback). Written as-is, the
+    minority-linktype packets parse as garbage. Packets already of the target
+    linktype pass through untouched; an IP/IPv6 packet is re-wrapped in a
+    synthetic Ethernet header for an Ethernet file. Anything else cannot be
+    represented faithfully and is dropped (None) rather than stored corrupt.
+    """
+    if _packet_linktype(packet) == target_linktype:
+        return packet
+    if target_linktype != DLT_EN10MB:
+        return None
+    from scapy.layers.inet import IP
+    from scapy.layers.inet6 import IPv6
+    from scapy.layers.l2 import Ether
+    for layer, ethertype in ((IP, _ETHERTYPE_IPV4), (IPv6, _ETHERTYPE_IPV6)):
+        if packet.haslayer(layer):
+            framed = Ether(src="00:00:00:00:00:00", dst="00:00:00:00:00:00",
+                           type=ethertype) / packet[layer].copy()
+            framed.time = packet.time
+            return framed
+    return None
+
+
+def _ipv6_bytes(addr) -> bytes:
+    """Return the 16-byte form of an IPv6 address given as a hex string.
+
+    Content-only packets (no socket 5-tuple) carry "", None or 0 instead; those
+    map to the :: placeholder so the synthetic header can still be written.
+    """
+    if isinstance(addr, str):
+        try:
+            raw = bytes.fromhex(addr)
+        except ValueError:
+            raw = b""
+        if len(raw) == 16:
+            return raw
+    return bytes(16)
+
+
+def _write_pcap_record(pcap_file, fields, data) -> None:
+    """Write one pcap record (packed *fields* followed by *data*) in ONE write.
+
+    The plaintext pcap may be shared by several sessions (the Windows LSASS
+    worker writes the same ``-p`` file, see :mod:`friTap.output.shared_output_file`);
+    a single write keeps each record contiguous. The bytes are identical to
+    writing every field separately.
+    """
+    header = b"".join(struct.pack(fmt, value) for fmt, value in fields)
+    pcap_file.write(header + data)
+
+
 def terminate_lingering_processes(parent_pid):
     logger = logging.getLogger('friTap')
     parent = psutil.Process(parent_pid)
@@ -107,12 +193,54 @@ def terminate_lingering_processes(parent_pid):
             logger.warning(f"Forcing kill of child process: {child.pid}")
             child.kill()
 
+
+# Slack for coarse filesystem mtime resolution (FAT/exFAT store 2 s steps), so a
+# sidecar written in the first instant of this run is never mistaken for stale.
+_MTIME_SLACK_SECONDS = 2.0
+
+
+def _written_this_session(path, not_before) -> bool:
+    """Whether *path* is a non-empty file last modified at/after *not_before*.
+
+    ``not_before=None`` skips the age check (callers without a session clock).
+    """
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return False
+    if stat.st_size == 0:
+        return False
+    return not_before is None or stat.st_mtime >= not_before - _MTIME_SLACK_SECONDS
+
+
+def _existing_keylog_files(mapping, not_before=None) -> dict:
+    """Keep only the ``{protocol: path}`` entries this session actually wrote.
+
+    Memory-scan sidecars (e.g. ``<base>.memscan.mtproto.keylog``) have stable
+    names and are only opened (``"w"``) when their first key arrives, so a file
+    left behind by an EARLIER run survives untouched when this run finds no
+    key. Existence alone would record that stale file in this run's manifest
+    and merge foreign keys offline; requiring content written at/after
+    *not_before* (the session start) excludes it without deleting anything.
+    """
+    return {proto: path for proto, path in (mapping or {}).items()
+            if path and os.path.isfile(path) and _written_this_session(path, not_before)}
+
+
 class PCAP:
 
     def __init__(self,pcap_file_name,SSL_READ,SSL_WRITE, doFullCapture, isMobile, print_debug_infos=False,
-                 owner_capture=False, owner_capture_opts=None, target_package=None, target_pid=None):
+                 owner_capture=False, owner_capture_opts=None, target_package=None, target_pid=None,
+                 include_loopback=False):
         self.pcap_file_name = pcap_file_name
         self.logger = logging.getLogger('friTap')
+        # Full local capture (-f): also sniff the loopback interface so localhost
+        # traffic (127.0.0.1 / ::1) is recorded. Default OFF — opt-in via --loopback
+        # when a client talks to a local server (e.g. an RC4-in-TLS test server on
+        # 127.0.0.1:8443), which is otherwise invisible to a capture on the primary NIC.
+        # Best-effort: if the loopback adapter can't be opened (e.g. Npcap without
+        # loopback support), the primary capture still runs.
+        self.include_loopback = include_loopback
         # --owner-capture: delegate full capture to the AppTap library to acquire an
         # app-scoped (UID-scoped) pcap instead of capturing the whole device. These
         # are intent (config); the *runtime* state lives in apptap_session/
@@ -149,6 +277,16 @@ class PCAP:
         # Keylog file path, if friTap is also exporting an SSLKEYLOGFILE.
         # Populated externally; recorded in the manifest when present.
         self.keylog_path = None
+        # Un-split base ``-k`` path (config.output.keylog). In a multi-protocol
+        # split capture the factory only hands us the per-protocol split paths,
+        # never the base; on Windows the target's TLS is SChannel, so the
+        # <base>.tls split is never written and the real TLS secrets land in this
+        # base file (written by the separate LSASS session). Kept as a manifest
+        # fallback so we record a keylog that actually exists. Populated externally.
+        self.base_keylog_path = None
+        # Wall-clock start of this capture session: memory-scan sidecars older
+        # than this belong to an earlier run and are kept out of the manifest.
+        self._session_started_at = time.time()
         # Active capture protocol (e.g. "mtproto", "telegram", "signal", "tls").
         # Populated externally; used to record a protocol-specific keylog field
         # in the manifest so offline decrypt routes the keys to the right
@@ -159,6 +297,9 @@ class PCAP:
         # the manifest under "keylogs" alongside the single "keylog" field so
         # the offline pipeline can locate every split keylog. {protocol: path}.
         self.active_keylogs = {}
+        # Memory-scan (-ms) keylog paths, {protocol: path}; see
+        # set_memory_scan_keylogs(). Populated externally.
+        self.memory_scan_keylogs = {}
 
         if doFullCapture:
             if isMobile:
@@ -254,9 +395,12 @@ class PCAP:
                 self.pcap_file_name = pcap_class.pcap_file_name
                 self.daemon = True
                 self.socket = None
+                self.loopback_socket = None
                 self.stop_capture = Event()
                 self.tmp_pcap_name = self._get_tmp_pcap_name()
-                
+                self._file_linktype = None
+                self._warned_linktype_drop = False
+
                 self.mobile_subprocess = -1
                 self.android_capture_process = -1    
                 self.is_Mobile = pcap_class.is_Mobile
@@ -280,7 +424,29 @@ class PCAP:
                 
             
             def write_packet_to_pcap(self,packet):
-                wrpcap(self.tmp_pcap_name, packet, append=True)  #appends packet to output file
+                """Append ``packet`` to the temp pcap, matching the file's linktype.
+
+                With --loopback, packets from two adapters of different
+                linktypes share one classic pcap; see _normalize_to_linktype.
+                """
+                if self._file_linktype is None:
+                    existing = _existing_pcap_linktype(self.tmp_pcap_name)
+                    self._file_linktype = (existing if existing is not None
+                                           else _packet_linktype(packet))
+                normalized = _normalize_to_linktype(packet, self._file_linktype)
+                if normalized is None:
+                    self._warn_dropped_packet(packet)
+                    return
+                wrpcap(self.tmp_pcap_name, normalized, append=True)  #appends packet to output file
+
+            def _warn_dropped_packet(self, packet):
+                if self._warned_linktype_drop:
+                    return
+                self._warned_linktype_drop = True
+                pcap_class.logger.warning(
+                    "full capture: dropping %s packets that cannot be stored in a "
+                    "linktype-%d pcap (mixed-interface capture via --loopback)",
+                    type(packet).__name__, self._file_linktype)
             
             
             def clean_up_and_exit(self):
@@ -296,6 +462,11 @@ class PCAP:
                         self.socket.close()
                     except Exception as e:
                         pcap_class.logger.error(f"Error while closing the socket: {e}")
+                if self.loopback_socket:
+                    try:
+                        self.loopback_socket.close()
+                    except Exception as e:
+                        pcap_class.logger.debug(f"Error while closing the loopback socket: {e}")
                 if self.android_capture_process != -1:
                     try:
                         pcap_class.logger.info("Terminating android capture process.")
@@ -306,6 +477,33 @@ class PCAP:
 
             
             
+            def _open_loopback_socket(self):
+                """Open an L2 listener on the loopback interface, or None (best-effort).
+
+                On Windows this needs Npcap's loopback adapter (``conf.loopback_name``,
+                e.g. "\\Device\\NPF_Loopback"); on Linux/macOS it is ``lo``/``lo0``. Any
+                failure (no loopback adapter, no permission) is logged and returns None
+                so the primary capture proceeds unaffected.
+                """
+                loop_name = getattr(conf, "loopback_name", None)
+                if not loop_name:
+                    pcap_class.logger.debug(
+                        "loopback capture: scapy knows no loopback adapter; skipping "
+                        "(on Windows, install Npcap with loopback support).")
+                    return None
+                try:
+                    sock = conf.L2listen(type=ETH_P_ALL, iface=loop_name)
+                    pcap_class.logger.info(
+                        "also capturing loopback traffic on %s (enabled via --loopback)",
+                        loop_name)
+                    return sock
+                except Exception as e:
+                    pcap_class.logger.warning(
+                        "loopback capture unavailable on %s (%s); continuing with the "
+                        "primary interface. On Windows, install Npcap with loopback "
+                        "support to capture 127.0.0.1 traffic.", loop_name, e)
+                    return None
+
             def full_local_capture(self):
                 if getattr(pcap_class, "owner_capture", False):
                     session = pcap_class._build_apptap_session(self.tmp_pcap_name)
@@ -333,10 +531,21 @@ class PCAP:
                         type=ETH_P_ALL
                     )
 
+                    # Also sniff loopback so localhost traffic (127.0.0.1 / ::1) is
+                    # captured — a client talking to a local server is otherwise
+                    # invisible on the primary NIC. Opt-in via --loopback and
+                    # best-effort; a failure to open the loopback adapter degrades to
+                    # primary-only.
+                    sockets = [self.socket]
+                    if getattr(pcap_class, "include_loopback", False):
+                        self.loopback_socket = self._open_loopback_socket()
+                        if self.loopback_socket is not None:
+                            sockets.append(self.loopback_socket)
+
                     pcap_class.logger.info("doing full local capture")
 
                     sniff(
-                        opened_socket=self.socket,
+                        opened_socket=sockets if len(sockets) > 1 else self.socket,
                         filter=build_infrastructure_bpf(),
                         prn=self.write_packet_to_pcap,
                         stop_filter=self.stop_capture_thread
@@ -470,8 +679,12 @@ class PCAP:
         return pcap_file    
     
     def __create_plaintext_pcap(self):
-        pcap_file = open(self.pcap_file_name, "wb", 0)
-        pcap_file = self.write_pcap_header(pcap_file)
+        # Shared per path: the Windows LSASS session logs plaintext into the same
+        # -p file, and a second private "wb" open would truncate this one. Only
+        # the first opener writes the global header.
+        from .output.shared_output_file import open_shared_output_file
+        pcap_file, _created = open_shared_output_file(
+            self.pcap_file_name, "wb", 0, initializer=self.write_pcap_header)
         return pcap_file
     
     def log_plaintext_payload(self, ss_family, function, src_addr, src_port,
@@ -499,10 +712,13 @@ class PCAP:
         # any non-integer to 0 — a 0.0.0.0:0 placeholder. The addresses are purely
         # cosmetic for these content-only packets; this keeps the pcap writer from
         # raising struct.error and dropping the payload.
-        if not isinstance(src_addr, int):
-            src_addr = 0
-        if not isinstance(dst_addr, int):
-            dst_addr = 0
+        # IPv6 addresses legitimately arrive as 32-char hex strings; those are
+        # packed via _ipv6_bytes() below, so only IPv4 addresses are forced to int.
+        if ss_family != "AF_INET6":
+            if not isinstance(src_addr, int):
+                src_addr = 0
+            if not isinstance(dst_addr, int):
+                dst_addr = 0
         if not isinstance(src_port, int):
             src_port = 0
         if not isinstance(dst_port, int):
@@ -535,7 +751,7 @@ class PCAP:
         else:
             seq, ack = (client_sent, server_sent)
         if ss_family == "AF_INET":
-            for writes in (
+            _write_pcap_record(self.pcap_file, (
                 # PCAP record (packet) header
                 # Timestamp seconds
                 ("=I", int(t)),
@@ -572,13 +788,10 @@ class PCAP:
                 (">H", 0x5018),                   # Header Length and Flags
                 (">H", 0xFFFF),                   # Window Size
                 (">H", 0),                        # Checksum
-                    (">H", 0)):                       # Urgent Pointer
-                self.pcap_file.write(struct.pack(writes[0], writes[1]))
-
-            self.pcap_file.write(data)
+                    (">H", 0)), data)                 # Urgent Pointer
 
         elif ss_family == "AF_INET6":
-            for writes in (
+            _write_pcap_record(self.pcap_file, (
                 # PCAP record (packet) header
                 # Timestamp seconds
                 ("=I", int(t)),
@@ -598,9 +811,9 @@ class PCAP:
                 # Hop limit
                 (">B", 0xFF),
                 # Source Address
-                (">16s", bytes.fromhex(src_addr)),
+                (">16s", _ipv6_bytes(src_addr)),
                 # Destination Address
-                (">16s", bytes.fromhex(dst_addr)),
+                (">16s", _ipv6_bytes(dst_addr)),
                 # TCP header
                 (">H", src_port),                 # Source Port
                 (">H", dst_port),                 # Destination Port
@@ -609,10 +822,7 @@ class PCAP:
                 (">H", 0x5018),                   # Header Length and Flags
                 (">H", 0xFFFF),                   # Window Size
                 (">H", 0),                        # Checksum
-                    (">H", 0)):                       # Urgent Pointer
-                self.pcap_file.write(struct.pack(writes[0], writes[1]))
-
-            self.pcap_file.write(data)
+                    (">H", 0)), data)                 # Urgent Pointer
 
         else:
             self.logger.warning("Packet has unknown/unsupported family!")
@@ -633,7 +843,7 @@ class PCAP:
         connectionless, so each datagram stands alone.
         """
         if ss_family == "AF_INET":
-            for writes in (
+            _write_pcap_record(self.pcap_file, (
                 # PCAP record (packet) header
                 # Timestamp seconds
                 ("=I", int(t)),
@@ -666,13 +876,10 @@ class PCAP:
                 (">H", src_port),                 # Source Port
                 (">H", dst_port),                 # Destination Port
                 (">H", 8 + len(data)),            # UDP Length
-                    (">H", 0)):                       # Checksum
-                self.pcap_file.write(struct.pack(writes[0], writes[1]))
-
-            self.pcap_file.write(data)
+                    (">H", 0)), data)                 # Checksum
 
         elif ss_family == "AF_INET6":
-            for writes in (
+            _write_pcap_record(self.pcap_file, (
                 # PCAP record (packet) header
                 # Timestamp seconds
                 ("=I", int(t)),
@@ -692,17 +899,14 @@ class PCAP:
                 # Hop limit
                 (">B", 0xFF),
                 # Source Address
-                (">16s", bytes.fromhex(src_addr)),
+                (">16s", _ipv6_bytes(src_addr)),
                 # Destination Address
-                (">16s", bytes.fromhex(dst_addr)),
+                (">16s", _ipv6_bytes(dst_addr)),
                 # UDP header
                 (">H", src_port),                 # Source Port
                 (">H", dst_port),                 # Destination Port
                 (">H", 8 + len(data)),            # UDP Length
-                    (">H", 0)):                       # Checksum
-                self.pcap_file.write(struct.pack(writes[0], writes[1]))
-
-            self.pcap_file.write(data)
+                    (">H", 0)), data)                 # Checksum
 
         else:
             self.logger.warning("Packet has unknown/unsupported family!")
@@ -904,6 +1108,31 @@ class PCAP:
         except Exception:
             self.logger.debug("Could not seed server ports from sockets", exc_info=True)
 
+    @staticmethod
+    def _keylog_with_content(*candidates) -> "str | None":
+        """Return the first candidate keylog path that exists AND is non-empty.
+
+        Used to pick the TLS keylog for the manifest: the per-protocol split path
+        is preferred, but on Windows the LSASS hook worker writes the TLS secrets to
+        the BASE ``-k`` file, not the split ``<base>.tls.log`` (which is then never
+        created). Recording that phantom split path makes an offline replay fail with
+        "keylog file not found". Falling back to the base keylog (which actually holds
+        the secrets) fixes it. Falls back to the first candidate when none has content
+        (so the field is still populated for diagnostics).
+        """
+        for path in candidates:
+            if not path:
+                continue
+            try:
+                if os.path.isfile(path) and os.path.getsize(path) > 0:
+                    return str(path)
+            except OSError:
+                continue
+        for path in candidates:
+            if path:
+                return str(path)
+        return None
+
     def set_active_keylogs(self, mapping: dict) -> None:
         """Record the per-protocol split keylog paths for the manifest.
 
@@ -912,6 +1141,71 @@ class PCAP:
         shallow copy) and surfaced in the manifest under the "keylogs" field.
         """
         self.active_keylogs = dict(mapping or {})
+
+    def set_base_keylog(self, path) -> None:
+        """Record the un-split base ``-k`` path for the manifest fallback.
+
+        Called externally alongside :meth:`set_active_keylogs` in a multi-protocol
+        split capture. The base file (``config.output.keylog``) is where a
+        SChannel/LSASS TLS session writes its secrets when the ``<base>.tls`` split
+        is never produced, so the manifest can fall back to it instead of recording
+        a phantom split path.
+        """
+        self.base_keylog_path = path or None
+
+    def set_memory_scan_keylogs(self, mapping: dict) -> None:
+        """Record the memory-scan (``-ms``) keylog paths for the manifest.
+
+        *mapping* is ``{protocol: path}`` (``"tls"`` = the NSS memscan keylog,
+        ``"mtproto"``/``"telegram"`` = its ``.mtproto.keylog`` sidecar). Used as
+        the fallback key source when no hooked-key keylog exists (e.g. a
+        memory-scan-only full capture). Paths are only recorded if the scanner
+        actually wrote them, since the files are created lazily.
+        """
+        self.memory_scan_keylogs = dict(mapping or {})
+
+    def _add_known_server_ports(self, transport_key, ports) -> None:
+        """Seed explicit server ports into ``_observed_server_ports[transport_key]``.
+
+        Shared, fully-guarded helper behind ``set_known_tls_ports`` /
+        ``set_known_quic_ports``. Each port is coerced to a positive int;
+        anything else is skipped. Side-effect-free when *ports* is falsy, so a
+        capture with no explicit ``--tls-port``/``--quic-port`` is unaffected.
+        """
+        if not ports:
+            return
+        try:
+            for port in ports:
+                try:
+                    port_int = int(port)
+                except (TypeError, ValueError):
+                    continue
+                if port_int > 0:
+                    self._observed_server_ports[transport_key].add(port_int)
+        except Exception:
+            self.logger.debug("Could not seed known server ports", exc_info=True)
+
+    def set_known_tls_ports(self, ports) -> None:
+        """Record explicit TLS (TCP) server ports for the manifest.
+
+        Called at capture-configure time when the user passes a capture-side
+        ``--tls-port``; seeds ``_observed_server_ports["tcp"]`` so the manifest's
+        ``tls_ports`` is populated even for a pure ``--full_capture`` that never
+        observes the loopback/non-standard TLS server (e.g. 127.0.0.1:8443).
+        This lets the offline Decode-As pipeline recover TLS (and nested RC4)
+        streams on non-standard ports. Best-effort and side-effect-free when unset.
+        """
+        self._add_known_server_ports("tcp", ports)
+
+    def set_known_quic_ports(self, ports) -> None:
+        """Record explicit QUIC (UDP) server ports for the manifest.
+
+        Capture-side counterpart of ``set_known_tls_ports`` for a capture-time
+        ``--quic-port``; seeds ``_observed_server_ports["udp"]`` so the manifest's
+        ``quic_ports`` covers non-standard QUIC server ports. Best-effort and
+        side-effect-free when unset.
+        """
+        self._add_known_server_ports("udp", ports)
 
     def _write_capture_manifest(self):
         """Write a best-effort ``<pcap>.fritap.json`` sidecar manifest.
@@ -944,6 +1238,53 @@ class PCAP:
             # <base>.<proto>.log siblings; the authoritative per-protocol paths
             # live in active_keylogs.
             active_keylogs = getattr(self, "active_keylogs", None) or {}
+            # Heap-scanner keylogs that were actually written. They only fill in
+            # when no hooked-key keylog exists (memory-scan-only capture), so an
+            # offline replay still finds e.g. the .mtproto.keylog sidecar.
+            memscan_keylogs = _existing_keylog_files(
+                getattr(self, "memory_scan_keylogs", None),
+                not_before=getattr(self, "_session_started_at", None),
+            )
+            if not self.keylog_path and memscan_keylogs:
+                if "tls" in memscan_keylogs:
+                    manifest["keylog"] = str(memscan_keylogs["tls"])
+                try:
+                    from friTap.offline.registry import get_offline_decryptor_registry
+                    for entry in get_offline_decryptor_registry().list():
+                        if entry.protocol_name == self.capture_protocol \
+                                and entry.protocol_name in memscan_keylogs:
+                            manifest[entry.cli_dest] = str(memscan_keylogs[entry.protocol_name])
+                            break
+                except Exception as e:
+                    self.logger.debug(f"manifest memory-scan keylog mapping skipped: {e}")
+            if memscan_keylogs:
+                manifest["memory_scan_keylogs"] = {
+                    proto: str(path) for proto, path in memscan_keylogs.items()
+                }
+            # Prefer the per-protocol TLS split, then the BASE -k file, then the
+            # last-handler split path. On Windows the target's TLS is SChannel, so
+            # the <base>.tls split is never written and the real TLS secrets land in
+            # the base -k keylog (written by the separate LSASS session). The base
+            # path is not carried in active_keylogs (the factory only hands us the
+            # splits), so it is passed separately via set_base_keylog() and slotted
+            # in here as the middle candidate. Resolved once, only when a keylog
+            # field below will record it.
+            base_keylog_path = getattr(self, "base_keylog_path", None)
+            tls_keylog = (
+                self._keylog_with_content(
+                    active_keylogs.get("tls"), base_keylog_path, self.keylog_path)
+                if self.keylog_path or "tls" in active_keylogs or base_keylog_path
+                else None
+            )
+            # _keylog_with_content falls back to the first candidate even when none
+            # exists; that tail is exactly what produced the phantom .tls path in the
+            # manifest. Gate every keylog write below on a file that really exists
+            # with content, so a never-written split is omitted, not recorded.
+            tls_keylog_has_content = bool(
+                tls_keylog
+                and os.path.isfile(tls_keylog)
+                and os.path.getsize(tls_keylog) > 0
+            )
             if self.keylog_path:
                 # Generic "keylog" = the TLS keylog (the SSLKEYLOGFILE a back-compat
                 # consumer feeds to tshark to strip TLS first). In a multi-protocol
@@ -953,8 +1294,10 @@ class PCAP:
                 # KeylogOutputHandler happened to set self.keylog_path last (the
                 # protocol split would point a TLS consumer at the wrong keys and
                 # decrypt nothing). Single-protocol captures have no "tls" split and
-                # fall back to self.keylog_path unchanged.
-                manifest["keylog"] = str(active_keylogs.get("tls", self.keylog_path))
+                # fall back to self.keylog_path unchanged. Only record it when the
+                # resolved keylog actually exists — never emit a phantom path.
+                if tls_keylog_has_content:
+                    manifest["keylog"] = tls_keylog
                 # Also record the keylog under the active protocol's offline
                 # decryptor field (its registry cli_dest, e.g. "mtproto_keylog" /
                 # "signal_keylog") so the manifest-driven offline pipeline routes
@@ -963,31 +1306,51 @@ class PCAP:
                 # CRITICAL: use the per-protocol SPLIT path when one exists — for a
                 # multi-protocol capture the base -k path holds the TLS keys, NOT
                 # the protocol's keys, so writing it here would point e.g.
-                # signal_keylog at the TLS log and decrypt 0 Signal messages.
+                # signal_keylog at the TLS log and decrypt 0 Signal messages. A split
+                # is recorded only when it was actually written (exists + non-empty);
+                # a never-written split is dropped rather than recorded as a phantom,
+                # while the base -k fallback (the hooked-key writer's own file) is kept.
                 try:
                     from friTap.offline.registry import get_offline_decryptor_registry
                     for entry in get_offline_decryptor_registry().list():
                         if entry.protocol_name == self.capture_protocol:
-                            proto_keylog = active_keylogs.get(
-                                entry.protocol_name, self.keylog_path
-                            )
-                            manifest[entry.cli_dest] = str(proto_keylog)
+                            proto_split = active_keylogs.get(entry.protocol_name)
+                            if proto_split:
+                                if os.path.isfile(proto_split) \
+                                        and os.path.getsize(proto_split) > 0:
+                                    manifest[entry.cli_dest] = str(proto_split)
+                            else:
+                                manifest[entry.cli_dest] = str(self.keylog_path)
                             break
                 except Exception as e:
                     self.logger.debug(f"manifest protocol-keylog mapping skipped: {e}")
-            # Record every per-protocol split path so the offline pipeline can
-            # locate each keylog. The single "keylog" field above is preserved
-            # for back-compat.
+            # Record every per-protocol split path that was ACTUALLY written so the
+            # offline pipeline can locate each keylog without chasing a phantom path
+            # (a never-written <base>.tls/<base>.rc4 split is dropped). Only a
+            # multi-protocol split capture populates active_keylogs; a single-protocol
+            # capture leaves it empty and gets no "keylogs" field (unchanged). The
+            # single "keylog" field above is preserved for back-compat.
             if active_keylogs:
-                manifest["keylogs"] = {
-                    proto: str(path) for proto, path in active_keylogs.items()
+                existing_active_keylogs = _existing_keylog_files(
+                    active_keylogs,
+                    not_before=getattr(self, "_session_started_at", None),
+                )
+                resolved_keylogs = {
+                    proto: str(path) for proto, path in existing_active_keylogs.items()
                 }
+                # Overlay the resolved TLS keylog (which may be the base -k file, not
+                # the split) so the offline pipeline's per-protocol map also points at
+                # a keylog that exists.
+                if tls_keylog_has_content:
+                    resolved_keylogs["tls"] = tls_keylog
+                if resolved_keylogs:
+                    manifest["keylogs"] = resolved_keylogs
             manifest_path = f"{self.pcap_file_name}.fritap.json"
             with open(manifest_path, "w", encoding="utf-8") as fh:
                 _json.dump(manifest, fh, indent=2)
             self.logger.debug(f"Wrote capture manifest {manifest_path}")
         except Exception as e:
-            self.logger.debug(f"Could not write capture manifest: {e}")
+            self.logger.warning(f"Could not write capture manifest: {e}")
 
     def finalize_full_capture(self, formatted_keys=(), traced_Socket_Set=None):
         """Finalize the *unfiltered* full capture: emit the temp file at
@@ -1006,6 +1369,10 @@ class PCAP:
             self.logger.error(f"Error finalizing full capture: {e}")
         else:
             self.logger.info(f"Full capture written to {self.pcap_file_name}")
+            # A full capture holds only ciphertext; point the user at friTap's own
+            # offline replay so they can decrypt it with the keylog they captured.
+            self.logger.info(
+                f"To replay/decrypt this capture, run:  fritap -r {self.pcap_file_name}")
         # Seed manifest ports from any per-connection socket data the caller has.
         # Pure full captures (no plaintext logging) never hit
         # log_plaintext_payload, so this is the only chance to record ports.

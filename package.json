@@ -1,14 +1,17 @@
 {
     "name": "friTap",
-    "version": "2.3.1",
+    "version": "2.5.0",
     "description": "Frida agent for logging encrypted traffic as plaintext and extracting its encryption keys",
     "private": true,
     "main": "agent/fritap_agent.ts",
     "scripts": {
         "prepare": "npm run build",
         "build": "frida-compile agent/fritap_agent.ts -o friTap/fritap_agent.js",
+        "build:memscan": "frida-compile agent/memory_scan_agent.ts -o friTap/fritap_memscan.js",
+        "build:full": "./dev/compile_agent.sh full",
         "watch": "frida-compile agent/fritap_agent.ts -o friTap/_fritap_agent.js -w",
-        "test:agent": "node --import tsx --test agent/shared/arm64.test.ts agent/shared/registry.test.ts agent/shared/sockaddr.test.ts agent/util/anti_tamper.test.ts agent/util/non_tls_libs.test.ts agent/util/darwin_sysctl.test.ts agent/shared/deep_symbol_resolution.test.ts agent/shared/wine_keylog_pattern_hook.test.ts agent/tls/shared/keylog_line.test.ts agent/legacy/tls/shared/apple_keylog_offset.test.ts"
+        "test:agent": "node --import tsx --test agent/shared/arm64.test.ts agent/shared/registry.test.ts agent/platforms/android_cronet_rows.test.ts agent/shared/supplementary_hooks.test.ts agent/shared/sockaddr.test.ts agent/util/anti_tamper.test.ts agent/util/non_tls_libs.test.ts agent/util/darwin_sysctl.test.ts agent/shared/deep_symbol_resolution.test.ts agent/shared/wine_keylog_pattern_hook.test.ts agent/tls/shared/keylog_line.test.ts agent/legacy/tls/shared/apple_keylog_offset.test.ts agent/core/definition_extrahooks.test.ts agent/platforms/wine_contributor_rows.test.ts agent/shared/bundled_cronet_patterns.test.ts agent/shared/boringssl_keylog_outcome.test.ts agent/legacy/tls/libs/ssl_method_mapping.test.ts agent/shared/arm64_xref.test.ts agent/shared/boringssl_anchor_locator.test.ts agent/ms_agent/engines/mtproto/endpoint.test.ts agent/ms_agent/engines/rc4/index.test.ts agent/ms_agent/driver.test.ts agent/shared/tls13_phase_tracker.test.ts agent/shared/keylog_callback_registry.test.ts agent/shared/boringssl_pattern_poll.test.ts agent/ms_agent/core/memory.test.ts agent/ms_agent/engines/mtproto/tiere_stats.test.ts agent/shared/keylog_callback_tracker.test.ts agent/rc4/libs/rc4_memscan.test.ts agent/rc4/libs/rc4_hooks.test.ts",
+        "test:memscan-agent": "node tests/agent/mtproto_agent_harness.mjs"
     },
     "keywords": [
         "frida",

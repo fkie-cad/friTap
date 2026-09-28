@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import atexit
 import contextlib
+import hashlib
 import logging
 import os
 import platform
@@ -51,6 +52,15 @@ def get_pid_of_lsass() -> int | None:
         PID of LSASS or None if not found.
     """
     return find_pid_by_name("lsass")  # LSASS is typically named "lsass.exe" on Windows
+
+def sha256_file(path, chunk_size: int = 1 << 20) -> str:
+    """Hex sha256 digest of the file at *path*, read in chunks."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
 
 def stringify_list(*args):
     """

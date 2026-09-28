@@ -108,12 +108,23 @@ jobs:
       - name: Rebuild agent
         run: ./dev/compile_agent.sh
 
-      - name: Verify committed agent matches rebuild
+      - name: Verify committed agents match rebuild
+        # ./dev/compile_agent.sh (bare) rebuilds BOTH the intercept and the
+        # memscan bundle; both are tracked, so both must be byte-identical to a
+        # fresh rebuild from agent/.
         run: |
-          if ! git diff --exit-code -- friTap/fritap_agent.js; then
-            echo "::error ::friTap/fritap_agent.js does not match a fresh rebuild from agent/. Run ./dev/compile_agent.sh locally and commit the result."
+          if ! git diff --exit-code -- friTap/fritap_agent.js friTap/fritap_memscan.js; then
+            echo "::error ::A committed agent bundle does not match a fresh rebuild from agent/. Run ./dev/compile_agent.sh locally and commit the result."
             exit 1
           fi
+
+      - name: Run agent unit tests (main + memscan)
+        # The .mjs harness self-compiles an -B iife bundle via
+        # node_modules/.bin/frida-compile (present after `npm ci`); test:agent
+        # runs the Node test runner over the TS unit tests via tsx.
+        run: |
+          npm run test:agent
+          npm run test:memscan-agent
 
       - name: Build manifest
         run: |

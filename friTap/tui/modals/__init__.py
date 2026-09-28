@@ -14,6 +14,7 @@ try:
     from .capture_select_modal import CaptureSelectModal  # noqa: F401
     from .device_modal import DeviceSelectModal  # noqa: F401
     from .encapsulated_protocol_modal import EncapsulatedProtocolModal  # noqa: F401
+    from .extraction_method_modal import ExtractionMethodModal  # noqa: F401
     from .filter_help_modal import FilterHelpScreen  # noqa: F401
     from .filter_modal import FilterModal, FilterResult  # noqa: F401
     from .help_modal import HelpScreen  # noqa: F401

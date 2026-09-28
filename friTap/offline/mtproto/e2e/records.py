@@ -19,6 +19,14 @@ class SecretChatMessage:
     chat_id: int
     key_fingerprint_hex: str
     origin: str = "decrypted"  # "decrypted" | "plaintext_hook"
+    # Hex of the blob's 16-byte msg_key (bytes 8..24); "" = unknown. Unique per
+    # E2E message, so the offline emitter uses it to skip a re-decrypted blob.
+    msg_key_hex: str = ""
+    # Timestamp of the carrying cloud message (epoch seconds); 0.0 = unknown.
+    timestamp: float = 0.0
+    # The other participant's user id, from the keylog's optional 4th field
+    # (read by the agent from the client's Java EncryptedChat); 0 = unknown.
+    peer_user_id: int = 0
 
 
 @dataclass

@@ -114,6 +114,30 @@ def test_no_crash_object_falls_back_to_breadcrumb(caplog):
     assert "PairIP" not in text
 
 
+def test_clean_attach_exit_not_reported_as_hook_crash(caplog):
+    # Attach mode, agent fully initialised ("agent-init: complete"), no frida crash
+    # object: a short-lived target that simply finished (e.g. a download script).
+    # Must NOT be blamed on an instrumented hook, and must emit no crash noise.
+    obj = _make_logger(anti_tamper="", crumb="agent-init: complete", spawn=False)
+    with caplog.at_level(logging.INFO):
+        obj._report_target_crash("process-terminated", None)
+    text = caplog.text
+    assert "Target process exited" in text
+    assert "no crash detected" in text
+    assert "crashed inside an instrumented hook" not in text
+    assert "Full crash report" not in text
+    assert "PairIP" not in text
+
+
+def test_spawn_exit_with_empty_crumb_still_reports_crash(caplog):
+    # Empty breadcrumb (target went away before init finished) in spawn mode is a
+    # crash, not a clean exit — the hook hypothesis must still fire.
+    obj = _make_logger(anti_tamper="", crumb="", spawn=True)
+    with caplog.at_level(logging.ERROR):
+        obj._report_target_crash("process-terminated", None)
+    assert "crashed inside an instrumented hook" in caplog.text
+
+
 class TestParseCrashCause:
     def test_extracts_signal_and_jni_abort(self):
         obj = SSL_Logger.__new__(SSL_Logger)

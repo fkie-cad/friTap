@@ -494,9 +494,75 @@ pattern hits multiple sites and installs at the first one.
 Re-extract with BoringSecretHunter for the new build, or widen the volatile mid-pattern
 bytes with wildcards while keeping the edges concrete.
 
+## Memory-scan secret profiles
+
+Everything above describes friTap's **hooking** engines: they find a function's
+machine-code prologue and install a hook. friTap also has a completely separate
+feature — [`-ms`/`--memory-scan`](../api/cli.md#-ms-memory-scan-patternjson) — that
+recovers TLS secrets by **scanning the target's heap for the secrets themselves**,
+without hooking the TLS library at all. It runs as an independently-injected agent
+(`friTap/fritap_memscan.js`) and is driven by its **own** profile schema, distinct
+from the `--patterns` hooking schemas.
+
+!!! note "Different schema, different job"
+    A `--patterns` file describes **where a function is** (byte signatures of code).
+    A memory-scan profile describes **where a secret is** (struct layout, anchors and
+    validators for data on the heap). They are not interchangeable — pass a memory-scan
+    profile with `-ms`, not `--patterns`.
+
+The shipped default profile database is
+`friTap/memory_scanning/patterns.json`; override or extend it with
+`-ms <file>` (profiles merge by `id`). The rich rationale — how each byte pattern,
+stride and struct offset was derived and cross-checked against a BoringSSL build —
+lives in `research/memory_scan/README.md` and
+`research/memory_scan/patterns/boringssl_secrets.json`.
+
+### Schema at a glance
+
+```
+{
+  "schema":   <int>,
+  "_meta":    { … documentation / provenance … },
+  "profiles": [
+    {
+      "id":            "<profile id, merge key>",
+      "description":   "<which builds this profile targets>",
+      "match":         { … advisory module/pointer-size hints … },
+      "scan_regions":  { … which memory ranges to scan … },
+      "constants":     { … layout constants (strides, sizes, versions) … },
+      "struct_offsets":{ … per-struct field offsets … },
+      "tiers":         { … the scan strategies to run … },
+      "validators":    { … accept/reject checks for candidates … },
+      "keylog_labels": [ … NSS labels this profile can emit … ]
+    }
+  ]
+}
+```
+
+| Field | Purpose |
+|-------|---------|
+| `schema` | Profile-format version. |
+| `_meta` | Human-readable provenance (source revision, verification target, method). Ignored by the engine. |
+| `profiles[]` | One or more secret profiles. A user file **merges by `id`** on top of the shipped defaults. |
+| `id` | Stable profile identifier and the merge key. |
+| `description` | Which library builds the profile covers. |
+| `match` | Advisory module-name / pointer-size hints for auto-selecting a profile (the agent still scans the target you selected). |
+| `scan_regions` | Which ranges to scan — protection (`rw-`), anonymous-only, name allow/deny lists, and a max range size. Keeps the scan on the app's heap allocator and off guard/instrumentation pages. |
+| `constants` | Layout constants such as the `InplaceVector` stride, hash sizes and TLS version words. |
+| `struct_offsets` | Field offsets inside the relevant structs (e.g. `SSL`, `SSL3_STATE`, `SSL_HANDSHAKE`, `SSL_SESSION`). |
+| `tiers` | The ordered scan strategies (anchor-based, pointer-based, orphan-object) the engine runs each pass. |
+| `validators` | Numeric gates that reject false positives — entropy floor, max zero-fraction, secret length bounds, pointer sanity. |
+| `keylog_labels` | The NSS keylog labels this profile can produce (e.g. `CLIENT_RANDOM`, `CLIENT_TRAFFIC_SECRET_0`, `SERVER_TRAFFIC_SECRET_0`, `EXPORTER_SECRET`). |
+
+The shipped BoringSSL profile reliably recovers the secrets needed to decrypt
+**application data** (the `*_TRAFFIC_SECRET_0`, `EXPORTER_SECRET` and TLS 1.2
+`CLIENT_RANDOM` master secret); short-lived handshake-epoch secrets are recovered
+only opportunistically. For the full derivation, measured recall/precision and the
+lifetime reasoning behind that split, read `research/memory_scan/README.md`.
+
 ## Next steps
 
 - **[Add a new library / hook](../development/adding-features.md)** — how the hooking
   pipeline and strategies fit together.
 - **[CLI reference](../api/cli.md)** — full documentation for `--patterns`, `--offsets`,
-  `--force-scan`, `-do`, and related flags.
+  `--force-scan`, `-do`, `-ms`/`--memory-scan`, and related flags.

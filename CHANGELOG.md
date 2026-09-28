@@ -7,6 +7,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased] — 2.3.0
 
 ### Added
+  - **RC4 as a first-class protocol (`--protocol rc4`).** RC4 is independent of
+    TLS: run it standalone (`--protocol rc4`) or nested inside TLS
+    (`--protocol tls,rc4`, i.e. plaintext → RC4 → TLS). RC4 **keys** are hooked
+    on every platform (OpenSSL/LibreSSL/BoringSSL `RC4_set_key`, Nettle
+    `nettle_arcfour_set_key`, mbedTLS `mbedtls_arc4_setup`; Windows CNG
+    `BCryptGenerateSymmetricKey` and legacy CryptoAPI `CryptEncrypt`/`CALG_RC4`)
+    and can also be recovered heap-side with `-ms --protocol rc4` (S-box scan +
+    candidate-key trial-decrypt). Offline decryption via `--from-pcap
+    --rc4-keylog`, auto-detecting standalone (raw TCP) vs nested (strip TLS via
+    tshark, then peel RC4).
+  - **Multi-protocol selection.** `--protocol` now accepts a set, e.g.
+    `--protocol tls,rc4` or `--protocol tls --protocol rc4`. Each protocol's
+    hooks install only when it is explicitly selected (no implication);
+    `ssh`/`ipsec`/`mtproto` remain exclusive. `--protocol tls` alone is
+    unchanged.
+  - **Schannel read-only heap scan (Windows).** Memory-scan engine selection is
+    now driven by the `--protocol` set and platform, resolved from the central
+    `memory_scan_patterns.json`. On Windows, `-ms` additionally attaches a
+    **read-only** scan to `lsass.exe` for Schannel TLS 1.2/1.3 secrets and the
+    session cache (skipped with `-nl`). Verified on Windows 11 **arm64** (build
+    26200); **x64** ships uncalibrated with a calibration tool under
+    `dev/schannel_calibrate/`. Unpaired lsass secrets are written to
+    `<stem>.schannel.unpaired` and correlated to client-randoms offline with
+    `--from-pcap --schannel-unpaired`, emitting a normal NSS keylog.
+  - **Targeted memory scan.** `-ms <engine>` (`-ms schannel`, `-ms rc4`,
+    `-ms boringssl`) scans only that engine regardless of `--protocol`.
   - **`--probe` (dry run).** Loads the agent, reports which platform branch it
     selected, and stops **before installing any hooks** — for diagnosing targets
     that die during instrumentation (fkie-cad/friTap#65). If the loaded bundle

@@ -208,3 +208,78 @@ def test_extract_libraries_exits_two_on_a_failed_scan(extract_libraries_run):
 
 def test_extract_libraries_exits_promptly(extract_libraries_run):
     assert extract_libraries_run.elapsed < _EARLY_EXIT_BUDGET_SECONDS
+
+
+# ---------------------------------------------------------------------------
+# A rejected --filter is a usage error: exit 2, before any capture banner
+# ---------------------------------------------------------------------------
+# The headless filter check used to run inside the capture ``try:`` -- after
+# "Start logging" had been printed -- and its bare ``return`` left ``cli()``
+# with status 0. It now runs right after the ``-ll``/``--extract-libraries``
+# early exits (which never use the filter) and raises
+# ``Failure`` (exit 2, docs/api/cli.md's "invalid arguments/configuration").
+# friTap writes only to stderr, so stdout must stay empty on this path too.
+
+@pytest.fixture(scope="module")
+def invalid_syntax_filter_run() -> CliRun:
+    return _run_cli("--filter", "TELE", _nonexistent_target(), timeout=30)
+
+
+@pytest.fixture(scope="module")
+def tui_only_filter_run() -> CliRun:
+    return _run_cli("--filter", "telegram", _nonexistent_target(), timeout=30)
+
+
+@pytest.mark.parametrize("run_fixture", ["invalid_syntax_filter_run", "tui_only_filter_run"])
+def test_rejected_filter_exits_two_before_any_banner(run_fixture, request):
+    run = request.getfixturevalue(run_fixture)
+    assert run.returncode == 2
+    for banner in _CAPTURE_BANNERS:
+        assert banner not in run.output
+    assert run.stdout == ""
+
+
+def test_invalid_filter_syntax_reports_the_reason(invalid_syntax_filter_run):
+    assert "Invalid filter expression" in invalid_syntax_filter_run.stderr
+    assert "TELE" in invalid_syntax_filter_run.stderr
+
+
+def test_tui_only_filter_field_points_at_the_headless_spelling(tui_only_filter_run):
+    assert "not available in headless mode: telegram" in tui_only_filter_run.stderr
+    assert "protocol == telegram" in tui_only_filter_run.stderr
+
+
+@pytest.mark.parametrize("expression", ["protocol == telegram", "ip.addr == 1.2.3.4"])
+def test_headless_filter_passes_validation_and_reaches_the_attach(expression):
+    # Past validation the session starts and fails on the uuid target lookup.
+    run = _run_cli("--filter", expression, _nonexistent_target(), timeout=30)
+    assert "Start logging" in run.stderr
+    assert f"Display filter active: {expression}" in run.stderr
+    assert "unable to find process" in run.stderr
+    assert "Invalid filter expression" not in run.output
+    assert run.stdout == ""
+
+
+# -ll / --extract-libraries never use --filter, so a filter the headless check
+# rejects must not turn them into a filter error: the command behaves exactly
+# as it does without --filter.
+@pytest.fixture(scope="module")
+def list_libraries_with_rejected_filter_run() -> CliRun:
+    return _run_cli("-ll", _nonexistent_target(), "--filter", "telegram", timeout=30)
+
+
+def test_list_libraries_ignores_a_headless_rejected_filter(
+        list_libraries_with_rejected_filter_run, list_libraries_run):
+    run = list_libraries_with_rejected_filter_run
+    assert run.returncode == list_libraries_run.returncode
+    assert "Listing loaded libraries" in run.output
+    assert "not available in headless mode" not in run.output
+    assert "Invalid filter expression" not in run.output
+
+
+def test_extract_libraries_ignores_a_headless_rejected_filter(tmp_path):
+    run = _run_cli("--extract-libraries", str(tmp_path), _nonexistent_target(),
+                   "--filter", "TELE", timeout=30)
+    assert run.returncode == 2
+    assert "Extracting TLS libraries" in run.output
+    assert "Invalid filter expression" not in run.output

@@ -322,9 +322,11 @@ addresses) for apps using BIO-wrapped or NIO/async networking, with no extra fla
 fritap -m --modern -k keys.log com.example.app
 ```
 
-The modern path is **auto-enabled** when you select `--protocol ssh` or
-`--protocol ipsec` (those agents live only in the modern path); you do not need to
-pass `--modern` in that case.
+No protocol forces the modern path: `--protocol ssh`, `mtproto`, `telegram`,
+`signal`, and `rc4` all run on the default legacy agent path too (as do the
+IPsec hooks, which are installed only via `--protocol all`/`auto` —
+`--protocol ipsec` is not selectable yet). Pass `--modern` explicitly only when
+you want the experimental modern hooks.
 
 ## Application Categories
 

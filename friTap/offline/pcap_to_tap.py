@@ -13,11 +13,13 @@ parsing is duplicated.
 
 from __future__ import annotations
 
+import heapq
 import importlib
+import inspect
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable, Iterator, Sequence, Tuple
 
 if TYPE_CHECKING:
     # Type-only import: the factories below annotate this return type, but import
@@ -28,11 +30,17 @@ if TYPE_CHECKING:
 from friTap.connection_index import resolve_connection_key
 from friTap.events import SESSION_STARTED, DatalogEvent, EventBus, SessionEvent
 from friTap.flow.collector import FlowCollector
+from friTap.flow.layer_pipeline import MESSAGE_TRANSPORTS
 from friTap.flow.layers import SshLayer
 from friTap.flow.tap_writer import TapWriter
+from friTap.offline.keylog_paths import canonical_keylog_path
+from friTap.offline.mtproto.transport import DEFAULT_OBF_MAX_BLOCKS
+from friTap.offline.tls_spans import record_tls_span
 
 from .tshark import (
     ENCRYPTED_RECORD_MARKERS,
+    TSHARK_INSTALL_MESSAGE,
+    TsharkNotFoundError,
     build_plaintext_command,
     build_quic_command,
     build_quic_detection_command,
@@ -97,6 +105,14 @@ class ConvertResult:
         streams: int = 0,
         undecryptable: int = 0,
         degraded: int = 0,
+        degraded_non_mtproto: int = 0,
+        partial: int = 0,
+        recovered_via_obf: int = 0,
+        degraded_unrecovered: int = 0,
+        short: int = 0,
+        unsupported_framing: int = 0,
+        e2e_only: bool = False,
+        unknown_key_ids: dict | None = None,
     ) -> None:
         """Accumulate one protocol decryptor's counters (generic + back-compat).
 
@@ -104,15 +120,55 @@ class ConvertResult:
         matching legacy named field exists (``<prefix>_messages`` etc.), mirrors
         the increment into it so existing readers of ``result.mtproto_messages`` /
         ``result.mtproto_streams`` keep working unchanged.
+
+        The richer breakdown counters (``degraded_non_mtproto``/``partial`` from
+        Workstream E, ``recovered_via_obf``/``degraded_unrecovered`` from F) are
+        stored in the generic bucket only; the CLI summary reads them defensively
+        (defaulting to 0) so older buckets keep printing exactly as before.
+
+        Honest-diagnostics fields (also generic-bucket only, read defensively):
+          * ``short`` / ``unsupported_framing`` -- streams the decryptor could not
+            open for reasons that are NOT "started mid-connection" (a short/lossy
+            client run, or an unsupported transport framing). Kept out of
+            ``degraded`` so the mid-connection figure is not overstated.
+          * ``e2e_only`` -- an E2E (secret-chat) key was present but no transport
+            auth key, so the transport envelope never decrypted and the E2E blobs
+            inside were never reached (a boolean OR-ed across calls).
+          * ``unknown_key_ids`` -- hex ``auth_key_id -> count`` for records naming a
+            key not in the keylog. They travel in the clear, so surfacing them tells
+            the user exactly which transport keys to capture.
         """
         bucket = self.per_protocol.setdefault(
             prefix,
-            {"messages": 0, "streams": 0, "undecryptable": 0, "degraded": 0},
+            {
+                "messages": 0, "streams": 0, "undecryptable": 0, "degraded": 0,
+                "degraded_non_mtproto": 0, "partial": 0,
+                "recovered_via_obf": 0, "degraded_unrecovered": 0,
+                "short": 0, "unsupported_framing": 0,
+                "e2e_only": False, "unknown_key_ids": {},
+            },
         )
         bucket["messages"] += messages
         bucket["streams"] += streams
         bucket["undecryptable"] += undecryptable
         bucket["degraded"] += degraded
+        for extra_key, extra_value in (
+            ("degraded_non_mtproto", degraded_non_mtproto),
+            ("partial", partial),
+            ("recovered_via_obf", recovered_via_obf),
+            ("degraded_unrecovered", degraded_unrecovered),
+            ("short", short),
+            ("unsupported_framing", unsupported_framing),
+        ):
+            bucket[extra_key] = bucket.get(extra_key, 0) + extra_value
+        # E2E-only is a latching signal: once any call reports it, keep it set.
+        if e2e_only:
+            bucket["e2e_only"] = True
+        # Merge the unknown-key-id -> count map so repeated calls accumulate.
+        if unknown_key_ids:
+            merged = bucket.setdefault("unknown_key_ids", {})
+            for key_id, count in unknown_key_ids.items():
+                merged[key_id] = merged.get(key_id, 0) + count
         for legacy_suffix, value in (
             ("messages", messages),
             ("streams", streams),
@@ -131,6 +187,26 @@ class ConvertResult:
         """
         from dataclasses import asdict
         return asdict(self)
+
+
+# The messaging protocols whose obfuscated/self-contained transports friTap
+# decrypts itself (not via tshark). Their counters all live in
+# ``ConvertResult.per_protocol`` under these prefixes; only ``mtproto`` also
+# mirrors into the legacy ``mtproto_*`` fields. Walking every prefix covers a
+# ``telegram``-keylog run's counts too.
+MESSAGING_PREFIXES = ("mtproto", "telegram", "signal")
+
+
+def messaging_buckets(result) -> Iterator[Tuple[str, dict]]:
+    """Yield ``(prefix, counters)`` for every messaging prefix, in fixed order.
+
+    *counters* is ``result.per_protocol[prefix]`` (see
+    :meth:`ConvertResult.record_protocol`), or ``{}`` when that protocol recorded
+    nothing. Duck-typed: any object with (or without) a ``per_protocol`` dict works.
+    """
+    per_protocol = getattr(result, "per_protocol", None) or {}
+    for prefix in MESSAGING_PREFIXES:
+        yield prefix, per_protocol.get(prefix) or {}
 
 
 class _StreamDirectionTracker:
@@ -291,10 +367,222 @@ def _extract_addrs(layers: dict) -> tuple[str, str, str]:
     )
 
 
+# ---------------------------------------------------------------------------
+# Offline QUIC stream reassembly
+# ---------------------------------------------------------------------------
+#
+# tshark's ``quic.stream_data`` is one entry per STREAM frame *as captured*:
+# retransmissions repeat bytes already seen and loss/reordering delivers frames
+# out of order. Feeding those raw frames to the HTTP/3 parser corrupts its
+# framing, so when the ``-T ek`` export carries the per-frame OFF/LEN/FIN flags
+# we rebuild each stream's byte sequence from the frame offsets first.
+
+# Per-stream cap on out-of-order bytes held while waiting for a gap to fill.
+# Past it the gap is declared lost and skipped (debug-logged and counted).
+_QUIC_REASSEMBLY_GAP_CAP = 1 << 20  # 1 MiB
+
+# One STREAM frame's layout: (offset, explicit length or None, fin).
+_QuicFrameLayout = tuple[int, "int | None", bool]
+
+
+def _ek_true(value) -> bool:
+    """Interpret one `-T ek` FT_BOOLEAN entry (``"True"``/``"1"``/bool)."""
+    return str(value).strip().lower() in ("true", "1")
+
+
+def _pop_gated_values(flags: list, values: list) -> list | None:
+    """Expand a sparse value list to one slot per frame, gated by *flags*.
+
+    ``quic.stream.offset`` / ``quic.stream.length`` only carry entries for the
+    frames whose OFF / LEN bit is set. Returns ``None`` when the counts disagree
+    (the layout cannot be trusted), else a list with ``None`` for unset frames.
+    """
+    if sum(1 for flag in flags if _ek_true(flag)) != len(values):
+        return None
+    remaining = iter(values)
+    return [_coerce_int(next(remaining), default=None) if _ek_true(flag) else None
+            for flag in flags]
+
+
+def _quic_frame_layout(layers: dict, n_ids: int) -> list[_QuicFrameLayout] | None:
+    """Return per-STREAM-frame ``(offset, length|None, fin)`` aligned with the ids.
+
+    Built from the ``quic.stream.off``/``len``/``fin`` flag lists (one entry per
+    frame, parallel to ``quic.stream.stream_id``) plus the sparse
+    ``quic.stream.offset``/``length`` values. A frame without the OFF bit starts
+    at offset 0. Returns ``None`` when the flags are absent (older exports and
+    hand-built packets) or inconsistent, so callers fall back to raw frames.
+    """
+    off_flags = _as_list(_field(layers, "quic.stream.off"))
+    len_flags = _as_list(_field(layers, "quic.stream.len"))
+    fin_flags = _as_list(_field(layers, "quic.stream.fin"))
+    if not n_ids or not (len(off_flags) == len(len_flags) == len(fin_flags) == n_ids):
+        return None
+    offsets = _pop_gated_values(off_flags, _as_list(_field(layers, "quic.stream.offset")))
+    lengths = _pop_gated_values(len_flags, _as_list(_field(layers, "quic.stream.length")))
+    if offsets is None or lengths is None:
+        return None
+    return [(offset or 0, length, _ek_true(fin))
+            for offset, length, fin in zip(offsets, lengths, fin_flags)]
+
+
+def _align_payloads(
+    ids: list,
+    payloads: list,
+    layout: list[_QuicFrameLayout] | None,
+) -> list[tuple] | None:
+    """Pair stream ids with payloads (and layout), or ``None`` if impossible.
+
+    Equal counts zip directly. With more ids than payloads, a zero-length
+    (typically FIN-only) STREAM frame contributed an id but no ``stream_data``
+    entry; when the layout identifies those frames they are dropped so the
+    remaining frames line up. Anything else is unrecoverable -> ``None``.
+    """
+    frames = layout if layout is not None else [None] * len(ids)
+    if len(ids) == len(payloads):
+        return list(zip(ids, payloads, frames))
+    if layout is None or len(ids) < len(payloads):
+        return None
+    kept = [(sid, frame) for sid, frame in zip(ids, frames) if frame[1] != 0]
+    if len(kept) != len(payloads):
+        return None
+    return [(sid, payload, frame) for (sid, frame), payload in zip(kept, payloads)]
+
+
+@dataclass
+class _QuicStreamBuffer:
+    """Reassembly state of one directional QUIC stream."""
+
+    next_offset: int = 0
+    pending: dict = field(default_factory=dict)  # offset -> bytes (out of order)
+    starts: list = field(default_factory=list)  # min-heap of the offsets in pending
+    pending_bytes: int = 0
+    context: dict | None = None  # DatalogEvent kwargs for drained leftovers
+
+
+class _QuicStreamReassembler:
+    """Rebuild in-order QUIC stream bytes from captured STREAM frames.
+
+    Keyed by an opaque per-direction stream key (the converter uses
+    ``(udp_stream_key, direction, stream_id)`` because each QUIC stream carries
+    two independent byte sequences). :meth:`push` returns only the bytes that
+    became contiguous: duplicates and overlaps are trimmed, gaps are buffered up
+    to *gap_cap* bytes per stream and skipped past it. :meth:`drain_all` flushes
+    whatever is still buffered at the end of the capture.
+    """
+
+    def __init__(self, gap_cap: int = _QUIC_REASSEMBLY_GAP_CAP) -> None:
+        self._streams: dict = {}
+        self._gap_cap = gap_cap
+        self.gap_count = 0          # gaps skipped (cap exceeded or drained)
+        self.duplicate_bytes = 0    # retransmitted bytes trimmed
+
+    def push(self, key, offset: int, data: bytes, context: dict | None = None) -> bytes:
+        """Add one frame's *data* at *offset*; return newly in-order bytes."""
+        buf = self._streams.setdefault(key, _QuicStreamBuffer())
+        if context is not None:
+            buf.context = context
+        offset, data = self._trim_delivered(buf, offset, data)
+        if not data:
+            return b""
+        if offset == buf.next_offset and not buf.pending:
+            buf.next_offset += len(data)  # fast path: in order, nothing held
+            return data
+        self._hold(buf, offset, data)
+        released = bytearray(self._release_contiguous(buf))
+        while buf.pending_bytes > self._gap_cap:
+            released += self._skip_gap(key, buf, "gap cap exceeded")
+        return bytes(released)
+
+    def drain(self, key) -> bytes:
+        """Flush *key*'s buffered bytes, skipping any remaining gaps."""
+        buf = self._streams.get(key)
+        released = bytearray()
+        while buf is not None and buf.pending:
+            released += self._skip_gap(key, buf, "end of capture")
+        return bytes(released)
+
+    def drain_all(self) -> list[tuple]:
+        """Flush every stream; return ``(key, context, bytes)`` for non-empty ones."""
+        leftovers = []
+        for key, buf in self._streams.items():
+            data = self.drain(key)
+            if data:
+                leftovers.append((key, buf.context, data))
+        return leftovers
+
+    def _trim_delivered(self, buf: _QuicStreamBuffer, offset: int, data: bytes):
+        """Cut the prefix of *data* that was already released (retransmission)."""
+        overlap = buf.next_offset - offset
+        if overlap <= 0:
+            return offset, data
+        self.duplicate_bytes += min(overlap, len(data))
+        return buf.next_offset, data[overlap:]
+
+    @staticmethod
+    def _hold(buf: _QuicStreamBuffer, offset: int, data: bytes) -> None:
+        """Buffer an out-of-order segment (keeping the longer one per offset)."""
+        existing = buf.pending.get(offset)
+        if existing is not None and len(existing) >= len(data):
+            return
+        if existing is None:
+            heapq.heappush(buf.starts, offset)
+        buf.pending_bytes += len(data) - (len(existing) if existing else 0)
+        buf.pending[offset] = data
+
+    @staticmethod
+    def _release_contiguous(buf: _QuicStreamBuffer) -> bytes:
+        """Pop held segments that now touch ``next_offset`` (trimming overlap)."""
+        out = bytearray()
+        while buf.starts:
+            start = buf.starts[0]
+            if start > buf.next_offset:
+                break
+            heapq.heappop(buf.starts)
+            segment = buf.pending.pop(start)
+            buf.pending_bytes -= len(segment)
+            tail = segment[buf.next_offset - start:]
+            out += tail
+            buf.next_offset += len(tail)
+        return bytes(out)
+
+    def _skip_gap(self, key, buf: _QuicStreamBuffer, reason: str) -> bytes:
+        """Declare the gap before the lowest held segment lost and move past it."""
+        start = buf.starts[0]
+        self.gap_count += 1
+        logger.debug("QUIC stream %s: skipping %d-byte gap at offset %d (%s)",
+                     key, start - buf.next_offset, buf.next_offset, reason)
+        buf.next_offset = start
+        return self._release_contiguous(buf)
+
+
+def _quic_stream_frames(layers: dict, stream_key: str,
+                        result: ConvertResult | None) -> list[tuple] | None:
+    """Return aligned ``(stream_id, payload, layout|None)`` frames, or ``None``.
+
+    ``None`` means the id/payload lists could not be aligned: the packet is
+    skipped (warning + *result* drop counter) rather than mis-attributed.
+    """
+    stream_ids = _as_list(_field(layers, "quic.stream.stream_id"))
+    stream_payloads = _as_list(_field(layers, "quic.stream_data"))
+    layout = _quic_frame_layout(layers, len(stream_ids))
+    frames = _align_payloads(stream_ids, stream_payloads, layout)
+    if frames is None:
+        logger.warning(
+            "QUIC packet on %s has mismatched stream id/payload counts "
+            "(%d ids vs %d payloads); skipping packet to avoid misattribution.",
+            stream_key, len(stream_ids), len(stream_payloads),
+        )
+        if result is not None:
+            result.dropped_packet_count += 1
+    return frames
+
+
 def _quic_packet_to_events(
     pkt: dict,
     tracker: _StreamDirectionTracker,
     result: ConvertResult | None = None,
+    reassembler: _QuicStreamReassembler | None = None,
 ) -> list[DatalogEvent]:
     """Translate one QUIC `-T ek` packet dict into DatalogEvents.
 
@@ -305,9 +593,15 @@ def _quic_packet_to_events(
     These two fields are extracted as independent parallel ``-T ek`` lists, so a
     packet carrying a zero-length / FIN-only STREAM frame can make the lists
     differ in length. ``zip`` would silently truncate, attaching payloads to the
-    wrong stream id. To avoid corrupt attribution we detect a length mismatch,
-    log a warning, increment *result*'s drop counter (when supplied), and SKIP
-    the whole packet rather than emit a wrong mapping.
+    wrong stream id. When the per-frame OFF/LEN/FIN flags are exported the
+    zero-length frames are identified and dropped (see :func:`_align_payloads`);
+    otherwise we log a warning, increment *result*'s drop counter (when
+    supplied), and SKIP the whole packet rather than emit a wrong mapping.
+
+    When *reassembler* is given and the frame layout is known, each event's data
+    is only the bytes that became in-order for that directional stream
+    (retransmissions trimmed, out-of-order frames held back); frames releasing
+    nothing produce no event. Without flags, frames pass through unchanged.
     """
     layers = pkt.get("layers") or {}
 
@@ -321,30 +615,16 @@ def _quic_packet_to_events(
     direction = tracker.direction_for(
         stream_key, src_addr, src_port, dst_addr, dst_port)
 
-    stream_ids = _as_list(_field(layers, "quic.stream.stream_id"))
-    stream_payloads = _as_list(_field(layers, "quic.stream_data"))
-
-    # Guard against zip() silently truncating misaligned parallel lists (e.g. a
-    # zero-length/FIN-only STREAM frame contributes a stream id but no payload).
-    # Skip the packet entirely rather than mis-attribute payloads to stream ids.
-    if len(stream_ids) != len(stream_payloads):
-        logger.warning(
-            "QUIC packet on %s has mismatched stream id/payload counts "
-            "(%d ids vs %d payloads); skipping packet to avoid misattribution.",
-            stream_key, len(stream_ids), len(stream_payloads),
-        )
-        if result is not None:
-            result.dropped_packet_count += 1
+    frames = _quic_stream_frames(layers, stream_key, result)
+    if frames is None:
         return []
 
     events: list[DatalogEvent] = []
-    for stream_id, payload in zip(stream_ids, stream_payloads):
+    for stream_id, payload, layout in frames:
         data = decode_hex(str(payload))
         if not data:
             continue
-        events.append(DatalogEvent(
-            timestamp=timestamp,
-            data=data,
+        context = dict(
             function="tshark_offline",
             direction=direction,
             src_addr=src_addr,
@@ -356,7 +636,13 @@ def _quic_packet_to_events(
             transport="udp",
             protocol="quic",  # so the flow is keyed/typed as QUIC (flow.transport)
             stream_id=_coerce_int(stream_id, default=None),
-        ))
+        )
+        if reassembler is not None and layout is not None:
+            data = reassembler.push(
+                (stream_key, direction, context["stream_id"]), layout[0], data, context)
+            if not data:
+                continue
+        events.append(DatalogEvent(timestamp=timestamp, data=data, **context))
     return events
 
 
@@ -472,6 +758,20 @@ class _WriterState:
         # several chats share one 4-tuple. Both are consumed by _attach_telegram_meta.
         self.mtproto_meta: dict = {}
         self.telegram_e2e_meta: dict = {}
+        # Identities of Telegram records already emitted during this conversion
+        # (cloud: (auth_key_id_hex, msg_id, direction); E2E: (fp, msg_key_hex)),
+        # so a second decoder pass over the same traffic never duplicates flows.
+        self.telegram_emitted: set = set()
+        # Lazily created by _telegram_ledger / _telegram_refs (None = no Telegram
+        # record emitted yet) and the record counter behind _next_record_seq.
+        self.telegram_ledger = None
+        self.telegram_refs = None
+        self.telegram_record_seq: int = 0
+        # Per-frame provenance of the single-pass TLS plaintext, keyed by
+        # canonical_4tuple then direction (see friTap.offline.tls_spans), and the
+        # RC4 provenance derived from it (consumed by the nested RC4 path).
+        self.tls_spans: dict = {}
+        self.rc4_provenance: dict = {}
 
     def ensure_open(self, capture_start: float = 0.0) -> None:
         """Open the writer if it is not already open (idempotent)."""
@@ -482,6 +782,15 @@ class _WriterState:
         if self._keylog_path:
             _copy_keylog_into_tap(self._writer, self._keylog_path)
         self.opened = True
+
+    def note_capture_time(self, ts: float) -> None:
+        """Open the writer at *ts* (if needed) and lower the header start to it.
+
+        *ts* is a real pcap capture time (epoch seconds); non-positive values
+        mean "unknown" and only ensure the writer is open.
+        """
+        self.ensure_open(ts if ts > 0 else 0.0)
+        self._writer.update_capture_start(ts)
 
 
 def _emit_tls_session_event(
@@ -637,9 +946,11 @@ def _emit_quic_streams(
     # the QUIC stream_count consistent with the TLS path, which counts real
     # streams.
     quic_stream_ids: set[tuple[int | None, int | None]] = set()
+    reassembler = _QuicStreamReassembler()
+    last_timestamp = 0.0
     for pkt in stream_packets(cmd):
         try:
-            events = _quic_packet_to_events(pkt, tracker, result)
+            events = _quic_packet_to_events(pkt, tracker, result, reassembler)
         except Exception:
             result.dropped_packet_count += 1
             logger.debug("Skipping unparseable QUIC packet", exc_info=True)
@@ -649,14 +960,53 @@ def _emit_quic_streams(
 
         udp_stream = _coerce_int(
             _first(_field(pkt.get("layers") or {}, "udp.stream")), default=None)
+        last_timestamp = events[-1].timestamp or last_timestamp
+        _emit_quic_events(events, udp_stream, bus, state, result, quic_stream_ids)
 
-        state.ensure_open(events[0].timestamp or 0.0)
-        for ev in events:
-            result.decrypted_packet_count += 1
-            quic_stream_ids.add((udp_stream, ev.stream_id))
-            bus.emit(ev)
-
+    _emit_quic_leftovers(reassembler, last_timestamp, bus, state, result,
+                         quic_stream_ids)
     result.stream_count += len(quic_stream_ids)
+
+
+def _emit_quic_events(
+    events: list[DatalogEvent],
+    udp_stream: int | None,
+    bus: EventBus,
+    state: _WriterState,
+    result: ConvertResult,
+    quic_stream_ids: set,
+) -> None:
+    """Emit QUIC data events, tracking distinct (udp.stream, stream_id) pairs."""
+    state.ensure_open(events[0].timestamp or 0.0)
+    for ev in events:
+        result.decrypted_packet_count += 1
+        quic_stream_ids.add((udp_stream, ev.stream_id))
+        bus.emit(ev)
+
+
+def _emit_quic_leftovers(
+    reassembler: _QuicStreamReassembler,
+    last_timestamp: float,
+    bus: EventBus,
+    state: _WriterState,
+    result: ConvertResult,
+    quic_stream_ids: set,
+) -> None:
+    """Flush bytes still held by *reassembler*, stamped with the last timestamp.
+
+    Held bytes sit behind a gap that never filled (lost frames the capture
+    missed); they are released past the gap so no captured payload is lost.
+    """
+    for key, context, data in reassembler.drain_all():
+        if context is None:
+            continue
+        udp_stream = _coerce_int(str(key[0]).partition(":")[2], default=None)
+        event = DatalogEvent(timestamp=last_timestamp, data=data, **context)
+        _emit_quic_events([event], udp_stream, bus, state, result, quic_stream_ids)
+    if reassembler.gap_count or reassembler.duplicate_bytes:
+        logger.debug("QUIC reassembly: %d gap(s) skipped, %d retransmitted "
+                     "byte(s) trimmed", reassembler.gap_count,
+                     reassembler.duplicate_bytes)
 
 
 def _emit_tls_streams_singlepass(
@@ -712,7 +1062,7 @@ def _emit_tls_streams_singlepass(
         # key it identically to the data events the collector sees.
         if tcp_stream is not None and tcp_stream not in seen_streams:
             seen_streams.add(tcp_stream)
-            meta = tls_meta_by_stream.get(tcp_stream)
+            meta = _tls_meta_for_packet(tls_meta_by_stream, pkt, tcp_stream)
             if meta:
                 ev0 = events[0]
                 _emit_tls_session_event(
@@ -724,9 +1074,24 @@ def _emit_tls_streams_singlepass(
             tcp_streams.add(tcp_stream)
         for ev in events:
             result.decrypted_packet_count += 1
+            record_tls_span(state.tls_spans, pkt, ev)
             bus.emit(ev)
 
     result.stream_count += len(tcp_streams)
+
+
+def _tls_meta_for_packet(tls_meta_by_stream: dict, pkt: dict, tcp_stream):
+    """Handshake metadata of *pkt*'s stream.
+
+    :func:`extract_tls_metadata` keys by ``tls.stream``, which differs from
+    ``tcp.stream`` whenever non-TLS TCP streams precede the TLS one; prefer the
+    packet's ``tls.stream`` and fall back to ``tcp.stream`` (older exports).
+    """
+    tls_stream = _coerce_int(
+        _first(_field(pkt.get("layers") or {}, "tls.stream")), default=None)
+    if tls_stream is not None and tls_stream in tls_meta_by_stream:
+        return tls_meta_by_stream[tls_stream]
+    return tls_meta_by_stream.get(tcp_stream)
 
 
 def _is_encrypted_record(layers: dict, proto_layers: list[str]) -> bool:
@@ -1038,18 +1403,21 @@ def _emit_ssh_connections(
         state.ensure_open()
 
 
-def _parsed_mtproto_to_dicts(parsed_messages, direction: str) -> list:
+def _parsed_mtproto_to_dicts(
+    parsed_messages, direction: str, fallback_ts: float = 0.0,
+) -> list:
     """Turn :class:`ParsedMtprotoMessage` objects into JSON-native dicts.
 
     Mirrors the per-message dict shape the Signal path stores (so flow_detail's
     generic ``_render_layer_parsed`` understands it). The TL parser yields no
-    timestamp/sender for outbound text, so those fields stay zero/empty.
+    timestamp/sender for outbound text; a missing TL ``date`` falls back to
+    *fallback_ts* (the carrying record's capture time, 0.0 = unknown).
     """
     return [
         {
             "sender": str(p.sender_id) if p.sender_id else "",
             "direction": direction,
-            "timestamp": p.timestamp,
+            "timestamp": p.timestamp or fallback_ts,
             "kind": p.kind,
             "body": p.body,
             "method": getattr(p, "method", "") or "",
@@ -1078,52 +1446,333 @@ def _user_dedup_key(item: dict):
     return ("body", item.get("body", ""))
 
 
-def _append_mtproto_dicts_deduped(entry: dict, dicts: list) -> None:
+def _chunk_key(direction: str, data: bytes) -> str:
+    """Identity of one flow chunk: its direction plus a short SHA-1 of its bytes.
+
+    Each offline MTProto/E2E ``DatalogEvent`` carries exactly one decrypted
+    record, which the collector stores verbatim as one ``FlowChunk`` (same
+    ``"write"``/``"read"`` direction naming). Tagging the parsed messages of a
+    record with this key lets :func:`_scope_messages_to_flow` hand each flow only
+    the messages whose record actually landed in it.
+    """
+    import hashlib
+
+    return f"{direction}:{hashlib.sha1(bytes(data or b'')).hexdigest()[:16]}"
+
+
+def _tag_chunk_key(dicts: list, chunk_key: str) -> list:
+    """Stamp *chunk_key* onto every dict of one record (no-op when empty)."""
+    if chunk_key:
+        for item in dicts:
+            item["_chunk_key"] = chunk_key
+    return dicts
+
+
+def _append_mtproto_dicts_deduped(entry: dict, dicts: list) -> list:
     """Append parsed dicts to *entry* while collapsing duplicate user identities.
 
     The same user often appears in multiple RPC results within one flow (e.g.
     "db Forscher" returned by several queries). Each distinct ``kind="user"``
     identity is emitted only ONCE per flow, keyed by :func:`_user_dedup_key`.
     Text/chat/service items are NEVER deduped — they pass through untouched.
+    Returns the dicts actually appended (the record's messages for the ledger).
     """
     seen = entry.setdefault("_user_keys", set())
+    appended: list = []
     for item in dicts:
         key = _user_dedup_key(item)
         if key is not None:
+            # Scoped per record when chunk-tagged, so a user repeated in a LATER
+            # flow of the same connection survives until per-flow dedup.
+            key = (item.get("_chunk_key", ""), key)
             if key in seen:
                 continue
             seen.add(key)
         entry["messages"].append(item)
+        appended.append(item)
+    return appended
+
+
+def _mark_seen(entry: dict, identity) -> bool:
+    """Record *identity* in *entry*'s private ``_seen`` set.
+
+    Returns True when it was already present (the caller should skip). The
+    ``_seen`` set lives on the accumulating side-channel entry next to
+    ``_user_keys``; only ``messages`` is folded onto the flow layer, so neither
+    private key reaches the .tap.
+    """
+    return _already_emitted(entry.setdefault("_seen", set()), identity)
 
 
 def _accumulate_mtproto_messages(
-    meta: dict, key: str, tl_bytes: bytes, direction: str,
-) -> None:
+    meta: dict, key: str, tl_bytes: bytes, direction: str, msg_id: int = 0,
+    capture_ts: float = 0.0, chunk_key: str = "",
+) -> list:
     """Parse a cloud MTProto record's TL bytes and append to the side-channel.
 
     Tolerant by delegation: the parser never raises (degrades to no messages),
-    so this can never break the conversion.
+    so this can never break the conversion. A known *msg_id* makes the call
+    idempotent: the same (msg_id, direction) record is accumulated only once.
+    A *chunk_key* (see :func:`_chunk_key`) tags every parsed message of the
+    record so the attach pass can scope messages to their own flow. Returns
+    the dicts accumulated for THIS record (empty when nothing was added).
     """
     from friTap.offline.mtproto.content import parse_mtproto_message
 
     parsed = parse_mtproto_message(tl_bytes)
     if not parsed:
-        return
+        return []
     entry = meta.setdefault(key, {"messages": []})
-    _append_mtproto_dicts_deduped(entry, _parsed_mtproto_to_dicts(parsed, direction))
+    if msg_id and _mark_seen(entry, ("msg", msg_id, direction)):
+        return []
+    dicts = _parsed_mtproto_to_dicts(parsed, direction, fallback_ts=capture_ts)
+    return _append_mtproto_dicts_deduped(entry, _tag_chunk_key(dicts, chunk_key))
+
+
+def _secret_chat_identity(parsed, direction: str, msg_key_hex: str):
+    """Identity of one parsed E2E message within its per-fingerprint entry.
+
+    Prefers the blob's msg_key (unique per encrypted packet), so two DISTINCT
+    packets that reuse a ``random_id`` still each get their messages (the
+    Message tab de-duplicates by ``random_id`` for display). Falls back to the
+    sender-chosen ``random_id``, then to (body, direction) when neither is known.
+    """
+    if msg_key_hex:
+        return ("mk", msg_key_hex)
+    random_id = getattr(parsed, "random_id", 0) or 0
+    if random_id:
+        return ("rid", random_id)
+    return ("body", parsed.body, direction)
 
 
 def _accumulate_secret_chat_messages(
     meta: dict, key: str, tl_bytes: bytes, direction: str, chat_id: int,
-) -> None:
-    """Parse a Secret-Chat E2E record's TL bytes and append to the side-channel."""
+    msg_key_hex: str = "", capture_ts: float = 0.0, chunk_key: str = "",
+) -> list:
+    """Parse a Secret-Chat E2E record's TL bytes and append to the side-channel.
+
+    Idempotent per message: each E2E message is accumulated once per
+    fingerprint entry, keyed by :func:`_secret_chat_identity`. E2E dicts carry
+    ``random_id`` in addition to the shared cloud dict shape. A known
+    *capture_ts* always wins as the E2E ``timestamp`` (Secret-Chat TL carries no
+    trustworthy date of its own). *chunk_key* tags the record's messages as in
+    :func:`_accumulate_mtproto_messages`, and the record's dicts are returned.
+    """
     from friTap.offline.mtproto.content import parse_secret_chat_message
 
     parsed = parse_secret_chat_message(tl_bytes)
     if not parsed:
-        return
+        return []
     entry = meta.setdefault(key, {"chat_id": chat_id, "messages": []})
-    entry["messages"].extend(_parsed_mtproto_to_dicts(parsed, direction))
+    fresh = [
+        p for p in parsed
+        if not _mark_seen(entry, _secret_chat_identity(p, direction, msg_key_hex))
+    ]
+    dicts = _parsed_mtproto_to_dicts(fresh, direction, fallback_ts=capture_ts)
+    for item, p in zip(dicts, fresh):
+        item["random_id"] = getattr(p, "random_id", 0) or 0
+        if capture_ts > 0:
+            item["timestamp"] = capture_ts
+    entry["messages"].extend(_tag_chunk_key(dicts, chunk_key))
+    return dicts
+
+
+def _unique_keylog_paths(keylog: str, keylogs: Sequence[str] = ()) -> list:
+    """*keylog* plus any extra *keylogs*, de-duplicated by real path (order kept)."""
+    paths: list = []
+    seen: set = set()
+    for path in (keylog, *keylogs):
+        if not path:
+            continue
+        real = canonical_keylog_path(path)
+        if real not in seen:
+            seen.add(real)
+            paths.append(path)
+    return paths
+
+
+def _load_telegram_keys(paths: Sequence[str]):
+    """Load and merge cloud, obfuscation and Secret-Chat keys from *paths*.
+
+    Returns ``(auth_keymap, obf_keys, secret_keymap)``: the two dicts are
+    merged (first file wins on a key collision), the obf-key list is
+    concatenated without duplicates.
+    """
+    from friTap.offline.mtproto.e2e.keylog import load_secret_chat_keylog
+    from friTap.offline.mtproto.keylog import (
+        load_mtproto_keylog,
+        load_mtproto_obf_keylog,
+    )
+
+    auth_keymap: dict = {}
+    obf_keys: list = []
+    secret_keymap: dict = {}
+    for path in paths:
+        for key_id, key in load_mtproto_keylog(path).items():
+            auth_keymap.setdefault(key_id, key)
+        obf_keys.extend(k for k in load_mtproto_obf_keylog(path) if k not in obf_keys)
+        for fp, key in load_secret_chat_keylog(path).items():
+            secret_keymap.setdefault(fp, key)
+    return auth_keymap, obf_keys, secret_keymap
+
+
+def _set_state_attr(state, name: str, value) -> None:
+    """Set *state*.<name>; a state that refuses attributes is left untouched."""
+    try:
+        setattr(state, name, value)
+    except AttributeError:
+        pass
+
+
+def _state_attr(state, name: str, factory):
+    """*state*.<name>, created by *factory* and attached when missing or None.
+
+    Minimal state stand-ins (tests) without the attribute get one attached; a
+    state that refuses attributes gets a call-local value instead.
+    """
+    value = getattr(state, name, None)
+    if value is None:
+        value = factory()
+        _set_state_attr(state, name, value)
+    return value
+
+
+def _telegram_emitted_set(state) -> set:
+    """The per-conversion set of already-emitted Telegram record identities.
+
+    Lives on the writer state (``telegram_emitted``) so it spans every decoder
+    pass (see :func:`_state_attr` for stand-in states).
+    """
+    return _state_attr(state, "telegram_emitted", set)
+
+
+def _telegram_ledger(state):
+    """The per-conversion :class:`RecordLedger` of emitted Telegram records.
+
+    Lazily attached to the writer state like :func:`_telegram_emitted_set`, so
+    minimal state stand-ins keep working; a state that refuses attributes gets
+    a call-local ledger (the attach pass then falls back to scoping).
+    """
+    from friTap.offline.mtproto.packet_meta import RecordLedger
+
+    return _state_attr(state, "telegram_ledger", RecordLedger)
+
+
+def _next_record_seq(state) -> int:
+    """Next monotonic record number of this conversion (starting at 1)."""
+    seq = (getattr(state, "telegram_record_seq", 0) or 0) + 1
+    _set_state_attr(state, "telegram_record_seq", seq)
+    return seq
+
+
+def _ledger_record(state, transport: str, chunk_key: str,
+                   messages: list, envelope: dict) -> int:
+    """Record one emitted Telegram packet (its messages + envelope) in the ledger.
+
+    Returns the record's ``record_seq`` (used to key its cross-references).
+    """
+    record_seq = _next_record_seq(state)
+    _telegram_ledger(state).add(transport, chunk_key, {
+        "record_seq": record_seq,
+        "transport": transport,
+        "chunk_key": chunk_key,
+        "messages": [_strip_private_keys(item) for item in messages or []],
+        "envelope": envelope,
+    })
+    return record_seq
+
+
+class _TelegramRefs:
+    """Per-conversion cross-references, users and Secret-Chat hints by record_seq.
+
+    Filled while records are emitted (one TL decode per cloud record; the tree
+    itself is dropped) and consumed by :func:`_finalize_telegram_refs`.
+    """
+
+    def __init__(self) -> None:
+        from friTap.offline.mtproto.crossref import CrossRefIndex
+
+        self.index = CrossRefIndex()
+        self.users_by_seq: dict = {}
+        self.chat_nodes: list = []
+        self.e2e_chats: dict = {}
+
+    def add_cloud(self, record_seq: int, msg) -> None:
+        """Decode one cloud record once: index its refs, keep its users/chat objects."""
+        from friTap.offline.mtproto.crossref import REF_LIMITS, refs_from_tree
+        from friTap.offline.mtproto.tl import decode_tl, iter_nodes
+        from friTap.offline.mtproto.tl.users import extract_users, is_chat_related
+
+        root = decode_tl(msg.message, domain="mtproto", limits=REF_LIMITS)
+        self.index.add(refs_from_tree(
+            root, record_seq=record_seq,
+            auth_key_id=getattr(msg, "auth_key_id_hex", "") or "",
+            direction=getattr(msg, "direction", "") or "",
+            msg_id=getattr(msg, "msg_id", 0) or 0,
+        ))
+        users = extract_users(root)
+        if users:
+            self.users_by_seq[record_seq] = users
+        self.chat_nodes.extend(n for n in iter_nodes(root) if is_chat_related(n))
+
+    def add_e2e(self, record_seq: int, sc, carrier) -> None:
+        """Register a Secret-Chat record and the cloud record carrying it."""
+        self.index.add_e2e(record_seq, getattr(carrier, "auth_key_id_hex", "") or "",
+                           getattr(carrier, "msg_id", 0) or 0)
+        self.e2e_chats[record_seq] = (getattr(sc, "key_fingerprint_hex", "") or "",
+                                      getattr(sc, "chat_id", 0) or 0,
+                                      getattr(sc, "peer_user_id", 0) or 0)
+
+    def directory(self) -> dict:
+        """All users of the capture merged by id (later records win)."""
+        from friTap.offline.mtproto.tl.users import merge_user_directory
+
+        return merge_user_directory(
+            user for seq in sorted(self.users_by_seq) for user in self.users_by_seq[seq]
+        )
+
+
+def _telegram_refs(state) -> "_TelegramRefs":
+    """The per-conversion :class:`_TelegramRefs`, lazily attached to *state*."""
+    return _state_attr(state, "telegram_refs", _TelegramRefs)
+
+
+def _collect_cloud_refs(state, record_seq: int, msg) -> None:
+    """Index one cloud record's refs/users; never lets a failure stop the emit."""
+    try:
+        _telegram_refs(state).add_cloud(record_seq, msg)
+    except Exception as exc:  # noqa: BLE001 - forensic extras must not break conversion
+        logger.debug("Telegram cross-reference extraction failed for record %s: %s",
+                     record_seq, exc)
+
+
+def _already_emitted(seen: set, identity) -> bool:
+    """True when *identity* was emitted before; otherwise record it.
+
+    A falsy identity (unknown msg_id / msg_key) is never deduplicated.
+    """
+    if identity is None:
+        return False
+    if identity in seen:
+        return True
+    seen.add(identity)
+    return False
+
+
+def _cloud_identity(msg):
+    """Emission identity of a decrypted cloud record, or None if msg_id unknown."""
+    msg_id = getattr(msg, "msg_id", 0) or 0
+    if not msg_id:
+        return None
+    return ("cloud", msg.auth_key_id_hex, msg_id, msg.direction)
+
+
+def _secret_chat_emit_identity(sc):
+    """Emission identity of a decrypted E2E message, or None if msg_key unknown."""
+    msg_key_hex = getattr(sc, "msg_key_hex", "") or ""
+    if not msg_key_hex:
+        return None
+    return ("e2e", sc.key_fingerprint_hex, msg_key_hex)
 
 
 def _emit_mtproto_streams(
@@ -1133,69 +1782,249 @@ def _emit_mtproto_streams(
     bus: EventBus,
     state: "_WriterState",
     result: ConvertResult,
+    extra_keylogs: Sequence[str] = (),
+    obf_max_blocks: int = DEFAULT_OBF_MAX_BLOCKS,
 ) -> None:
-    """Decrypt Telegram MTProto streams and emit decrypted messages as DatalogEvents.
+    """Decrypt Telegram traffic from an ``.mtproto.keylog`` (cloud + Secret-Chat).
 
-    Unlike TLS/QUIC this does NOT use tshark — friTap's own MTProto decryptor
-    (``friTap.offline.mtproto``) reassembles the TCP streams, strips the
-    obfuscated transport, and AES-IGE-decrypts each record using the auth keys
-    in *mtproto_keylog*. Each decrypted MTProto message becomes one
-    ``DatalogEvent(protocol="mtproto")`` fed through the SAME collector/writer
-    path as the tshark output; the collector types the flow as ``mtproto``.
+    The friTap memscan sidecar written by ``-ms mtproto`` carries BOTH
+    ``MTPROTO_AUTH_KEY`` (cloud transport) and ``MTPROTO_E2E_KEY`` (Secret-Chat)
+    lines, so ``--mtproto-keylog`` decrypts cloud AND E2E secret chats. Thin
+    wrapper over :func:`_emit_telegram_like_streams`; cloud + E2E messages are
+    counted under the ``mtproto`` protocol bucket.
+    """
+    _emit_telegram_like_streams(
+        pcap_path, mtproto_keylog,
+        counter_name="mtproto",
+        cloud_function="mtproto_offline",
+        bus=bus, state=state, result=result,
+        keylogs=extra_keylogs,
+        obf_max_blocks=obf_max_blocks,
+    )
+
+
+def _time_ordered(messages) -> list:
+    """*messages* stably sorted by capture ``timestamp`` (ties keep yield order).
+
+    Unknown (0.0) timestamps sort first, which keeps an all-unknown input in its
+    original order.
+    """
+    return sorted(messages, key=lambda m: getattr(m, "timestamp", 0.0) or 0.0)
+
+
+def _event_ts_kwargs(ts: float) -> dict:
+    """``{"timestamp": ts}`` for a real capture time, else ``{}`` (keep the default)."""
+    return {"timestamp": ts} if ts and ts > 0 else {}
+
+
+def _open_at_capture_time(state, ts: float) -> None:
+    """Open *state*'s writer and lower its header start to capture time *ts*.
+
+    Falls back to a plain ``ensure_open`` for minimal writer-state stand-ins
+    that do not implement ``note_capture_time``.
+    """
+    note = getattr(state, "note_capture_time", None)
+    if note is not None:
+        note(ts)
+    else:
+        state.ensure_open(ts if ts > 0 else 0.0)
+
+
+def _emit_telegram_like_streams(
+    pcap_path: str,
+    keylog: str,
+    *,
+    counter_name: str,
+    cloud_function: str,
+    bus: EventBus,
+    state: "_WriterState",
+    result: ConvertResult,
+    keylogs: Sequence[str] = (),
+    obf_max_blocks: int = DEFAULT_OBF_MAX_BLOCKS,
+) -> None:
+    """Decrypt Telegram traffic (cloud + Secret-Chat) from ONE combined keylog.
+
+    A friTap Telegram/MTProto keylog holds BOTH ``MTPROTO_AUTH_KEY`` (cloud
+    transport) and ``MTPROTO_E2E_KEY`` (Secret-Chat) lines; the two loaders each
+    read only their own label, so the same file feeds both decryptors. Unlike
+    TLS/QUIC this does NOT use tshark — friTap's own decryptor reassembles the TCP
+    streams and AES-IGE decrypts each record. For every decrypted cloud message we
+    (a) emit it as a ``DatalogEvent(protocol="mtproto")`` flow, and (b) scan it for
+    embedded Secret-Chat E2E blobs, emitting each decrypted one as a
+    ``DatalogEvent(protocol="telegram_e2e")`` flow.
+
+    *counter_name* selects the ``ConvertResult`` protocol bucket (so the same body
+    serves both the ``--mtproto-keylog`` and ``--telegram-keylog`` flags), while
+    *cloud_function* labels the emitted cloud events per caller (E2E events are
+    always labelled ``telegram_e2e_offline``).
+
+    *keylogs* optionally names further keylog files whose keys are merged with
+    *keylog*'s, so one pass decrypts with the union (used when two registry
+    entries of the same decoder family were given different files). Records
+    already emitted during this conversion (see :func:`_telegram_emitted_set`)
+    are skipped, so a repeated pass never duplicates flows or messages.
+
+    Every emitted record is also queued in the state's :class:`RecordLedger`
+    (see :func:`_ledger_record`) with its own messages, forensic envelope and a
+    monotonic ``record_seq``, which :func:`_attach_telegram_meta` pops per flow.
 
     The optional crypto backend is imported lazily; a missing dependency logs a
-    warning and skips MTProto (the rest of the conversion is unaffected).
+    warning and skips decryption (the rest of the conversion is unaffected).
     """
-    from friTap.connection_index import normalize_4tuple
     from friTap.offline.mtproto import MtprotoDependencyError
     from friTap.offline.mtproto.decrypt import MtprotoStats, iter_decrypted_messages
-    from friTap.offline.mtproto.keylog import load_mtproto_keylog
+    from friTap.offline.mtproto.e2e.decrypt import iter_secret_chat_messages
+    from friTap.offline.mtproto.e2e.records import SecretChatStats
 
-    keymap = load_mtproto_keylog(mtproto_keylog)
-    if not keymap:
+    auth_keymap, obf_keys, secret_keymap = _load_telegram_keys(
+        _unique_keylog_paths(keylog, keylogs)
+    )
+    emitted = _telegram_emitted_set(state)
+    if not auth_keymap and not secret_keymap:
         logger.warning(
-            "MTProto keylog %s has no usable auth keys; skipping MTProto decryption",
-            mtproto_keylog,
+            "Telegram keylog %s has no usable cloud (MTPROTO_AUTH_KEY) or "
+            "Secret-Chat (MTPROTO_E2E_KEY) keys; skipping Telegram decryption",
+            keylog,
         )
         return
 
-    stats = MtprotoStats()
+    tstats = MtprotoStats()
+    sstats = SecretChatStats()
     try:
-        for msg in iter_decrypted_messages(pcap_path, keymap, stats=stats):
-            ev = DatalogEvent(
-                data=msg.message,
-                function="mtproto_offline",
-                direction=msg.direction,
-                src_addr=msg.src_addr,
-                src_port=msg.src_port,
-                dst_addr=msg.dst_addr,
-                dst_port=msg.dst_port,
-                ss_family=msg.ss_family,
-                transport="tcp",
-                protocol="mtproto",
-            )
-            # DatalogEvent cannot carry parsed TL content, so accumulate it in the
-            # cloud side-channel keyed by the perspective-independent 4-tuple;
-            # _attach_telegram_meta folds it onto the inner MtprotoLayer.
-            key = normalize_4tuple(
-                msg.src_addr, msg.src_port, msg.dst_addr, msg.dst_port
-            )
-            _accumulate_mtproto_messages(
-                state.mtproto_meta, key, msg.message, msg.direction,
-            )
-            state.ensure_open(0.0)
-            result.decrypted_packet_count += 1
-            bus.emit(ev)
+        for msg in _time_ordered(iter_decrypted_messages(
+            pcap_path, auth_keymap, stats=tstats, obf_keys=obf_keys,
+            obf_max_blocks=obf_max_blocks,
+        )):
+            # A record an earlier pass already emitted (same auth key, msg_id and
+            # direction) is skipped whole: its E2E blobs were handled then too.
+            if _already_emitted(emitted, _cloud_identity(msg)):
+                continue
+            # (a) the decrypted cloud transport message itself.
+            _emit_cloud_record(msg, cloud_function=cloud_function,
+                               bus=bus, state=state, result=result)
+            # (b) any Secret-Chat E2E blobs carried inside this cloud message.
+            for sc in iter_secret_chat_messages([msg], secret_keymap, stats=sstats):
+                if _already_emitted(emitted, _secret_chat_emit_identity(sc)):
+                    continue
+                _emit_e2e_record(sc, msg, bus=bus, state=state, result=result)
     except MtprotoDependencyError as exc:
-        logger.warning("MTProto decryption skipped: %s", exc)
+        logger.warning("Telegram decryption skipped: %s", exc)
         return
 
+    # Honest E2E diagnostic: an E2E (secret-chat) key was loaded but NO transport
+    # auth key, so every transport record missed the keymap, the transport envelope
+    # never decrypted, and the E2E blobs inside it were never reached. Report this
+    # exactly rather than as a generic mid-connection/undecryptable failure.
+    e2e_only = bool(secret_keymap) and not auth_keymap
+    _record_telegram_stats(result, counter_name, tstats, sstats, e2e_only=e2e_only)
+
+
+def _emit_cloud_record(msg, *, cloud_function: str, bus: EventBus,
+                       state: "_WriterState", result: ConvertResult) -> None:
+    """Emit one decrypted cloud record as a ``protocol="mtproto"`` flow event.
+
+    Its TL payload is parsed into displayable messages accumulated in the cloud
+    side-channel keyed by the perspective-independent 4-tuple (folded onto the
+    inner MtprotoLayer by :func:`_attach_telegram_meta`), and the record is
+    queued in the ledger with its envelope and cross-references.
+    """
+    from friTap.connection_index import normalize_4tuple
+    from friTap.offline.mtproto.packet_meta import build_cloud_envelope
+
+    msg_ts = getattr(msg, "timestamp", 0.0) or 0.0
+    cloud_ev = DatalogEvent(
+        data=msg.message,
+        function=cloud_function,
+        direction=msg.direction,
+        src_addr=msg.src_addr,
+        src_port=msg.src_port,
+        dst_addr=msg.dst_addr,
+        dst_port=msg.dst_port,
+        ss_family=msg.ss_family,
+        transport="tcp",
+        protocol="mtproto",
+        **_event_ts_kwargs(msg_ts),
+    )
+    cloud_key = normalize_4tuple(
+        msg.src_addr, msg.src_port, msg.dst_addr, msg.dst_port
+    )
+    cloud_chunk_key = _chunk_key(msg.direction, cloud_ev.data)
+    cloud_dicts = _accumulate_mtproto_messages(
+        state.mtproto_meta, cloud_key, msg.message, msg.direction,
+        msg_id=getattr(msg, "msg_id", 0) or 0,
+        capture_ts=msg_ts,
+        chunk_key=cloud_chunk_key,
+    )
+    cloud_seq = _ledger_record(state, "mtproto", cloud_chunk_key, cloud_dicts,
+                               build_cloud_envelope(msg))
+    _collect_cloud_refs(state, cloud_seq, msg)
+    _open_at_capture_time(state, msg_ts)
+    result.decrypted_packet_count += 1
+    bus.emit(cloud_ev)
+
+
+def _emit_e2e_record(sc, carrier, *, bus: EventBus,
+                     state: "_WriterState", result: ConvertResult) -> None:
+    """Emit one decrypted Secret-Chat message found inside cloud record *carrier*.
+
+    Secret chats ride INSIDE the same TCP connection as the cloud transport, so
+    they share the cloud flow's 4-tuple. The event carries a per-chat session
+    token (``telegram_e2e:<fp>``) so the collector keys it onto its OWN
+    ``telegram_e2e`` flow (via the ``sid:`` tier) instead of folding its bytes
+    into the cloud flow's MTProto parser; its messages are accumulated under
+    that same session id.
+    """
+    from friTap.offline.mtproto.packet_meta import build_e2e_envelope
+
+    session_id = f"telegram_e2e:{sc.key_fingerprint_hex}"
+    sc_ts = getattr(sc, "timestamp", 0.0) or getattr(carrier, "timestamp", 0.0) or 0.0
+    e2e_ev = DatalogEvent(
+        data=sc.message,
+        function="telegram_e2e_offline",
+        direction=sc.direction,
+        src_addr=sc.src_addr,
+        src_port=sc.src_port,
+        dst_addr=sc.dst_addr,
+        dst_port=sc.dst_port,
+        ss_family=sc.ss_family,
+        ssl_session_id=session_id,
+        transport="tcp",
+        protocol="telegram_e2e",
+        **_event_ts_kwargs(sc_ts),
+    )
+    e2e_chunk_key = _chunk_key(sc.direction, e2e_ev.data)
+    e2e_dicts = _accumulate_secret_chat_messages(
+        state.telegram_e2e_meta, session_id,
+        sc.message, sc.direction, sc.chat_id,
+        msg_key_hex=getattr(sc, "msg_key_hex", "") or "",
+        capture_ts=sc_ts,
+        chunk_key=e2e_chunk_key,
+    )
+    e2e_seq = _ledger_record(state, "telegram_e2e", e2e_chunk_key, e2e_dicts,
+                             build_e2e_envelope(sc, carrier))
+    _telegram_refs(state).add_e2e(e2e_seq, sc, carrier)
+    _open_at_capture_time(state, sc_ts)
+    result.decrypted_packet_count += 1
+    bus.emit(e2e_ev)
+
+
+def _record_telegram_stats(result: ConvertResult, counter_name: str,
+                           tstats, sstats, *, e2e_only: bool) -> None:
+    """Record the cloud + Secret-Chat decryption stats under *counter_name*."""
     result.record_protocol(
-        "mtproto",
-        messages=stats.messages,
-        streams=stats.streams,
-        undecryptable=stats.records_undecryptable,
-        degraded=stats.streams_degraded,
+        counter_name,
+        messages=tstats.messages + sstats.messages,
+        streams=tstats.streams,
+        undecryptable=tstats.records_undecryptable + sstats.records_undecryptable,
+        degraded=tstats.streams_degraded,
+        degraded_non_mtproto=tstats.streams_degraded_non_mtproto,
+        partial=tstats.streams_partial,
+        recovered_via_obf=tstats.streams_recovered_via_obf,
+        degraded_unrecovered=tstats.streams_degraded_unrecovered,
+        short=tstats.streams_short,
+        unsupported_framing=tstats.streams_unsupported_framing,
+        e2e_only=e2e_only,
+        unknown_key_ids=dict(tstats.unknown_key_ids),
     )
 
 
@@ -1206,108 +2035,23 @@ def _emit_telegram_streams(
     bus: EventBus,
     state: "_WriterState",
     result: ConvertResult,
+    extra_keylogs: Sequence[str] = (),
+    obf_max_blocks: int = DEFAULT_OBF_MAX_BLOCKS,
 ) -> None:
     """Decrypt Telegram traffic (cloud + Secret-Chat) from ONE combined keylog.
 
-    The ``telegram`` keylog holds BOTH ``MTPROTO_AUTH_KEY`` (cloud transport) and
-    ``MTPROTO_E2E_KEY`` (Secret-Chat) lines; the two loaders each read only their
-    own label, so the same file feeds both decryptors. Like MTProto this does NOT
-    use tshark — friTap's own decryptor reassembles the TCP streams and AES-IGE
-    decrypts each record. For every decrypted cloud message we (a) emit it as a
-    ``DatalogEvent(protocol="mtproto")`` flow, and (b) scan it for embedded
-    Secret-Chat E2E blobs, emitting each decrypted one as a
-    ``DatalogEvent(protocol="telegram_e2e")`` flow.
-
-    The optional crypto backend is imported lazily; a missing dependency logs a
-    warning and skips Telegram (the rest of the conversion is unaffected).
+    Thin wrapper over :func:`_emit_telegram_like_streams`; cloud + E2E messages
+    are counted under the ``telegram`` protocol bucket. Behaviourally identical to
+    ``--mtproto-keylog`` (both flags now decrypt cloud + E2E from the same combined
+    keylog); the two entry points differ only in their summary counter name.
     """
-    from friTap.connection_index import normalize_4tuple
-    from friTap.offline.mtproto import MtprotoDependencyError
-    from friTap.offline.mtproto.decrypt import MtprotoStats, iter_decrypted_messages
-    from friTap.offline.mtproto.e2e.decrypt import iter_secret_chat_messages
-    from friTap.offline.mtproto.e2e.keylog import load_secret_chat_keylog
-    from friTap.offline.mtproto.e2e.records import SecretChatStats
-    from friTap.offline.mtproto.keylog import load_mtproto_keylog
-
-    auth_keymap = load_mtproto_keylog(telegram_keylog)
-    secret_keymap = load_secret_chat_keylog(telegram_keylog)
-    if not auth_keymap and not secret_keymap:
-        logger.warning(
-            "Telegram keylog %s has no usable cloud (MTPROTO_AUTH_KEY) or "
-            "Secret-Chat (MTPROTO_E2E_KEY) keys; skipping Telegram decryption",
-            telegram_keylog,
-        )
-        return
-
-    tstats = MtprotoStats()
-    sstats = SecretChatStats()
-    try:
-        for msg in iter_decrypted_messages(pcap_path, auth_keymap, stats=tstats):
-            # (a) the decrypted cloud transport message itself.
-            cloud_ev = DatalogEvent(
-                data=msg.message,
-                function="telegram_offline",
-                direction=msg.direction,
-                src_addr=msg.src_addr,
-                src_port=msg.src_port,
-                dst_addr=msg.dst_addr,
-                dst_port=msg.dst_port,
-                ss_family=msg.ss_family,
-                transport="tcp",
-                protocol="mtproto",
-            )
-            # Parse the cloud TL payload into displayable messages (same cloud
-            # side-channel + 4-tuple key as _emit_mtproto_streams).
-            cloud_key = normalize_4tuple(
-                msg.src_addr, msg.src_port, msg.dst_addr, msg.dst_port
-            )
-            _accumulate_mtproto_messages(
-                state.mtproto_meta, cloud_key, msg.message, msg.direction,
-            )
-            state.ensure_open(0.0)
-            result.decrypted_packet_count += 1
-            bus.emit(cloud_ev)
-
-            # (b) any Secret-Chat E2E blobs carried inside this cloud message.
-            # Secret chats ride INSIDE the same TCP connection as the cloud
-            # transport, so they share the cloud flow's 4-tuple. Tag each E2E
-            # event with a per-chat session token so the collector keys it onto
-            # its OWN ``telegram_e2e`` flow (via the ``sid:`` tier) instead of
-            # folding its bytes into the cloud flow's MTProto parser.
-            for sc in iter_secret_chat_messages([msg], secret_keymap, stats=sstats):
-                e2e_ev = DatalogEvent(
-                    data=sc.message,
-                    function="telegram_e2e_offline",
-                    direction=sc.direction,
-                    src_addr=sc.src_addr,
-                    src_port=sc.src_port,
-                    dst_addr=sc.dst_addr,
-                    dst_port=sc.dst_port,
-                    ss_family=sc.ss_family,
-                    ssl_session_id=f"telegram_e2e:{sc.key_fingerprint_hex}",
-                    transport="tcp",
-                    protocol="telegram_e2e",
-                )
-                # Parse the E2E TL payload; accumulate keyed by the same
-                # ``telegram_e2e:<fp>`` session id the collector uses for the flow.
-                _accumulate_secret_chat_messages(
-                    state.telegram_e2e_meta,
-                    f"telegram_e2e:{sc.key_fingerprint_hex}",
-                    sc.message, sc.direction, sc.chat_id,
-                )
-                state.ensure_open(0.0)
-                result.decrypted_packet_count += 1
-                bus.emit(e2e_ev)
-    except MtprotoDependencyError as exc:
-        logger.warning("Telegram decryption skipped: %s", exc)
-        return
-
-    result.record_protocol(
-        "telegram",
-        messages=tstats.messages + sstats.messages,
-        streams=tstats.streams,
-        undecryptable=tstats.records_undecryptable + sstats.records_undecryptable,
-        degraded=tstats.streams_degraded,
+    _emit_telegram_like_streams(
+        pcap_path, telegram_keylog,
+        counter_name="telegram",
+        cloud_function="telegram_offline",
+        bus=bus, state=state, result=result,
+        keylogs=extra_keylogs,
+        obf_max_blocks=obf_max_blocks,
     )
 
 
@@ -1325,23 +2069,25 @@ def _emit_telegram_streams(
 
 def _mtproto_offline_emitter(
     *, pcap_path, proto_keylog, tls_keylog_path, tshark_bin, tls_ports,
-    bus, state, result,
+    bus, state, result, extra_keylogs=(), obf_max_blocks=DEFAULT_OBF_MAX_BLOCKS,
 ) -> None:
     """Normalized adapter around :func:`_emit_mtproto_streams` (self-contained TCP)."""
     _emit_mtproto_streams(
         pcap_path, proto_keylog,
-        bus=bus, state=state, result=result,
+        bus=bus, state=state, result=result, extra_keylogs=extra_keylogs,
+        obf_max_blocks=obf_max_blocks,
     )
 
 
 def _telegram_offline_emitter(
     *, pcap_path, proto_keylog, tls_keylog_path, tshark_bin, tls_ports,
-    bus, state, result,
+    bus, state, result, extra_keylogs=(), obf_max_blocks=DEFAULT_OBF_MAX_BLOCKS,
 ) -> None:
     """Normalized adapter around :func:`_emit_telegram_streams` (self-contained TCP)."""
     _emit_telegram_streams(
         pcap_path, proto_keylog,
-        bus=bus, state=state, result=result,
+        bus=bus, state=state, result=result, extra_keylogs=extra_keylogs,
+        obf_max_blocks=obf_max_blocks,
     )
 
 
@@ -1392,10 +2138,12 @@ def build_mtproto_offline_decryptor_entry() -> "OfflineDecryptorEntry":
         emitter=_mtproto_offline_emitter,
         layer_cls=MtprotoLayer,
         counter_prefix="mtproto",
+        decoder_family="telegram",
         cli_help=(
-            "friTap MTProto keylog (MTPROTO_AUTH_KEY lines) for Telegram traffic. "
-            "Decrypted by friTap's own MTProto decryptor (not tshark); distinct "
-            "from --keylog."
+            "friTap MTProto/Telegram keylog (MTPROTO_AUTH_KEY + MTPROTO_E2E_KEY "
+            "lines, e.g. a .mtproto.keylog from -ms mtproto) — decrypts Telegram "
+            "cloud chats AND Secret-Chat E2E. Decrypted by friTap's own decryptor "
+            "(not tshark); distinct from --keylog."
         ),
     )
 
@@ -1417,6 +2165,7 @@ def build_telegram_offline_decryptor_entry() -> "OfflineDecryptorEntry":
         emitter=_telegram_offline_emitter,
         layer_cls=TelegramE2ELayer,
         counter_prefix="telegram",
+        decoder_family="telegram",
         cli_help=(
             "friTap Telegram keylog (combined MTProto cloud auth keys + Secret-Chat "
             "E2E keys) — decrypts cloud chats and secret chats."
@@ -1458,6 +2207,51 @@ def _tls_riding_protocol_names() -> set:
         for e in get_offline_decryptor_registry().list()
         if e.requires_tls_strip
     }
+
+
+def _tls_nested_protocol_names() -> set:
+    """Names of independent decryptors that can nest inside TLS (``nests_in_tls``).
+
+    Registry-driven like :func:`_tls_riding_protocol_names` (today ``{"rc4"}``).
+    """
+    from friTap.offline.registry import get_offline_decryptor_registry
+    return {
+        e.protocol_name
+        for e in get_offline_decryptor_registry().list()
+        if getattr(e, "nests_in_tls", False)
+    }
+
+
+def _post_attach_transports() -> frozenset:
+    """Transports whose flows get metadata folded on AFTER collection.
+
+    TLS-riding decryptors (Signal), TLS-nesting ones (RC4-in-TLS) plus the
+    message transports (Telegram MTProto / Secret-Chat): convert_pcap_to_tap
+    writes these flows itself once the ``_attach_*`` passes ran, so the
+    TapWriter defers them on "completed".
+    """
+    return frozenset(_tls_riding_protocol_names() | _tls_nested_protocol_names()
+                     | MESSAGE_TRANSPORTS)
+
+
+def _tls_holdback_transports(present_entries) -> frozenset:
+    """``{"tls"}`` while a TLS-nesting decryptor runs on this capture, else empty.
+
+    Its TLS flows are then written only after the nested attach, which may
+    absorb them; a capture without such a decryptor keeps the early TLS write.
+    """
+    if any(getattr(e, "nests_in_tls", False) for e in present_entries):
+        return frozenset({"tls"})
+    return frozenset()
+
+
+def _attach_rc4_in_tls_layers(flows, state) -> set:
+    """Fold nested RC4 flows into [TLS (owned), RC4 (chunks)]; return the ids of
+    the TLS flows they fully absorbed. No-op without RC4 provenance."""
+    if not getattr(state, "rc4_provenance", None):
+        return set()
+    from friTap.offline.rc4.tls_attach import attach_rc4_in_tls_layers
+    return attach_rc4_in_tls_layers(flows, state)
 
 
 def _make_metadata_marker(layer_cls, name: str):
@@ -1633,10 +2427,144 @@ def _apply_mtproto_meta(layer, meta: dict | None) -> None:
     layer.message_count = len(messages)
 
 
+def _flow_chunk_keys(flow) -> set:
+    """The :func:`_chunk_key` of every chunk the collector put into *flow*."""
+    return {
+        _chunk_key(getattr(c, "direction", ""), getattr(c, "data", b""))
+        for c in (getattr(flow, "chunks", None) or [])
+    }
+
+
+def _strip_private_keys(item: dict) -> dict:
+    """Copy of a parsed-message dict without the private ``_chunk_key`` tag."""
+    return {k: v for k, v in item.items() if k != "_chunk_key"}
+
+
+def _scope_messages_to_flow(flow, messages) -> list:
+    """Keep only the side-channel *messages* whose record landed in *flow*.
+
+    Side-channel entries are accumulated per connection (cloud) or per chat
+    (E2E), but the collector splits them into several exchange flows. A message
+    is kept when its ``_chunk_key`` matches one of *flow*'s chunks. Messages from
+    a path that never tagged keys (no dict has one) pass through unchanged.
+    Returned dicts are copies with ``_chunk_key`` stripped, so it never reaches
+    the .tap.
+    """
+    messages = list(messages or [])
+    if not any("_chunk_key" in item for item in messages):
+        return [_strip_private_keys(item) for item in messages]
+    keys = _flow_chunk_keys(flow)
+    return [
+        _strip_private_keys(item) for item in messages
+        if item.get("_chunk_key") in keys
+    ]
+
+
+def _scoped_cloud_meta(flow, meta: dict) -> dict:
+    """Per-flow cloud entry: scoped messages, users re-deduped within the flow."""
+    scoped: dict = {"messages": []}
+    _append_mtproto_dicts_deduped(
+        scoped, _scope_messages_to_flow(flow, meta.get("messages"))
+    )
+    return {"messages": scoped["messages"]}
+
+
+def _scoped_e2e_meta(flow, meta: dict) -> dict:
+    """Per-flow Secret-Chat entry: public fields plus the flow's own messages."""
+    scoped = {k: v for k, v in meta.items() if not k.startswith("_")}
+    scoped["messages"] = _scope_messages_to_flow(flow, meta.get("messages"))
+    return scoped
+
+
+def _single_chunk_key(flow) -> str:
+    """:func:`_chunk_key` of a one-chunk (per-packet) flow, else ``""``."""
+    chunks = getattr(flow, "chunks", None) or []
+    if len(chunks) != 1:
+        return ""
+    return _chunk_key(getattr(chunks[0], "direction", ""), getattr(chunks[0], "data", b""))
+
+
+def _apply_ledger_envelope(layer, envelope: dict) -> None:
+    """Copy the envelope's identity fields onto the layer's typed attributes."""
+    if getattr(layer, "NAME", "") == "mtproto":
+        layer.transport = envelope.get("transport", "") or layer.transport
+        layer.obfuscated = bool(envelope.get("obfuscated", layer.obfuscated))
+        layer.dc_id = envelope.get("dc_id", 0) or layer.dc_id
+        layer.auth_key_id = envelope.get("auth_key_id", "") or layer.auth_key_id
+    else:
+        layer.key_fingerprint = envelope.get("key_fingerprint", "") or layer.key_fingerprint
+        layer.chat_id = envelope.get("chat_id", 0) or layer.chat_id
+
+
+def _apply_ledger_record(layer, record: dict) -> None:
+    """Fold one ledger record (messages + envelope + record_seq) onto *layer*."""
+    messages = list(record.get("messages") or [])
+    layer.messages = messages
+    layer.message_count = len(messages)
+    envelope = dict(record.get("envelope") or {})
+    envelope["record_seq"] = record.get("record_seq", 0)
+    layer.envelope = envelope
+    _apply_ledger_envelope(layer, envelope)
+
+
+def _meta_from_ledger(flow, ledger) -> bool:
+    """Give a per-packet Telegram *flow* exactly its own ledger record.
+
+    Pops the oldest record queued under the flow's transport and single chunk
+    key; flows are walked in creation (= emission) order, so byte-identical
+    packets are matched first-in-first-out. Returns False (caller falls back to
+    side-channel scoping) when the flow is not one-chunk or no record is left.
+    """
+    inner_name = getattr(flow, "transport", "")
+    chunk_key = _single_chunk_key(flow)
+    record = ledger.take(inner_name, chunk_key) if chunk_key else None
+    if record is None:
+        logger.debug("No Telegram ledger record for flow %s (%s, key %r); "
+                     "falling back to scoped metadata",
+                     getattr(flow, "flow_id", "?"), inner_name, chunk_key)
+        return False
+    getattr(flow, inner_name)
+    layer = flow.layer(inner_name)
+    if layer is None:
+        return False
+    _apply_ledger_record(layer, record)
+    return True
+
+
+def _attach_scoped_meta(flow, mtproto_meta: dict | None,
+                        telegram_e2e_meta: dict | None) -> None:
+    """Fallback: fold the flow's scoped side-channel messages onto its layer."""
+    from friTap.connection_index import normalize_4tuple
+
+    inner_name = getattr(flow, "transport", "")
+    if inner_name == "mtproto" and mtproto_meta:
+        key = normalize_4tuple(
+            flow.src_addr, flow.src_port, flow.dst_addr, flow.dst_port
+        )
+        meta = mtproto_meta.get(key)
+        meta = _scoped_cloud_meta(flow, meta) if meta else None
+    elif inner_name == "telegram_e2e" and telegram_e2e_meta:
+        meta = telegram_e2e_meta.get(getattr(flow, "ssl_session_id", ""))
+        meta = _scoped_e2e_meta(flow, meta) if meta else None
+    else:
+        return
+    if not meta:
+        return
+    # Materialize the inner layer if the offline flow built it lazily
+    # (``getattr`` triggers _create_layer, which appends the chunks-view
+    # layer); then fold the parsed messages onto it.
+    getattr(flow, inner_name)
+    _apply_mtproto_meta(flow.layer(inner_name), meta)
+
+
+_TELEGRAM_TRANSPORTS = MESSAGE_TRANSPORTS  # back-compat alias
+
+
 def _attach_telegram_meta(
     flows,
     mtproto_meta: dict | None = None,
     telegram_e2e_meta: dict | None = None,
+    ledger=None,
 ) -> None:
     """Fold parsed Telegram messages onto offline-decrypted MTProto/E2E flows.
 
@@ -1650,28 +2578,219 @@ def _attach_telegram_meta(
         ``telegram_e2e:<fp>`` session id (several chats share one 4-tuple).
 
     Like the Signal pass it MUST run on the LIVE flow objects and BEFORE flush().
+    Each flow receives only the messages whose record became one of ITS chunks
+    (see :func:`_scope_messages_to_flow`), so sibling exchange flows of one
+    connection/chat no longer share one connection-wide message list.
     Flows with no recovered messages are left untouched (degrades, never raises).
-    """
-    from friTap.connection_index import normalize_4tuple
 
+    When a :class:`RecordLedger` is given (the emitter's per-record queue), it
+    is tried FIRST: each per-packet flow gets exactly its own record's messages
+    and forensic envelope (:func:`_meta_from_ledger`), which stays correct even
+    for byte-identical packets. The scoping above is the per-flow fallback.
+    """
     for flow in flows:
-        inner_name = getattr(flow, "transport", "")
-        if inner_name == "mtproto" and mtproto_meta:
-            key = normalize_4tuple(
-                flow.src_addr, flow.src_port, flow.dst_addr, flow.dst_port
-            )
-            meta = mtproto_meta.get(key)
-        elif inner_name == "telegram_e2e" and telegram_e2e_meta:
-            meta = telegram_e2e_meta.get(getattr(flow, "ssl_session_id", ""))
+        if getattr(flow, "transport", "") not in MESSAGE_TRANSPORTS:
+            continue
+        if ledger and _meta_from_ledger(flow, ledger):
+            continue
+        _attach_scoped_meta(flow, mtproto_meta, telegram_e2e_meta)
+
+
+def _flow_record_seq(flow) -> tuple:
+    """``(layer, record_seq)`` of a per-packet Telegram flow, or ``(None, 0)``."""
+    transport = getattr(flow, "transport", "")
+    if transport not in MESSAGE_TRANSPORTS:
+        return None, 0
+    layer = flow.layer(transport)
+    envelope = getattr(layer, "envelope", None) or {}
+    return layer, int(envelope.get("record_seq", 0) or 0)
+
+
+def _fill_flow_ids(value, seq_to_flow: dict) -> None:
+    """Add ``flow_id`` next to every ``record_seq`` in a refs structure (in place)."""
+    if isinstance(value, list):
+        for item in value:
+            _fill_flow_ids(item, seq_to_flow)
+    elif isinstance(value, dict):
+        flow_id = seq_to_flow.get(value.get("record_seq"))
+        if flow_id is not None:
+            value["flow_id"] = flow_id
+        for item in value.values():
+            if isinstance(item, (dict, list)):
+                _fill_flow_ids(item, seq_to_flow)
+
+
+def _message_user_ids(messages) -> list:
+    """Non-zero user ids a flow's chat messages reference (sender / peer / user)."""
+    ids = []
+    for message in messages or []:
+        for key in ("sender_id", "peer_id", "user_id"):
+            value = message.get(key) if isinstance(message, dict) else None
+            if isinstance(value, int) and value and value not in ids:
+                ids.append(value)
+    return ids
+
+
+def _dedupe_users(users) -> list:
+    seen, out = set(), []
+    for user in users:
+        if user and user.get("id") not in seen:
+            seen.add(user.get("id"))
+            out.append(user)
+    return out
+
+
+def _cloud_flow_users(layer, record_users: list, directory: dict) -> list:
+    """Users decoded in this packet, plus self + users its chat messages reference."""
+    from friTap.offline.mtproto.tl.users import self_user
+
+    referenced = _message_user_ids(getattr(layer, "messages", None))
+    extra = [directory.get(uid) for uid in referenced]
+    if referenced:
+        extra.insert(0, self_user(directory))
+    return _dedupe_users(list(record_users) + extra)
+
+
+def _apply_e2e_peer(layer, refs_state, record_seq: int, directory: dict) -> None:
+    """Link the Secret-Chat peer and set ``layer.peer`` / ``layer.users``.
+
+    Resolution priority: the keylog's ``peer_user_id`` (agent-read, confident) →
+    a wire-confirmed ``encryptedChat*`` link → the heuristic fallback (tagged
+    ``matched_by="heuristic"``) for chats that predate the capture.
+    """
+    from friTap.offline.mtproto.tl.users import (
+        infer_secret_chat_peer, keylog_peer, link_secret_chat_peer, self_user)
+
+    fp_hex, chat_id, peer_user_id = refs_state.e2e_chats.get(record_seq, ("", 0, 0))
+    if peer_user_id:
+        peer = keylog_peer(peer_user_id, chat_id, directory)
+    else:
+        peer = link_secret_chat_peer(refs_state.chat_nodes, fp_hex, chat_id, directory)
+        if not peer.get("user_id"):
+            me = self_user(directory)
+            peer = infer_secret_chat_peer(directory, me.get("id", 0) if me else 0, chat_id)
+    layer.peer = peer
+    layer.users = _dedupe_users([self_user(directory), peer.get("user")])
+
+
+def _finalize_telegram_refs(flows, refs_state) -> None:
+    """Write ``refs`` / ``users`` / ``peer`` onto every per-packet Telegram flow.
+
+    Runs after :func:`_attach_telegram_meta` (which set ``envelope.record_seq``)
+    on the LIVE flows, before flush. Referenced records gain their ``flow_id``.
+    Degrades silently when no refs were collected (e.g. minimal test state).
+    """
+    if refs_state is None:
+        return
+    targets = [(flow, *_flow_record_seq(flow)) for flow in flows]
+    targets = [(flow, layer, seq) for flow, layer, seq in targets if layer is not None and seq]
+    seq_to_flow = {seq: flow.flow_id for flow, _layer, seq in targets}
+    directory = refs_state.directory()
+    for flow, layer, seq in targets:
+        refs = refs_state.index.resolve(seq)
+        _fill_flow_ids(refs, seq_to_flow)
+        layer.refs = refs
+        if flow.transport == "mtproto":
+            layer.users = _cloud_flow_users(layer, refs_state.users_by_seq.get(seq, []), directory)
         else:
-            continue
-        if not meta:
-            continue
-        # Materialize the inner layer if the offline flow built it lazily
-        # (``getattr`` triggers _create_layer, which appends the chunks-view
-        # layer); then fold the parsed messages onto it.
-        getattr(flow, inner_name)
-        _apply_mtproto_meta(flow.layer(inner_name), meta)
+            _apply_e2e_peer(layer, refs_state, seq, directory)
+
+
+def _entry_family(entry) -> str:
+    """Decoder family of an offline entry (its own protocol name if unset)."""
+    return getattr(entry, "decoder_family", "") or entry.protocol_name
+
+
+def _family_representative(members: list, family: str):
+    """Pick the entry that runs a family: the one named after it, else the first."""
+    for entry in members:
+        if entry.protocol_name == family:
+            return entry
+    return members[0]
+
+
+def _dedupe_independent_entries(entries, proto_keylogs: dict) -> list:
+    """Collapse offline entries that would run the same decoder twice.
+
+    Entries are grouped by :func:`_entry_family` (e.g. ``mtproto`` and
+    ``telegram`` both run the Telegram decoder). Each family runs ONCE, via
+    the entry named after the family when present. Returns ``(entry, keylogs)``
+    pairs, *keylogs* being the family's distinct keylog paths (by real path):
+    one path is the plain case, several mean the pass must load their union.
+    Order follows the first appearance of each family.
+    """
+    families: dict = {}
+    for entry in entries:
+        families.setdefault(_entry_family(entry), []).append(entry)
+    plan = []
+    for family, members in families.items():
+        chosen = _family_representative(members, family)
+        paths = _unique_keylog_paths(
+            proto_keylogs[chosen.protocol_name],
+            [proto_keylogs[m.protocol_name] for m in members],
+        )
+        for dropped in (m for m in members if m is not chosen):
+            logger.debug(
+                "offline decryptor %r shares decoder family %r with %r; "
+                "running it once", dropped.protocol_name, family,
+                chosen.protocol_name,
+            )
+        plan.append((chosen, paths))
+    return plan
+
+
+def _emitter_accepts(emitter, name: str) -> bool:
+    """True if *emitter* declares keyword *name* (or a ``**kwargs`` catch-all).
+
+    Lets the dispatch forward a protocol-specific kwarg only to the emitters that
+    understand it, so a plugin decryptor with a fixed signature is never handed an
+    argument it cannot take. Fails open (assume accepted) if introspection fails.
+    """
+    try:
+        params = inspect.signature(emitter).parameters.values()
+    except (TypeError, ValueError):
+        return True
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params):
+        return True
+    return any(p.name == name for p in params)
+
+
+def _drop_obf_max_blocks_unless_accepted(emitter, emitter_kwargs: dict) -> dict:
+    """Remove ``obf_max_blocks`` from *emitter_kwargs* unless *emitter* accepts it.
+
+    ``obf_max_blocks`` is MTProto/Telegram-specific: plugin decryptors (and Signal)
+    with a fixed signature are never handed an argument they cannot take.
+    """
+    if "obf_max_blocks" in emitter_kwargs and not _emitter_accepts(
+        emitter, "obf_max_blocks"
+    ):
+        emitter_kwargs.pop("obf_max_blocks")
+    return emitter_kwargs
+
+
+def _run_independent_entry(entry, keylogs: list, **emitter_kwargs) -> None:
+    """Run one self-contained offline entry over its (possibly merged) keylogs.
+
+    ``extra_keylogs`` is only passed when a family brought several distinct
+    files, so single-keylog (plugin) emitters keep their plain signature.
+    """
+    if len(keylogs) > 1:
+        emitter_kwargs["extra_keylogs"] = tuple(keylogs[1:])
+    _drop_obf_max_blocks_unless_accepted(entry.emitter, emitter_kwargs)
+    entry.emitter(proto_keylog=keylogs[0], **emitter_kwargs)
+
+
+def _emit_progress(progress: "Callable[[str], None] | None", message: str) -> None:
+    """Report a coarse decrypt milestone to *progress*, if supplied.
+
+    Total: a raising or missing callback must never break the conversion.
+    """
+    if progress is None:
+        return
+    try:
+        progress(message)
+    except Exception:  # noqa: BLE001 - progress reporting is best-effort
+        logger.debug("progress callback raised", exc_info=True)
 
 
 def convert_pcap_to_tap(
@@ -1688,6 +2807,8 @@ def convert_pcap_to_tap(
     tshark_path: str | None = None,
     mtproto_keylog: str | None = None,
     protocol_keylogs: dict[str, str] | None = None,
+    resync_search_depth: int = DEFAULT_OBF_MAX_BLOCKS,
+    progress: "Callable[[str], None] | None" = None,
     **legacy_protocol_keylogs: str | None,
 ) -> ConvertResult:
     """Decrypt *pcap_path* with tshark and reconstruct a friTap ``.tap`` file.
@@ -1710,6 +2831,13 @@ def convert_pcap_to_tap(
             decryptors registered in :mod:`friTap.offline.registry` (including
             plugin protocols). This is the AUTHORITATIVE source for every protocol
             that does not have an explicit named argument here.
+        resync_search_depth: Generic maximum search depth when re-aligning a
+            mid-stream flow to a memory-recovered key, applied to any offline
+            decryptor that supports mid-stream recovery. It maps onto the
+            per-emitter unit (MTProto's ``obf_max_blocks`` today: 16-byte CTR
+            blocks behind the live counter) and is forwarded only to emitters that
+            declare it (via :func:`_emitter_accepts`). Defaults to
+            :data:`~friTap.offline.mtproto.transport.DEFAULT_OBF_MAX_BLOCKS`.
         legacy_protocol_keylogs: Back-compat named keylog kwargs of the form
             ``<protocol>_keylog`` (e.g. a TLS-riding protocol's keylog). Each is
             folded into ``protocol_keylogs`` keyed by the leading ``<protocol>``
@@ -1722,6 +2850,11 @@ def convert_pcap_to_tap(
     """
     if tap_path is None:
         tap_path = os.path.splitext(pcap_path)[0] + ".tap"
+
+    # Generic-to-emitter mapping: the public boundary speaks resync_search_depth;
+    # emitters speak their own unit (MTProto's obf_max_blocks). Map it here so the
+    # single generic knob feeds every mid-stream-recovery decryptor downstream.
+    obf_max_blocks = resync_search_depth
 
     # Decryption uses EITHER an explicit keylog file OR a pcapng with an embedded
     # Decryption Secrets Block (DSB). Three cases:
@@ -1772,13 +2905,23 @@ def convert_pcap_to_tap(
 
     tls_strip_entries = [e for e in present_entries if e.requires_tls_strip]
     independent_entries = [e for e in present_entries if not e.requires_tls_strip]
+    # One pass per decoder family (mtproto + telegram share the Telegram decoder).
+    independent_plan = _dedupe_independent_entries(independent_entries, proto_keylogs)
 
     tshark_bin = find_tshark(tshark_path)
     warn_if_outdated(tshark_version(tshark_bin))
 
     bus = EventBus()
     collector = FlowCollector(event_bus=bus)
-    writer = TapWriter()
+    # Offline events carry pcap capture times: measure idle/sweep time by them.
+    collector.use_event_clock(True)
+    # Flows of these transports are written exactly once, after the post-collection
+    # metadata attach below; the writer skips their early "completed" write.
+    post_attach_transports = (_post_attach_transports()
+                              | _tls_holdback_transports(present_entries))
+    writer = TapWriter(
+        defer_flow=lambda flow: getattr(flow, "transport", "") in post_attach_transports,
+    )
 
     target = capture_target or os.path.basename(pcap_path)
     collector.set_capture_target(target)
@@ -1800,6 +2943,7 @@ def convert_pcap_to_tap(
     state = _WriterState(writer, tap_path, target, keylog_path)
     try:
         if has_keys:
+            _emit_progress(progress, "Decrypting TLS/QUIC streams…")
             # Extract TLS handshake metadata ONCE up front (SNI/version/cipher/alpn)
             # so each stream can emit a SessionEvent before its data, backfilling the
             # flow's TLS layer. Metadata failure is non-fatal — the decrypted-bytes
@@ -1843,14 +2987,19 @@ def convert_pcap_to_tap(
             # branch. Registry-driven: each present ``requires_tls_strip`` entry
             # is emitted via its normalized adapter.
             for entry in tls_strip_entries:
-                entry.emitter(
+                tls_strip_kwargs: dict = dict(
                     pcap_path=pcap_path,
                     proto_keylog=proto_keylogs[entry.protocol_name],
                     tls_keylog_path=keylog_path,
                     tshark_bin=tshark_bin,
                     tls_ports=tls_ports,
                     bus=bus, state=state, result=result,
+                    obf_max_blocks=obf_max_blocks,
                 )
+                # Same generality gate as the independent path: a tls-strip emitter
+                # that declares obf_max_blocks gets it; Signal is left untouched.
+                entry.emitter(**_drop_obf_max_blocks_unless_accepted(
+                    entry.emitter, tls_strip_kwargs))
         elif not independent_entries:
             # No keys and no DSB: ingest the capture as already-plaintext. The raw
             # transport payload is fed through the SAME parser pipeline; encrypted
@@ -1885,17 +3034,25 @@ def convert_pcap_to_tap(
         # Self-contained offline decryptors (friTap's own, e.g. MTProto) decrypt
         # raw TCP independently of any tshark TLS/QUIC pass, so they run always.
         # Registry-driven: each present non-``requires_tls_strip`` entry is emitted.
-        for entry in independent_entries:
-            entry.emitter(
+        for entry, entry_keylogs in independent_plan:
+            _emit_progress(
+                progress,
+                f"Decrypting {getattr(entry, 'name', getattr(entry, 'protocol', 'protocol'))}…",
+            )
+            _run_independent_entry(
+                entry, entry_keylogs,
                 pcap_path=pcap_path,
-                proto_keylog=proto_keylogs[entry.protocol_name],
                 tls_keylog_path=keylog_path,
                 tshark_bin=tshark_bin,
                 tls_ports=tls_ports,
                 bus=bus, state=state, result=result,
+                obf_max_blocks=obf_max_blocks,
             )
 
         state.ensure_open()
+        # The header start is the capture's FIRST packet, not the earliest
+        # decrypted record (handshakes/undecryptable traffic precede it).
+        state.note_capture_time(_first_packet_time(pcap_path))
 
         # Correlate TLS metadata onto offline-decrypted TLS-riding flows (Signal)
         # by 4-tuple, building the TLS -> HTTP/2 -> WebSocket -> inner encapsulation
@@ -1904,39 +3061,47 @@ def convert_pcap_to_tap(
         # flush(): flush completes+writes the live flows, so the layers have to be
         # attached to those very objects beforehand to land in the .tap.
         _attach_transport_metadata_layers(collector.live_flows(), state.inner_meta)
+        # Nested RC4-in-TLS: rebuild each RC4 flow as [TLS (owned), RC4 (chunks)]
+        # and learn which TLS flows it fully absorbed (not written below).
+        absorbed_flow_ids = _attach_rc4_in_tls_layers(collector.live_flows(), state)
 
         # Fold parsed Telegram MTProto/Secret-Chat messages onto their (raw-TCP,
         # non-TLS-riding) flows. Same LIVE-flows-before-flush() requirement as
         # the Signal pass above.
         _attach_telegram_meta(
             collector.live_flows(), state.mtproto_meta, state.telegram_e2e_meta,
+            ledger=getattr(state, "telegram_ledger", None),
         )
+        # Cross-references (rpc_result/ack/container/E2E carrier), users and the
+        # Secret-Chat peer need every record's flow_id, so they run after the fold.
+        _finalize_telegram_refs(collector.live_flows(), getattr(state, "telegram_refs", None))
 
         # CRITICAL: TapWriter.on_flow_event only writes on "completed", which
         # offline reconstruction rarely emits (no SESSION_ENDED). flush() marks
         # active flows COMPLETE, then we sweep every flow the writer has not
         # already persisted.
-        collector.flush()
-        flows = collector.get_flows()
+        collector.flush(end_at_last_activity=True)
+        flows = [f for f in collector.get_flows()
+                 if f.flow_id not in absorbed_flow_ids]
         # Flows whose metadata is folded on AFTER collection (Signal TLS-riding +
-        # Telegram MTProto/Secret-Chat) can be written EARLY by an on-complete event
-        # during collection — before _attach_*_meta ran — leaving the persisted record
-        # without the attached layers/messages. Re-write those so the post-attach state
-        # wins: the reader's flow index keeps the LAST record per flow_id, and only the
-        # handful of offline-decrypted flows ever get a (harmless) duplicate record.
-        offline_attached = _tls_riding_protocol_names() | {"mtproto", "telegram_e2e"}
+        # Telegram MTProto/Secret-Chat) are deferred by the writer's on-complete
+        # hook, so they are persisted here exactly once, with the attached
+        # layers/messages. Should one have been written early anyway, this rewrite
+        # still wins: the flow index keeps the LAST record per flow_id.
         for flow in flows:
             transport = getattr(flow, "transport", "")
-            if (flow.flow_id not in writer.written_flow_ids
-                    or transport in offline_attached):
+            if (not writer.has_written(flow.flow_id)
+                    or transport in post_attach_transports):
                 writer.write_flow(flow)
 
         result.flow_count = len(flows)
+        _emit_progress(progress, "Writing .tap…")
     finally:
         if state.opened:
             writer.close()
 
     if run_scan:
+        _emit_progress(progress, "Running analysis…")
         result.findings_count = _run_scan(tap_path)
 
     logger.info(
@@ -1949,6 +3114,32 @@ def convert_pcap_to_tap(
     return result
 
 
+def _first_packet_time(pcap_path: str) -> float:
+    """Capture time (epoch seconds) of the first packet in *pcap_path*.
+
+    Reads only the first record (scapy handles pcap and pcapng, including the
+    pcapng timestamp resolution). Returns ``0.0`` ("unknown") for an empty or
+    unreadable capture, so callers can pass it straight to
+    :meth:`_WriterState.note_capture_time`.
+    """
+    # scapy warns about an embedded DSB it cannot use; irrelevant here.
+    scapy_log = logging.getLogger("scapy.runtime")
+    previous_level = scapy_log.level
+    scapy_log.setLevel(logging.ERROR)
+    try:
+        from scapy.utils import PcapReader
+
+        with PcapReader(pcap_path) as reader:
+            for pkt in reader:
+                return float(pkt.time)
+    except Exception:
+        logger.debug("Could not read first packet time of %s", pcap_path,
+                     exc_info=True)
+    finally:
+        scapy_log.setLevel(previous_level)
+    return 0.0
+
+
 def _run_scan(tap_path: str) -> int:
     """Run all registered analyzers over *tap_path*; return the finding count."""
     from friTap.analysis import analyze_tap_multi
@@ -1956,6 +3147,44 @@ def _run_scan(tap_path: str) -> int:
 
     findings = analyze_tap_multi(resolve_analyzers("all"), tap_path)
     return len(findings)
+
+
+def _merge_memory_scan_sidecars_into(
+    ms_map: dict,
+    pcap_path: str,
+    keylog: str | None,
+    mtproto: str | None,
+    protocol_keylogs: dict[str, str],
+    legacy_keylogs: dict[str, str | None],
+) -> tuple[str | None, str | None]:
+    """Union memory-scan sidecars into the effective keylog of each protocol.
+
+    The effective per-protocol keylog is the one convert_pcap_to_tap will use:
+    a ``protocol_keylogs`` entry first, then the named ``mtproto_keylog`` /
+    ``<proto>_keylog`` kwarg. Merged paths are written back into
+    *protocol_keylogs* (mutated in place, so they win downstream) and into the
+    named kwargs. TLS stays on the base ``keylog_path``. Returns the updated
+    ``(keylog, mtproto)`` pair.
+    """
+    def _current(proto: str) -> str | None:
+        if proto == "tls":
+            return keylog
+        named = mtproto if proto == "mtproto" else legacy_keylogs.get(f"{proto}_keylog")
+        return protocol_keylogs.get(proto) or named
+
+    from .keylog_picker import merge_memory_scan_sidecars
+
+    merged_sidecars = merge_memory_scan_sidecars(
+        ms_map, _current,
+        out_dir=os.path.dirname(os.path.abspath(pcap_path)) or None)
+    keylog = merged_sidecars.pop("tls", keylog)
+    for proto, merged_path in merged_sidecars.items():
+        protocol_keylogs[proto] = merged_path
+        if proto == "mtproto":
+            mtproto = merged_path
+        else:
+            legacy_keylogs[f"{proto}_keylog"] = merged_path
+    return keylog, mtproto
 
 
 def pcap_to_tap(
@@ -1972,7 +3201,9 @@ def pcap_to_tap(
     tshark_path: str | None = None,
     mtproto_keylog: str | None = None,
     protocol_keylogs: dict[str, str] | None = None,
+    resync_search_depth: int = DEFAULT_OBF_MAX_BLOCKS,
     use_manifest: bool = True,
+    progress: "Callable[[str], None] | None" = None,
     **legacy_protocol_keylogs: str | None,
 ) -> ConvertResult:
     """Convert a captured pcap/pcapng to a friTap ``.tap``, manifest-aware.
@@ -2024,6 +3255,26 @@ def pcap_to_tap(
                     and not legacy_keylogs.get(man_key)
                 ):
                     legacy_keylogs[man_key] = man_value
+            # Memory-scan sidecars carry keys the hook keylog lacks (e.g. the
+            # MTProto OBF + perm auth keys that make de-obfuscation possible).
+            # The manifest records them under the nested ``memory_scan_keylogs``
+            # map, which the ``*_keylog`` loop above never sees. Merge each into
+            # the selected keylog for its protocol so the automatic decrypt uses
+            # them — mirroring the wizard's manual "merge keylogs" step.
+            #
+            # The caller's ``protocol_keylogs`` map is what convert_pcap_to_tap
+            # actually uses per protocol (its entries win over the named
+            # ``mtproto_keylog`` / ``<proto>_keylog`` kwargs), so it is the
+            # "current" keylog to merge into, and the merged result is written
+            # back INTO it — otherwise a caller such as the TUI, which always
+            # passes protocol_keylogs, would silently lose the sidecar keys.
+            # Mirrors cli.merge_manifest.
+            ms_map = manifest.get("memory_scan_keylogs") or {}
+            if ms_map:
+                protocol_keylogs = dict(protocol_keylogs or {})
+                keylog, mtproto = _merge_memory_scan_sidecars_into(
+                    ms_map, pcap_path, keylog, mtproto,
+                    protocol_keylogs, legacy_keylogs)
 
     return convert_pcap_to_tap(
         pcap_path,
@@ -2038,5 +3289,7 @@ def pcap_to_tap(
         tshark_path=tshark_path,
         mtproto_keylog=mtproto,
         protocol_keylogs=protocol_keylogs,
+        resync_search_depth=resync_search_depth,
+        progress=progress,
         **{k: v for k, v in legacy_keylogs.items() if v},
     )

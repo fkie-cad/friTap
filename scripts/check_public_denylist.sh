@@ -83,7 +83,9 @@ if ( cd "$TREE" && python3 - <<'PY'
 import sys
 from friTap.protocols import registry
 names = set(registry.available_protocol_names())
-allowed = {"tls", "ssh", "mtproto", "telegram"}
+# Fail-closed allowlist: every PUBLIC protocol (built-in or protocols/_ext shim)
+# must be listed here, or the publish is refused as a private-protocol leak.
+allowed = {"tls", "ssh", "mtproto", "rc4", "telegram"}
 extra = names - allowed
 if extra:
     print(f"      unexpected protocol(s): {sorted(extra)}", file=sys.stderr); sys.exit(1)

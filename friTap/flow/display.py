@@ -67,20 +67,33 @@ def display_protocol(flow: FlowLike) -> str:
 # below lets ``display_protocol_layered`` recognise that genuine nesting so it
 # renders ``MTProto[Telegram-E2E]`` while a bare cloud flow stays ``MTProto``.
 OUTER_APP_LAYER_NAMES = ("http1", "http2", "http3", "websocket")
-INNER_E2E_LAYER_NAMES = ("signal", "mtproto", "telegram_e2e")
+INNER_E2E_LAYER_NAMES = ("signal", "mtproto", "telegram_e2e", "rc4")
 
 # Carriers that can wrap a distinct inner E2E layer (outer[inner] nesting).
 # ``mtproto`` carries ``telegram_e2e``; the app layers above carry signal/mtproto.
 _CARRIER_FOR_INNER = {
     "telegram_e2e": "mtproto",
+    "rc4": "tls",  # RC4-in-TLS: TLS plaintext carries an RC4 stream -> TLS[RC4]
 }
+
+
+def _carrier_display_names() -> dict:
+    """Display names for carrier-only layers absent from LAYER_DISPLAY_NAMES.
+
+    Kept local on purpose: LAYER_DISPLAY_NAMES feeds the display-filter
+    vocabulary, which must not gain a ``tls`` entry through this path.
+    """
+    from friTap.constants import PROTOCOL_TLS
+
+    return {"tls": PROTOCOL_TLS}
 
 
 def _layer_display_name(layer_name: str) -> str:
     """Return the human display string for a protocol-layer NAME."""
     from friTap.constants import LAYER_DISPLAY_NAMES
 
-    return LAYER_DISPLAY_NAMES.get(layer_name, "")
+    name = LAYER_DISPLAY_NAMES.get(layer_name, "")
+    return name or _carrier_display_names().get(layer_name, "")
 
 
 def display_protocol_layered(flow) -> str:
@@ -182,10 +195,14 @@ def display_method(request: Optional[ParseLike]) -> str:
     return ""
 
 
+# Telegram layer names (cloud MTProto, then Secret-Chat E2E) in iteration order.
+# The same names as ``layer_pipeline.MESSAGE_TRANSPORTS`` (a set, unordered, and
+# importable here only lazily); every ordered scan of Telegram layers uses this.
+TELEGRAM_LAYER_NAMES = ("mtproto", "telegram_e2e")
 # Layer names whose ``messages`` carry a per-item ``method`` (TL operation name)
 # that can stand in for the HTTP-style Method column. Innermost (E2E) last so a
 # secret-chat method wins over the carrier transport when both exist.
-_METHOD_LAYER_NAMES = ("mtproto", "telegram_e2e")
+_METHOD_LAYER_NAMES = TELEGRAM_LAYER_NAMES
 
 # Method-classification buckets, highest display priority first. A chat method
 # (the operation that carries the actual conversation) outranks a meaningful RPC,
@@ -302,6 +319,53 @@ def display_status(response: Optional[ParseLike]) -> str:
     return ""
 
 
+def is_message_transport(flow) -> bool:
+    """True when *flow* rides a message-stream transport (MTProto / Secret Chat).
+
+    Such flows are sequences of messages, not HTTP request/response exchanges,
+    so an HTTP status is meaningless for them. Imported lazily to avoid a
+    module import cycle (layer_pipeline -> ... -> models -> display).
+    """
+    from friTap.flow.layer_pipeline import MESSAGE_TRANSPORTS
+
+    return (getattr(flow, "transport", "") or "") in MESSAGE_TRANSPORTS
+
+
+def display_status_for(flow) -> str:
+    """Flow-aware status string: ``""`` for message transports, else HTTP status."""
+    if is_message_transport(flow):
+        return ""
+    return getattr(flow, "display_status", "") or ""
+
+
+def has_parsed_side(flow, side: str) -> bool:
+    """True when *flow* carries a parsed ``request``/``response`` (*side*).
+
+    Works on a live :class:`Flow`, the stub-bearing ``models.FlowSummary``, and
+    the flat ``tap_format.FlowSummary`` read back on replay, which has no
+    parse objects and instead records ``has_request``/``has_response``.
+    """
+    if getattr(flow, side, None) is not None:
+        return True
+    return bool(getattr(flow, f"has_{side}", False))
+
+
+def message_direction_status(flow) -> str:
+    """``sent`` / ``recv`` / ``sent+recv`` from the flow's parsed request/response.
+
+    Returns ``""`` when neither side was parsed.
+    """
+    has_sent = has_parsed_side(flow, "request")
+    has_recv = has_parsed_side(flow, "response")
+    if has_sent and has_recv:
+        return "sent+recv"
+    if has_sent:
+        return "sent"
+    if has_recv:
+        return "recv"
+    return ""
+
+
 def display_size(
     response: Optional[ParseLike],
     total_bytes: int,
@@ -330,13 +394,21 @@ def display_connection(
     dst_addr: str,
     dst_port: int,
     host: str = "",
+    literal_direction: bool = False,
 ) -> str:
-    """Directional connection string: src -> dst, src <- dst, or src <-> dst."""
+    """Directional connection string: src -> dst, src <- dst, or src <-> dst.
+
+    With *literal_direction* (per-packet message transports) the flow's
+    src/dst already are the packet's real endpoints, so the arrow is always
+    ``src -> dst`` (Wireshark-like) regardless of which side was parsed.
+    """
     src = f":{src_port}" if src_addr in _LOOPBACK_ADDRS else f"{src_addr}:{src_port}"
     dst = host or display_host(request, dst_addr, dst_port)
     has_req = request is not None
     has_resp = response is not None
-    if has_req and has_resp:
+    if literal_direction:
+        arrow = "\u2192"
+    elif has_req and has_resp:
         arrow = "\u21c4"
     elif has_resp and not has_req:
         arrow = "\u2190"

@@ -131,6 +131,16 @@ class BaseParser(ABC):
         """Return True if this parser can handle this data."""
         ...
 
+    def recognized_any(self) -> bool:
+        """Whether the fed bytes were actually recognized as this protocol.
+
+        The collector stamps ``Flow.detected_protocol`` only when this is
+        True. Default True: a parser may legitimately recognize its protocol
+        without emitting a ParseResult (e.g. an HTTP/2 SETTINGS-only prelude).
+        Parsers whose detection is weak override it.
+        """
+        return True
+
 
 @dataclass
 class ParserFailure:
@@ -226,6 +236,13 @@ class SafeParserAdapter(BaseParser):
             return self._inner.can_parse(data)
         except Exception:
             return False
+
+    def recognized_any(self) -> bool:
+        # Explicit forward: BaseParser's default would shadow __getattr__.
+        try:
+            return bool(self._inner.recognized_any())
+        except Exception:
+            return True
 
     def __getattr__(self, name: str):
         # Only called for attrs not found on the adapter itself.

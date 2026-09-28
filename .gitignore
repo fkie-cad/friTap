@@ -13,9 +13,12 @@ site/
 *.sh
 *.yml
 *.js
+*.keylog
 *.json
+*.ps1
 dev/changelog_backfill.py
 research/
+demo/
 
 # Project-tracked files that the broad *.md / *.yml rules above would
 # otherwise hide. Keep this list in sync with files that must ship.
@@ -45,7 +48,8 @@ research/
 # found). Keep the whole docs/ tree trackable.
 !docs/**/*.md
 !docs/*.md
-test.json
+!friTap/memory_scanning/*.json
+!friTap/patterns/default_patterns.json
 
 # Testing artifacts
 tests/coverage_html/
@@ -129,8 +133,10 @@ ExampleLinux/wolfssl/*
 # offline-decrypt regression tests actually run in CI; the *.pcapng / *.log rules
 # above would otherwise exclude them.
 !tests/fixtures/*.pcapng
+!tests/fixtures/*.pcap
 !tests/fixtures/*.tls.log
 !tests/fixtures/*.signal.log
+!tests/fixtures/*.keylog
 
 # Generated files
 *.apk
@@ -170,6 +176,10 @@ tls_libs_Chrome/
 !tsconfig.json
 !custom.js
 !friTap/fritap_agent.js
+!friTap/fritap_memscan.js
+!friTap/fritap_agent_full.js
+!friTap/fritap_agent_full.js.src
+!.gitlab-ci.yml
 !friTap/patterns/*.json
 !offsets_example.json
 !pattern.json

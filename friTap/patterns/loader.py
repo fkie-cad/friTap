@@ -7,6 +7,7 @@ Handles loading, validating, and merging default and user-supplied
 pattern files for the hooking pipeline.
 """
 
+import glob
 import json
 import logging
 import os
@@ -39,19 +40,31 @@ class PatternLoader:
         Returns:
             JSON string of merged patterns, or None if no patterns available.
         """
-        # 1. Auto-load shipped default patterns (always)
-        default_pattern_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "default_patterns.json"
-        )
+        # 1. Auto-load shipped default patterns (always). friTap ships one pattern
+        #    file per protocol in this directory (``default_patterns.json`` for TLS,
+        #    ``default_mtproto.json`` for MTProto, and so on). Load EVERY
+        #    ``default_*.json`` and deep-merge them into one base DB. Per-protocol
+        #    files key on disjoint top-level library names (e.g. ``openssl`` vs
+        #    ``libtmessages.tmessages.so``), so the merge is collision-free;
+        #    ``deep_merge`` still merges any shared subtree granularly.
+        patterns_dir = os.path.dirname(os.path.abspath(__file__))
         base_patterns = {}
-        if os.path.exists(default_pattern_path):
+        # Deterministic order, with ``default_patterns.json`` (the historical TLS
+        # base) first so newer per-protocol files layer on top of it.
+        default_files = sorted(
+            glob.glob(os.path.join(patterns_dir, "default_*.json")),
+            key=lambda p: (os.path.basename(p) != "default_patterns.json",
+                           os.path.basename(p)),
+        )
+        for default_pattern_path in default_files:
             try:
                 with open(default_pattern_path, "r") as f:
-                    base_patterns = json.load(f)
+                    file_patterns = json.load(f)
+                base_patterns = PatternLoader.deep_merge(base_patterns, file_patterns)
                 logger.debug("Loaded default patterns from %s", default_pattern_path)
             except Exception as e:
-                logger.warning("Failed to load default patterns: %s", e)
+                logger.warning("Failed to load default patterns from %s: %s",
+                               default_pattern_path, e)
 
         # 2. If user provided --patterns, load and deep-merge
         if patterns_path is not None:

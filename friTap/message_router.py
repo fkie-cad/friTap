@@ -46,7 +46,7 @@ class MessageRouter:
     Keylog, lifecycle, and meta events always pass through.
     """
 
-    def __init__(self, event_bus: "EventBus", active_protocol: str | None = None) -> None:
+    def __init__(self, event_bus: "EventBus", active_protocol=None) -> None:
         self._event_bus = event_bus
         self._logger = logging.getLogger("friTap.router")
         self._data_filter = None  # Optional FilterEngine for network-level filtering
@@ -54,10 +54,21 @@ class MessageRouter:
         # several agent code paths may emit `anti_tamper_detected` (detection +
         # loader-hook skip). Subsequent events still flow to API consumers.
         self._anti_tamper_bannered = False
-        # The user-selected --protocol. When it is "telegram", MTProto cloud keys
-        # AND Secret-Chat E2E keys are routed into ONE combined keylog file (both
-        # emitted as protocol="telegram"); otherwise behaviour is unchanged.
-        self._active_protocol = active_protocol
+        # The user-selected --protocol set (Foundation F1 multi-protocol). May be
+        # given as a single name, a comma-joined string ("tls,telegram"), a
+        # list/set, or None. When "telegram" is among the selection, MTProto
+        # cloud keys AND Secret-Chat E2E keys are routed into ONE combined keylog
+        # file (both emitted as protocol="telegram"); otherwise behaviour is
+        # unchanged.
+        if active_protocol is None:
+            _names = []
+        elif isinstance(active_protocol, str):
+            _names = [p.strip() for p in active_protocol.split(",") if p.strip()]
+        else:
+            _names = [str(p).strip() for p in active_protocol if str(p).strip()]
+        self._active_protocols = set(_names)
+        # Primary retained for any single-value consumer / debugging.
+        self._active_protocol = _names[0] if _names else None
 
     def set_filter(self, filter_engine) -> None:
         """Set a display filter engine. Only network-level fields are checked."""
@@ -276,7 +287,7 @@ class MessageRouter:
         keylog (alongside the Secret-Chat E2E keys); otherwise they keep their
         historical ``protocol="mtproto"`` routing.
         """
-        protocol = "telegram" if self._active_protocol == "telegram" else "mtproto"
+        protocol = "telegram" if "telegram" in self._active_protocols else "mtproto"
         auth_key = str(payload.get("auth_key", ""))
         auth_key_id = str(payload.get("auth_key_id", ""))
         # Datacenter::getAuthKey does not always populate the auth_key_id

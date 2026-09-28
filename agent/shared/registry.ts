@@ -122,6 +122,17 @@
      coveredBySibling?: { siblingPattern: RegExp; reason: string };
      /** Bypass `coveredBySibling` suppression (e.g. user passed --force-scan). */
      forceScan?: boolean;
+     /**
+      * Add-on hook that does NOT extract TLS keys (e.g. Google QUICHE stream
+      * hooks, which only feed the plaintext pcap). It still installs and still
+      * reports `library_detected`, but it never claims TLS coverage of the
+      * module: the loaders record it under a separate dedup tag (see
+      * `installTagFor`), and the "already matched by the registry" filters
+      * ignore it (see {@link HookRegistry.findPrimaryMatch}). Without this a
+      * QUICHE-only match on e.g. libchrome.so marked the module "hooked for
+      * tls" and blocked every BoringSSL rescue path.
+      */
+     supplementary?: boolean;
  }
 
  /**
@@ -150,15 +161,69 @@
  * public core hardcodes only the public Telegram→MTProto implication. Mirrors
  * PROTOCOL_IMPLIES on the Python side (friTap/protocols/registry.py).
  */
-function protocolMatches(hookProtocol: string, requested: string): boolean {
-    if (hookProtocol === requested) return true;
-    // Contributed implications (e.g. a private messenger E2E unit declaring that
-    // its traffic is TLS-wrapped). Empty in the public build.
-    if (contributedImplications()[requested]?.includes(hookProtocol)) return true;
-    // `--protocol telegram` ALSO installs the existing tgnet/mtproto transport
-    // hooks (cloud-chat keys live in the MTProto transport, Secret-Chat keys in
-    // the Java layer). The exact-match rule above handles the telegram Java entry.
-    if (requested === "telegram" && hookProtocol === "mtproto") return true;
+/**
+ * A requested-protocol selection as it arrives at the registry: a single name
+ * (legacy, e.g. "tls"), a comma-joined string ("tls,rc4"), a pre-parsed
+ * `Set<string>`, or `undefined`. Multi-protocol selection (Foundation F1) lets
+ * the user activate several independent protocols at once (e.g. `--protocol
+ * tls,rc4`); a single string keeps behaving exactly as before.
+ */
+export type RequestedProtocol = string | Set<string> | undefined;
+
+/**
+ * Normalize a {@link RequestedProtocol} into the effective FILTER set, or
+ * `undefined` meaning "no filter / install everything". The meta values
+ * `auto`/`all`, the empty selection and `undefined` all collapse to `undefined`
+ * (their historical "install everything" semantics). A comma-joined string is
+ * split; whitespace is trimmed; empties are dropped.
+ */
+export function protocolFilterSet(requested: RequestedProtocol): Set<string> | undefined {
+    if (requested === undefined) return undefined;
+    const names = typeof requested === "string"
+        ? requested.split(",").map(s => s.trim()).filter(Boolean)
+        : [...requested].map(s => (s ?? "").trim()).filter(Boolean);
+    const set = new Set(names);
+    if (set.size === 0) return undefined;
+    if (set.has("auto") || set.has("all")) return undefined;
+    return set;
+}
+
+/**
+ * The PRIMARY protocol label for a selection (first element, "tls" fallback).
+ * String-typed contexts that predate multi-select — per-module dedup keys
+ * (`isModuleHooked`/`markModuleHooked`), `library_detected` message tags — keep
+ * consuming a single label. For a single selection this is the selection itself,
+ * so single-protocol behaviour is byte-for-byte unchanged.
+ */
+export function protocolLabel(requested: RequestedProtocol): string {
+    if (requested === undefined) return "tls";
+    const names = typeof requested === "string"
+        ? requested.split(",").map(s => s.trim()).filter(Boolean)
+        : [...requested].map(s => (s ?? "").trim()).filter(Boolean);
+    return names[0] || "tls";
+}
+
+/**
+ * Whether a hook registered for `hookProtocol` should install given the
+ * requested-protocol SET. Beyond exact set membership this encodes the same
+ * companion-protocol implications as before: contributed implications
+ * (`registerProtocolImplication(...)`, empty in the public build) and the
+ * public Telegram→MTProto rule. Contract: returns true iff `hookProtocol` is a
+ * member of `requested`, OR some requested member implies `hookProtocol`.
+ * Mirrors PROTOCOL_IMPLIES on the Python side (friTap/protocols/registry.py).
+ */
+function protocolMatches(hookProtocol: string, requested: Set<string>): boolean {
+    if (requested.has(hookProtocol)) return true;
+    const implications = contributedImplications();
+    for (const req of requested) {
+        // Contributed implications (e.g. a private messenger E2E unit declaring
+        // that its traffic is TLS-wrapped). Empty in the public build.
+        if (implications[req]?.includes(hookProtocol)) return true;
+        // `--protocol telegram` ALSO installs the existing tgnet/mtproto
+        // transport hooks (cloud-chat keys live in the MTProto transport,
+        // Secret-Chat keys in the Java layer).
+        if (req === "telegram" && hookProtocol === "mtproto") return true;
+    }
     return false;
 }
 
@@ -199,15 +264,19 @@ function protocolMatches(hookProtocol: string, requested: string): boolean {
       * Return all hooks for a given platform, optionally filtered by protocol,
       * sorted by descending priority.
       */
-     getHooks(platform: Platform, protocol?: string): HookRegistration[] {
-         const key = `${platform}:${protocol || '*'}`;
+     getHooks(platform: Platform, protocol?: RequestedProtocol): HookRegistration[] {
+         // Normalize the selection (single name, comma-joined string, or Set)
+         // to the effective filter set; `undefined` means "no filter".
+         const filter = protocolFilterSet(protocol);
+         const key = `${platform}:${filter ? [...filter].slice().sort().join(",") : '*'}`;
          const cached = this._cache.get(key);
          if (cached) return cached;
          let result = this._hooks.filter(h => h.platform === platform);
-         if (protocol) {
+         if (filter) {
              result = result.filter(h =>
-                 protocolMatches(h.protocol, protocol) &&
-                 !h.excludeProtocols?.includes(protocol)
+                 protocolMatches(h.protocol, filter) &&
+                 // Suppress a hook flagged unsafe for ANY requested protocol.
+                 !h.excludeProtocols?.some(p => filter.has(p))
              );
          }
          result = result.sort((a, b) => b.priority - a.priority);
@@ -220,9 +289,8 @@ function protocolMatches(hookProtocol: string, requested: string): boolean {
       *
       * @param protocol Optional protocol filter. "auto", "all", or undefined = no filter.
       */
-     findMatch(platform: Platform, moduleName: string, modulePath?: string, protocol?: string): HookRegistration | undefined {
-         const effectiveProtocol = (protocol && protocol !== "auto" && protocol !== "all") ? protocol : undefined;
-         const hooks = this.getHooks(platform, effectiveProtocol);
+     findMatch(platform: Platform, moduleName: string, modulePath?: string, protocol?: RequestedProtocol): HookRegistration | undefined {
+         const hooks = this.getHooks(platform, protocol);
          for (const hook of hooks) {
              if (hook.pattern.test(moduleName)) {
                  if (this._isExcluded(hook, moduleName, modulePath)) {
@@ -235,13 +303,22 @@ function protocolMatches(hookProtocol: string, requested: string): boolean {
      }
  
      /**
+      * Like {@link findMatch}, but ignores `supplementary` hooks: returns the
+      * first match that actually claims (TLS) coverage of the module. Used by
+      * the "module already matched by the registry, skipping" filters so a
+      * QUIC-stream-only add-on does not hide a module from the library scan.
+      */
+     findPrimaryMatch(platform: Platform, moduleName: string, modulePath?: string, protocol?: RequestedProtocol): HookRegistration | undefined {
+         return this.findAllMatches(platform, moduleName, modulePath, protocol).find(h => !h.supplementary);
+     }
+
+     /**
       * Find ALL hooks whose pattern matches *moduleName* on *platform*.
       *
       * @param protocol Optional protocol filter. "auto", "all", or undefined = no filter.
       */
-     findAllMatches(platform: Platform, moduleName: string, modulePath?: string, protocol?: string): HookRegistration[] {
-         const effectiveProtocol = (protocol && protocol !== "auto" && protocol !== "all") ? protocol : undefined;
-         const hooks = this.getHooks(platform, effectiveProtocol);
+     findAllMatches(platform: Platform, moduleName: string, modulePath?: string, protocol?: RequestedProtocol): HookRegistration[] {
+         const hooks = this.getHooks(platform, protocol);
          const matches: HookRegistration[] = [];
          for (const hook of hooks) {
              if (hook.pattern.test(moduleName)) {
@@ -257,9 +334,8 @@ function protocolMatches(hookProtocol: string, requested: string): boolean {
      /**
       * Find the first hook matching a tlsLibHunter library_type.
       */
-     findByLibraryType(platform: Platform, libraryType: string, protocol?: string): HookRegistration | undefined {
-         const effectiveProtocol = (protocol && protocol !== "auto" && protocol !== "all") ? protocol : undefined;
-         const hooks = this.getHooks(platform, effectiveProtocol);
+     findByLibraryType(platform: Platform, libraryType: string, protocol?: RequestedProtocol): HookRegistration | undefined {
+         const hooks = this.getHooks(platform, protocol);
          return hooks.find(h => h.libraryType === libraryType);
      }
 
@@ -275,10 +351,10 @@ function protocolMatches(hookProtocol: string, requested: string): boolean {
          moduleName: string,
          modulePath: string | undefined,
          loadedModuleNames: string[] | (() => string[]),
-         protocol?: string,
+         protocol?: RequestedProtocol,
      ): { matches: HookRegistration[]; suppressed: HookCoverageSuppression[] } {
          const candidates = this.findAllMatches(platform, moduleName, modulePath, protocol);
-         const effectiveProtocol = (protocol && protocol !== "auto" && protocol !== "all") ? protocol : undefined;
+         const effectiveProtocol = protocolFilterSet(protocol);
          const matches: HookRegistration[] = [];
          const suppressed: HookCoverageSuppression[] = [];
          let resolvedModules: string[] | null = null;
@@ -314,7 +390,7 @@ function protocolMatches(hookProtocol: string, requested: string): boolean {
          moduleName: string,
          modulePath: string | undefined,
          loadedModuleNames: string[] | (() => string[]),
-         protocol?: string,
+         protocol?: RequestedProtocol,
      ): { hook: HookRegistration | undefined; suppressed: HookCoverageSuppression[] } {
          const { matches, suppressed } = this.findAllMatchesWithCoverage(
              platform, moduleName, modulePath, loadedModuleNames, protocol,
@@ -331,7 +407,7 @@ function protocolMatches(hookProtocol: string, requested: string): boolean {
          hook: HookRegistration,
          selfName: string,
          loadedModuleNames: string[],
-         protocol?: string,
+         protocol?: Set<string>,
      ): string | undefined {
          if (!hook.coveredBySibling) return undefined;
          const siblingPattern = hook.coveredBySibling.siblingPattern;
@@ -342,7 +418,7 @@ function protocolMatches(hookProtocol: string, requested: string): boolean {
              const registered = this._hooks.some((other) => {
                  if (other === hook) return false;
                  if (other.platform !== hook.platform) return false;
-                 if (protocol && other.protocol !== protocol) return false;
+                 if (protocol && !protocolMatches(other.protocol, protocol)) return false;
                  if (requiredType && other.libraryType !== requiredType) return false;
                  if (!other.pattern.test(candidate)) return false;
                  return true;

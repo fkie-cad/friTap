@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 import platformdirs
 
@@ -53,10 +53,19 @@ class AppState:
     live_mode: str = ""  # "", "wireshark", "live_pcapng"
     full_capture: bool = False
     owner_capture: bool = False  # Android/Linux: per-app (UID) kernel-scoped keys + PCAP
-    protocol: str = "tls"  # "tls", "ipsec", "ssh", "auto"
+    protocol: str = "tls"  # "tls", "ipsec", "ssh", "auto" (primary; back-compat)
+    # The full protocol SET this capture writes keys for. Kept in sync with
+    # `protocol` (today the wizard is single-select, so this is [protocol]); a
+    # future multi-select populates it directly. The post-capture keylog resolver
+    # reads this so the READ side matches the multi-protocol WRITE side (which
+    # splits by config.protocols) — see capture_controller._resolve_keylog_files.
+    protocols: List[str] = field(default_factory=lambda: ["tls"])
     view_mode: str = "legacy"  # "legacy", "flow"
     library_scan: bool = False
     pairip_safe: bool = False  # Android-only: --pairip-safe PairIP workaround
+    intercept: bool = True  # hook TLS/crypto functions (False = memory-scan-only run)
+    memory_scan: bool = False  # --memory-scan: heap secret-scanner for recovered secrets
+    memory_scan_patterns: Optional[str] = None  # optional pattern-file path (blank = shipped defaults)
     encapsulated_protocols: dict = field(default_factory=lambda: {"ohttp": True})
     quic_capture_mode: str = "stream"  # "stream" or "app-api"
 
@@ -101,6 +110,7 @@ if TEXTUAL_AVAILABLE:
             Binding("y", "copy_log", "Copy Log", show=False),
             Binding("w", "save_tap", "Save .tap", show=False),
             Binding("o", "open_pcap", "Open PCAP", show=False),
+            Binding("r", "restart_wizard", "Restart Wizard", show=False),
         ]
 
         _THEME_CONFIG_PATH = Path(platformdirs.user_config_dir("friTap")) / "tui_prefs.json"
@@ -282,6 +292,9 @@ if TEXTUAL_AVAILABLE:
 
         def action_open_pcap(self) -> None:
             self._delegate("action_open_pcap")
+
+        def action_restart_wizard(self) -> None:
+            self._delegate("action_restart_wizard")
 
         def action_quit(self) -> None:
             """Show quit confirmation modal before exiting."""

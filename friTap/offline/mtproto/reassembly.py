@@ -10,6 +10,7 @@ gap that the available segments cannot fill, marks the direction ``degraded``.
 
 from __future__ import annotations
 
+import bisect
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -29,9 +30,26 @@ class TcpStreamReassembler:
         self._anchor: Optional[int] = None
         self._saw_syn = False
         self._contig_cache: Optional[bytes] = None  # invalidated on feed()
+        # seq -> earliest capture time seen for that seq (retransmits never move it).
+        self._seq_ts: Dict[int, float] = {}
+        # [(start offset within the contiguous run, capture ts)] — built with the run.
+        self._span_starts: List[int] = []
+        self._span_ts: List[float] = []
 
-    def feed(self, seq: int, payload: bytes, syn: bool = False, fin: bool = False) -> None:
-        """Buffer one segment. SYN consumes one sequence number (data starts at seq+1)."""
+    def feed(
+        self,
+        seq: int,
+        payload: bytes,
+        syn: bool = False,
+        fin: bool = False,
+        ts: float = 0.0,
+    ) -> None:
+        """Buffer one segment. SYN consumes one sequence number (data starts at seq+1).
+
+        ``ts`` is the segment's capture time (pcap epoch seconds; 0.0 = unknown).
+        The earliest time seen for a sequence number is kept, so a retransmit
+        never moves a byte's timestamp later.
+        """
         # Any new segment can change the anchor or the contiguous run; the run is
         # read repeatedly afterwards (degraded checks + the decryptor), so cache it.
         self._contig_cache = None
@@ -50,10 +68,45 @@ class TcpStreamReassembler:
             # Dedupe retransmits; keep the longest copy at a given seq.
             if existing is None or len(payload) > len(existing):
                 self._segments[data_seq] = payload
+            self._record_seq_ts(data_seq, ts)
+
+    def _record_seq_ts(self, seq: int, ts: float) -> None:
+        """Keep the minimum known (> 0) capture time for *seq*."""
+        if ts <= 0:
+            self._seq_ts.setdefault(seq, 0.0)
+            return
+        known = self._seq_ts.get(seq, 0.0)
+        if known <= 0 or ts < known:
+            self._seq_ts[seq] = ts
 
     @property
     def has_anchor(self) -> bool:
         return self._anchor is not None
+
+    @property
+    def saw_syn(self) -> bool:
+        """True when the opening SYN was observed, so the anchor is the REAL start.
+
+        Without a SYN the anchor is merely the lowest sequence number seen, which
+        for a capture that began mid-flow is NOT the connection start — the first
+        contiguous bytes are then not guaranteed to be the obfuscation init block.
+        """
+        return self._saw_syn
+
+    @property
+    def has_start_gap(self) -> bool:
+        """True when the earliest observed byte begins after the anchor.
+
+        A start gap means the opening (init) bytes were never captured. It is
+        distinct from a later mid-stream gap, where the init block is intact and a
+        contiguous prefix is still decryptable.
+        """
+        if self._anchor is None:
+            return True
+        ordered = self._ordered()
+        if not ordered:
+            return False  # no data yet (handshake only) — not a start gap per se
+        return self._rel(ordered[0][0]) > 0
 
     def _rel(self, seq: int) -> int:
         """Signed distance of *seq* from the anchor, wrap-safe (RFC 1982 serial math).
@@ -82,6 +135,8 @@ class TcpStreamReassembler:
         """
         if self._contig_cache is not None:
             return self._contig_cache
+        self._span_starts = []
+        self._span_ts = []
         if self._anchor is None:
             self._contig_cache = b""
             return self._contig_cache
@@ -94,11 +149,26 @@ class TcpStreamReassembler:
             end_rel = rel + len(payload)
             if end_rel <= next_rel:
                 continue  # fully-overlapping retransmit already covered
+            # The bytes this segment contributes start at the current run end.
+            self._span_starts.append(next_rel)
+            self._span_ts.append(self._seq_ts.get(seq, 0.0))
             # Trim any overlap with what we've already emitted.
             out += payload[next_rel - rel:]
             next_rel = end_rel
         self._contig_cache = bytes(out)
         return self._contig_cache
+
+    def timestamp_at(self, offset: int) -> float:
+        """Capture time of the segment that delivered byte *offset* of the run.
+
+        *offset* indexes :meth:`contiguous_bytes` (0 = the anchor byte). Returns
+        0.0 when the offset lies outside the run or its segment had no timestamp.
+        """
+        run = self.contiguous_bytes()
+        if offset < 0 or offset >= len(run) or not self._span_starts:
+            return 0.0
+        idx = bisect.bisect_right(self._span_starts, offset) - 1
+        return self._span_ts[idx] if idx >= 0 else 0.0
 
     @property
     def degraded(self) -> bool:
@@ -157,6 +227,41 @@ def _normalized_key(
     return (lo[0], lo[1], hi[0], hi[1])
 
 
+def _tcp_payload(ip, tcp, raw_cls) -> bytes:
+    """Return the raw TCP payload bytes, independent of scapy's dissection.
+
+    ``pkt[Raw]`` is not enough: once any code in the process imports
+    ``scapy.layers.tls`` (bound to TCP/443), scapy dissects port-443 payloads
+    as TLS records, so the bytes end up in TLS layers instead of a ``Raw``
+    layer and would be silently dropped. MTProto's DCs listen on 443 too.
+    Rebuilding ``tcp.payload`` returns the original bytes (scapy caches the
+    raw bytes of every dissected layer); link-layer padding is trimmed via
+    the IP length fields.
+    """
+    payload_layer = tcp.payload
+    if isinstance(payload_layer, raw_cls):
+        return bytes(payload_layer.load)
+    if not payload_layer:
+        return b""
+    data = bytes(payload_layer)
+    expected = _ip_payload_length(ip, tcp)
+    if expected is not None and 0 <= expected <= len(data):
+        data = data[:expected]
+    return data
+
+
+def _ip_payload_length(ip, tcp):
+    """TCP payload length from the IP header, or None when unknown."""
+    header_len = int(tcp.dataofs or 5) * 4
+    total = getattr(ip, "len", None)
+    if total is not None and hasattr(ip, "ihl"):
+        return int(total) - int(ip.ihl or 5) * 4 - header_len
+    plen = getattr(ip, "plen", None)
+    if plen is not None:
+        return int(plen) - header_len
+    return None
+
+
 def reassemble_pcap(
     pcap_path: str,
     *,
@@ -192,18 +297,19 @@ def reassemble_pcap(
                 continue
             tcp = pkt[TCP]
             sport, dport = int(tcp.sport), int(tcp.dport)
-            payload = bytes(pkt[Raw].load) if Raw in pkt else b""
+            payload = _tcp_payload(ip, tcp, Raw)
             flags = int(tcp.flags)
             syn = bool(flags & 0x02)
             fin = bool(flags & 0x01)
             seq = int(tcp.seq)
+            ts = float(pkt.time)
 
             key = _normalized_key(src, sport, dst, dport)
             builder = pending.get(key)
             if builder is None:
                 builder = _ConvBuilder(family, server_ports)
                 pending[key] = builder
-            builder.add(src, sport, dst, dport, seq, payload, syn, fin)
+            builder.add(src, sport, dst, dport, seq, payload, syn, fin, ts=ts)
 
     return {key: b.finalize() for key, b in pending.items()}
 
@@ -220,7 +326,7 @@ class _ConvBuilder:
         self._first_payload_src: Optional[Tuple[str, int]] = None
         self._dst_ports: Dict[Tuple[str, int], int] = {}
 
-    def add(self, src, sport, dst, dport, seq, payload, syn, fin) -> None:
+    def add(self, src, sport, dst, dport, seq, payload, syn, fin, ts: float = 0.0) -> None:
         src_ep = (src, sport)
         dst_ep = (dst, dport)
         for ep in (src_ep, dst_ep):
@@ -231,7 +337,7 @@ class _ConvBuilder:
         if r is None:
             r = TcpStreamReassembler()
             self._reasm[src_ep] = r
-        r.feed(seq, payload, syn=syn, fin=fin)
+        r.feed(seq, payload, syn=syn, fin=fin, ts=ts)
         if payload and self._first_payload_src is None:
             self._first_payload_src = src_ep
 

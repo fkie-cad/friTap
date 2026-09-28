@@ -17,7 +17,14 @@ logger = logging.getLogger(__name__)
 
 
 def _parser_protocol_label(parser) -> str:
-    """Map a parser instance to a human-readable protocol name."""
+    """Map a parser instance to a human-readable protocol name.
+
+    A parser's own ``PROTOCOL`` wins when it declares one; the class-name
+    heuristics remain for parsers that leave it at ``"unknown"``.
+    """
+    declared = getattr(parser, "PROTOCOL", "unknown")
+    if declared and declared != "unknown":
+        return declared
     name = type(parser).__name__
     if "Http1" in name:
         return "HTTP/1.x"
@@ -30,8 +37,11 @@ def _parser_protocol_label(parser) -> str:
     return name
 
 
-def detect_protocol_from_bytes(data: bytes) -> str:
+def detect_protocol_from_bytes(data: bytes, transport: str | None = None) -> str:
     """Lightweight protocol detection from first bytes.
+
+    *transport* (a ``Flow.transport`` value) selects a pinned parser first, so
+    decrypted TL transports are labelled by transport rather than by sniffing.
 
     Returns a human-readable protocol name (e.g. ``"HTTP/1.1"``,
     ``"HTTP/2"``) or ``"unknown"`` if no parser matches.
@@ -46,7 +56,7 @@ def detect_protocol_from_bytes(data: bytes) -> str:
 
     try:
         registry = get_default_registry()
-        parser = registry.detect(data)
+        parser = registry.detect(data, transport=transport)
     except Exception:
         return "unknown"
 
@@ -70,6 +80,16 @@ def reparse_flow(flow: "Flow") -> bool:
     from friTap.parsers.registry import get_default_registry
 
     if not flow.chunks:
+        return False
+
+    transport = getattr(flow, "transport", None)
+    try:
+        registry = get_default_registry()
+        if registry.pinned_parser_for(transport) is not None:
+            return _reparse_pinned_flow(flow, registry, transport)
+    except Exception:
+        logger.debug("Pinned reparse failed for flow %s",
+                     getattr(flow, "flow_id", "?"), exc_info=True)
         return False
 
     # Try write-direction bytes first (client request), fall back to read
@@ -151,12 +171,7 @@ def reparse_flow(flow: "Flow") -> bool:
     # new protocol and any OWNED inner layers (decryptor output) are re-parsed
     # against their current bytes. Mirrored transport/app layers track the
     # reassigned request/response automatically; this rebuilds their identity.
-    try:
-        from friTap.flow.layer_pipeline import LayerPipeline
-        LayerPipeline().reparse(flow)
-    except Exception:
-        logger.debug("Layer-stack reparse failed for flow %s",
-                     getattr(flow, "flow_id", "?"), exc_info=True)
+    _refresh_layer_stack(flow)
 
     if upgraded:
         logger.debug(
@@ -166,4 +181,61 @@ def reparse_flow(flow: "Flow") -> bool:
             flow.display_method,
         )
 
+    return upgraded
+
+
+def _refresh_layer_stack(flow: "Flow") -> None:
+    """Rebuild the flow's protocol layer stack after request/response changed."""
+    try:
+        from friTap.flow.layer_pipeline import LayerPipeline
+        LayerPipeline().reparse(flow)
+    except Exception:
+        logger.debug("Layer-stack reparse failed for flow %s",
+                     getattr(flow, "flow_id", "?"), exc_info=True)
+
+
+def clear_trailing_data(flow: "Flow") -> None:
+    """Drop trailing-data state a byte-sniffing parser left on *flow*."""
+    flow.trailing_bytes = None
+    flow.trailing_protocol = ""
+    flow.trailing_parse = None
+    if getattr(flow, "response_trailing_bytes", None) is not None:
+        flow.response_trailing_bytes = None
+        flow.response_trailing_protocol = ""
+        flow.response_trailing_parse = None
+    invalidate = getattr(flow, "invalidate_body_cache", None)
+    if callable(invalidate):
+        invalidate()
+
+
+def _first_result_for_direction(registry, transport: str, flow: "Flow", direction: str):
+    """Feed only *direction*'s chunks to a fresh pinned parser; return its first result."""
+    from friTap.parsers.base import SafeParserAdapter
+
+    parser = SafeParserAdapter(registry.detect(b"", transport=transport))
+    for chunk in flow.chunks:
+        if chunk.direction != direction:
+            continue
+        for result in parser.feed(chunk.data, chunk.direction):
+            return result
+    for result in parser.flush():
+        return result
+    return None
+
+
+def _reparse_pinned_flow(flow: "Flow", registry, transport: str) -> bool:
+    """Re-parse a transport-pinned flow (decrypted TL) per direction.
+
+    Each direction gets its own parser so the request holds only write data and
+    the response only read data; stale trailing-data segments from an earlier
+    byte-sniffed parse (e.g. a bogus WebSocket PING) are cleared.
+    """
+    clear_trailing_data(flow)
+    flow.request = _first_result_for_direction(registry, transport, flow, "write")
+    flow.response = _first_result_for_direction(registry, transport, flow, "read")
+    _refresh_layer_stack(flow)
+    upgraded = flow.request is not None or flow.response is not None
+    if upgraded:
+        logger.debug("Reparsed pinned flow %s (transport=%s)",
+                     getattr(flow, "flow_id", "?"), transport)
     return upgraded

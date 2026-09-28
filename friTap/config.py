@@ -61,8 +61,19 @@ class OutputConfig:
     filter_expression: Optional[str] = None  # Wireshark-like display filter
     # Drop frida/adb infrastructure traffic (ports 5037/5555/27042/27043) by default
     filter_infrastructure: bool = True
-    # Include loopback/localhost traffic (e.g. Firefox NSS IPC) — off by default
+    # Include loopback/localhost traffic (e.g. a client talking to a local server,
+    # Firefox NSS IPC). OFF by default; opt-in via --loopback, which makes a full
+    # capture (-f) also sniff the loopback adapter and the pipeline keep loopback traffic.
     include_loopback: bool = False
+    # Auto-relabel a Windows SChannel/lsass keylog by trial decryption against the
+    # full capture at teardown (fixes TLS 1.3 label swaps + ??? client_randoms so the
+    # keylog loads directly in Wireshark). ON by default; disable with --no-auto-relabel.
+    auto_relabel: bool = True
+    # A helper session that contributes to ANOTHER session's outputs: the Windows
+    # LSASS worker (``hook_lsass`` in friTap.py) shares the target session's -p,
+    # -k and --json paths. Its JSON session_info is recorded under
+    # "auxiliary_sessions" so "session_info" stays the target session's.
+    auxiliary_session: bool = False
     # Live passive-analysis ("scan") of observed traffic during capture.
     # ``scan`` is an analyzer spec (None disables; "all" / comma-list selects).
     scan: Optional[str] = None
@@ -127,6 +138,13 @@ class HookingConfig:
     # user with no way to learn how far friTap got. Boolean on purpose — staged
     # verbosity levels would be a second, redundant knob next to -v/-do.
     probe: bool = False
+    # --boringssl-anchor-only (Android arm64; debugging aid). Force friTap's
+    # last-resort BoringSSL keylog tier (the "anchor locator") by skipping the
+    # byte-pattern tier, so a fully-stripped BoringSSL lib (Chrome libchrome.so,
+    # libhttpengine.so) routes straight to onAllKeylogTiersMissed -> tier 4. Lets
+    # the anchor locator be exercised on modules a pattern would otherwise win.
+    # Still honours --pairip-safe (tier 4 is a memory scan). Default OFF.
+    force_anchor_locator: bool = False
     # Override which layer of the HTTP/3 egress-headers fallback chain the
     # agent actually attaches to. "auto" (default) keeps the winner-takes-all
     # logic: quiche-internal QuicSpdyStream::WriteHeaders preferred, then
@@ -141,6 +159,38 @@ class HookingConfig:
     # protocol-agnostic (the public scan engine and any private scan binding both
     # read it). See agent/shared/scan/.
     scan_keys_region: Optional[str] = None
+    # Heap secret-scanner (--memory-scan / -ms). When True, friTap loads a
+    # separate, independently-injected agent (friTap/fritap_memscan.js) that
+    # recovers TLS secrets by scanning process heap memory instead of hooking
+    # the TLS library. It is complementary to the normal capture: passed alone,
+    # it is the ONLY thing loaded (the main TLS-hooking agent is skipped);
+    # combined with -k/-p/-c it runs alongside them. memory_scan_patterns is the
+    # optional -ms value: either a path to a user profile file that
+    # overrides/extends the shipped friTap/memory_scanning/patterns.json,
+    # OR a targeted engine name (boringssl | schannel | rc4) / profile id (F3).
+    # The resolver (memory_scanning.loader.select_profiles) disambiguates by
+    # resolution order — an existing file wins, then a known engine/id — so this
+    # single field carries both meanings. memory_scan_interval is the poll
+    # cadence (seconds) at which the host drives the scanner's scanOnce().
+    memory_scan: bool = False
+    memory_scan_patterns: Optional[str] = None
+    memory_scan_interval: float = 2.0
+    # Opt-in (--ms-emit-unconfirmed): also write memory-scan key candidates the
+    # confirmation oracle could not verify (MTProto auth/E2E) to the keylog. OFF
+    # by default; harmless offline since a wrong candidate matches no record.
+    memory_scan_emit_unconfirmed: bool = False
+    # RC4 memory-scanner oracles (--ms-rc4-known-plaintext / --ms-rc4-ciphertext).
+    # There is no SSPI oracle on Android, so these inject a known-plaintext prefix
+    # (an exact, zero-false-accept key test) and/or a ciphertext sample (for
+    # trial-decrypt scoring) into the rc4 profile's params via
+    # memory_scanning.loader.apply_rc4_param_overrides. Each accepts hex or plain
+    # text; None (the default) leaves the profile untouched.
+    memory_scan_rc4_known_plaintext: Optional[str] = None
+    memory_scan_rc4_ciphertext: Optional[str] = None
+    # Whether the main hooking agent (interception) runs at all. The TUI's
+    # "Key Extraction Method" step sets this False for a memory-scan-only run;
+    # see memory_scan_only(). The CLI leaves it True and relies on inference.
+    intercept: bool = True
     encapsulated_protocols: Dict[str, bool] = field(
         default_factory=lambda: {"ohttp": True}
     )
@@ -186,6 +236,12 @@ class FriTapConfig:
     output: OutputConfig = field(default_factory=OutputConfig)
     hooking: HookingConfig = field(default_factory=HookingConfig)
     protocol: str = "tls"
+    # Foundation F1 — multi-protocol selection. `protocols` is the CANONICAL
+    # selection: an ordered, de-duplicated list of the protocols the user asked
+    # for (e.g. ["tls", "rc4"]). `protocol` above is kept as the PRIMARY (first)
+    # element so the many existing call sites that read a single `config.protocol`
+    # string keep working unchanged. __post_init__ keeps the two in sync.
+    protocols: List[str] = field(default_factory=list)
     backend: str = BackendName.FRIDA
     debug: bool = False
     debug_output: bool = False
@@ -197,22 +253,38 @@ class FriTapConfig:
     def __post_init__(self):
         if self.debug:
             self.debug_output = True
+        # Keep the canonical `protocols` list and the primary `protocol` string
+        # consistent regardless of which one the caller supplied. When only the
+        # legacy `protocol` was set, derive the list from it; otherwise the list
+        # is canonical and `protocol` becomes its first (primary) element. This
+        # makes the default (`protocols == ["tls"]`, `protocol == "tls"`) and the
+        # single-protocol case byte-for-byte identical to before.
+        if not self.protocols:
+            self.protocols = [self.protocol]
+        else:
+            self.protocol = self.protocols[0]
 
-    def validate_protocol_backend(self, protocol_handler=None) -> None:
-        """Validate that the selected backend supports the configured protocol.
+    def validate_protocol_backend(self, protocol_handler=None, protocol_name=None) -> None:
+        """Validate that the selected backend supports a configured protocol.
 
         Parameters
         ----------
         protocol_handler
             A ProtocolHandler instance. If None, validation is skipped.
+        protocol_name
+            The name of the protocol being validated (used in the skip check and
+            error message). Defaults to the primary ``self.protocol`` so existing
+            single-handler callers are unchanged; multi-protocol callers pass one
+            name per selected handler so each selection is validated in turn.
 
         Raises
         ------
         UnsupportedProtocolBackendError
             When the backend support level is STUB or UNSUPPORTED.
         """
-        if self.protocol == "auto":
-            return  # auto always starts with Frida default
+        name = protocol_name or self.protocol
+        if name in ("auto", "all"):
+            return  # auto/all always start with the Frida default
         if protocol_handler is None:
             return
         from .protocols.base import BackendSupport
@@ -223,7 +295,7 @@ class FriTapConfig:
                 if lvl == BackendSupport.FULL
             ]
             raise UnsupportedProtocolBackendError(
-                f"Protocol '{self.protocol}' does not fully support the "
+                f"Protocol '{name}' does not fully support the "
                 f"'{self.backend}' backend (level: {level}). "
                 f"Supported backends: {', '.join(supported)}"
             )
@@ -266,10 +338,12 @@ class FriTapConfig:
         script_load_timeout: float = 20.0,
         backend: str = BackendName.FRIDA,
         protocol: str = "tls",
+        protocols: Optional[List[str]] = None,
         proxy: Optional[str] = None,
         filter_expression: Optional[str] = None,
         filter_infrastructure: bool = True,
         include_loopback: bool = False,
+        auto_relabel: bool = True,
         force_scan_modules: Optional[List[str]] = None,
         quic_capture_mode: str = "stream",
         quic_only: bool = False,
@@ -277,8 +351,15 @@ class FriTapConfig:
         stealth_loader: bool = False,
         pairip_safe: bool = False,
         probe: bool = False,
+        force_anchor_locator: bool = False,
         quic_egress_headers_layer: str = "auto",
         scan_keys_region: Optional[str] = None,
+        memory_scan: bool = False,
+        memory_scan_patterns: Optional[str] = None,
+        memory_scan_interval: float = 2.0,
+        memory_scan_emit_unconfirmed: bool = False,
+        memory_scan_rc4_known_plaintext: Optional[str] = None,
+        memory_scan_rc4_ciphertext: Optional[str] = None,
         scan: Optional[str] = None,
         scan_report: str = "table",
         scan_report_out: Optional[str] = None,
@@ -321,6 +402,7 @@ class FriTapConfig:
                 filter_expression=filter_expression,
                 filter_infrastructure=filter_infrastructure,
                 include_loopback=include_loopback,
+                auto_relabel=auto_relabel,
                 scan=scan,
                 scan_report=scan_report,
                 scan_report_out=scan_report_out,
@@ -346,10 +428,18 @@ class FriTapConfig:
                 stealth_loader=stealth_loader,
                 pairip_safe=pairip_safe,
                 probe=probe,
+                force_anchor_locator=force_anchor_locator,
                 quic_egress_headers_layer=quic_egress_headers_layer,
                 scan_keys_region=scan_keys_region,
+                memory_scan=memory_scan,
+                memory_scan_patterns=memory_scan_patterns,
+                memory_scan_interval=memory_scan_interval,
+                memory_scan_emit_unconfirmed=memory_scan_emit_unconfirmed,
+                memory_scan_rc4_known_plaintext=memory_scan_rc4_known_plaintext,
+                memory_scan_rc4_ciphertext=memory_scan_rc4_ciphertext,
             ),
             protocol=protocol,
+            protocols=list(protocols) if protocols else [protocol],
             backend=backend,
             debug=debug_mode,
             debug_output=debug_output,
@@ -382,6 +472,57 @@ def effective_script_load_timeout(config: "FriTapConfig") -> float | None:
 
     hooking = config.hooking
     scan_heavy = bool(
-        hooking.patterns or hooking.library_scan or hooking.scan_keys_region
+        hooking.patterns
+        or hooking.library_scan
+        or hooking.scan_keys_region
+        or getattr(hooking, "memory_scan", False)
     )
     return configured * _SCAN_HEAVY_TIMEOUT_FACTOR if scan_heavy else configured
+
+
+def memory_scan_only(config: "FriTapConfig") -> bool:
+    """True when ``-ms`` was requested with no other capture/hook surface.
+
+    In that case the main TLS-hooking agent produces nothing — only the heap
+    secret-scanner does — so ``instrument()`` skips creating and loading the
+    main agent and runs the memory-scan plugin alone. An explicit
+    ``hooking.intercept = False`` (the TUI's "memory only" extraction method)
+    forces this mode. Otherwise any normal capture surface
+    (``-k``/``-p``/``-c``/socket trace/live/JSON/``--scan``/
+    ``--scan-keys-region``), offset/pattern hooking (``--offsets``/``--patterns``),
+    a library scan (``--library-scan``), a probe, or payload modification pulls
+    the main agent back in so both run together. Full capture (``-f``) is not a
+    surface of its own: its pcap comes from tcpdump, not the agent, so ``-f -p``
+    counts ``-p`` only without ``-f``, and the memory scanner supplies the keys.
+    Kept as a pure function of the config so the decision is testable and lives
+    next to the other config-derived rules.
+    """
+    hooking = config.hooking
+    # getattr on the gates only: partial mock configs in the test suite may omit
+    # the newest fields, and these are the lines they reach before returning.
+    if not getattr(hooking, "memory_scan", False):
+        return False
+    if not getattr(hooking, "intercept", True):
+        return True
+    out = config.output
+    # In full-capture mode the pcap is written by tcpdump on the device, so -p
+    # alone does not need the agent's plaintext pcap stream.
+    agent_pcap = bool(out.pcap) and not out.full_capture
+    other_capture = any((
+        out.keylog,
+        agent_pcap,
+        out.json_output,
+        out.socket_trace,
+        out.live,
+        out.scan,
+        config.custom_hook_script,
+        hooking.scan_keys_region,
+        hooking.probe,
+        hooking.payload_modification,
+        # Offset/pattern-based hooking and the library scan all run *inside* the
+        # main agent, so any of them must pull it back in alongside -ms.
+        hooking.offsets,
+        hooking.patterns,
+        hooking.library_scan,
+    ))
+    return not other_capture

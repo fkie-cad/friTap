@@ -15,6 +15,7 @@ from ..backends.base import BackendName
 from ..output.keylog_format import KeylogFormatter
 from . import mtproto_keylog_spec as spec
 from .base import BackendSupport, ProtocolHandler
+from .mtproto_hints import attach_mode_hint
 
 if TYPE_CHECKING:
     from ..events import KeylogEvent
@@ -87,28 +88,28 @@ class MTProtoHandler(ProtocolHandler):
         return {BackendName.FRIDA: BackendSupport.FULL}
 
     def validate_cli_intent(self, parsed, parser, logger) -> None:
-        """MTProto needs the modern agent; nudge spawn and warn on missing backend.
+        """Nudge MTProto captures toward spawn and warn on a missing backend.
 
-        Moved here from the generic CLI parser so the public core stays
-        protocol-agnostic. ``--protocol mtproto`` auto-enables the modern path
-        (legacy has no MTProto support); attach mode misses the obfuscated-
-        transport init bytes so we nudge toward spawn; and we warn early if the
-        offline-decrypt backend is missing.
+        Attach mode misses the obfuscated-transport init bytes
+        so we nudge toward spawn; and we warn early if the offline-decrypt
+        backend is missing.
         """
-        if not getattr(parsed, "use_modern", False):
-            logger.info("[mtproto] --protocol mtproto auto-enables use_modern=true (legacy path has no MTProto support)")
-            parsed.use_modern = True
         # MTProto's obfuscated transport can only be decrypted offline when each
         # TCP stream is captured from its first 64 bytes. Attaching to an already
         # running Telegram misses that init block on connections opened earlier
         # (they come back "degraded" and decrypt to nothing), so nudge toward spawn.
         if not getattr(parsed, "spawn", False):
-            logger.info(
-                "[mtproto] attach mode: connections opened before capture can't be "
-                "decrypted (obfuscated-transport init bytes are missed). Use -s (spawn) "
-                "so every connection is captured from the start, or force-stop + relaunch "
-                "the app before attaching."
-            )
+            memory_scan = bool(getattr(parsed, "memory_scan", False))
+            logger.info(f"[mtproto] {attach_mode_hint(memory_scan)}")
+        # Offline decryption needs the transport auth key for every stream: friTap
+        # captures it via the spawn getAuthKey hook (-k) or an -ms memory scan.
+        # Without it the transport envelope can't be opened, so a secret-chat (E2E)
+        # key alone decrypts nothing. Emit only — never touch the user's flags.
+        logger.info(
+            "[mtproto] transport auth keys are captured by the spawn getAuthKey hook "
+            "(-k) or -ms memory scan; without a transport auth key the obfuscated "
+            "envelope can't be decrypted (an E2E-only keylog yields 0 flows)."
+        )
         # Live capture only needs to extract keys/plaintext (no Python-side crypto),
         # but offline decryption of the resulting pcap does. Nudge the user early so
         # a later `--mtproto-keylog` run does not surprise them.

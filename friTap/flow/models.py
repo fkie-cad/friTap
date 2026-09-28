@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from friTap.flow import display as _display
 from friTap.flow.layer_registry import get_registry
@@ -53,6 +54,9 @@ class FlowChunk:
     direction: str  # "read" or "write"
     timestamp: float
     function: str = ""
+    # Real transport stream id (QUIC) when known. In-memory only: the tap
+    # format serializes chunk fields explicitly and does not persist it.
+    stream_id: Optional[int] = None
 
 
 # TLS handshake metadata is now the ``tls`` protocol LAYER (TlsLayer in
@@ -112,6 +116,8 @@ class FlowSummary:
     has_ohttp: bool = False
     has_trailing_data: bool = False
     trailing_protocol: str = ""
+    has_response_trailing_data: bool = False
+    response_trailing_protocol: str = ""
     total_bytes: int = 0
     detected_protocol: str = ""
     # Schema v2 additive enrichment scalars (cheap to surface in list/filter views)
@@ -130,6 +136,16 @@ class FlowSummary:
     # "sendMessage", "users", "updates"). Surfaced in the Method column without
     # loading full messages. See friTap.flow.display.method_from_messages.
     flow_method: str = ""
+    # Precomputed display-filter inputs, so filtering behaves identically on a
+    # live flow and on a row rebuilt from a .tap (which has no layer stack).
+    # ``filter_attrs`` maps per-protocol filter fields (``mtproto.method`` ...)
+    # to their values (see friTap.filter.layer_fields); ``protocols`` holds the
+    # canonical protocol names (see friTap.filter.protocols). The mapping is a
+    # plain dict (so the summary pickles, deep-copies and survives
+    # dataclasses.asdict) that must be treated as READ-ONLY; dicts are
+    # unhashable, so it is excluded from hash().
+    filter_attrs: Mapping[str, tuple] = field(default_factory=dict, hash=False)
+    protocols: frozenset[str] = frozenset()
 
     @property
     def duration(self) -> float:
@@ -170,6 +186,7 @@ class FlowSummary:
         return _display.display_connection(
             self.request, self.response,
             self.src_addr, self.src_port, self.dst_addr, self.dst_port,
+            literal_direction=_display.is_message_transport(self),
         )
 
     # Aliases for filter engine compatibility
@@ -187,8 +204,20 @@ class FlowSummary:
         return _OHTTP_SENTINEL if self.has_ohttp else None
 
     @staticmethod
-    def from_flow(flow: "Flow") -> "FlowSummary":
-        """Create a summary snapshot from a full Flow."""
+    def from_flow(
+        flow: "Flow", filter_attrs: Optional[Mapping[str, tuple]] = None,
+    ) -> "FlowSummary":
+        """Create a summary snapshot from a full Flow.
+
+        *filter_attrs* reuses display-filter attributes already extracted for
+        an unchanged layer stack (live rebuilds); by default they are derived
+        from ``flow.layers``.
+        """
+        # Local imports: friTap.filter's package __init__ pulls in the evaluator,
+        # which must stay free to import friTap.flow without a cycle.
+        from friTap.filter.layer_fields import filter_inputs_from_flow
+        from friTap.filter.protocols import flow_has_ohttp
+
         req_stub = None
         if flow.request is not None:
             r = flow.request
@@ -224,6 +253,7 @@ class FlowSummary:
         # Primary TL operation from the message-bearing layers; falls back to a
         # preset scalar (synthetic flows rebuilt from a .tap have no live layers).
         flow_method = getattr(flow, "flow_method", "") or _display.method_from_messages(flow)
+        filter_attrs, protocols = filter_inputs_from_flow(flow, filter_attrs)
         return FlowSummary(
             flow_id=flow.flow_id,
             connection_id=flow.connection_id,
@@ -238,10 +268,11 @@ class FlowSummary:
             transport=getattr(flow, "transport", "tls") or "tls",
             request=req_stub,
             response=resp_stub,
-            has_ohttp=(flow.ohttp_inner_request is not None
-                       or flow.ohttp_inner_response is not None),
+            has_ohttp=flow_has_ohttp(flow),
             has_trailing_data=flow.trailing_bytes is not None,
             trailing_protocol=flow.trailing_protocol,
+            has_response_trailing_data=flow.response_trailing_bytes is not None,
+            response_trailing_protocol=flow.response_trailing_protocol,
             total_bytes=flow._total_bytes,
             detected_protocol=flow.detected_protocol,
             process_name=flow.process_name,
@@ -254,6 +285,25 @@ class FlowSummary:
             inner_e2e_protocol=inner_e2e,
             inner_summary=inner_summary,
             flow_method=flow_method,
+            filter_attrs=filter_attrs,
+            protocols=protocols,
+        )
+
+    @staticmethod
+    def from_tap_summary(tap_summary: Any, flow: "Flow") -> "FlowSummary":
+        """Summary for a replay row: *flow* is the layerless synthetic Flow
+        rebuilt from *tap_summary* (a decoded ``tap_format.FlowSummary``).
+
+        The synthetic flow has no layer stack or OHTTP payloads, so the
+        display-filter inputs decoded from the tap's ``meta["layers"]`` are
+        taken over directly; only the protocols of a re-parsed
+        request/response (computed by :meth:`from_flow`) are added on top.
+        """
+        summary = FlowSummary.from_flow(flow, filter_attrs=tap_summary.filter_attrs)
+        return replace(
+            summary,
+            protocols=tap_summary.protocols | summary.protocols,
+            has_ohttp=summary.has_ohttp or tap_summary.has_ohttp,
         )
 
     def to_dict(self) -> dict:
@@ -341,6 +391,12 @@ class Flow:
     trailing_bytes: Optional[bytes] = None
     trailing_protocol: str = ""
     trailing_parse: Optional[ParseResult] = None
+    # Trailing data left over in the READ (response) direction. The legacy
+    # trailing_* slot above keeps holding write-direction / direction-less
+    # leftovers, so parsers that do not report a direction are unchanged.
+    response_trailing_bytes: Optional[bytes] = None
+    response_trailing_protocol: str = ""
+    response_trailing_parse: Optional[ParseResult] = None
 
     # Raw
     chunks: list[FlowChunk] = field(default_factory=list)
@@ -492,11 +548,19 @@ class Flow:
         return self.trailing_bytes is not None
 
     @property
+    def has_response_trailing_data(self) -> bool:
+        return self.response_trailing_bytes is not None
+
+    @property
     def segments(self) -> list[dict]:
         """Return segment descriptors for multi-protocol rendering.
 
         Each segment is a dict with keys: type ('parsed'|'raw'), protocol,
         parse_result (or None), data (raw bytes for 'raw' type), source.
+
+        The response-direction trailing segment (source ``"response_trailing"``)
+        is appended last. The TUI addresses segments PER PANE: on each pane,
+        segment 1 is that pane's own trailing segment (see ``pane_segments``).
         """
         segs: list[dict] = []
         if self.request is not None:
@@ -506,21 +570,35 @@ class Flow:
                 "parse_result": self.request,
                 "source": "primary",
             })
-        if self.trailing_parse is not None:
-            segs.append({
-                "type": "parsed",
-                "protocol": self.trailing_protocol,
-                "parse_result": self.trailing_parse,
-                "source": "trailing",
-            })
-        elif self.trailing_bytes:
-            segs.append({
-                "type": "raw",
-                "protocol": self.trailing_protocol or "unknown",
-                "data": self.trailing_bytes,
-                "source": "trailing",
-            })
+        segs.extend(self._trailing_segments(
+            self.trailing_bytes, self.trailing_protocol,
+            self.trailing_parse, "trailing"))
+        segs.extend(self._trailing_segments(
+            self.response_trailing_bytes, self.response_trailing_protocol,
+            self.response_trailing_parse, "response_trailing"))
         return segs
+
+    def pane_segments(self, pane: str) -> list[dict]:
+        """Segments shown on one detail pane: primary plus that pane's trailing.
+
+        *pane* is ``"request"`` or ``"response"``; index 0 is the primary
+        message, index 1 (when present) the pane's trailing segment.
+        """
+        trailing_source = "response_trailing" if pane == "response" else "trailing"
+        return [s for s in self.segments
+                if s["source"] in ("primary", trailing_source)]
+
+    @staticmethod
+    def _trailing_segments(data: Optional[bytes], protocol: str,
+                           parse: Optional[ParseResult], source: str) -> list[dict]:
+        """0 or 1 segment descriptor for one trailing slot."""
+        if parse is not None:
+            return [{"type": "parsed", "protocol": protocol,
+                     "parse_result": parse, "source": source}]
+        if data:
+            return [{"type": "raw", "protocol": protocol or "unknown",
+                     "data": data, "source": source}]
+        return []
 
     @property
     def duration(self) -> float:
@@ -592,6 +670,7 @@ class Flow:
             self.request if self.has_request_data else None,
             self.response if self.has_response_data else None,
             self.src_addr, self.src_port, self.dst_addr, self.dst_port,
+            literal_direction=_display.is_message_transport(self),
         )
 
     def to_dict(self, include_bodies: bool = False) -> dict:

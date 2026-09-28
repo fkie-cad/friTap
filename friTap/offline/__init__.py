@@ -13,7 +13,7 @@ from .pcap_to_tap import (
     NoDecryptionKeysError,
     convert_pcap_to_tap,
 )
-from .tshark import capture_has_dsb
+from .tshark import TSHARK_INSTALL_MESSAGE, TsharkNotFoundError, capture_has_dsb
 
 # NOTE: the manifest-aware ``pcap_to_tap`` wrapper lives in the submodule
 # ``friTap.offline.pcap_to_tap`` (next to ``convert_pcap_to_tap``) and is NOT
@@ -24,6 +24,8 @@ from .tshark import capture_has_dsb
 __all__ = [
     "ConvertResult",
     "NoDecryptionKeysError",
+    "TSHARK_INSTALL_MESSAGE",
+    "TsharkNotFoundError",
     "capture_has_dsb",
     "convert_pcap_to_tap",
 ]

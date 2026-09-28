@@ -12,12 +12,53 @@ import argparse
 import json
 import logging
 import os
-from typing import Sequence
+from typing import Optional, Sequence
 
-from .pcap_to_tap import ConvertResult, NoDecryptionKeysError, convert_pcap_to_tap
-from .tshark import find_tshark
+from . import keylog_coverage
+from .mtproto.transport import (
+    DEFAULT_OBF_ENDPOINT_MATCH_BLOCKS,
+    DEFAULT_OBF_MAX_BLOCKS,
+)
+from .pcap_to_tap import (
+    MESSAGING_PREFIXES,
+    ConvertResult,
+    NoDecryptionKeysError,
+    convert_pcap_to_tap,
+    messaging_buckets,
+)
+from .tshark import TsharkNotFoundError, find_tshark
 
 logger = logging.getLogger(__name__)
+
+# Upper bound for --resync-search-depth (and the TUI's advanced field). The
+# resync search materialises ~2 * 16 bytes of keystream per block of depth, so
+# the depth is a memory knob: 4x the endpoint-matched auto-widen ceiling (the
+# deepest search the pipeline ever runs on its own) leaves headroom for manual
+# un-attributed-key searches while capping one search at ~256 MB of keystream
+# instead of letting a typo allocate many GB. 0 is allowed (no lag search).
+RESYNC_SEARCH_DEPTH_MAX = 4 * DEFAULT_OBF_ENDPOINT_MATCH_BLOCKS
+
+
+def parse_resync_search_depth(raw: str) -> int:
+    """argparse ``type=`` for ``--resync-search-depth``: an int in range.
+
+    Raises :class:`argparse.ArgumentTypeError` (argparse turns it into a clean
+    usage error) for non-integers and values outside
+    ``0..RESYNC_SEARCH_DEPTH_MAX``. A negative depth used to silently disable
+    mid-stream recovery; a huge one allocated gigabytes.
+    """
+    try:
+        value = int(str(raw).strip())
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"resync search depth must be an integer, got {raw!r}"
+        ) from None
+    if not 0 <= value <= RESYNC_SEARCH_DEPTH_MAX:
+        raise argparse.ArgumentTypeError(
+            f"resync search depth must be between 0 and "
+            f"{RESYNC_SEARCH_DEPTH_MAX}, got {value}"
+        )
+    return value
 
 # Sidecar manifest suffix written by friTap at end-of-capture (see pcap.py).
 MANIFEST_SUFFIX = ".fritap.json"
@@ -80,6 +121,16 @@ def _build_parser() -> argparse.ArgumentParser:
             except Exception:  # noqa: BLE001 - a bad hook must not break the CLI
                 logger.debug("offline CLI extras registration failed for %r",
                              _entry.protocol_name, exc_info=True)
+    parser.add_argument(
+        "--resync-search-depth", dest="resync_search_depth",
+        type=parse_resync_search_depth,
+        default=DEFAULT_OBF_MAX_BLOCKS,
+        help="Maximum search depth (in cipher blocks/units) when re-aligning a "
+             "mid-stream flow to a memory-recovered key. Applies to offline "
+             "decryptors that support mid-stream key recovery (currently MTProto "
+             f"obfuscated transport; default {DEFAULT_OBF_MAX_BLOCKS}). "
+             "Endpoint-matched keys auto-search further; raise this for "
+             f"un-attributed keys (range 0..{RESYNC_SEARCH_DEPTH_MAX}).")
     parser.add_argument("--tap", dest="tap", default=None,
                         help="Output .tap path (default: <pcap stem>.tap).")
     parser.add_argument("--scan", action="store_true",
@@ -98,6 +149,14 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Path to the tshark binary (else auto-discovered; "
                              "also honors $FRITAP_TSHARK). Useful on macOS where "
                              "tshark lives in Wireshark.app and is not on PATH.")
+    parser.add_argument("--repair-keylog", dest="repair_keylog", action="store_true",
+                        help="Before converting, fix a --keylog by trial decryption "
+                             "against the capture: re-pair secrets whose client_random "
+                             "is wrong or '???' (e.g. Schannel/lsass dumps), and correct "
+                             "TLS 1.3 labels the live hook may have swapped "
+                             "(HANDSHAKE<->TRAFFIC_SECRET_0). Writes "
+                             "<keylog stem>.relabeled.keylog next to the keylog and "
+                             "decrypts with it; otherwise keeps the original keylog.")
     return parser
 
 
@@ -157,6 +216,28 @@ def merge_manifest(args: argparse.Namespace, manifest: dict) -> dict:
         if value:
             protocol_keylogs[entry.protocol_name] = value
 
+    # Memory-scan sidecars (nested ``memory_scan_keylogs`` map) carry keys the hook
+    # keylog lacks — e.g. the MTProto OBF + perm auth keys that make de-obfuscation
+    # possible. The registry loop above never sees that map, so union each sidecar
+    # into the selected keylog for its protocol (same as the manifest-aware
+    # ``pcap_to_tap`` wrapper), so ``fritap --from-pcap`` uses the scanner keys too.
+    ms_map = manifest.get("memory_scan_keylogs") or {}
+    if ms_map:
+        from .keylog_picker import merge_memory_scan_sidecars
+
+        def _current(proto: str) -> str | None:
+            if proto == "tls":
+                return keylog
+            return protocol_keylogs.get(proto) or named_keylog_kwargs.get(f"{proto}_keylog")
+
+        merged_sidecars = merge_memory_scan_sidecars(
+            ms_map, _current,
+            out_dir=os.path.dirname(os.path.abspath(args.from_pcap)) or None)
+        keylog = merged_sidecars.pop("tls", keylog)
+        for proto, merged_path in merged_sidecars.items():
+            protocol_keylogs[proto] = merged_path
+            named_keylog_kwargs[f"{proto}_keylog"] = merged_path
+
     merged = {
         "keylog_path": keylog,
         "protocol_keylogs": protocol_keylogs,
@@ -164,9 +245,31 @@ def merge_manifest(args: argparse.Namespace, manifest: dict) -> dict:
         "quic_ports": tuple(quic_ports),
         "extra_decode_as": tuple(args.decode_as),
         "heuristic": bool(args.tls_heuristic),
+        # Generic mid-stream resync depth: the boundary maps it to each emitter's
+        # own unit (MTProto's obf_max_blocks today) via the _emitter_accepts gate.
+        "resync_search_depth": getattr(
+            args, "resync_search_depth", DEFAULT_OBF_MAX_BLOCKS
+        ),
     }
     merged.update(named_keylog_kwargs)
     return merged
+
+
+# Shared tail of both E2E-only warnings (summary line + 0-flow explanation).
+_E2E_ONLY_CONSEQUENCE = (
+    " — the transport envelope can't be decrypted, so the messages inside can't "
+    "be reached. Capture transport auth keys with a spawn -k run or -ms memory-scan."
+)
+_MAX_UNKNOWN_IDS_SHOWN = 8
+
+
+def _format_unknown_ids(unknown_key_ids) -> str:
+    """Sorted auth_key_ids, the first 8 shown and the rest as ``… (+N more)``."""
+    shown = ", ".join(sorted(unknown_key_ids)[:_MAX_UNKNOWN_IDS_SHOWN])
+    hidden = len(unknown_key_ids) - _MAX_UNKNOWN_IDS_SHOWN
+    if hidden > 0:
+        shown += f", … (+{hidden} more)"
+    return shown
 
 
 def _print_summary(result: ConvertResult, run_scan: bool) -> None:
@@ -187,9 +290,39 @@ def _print_summary(result: ConvertResult, run_scan: bool) -> None:
         messages = counts.get("messages", 0)
         undecryptable = counts.get("undecryptable", 0)
         degraded = counts.get("degraded", 0)
-        if not (messages or undecryptable or degraded):
+        # Richer degraded breakdown. ``degraded`` now counts only degraded streams
+        # with positive protocol evidence (e.g. MTProto: a Telegram-DC peer), so it
+        # is no longer inflated by foreign/empty streams. The two keys below are
+        # read defensively: they default to 0 until a decryptor plumbs them through
+        # ``record_protocol`` (that plumbing is owned by another workstream), so
+        # this stays behaviour-preserving today and prints the detail once present.
+        degraded_non = counts.get("degraded_non_mtproto", 0)
+        partial = counts.get("partial", 0)
+        # Workstream F: streams re-derived mid-stream from memory-recovered
+        # obfuscation keys (and those a recovery attempt could not align). Read
+        # defensively so buckets without the keys print exactly as before.
+        recovered = counts.get("recovered_via_obf", 0)
+        degraded_unrecovered = counts.get("degraded_unrecovered", 0)
+        # Honest diagnostics: streams that could not be opened for reasons that are
+        # NOT "started mid-connection" (short/lossy client run or an unsupported
+        # transport framing), the E2E-only signal, and the clear-text auth_key_ids
+        # of records naming a key we did not hold. All read defensively (default 0/
+        # False/{}) so buckets without them print exactly as before.
+        short = counts.get("short", 0)
+        unsupported_framing = counts.get("unsupported_framing", 0)
+        e2e_only = counts.get("e2e_only", False)
+        unknown_key_ids = counts.get("unknown_key_ids") or {}
+        if not (messages or undecryptable or degraded or degraded_non or partial
+                or recovered or short or unsupported_framing or e2e_only
+                or unknown_key_ids):
             continue
         print(f"  {proto} messages:   {messages}")
+        if recovered:
+            print(f"  {proto} recovered streams: {recovered} "
+                  "(mid-stream, re-derived from memory-recovered obfuscation keys)")
+        if partial:
+            print(f"  {proto} partial streams: {partial} "
+                  "(valid start, later gap — decrypted the records before the gap)")
         if undecryptable:
             print(f"  {proto} undecryptable records: {undecryptable} "
                   "(no matching key / unsupported transport / wrong key?)")
@@ -198,8 +331,128 @@ def _print_summary(result: ConvertResult, run_scan: bool) -> None:
                   "(capture started mid-stream / unsupported transport)")
             print("  ! messages on those streams could NOT be decrypted — re-capture "
                   "from connection start (spawn mode) to recover them.")
+        if degraded_unrecovered:
+            print(f"  {proto} unrecovered degraded streams: {degraded_unrecovered} "
+                  "(obfuscation-key recovery attempted, no key aligned)")
+        if degraded_non:
+            print(f"  {proto} non-{proto} degraded streams: {degraded_non} "
+                  "(init-less streams with no protocol evidence — not counted above)")
+        if short:
+            print(f"  {proto} short streams: {short} "
+                  "(a start gap / too little client data — NOT mid-connection; "
+                  "re-capture without loss from connection start)")
+        if unsupported_framing:
+            print(f"  {proto} unsupported-framing streams: {unsupported_framing} "
+                  "(padded-intermediate / full / Fake-TLS — start captured, framing "
+                  "not yet decodable; NOT mid-connection)")
+        if e2e_only:
+            print(f"  ! {proto}: a secret-chat (E2E) key was present but no transport "
+                  f"auth key{_E2E_ONLY_CONSEQUENCE}")
+        if unknown_key_ids:
+            print(f"  {proto} unknown auth_key_id(s) on the wire (capture these keys): "
+                  f"{_format_unknown_ids(unknown_key_ids)}")
     if run_scan:
         print(f"  findings:          {result.findings_count}")
+
+
+def _print_prefixed_lines(prefix: str, lines: Sequence[str]) -> None:
+    """Print *lines* with *prefix* on the first and an aligned indent on the rest."""
+    for index, line in enumerate(lines):
+        lead = prefix if index == 0 else " " * len(prefix)
+        print(f"{lead}{line}")
+
+
+def _keylog_coverage(tshark_bin: str, pcap: str, keylog: Optional[str],
+                     capture: Optional[keylog_coverage.CaptureTls] = None,
+                     ) -> Optional[keylog_coverage.Coverage]:
+    """Coverage of the TLS *keylog* over *pcap*, or ``None`` when unavailable.
+
+    ``None`` when no (readable) TLS keylog was supplied — e.g. a DSB-only
+    capture — or the coverage check itself failed. Never raises: the check is
+    advisory and must never change the CLI's outcome.
+    """
+    if not keylog or not os.path.isfile(keylog):
+        return None
+    try:
+        return keylog_coverage.check_keylog_coverage(tshark_bin, pcap, keylog, capture=capture)
+    except Exception:  # noqa: BLE001 - advisory only
+        logger.debug("Keylog coverage check failed for %r", pcap, exc_info=True)
+        return None
+
+
+def _print_coverage_explanation(coverage: Optional[keylog_coverage.Coverage]) -> None:
+    """Explain *coverage* after a run that produced no decrypted packets."""
+    if coverage is None:
+        return
+    severity, lines = keylog_coverage.describe(coverage)
+    _print_prefixed_lines("Warning: " if severity == "warning" else "Note: ", lines)
+
+
+_MESSAGING_PREFIXES = MESSAGING_PREFIXES
+
+
+def _print_messaging_zero_flow_explanation(result: ConvertResult) -> None:
+    """Print honest messaging-protocol reasons a 0-packet run decrypted nothing.
+
+    Reads ``result.per_protocol`` generically (MTProto/Telegram/Signal) so a
+    ``telegram``-prefixed keylog is covered too. Mirrors the TUI wording:
+      * E2E-only  -- a secret-chat key but no transport auth key.
+      * unknown auth_key_ids seen in the clear -- exactly the keys to capture.
+    Advisory only: never changes the exit code, prints nothing when neither
+    signal is present.
+    """
+    for proto, counts in messaging_buckets(result):
+        if counts.get("e2e_only"):
+            print(
+                f"Warning: {proto}: the keylog has a secret-chat (E2E) key but no "
+                f"MTProto transport auth key{_E2E_ONLY_CONSEQUENCE}"
+            )
+        unknown_key_ids = counts.get("unknown_key_ids") or {}
+        if unknown_key_ids:
+            print(
+                f"Note: {proto} unknown auth_key_id(s) seen on the wire (in the "
+                f"clear — capture these keys): {_format_unknown_ids(unknown_key_ids)}"
+            )
+
+
+def _print_partial_coverage_note(coverage: Optional[keylog_coverage.Coverage]) -> None:
+    """One-line note when a successful run's keylog misses some handshakes."""
+    if coverage is None or not coverage.covered or not coverage.uncovered:
+        return
+    _severity, lines = keylog_coverage.describe(coverage)
+    if lines:
+        print(f"Note: {lines[0]}")
+
+
+def _repair_keylog_if_needed(tshark_bin: str, pcap: str,
+                             keylog: Optional[str]) -> Optional[str]:
+    """Run ``--repair-keylog``; return the keylog path to convert with.
+
+    Returns the repaired keylog on a hit, else the original *keylog* (with the
+    reason printed). Never raises — a failed rescue just keeps the original.
+    """
+    if not keylog or not os.path.isfile(keylog):
+        print("Note: --repair-keylog needs a readable --keylog; skipping re-pair.")
+        return keylog
+    # relabel_keylog is a superset of repair_keylog: besides re-pairing orphan
+    # sessions it trial-decrypts every secret to fix the ncrypt hook's TLS 1.3
+    # HANDSHAKE<->TRAFFIC_SECRET_0 label swap and its ``???`` client_randoms. A
+    # mislabeled-but-present session is invisible to the coverage gate, so this
+    # runs whenever --repair-keylog is set (it is a no-op when nothing changes).
+    try:
+        result = keylog_coverage.relabel_keylog(
+            tshark_bin, pcap, keylog,
+            progress=lambda msg: print(f"Re-pair: {msg}"))
+    except Exception as exc:  # noqa: BLE001 - keep the original keylog
+        logger.debug("Keylog re-pair failed for %r", pcap, exc_info=True)
+        print(f"Note: keylog re-pair failed ({exc}); using the original keylog.")
+        return keylog
+    if result.repaired_path:
+        print(f"Re-pair: {result.message}")
+        print(f"         decrypting with {result.repaired_path}")
+        return result.repaired_path
+    print(f"Note: {result.message} Using the original keylog.")
+    return keylog
 
 
 def _layer_metadata_hint(layer) -> str:
@@ -334,10 +587,16 @@ def run_offline_pcap_to_tap(argv: Sequence[str]) -> int:
                          entry.protocol_name, exc_info=True)
 
     try:
-        find_tshark(args.tshark_path)
-    except RuntimeError as exc:
+        tshark_bin = find_tshark(args.tshark_path)
+    except TsharkNotFoundError as exc:
         print(f"Error: {exc}")
         return 3
+
+    # Opt-in rescue: re-pair keylog secrets whose client_random is not in the
+    # capture (Schannel/lsass) by trial decryption, and convert with the result.
+    if getattr(args, "repair_keylog", False):
+        kwargs["keylog_path"] = _repair_keylog_if_needed(
+            tshark_bin, args.from_pcap, kwargs.get("keylog_path"))
 
     try:
         result = convert_pcap_to_tap(
@@ -365,7 +624,18 @@ def run_offline_pcap_to_tap(argv: Sequence[str]) -> int:
         except Exception:  # pragma: no cover - never break a good conversion
             logger.debug("--show-layers printing failed", exc_info=True)
 
+    # Advisory TLS keylog coverage (only when a TLS keylog was used — a DSB-only
+    # capture has nothing to match). Explains 0-decrypted runs and flags
+    # partially covered successful ones; never changes the exit code.
+    coverage = _keylog_coverage(tshark_bin, args.from_pcap, kwargs.get("keylog_path"))
+
     if result.decrypted_packet_count == 0:
+        _print_coverage_explanation(coverage)
+        # Honest messaging-protocol diagnostics, mirrored from the TUI: an E2E-only
+        # keylog (secret-chat key but no transport auth key) and any clear-text
+        # auth_key_ids seen on the wire that we lacked the key for. Both are the
+        # actual, actionable reasons a Telegram capture produced nothing.
+        _print_messaging_zero_flow_explanation(result)
         if result.encrypted_streams_skipped:
             print(
                 f"Warning: no plaintext application data was produced; "
@@ -384,4 +654,5 @@ def run_offline_pcap_to_tap(argv: Sequence[str]) -> int:
             )
         return 4
 
+    _print_partial_coverage_note(coverage)
     return 0

@@ -109,6 +109,13 @@ class AntiTamperDetectedEvent(FriTapEvent):
     skipped_loader_hook: bool = False
 
 
+# Heap memory-scan (--memory-scan / -ms) findings do NOT use a dedicated event:
+# they flow through KeylogEvent tagged ``protocol="memscan"`` (with the parsed
+# label/client_random/secret/tier/source in ``payload``), mirroring the
+# ``--scan-keys-region`` scan-candidate path, so they reuse the shared keylog
+# output handler and the existing keylog subscribers.
+
+
 # Session lifecycle event type constants
 SESSION_STARTED = "started"
 SESSION_RESUMED = "resumed"

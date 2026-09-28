@@ -1,5 +1,5 @@
 import { log, devlog } from "../util/log.js";
-import { hookRegistry } from "./registry.js";
+import { hookRegistry, HookRegistration, RequestedProtocol, protocolLabel } from "./registry.js";
 import { Platform } from "./shared_structures.js";
 import { matchNonTLSLibrary, noteNonTLSLibrary } from "../util/non_tls_libs.js";
 
@@ -32,6 +32,36 @@ export function isModuleHooked(moduleName: string, protocol: string = "tls"): bo
     return hookedModules.has(`${moduleName}:${protocol}`);
 }
 
+/**
+ * Dedup tag under which an installed registry match is recorded. Supplementary
+ * add-on hooks (e.g. Google QUICHE) get their own
+ * `${protocol}:supplementary:${library}` tag so they never count as coverage
+ * for `protocol` — the module stays eligible for the real (key-extracting)
+ * hooks on later passes. The tag is per ROW (keyed by `library`), not per
+ * module: a per-module `${protocol}:supplementary` tag made the first
+ * supplementary row installed on a module block every other supplementary row
+ * matching that module.
+ */
+export function installTagFor(match: HookRegistration, protocol: string = "tls"): string {
+    return match.supplementary ? `${protocol}:supplementary:${match.library}` : protocol;
+}
+
+/**
+ * Whether *match* must be skipped because this supplementary hook is already
+ * installed on *moduleName* (e.g. the dynamic loader fired again for a module
+ * a supplementary hook was installed on, but that no primary hook claimed).
+ * Always false for primary hooks: their dedup is the module-level
+ * `isModuleHooked(moduleName, protocol)` check the loaders run first.
+ */
+export function isSupplementaryHookInstalled(match: HookRegistration, moduleName: string, protocol: string = "tls"): boolean {
+    return !!match.supplementary && isModuleHooked(moduleName, installTagFor(match, protocol));
+}
+
+/** Record that *match* was installed on *moduleName* (under {@link installTagFor}). */
+export function recordHookInstalled(match: HookRegistration, moduleName: string, protocol: string = "tls"): void {
+    markModuleHooked(moduleName, installTagFor(match, protocol));
+}
+
 export function announceSiblingCoverage(
     moduleName: string,
     sibling: string,
@@ -52,8 +82,12 @@ export function processScanResults(
     scanData: string,
     platform: Platform,
     is_base_hook: boolean,
-    protocol?: string
+    protocol?: RequestedProtocol
 ): void {
+    // Primary label for the single-value string contexts (dedup keys, coverage
+    // announce); the raw `protocol` selection drives multi-protocol registry
+    // filtering via findMatch/findByLibraryType below.
+    const protocolTag = protocolLabel(protocol);
     // Reject uninitialized scan_results (placeholder string from agent init)
     if (!scanData || scanData.length < 3 || scanData.startsWith("{SCAN_RESULTS")) return;
 
@@ -69,8 +103,8 @@ export function processScanResults(
 
     for (const entry of entries) {
         // Skip already-hooked modules (for this protocol)
-        if (isModuleHooked(entry.name, protocol || "tls")) {
-            devlog(`[Scanner] ${entry.name} already hooked for ${protocol || "tls"}, skipping`);
+        if (isModuleHooked(entry.name, protocolTag)) {
+            devlog(`[Scanner] ${entry.name} already hooked for ${protocolTag}, skipping`);
             continue;
         }
 
@@ -87,13 +121,15 @@ export function processScanResults(
                 entry.name,
                 entry.covered_by_sibling.sibling,
                 entry.covered_by_sibling.reason,
-                protocol || "tls",
+                protocolTag,
             );
             continue;
         }
 
-        // Skip if registry regex already matches this module
-        const regexMatch = hookRegistry.findMatch(platform, entry.name, entry.path, protocol);
+        // Skip if registry regex already matches this module. Supplementary
+        // (non-key-extracting) rows don't count: a QUICHE-only match must not
+        // keep a BoringSSL module from its library_type hook.
+        const regexMatch = hookRegistry.findPrimaryMatch(platform, entry.name, entry.path, protocol);
         if (regexMatch) {
             devlog(`[Scanner] ${entry.name} matches registry pattern, skipping`);
             continue;
@@ -106,7 +142,7 @@ export function processScanResults(
             try {
                 Process.getModuleByName(entry.name).ensureInitialized();
                 typeMatch.hookFn(entry.name, is_base_hook);
-                markModuleHooked(entry.name, protocol || "tls");
+                recordHookInstalled(typeMatch, entry.name, protocolTag);
             } catch (error) {
                 devlog(`[Scanner] Error hooking ${entry.name}: ${error}`);
             }

@@ -52,16 +52,23 @@ export function createLibsshDefinition(): HookDefinition {
         clientRandomDecoder: noOpClientRandomDecoder,
         // readHook / writeHook intentionally undefined — see openssh.ts
         // for the rationale; legacy ssh_detect_execute owns both paths.
-        keylog: {
-            kind: "custom",
-            install: (_addresses, moduleName, _resolvedFns, _enableDefaultFd) => {
+        // No loader-driven keylog install: the legacy ssh_detect_execute()
+        // executor owns BOTH key extraction and packet/plaintext capture and
+        // self-gates keys/packets internally (see openssh.ts). Wired via
+        // extraHooks so it runs on a `-p`-only run too.
+        keylog: { kind: "none" },
+        extraHooks: [
+            {
                 // Legacy ssh_detect_execute doesn't distinguish OpenSSH
                 // from libssh at the executor level — the hookers inside
                 // probe each symbol independently and no-op when missing.
-                ssh_detect_execute(moduleName, /* is_base_hook */ true);
-                return true;
+                // extraHooks always runs in the loader (step 7), independent of
+                // keylog_enabled.
+                install: (_addresses, moduleName, _resolvedFns, _enableDefaultFd) => {
+                    ssh_detect_execute(moduleName, /* is_base_hook */ true);
+                },
             },
-        },
+        ],
         libraryType: "ssh_libssh",
     };
 }

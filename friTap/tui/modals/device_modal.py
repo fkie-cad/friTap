@@ -25,6 +25,7 @@ _PLATFORM_NAMES = {"darwin": "macOS", "win32": "Windows"}
 if TEXTUAL_AVAILABLE:
     from friTap.tui.themes import c
 
+    from .alert_modal import AlertModal
     from .base import FriTapModal
 
     class DeviceSelectModal(FriTapModal[Optional[str]]):
@@ -158,4 +159,10 @@ if TEXTUAL_AVAILABLE:
                 remote_input.value = ""
                 self._enumerate_devices()
             except Exception as e:
-                self.notify(f"Failed to add remote: {e}", severity="error")
+                self.app.push_screen(
+                    AlertModal(
+                        message=f"Failed to add remote: {e}",
+                        title="Add Remote Failed",
+                        severity="error",
+                    )
+                )

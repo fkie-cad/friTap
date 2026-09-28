@@ -44,14 +44,14 @@ class TestActiveKeylogFormatters:
     def test_all_includes_every_keylog_protocol(self):
         reg = create_default_registry()  # full registry
         formatters = _active_keylog_formatters("all", reg)
-        expected = ["mtproto", "ssh", "telegram", "tls"]
+        expected = ["mtproto", "rc4", "ssh", "telegram", "tls"]
         if _SIGNAL_AVAILABLE:
             expected = sorted(expected + ["signal"])
         assert sorted(f.protocol for f in formatters) == expected
 
     def test_auto_matches_all(self):
         reg = create_default_registry()
-        expected = ["mtproto", "ssh", "telegram", "tls"]
+        expected = ["mtproto", "rc4", "ssh", "telegram", "tls"]
         if _SIGNAL_AVAILABLE:
             expected = sorted(expected + ["signal"])
         assert sorted(f.protocol for f in _active_keylog_formatters("auto", reg)) == expected
@@ -119,6 +119,7 @@ class TestFactoryKeylogRouting:
             "ssh": str(tmp_path / "mykeys.ssh.log"),
             "mtproto": str(tmp_path / "mykeys.mtproto.log"),
             "telegram": str(tmp_path / "mykeys.telegram.log"),
+            "rc4": str(tmp_path / "mykeys.rc4.log"),
         }
         if _SIGNAL_AVAILABLE:
             expected["signal"] = str(tmp_path / "mykeys.signal.log")
@@ -139,6 +140,7 @@ class TestFactoryKeylogRouting:
             "ssh": str(tmp_path / "mykeys.ssh.log"),
             "mtproto": str(tmp_path / "mykeys.mtproto.log"),
             "telegram": str(tmp_path / "mykeys.telegram.log"),
+            "rc4": str(tmp_path / "mykeys.rc4.log"),
         }
         if _SIGNAL_AVAILABLE:
             expected["signal"] = str(tmp_path / "mykeys.signal.log")
@@ -220,62 +222,6 @@ class TestFactoryKeylogRouting:
             "tls": str(tmp_path / "keys.tls.log"),
             "signal": str(tmp_path / "keys.signal.log"),
         }
-
-    @pytest.mark.skipif(not _SIGNAL_AVAILABLE, reason="signal protocol is private/stripped in public build")
-    def test_signal_tls_keylog_routes_to_tls_file(self, silent_logger, tmp_path):
-        """Regression for the keylog mis-tagging bug: under ``--protocol signal``
-        the TLS hooks emit NSS keylog lines tagged ``protocol="tls"`` (the agent's
-        sendKeylog now always tags "tls"). Those must materialize ``keys.tls.log``,
-        not be dropped — previously they were tagged "signal", the Signal formatter
-        could not parse the raw NSS line, and the .tls.log was never opened.
-
-        Conversely a structured ``signal``-tagged event must land in keys.signal.log.
-        """
-        keylog = str(tmp_path / "keys.log")
-        reg = create_default_registry(["signal"])
-        config = self._config(keylog, "signal")
-
-        handlers, _ = OutputHandlerFactory.create_handlers(
-            config, None, reg.get("signal"), {}, silent_logger,
-            protocol_registry=reg,
-        )
-
-        bus = EventBus()
-        try:
-            for h in _keylog_handlers(handlers):
-                h.setup(bus)
-
-            assert not (tmp_path / "keys.tls.log").exists()
-
-            # TLS hook emits an NSS keylog line tagged "tls" (post-fix behavior).
-            bus.emit(KeylogEvent(
-                key_data=f"CLIENT_RANDOM {'ab' * 32} {'cd' * 48}",
-                protocol="tls",
-            ))
-
-            tls_file = tmp_path / "keys.tls.log"
-            assert tls_file.exists(), \
-                "TLS keylog tagged 'tls' under --protocol signal must reach keys.tls.log"
-            assert "CLIENT_RANDOM" in tls_file.read_text()
-
-            # A structured Signal key still routes to the signal file.
-            from friTap.protocols import signal_keylog_spec as spec
-            bus.emit(KeylogEvent(
-                protocol="signal",
-                payload={
-                    "chat_type": spec.CHAT_1TO1,
-                    "eph_pub": "05" + "ab" * 32,
-                    "static_cipher": "11" * 32,
-                    "static_mac": "22" * 32,
-                    "cipher": "33" * 32,
-                    "mac": "44" * 32,
-                    "iv": "55" * 16,
-                },
-            ))
-            assert (tmp_path / "keys.signal.log").exists()
-        finally:
-            for h in _keylog_handlers(handlers):
-                h.close()
 
     def test_warns_when_no_formatter_active(self, silent_logger, tmp_path, caplog):
         """``--protocol ipsec`` has no formatter today — warn and create no handler."""

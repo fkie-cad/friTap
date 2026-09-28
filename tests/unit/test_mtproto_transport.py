@@ -152,6 +152,38 @@ def test_abridged_masks_quick_ack_bit():
     assert list(iter_frames(ABRIDGED, frame)) == [payload]
 
 
+def test_abridged_quick_ack_token_skipped_with_keymap():
+    """A server quick-ack TOKEN (4 bytes, high bit set, not a real record) between
+    two data frames must be skipped so the following record still frames — the bug
+    that dropped every received message after the first quick-ack."""
+    from friTap.offline.mtproto.transport import iter_frames_with_offsets
+
+    aid = b"\xaa" * 8
+    keymap = {aid: object()}
+    rec = aid + os.urandom(40)               # a real 48-byte record (>= _MIN_RECORD_LEN)
+    data = _abridged_frame(rec)
+    # 4-byte quick-ack token: high bit set, masked length (2 -> 8 bytes) is NOT a real
+    # record, so the oracle classifies it as a token and consumes exactly 4 bytes.
+    token = bytes([0x02 | 0x80]) + b"\x11\x22\x33"
+    spans = list(iter_frames_with_offsets(ABRIDGED, data + token + data, keymap))
+    payloads = [p for _s, _e, p in spans]
+    assert payloads.count(rec) == 2          # both records recovered across the token
+    assert b"" in payloads                   # the token yielded an empty (control) frame
+
+
+def test_abridged_quick_ack_request_flag_kept_as_data_frame_with_keymap():
+    """A data frame that merely REQUESTS an ack (high bit on its length byte) is a
+    real record and must be read as a normal frame, not mistaken for a 4-byte token."""
+    from friTap.offline.mtproto.transport import iter_frames_with_offsets
+
+    aid = b"\xbb" * 8
+    keymap = {aid: object()}
+    rec = aid + os.urandom(40)               # 48-byte record, n == 12
+    flagged = bytes([(len(rec) // 4) | 0x80]) + rec  # ack-request flag on the length
+    spans = list(iter_frames_with_offsets(ABRIDGED, flagged, keymap))
+    assert [p for _s, _e, p in spans] == [rec]
+
+
 def test_abridged_partial_trailing_dropped():
     good = _abridged_frame(os.urandom(12))
     # A length byte promising 5*4 bytes but only 4 present -> dropped cleanly.
@@ -179,3 +211,45 @@ def test_intermediate_partial_length_header_dropped():
 def test_padded_intermediate_not_implemented():
     with pytest.raises(NotImplementedError):
         list(iter_frames(PADDED_INTERMEDIATE, b"\x00" * 16))
+
+
+# --------------------------------------------------------------------------- #
+# iter_frames_with_offsets
+# --------------------------------------------------------------------------- #
+
+
+def _abridged(payload: bytes) -> bytes:
+    n = len(payload) // 4
+    if n < 0x7F:
+        return bytes([n]) + payload
+    return b"\x7f" + n.to_bytes(3, "little") + payload
+
+
+def _intermediate(payload: bytes) -> bytes:
+    return len(payload).to_bytes(4, "little") + payload
+
+
+@pytest.mark.parametrize(
+    "transport, framer",
+    [("abridged", _abridged), ("intermediate", _intermediate)],
+)
+def test_iter_frames_with_offsets_matches_iter_frames(transport, framer):
+    from friTap.offline.mtproto.transport import iter_frames_with_offsets
+
+    payloads = [b"A" * 8, b"B" * 4 * 0x80, b"C" * 12]  # includes a long abridged
+    buf = b"".join(framer(p) for p in payloads) + framer(b"D" * 16)[:7]  # partial tail
+    spans = list(iter_frames_with_offsets(transport, buf))
+    assert [p for _s, _e, p in spans] == list(iter_frames(transport, buf)) == payloads
+    pos = 0
+    for (start, end, payload), raw in zip(spans, payloads):
+        framed = framer(raw)
+        assert (start, end) == (pos, pos + len(framed))
+        assert buf[end - len(payload):end] == payload
+        pos = end
+
+
+def test_iter_frames_with_offsets_rejects_unsupported():
+    from friTap.offline.mtproto.transport import iter_frames_with_offsets
+
+    with pytest.raises(NotImplementedError):
+        list(iter_frames_with_offsets(PADDED_INTERMEDIATE, b"\x00" * 8))

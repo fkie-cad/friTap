@@ -52,6 +52,30 @@ class ProtocolHandler(ABC):
         """
         return False
 
+    @property
+    def category(self) -> str:
+        """Which family this handler belongs to.
+
+        ``"protocol"`` (default) → a standalone protocol (TLS, SSH, ...) listed
+        on its own in the protocol pickers. ``"custom_cipher"`` → a custom
+        encryption routine (RC4, ...) that is grouped under the ``custom`` meta
+        selection (``--protocol custom`` / the TUI "Custom Encryption" entry)
+        and may be combined with any protocol. A new cipher only needs to
+        return ``"custom_cipher"`` here to join the group.
+
+        Keylog naming contract: a ``"custom_cipher"`` handler must return a
+        :meth:`keylog_formatter` whose ``protocol`` equals the handler's
+        ``name``, so a multi-protocol run splits ``-k keys.log`` into
+        ``keys.<cipher>.log`` (e.g. ``keys.rc4.log``, ``keys.aes.log``).
+        Enforced by ``tests/unit/test_custom_cipher_keylog_split.py``.
+        """
+        return "protocol"
+
+    @property
+    def description(self) -> str:
+        """Optional one-line description used as menu label text (``""`` = none)."""
+        return ""
+
     @abstractmethod
     def get_keylog_format(self) -> str:
         """Return the keylog format description."""
@@ -88,8 +112,8 @@ class ProtocolHandler(ABC):
     def validate_cli_intent(self, parsed, parser, logger) -> None:
         """Validate/adjust parsed CLI arguments for this protocol.
 
-        Default: no-op. A protocol that requires a specific capture intent or
-        agent mode overrides this; it may mutate *parsed* or call
+        Default: no-op. A protocol that requires a specific capture intent
+        overrides this; it may mutate *parsed* or call
         ``parser.error(...)`` (which exits) to reject an invalid combination.
         Keeps protocol-specific CLI rules with the handler instead of hardcoded
         in the generic argument parser.

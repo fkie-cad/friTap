@@ -13,7 +13,7 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable, Optional
 
 from friTap.flow.tap_format import (
     _HEADER_STRUCT,
@@ -52,12 +52,23 @@ class TapWriter:
         writer.close()                # writes index + footer
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self, defer_flow: Optional[Callable[["Flow"], bool]] = None,
+    ) -> None:
+        """*defer_flow* (optional) marks flows NOT to persist on "completed".
+
+        Offline conversion folds metadata onto some flows only after collection
+        and writes those flows itself afterwards; deferring them here keeps each
+        such flow to exactly one FLOW record instead of an early stale copy.
+        """
         self._lock = threading.Lock()
         self._file = None
         self._path: str = ""
-        self._flow_count: int = 0
-        self._flow_index: list[dict] = []  # {"flow_id": str, "offset": int}
+        self._flow_count: int = 0  # FLOW records written (incl. rewrites)
+        # flow_id -> {"flow_id", "offset"}; insertion order = first-write order,
+        # a rewrite updates the offset in place (last record wins).
+        self._flow_index: dict[str, dict] = {}
+        self._defer_flow = defer_flow
         self._wrote_findings: bool = False  # any REC_FINDING written this session
         self._capture_start: float = 0.0
         self._capture_target: str = ""
@@ -74,7 +85,8 @@ class TapWriter:
     @property
     def written_flow_ids(self) -> set[str]:
         """Return the set of flow_ids already written to this file."""
-        return {e["flow_id"] for e in self._flow_index}
+        with self._lock:
+            return set(self._flow_index)
 
     def open(self, path: str, target: str = "", capture_start: float = 0.0) -> None:
         """Open a .tap file for writing.
@@ -92,7 +104,7 @@ class TapWriter:
         self._capture_start = capture_start or time.time()
         self._capture_target = target
         self._flow_count = 0
-        self._flow_index = []
+        self._flow_index = {}
         self._wrote_findings = False
         self._closed = False
 
@@ -116,6 +128,20 @@ class TapWriter:
 
         logger.info("TapWriter opened: %s", self._path)
 
+    def update_capture_start(self, ts: float) -> None:
+        """Lower the header's capture_start to *ts* if it is an earlier real time.
+
+        Offline conversion learns the true capture times only while emitting, after
+        :meth:`open` already stamped a provisional start. The header is rewritten
+        at :meth:`close`, so the earliest value recorded here is what lands on disk.
+        Non-positive *ts* (unknown) is ignored.
+        """
+        if ts <= 0:
+            return
+        with self._lock:
+            if self._capture_start <= 0 or ts < self._capture_start:
+                self._capture_start = ts
+
     def write_flow(self, flow: "Flow") -> None:
         """Write a single Flow as a FLOW record.
 
@@ -133,10 +159,10 @@ class TapWriter:
             offset = self._file.tell()
             self._file.write(record)
 
-            self._flow_index.append({
+            self._flow_index[flow.flow_id] = {
                 "flow_id": flow.flow_id,
                 "offset": offset,
-            })
+            }
             self._flow_count += 1
 
             if self._flow_count % 10 == 0:
@@ -178,7 +204,30 @@ class TapWriter:
         Subscribe this method via FlowCollector.subscribe(writer.on_flow_event).
         """
         if event_type == "completed":
+            if self._defer_flow is None or not self._defer_flow(flow):
+                self.write_flow(flow)
+        elif event_type == "removed":
+            self.forget_flow(flow.flow_id)
+        elif event_type == "updated" and self.has_written(flow.flow_id):
+            # A flow changed after it was persisted (e.g. an orphan response
+            # merged into it at flush): append a fresh record, last one wins.
             self.write_flow(flow)
+
+    def has_written(self, flow_id: str) -> bool:
+        """True when a FLOW record for *flow_id* is already indexed. Thread-safe."""
+        with self._lock:
+            return flow_id in self._flow_index
+
+    def forget_flow(self, flow_id: str) -> None:
+        """Drop *flow_id* from the FLOW_INDEX written at :meth:`close`.
+
+        Used when the collector REMOVES a flow it already completed (an orphan
+        response merged into its request flow): the record bytes stay in the
+        file, but without an index entry the reader no longer lists it, so the
+        .tap does not show a ghost duplicate of the merged data. Thread-safe.
+        """
+        with self._lock:
+            self._flow_index.pop(flow_id, None)
 
     def flush(self) -> None:
         """Flush buffered data to disk. Thread-safe."""
@@ -200,15 +249,11 @@ class TapWriter:
     def _close_locked(self) -> None:
         """Internal close — must be called under self._lock."""
         try:
-            # Collapse duplicate flow_ids to the LAST-written record. A flow may be
-            # written twice — once when it "completes" mid-collection, then again
-            # after post-collection metadata attachment — so without this the header
-            # count and FLOW_INDEX would over-count and carry stale duplicate entries.
-            # This matches the reader, which already keeps the last offset per id.
-            deduped: dict[str, dict] = {}
-            for entry in self._flow_index:
-                deduped[entry["flow_id"]] = entry  # last wins
-            flow_index = list(deduped.values())
+            # The index is keyed by flow_id, so a flow written twice (e.g. an
+            # "updated" rewrite) is already collapsed to its LAST record at its
+            # first-write position — matching the reader, which keeps the last
+            # offset per id — and the header count stays distinct.
+            flow_index = list(self._flow_index.values())
 
             # Write FLOW_INDEX record
             index_offset = self._file.tell()

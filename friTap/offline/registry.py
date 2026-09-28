@@ -69,6 +69,24 @@ class OfflineDecryptorEntry:
         counter_prefix: Prefix for ``ConvertResult`` counters / ``per_protocol``
             key (usually equals *protocol_name*).
         cli_help: Help text for the generated CLI flag.
+        picker_group: Empty for a protocol listed on its own in the TUI keylog
+            picker. Non-empty (e.g. ``"tls"``) means the protocol is NOT listed
+            on its own but offered through the named picker entry instead (a
+            Schannel sidecar supplied under ``tls`` is routed to ``schannel``).
+        accepts_keylog: Optional predicate telling whether a keylog path supplied
+            under the entry's *picker_group* belongs to this decryptor (e.g. the
+            Schannel entry recognizes a ``.schannel.unpaired`` sidecar). Only
+            consulted for grouped entries; ``None`` means "never routed here".
+        decoder_family: Entries sharing a non-empty family run the SAME decoder
+            (e.g. ``mtproto`` and ``telegram`` both run the Telegram decoder).
+            The conversion runs a family once per capture (merging distinct
+            keylogs) instead of once per entry. Empty means the entry is its
+            own family (keyed by *protocol_name*). An emitter of a family that
+            can receive several keylogs must accept an ``extra_keylogs`` kwarg.
+        nests_in_tls: True for an independent decryptor whose protocol can ride
+            INSIDE the decrypted TLS plaintext (RC4-in-TLS). Its flows and the
+            TLS flows of the capture are held back until the post-collection
+            nested attach, which may absorb a TLS flow it fully consumed.
     """
 
     protocol_name: str
@@ -79,6 +97,10 @@ class OfflineDecryptorEntry:
     layer_cls: type
     counter_prefix: str
     cli_help: str = ""
+    picker_group: str = ""
+    accepts_keylog: Optional[Callable[[str], bool]] = None
+    decoder_family: str = ""
+    nests_in_tls: bool = False
 
 
 class OfflineDecryptorRegistry:

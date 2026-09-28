@@ -11,6 +11,7 @@ import { getPortsAndAddresses } from "../../shared/shared_functions.js";
 import { readHexFromPointer } from "../decoders/hex_utils.js";
 import { enable_default_fd, pcap_enabled, pairip_safe } from "../../fritap_agent.js";
 import { registerBlinkTarget, PAIRIP_BLINK_ENABLED } from "../../shared/pairip_blink.js";
+import { createKeylogCallbackTracker } from "../../shared/keylog_callback_tracker.js";
 import { STANDARD_SOCKET_SYMBOLS, DUMMY_SESSION_ID_OPENSSL } from "./shared_constants.js";
 import { createLifecycleHook, createBufferedClientRandomDecoder } from "./shared_factories.js";
 import { installBoringSSLSymbolHook, makeBoringSslDumpKeys, DumpKeysCb } from "../../shared/boringssl_symbol_hook.js";
@@ -141,6 +142,11 @@ export function createBoringSSLKeylogApproach(): KeylogApproach {
             // callback, which isn't a reliable trigger.
             if (!canSslNew && !canCtxNew) return false;
 
+            // Records every SSL_CTX we point at keylogCb so releaseAgentHooks can
+            // undo it before keylogCb is freed (shared/keylog_callback_tracker.ts).
+            const blinking = pairip_safe && PAIRIP_BLINK_ENABLED;
+            const tracker = createKeylogCallbackTracker(modName, setKeylogAddr, keylogCb, !blinking);
+
             // (Re-)attach the inline keylog hooks; returns the listeners so the
             // pairip-safe blink loop can detach/re-attach them (keeping .text
             // pristine between blinks while the heap-resident keylog callback
@@ -150,7 +156,7 @@ export function createBoringSSLKeylogApproach(): KeylogApproach {
                 if (canSslNew) {
                     ls.push(Interceptor.attach(sslNewAddr!, {
                         onEnter: function (args: any) {
-                            try { setKeylogOn!(args[0], keylogCb); }
+                            try { tracker.install(args[0]); }
                             catch (e) { devlog_error(`[modern] Error in SSL_new keylog hook: ${e}`); }
                         },
                     }));
@@ -159,7 +165,7 @@ export function createBoringSSLKeylogApproach(): KeylogApproach {
                     ls.push(Interceptor.attach(ctxNewAddr!, {
                         onLeave: function (retval: any) {
                             if (retval.isNull()) return;
-                            try { setKeylogOn!(retval, keylogCb); }
+                            try { tracker.install(retval); }
                             catch (e) { devlog_error(`[modern] Error in SSL_CTX_new keylog hook: ${e}`); }
                         },
                     }));
@@ -167,7 +173,9 @@ export function createBoringSSLKeylogApproach(): KeylogApproach {
                 ls.push(Interceptor.attach(setKeylogAddr, {
                     onEnter: function (args: any) {
                         const userCb = args[1];
+                        if (tracker.sealed) return;
                         if (!userCb.isNull()) {
+                            tracker.noteAppCallback(args[0], userCb);
                             Interceptor.attach(userCb, {
                                 onEnter: function (innerArgs: any) {
                                     devlog(`invoking user-installed keylog_callback from OpenSSL_BoringSSL (${modName})`);
@@ -180,7 +188,7 @@ export function createBoringSSLKeylogApproach(): KeylogApproach {
                 return ls;
             };
 
-            if (pairip_safe && PAIRIP_BLINK_ENABLED) {
+            if (blinking) {
                 // Blink: register (roots keylogCb, first BRIGHT attach, schedules toggling).
                 registerBlinkTarget(modName, keylogCb, attachAll);
             } else {

@@ -12,16 +12,13 @@ stack to the user:
 Both views are exercised against a layered Signal flow built with the same
 ``_attach_transport_metadata_layers`` correlation helper used in
 ``tests/unit/test_signal_metadata_layers.py`` (TLS -> HTTP/2 -> WebSocket ->
-Signal). The tshark-free tests hand-build that stack and never touch a pcap; one
-optional CLI test additionally converts the committed HTTP/2 Signal fixture and
-skips cleanly when tshark or the fixtures are unavailable.
+Signal). The tests hand-build that stack and never touch a pcap.
 """
 
 from __future__ import annotations
 
 import asyncio
 import importlib.util
-import os
 
 import pytest
 
@@ -136,56 +133,6 @@ def test_print_layer_stacks_skips_single_layer_flow(tmp_path, capsys):
 
     assert "Layer stacks:" not in out
     assert ">" not in out
-
-
-# ===========================================================================
-# CLI: _print_layer_stacks (optional end-to-end via committed HTTP/2 fixture)
-# ===========================================================================
-
-_FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
-_H2_PCAP = os.path.join(_FIXTURES, "signal_h2_ws_modern.pcapng")
-_H2_TLS_KEYS = os.path.join(_FIXTURES, "signal_h2_ws_modern.tls.log")
-_H2_SIGNAL_KEYS = os.path.join(_FIXTURES, "signal_h2_ws_modern.signal.log")
-_h2_fixture_present = all(
-    os.path.isfile(p) for p in (_H2_PCAP, _H2_TLS_KEYS, _H2_SIGNAL_KEYS)
-)
-
-
-def _tshark_or_skip() -> str:
-    from friTap.offline.tshark import find_tshark
-
-    try:
-        return find_tshark(None)
-    except RuntimeError:
-        pytest.skip("tshark not available")
-
-
-@pytest.mark.skipif(
-    not _h2_fixture_present, reason="committed HTTP/2 Signal fixture missing"
-)
-def test_print_layer_stacks_on_converted_fixture(tmp_path, capsys):
-    """End-to-end: convert the committed Signal HTTP/2 capture and print its
-    real layer stacks. Locks the SNI (grpc.chat.signal.org) + full stack line."""
-    pytest.importorskip("cryptography")
-    tshark_bin = _tshark_or_skip()
-
-    import friTap.offline.pcap_to_tap as p2t
-    from friTap.offline.cli import _print_layer_stacks
-
-    tap_path = str(tmp_path / "fixture.tap")
-    p2t.convert_pcap_to_tap(
-        _H2_PCAP,
-        keylog_path=_H2_TLS_KEYS,
-        signal_keylog=_H2_SIGNAL_KEYS,
-        tap_path=tap_path,
-        tshark_path=tshark_bin,
-    )
-
-    _print_layer_stacks(tap_path)
-    out = capsys.readouterr().out
-
-    assert "tls > http2 > websocket > signal" in out
-    assert "grpc.chat.signal.org" in out
 
 
 # ===========================================================================

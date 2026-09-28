@@ -30,6 +30,11 @@ except ImportError:
 
 
 from friTap.flow.models import format_byte_size  # noqa: E402
+from friTap.protocols.mtproto_hints import ATTACH_MEMORY_SCAN_RECOVERY  # noqa: E402
+
+# Shown whenever a STOPPED capture is asked to start again: only an explicit
+# wizard restart (r) may launch a new attach/session.
+CAPTURE_STOPPED_RESTART_HINT = "Capture stopped — press r to restart the wizard."
 
 
 def _tokenize_spawn_command(command: str) -> list[str] | None:
@@ -57,6 +62,19 @@ def _tokenize_spawn_command(command: str) -> list[str] | None:
         return None
 
 
+def _selected_protocols(state) -> list[str]:
+    """The TUI state's protocol set, with the primary ``state.protocol`` first.
+
+    Falls back to ``[state.protocol]`` when ``state.protocols`` is missing or
+    out of sync with the primary (a caller that only set ``state.protocol``).
+    """
+    primary = getattr(state, 'protocol', 'tls')
+    protocols = list(getattr(state, 'protocols', None) or [])
+    if not protocols or protocols[0] != primary:
+        return [primary]
+    return protocols
+
+
 def _count_keys(path: str) -> int | None:
     """Count non-empty, non-comment lines in a keylog file."""
     try:
@@ -67,6 +85,23 @@ def _count_keys(path: str) -> int | None:
             )
     except OSError:
         return None
+
+
+# Results-modal line for the distinct key total across several keylog files.
+KEYLOG_TOTAL_STAT = "Distinct keys (all keylogs)"
+
+
+def _key_count_label(count: int) -> str:
+    """``"1 key"`` / ``"N keys"`` (including ``"0 keys"``)."""
+    return f"{count} key{'s' if count != 1 else ''}"
+
+
+def _same_file_key(path: str) -> str:
+    """Normalised path so two spellings of one file compare equal."""
+    try:
+        return os.path.normcase(os.path.realpath(path))
+    except (OSError, ValueError):
+        return path
 
 
 def _get_file_size(path: str) -> int | None:
@@ -136,9 +171,36 @@ def _pcap_has_packets(path: str) -> bool:
 class CaptureController:
     """Manages capture lifecycle -- extracted from MainScreen."""
 
+    # Explicit capture lifecycle state (UI intent), kept distinct from the
+    # backend ``SSL_Logger.running`` flag. ``running`` flips synchronously on stop
+    # while the UI reset is deferred to the end of a blocking teardown, and a
+    # self-terminating scan can leave ``running`` stale — both left a window where
+    # the Enter toggle (which only checked ``running``) silently RE-STARTED the
+    # capture. This state gates start/stop deterministically instead.
+    STATE_IDLE = "idle"
+    STATE_RUNNING = "running"
+    STATE_STOPPING = "stopping"
+    STATE_STOPPED = "stopped"
+
     def __init__(self, screen) -> None:
         self._screen = screen
         self._ssl_logger = None
+        # Capture lifecycle state. IDLE = never started / reset for a fresh run;
+        # RUNNING = session live; STOPPING = stop requested, teardown in flight;
+        # STOPPED = finished (Enter is a no-op until the wizard is restarted).
+        self._capture_state: str = self.STATE_IDLE
+        # Generation of the most recently started capture. Each worker remembers
+        # the generation it was started with, so a late teardown of an OLD
+        # session can never clobber the shared UI state of a newer one.
+        self._session_generation: int = 0
+        # Set by a stop request. Closes the "starting" window: start_capture
+        # enters RUNNING before the worker has built SSL_Logger, so a stop that
+        # arrives then has no logger to call request_stop on. The worker checks
+        # this flag right after it builds the logger (see _run_session).
+        self._stop_requested: bool = False
+        # Callback to run once the in-flight session has fully ended (set by a
+        # wizard restart requested mid-capture; see restart_when_stopped).
+        self._restart_after_stop = None
         self._tui_handler = None
         self._capture_mode: str = ""
         self._flow_collector = None
@@ -196,6 +258,16 @@ class CaptureController:
     def flow_collector(self):
         return self._flow_collector
 
+    @property
+    def is_running(self) -> bool:
+        """True while a capture is starting or live (a stop would take effect)."""
+        return self._capture_state == self.STATE_RUNNING
+
+    @property
+    def capture_in_flight(self) -> bool:
+        """True from start until the worker's teardown has fully finished."""
+        return self._capture_state in (self.STATE_RUNNING, self.STATE_STOPPING)
+
     # ----------------------------------------------------------
     # Actions
     # ----------------------------------------------------------
@@ -217,9 +289,63 @@ class CaptureController:
         except Exception:
             pass
 
+    def reset_capture_state(self) -> None:
+        """Return the controller to IDLE so a fresh capture can be started.
+
+        Called when the wizard is restarted (see ``MainScreen.action_restart_wizard``):
+        after a capture STOPPED, a bare Enter never re-attaches (the ended session
+        cleared target and mode); the wizard restart resets to IDLE here.
+        """
+        self._capture_state = self.STATE_IDLE
+
+    def restart_when_stopped(self, restart) -> None:
+        """Stop the in-flight capture and call ``restart`` once it has ENDED.
+
+        Restarting the wizard while the old worker is still tearing down (frida
+        detach, pcap pull, ... — seconds) let that worker's late
+        ``_on_session_ended`` wipe the wizard's freshly chosen target, push the
+        old results over the wizard, or tear down a NEW session. So the restart
+        is deferred: ``_on_session_ended`` runs ``restart`` after the old
+        session's results have been shown.
+        """
+        already_pending = self._restart_after_stop is not None
+        self._restart_after_stop = restart
+        log = self._screen._get_activity_log()
+        if already_pending:
+            log.log_info("Stopping capture — please wait…")
+            return
+        log.log_info("Stopping capture before restart…")
+        if self._capture_state == self.STATE_RUNNING:
+            self.action_stop_capture()
+
+    @staticmethod
+    def _has_manual_capture_setup(state) -> bool:
+        """True when a target and a capture mode are configured (IDLE's checks)."""
+        has_mode = bool(
+            getattr(state, "keylog_path", "")
+            or getattr(state, "pcap_path", "")
+            or getattr(state, "live", False)
+        )
+        return bool(getattr(state, "target", "")) and has_mode
+
     def action_start_capture(self) -> None:
         """Build config, create SSL_Logger, wire handler, start session."""
+        # RUNNING/STOPPING refuse. STOPPED starts only when the user has
+        # configured a NEW capture by hand (a/s target + 1-6 mode): the ended
+        # session cleared target and mode, so a bare Enter can never silently
+        # re-attach the old session; with nothing configured it points at r.
+        if self._capture_state == self.STATE_RUNNING:
+            self._warn(
+                "Capture already running.\nPress [bold]Enter[/] to stop first.",
+            )
+            return
         state = self._screen._get_state()
+        if self._capture_state == self.STATE_STOPPING or (
+            self._capture_state == self.STATE_STOPPED
+            and not self._has_manual_capture_setup(state)
+        ):
+            self._screen._get_activity_log().log_info(CAPTURE_STOPPED_RESTART_HINT)
+            return
 
         if not state.target:
             self._warn(
@@ -261,22 +387,43 @@ class CaptureController:
     def action_stop_capture(self) -> None:
         """Stop the active capture session.
 
-        Sets ``running = False`` **immediately** so the TUI stays responsive
-        even when the Frida session or message consumer is busy.  The
-        background worker thread's ``finally`` block handles the actual cleanup
-        (queue drain, PCAP close, Frida detach).
+        Requests the stop, moves to STOPPING immediately, and gives instant
+        feedback (log line + status bar) so the user sees the capture is ending
+        without waiting for the blocking teardown to finish. A second press while
+        STOPPING/STOPPED is a no-op — this is what stops the old "press again and
+        it re-starts" behaviour. ``running`` is flipped synchronously by
+        ``request_stop``; the worker ``finally`` block does the actual cleanup and
+        ``_on_session_ended`` moves us to STOPPED.
+
+        While the worker is still building SSL_Logger there is no logger to stop
+        yet; ``_stop_requested`` makes the worker stop it as soon as it exists.
         """
-        if self._ssl_logger and self._ssl_logger.running:
+        if self._capture_state == self.STATE_RUNNING:
+            self._capture_state = self.STATE_STOPPING
+            # Set BEFORE reading self._ssl_logger: the worker assigns the logger
+            # BEFORE reading the flag, so at least one side always sees the other.
+            self._stop_requested = True
             self._screen._get_activity_log().log_info("Stopping capture...")
-            self._ssl_logger.request_stop()
+            try:
+                mode_display = self._capture_mode or "Custom"
+                self._screen._get_status_bar().update_capture("STOPPING", mode_display)
+            except Exception:
+                pass
+            if self._ssl_logger:
+                self._ssl_logger.request_stop()
+        elif self._capture_state == self.STATE_STOPPING:
+            self._screen._get_activity_log().log_info("Stopping capture — please wait…")
         else:
             self._screen._get_activity_log().log_warning("No capture running.")
 
     def action_toggle_capture(self) -> None:
-        """Toggle capture: start if idle, stop if running."""
+        """Toggle capture: start when idle, stop when running, no-op otherwise."""
         if self._screen._wizard_guard():
             return
-        if self._ssl_logger and self._ssl_logger.running:
+        # Each action owns its per-state feedback: stop handles RUNNING (stop) and
+        # STOPPING ("please wait"); start handles IDLE (start) and STOPPED (starts
+        # a newly configured capture, else points at the wizard restart).
+        if self._capture_state in (self.STATE_RUNNING, self.STATE_STOPPING):
             self.action_stop_capture()
         else:
             self.action_start_capture()
@@ -285,7 +432,7 @@ class CaptureController:
         """Esc stops capture if running, otherwise does nothing."""
         if self._screen._wizard_guard():
             return
-        if self._ssl_logger and self._ssl_logger.running:
+        if self._capture_state == self.STATE_RUNNING:
             self.action_stop_capture()
 
     # ----------------------------------------------------------
@@ -349,8 +496,13 @@ class CaptureController:
                 )
                 self._toast(f"Saved {count} flows to {path}")
             except Exception as e:
-                self._screen._get_activity_log().log_error(f"Error saving .tap: {e}")
-                self._toast(f"Error saving .tap: {e}", severity="error")
+                # Surface the save failure as a dismissible modal (via _warn,
+                # which also logs it) instead of a transient error toast.
+                self._warn(
+                    f"Error saving .tap: {e}",
+                    title="Save Failed",
+                    severity="error",
+                )
             finally:
                 self._tap_writer = None
 
@@ -555,12 +707,16 @@ class CaptureController:
             hooking=HookingConfig(
                 library_scan=getattr(state, 'library_scan', False),
                 pairip_safe=getattr(state, 'pairip_safe', False),
+                intercept=getattr(state, 'intercept', True),
+                memory_scan=getattr(state, 'memory_scan', False),
+                memory_scan_patterns=getattr(state, 'memory_scan_patterns', None),
                 encapsulated_protocols=getattr(
                     state, 'encapsulated_protocols', {"ohttp": True}
                 ),
                 quic_capture_mode=getattr(state, 'quic_capture_mode', 'stream'),
             ),
             protocol=getattr(state, 'protocol', 'tls'),
+            protocols=_selected_protocols(state),
             debug_output=getattr(state, 'debug_log', False),
         )
 
@@ -589,6 +745,11 @@ class CaptureController:
         else:
             self._flow_collector = None
 
+        # A capture is now in flight — deterministic state for the Enter toggle.
+        self._capture_state = self.STATE_RUNNING
+        self._session_generation += 1
+        self._stop_requested = False
+
         # Update UI state to STARTING
         mode_display = self._capture_mode or "Custom"
         self._screen._get_status_bar().update_capture("STARTING", mode_display)
@@ -600,14 +761,21 @@ class CaptureController:
         mode_action = "Spawning" if state.spawn else "Attaching to"
         log.log_info(f"{mode_action}: [bold {c('target')}]{state.target_display or state.target}[/]...")
 
-        # MTProto/Telegram's obfuscated transport can only be decrypted offline
-        # when each connection is captured from byte 0. Attaching to a running app
-        # misses that on already-open connections, so warn the user to prefer spawn.
+        # MTProto/Telegram's obfuscated transport normally needs each connection
+        # captured from byte 0. Memory scanning changes that: Tier E recovers the
+        # live CTR state and the offline decryptor seeks it into a mid-stream
+        # capture, so attach + memory scan DOES decrypt already-open connections.
+        # Tailor the message to whether memory scanning is on for this run.
         if not state.spawn and getattr(state, "protocol", "tls") in ("telegram", "mtproto"):
-            log.log_warning(
-                "Attach mode: connections already open won't decrypt — use spawn mode "
-                "for byte-0 capture, or force-stop + relaunch the app first."
-            )
+            if getattr(state, "memory_scan", False):
+                log.log_info(f"Attach mode + memory scan: {ATTACH_MEMORY_SCAN_RECOVERY}")
+            else:
+                log.log_warning(
+                    "Attach mode: connections already open won't decrypt — use spawn "
+                    "mode for byte-0 capture, or force-stop + relaunch the app first. "
+                    "Or enable memory scanning (-ms) to recover keys for already-open "
+                    "connections."
+                )
 
         # CRITICAL: Do NOT call install_signal_handler() -- it calls os._exit(0)
         self._screen.run_worker(self._run_session, thread=True)
@@ -619,14 +787,48 @@ class CaptureController:
         the blocking FIFO open in live mode doesn't freeze the UI.
         """
         result_stats: dict[str, str] = {}
+        # Teardown uses THIS run's own logger and generation, never whatever
+        # self.* points at by the time the (slow) teardown finishes.
+        generation = self._session_generation
+        session_logger = None
         self._session_error = ""
         self._session_error_category = None
         self._session_error_original = None
         self._session_crashed = False
         self._session_crash_message = ""
+        lsass_started = False
+        lsass_params = None
         try:
             from friTap.ssl_logger import SSL_Logger
             debug_output_enabled = self._pending_config.debug_output
+            # On Windows the Schannel session/traffic secrets live in lsass, not in
+            # the target process, so key extraction needs a separate lsass hook. The
+            # CLI starts it in friTap.main(); the TUI path never reached that block,
+            # so a TUI capture produced traffic but NO keys. Snapshot the params now
+            # (the config is cleared right after SSL_Logger is built) and — exactly as
+            # the CLI does — disable the target session's own lsass hook so only the
+            # dedicated LsassHookWorker touches lsass.
+            cfg = self._pending_config
+            try:
+                from friTap.fritap_utility import are_we_running_on_windows
+                # LSASS is a local-Windows-only service hook: never for a mobile
+                # (Android/iOS) or remote (--host frida-server) target, even when
+                # the analyst's own OS is Windows.
+                if (are_we_running_on_windows() and not cfg.device.mobile
+                        and not cfg.device.host and cfg.install_lsass_hook):
+                    lsass_params = dict(
+                        pcap_name=cfg.output.pcap, verbose=cfg.output.verbose,
+                        keylog=cfg.output.keylog, live=cfg.output.live,
+                        debug_mode=cfg.debug, host=cfg.device.host or False,
+                        debug_output=cfg.debug_output,
+                        enable_default_fd=cfg.hooking.enable_default_fd,
+                        patterns=cfg.hooking.patterns,
+                        custom_hook_script=cfg.custom_hook_script,
+                        json_output=cfg.output.json_output,
+                        full_capture=cfg.output.full_capture)
+                    cfg.install_lsass_hook = False
+            except Exception:
+                logger.debug("TUI lsass pre-check failed", exc_info=True)
             # Open the debug log + attach the file handler BEFORE SSL_Logger
             # is constructed so the protocol-registry / pattern-loader /
             # device-acquisition records emitted during init also land in
@@ -634,9 +836,14 @@ class CaptureController:
             # bus exists.
             if debug_output_enabled:
                 self._open_debug_log_file()
-            self._ssl_logger = SSL_Logger(config=self._pending_config)
+            session_logger = self._ssl_logger = SSL_Logger(config=self._pending_config)
             self._ssl_logger._tui_mode = True
             self._pending_config = None
+            # A stop requested while the logger was being built had nothing to
+            # stop yet — honour it now (request_stop flips `running`, which
+            # SSL_Logger.__init__ set True) and skip straight to teardown.
+            if self._stop_requested:
+                session_logger.request_stop()
 
             # Wire TUI output handler to the event bus BEFORE connect_live()
             # so it receives LiveReadyEvent and can launch Wireshark
@@ -679,6 +886,10 @@ class CaptureController:
             if debug_output_enabled:
                 self._setup_debug_log(self._ssl_logger._event_bus)
 
+            if self._stop_requested:
+                # Stopped during start-up: never attach / start the session.
+                return
+
             # Connect live Wireshark handler (emits LiveReadyEvent → TUI
             # launches Wireshark → blocks until FIFO connected or timeout)
             self._ssl_logger.connect_live()
@@ -709,8 +920,27 @@ class CaptureController:
                         pass
             self._screen.app.call_from_thread(_update_capturing)
 
-            self._ssl_logger.start_fritap_session()
-            while self._ssl_logger.running:
+            # Bring up the dedicated lsass key-extraction worker BEFORE the target
+            # handshake so the Schannel secrets are captured (see the pre-check above).
+            # start_lsass_hook runs on its own daemon thread and blocks ~2s until the
+            # hook is live; running it here (background worker) won't freeze the UI.
+            if lsass_params is not None:
+                try:
+                    from friTap.friTap import hook_lsass
+                    hook_lsass(**lsass_params)
+                    lsass_started = True
+                    if not getattr(self, "_lsass_atexit_registered", False):
+                        import atexit
+                        from friTap.friTap import cleanup_lsass_hook as _cleanup_lsass
+                        atexit.register(_cleanup_lsass)
+                        self._lsass_atexit_registered = True
+                except Exception as e:
+                    self._screen.app.call_from_thread(
+                        lambda err=e: self._screen._get_activity_log().log_warning(
+                            f"LSASS key extraction unavailable: {err}"))
+
+            session_logger.start_fritap_session()
+            while session_logger.running:
                 time.sleep(0.2)
             # The loop exits normally on a target crash (running flipped to
             # False by the detach/error handler). Promote the recorded crash to
@@ -758,11 +988,19 @@ class CaptureController:
                 self._screen._get_activity_log().log_error(msg)
             self._screen.app.call_from_thread(_log_error)
         finally:
+            # Stop the dedicated lsass key-extraction worker (if we started it)
+            # before tearing down the target session.
+            if lsass_started:
+                try:
+                    from friTap.friTap import cleanup_lsass_hook
+                    cleanup_lsass_hook()
+                except Exception:
+                    logger.debug("lsass hook cleanup failed", exc_info=True)
             # All blocking I/O runs here on the background thread
-            if self._ssl_logger:
+            if session_logger is not None:
                 self._close_debug_log()
                 try:
-                    sl = self._ssl_logger
+                    sl = session_logger
                     # finish_fritap() drains the message queue, stops proxy,
                     # and unloads the Frida script — safe to block here.
                     sl.finish_fritap()
@@ -776,8 +1014,8 @@ class CaptureController:
                 # Gather file stats on background thread to avoid blocking UI
                 result_stats = self._gather_result_stats()
 
-            def _finalize(stats=result_stats):
-                self._on_session_ended(stats)
+            def _finalize(stats=result_stats, gen=generation):
+                self._on_session_ended(stats, generation=gen)
             self._screen.app.call_from_thread(_finalize)
 
     def _on_session_error_event(self, event) -> None:
@@ -797,16 +1035,29 @@ class CaptureController:
             logger.debug("Failed to handle session ErrorEvent", exc_info=True)
 
     def _on_session_detach_event(self, event) -> None:
-        """Mark the session crashed when the target process terminates."""
+        """Mark the session crashed only when the target died INSIDE a hook.
+
+        A plain process exit — e.g. a short-lived target that finished its work —
+        is not a crash: the agent breadcrumb still reads ``agent-init*``/empty
+        because no hook was executing. Only a crumb naming a real hook marks the
+        session as crashed; otherwise the session ends as completed, not failed.
+        """
         try:
             reason = getattr(event, "reason", "")
             if reason in ("process-terminated", "process-replaced"):
-                self._session_crashed = True
-                if not self._session_crash_message:
-                    self._session_crash_message = (
-                        "Target process terminated unexpectedly — it most "
-                        "likely crashed inside an instrumented hook."
-                    )
+                crumb = getattr(self._ssl_logger, "_last_hook_breadcrumb", "") or ""
+                spawn = getattr(self._ssl_logger, "spawn", False)
+                # A clean exit only when the agent fully initialised in attach mode;
+                # an empty/partial crumb (esp. a spawn startup crash) marks crashed.
+                looks_clean = (not spawn) and crumb == "agent-init: complete"
+                if not looks_clean:
+                    self._session_crashed = True
+                    if not self._session_crash_message:
+                        msg = ("Target process terminated unexpectedly — it most "
+                               "likely crashed inside an instrumented hook")
+                        if crumb and not crumb.startswith("agent-init"):
+                            msg += f" (last instrumented: {crumb})"
+                        self._session_crash_message = msg + "."
         except Exception:
             logger.debug("Failed to handle session DetachEvent", exc_info=True)
 
@@ -845,14 +1096,78 @@ class CaptureController:
                 except Exception:
                     self._ui_flush_scheduled = False
 
+    def _memory_scan_keylog_files(self) -> dict[str, str]:
+        """Protocol -> memory-scan sidecar keylog written this capture, if any.
+
+        These hold the keys the *scanner* recovered (e.g. MTProto OBF + perm auth
+        keys) — distinct from the hook keylog. Read from the live SSL_Logger's
+        config. The sidecar names are derived (stable across runs), so only
+        files this session actually wrote are kept — non-empty and modified
+        since the session start, the same rule the capture manifest applies —
+        so a stale sidecar left by an earlier run is neither listed nor counted.
+        Each file appears once (under the first protocol mapping to it —
+        mtproto and telegram share one sidecar). Total: any failure yields ``{}``.
+        """
+        try:
+            from friTap.memory_scanning import memory_scan_protocol_keylogs
+            from friTap.pcap import _existing_keylog_files
+            mapping = memory_scan_protocol_keylogs(self._ssl_logger._config)
+            started = getattr(self._ssl_logger, "_session_start_time", None)
+            written = _existing_keylog_files(
+                mapping,
+                not_before=started if isinstance(started, (int, float)) else None)
+        except Exception:
+            return {}
+        files: dict[str, str] = {}
+        for proto, path in written.items():
+            if path not in files.values():
+                files[proto] = path
+        return files
+
+    def _memory_scan_keylog_paths(self) -> list[str]:
+        """The memory-scan sidecar keylog file(s) written this capture, if any.
+
+        Feeds the results key count so it reflects the scanner's keys too, not
+        just the hook file. Total: any failure yields ``[]`` (hook-only count).
+        """
+        return list(self._memory_scan_keylog_files().values())
+
+    def _keylog_result_rows(self, base_keylog: str, protocols) -> dict[str, str]:
+        """Results-modal keylog rows: ``{label: path}``, each file listed once.
+
+        The hook keylog(s) (split per protocol on a multi-protocol run, else the
+        base ``-k`` path) followed by the memory-scan sidecar(s). A sidecar that
+        IS a hook keylog (memory-scan-only mode writes the tls sidecar to the
+        ``-k`` path) is not listed a second time. Shared by the stats gathering
+        and the results modal so every stat lands on the row of its own file.
+        """
+        rows: dict[str, str] = {}
+        keylog_files = self._resolve_keylog_files(base_keylog, protocols)
+        if keylog_files:
+            multi = len(keylog_files) > 1
+            for proto, path in keylog_files.items():
+                rows[f"Key log ({proto})" if multi else "Key log"] = path
+        elif base_keylog:
+            rows["Key log"] = base_keylog
+        listed = {_same_file_key(path) for path in rows.values()}
+        for proto, path in self._memory_scan_keylog_files().items():
+            if _same_file_key(path) not in listed:
+                listed.add(_same_file_key(path))
+                rows[f"Memory-scan keys ({proto})"] = path
+        return rows
+
     def _gather_result_stats(self) -> dict[str, str]:
-        """Gather capture statistics (file I/O). Must run on background thread."""
+        """Gather capture statistics (file I/O). Must run on background thread.
+
+        Each keylog row gets the count of ITS OWN file (``0 keys`` for an empty
+        one); with several keylog files a distinct-union total is added too.
+        """
         stats: dict[str, str] = {}
         state = self._screen._get_state()
         if state.keylog_path:
-            key_count = _count_keys(state.keylog_path)
-            if key_count is not None:
-                stats["Key log"] = f"{key_count} key{'s' if key_count != 1 else ''}"
+            stats.update(self._keylog_row_stats(
+                self._keylog_result_rows(state.keylog_path, _selected_protocols(state))
+            ))
         if state.pcap_path:
             size = _get_file_size(state.pcap_path)
             if size is None:
@@ -862,16 +1177,32 @@ class CaptureController:
                 stats["PCAP"] = format_byte_size(size)
         return stats
 
-    def _show_modals_sequentially(self, items: list) -> None:
+    @staticmethod
+    def _keylog_row_stats(rows: dict[str, str]) -> dict[str, str]:
+        """Per-row key counts for existing keylog files, plus a distinct total."""
+        from friTap.offline.keylog_picker import count_distinct_keys
+        stats: dict[str, str] = {}
+        existing = [path for path in rows.values() if os.path.isfile(path)]
+        for label, path in rows.items():
+            if os.path.isfile(path):
+                stats[label] = _key_count_label(count_distinct_keys([path]))
+        if len(existing) > 1:
+            stats[KEYLOG_TOTAL_STAT] = _key_count_label(count_distinct_keys(existing))
+        return stats
+
+    def _show_modals_sequentially(self, items: list, on_complete=None) -> None:
         """Show queued ``(screen, on_result)`` modals one at a time.
 
         Each modal is pushed only after the previous one is dismissed, so the
         post-capture dialogs never render on top of each other (textual's
         ``push_screen`` is non-blocking). ``on_result`` (if not None) receives
         the dismissed screen's result before the next modal is shown. Mirrors
-        the callback-chaining pattern used in wizard.py.
+        the callback-chaining pattern used in wizard.py. ``on_complete`` (if not
+        None) runs once the last modal was dismissed (immediately if none).
         """
         if not items:
+            if on_complete is not None:
+                on_complete()
             return
         screen, on_result = items[0]
         rest = items[1:]
@@ -882,11 +1213,11 @@ class CaptureController:
                     _on_result(result)
                 except Exception:
                     logger.exception("post-capture modal callback failed")
-            self._show_modals_sequentially(_rest)
+            self._show_modals_sequentially(_rest, on_complete)
 
         self._screen.app.push_screen(screen, callback=_advance)
 
-    def _resolve_keylog_files(self, base_keylog: str, protocol: str) -> dict[str, str]:
+    def _resolve_keylog_files(self, base_keylog: str, protocols) -> dict[str, str]:
         """Resolve the keylog file(s) actually written this capture, that exist.
 
         A single-protocol run writes the base ``-k`` path directly; a
@@ -895,23 +1226,49 @@ class CaptureController:
         ``{protocol: path}`` for files present on disk so the results modal and
         the decrypt-to-flow offer reflect what is on disk — not the base path,
         which a split run never writes verbatim.
+
+        ``protocols`` is the protocol SET this capture wrote keys for (a list, or
+        a single string for back-compat). It is fed to the SAME
+        :func:`active_keylog_paths` helper the factory uses on the WRITE side, so
+        the read side splits identically to the write side by construction.
         """
         if not base_keylog:
             return {}
+        proto_list = [protocols] if isinstance(protocols, str) else list(protocols)
+        fallback_proto = proto_list[0] if proto_list else "tls"
         registry = getattr(self._ssl_logger, "_protocol_registry", None)
         try:
             from friTap.output.factory import active_keylog_paths
-            candidates = active_keylog_paths(base_keylog, protocol, registry)
+            candidates = active_keylog_paths(base_keylog, proto_list, registry)
         except Exception:
-            candidates = {protocol: base_keylog}
+            candidates = {fallback_proto: base_keylog}
         existing = {proto: path for proto, path in candidates.items()
                     if path and os.path.isfile(path)}
         if not existing and os.path.isfile(base_keylog):
-            existing = {protocol: base_keylog}
+            existing = {fallback_proto: base_keylog}
         return existing
 
-    def _on_session_ended(self, result_stats: dict[str, str] | None = None) -> None:
-        """Called when the capture session ends (on Textual thread)."""
+    def _on_session_ended(
+        self,
+        result_stats: dict[str, str] | None = None,
+        generation: int | None = None,
+    ) -> None:
+        """Called when the capture session ends (on Textual thread).
+
+        ``generation`` is the ending worker's session generation; an end report
+        from a stale (superseded) session must not touch the current session's
+        shared state, so it is ignored. ``None`` means "the current session".
+        """
+        if generation is not None and generation != self._session_generation:
+            logger.debug(
+                "Ignoring end of stale capture session %d (current: %d)",
+                generation, self._session_generation,
+            )
+            return
+        # A wizard restart requested mid-capture runs once this session's
+        # results have been shown (see restart_when_stopped).
+        restart = self._restart_after_stop
+        self._restart_after_stop = None
         if result_stats is None:
             result_stats = {}
         state = self._screen._get_state()
@@ -921,6 +1278,9 @@ class CaptureController:
         decrypt_pcap = getattr(state, "pcap_path", "")
         decrypt_keylog = getattr(state, "keylog_path", "")
         decrypt_protocol = getattr(state, "protocol", "tls")
+        # The protocol SET the WRITE side split by (config.protocols); fall back to
+        # the primary scalar so a state that never set the list still resolves.
+        decrypt_protocols = getattr(state, "protocols", None) or [decrypt_protocol]
         decrypt_was_full = getattr(state, "full_capture", False)
 
         # The base -k path may never be written verbatim: a multi-protocol run
@@ -928,17 +1288,13 @@ class CaptureController:
         # <stem>.<proto>.log per protocol. Resolve the real files so the results
         # modal and the decrypt offer below reflect what is on disk. Done BEFORE
         # the reset (and while self._ssl_logger is still set for its registry).
-        keylog_files = self._resolve_keylog_files(decrypt_keylog, decrypt_protocol)
+        keylog_files = self._resolve_keylog_files(decrypt_keylog, decrypt_protocols)
 
-        # Save paths BEFORE resetting
-        result_paths = {}
-        if keylog_files:
-            multi = len(keylog_files) > 1
-            for proto, path in keylog_files.items():
-                label = f"Key log ({proto})" if multi else "Key log"
-                result_paths[label] = path
-        elif decrypt_keylog:
-            result_paths["Key log"] = decrypt_keylog
+        # Save paths BEFORE resetting. The memory-scan sidecar(s) are surfaced too
+        # (deduped against the hook keylogs), so the user sees the file that holds
+        # the scanner-recovered keys (OBF/perm auth). Done while self._ssl_logger
+        # is still set (before the reset).
+        result_paths = self._keylog_result_rows(decrypt_keylog, decrypt_protocols)
         if state.pcap_path:
             result_paths["PCAP"] = state.pcap_path
         target_display = state.target_display or state.target or "unknown"
@@ -993,8 +1349,14 @@ class CaptureController:
             menu.pcap_path = ""
 
         self._capture_mode = ""
+        # The capture is fully torn down. Move to STOPPED: Enter won't re-attach
+        # (target/mode were just cleared) until the user configures a new capture
+        # by hand (a/s + 1-6) or restarts the wizard.
+        self._capture_state = self.STATE_STOPPED
 
         self._screen._get_activity_log().log_session("Capture session ended")
+        if restart is None:
+            self._screen._get_activity_log().log_info(CAPTURE_STOPPED_RESTART_HINT)
 
         # Revert console title (or refresh flow view title to remove "stop capture" hint)
         try:
@@ -1089,6 +1451,9 @@ class CaptureController:
                 stat = result_stats.get(label)
                 suffix = f" ({stat})" if stat else ""
                 lines.append(f"  {label}: [bold]{path}[/]{suffix}")
+            total = result_stats.get(KEYLOG_TOTAL_STAT)
+            if total:
+                lines.append(f"  {KEYLOG_TOTAL_STAT}: [bold]{total}[/]")
             modal_queue.append((
                 AlertModal(message="\n".join(lines), title="Capture Results", severity=results_severity),
                 None,
@@ -1176,8 +1541,11 @@ class CaptureController:
         # keylog files for ANY supported protocol — Signal, MTProto/Telegram,
         # plain TLS, and future plugins — so the offer is no longer skipped just
         # because a split run never wrote the base ``-k`` path verbatim.
+        # Skipped when a wizard restart is pending: the user asked for a fresh
+        # session, and a decrypt run would race the new wizard.
         if (
-            decrypt_was_full
+            restart is None
+            and decrypt_was_full
             and keylog_files
             and decrypt_pcap and os.path.isfile(decrypt_pcap)
             and pcap_has_packets
@@ -1197,5 +1565,6 @@ class CaptureController:
 
             modal_queue.append((DecryptConfirmModal(), _on_decrypt_choice))
 
-        # Present every queued dialog sequentially — never overlapping.
-        self._show_modals_sequentially(modal_queue)
+        # Present every queued dialog sequentially — never overlapping — and only
+        # then relaunch the wizard, so no old-session modal lands on top of it.
+        self._show_modals_sequentially(modal_queue, on_complete=restart)

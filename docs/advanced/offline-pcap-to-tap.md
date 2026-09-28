@@ -78,6 +78,7 @@ fritap --from-pcap chrome.pcap --keylog chromekeys.log --tap out.tap
 | `--decode-as <rule>` | Raw tshark `-d` Decode-As rule, passed through verbatim. Repeatable. |
 | `--tls-heuristic` | Enable tshark's TLS-over-TCP heuristic dissection (finds TLS on non-standard ports without an explicit `--tls-port`). |
 | `--tshark-path <path>` | Path to the tshark binary. Else auto-discovered (also honors `$FRITAP_TSHARK`). |
+| `--repair-keylog` | Before converting, re-pair `--keylog` secrets whose `client_random` matches no handshake in the capture (e.g. keys dumped from Schannel/lsass) by trial decryption. On a match it writes `<keylog stem>.repaired.keylog` next to the keylog and decrypts with it; otherwise the original keylog is used. |
 
 !!! tip "Direction labelling on non-standard ports"
     friTap labels `write` (client→server) vs `read` (server→client) by the
@@ -174,9 +175,16 @@ tallies):
   the keylog. Usually a **temp/perm key mismatch**: the keylog was not recorded
   during the same session as the pcap (Telegram's PFS rotates the temp key).
 * **`mtproto degraded streams`** — a stream could not be processed end-to-end:
-  the capture **started mid-stream** (de-obfuscation needs the first 64 bytes) or
-  used a transport friTap does not yet support (e.g. Fake-TLS, padded
-  intermediate).
+  the capture **started mid-stream** and no obfuscated-transport CTR state was
+  available to seek the counter into it, or it used a transport friTap does not
+  yet support (e.g. Fake-TLS, padded intermediate). A mid-stream capture is **not**
+  fatal when memory scanning (`-ms`) is on: the scanner's Tier E recovers the live
+  obfuscated-transport AES-CTR state from memory, and the offline decryptor seeks
+  that counter into the capture (`recover_obf_alignment`), so already-open
+  connections decrypt without the first 64 bytes. This needs the connection alive
+  during a scan pass, some recent traffic captured (alignment anchors within
+  roughly ~64 KB of the live counter), and the transport AUTH key — which the same
+  scan recovers.
 
 ---
 

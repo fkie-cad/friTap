@@ -25,7 +25,7 @@ Once running you can connect with:
 
 …or wrap the client invocation in friTap:
 
-    fritap --protocol ssh --include-loopback \
+    fritap --protocol ssh --loopback \
         -p /tmp/fritap_ssh_<port>/out.pcapng \
         -k /tmp/fritap_ssh_<port>/keys.log \
         -- /usr/bin/ssh -p <port> \

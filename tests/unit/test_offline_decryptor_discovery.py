@@ -14,31 +14,13 @@ import pytest
 _SIGNAL_AVAILABLE = importlib.util.find_spec("friTap.offline.signal") is not None
 
 import friTap.offline.discovery as discovery  # noqa: E402
-from friTap.flow.layers import AppLayer  # noqa: E402
 from friTap.offline.registry import (  # noqa: E402
-    OfflineDecryptorEntry,
     OfflineDecryptorRegistry,
     get_offline_decryptor_registry,
 )
+from tests.unit._offline_helpers import make_offline_entry  # noqa: E402
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "offline_decryptors"
-
-
-def _noop_emitter(**_kwargs):  # pragma: no cover - never invoked in these tests
-    return None
-
-
-def _make_entry(name: str, *, help_text: str = "") -> OfflineDecryptorEntry:
-    return OfflineDecryptorEntry(
-        protocol_name=name,
-        cli_flag=f"--{name}-keylog",
-        cli_dest=f"{name}_keylog",
-        requires_tls_strip=False,
-        emitter=_noop_emitter,
-        layer_cls=AppLayer,
-        counter_prefix=name,
-        cli_help=help_text,
-    )
 
 
 # ----------------------------------------------------------------------------
@@ -47,7 +29,7 @@ def _make_entry(name: str, *, help_text: str = "") -> OfflineDecryptorEntry:
 
 def test_registry_register_get_list_names_roundtrip():
     reg = OfflineDecryptorRegistry()
-    entry = _make_entry("alpha")
+    entry = make_offline_entry("alpha")
 
     reg.register(entry)
 
@@ -59,8 +41,8 @@ def test_registry_register_get_list_names_roundtrip():
 
 def test_registry_conflict_ignored_without_replace():
     reg = OfflineDecryptorRegistry()
-    first = _make_entry("alpha", help_text="first")
-    second = _make_entry("alpha", help_text="second")
+    first = make_offline_entry("alpha", cli_help="first")
+    second = make_offline_entry("alpha", cli_help="second")
 
     reg.register(first)
     reg.register(second)  # conflicting, no replace -> ignored
@@ -70,8 +52,8 @@ def test_registry_conflict_ignored_without_replace():
 
 def test_registry_conflict_honored_with_replace():
     reg = OfflineDecryptorRegistry()
-    first = _make_entry("alpha", help_text="first")
-    second = _make_entry("alpha", help_text="second")
+    first = make_offline_entry("alpha", cli_help="first")
+    second = make_offline_entry("alpha", cli_help="second")
 
     reg.register(first)
     reg.register(second, replace=True)

@@ -27,13 +27,14 @@ from ..events import (
     EventBus,
     HookBreadcrumbEvent,
     InstrumentEvent,
+    KeylogEvent,
     LibraryDetectedEvent,
     PlatformReportEvent,
     ScriptLoadedEvent,
     SessionEvent,
     SocketTraceEvent,
 )
-from ..fritap_utility import setup_fritap_logging
+from ..fritap_utility import setup_fritap_logging, sha256_file
 from ..pcap import PCAP
 
 if TYPE_CHECKING:
@@ -91,6 +92,150 @@ except ImportError:
 
 # here - where we are.
 here = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+
+# Optional full agent bundle (generic; absent from public builds) and the
+# sidecar written by dev/compile_agent.sh holding the sha256 of the public
+# bundle it was built alongside.
+FULL_AGENT_BUNDLE_NAME = "fritap_agent_full.js"
+FULL_AGENT_BUNDLE_SIDECAR_SUFFIX = ".src"
+
+
+def _full_bundle_in_sync(full_bundle, public_bundle):
+    """True if the full bundle's sidecar hash matches the public bundle."""
+    try:
+        with open(full_bundle + FULL_AGENT_BUNDLE_SIDECAR_SUFFIX, encoding="utf-8") as fh:
+            expected = fh.read().strip().lower()
+        return bool(expected) and expected == sha256_file(public_bundle)
+    except (OSError, ValueError):
+        # Missing/unreadable file, or a garbled (non-UTF-8) sidecar
+        # (UnicodeDecodeError is a ValueError): treat as out of sync.
+        return False
+
+
+def _schannel_keylog_candidates(config, protocol_registry):
+    """Return the TLS keylog files an SChannel relabel pass should repair.
+
+    The LSASS worker (``hook_lsass`` in friTap.py) builds its own SSL_Logger
+    from the raw ``-k`` value with the default single ``tls`` protocol, so it
+    always writes the SChannel secrets to the BASE ``-k`` path, never to a
+    ``<stem>.<proto><ext>`` split file. ``pcap_obj.keylog_path`` is not usable
+    for this: under a multi-protocol split (``--protocol tls,rc4``) it holds
+    whichever split handler was set up last (e.g. ``keys.rc4.log``).
+
+    This session's own TLS keys go to its TLS split file when the keylog is
+    split, so that file is repaired too. Non-TLS split files (rc4, ssh, ...)
+    are never candidates.
+    """
+    base_keylog = config.output.keylog
+    if not base_keylog:
+        return []
+    candidates = [base_keylog]
+    try:
+        from ..output.factory import active_keylog_paths
+        protocols = list(getattr(config, "protocols", None) or ["tls"])
+        tls_keylog = active_keylog_paths(
+            base_keylog, protocols, protocol_registry).get("tls")
+    except Exception:  # noqa: BLE001 - best-effort discovery
+        tls_keylog = None
+    if tls_keylog and tls_keylog != base_keylog:
+        candidates.append(tls_keylog)
+    return candidates
+
+
+def _release_lsass_keylog_writer(logger):
+    """Stop the separate LSASS worker session so it releases the shared ``-k`` file.
+
+    The LSASS SSL_Logger (``hook_lsass`` in friTap.py) keeps its own
+    KeylogOutputHandler open on the base keylog (and its pcap/json handlers on the
+    shared -p/--json files) until it is torn down; the CLI otherwise only stops it
+    from an ``atexit`` hook that ``os._exit`` skips.
+    Idempotent (a no-op when no LSASS hook runs) and never raises.
+    """
+    try:
+        from ..friTap import cleanup_lsass_hook
+        cleanup_lsass_hook()
+    except Exception:  # noqa: BLE001 - best effort; the relabel handles a held file
+        logger.debug("Could not stop the LSASS hook before the keylog relabel",
+                     exc_info=True)
+
+
+def _drop_still_open_keylogs(logger, pcap_name, keylog_paths):
+    """Return the *keylog_paths* no writer in this process still holds open.
+
+    The ``-k`` file is shared (refcounted) by the main and the LSASS session's
+    keylog handlers, so it is only really closed once BOTH released it. A path
+    still open here would be renamed under a live writer (its later keys would
+    land in the ``.raw`` backup; Windows refuses the rename outright), so it is
+    skipped with a warning and left unchanged.
+    """
+    from ..output.shared_keylog_writer import is_keylog_path_open
+    closed = []
+    for path in keylog_paths:
+        if is_keylog_path_open(path):
+            logger.warning(
+                "SChannel keylog auto-relabel skipped for %s: the keylog is still "
+                "open by another friTap session. The keylog was kept unchanged; "
+                "to fix it manually, run: fritap --from-pcap %s --keylog %s "
+                "--repair-keylog", path, pcap_name, path)
+        else:
+            closed.append(path)
+    return closed
+
+
+def _warn_relabel_not_applied(logger, pcap_name, keylog_path, relabeled_path, error):
+    """Tell the user the relabel could not be written and how to apply it by hand."""
+    logger.warning(
+        "SChannel keylog auto-relabel could not replace %s (%s); the original keylog "
+        "was kept unchanged. The relabeled copy is at %s. To redo the fix manually, "
+        "run: fritap --from-pcap %s --keylog %s --repair-keylog",
+        keylog_path, error, relabeled_path, pcap_name, keylog_path)
+
+
+def _swap_in_relabeled_keylog(logger, pcap_name, keylog_path, relabeled_path, raw_backup):
+    """Move *keylog_path* to *raw_backup* and *relabeled_path* into its place.
+
+    Returns ``True`` on success. On an ``OSError`` (e.g. Windows' PermissionError
+    for a file another handle still holds open) the original keylog is kept (or
+    restored from the backup), a warning with the manual command is logged, and
+    ``False`` is returned.
+    """
+    try:
+        os.replace(keylog_path, raw_backup)
+    except OSError as e:
+        _warn_relabel_not_applied(logger, pcap_name, keylog_path, relabeled_path, e)
+        return False
+    try:
+        os.replace(relabeled_path, keylog_path)
+    except OSError as e:
+        try:
+            os.replace(raw_backup, keylog_path)
+        except OSError:
+            logger.warning("Could not restore %s; the original keylog is at %s",
+                           keylog_path, raw_backup)
+        _warn_relabel_not_applied(logger, pcap_name, keylog_path, relabeled_path, e)
+        return False
+    return True
+
+
+def _relabel_one_schannel_keylog(logger, tshark_bin, pcap_name, keylog_path):
+    """Trial-decrypt-relabel one keylog in place, keeping ``<stem>.raw<ext>``."""
+    from ..offline.keylog_coverage import relabel_keylog
+    result = relabel_keylog(
+        tshark_bin, pcap_name, keylog_path,
+        progress=lambda m: logger.debug("relabel: %s", m))
+    if not result.repaired_path:
+        logger.debug("SChannel keylog auto-relabel (%s): %s", keylog_path, result.message)
+        return
+    stem, ext = os.path.splitext(keylog_path)
+    raw_backup = f"{stem}.raw{ext or '.keylog'}"
+    if not _swap_in_relabeled_keylog(logger, pcap_name, keylog_path,
+                                     result.repaired_path, raw_backup):
+        return
+    logger.info(
+        "SChannel keylog relabeled by trial decryption (%s); raw agent output saved "
+        "to %s. Load %s directly in Wireshark.",
+        result.message, os.path.basename(raw_backup), os.path.basename(keylog_path))
+
 
 class SSL_Logger():
 
@@ -202,7 +347,13 @@ class SSL_Logger():
             self._protocol_handler = self._protocol_registry.get("tls") \
                 or next(iter(self._protocol_registry.get_all()), None)
         else:
-            self._protocol_registry = create_default_registry([self._config.protocol])
+            # Foundation F1 — multi-protocol selection: register EVERY selected
+            # protocol's handler (e.g. ["tls", "rc4"]) so all their hooks,
+            # keylog formatters and pcap wiring are available. The primary
+            # (first) selection stays the "active" handler for the single-handler
+            # call sites (pcap protocol, auto-detect fallback). A single
+            # selection reduces to exactly the previous behaviour.
+            self._protocol_registry = create_default_registry(list(self._config.protocols))
             self._detected_libraries = set()
             self._protocol_handler = self._protocol_registry.get(self._config.protocol)
             if self._protocol_handler is None:
@@ -211,8 +362,13 @@ class SSL_Logger():
                     "available: " + ", ".join(self._protocol_registry.list_protocols())
                 )
 
-        # Validate protocol-backend compatibility
-        self._config.validate_protocol_backend(self._protocol_handler)
+        # Validate protocol-backend compatibility for EACH selected protocol's
+        # handler (not just the primary). auto/all resolve to no single handler
+        # and are skipped inside validate_protocol_backend.
+        for _proto_name in self._config.protocols:
+            _proto_handler = self._protocol_registry.get(_proto_name)
+            if _proto_handler is not None:
+                self._config.validate_protocol_backend(_proto_handler, _proto_name)
 
         # Session manager (extracted for file length management)
         from .session_manager import SessionManager
@@ -220,24 +376,42 @@ class SSL_Logger():
 
         # Message router (extracted for file length management)
         from ..message_router import MessageRouter
-        self._message_router = MessageRouter(self._event_bus, active_protocol=self._config.protocol)
+        self._message_router = MessageRouter(self._event_bus, active_protocol=list(self._config.protocols))
 
-        # Wire display filter if configured
+        # Wire display filter if configured. Every headless entry point (CLI
+        # and API users constructing SSL_Logger directly) passes through here,
+        # so the headless policy is enforced once: an invalid expression or one
+        # using flow-only fields (which would drop every data event) is logged
+        # and not installed.
         if self._config.output.filter_expression:
             try:
-                from ..filter import FilterEngine
-                self._message_router.set_filter(
-                    FilterEngine(self._config.output.filter_expression)
-                )
-                self.logger.info(
-                    "Display filter active: %s",
-                    self._config.output.filter_expression,
-                )
+                from ..filter.pipeline_filter import build_headless_filter
+                engine = build_headless_filter(self._config.output.filter_expression)
+                if isinstance(engine, str):
+                    self.logger.warning("%s", engine)
+                else:
+                    self._message_router.set_filter(engine)
+                    self.logger.info(
+                        "Display filter active: %s",
+                        self._config.output.filter_expression,
+                    )
             except Exception as e:
                 self.logger.warning("Invalid filter expression: %s", e)
 
         # Always track detected libraries (needed for exit hint message)
         self._event_bus.subscribe(LibraryDetectedEvent, self._on_library_detected)
+
+        # Track whether ANY key material was captured this session, from any
+        # source. `_detected_libraries` (above) is only populated by the native
+        # LibraryDetectedEvent path, so key-producing paths that never emit that
+        # event — the Java Secret-Chat/E2E hooks and the memory-scan engine —
+        # would leave it empty and wrongly trigger the "No <PROTO> libraries were
+        # detected" exit hint even after a successful capture. Every keylog
+        # producer emits a KeylogEvent on this same bus (message_router, the
+        # memory-scan engine, the SSH/custom-protocol extractors), so a single
+        # subscription here is an accurate, source-agnostic "did we get keys?".
+        self._captured_any_secret = False
+        self._event_bus.subscribe(KeylogEvent, self._on_keylog_captured)
 
         # Crash attribution: remember the last hook the agent reported entering,
         # so on_detach can name it if the target dies inside a hook. Stored in
@@ -459,6 +633,16 @@ class SSL_Logger():
                     self._protocol_handler = matched[0]
                     self.logger.info("Auto-detect: switched protocol handler to %s", self._protocol_handler.name)
 
+    def _on_keylog_captured(self, event):
+        """Note that at least one key was captured this session (any source).
+
+        Used to suppress the misleading "No <PROTO> libraries were detected"
+        exit hint when keys were actually produced by a path that does not emit
+        a LibraryDetectedEvent (Java Secret-Chat/E2E hooks, the memory-scan
+        engine). Intentionally cheap and idempotent.
+        """
+        self._captured_any_secret = True
+
 
 
     def init_fritap(self):
@@ -480,7 +664,9 @@ class SSL_Logger():
                                       'nflog_group': self._config.output.owner_nflog_group,
                                   },
                                   target_package=self.target_app,
-                                  target_pid=getattr(self, 'pid', None))
+                                  target_pid=getattr(self, 'pid', None),
+                                  include_loopback=getattr(self._config.output, 'include_loopback', False))
+            self._seed_known_server_ports()
 
 
         if self.offsets is not None:
@@ -525,6 +711,41 @@ class SSL_Logger():
         self._setup_output_handlers()
         self._handlers_active = True
 
+    @staticmethod
+    def _is_memory_scan_handler(handler) -> bool:
+        """Whether *handler* is the heap scanner's (``-ms``) keylog writer."""
+        formatter = getattr(handler, "_formatter", None)
+        return getattr(formatter, "protocol", None) == "memscan"
+
+    def _record_memory_scan_keylogs(self):
+        """Hand the memory-scan keylog paths to the PCAP object for the manifest."""
+        if self.pcap_obj is None or not hasattr(self.pcap_obj, "set_memory_scan_keylogs"):
+            return
+        from ..memory_scanning import memory_scan_protocol_keylogs
+        mapping = memory_scan_protocol_keylogs(self._config)
+        if mapping:
+            self.pcap_obj.capture_protocol = self.protocol
+            self.pcap_obj.set_memory_scan_keylogs(mapping)
+
+    def _seed_known_server_ports(self):
+        """Seed explicit capture-time TLS/QUIC server ports into the manifest.
+
+        Honors an explicit ``--tls-port``/``--quic-port`` given at capture time
+        (when present on the output config) so the manifest's ``tls_ports`` /
+        ``quic_ports`` are populated even for a pure ``--full_capture`` that
+        never observes a non-standard/loopback server (e.g. 127.0.0.1:8443).
+        Fully guarded and side-effect-free when the ports are unset.
+        """
+        if self.pcap_obj is None or not hasattr(self.pcap_obj, "set_known_tls_ports"):
+            return
+        output_cfg = getattr(self._config, "output", None)
+        tls_ports = getattr(output_cfg, "tls_ports", None)
+        quic_ports = getattr(output_cfg, "quic_ports", None)
+        if tls_ports:
+            self.pcap_obj.set_known_tls_ports(tls_ports)
+        if quic_ports:
+            self.pcap_obj.set_known_quic_ports(quic_ports)
+
     def _setup_output_handlers(self):
         """Create and register output handlers based on config."""
         from ..output.factory import OutputHandlerFactory
@@ -552,11 +773,17 @@ class SSL_Logger():
                 # Also propagate the active protocol so the manifest can record a
                 # protocol-specific keylog field (e.g. "mtproto_keylog") and the
                 # offline pipeline routes the keys to the right decryptor.
+                # The memory-scan handler is NOT a hooked-key keylog: it is
+                # recorded separately below so the manifest can point each
+                # protocol at the scanner's real file (e.g. the .mtproto sidecar)
+                # instead of the TLS-only memscan keylog.
                 if self.pcap_obj is not None:
-                    self.pcap_obj.keylog_path = handler._path
+                    if not self._is_memory_scan_handler(handler):
+                        self.pcap_obj.keylog_path = handler._path
                     self.pcap_obj.capture_protocol = self.protocol
             if isinstance(handler, (LivePcapngHandler, LiveAutoDecryptHandler, LiveWiresharkHandler)):
                 self._live_handler = handler
+        self._record_memory_scan_keylogs()
 
         # Load plugins
         from ..plugins.loader import PluginLoader
@@ -569,6 +796,28 @@ class SSL_Logger():
             from ..plugins.legacy_custom_script import LegacyCustomScriptPlugin
             legacy_plugin = LegacyCustomScriptPlugin(self.custom_hook_script)
             self._plugin_loader.register_builtin(legacy_plugin, self._plugin_shim)
+
+        # Memory scanning (--memory-scan / -ms) is a first-class friTap capability,
+        # NOT a plugin: build the MemoryScanEngine here and drive it directly from
+        # instrument()/detach/cleanup (see self._memory_scan_engine below). It
+        # injects a separate, host-driven heap secret-scanner agent
+        # (fritap_memscan.js) with its own poll loop and, on Windows, its own
+        # lsass.exe session. When passed alone, instrument() skips the main
+        # TLS-hooking agent and only the scanner runs; combined with -k/-p/-c it
+        # runs alongside them. The engine remains reachable through the plugin
+        # system via friTap.memory_scanning.MemoryScanScriptPlugin, but the core
+        # does not register it as a plugin.
+        if getattr(self._config.hooking, "memory_scan", False):
+            from ..memory_scanning import build_memory_scan_engine
+            self._memory_scan_engine = build_memory_scan_engine(self._config)
+            # Bottom-up signal: if the scan agent dies on its own (target killed /
+            # ANR'd) the poll loop calls this back. In memory-scan-only runs that
+            # means the capture is effectively over, so end it instead of leaving
+            # the session (and the TUI) stuck in "capturing".
+            self._memory_scan_engine.set_scan_ended_callback(
+                self._on_memory_scan_ended)
+        else:
+            self._memory_scan_engine = None
 
 
     def _on_hook_breadcrumb(self, event: "HookBreadcrumbEvent") -> None:
@@ -1044,26 +1293,47 @@ class SSL_Logger():
         except Exception:
             self.logger.debug("ios crash enrichment failed", exc_info=True)
 
-        # Headline: report the real cause when we have one; otherwise fall back
-        # to the (lower-confidence) "crashed inside a hook" hypothesis.
+        # Headline: report the real cause when we have one; otherwise decide
+        # between a suspected hook crash and a plain, expected exit using the
+        # breadcrumb. A crumb that names a real hook means a hook WAS in flight;
+        # an "agent-init*" crumb (incl. "agent-init: complete") or an empty crumb
+        # means no hook was executing — so the process almost certainly just
+        # exited (e.g. a short-lived download target that finished), NOT crashed.
         have_real_cause = bool(signal_name or abort_msg)
+        # A clean, expected exit: no crash evidence, ATTACH mode, and the agent had
+        # fully initialised ("agent-init: complete") with no hook in flight — the
+        # short-lived-target case (e.g. a download script that finished). An empty or
+        # partial breadcrumb means the target went away before init completed, which
+        # is a crash (especially in spawn mode), so it keeps the hook-crash hypothesis
+        # and all the crash guidance below. This narrow carve-out is the only change
+        # from the previous blanket "crashed inside a hook" fallback.
+        clean_exit = (not have_real_cause and not self.spawn
+                      and crumb == "agent-init: complete")
         if have_real_cause:
             cause = signal_name or "native crash"
             if abort_msg:
                 cause += f": {abort_msg}"
             headline = f"Target process terminated unexpectedly — {cause}"
+        elif clean_exit:
+            headline = ("Target process exited "
+                        "(no crash detected; last agent stage: agent-init: complete)")
         else:
             headline = ("Target process terminated unexpectedly — it most likely "
                         "crashed inside an instrumented hook")
             if crumb:
                 headline += f" (last instrumented: {crumb})"
-        self.logger.error(headline)
+        # A clean exit is informational, not an error — and skips the crash-only
+        # guidance and the "crash report" pointer emitted below.
+        if clean_exit:
+            self.logger.info(headline)
+        else:
+            self.logger.error(headline)
 
         # Platform-aware guidance. No longer spawn-only: the fkie-cad/friTap#65
         # reporter was ATTACHING, and an attach-mode crash used to get no
         # guidance at all. Only claim anti-tamper when there is real evidence —
-        # never guess PairIP for a normal app.
-        if reason == "process-terminated":
+        # never guess PairIP for a normal app. Skipped entirely on a clean exit.
+        if reason == "process-terminated" and not clean_exit:
             if self._is_ios_target():
                 # iOS first: its crash report is far more specific than any
                 # of the heuristics below, and it exists in attach mode too.
@@ -1147,17 +1417,21 @@ class SSL_Logger():
                             "Try starting the app first, then ATTACH friTap (run WITHOUT -s). "
                             "See fkie-cad/friTap#64.")
 
-        if log_path:
-            self.logger.error(f"Full crash report + hook activity written to: {log_path}")
-        try:
-            from ..events import ERROR_SEVERITY_FATAL, ErrorEvent
-            self._event_bus.emit(ErrorEvent(
-                error="Target process crashed",
-                description=headline,
-                severity=ERROR_SEVERITY_FATAL,
-            ))
-        except Exception:
-            pass
+        # On a clean exit, skip the crash-report pointer and the fatal "crashed"
+        # ErrorEvent: the process simply ended, so there is nothing to report and
+        # nothing should mark the session as crashed.
+        if not clean_exit:
+            if log_path:
+                self.logger.error(f"Full crash report + hook activity written to: {log_path}")
+            try:
+                from ..events import ERROR_SEVERITY_FATAL, ErrorEvent
+                self._event_bus.emit(ErrorEvent(
+                    error="Target process crashed",
+                    description=headline,
+                    severity=ERROR_SEVERITY_FATAL,
+                ))
+            except Exception:
+                pass
 
     def on_process_crashed(self, crash) -> None:
         """Device ``process-crashed`` handler.
@@ -1195,7 +1469,75 @@ class SSL_Logger():
             self._pending_crash = None
 
         self._event_bus.emit(DetachEvent(reason=reason))
+        self._end_session(reason)
 
+    # Upper bound on how long a scanner-driven end of session may take to reach
+    # the flushed state before the waiting thread gives up and lets the main
+    # thread exit anyway. Generous: the final pcap/DSB/manifest pass of a long
+    # capture legitimately takes a while, and it is only hit on a wedge.
+    SESSION_END_WEDGE_TIMEOUT = 120.0
+
+    # Guards only the claim of the once-flag below; class-level so bare
+    # ``SSL_Logger.__new__`` instances (used throughout the tests) have it too.
+    _SESSION_END_CLAIM_LOCK = threading.Lock()
+
+    def _claim_session_end(self) -> bool:
+        """Atomically claim the end-of-session teardown. True for the first
+        caller only — every later caller must leave the teardown alone."""
+        with self._SESSION_END_CLAIM_LOCK:
+            if getattr(self, "_session_end_claimed", False):
+                return False
+            self._session_end_claimed = True
+            return True
+
+    def _end_session(self, reason) -> bool:
+        """The one, idempotent end-of-session teardown for a target that is gone.
+
+        Shared by the frida detach (``on_detach``) and the memory scanner ending
+        (``_on_memory_scan_ended``). Both can fire for the same target death on
+        different threads; only the first caller tears down, the second returns
+        ``False`` at once. The teardown flushes the pcap, runs ``cleanup()`` —
+        which writes the final pcap, DSB and manifest and only THEN sets
+        ``_done_event`` — before the wedge-prone frida detach (friTap#64).
+        """
+        if not self._claim_session_end():
+            self.logger.debug(
+                "session end (%s) already in progress; skipping", reason)
+            return False
+        self._notify_session_detach()
+        self.logger.info(f"Target process stopped: {reason}")
+        self._log_session_end(reason)
+        self.pcap_cleanup(self.full_capture,self.mobile,self.pcap_name)
+        self.cleanup(self.live,self.socket_trace,self.full_capture,self.debug_output)
+        return True
+
+    def _end_session_bounded(self, reason) -> None:
+        """Run :meth:`_end_session` on a worker thread, bounded by
+        ``SESSION_END_WEDGE_TIMEOUT``.
+
+        If the teardown wedges before it reaches the flushed state (a frida
+        unload on the dead session, friTap#64), set ``_done_event`` anyway so
+        the main thread still exits — degrading to the raw capture rather than
+        hanging forever. A post-flush wedge is already covered: ``_done_event``
+        was set by then.
+        """
+        worker = threading.Thread(
+            target=self._end_session, args=(reason,),
+            name="fritap-session-end", daemon=True,
+        )
+        worker.start()
+        worker.join(self.SESSION_END_WEDGE_TIMEOUT)
+        if worker.is_alive() and not self._done_event.is_set():
+            self.logger.warning(
+                "session teardown did not finish within %.0fs; exiting without "
+                "the final capture pass", self.SESSION_END_WEDGE_TIMEOUT)
+            self._done_event.set()
+
+    def _notify_session_detach(self) -> None:
+        """Tell the script plugins and the memory-scan engine the target is gone."""
+        # Build the detach ScriptContext once and share it between the plugin
+        # loader and the memory-scan engine (both want the same snapshot).
+        detach_ctx = None
         # Notify script plugins of detach
         if hasattr(self, '_plugin_loader') and self.process and self.device:
             detach_ctx = self._build_script_context(
@@ -1204,10 +1546,17 @@ class SSL_Logger():
             )
             self._plugin_loader.detach_all(detach_ctx)
 
-        self.logger.info(f"Target process stopped: {reason}")
-        self._log_session_end(reason)
-        self.pcap_cleanup(self.full_capture,self.mobile,self.pcap_name)
-        self.cleanup(self.live,self.socket_trace,self.full_capture,self.debug_output)
+        # Stop the memory-scan engine on detach (mirrors the plugins' detach_all).
+        if getattr(self, "_memory_scan_engine", None) is not None:
+            try:
+                if detach_ctx is None:
+                    detach_ctx = self._build_script_context(
+                        self.process, self.device,
+                        getattr(self, '_last_runtime', ScriptRuntime.QJS),
+                    )
+                self._memory_scan_engine.stop(detach_ctx)
+            except Exception:  # noqa: BLE001 - teardown must not break detach
+                self.logger.debug("memory-scan: engine stop() failed", exc_info=True)
 
     def _to_datetime(self, ts):
         # support numeric timestamp (seconds or millis) or iso string
@@ -1353,7 +1702,7 @@ class SSL_Logger():
             'socket_tracing': self.socket_trace,
             'defaultFD': self.enable_default_fd,
             'experimental': self.experimental,
-            'protocol_select': self.protocol,
+            'protocol_select': ",".join(getattr(self._config, 'protocols', None) or [self.protocol]),
             'install_lsass_hook': self.install_lsass_hook,
             'use_modern': getattr(self, 'use_modern', False),
             'library_scan': self.scan_results_data,
@@ -1376,6 +1725,9 @@ class SSL_Logger():
             # and the hooks it would install, then stops before installing any
             # of them (fkie-cad/friTap#65 diagnostics).
             'probe': bool(getattr(self._config.hooking, 'probe', False)),
+            # --boringssl-anchor-only: force the last-resort BoringSSL anchor
+            # locator (tier 4) by skipping the pattern tier (debugging aid).
+            'force_anchor_locator': bool(getattr(self._config.hooking, 'force_anchor_locator', False)),
             # Override for the HTTP/3 egress-headers chain layer. "auto" keeps
             # the winner-takes-all fallback; anything else forces a specific
             # layer so chain validation tests can exercise lower tiers on
@@ -1727,6 +2079,42 @@ class SSL_Logger():
             )
         return "Using friTap's bundled default byte patterns for hooking"
 
+    def _is_memory_scan_only(self) -> bool:
+        """Whether this run loads only the heap scanner (see
+        :func:`friTap.config.memory_scan_only`)."""
+        from ..config import memory_scan_only
+        return memory_scan_only(self._config)
+
+    def _on_memory_scan_ended(self) -> None:
+        """Handle the memory-scan agent ending unexpectedly (bottom-up signal).
+
+        Runs on the scanner's poll thread. In a memory-scan-only run the scanner
+        IS the capture, so its death (target killed / ANR'd) means the run is over
+        — request a stop so the normal teardown runs and the UI leaves the
+        capturing state. In a combined hook+scan run the main capture is still
+        live, so only log it and keep going.
+        """
+        if not self._is_memory_scan_only():
+            self.logger.warning(
+                "memory-scan: heap scanner ended early; main capture continues")
+            return
+        self.logger.info(
+            "memory-scan: scanner ended (target gone) — stopping capture")
+        # TUI: its capture worker loops on SSL_Logger.running, so clearing the flag
+        # ends the loop and drives the normal teardown + STOPPED transition.
+        if self._tui_mode:
+            self.request_stop()
+            return
+        # Headless/CLI: the main thread blocks in wait_for_completion() on
+        # _done_event and then os._exit()s, so friTap.py's own cleanup never runs
+        # — and a force-stopped / ANR'd target delivers no frida detach. Run the
+        # SAME once-guarded teardown on_detach uses, so the final pcap, DSB and
+        # .fritap.json manifest are written before _done_event is set. Bounded,
+        # because a frida unload on the dead session can wedge (friTap#64). Do
+        # not request_stop() first: clearing `running` would make a concurrent
+        # on_detach bail out early instead of deferring to the shared guard.
+        self._end_session_bounded("memory-scan-ended")
+
     def instrument(self, process, own_message_handler):
         runtime = ScriptRuntime.QJS
         debug_port = 1337
@@ -1739,55 +2127,95 @@ class SSL_Logger():
             runtime = ScriptRuntime.V8
         self._last_runtime = runtime
 
-        script_string = self.get_agent_script()
-        # Before load, not after: a stale bundle's failures happen *during*
-        # script.load(), so the RPC-based check below it can be too late.
-        self._warn_on_stale_agent_bundle(script_string)
-        if self.debug_output:
-            self.logger.debug(f"loading friTap agent script: {self.agent_script}")
+        # When -ms is passed alone, the main TLS-hooking agent has nothing to do:
+        # skip creating/loading it and let only the memory-scan plugin run.
+        # A supplied own_message_handler, however, only makes sense against the
+        # MAIN agent (it consumes its messages), so treating it as a capture
+        # surface here keeps the main agent — and returns a live script to the
+        # API caller — instead of returning None alongside the mem-scan plugin.
+        memory_scan_only = self._is_memory_scan_only() and own_message_handler is None
 
-        if self.offsets_data is not None:
-            self.logger.info(f"applying hooks at offset {self.offsets_data}")
-
-        if self.pattern_data is not None:
-            self.logger.info(self._describe_pattern_source())
-
-        # Build ScriptContext for plugins
+        script = None
         from ..plugins.script_plugin import ScriptLoadOrder
+
+        if not memory_scan_only:
+            script_string = self.get_agent_script()
+            # Before load, not after: a stale bundle's failures happen *during*
+            # script.load(), so the RPC-based check below it can be too late.
+            self._warn_on_stale_agent_bundle(script_string)
+            if self.debug_output:
+                self.logger.debug(f"loading friTap agent script: {self.agent_script}")
+
+            if self.offsets_data is not None:
+                self.logger.info(f"applying hooks at offset {self.offsets_data}")
+
+            if self.pattern_data is not None:
+                self.logger.info(self._describe_pattern_source())
+        else:
+            # Reached by -ms with no agent-backed surface (full capture's pcap
+            # comes from tcpdump, so -f -p -ms lands here too) or by an explicit
+            # memory-only extraction method (hooking.intercept=False).
+            self.logger.info(
+                "memory-scan only (no hook-backed output requested; -f captures "
+                "traffic via tcpdump): skipping the main friTap agent; the heap "
+                "secret-scanner supplies the key material."
+            )
+
+        # Build ScriptContext for plugins (needed in both paths).
         context = self._build_script_context(process, self.device, runtime)
 
         # Phase 1: BEFORE_MAIN script plugins (e.g. legacy --custom_script)
         if hasattr(self, '_plugin_loader'):
             self._plugin_loader.instrument_all(context, order=ScriptLoadOrder.BEFORE_MAIN)
 
-        # Keep a local handle: self.script is overwritten by the next
-        # instrument() call (gated child/spawn), and every step below must
-        # keep operating on the script it just created.
-        script = self._backend.create_script(process, script_string, runtime=runtime)
-        self.script = script
+        if not memory_scan_only:
+            # Keep a local handle: self.script is overwritten by the next
+            # instrument() call (gated child/spawn), and every step below must
+            # keep operating on the script it just created.
+            script = self._backend.create_script(process, script_string, runtime=runtime)
+            self.script = script
 
-        if self.debug and self._backend.version_at_least(16):
-            self._backend.enable_debugger(script, debug_port)
+            if self.debug and self._backend.version_at_least(16):
+                self._backend.enable_debugger(script, debug_port)
 
-        if own_message_handler is not None:
-            self._backend.on_message(script, self._provide_custom_hooking_handler(own_message_handler))
-            return script
+            if own_message_handler is not None:
+                self._backend.on_message(script, self._provide_custom_hooking_handler(own_message_handler))
+                return script
+            else:
+                self._backend.on_message(script, self._internal_callback_wrapper(script))
+            self._load_script_bounded(script)
+
+            # Best-effort JS<->Python ABI sanity check (non-fatal; warns on a
+            # stale or mismatched bundle). Only meaningful on the Frida backend.
+            self._check_agent_abi()
+
+            # Emit ScriptLoadedEvent for main friTap script
+            self._event_bus.emit(ScriptLoadedEvent(
+                script_name=self.agent_script, plugin_name="", load_order="main",
+            ))
         else:
-            self._backend.on_message(script, self._internal_callback_wrapper(script))
-        self._load_script_bounded(script)
-
-        # Best-effort JS<->Python ABI sanity check (non-fatal; warns on a stale
-        # or mismatched bundle). Only meaningful on the Frida backend.
-        self._check_agent_abi()
-
-        # Emit ScriptLoadedEvent for main friTap script
-        self._event_bus.emit(ScriptLoadedEvent(
-            script_name=self.agent_script, plugin_name="", load_order="main",
-        ))
+            # No main agent this run; the memory-scan plugin owns the session.
+            self.script = None
 
         # Phase 3: AFTER_MAIN script plugins
         if hasattr(self, '_plugin_loader'):
             self._plugin_loader.instrument_all(context, order=ScriptLoadOrder.AFTER_MAIN)
+
+        # Memory-scan engine: start AFTER the main agent hooks are in place
+        # (its scan loop is independent and owns its own script/session). This is
+        # the direct, core-driven counterpart of the old AFTER_MAIN plugin.
+        # Isolate its failures: as a plugin it ran under PluginLoader.instrument_all,
+        # which caught and logged per-plugin errors so one bad agent never aborted
+        # the run. The heap scanner is complementary/best-effort, so a start failure
+        # must not take down the main capture — surface it and carry on.
+        if getattr(self, "_memory_scan_engine", None) is not None:
+            try:
+                self._memory_scan_engine.start(context)
+            except Exception:  # noqa: BLE001 - a scanner failure must not abort the capture
+                self.logger.warning(
+                    "memory-scan: heap scanner failed to start; continuing without it",
+                    exc_info=True,
+                )
 
         # Emit InstrumentEvent
         self._event_bus.emit(InstrumentEvent(
@@ -2422,13 +2850,23 @@ class SSL_Logger():
                 # script.unload() has no native timeout; if the JS thread is
                 # still busy for any reason it would block forever.
                 # Wrapping it lets us fall through to session.detach() after
-                # 5s no matter what.
-                unload_thread = threading.Thread(
-                    target=lambda: self._backend.unload_script(self.script),
-                    daemon=True,
-                )
-                unload_thread.start()
-                unload_thread.join(timeout=5)
+                # 5s no matter what. Skipped when there is no main script
+                # (a memory-scan-only run) — its plugin scripts are unloaded
+                # separately via the plugin loader's detach path.
+                #
+                # Initialized to None so the Step-4 liveness check below is safe
+                # in the no-main-script case (self.script is None): without this
+                # the name would be unbound there, raising UnboundLocalError
+                # ("cannot access local variable 'unload_thread' ...") — the
+                # crash seen on Ctrl+C during memory-scan-only runs.
+                unload_thread = None
+                if self.script is not None:
+                    unload_thread = threading.Thread(
+                        target=lambda: self._backend.unload_script(self.script),
+                        daemon=True,
+                    )
+                    unload_thread.start()
+                    unload_thread.join(timeout=5)
 
                 # Step 4 — session.detach() (best-effort; backend handles
                 # races with the target already exiting).
@@ -2444,7 +2882,7 @@ class SSL_Logger():
                 # racing detach and let process exit / frida-server reclaim the
                 # session. We only issue session.detach() when unload returned
                 # cleanly (the common, non-flooded case).
-                if unload_thread.is_alive():
+                if unload_thread is not None and unload_thread.is_alive():
                     if self.debug_output or self.debug:
                         self.logger.debug(
                             "script.unload() did not return within 5s; skipping "
@@ -2453,6 +2891,8 @@ class SSL_Logger():
                             "thread will exit when the JS message loop drains)"
                         )
                 else:
+                    # No main script (unload_thread is None), or unload returned
+                    # cleanly — issue the best-effort session.detach().
                     self._backend.detach(self.process)
 
             except Exception as e:
@@ -2517,6 +2957,102 @@ class SSL_Logger():
                 # never needs a second Ctrl+C.
                 os._exit(0)
 
+    def _release_lsass_contributor(self):
+        """Stop the LSASS helper session (Windows target sessions only; never raises).
+
+        Its handlers hold references on the shared output files, so it must be
+        released before this session's own handlers close. A no-op for the LSASS
+        session itself and off Windows, where no such session exists.
+        """
+        output = getattr(getattr(self, "_config", None), "output", None)
+        if output is None or getattr(output, "auxiliary_session", False):
+            return
+        from ..fritap_utility import are_we_running_on_windows
+        if are_we_running_on_windows():
+            _release_lsass_keylog_writer(self.logger)
+
+    def close_output_handlers(self):
+        """Close every output handler (keylog, json, live, ...) exactly once.
+
+        Idempotent: a second call is a no-op, so both the normal teardown and
+        :meth:`friTap.friTap.LsassHookManager.stop_lsass_hook` (which must release
+        the LSASS worker's keylog handle before the SChannel relabel renames that
+        file) can call it.
+        """
+        if not self._handlers_active or getattr(self, "_output_handlers_closed", False):
+            return
+        self._output_handlers_closed = True
+        for handler in self._output_handlers:
+            try:
+                handler.close()
+            except Exception as e:
+                self.logger.error(f"Error closing handler: {e}")
+
+    def _auto_relabel_schannel_keylog(self, pcap_name):
+        """Fix a Windows SChannel/lsass keylog in place by trial decryption.
+
+        The live ncrypt hooks correlate a TLS 1.3 secret's client_random and its
+        handshake-vs-application phase per thread, but lsass is system-wide and runs
+        one handshake's hooks across a thread pool, so the raw keylog comes out with
+        swapped labels and ``???`` client_randoms. Once the raw full capture is
+        written we trial-decrypt every secret against it (reusing the offline
+        :func:`~friTap.offline.keylog_coverage.relabel_keylog`) to recover the true
+        label + client_random, then overwrite the keylog with the corrected version
+        so it loads directly in Wireshark. The raw agent output is preserved as
+        ``<stem>.raw.keylog``.
+
+        Best-effort and non-fatal: any problem leaves the original keylog intact.
+        Gated to Windows full captures and the ``auto_relabel`` config
+        (``--no-auto-relabel`` opts out). Needs tshark; when it is missing a one-line
+        hint to run ``--repair-keylog`` is printed and nothing is modified.
+        """
+        try:
+            if not getattr(self._config.output, "auto_relabel", True):
+                return
+            from ..fritap_utility import are_we_running_on_windows
+            if not are_we_running_on_windows():
+                return
+            if not pcap_name or not os.path.isfile(pcap_name):
+                return
+            keylog_paths = [
+                path for path in _schannel_keylog_candidates(
+                    self._config, getattr(self, "_protocol_registry", None))
+                if os.path.isfile(path) and os.path.getsize(path) > 0
+            ]
+            if not keylog_paths:
+                return
+            # The SChannel secrets are written by the separate lsass SSL_Logger that
+            # shares this keylog path. Tear that session down first so its keylog
+            # handle is flushed AND closed: Windows refuses to rename a file that is
+            # still open, and on any OS later lsass writes would land in the .raw
+            # backup. Then flush our own handle best-effort before reading.
+            _release_lsass_keylog_writer(self.logger)
+            try:
+                if self.keylog_file is not None and not self.keylog_file.closed:
+                    self.keylog_file.flush()
+            except Exception:  # noqa: BLE001
+                pass
+            # Both sessions' handlers are closed by now (ours in
+            # close_output_handlers(), LSASS's just above); confirm the shared
+            # writer really dropped to zero references before renaming.
+            keylog_paths = _drop_still_open_keylogs(self.logger, pcap_name, keylog_paths)
+            if not keylog_paths:
+                return
+            from ..offline.tshark import find_tshark
+            try:
+                tshark_bin = find_tshark(getattr(self._config.output, "tshark_path", None))
+            except RuntimeError:  # TsharkNotFoundError subclasses RuntimeError
+                self.logger.info(
+                    "SChannel keylog may have swapped TLS 1.3 labels / '???' client_randoms, "
+                    "but tshark was not found to auto-fix it. Install tshark, or run: "
+                    "fritap --from-pcap %s --keylog %s --repair-keylog",
+                    pcap_name, keylog_paths[0])
+                return
+            for keylog_path in keylog_paths:
+                _relabel_one_schannel_keylog(self.logger, tshark_bin, pcap_name, keylog_path)
+        except Exception:  # noqa: BLE001 - never break teardown
+            self.logger.debug("SChannel keylog auto-relabel failed", exc_info=True)
+
     def _run_cleanup_steps(self, live=False, socket_trace=False, full_capture=False, debug_output=False, debug=False):
         """Perform the actual teardown work. Always invoked via cleanup(), which
         guarantees the goodbye banner and a clean exit run afterward regardless
@@ -2528,18 +3064,26 @@ class SSL_Logger():
         if hasattr(self, '_plugin_loader'):
             self._plugin_loader.unload_all(self._plugin_shim)
 
+        # Final teardown of the memory-scan engine (stops the poll loop, closes
+        # sidecars, unloads scripts). Mirrors the plugins' unload_all.
+        if getattr(self, "_memory_scan_engine", None) is not None:
+            try:
+                self._memory_scan_engine.close()
+            except Exception:  # noqa: BLE001 - cleanup must not break teardown
+                self.logger.debug("memory-scan: engine close() failed", exc_info=True)
+
         # Finalize live passive analysis (flush flows, drain queue, render
         # findings) after plugins unload but before detaching. Guarded so a
         # scan error never breaks normal capture cleanup.
         self._finalize_live_scan()
 
+        # The Windows LSASS helper session shares our -p/-k/--json files; release
+        # it first so its records are in before the last releaser completes them
+        # (the JSON document, the full-capture finalize below).
+        self._release_lsass_contributor()
+
         # Close output handlers (new modular path)
-        if self._handlers_active:
-            for handler in self._output_handlers:
-                try:
-                    handler.close()
-                except Exception as e:
-                    self.logger.error(f"Error closing handler: {e}")
+        self.close_output_handlers()
 
         if self.pcap_obj is not None and full_capture:
             if self.pcap_obj.full_capture_thread.is_alive():
@@ -2608,6 +3152,11 @@ class SSL_Logger():
             except Exception as e:
                 self.logger.error(f"Error: {e}")
 
+            # Auto-relabel the Windows SChannel keylog so it loads in Wireshark
+            # without a separate --repair-keylog pass (fixes TLS 1.3 label swaps and
+            # ??? client_randoms via trial decryption against the raw full capture).
+            self._auto_relabel_schannel_keylog(pcap_name)
+
         self.running = False
         self._done_event.set()
         if self.process:
@@ -2621,7 +3170,9 @@ class SSL_Logger():
                 self.detach_with_timeout(timeout=_cli_timeout)
             else:
                 self.detach_with_timeout()
-        if self.process is not None and not self._detected_libraries and not self._config.hooking.library_scan:
+        if (self.process is not None and not self._detected_libraries
+                and not self._captured_any_secret
+                and not self._config.hooking.library_scan):
             if self._config.protocol in ("tls", "auto", "all"):
                 self.special_logger.info(
                     "\n[Hint] No TLS libraries were detected. Consider using "
@@ -2771,15 +3322,47 @@ class SSL_Logger():
              AGENT_ABI_VERSION (see _discover_agent_bundle). This lets a
              full/extended install auto-select its own bundle without the env
              var; ABI-filtered so a stale contribution is skipped.
-          3. The shipped bundle next to this module (``here/self.agent_script``).
+          3. A full agent bundle next to this module (``here/fritap_agent_full.js``),
+             but only while it is in sync with the shipped bundle
+             (see _resolve_full_agent_bundle).
+          4. The shipped bundle next to this module (``here/self.agent_script``).
+
+        Steps 2-4 are resolved once and cached on the instance: child gating
+        calls this per child, and the full-bundle check hashes the public bundle.
         """
         override = os.environ.get("FRITAP_AGENT_BUNDLE")
         if override:
             return os.path.abspath(os.path.expanduser(override))
-        discovered = self._discover_agent_bundle()
-        if discovered:
-            return discovered
-        return os.path.join(here, self.agent_script)
+        cached = getattr(self, "_resolved_agent_bundle", None)
+        if cached is None:
+            cached = self._discover_agent_bundle()
+            if not cached:
+                default_bundle = os.path.join(here, self.agent_script)
+                cached = self._resolve_full_agent_bundle(default_bundle) or default_bundle
+            self._resolved_agent_bundle = cached
+        return cached
+
+    def _resolve_full_agent_bundle(self, default_bundle):
+        """Return ``here/fritap_agent_full.js`` if present and in sync, else ``None``.
+
+        Generic by design — names no protocol. The build script writes a sidecar
+        ``fritap_agent_full.js.src`` holding the sha256 of the public bundle the
+        full bundle was built alongside. If the sidecar is missing or its hash no
+        longer matches ``default_bundle``, the full bundle is stale (it would lose
+        recent public fixes), so we warn and fall back to the public bundle.
+        The caller caches the result, so either message is logged once per
+        instance.
+        """
+        full_bundle = os.path.join(here, FULL_AGENT_BUNDLE_NAME)
+        if not os.path.isfile(full_bundle):
+            return None
+        if _full_bundle_in_sync(full_bundle, default_bundle):
+            self.logger.info("Loading full agent bundle: %s", full_bundle)
+            return full_bundle
+        self.logger.warning(
+            "full agent bundle is older than the public agent — rebuild with "
+            "./dev/compile_agent.sh; falling back to the public bundle")
+        return None
 
     def _discover_agent_bundle(self):
         """Return an agent bundle path contributed via a ``fritap.agent_bundle``

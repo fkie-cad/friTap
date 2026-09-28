@@ -1,0 +1,27 @@
+{
+    "_meta": {
+        "description": "Default MTProto (Telegram tgnet) byte-pattern database for friTap",
+        "version": "1.0.0",
+        "format": "friTap pattern format v2",
+        "notes": "Per-protocol pattern file (library -> os -> arch -> function -> [patterns]), loaded and merged alongside default_patterns.json. See default_patterns.json for the TLS database."
+    },
+    "_docs": {
+        "categories": {
+            "getAuthKey": "Datacenter::getAuthKey — transport auth-key extraction (dumps auth_key_id, auth_key, dc_id, perm/temp) for the MTProto keylog hook",
+            "decryptInbound": "post-AES-IGE-decrypt inbound plaintext buffer site (live plaintext mode; future)",
+            "encryptOutbound": "pre-AES-IGE-encrypt outbound plaintext buffer site (live plaintext mode; future)"
+        },
+        "architectures": ["x64", "arm64", "arm", "x86"],
+        "operating_systems": ["android", "ios", "linux", "macos", "windows"],
+        "notes": "Patterns are Frida space-separated hex, '??' wildcards allowed, and must not begin/end with '??'. Contributed per library per OS per arch per function."
+    },
+    "libtmessages.tmessages.so": {
+        "android": {
+            "arm64": {
+                "getAuthKey": [
+                    "FD 7B BB A9 F9 0B 00 F9 F8 5F 02 A9 F6 57 03 A9 F4 4F 04 A9 FD 03 00 91 08 ?? ?? 39 F3 03 03 AA"
+                ]
+            }
+        }
+    }
+}

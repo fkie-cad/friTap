@@ -67,9 +67,15 @@ if TEXTUAL_AVAILABLE:
             default_keylog: str = "",
             default_pcap: str = "",
             is_live: bool = False,
+            show_memory_scan_patterns: Optional[bool] = None,
             **kwargs,
         ) -> None:
             super().__init__(**kwargs)
+            # None keeps the legacy rule (shown for keylog-bearing modes); the
+            # wizard passes whether memory scanning was selected.
+            if show_memory_scan_patterns is None:
+                show_memory_scan_patterns = bool(default_keylog)
+            self._show_memory_scan_patterns = show_memory_scan_patterns
             self._mode_id = mode_id
             self._mode_display = mode_display
             self._default_keylog = default_keylog
@@ -104,6 +110,20 @@ if TEXTUAL_AVAILABLE:
                         value=self._default_pcap,
                         placeholder="Path for capture file (.pcap or .pcapng)...",
                         id="pcap-input",
+                    )
+
+                # Optional heap secret-scanner pattern file (--memory-scan).
+                # Blank keeps the shipped default patterns; shown only when memory
+                # scanning is in use (see show_memory_scan_patterns).
+                if self._show_memory_scan_patterns:
+                    yield Static(
+                        f"[{c('text-secondary')}]Memory scan patterns (optional):[/]",
+                        classes="path-label",
+                    )
+                    yield Input(
+                        value="",
+                        placeholder="Pattern JSON path (blank = shipped defaults)...",
+                        id="memory-scan-patterns-input",
                     )
 
                 if self._is_live:
@@ -172,5 +192,11 @@ if TEXTUAL_AVAILABLE:
                 result["pcap"] = pcap_input.value.strip()
             except Exception:
                 result["pcap"] = ""
+
+            try:
+                patterns_input = self.query_one("#memory-scan-patterns-input", Input)
+                result["memory_scan_patterns"] = patterns_input.value.strip()
+            except Exception:
+                result["memory_scan_patterns"] = ""
 
             self.dismiss(result)

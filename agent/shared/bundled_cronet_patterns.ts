@@ -39,6 +39,16 @@ export type ArchKey = "x64" | "x86" | "arm64" | "arm";
 
 export type ArchPatternMap = Partial<Record<ArchKey, ArchPatterns>>;
 
+/**
+ * Generic arm64 BoringSSL ssl_log_secret prologue. The last byte is `B?` so it
+ * matches both the cbz (B4, Chrome's libchrome.so) and cbnz (B5, tethering-APEX
+ * libhttpengine.so) early-return on ctx->keylog_callback. Shared by the modern
+ * bundle below and the legacy Android/Linux Cronet, GoTLS and OpenSSL modules;
+ * friTap/patterns/default_patterns.json carries the same string (LEGACY-SYNC).
+ */
+export const GENERIC_BORINGSSL_ARM64_FALLBACK =
+    "3F 23 03 D5 FF ?3 02 D1 FD 7B 0? A9 F? ?? 0? ?9 F6 57 0? A9 F4 4F 0? A9 FD ?3 01 91 08 34 40 F9 08 ?? 41 F9 ?8 ?? 00 B?";
+
 // Patterns lifted verbatim from
 //   agent/legacy/tls/platforms/android/cronet_android.ts:44-64
 // (the generic_boringssl row that the legacy Cronet_Android.default_pattern
@@ -55,7 +65,7 @@ const GENERIC_BORINGSSL: ArchPatternMap = {
     },
     arm64: {
         primary:         "3F 23 03 D5 FF ?3 01 D1 FD 7B 0? A9 F6 57 0? A9 F4 4F 0? A9 FD ?3 0? 91 08 34 40 F9 08 1? 41 F9 ?8 0? 00 B4",
-        fallback:        "3F 23 03 D5 FF ?3 02 D1 FD 7B 0? A9 F? ?? 0? ?9 F6 57 0? A9 F4 4F 0? A9 FD ?3 01 91 08 34 40 F9 08 ?? 41 F9 ?8 ?? 00 B4",
+        fallback:        GENERIC_BORINGSSL_ARM64_FALLBACK,
         second_fallback: "3F 23 03 D5 FF C3 05 D1 FD 7B 14 A9 FC 57 15 A9 F4 4F 16 A9 FD 03 05 91 54 D0 3B D5 88 16 40 F9 40 00 80 52 F3",
     },
     arm: {
@@ -68,7 +78,7 @@ const GENERIC_BORINGSSL: ArchPatternMap = {
 const STABLE_CRONET: ArchPatternMap = {
     arm64: {
         primary:  "FF 83 02 D1 FD 7B 05 A9 F9 33 00 F9 F8 5F 07 A9 F6 57 08 A9 F4 4F 09 A9 FD 43 01 91 58 D0 3B D5 08 17 40 F9 A8 83 1F F8 08 34 40 F9 08 21 41 F9 28 11",
-        fallback: "3F 23 03 D5 FF ?3 02 D1 FD 7B 0? A9 F? ?? 0? ?9 F6 57 0? A9 F4 4F 0? A9 FD ?3 01 91 08 34 40 F9 08 ?? 41 F9 ?8 ?? 00 B4",
+        fallback: GENERIC_BORINGSSL_ARM64_FALLBACK,
     },
 };
 
@@ -198,7 +208,7 @@ export const BUNDLED_OPENSSL_SSL_LOG_SECRET: Partial<Record<ArchKey, string[]>> 
     ],
     arm64: [
         "3F 23 03 D5 FD 7B BF A9 E4 03 01 AA FD 03 00 91 FD 7B C1 A8 BF 23 03 D5 E1 03 00 AA E5 03 03 AA E0 03 04 AA 03 04 80 D2 E4 03 02 AA 22 80 05 91",
-        "3F 23 03 D5 FF ?3 02 D1 FD 7B 0? A9 F? ?? 0? ?9 F6 57 0? A9 F4 4F 0? A9 FD ?3 01 91 08 34 40 F9 08 ?? 41 F9 ?8 ?? 00 B4",
+        GENERIC_BORINGSSL_ARM64_FALLBACK,
     ],
     arm: [
         "2D E9 F0 43 89 B0 04 46 40 6B D0 F8 2C 01 00 28 49 D0",

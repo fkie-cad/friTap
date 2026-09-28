@@ -7,6 +7,7 @@ import { patterns, isPatternReplaced } from "../../../../fritap_agent.js"
 import { devlog, devlog_error, devlog_info, devlog_warn, devlog_debug, log } from "../../../../util/log.js";
 import { sendKeylog } from "../../../../shared/shared_structures.js";
 import { scheduleBoringSSLSymbolFallback, installBoringSSLSymbolHook } from "../../../../shared/boringssl_symbol_hook.js";
+import { createKeylogCallbackTracker, KeylogCallbackTracker } from "../../../../shared/keylog_callback_tracker.js";
 
 export type HookingResult = [success: boolean, handle: PatternBasedHooking | null];
 const EXCLUDED_MODULE_SUFFIXES = ["_backup.dll", "_old.dll"]; // extensible list for problematic modules
@@ -75,13 +76,26 @@ export class Cronet_Windows extends Cronet {
         );
     }
 
+    // The tracker looks SSL_CTX_free / SSL_CTX_up_ref up by module name, so hand
+    // it the loaded module's real name (module_name may be a full path here).
+    private trackerModuleName(): string {
+        const mod = Process.findModuleByName(this.module_name)
+            ?? Process.findModuleByName(this.getDllName(this.module_name));
+        return mod !== null ? mod.name : this.module_name;
+    }
+
     install_tls_keys_callback_hook(){
+        let tracker: KeylogCallbackTracker;
         try {
+            const setKeylogAddr = this.addresses[this.module_name]["SSL_CTX_set_keylog_callback"];
             this.SSL_CTX_set_keylog_callback = new NativeFunction(
-                this.addresses[this.module_name]["SSL_CTX_set_keylog_callback"],
+                setKeylogAddr,
                 "void",
                 ["pointer", "pointer"]
             );
+            // Records every SSL_CTX we point at our script-owned keylog callback so
+            // releaseAgentHooks can undo it (see shared/keylog_callback_tracker.ts).
+            tracker = createKeylogCallbackTracker(this.trackerModuleName(), setKeylogAddr, this.keylog_callback, true);
         } catch(e) {
             devlog_error(`Failed to create SSL_CTX_set_keylog_callback function: ${e}`);
             return;
@@ -96,7 +110,7 @@ export class Cronet_Windows extends Cronet {
                     onEnter: function (args: any) {
                         try{
                             callback_already_set = true;
-                            instance.SSL_CTX_set_keylog_callback(args[0], instance.keylog_callback);
+                            tracker.install(args[0]);
                         } catch (e) {
                             callback_already_set = false;
                             devlog_error(`Error in SSL_new hook: ${e}`);
@@ -113,7 +127,7 @@ export class Cronet_Windows extends Cronet {
                                 devlog_error("SSL_CTX_new returned NULL");
                                 return;
                             }
-                            instance.SSL_CTX_set_keylog_callback(retval, instance.keylog_callback);
+                            tracker.install(retval);
                         } catch (e) {
                             devlog_error(`Error in SSL_CTX_new hook: ${e}`);
                         }
@@ -126,6 +140,8 @@ export class Cronet_Windows extends Cronet {
                 Interceptor.attach(this.addresses[this.module_name]["SSL_CTX_set_keylog_callback"], {
                     onEnter: function (args: any) {
                         let callback_func = args[1];
+                        if (callback_func.isNull() || tracker.sealed) return;
+                        tracker.noteAppCallback(args[0], callback_func);
                         try {
                             Interceptor.attach(callback_func, {
                                 onEnter: function (args: any) {

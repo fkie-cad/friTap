@@ -10,6 +10,44 @@ if TYPE_CHECKING:
     from friTap.sinks.base import Sink
 
 
+def _headless_fields_hint() -> str:
+    """The fields a headless filter can use (those with a DataCanonical accessor)."""
+    from friTap.filter.fields import CANONICAL_FIELDS
+
+    return f"{', '.join(sorted(CANONICAL_FIELDS))} (e.g. protocol == telegram)"
+
+
+def build_headless_filter(expression: str) -> "FilterEngine | str":
+    """Parse *expression* once for headless capture: an engine, or an error message.
+
+    Headless mode filters each data event on its own (no flows are built), so
+    only fields with a DataCanonical accessor can be evaluated. Anything else
+    (``telegram``, ``http.host``, ``frame contains x``, ``mtproto.*`` ...)
+    would silently drop every data event, so it is rejected up front.
+    """
+    from friTap.filter.evaluator import FilterEngine
+    from friTap.filter.fields import non_canonical_fields
+
+    engine = FilterEngine.try_create(expression)
+    if isinstance(engine, str):
+        return f"Invalid filter expression: {engine}"
+    unsupported = non_canonical_fields(engine.fields)
+    if not unsupported:
+        return engine
+    return (
+        f"Filter field(s) not available in headless mode: {', '.join(unsupported)}. "
+        f"Headless capture filters single data events and supports only: "
+        f"{_headless_fields_hint()}. Use the TUI (or offline replay) for "
+        f"flow-level fields."
+    )
+
+
+def headless_filter_error(expression: str) -> str | None:
+    """Validate *expression* for headless capture; return an error or None."""
+    result = build_headless_filter(expression)
+    return result if isinstance(result, str) else None
+
+
 class FilteredSink:
     """Wraps a Sink to apply network-level display filtering on DataCanonical events.
 

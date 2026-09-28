@@ -9,10 +9,19 @@ friTap consists of two main components:
 1. **Python Host (`SSL_Logger`)** - Manages Frida sessions, handles output, generates PCAP files
 2. **JavaScript Agent (`fritap_agent.js`)** - Performs the actual SSL/TLS hooking inside the target process
 
-friTap ships a **single** compiled agent, `friTap/fritap_agent.js`, built from
-`agent/fritap_agent.ts` via `frida-compile` (see `package.json`). The legacy and
-modern code paths live in that one file and are toggled internally through the
-`use_modern` configuration field rather than living in separate agent files.
+friTap ships **two** compiled agent bundles, both built with `frida-compile`
+(see `package.json`):
+
+- **`friTap/fritap_agent.js`** — the main TLS-hooking agent, built from
+  `agent/fritap_agent.ts` (`npm run build`). The legacy and modern code paths
+  live in this one file and are toggled internally through the `use_modern`
+  configuration field rather than in separate agent files.
+- **`friTap/fritap_memscan.js`** — the heap **memory-scan** agent, built from
+  `agent/memory_scan_agent.ts` (`npm run build:memscan`). It recovers TLS
+  secrets by scanning the target's heap instead of hooking the TLS library, and
+  is injected independently of `fritap_agent.js` (see the
+  [`-ms`/`--memory-scan` CLI flag](../api/cli.md#-ms-memory-scan-patternjson)).
+  This standalone-usage guide otherwise describes the main agent.
 
 You can use the agent standalone if you:
 
@@ -23,14 +32,17 @@ You can use the agent standalone if you:
 
 ## Agent Location
 
-The single compiled JavaScript agent is located at:
+The two compiled JavaScript agents are located at:
 
 ```
-friTap/fritap_agent.js   # the one and only compiled agent
+friTap/fritap_agent.js     # main TLS-hooking agent (npm run build)
+friTap/fritap_memscan.js   # heap memory-scan agent (npm run build:memscan)
 ```
 
-Both the modern (Frida 17+) and legacy (Frida <17) hook paths are bundled into this
-file; the active path is selected at runtime via the `use_modern` config field.
+For `fritap_agent.js`, both the modern (Frida 17+) and legacy (Frida <17) hook
+paths are bundled into that one file; the active path is selected at runtime via
+the `use_modern` config field. `fritap_memscan.js` is a separate, independently
+injected bundle built from `agent/memory_scan_agent.ts`.
 
 ## Critical: Initialization Protocol
 
@@ -164,8 +176,9 @@ friTap ships two agent code paths today:
   hook tree under `agent/legacy/`. Battle-tested across all supported
   libraries and protocols.
 - **Modern** (experimental, `use_modern: true`) — the refactored
-  definition-based path under `agent/tls/`, `agent/quic/`, etc. Required for
-  the `ssh` and `ipsec` protocol selectors, and enables improved Cronet /
+  definition-based path under `agent/tls/`, `agent/quic/`, etc. Not required
+  by any protocol selector (every protocol, including `ssh` and `ipsec`, also
+  installs on the legacy path); it enables improved Cronet /
   BoringSSL `SSL_CTX_set_keylog_callback` hooks for Chrome. Has known
   regressions on iOS/macOS Cronet, Windows LSASS, and IPsec.
 
@@ -192,7 +205,7 @@ There are **23** fields. friTap's own host builds all of them in
 | `pcap_enabled` | bool | `False` | Required `True` if you process pcap-format datalogs. Set `False` if you do your own raw packet capture and only want keys (mirrors friTap's own `-f`/full-capture mode) |
 | `keylog_enabled` | bool | `True` | Set `False` to skip key extraction entirely. When `False`, the agent installs **no** key-extraction hooks (callback / symbol / pattern-scan) for any library on any platform, and emits no key material of any protocol — TLS/QUIC `keylog`, SSH `ssh_key`/`ssh_keylog`, and IPSec `ipsec_child_sa_keys`/`ipsec_ike_keys` are all gated by this one flag. Useful when you only want decrypted plaintext. Default `True` preserves prior behaviour for handlers that omit the field |
 | `experimental` | bool | `False` | Enable experimental hooking strategies |
-| `protocol_select` | protocol name \| `"all"` \| `"auto"` | `"tls"` | Which protocol's hooks to install. **Not a three-value enum** — it accepts every *registered* protocol name (e.g. `tls`, `ssh`, `ipsec`, `mtproto`, `signal`, `telegram`, …) plus `all` and `auto`; the set grows with the protocol registry, so run `fritap --help` for the current list. `ssh`/`ipsec` require `use_modern: true` |
+| `protocol_select` | protocol name \| `"all"` \| `"auto"` | `"tls"` | Which protocol's hooks to install. **Not a three-value enum** — it accepts every *registered* protocol name (e.g. `tls`, `ssh`, `ipsec`, `mtproto`, `signal`, `telegram`, …) plus `all` and `auto`; the set grows with the protocol registry, so run `fritap --help` for the current list. Note: `ipsec` is matched by the agent's hook registrations, but the friTap CLI/TUI cannot select it yet (its Python handler is not registered) — from the CLI, IPsec hooks install only via `all`/`auto`. Every protocol works with `use_modern` `false` or `true` |
 | `install_lsass_hook` | bool | `False` | Hook LSASS (Windows only) |
 | `use_modern` | bool | `False` | Opt into the experimental modern agent path |
 | `library_scan` | object or `None` | `None` | Library-scan configuration |

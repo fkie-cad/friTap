@@ -12,6 +12,13 @@ import {
     observeHandshakeSecret,
 } from "./tls13_secret_recovery.js";
 import { keylog_enabled, offsets } from "../fritap_agent.js";
+import { guardKeylogDumpKeys, onAllKeylogTiersMissed } from "./boringssl_keylog_outcome.js";
+import { PatternOutcomeSource, pollPatternOutcome } from "./boringssl_pattern_hook.js";
+// Side-effect import: registers the tier-4 anchor locator with
+// boringssl_keylog_outcome. Imported here because this module is on the BoringSSL
+// keylog path in BOTH the legacy and modern trees, so tier 4 is always available
+// wherever onAllKeylogTiersMissed() runs.
+import "./boringssl_anchor_locator.js";
 
 /*
  * Shared BoringSSL ssl_log_secret hook.
@@ -256,11 +263,18 @@ export function attemptSymbolFallback(
  * window. The hooker-absent arm fires when execute_hooks() threw before
  * producing a hooker; the with-hooker arm checks `no_hooking_success` (set on
  * cascade exhaustion) before running the platform-specific fallback.
+ *
+ * Total-miss reporting (onAllKeylogTiersMissed): the hooker-absent arm reports
+ * as soon as the symbol fallback fails (no pattern scan is running). The
+ * with-hooker arm can only report when `runHookerFallback` returns `false`
+ * (symbol tier missed); it then waits for the still-running pattern scan to
+ * settle and reports only if that also missed. A `void` fallback (the other
+ * platforms' wrappers) opts out of the report.
  */
 export function scheduleBoringSSLSymbolFallback(
     moduleName: string,
-    hooker: { no_hooking_success: boolean } | null,
-    runHookerFallback: () => void,
+    hooker: ({ no_hooking_success: boolean } & Partial<PatternOutcomeSource>) | null,
+    runHookerFallback: () => boolean | void,
     dumpKeys: DumpKeysCb,
     delayMs: number = PATTERN_HOOKING_SETTLE_MS,
 ): void {
@@ -279,14 +293,29 @@ export function scheduleBoringSSLSymbolFallback(
                 devlog(
                     `[!] Pattern scan still in progress on ${moduleName} after ${delayMs}ms; running symbol-based fallback in parallel…`,
                 );
-                runHookerFallback();
-            } else {
-                attemptSymbolFallback(moduleName, dumpKeys);
+                if (runHookerFallback() === false) {
+                    reportMissOncePatternSettles(moduleName, hooker, dumpKeys);
+                }
+            } else if (!attemptSymbolFallback(moduleName, dumpKeys)) {
+                onAllKeylogTiersMissed(moduleName, dumpKeys, { detail: "no pattern scan could be started", pairipDisabled: false });
             }
         } catch (e) {
             devlog_error(`Error in BoringSSL symbol fallback for ${moduleName}: ${e}`);
         }
     }, delayMs);
+}
+
+function reportMissOncePatternSettles(
+    moduleName: string,
+    hooker: Partial<PatternOutcomeSource>,
+    dumpKeys: DumpKeysCb,
+): void {
+    if (typeof hooker.found_ssl_log_secret !== "boolean") return; // not a pattern hooker
+    pollPatternOutcome(hooker as PatternOutcomeSource, moduleName).then((matched) => {
+        if (!matched) onAllKeylogTiersMissed(moduleName, dumpKeys, { pairipDisabled: false });
+    }).catch((e) => {
+        devlog_error(`[bssl-symbol-fb] ${moduleName}: pattern outcome wait failed: ${e}`);
+    });
 }
 
 /**
@@ -306,7 +335,9 @@ export function installBoringSSLSymbolHook(moduleName: string, dumpKeys: DumpKey
     }
     const r = resolveSslLogSecretSymbol(mod);
     if (!r) return false;
-    const ok = attachSslLogSecretHook(r.address, dumpKeys);
+    // Guarded: the legacy Cronet chain runs this in parallel with a still-running
+    // pattern scan on the same ssl_log_secret; only one tier may emit each secret.
+    const ok = attachSslLogSecretHook(r.address, guardKeylogDumpKeys(moduleName, "symbol", dumpKeys));
     if (ok) {
         // Use `log` (level=info) so the success banner reaches stdout under
         // default verbosity — `devlog` (level=debug) was only visible with

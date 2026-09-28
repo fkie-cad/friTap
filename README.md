@@ -4,7 +4,7 @@
 </div>
 
 # friTap
-![version](https://img.shields.io/badge/version-2.3.1-blue) [![PyPI version](https://d25lcipzij17d.cloudfront.net/badge.svg?id=py&r=r&ts=1683906897&type=6e&v=2.3.1&x2=0)](https://badge.fury.io/py/friTap) [![CI](https://github.com/fkie-cad/friTap/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/fkie-cad/friTap/actions/workflows/ci.yml)
+![version](https://img.shields.io/badge/version-2.5.0-blue) [![PyPI version](https://d25lcipzij17d.cloudfront.net/badge.svg?id=py&r=r&ts=1683906897&type=6e&v=2.5.0&x2=0)](https://badge.fury.io/py/friTap) [![CI](https://github.com/fkie-cad/friTap/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/fkie-cad/friTap/actions/workflows/ci.yml)
 [![Ruff](https://github.com/fkie-cad/friTap/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/fkie-cad/friTap/actions/workflows/lint.yml)
 [![Publish status](https://github.com/fkie-cad/friTap/actions/workflows/publish.yml/badge.svg?branch=main)](https://github.com/fkie-cad/friTap/actions/workflows/publish.yml)
 
@@ -29,6 +29,8 @@ The main features of friTap are:
 - Support for custom Frida scripts. [Details](https://github.com/fkie-cad/friTap/blob/main/USAGE.md#custom-script-example)
 - Support of most common SSL libraries (OpenSSL, BoringSSL, NSS, GnuTLS, etc.)
 - Library scanning to discover renamed/statically linked libraries (`--library-scan`)
+- Heap memory scanning to recover TLS secrets without hooking the TLS library (`-ms`/`--memory-scan`) — see [USAGE.md](https://github.com/fkie-cad/friTap/blob/main/USAGE.md#recovering-tls-secrets-from-heap-memory--ms----memory-scan)
+- Telegram/MTProto cloud + E2E secret-chat key recovery from heap memory (`-ms mtproto` / `-ms telegram`) — see [USAGE.md](https://github.com/fkie-cad/friTap/blob/main/USAGE.md#capturing-telegram--mtproto-keys)
 
 ## Installation
 

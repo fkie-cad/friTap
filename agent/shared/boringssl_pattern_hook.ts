@@ -23,7 +23,9 @@
 // installs the hook. We do the same here.
 
 import { PatternBasedHooking } from "../tls/shared/pattern_based_hooking.js";
-import { DumpKeysCb } from "./boringssl_symbol_hook.js";
+// Type-only: boringssl_symbol_hook.ts imports pollPatternOutcome from here,
+// so a value import would form a runtime cycle.
+import type { DumpKeysCb } from "./boringssl_symbol_hook.js";
 import { lenArg } from "./keylog_length.js";
 import {
     ArchKey,
@@ -34,12 +36,17 @@ import {
     getBundledPatterns,
 } from "./bundled_cronet_patterns.js";
 import { detectBoringSSLFamily, familyAliases } from "./boringssl_family_detect.js";
+import { guardKeylogDumpKeys } from "./boringssl_keylog_outcome.js";
 import { devlog, devlog_debug, devlog_error, _isShuttingDownNow } from "../util/log.js";
 
 export interface PatternHookResult {
     scheduled: boolean;
     reason: string;
-    /** Resolves true iff the (single) pattern cascade matched; false on exhaustion or timeout. */
+    /**
+     * Resolves true iff the (single) pattern cascade matched; false once it
+     * completed without a match, or is still unmatched at the poll's hard bound
+     * (see pollPatternOutcome — the soft timeout alone never resolves it).
+     */
     settled: Promise<boolean>;
 }
 
@@ -60,10 +67,20 @@ export interface InstallPatternHookOpts {
 const POLL_INTERVAL_MS = 100;
 // libmonochrome_64.so is ~200 MB; Frida's Memory.scan onError fallback enumerates
 // every readable range and runs primary/fallback/second_fallback in series — the
-// full cascade comfortably exceeds 5 s on cold caches. Polling timeout no longer
-// pre-empts the chain into a wasted symbol re-scan; it only delays the chain's
-// "fall back to symbol re-resolve" log. The underlying scan continues regardless.
-const POLL_TIMEOUT_MS = 10000;
+// full cascade comfortably exceeds 5 s on cold caches.
+//
+// POLL_SOFT_TIMEOUT_MS is NOT a verdict: a scan still running at that point is
+// reported as "still scanning" and the poll keeps waiting (with backoff) for the
+// real outcome. Declaring a total miss there started tier 4 while the original
+// scan was still running; a later match then hooked ssl_log_secret a second time
+// next to a stale "[!] no BoringSSL keylog hook" warning.
+const POLL_SOFT_TIMEOUT_MS = 10000;
+// The only point where an unfinished scan is given up on. Also the bound for the
+// LEGACY PatternBasedHooking, which has no `cascadeCompleted` flag and so can
+// only settle via a match or this bound. A match after it is still deduplicated
+// by the per-module ownership guard (boringssl_keylog_outcome.ts).
+const POLL_HARD_TIMEOUT_MS = 120000;
+const POLL_MAX_INTERVAL_MS = 2000;
 const POLL_GRACE_MS = 200;
 
 type ResolvedPatternSource =
@@ -131,12 +148,15 @@ export function installBoringSSLPatternHook(
     // key derivation and stalling detach. dumpKeys still runs per call (that is
     // the actual keylog work); only the diagnostic is throttled.
     let installLogged = false;
+    // Guarded: if another tier (tier 4, a parallel symbol hook) already owns
+    // this module's keylog, a late pattern match must not emit every secret twice.
+    const guardedDumpKeys = guardKeylogDumpKeys(moduleName, "pattern", dumpKeys);
     const onMatch = (args: any[]): void => {
         if (!installLogged) {
             installLogged = true;
             devlog(`Installed ssl_log_secret() hooks using byte patterns for module ${moduleName}.`);
         }
-        dumpKeys(args[1], args[0], args[2], lenArg(args[3]) ?? 0);
+        guardedDumpKeys(args[1], args[0], args[2], lenArg(args[3]) ?? 0);
     };
 
     let hooker: PatternBasedHooking;
@@ -233,69 +253,108 @@ function dedupePreservingOrder(items: string[]): string[] {
 }
 
 /**
+ * The hooker state the poll reads. Structural so the LEGACY PatternBasedHooking
+ * (agent/legacy/tls/shared/pattern_based_hooking.ts, no `cascadeCompleted`) can
+ * be awaited too: without that flag only a match or the hard bound settles it.
+ */
+export interface PatternOutcomeSource {
+    found_ssl_log_secret: boolean;
+    cascadeCompleted?: boolean;
+}
+
+/** Poll timing; overridable for tests. */
+export interface PatternPollTiming {
+    intervalMs: number;
+    maxIntervalMs: number;
+    graceMs: number;
+    softTimeoutMs: number;
+    hardTimeoutMs: number;
+}
+
+const DEFAULT_POLL_TIMING: PatternPollTiming = {
+    intervalMs: POLL_INTERVAL_MS,
+    maxIntervalMs: POLL_MAX_INTERVAL_MS,
+    graceMs: POLL_GRACE_MS,
+    softTimeoutMs: POLL_SOFT_TIMEOUT_MS,
+    hardTimeoutMs: POLL_HARD_TIMEOUT_MS,
+};
+
+/**
+ * One poll step's verdict:
+ *   matched     — the scan installed the hook
+ *   no-match    — the cascade SETTLED without a match (a real miss)
+ *   gave-up     — still unmatched at the hard bound (scan may still be running)
+ *   still-scanning — keep waiting
+ */
+export type PatternPollVerdict = "matched" | "no-match" | "gave-up" | "still-scanning";
+
+/** Pure decision for one poll tick (exported for unit tests). */
+export function classifyPatternPoll(
+    hooker: PatternOutcomeSource, elapsedMs: number, timing: PatternPollTiming = DEFAULT_POLL_TIMING,
+): PatternPollVerdict {
+    if (hooker.found_ssl_log_secret) return "matched";
+    // Gate on `cascadeCompleted` — set true only when every outer cascade branch
+    // has terminated (see hookModuleByPattern). Reading `no_hooking_success` was
+    // wrong: it is `true` from the constructor onward, so the check fired
+    // BEFORE Memory.scan had started on slow targets like libmonochrome_64.so.
+    if (elapsedMs >= timing.graceMs && hooker.cascadeCompleted === true) return "no-match";
+    if (elapsedMs >= timing.hardTimeoutMs) return "gave-up";
+    return "still-scanning";
+}
+
+/** Delay before the next tick: fixed until the soft timeout, then doubling up to the cap. */
+export function nextPatternPollDelay(
+    elapsedMs: number, previousDelayMs: number, timing: PatternPollTiming = DEFAULT_POLL_TIMING,
+): number {
+    if (elapsedMs < timing.softTimeoutMs) return timing.intervalMs;
+    return Math.min(Math.max(previousDelayMs * 2, timing.intervalMs), timing.maxIntervalMs);
+}
+
+/**
  * Poll the hooker's flags for outcome.
  *
- * Resolves true once `found_ssl_log_secret` flips, false once
- * `no_hooking_success` is true past the grace window or POLL_TIMEOUT_MS
- * elapses.
+ * Resolves true once `found_ssl_log_secret` flips; false once the cascade
+ * completed without a match (past the grace window), or once the hard bound
+ * elapses with the scan still unmatched. Passing the SOFT timeout only logs
+ * "still scanning" and backs the poll off — it never resolves: a false there
+ * used to make every caller declare a total miss and start tier 4 while the
+ * scan was still running.
  *
- * IMPORTANT: When this resolves false on timeout, the underlying Memory.scan
- * is still running. We do NOT fire another scan — the chain will (uselessly)
- * try `attemptSymbolFallback` on `.settled.then(false)` and then give up, but
- * the still-running scan can match later and install the hook. This is the
- * same async-success-after-timeout behaviour the legacy executor relies on
- * (via scheduleBoringSSLSymbolFallback at PATTERN_HOOKING_SETTLE_MS=1000).
+ * Even after a hard-bound false the scan is not cancelled and may still match;
+ * the per-module ownership guard (guardKeylogDumpKeys) keeps that late match
+ * from emitting secrets a second time.
  */
-function pollPatternOutcome(hooker: PatternBasedHooking, moduleName: string): Promise<boolean> {
+export function pollPatternOutcome(
+    hooker: PatternOutcomeSource, moduleName: string, timing: PatternPollTiming = DEFAULT_POLL_TIMING,
+): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
         const t0 = Date.now();
-        let done = false;
-        const finish = (matched: boolean) => {
-            if (done) return;
-            done = true;
-            resolve(matched);
-        };
+        let delay = timing.intervalMs;
+        let softTimeoutLogged = false;
 
         const tick = (): void => {
-            if (done) return;
-
             // Stop rescheduling once teardown begins — this recurring setTimeout
             // would otherwise keep the JS message loop alive across script.unload(),
             // contributing to the detach hang.
             if (_isShuttingDownNow()) {
-                finish(false);
+                resolve(false);
                 return;
             }
-
-            if (hooker.found_ssl_log_secret) {
-                devlog_debug(`[bssl-pattern] ${moduleName}: pattern match detected`);
-                finish(true);
-                return;
-            }
-
             const elapsed = Date.now() - t0;
-            if (elapsed >= POLL_TIMEOUT_MS) {
-                devlog_debug(`[bssl-pattern] ${moduleName}: poll timeout after ${elapsed}ms`);
-                finish(false);
+            const verdict = classifyPatternPoll(hooker, elapsed, timing);
+            if (verdict !== "still-scanning") {
+                devlog_debug(`[bssl-pattern] ${moduleName}: pattern outcome ${verdict} after ${elapsed}ms`);
+                resolve(verdict === "matched");
                 return;
             }
-
-            // Gate on `cascadeCompleted` — set true only when every outer
-            // cascade branch has terminated (see hookModuleByPattern). Reading
-            // `no_hooking_success` here was wrong: the field is `true` from the
-            // constructor onward and remains `true` until a match flips it, so
-            // the grace check used to fire BEFORE Memory.scan had started,
-            // logging a premature "tier 3 exhausted" / "No keylog hook installed"
-            // on slow targets like libmonochrome_64.so.
-            if (elapsed >= POLL_GRACE_MS && hooker.cascadeCompleted && !hooker.found_ssl_log_secret) {
-                devlog_debug(`[bssl-pattern] ${moduleName}: cascade completed at ${elapsed}ms without match`);
-                finish(false);
-                return;
+            if (!softTimeoutLogged && elapsed >= timing.softTimeoutMs) {
+                softTimeoutLogged = true;
+                devlog(`[bssl-pattern] ${moduleName}: pattern scan still running after ${elapsed}ms; waiting for it to finish (up to ${timing.hardTimeoutMs}ms)`);
             }
-
-            setTimeout(tick, POLL_INTERVAL_MS);
+            delay = nextPatternPollDelay(elapsed, delay, timing);
+            setTimeout(tick, delay);
         };
 
-        setTimeout(tick, POLL_INTERVAL_MS);
+        setTimeout(tick, delay);
     });
 }

@@ -6,6 +6,7 @@ import { initializePipeline as sharedInitializePipeline, resolveWithPipelineAsyn
 import { ObjC } from "../../../shared/objclib.js";
 import { sendKeylog, sendDatalog } from "../../../shared/shared_structures.js";
 import { installSocketFdTracker, recoverSocketFd } from "../../../shared/socket_fd_tracker.js";
+import { buildDefaultSslMethodMapping, addModuleMethod, hasResolvableSslSurface, isResolvedAddress } from "./ssl_method_mapping.js";
 
 class ModifyReceiver{
     public readModification: ArrayBuffer | null = null;
@@ -94,20 +95,24 @@ export class OpenSSL_BoringSSL {
         if(typeof passed_library_method_mapping !== 'undefined'){
             this.library_method_mapping = passed_library_method_mapping;
         }else{
-            if(checkNumberOfExports(moduleName) > 2 ){
-                this.library_method_mapping[`*${moduleName}*`] = ["SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_keylog_callback"]
-            }
-            this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
+            // Gate mirrors the modern tree: enough dynamic exports OR a deep-
+            // symbol-resolution opt-in (libhttpengine.so exports only JNI_OnLoad,
+            // so the export count alone never created its SSL_* mapping).
+            this.library_method_mapping = buildDefaultSslMethodMapping(moduleName, String(socket_library), checkNumberOfExports(moduleName));
         }
+        // Computed once and shared by both gates (mapping above, read/write
+        // NativeFunctions below) — mirrors agent/tls/libs/openssl_boringssl.ts.
+        const sslSurfaceResolvable = hasResolvableSslSurface(moduleName, checkNumberOfExports(moduleName));
 
+        // addModuleMethod skips (instead of throwing on) a missing module key.
         if (isSymbolAvailable(moduleName, "SSL_CTX_new")) {
-            this.library_method_mapping[`*${moduleName}*`].push("SSL_CTX_new");
+            addModuleMethod(this.library_method_mapping, moduleName, "SSL_CTX_new");
         }
 
     
         // Check and add SSL_read_ex if available
         if (isSymbolAvailable(moduleName, "SSL_read_ex")) {
-            this.library_method_mapping[`*${moduleName}*`].push("SSL_read_ex");
+            addModuleMethod(this.library_method_mapping, moduleName, "SSL_read_ex");
             this.is_openssl = true;
         }else{
             this.is_openssl = false;
@@ -120,7 +125,7 @@ export class OpenSSL_BoringSSL {
 
         // Check and add SSL_write_ex if available
         if (isSymbolAvailable(moduleName, "SSL_write_ex")) {
-            this.library_method_mapping[`*${moduleName}*`].push("SSL_write_ex");
+            addModuleMethod(this.library_method_mapping, moduleName, "SSL_write_ex");
         }
 
 
@@ -143,7 +148,11 @@ export class OpenSSL_BoringSSL {
 
 
 
-        if(!ObjC.available && checkNumberOfExports(moduleName) > 2){
+        // Deep-resolved modules (e.g. libhttpengine.so, <=2 dynsym exports) get
+        // their SSL_* addresses from readAddresses' symbol-table fallback; a
+        // symbol it could not resolve stays undefined and the NativeFunction
+        // constructor throws, which the catch below turns into key-only mode.
+        if(!ObjC.available && sslSurfaceResolvable){
             try{
                 this.SSL_SESSION_get_id = new NativeFunction(this.addresses[this.moduleName]["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
                 this.SSL_get_fd = ObjC.available ? new NativeFunction(this.addresses[this.moduleName]["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(this.addresses[this.moduleName]["SSL_get_fd"], "int", ["pointer"]);
@@ -190,6 +199,12 @@ export class OpenSSL_BoringSSL {
 
     install_plaintext_read_hook(){
         if (!pcap_enabled) return;
+        if (this.do_read_write_hooks && !isResolvedAddress(this.addresses[this.moduleName]["SSL_read"])) {
+            // Guard: Interceptor.attach(undefined) would throw and abort the
+            // rest of execute_hooks (including the keylog install).
+            devlog_info("SSL_read unresolved for " + this.moduleName + "; skipping plaintext SSL_read hook");
+            return;
+        }
         if(this.do_read_write_hooks){
             function ab2str(buf: ArrayBuffer) {
                 //@ts-ignore
@@ -269,6 +284,12 @@ export class OpenSSL_BoringSSL {
 
     install_plaintext_write_hook(){
         if (!pcap_enabled) return;
+        if (this.do_read_write_hooks && !isResolvedAddress(this.addresses[this.moduleName]["SSL_write"])) {
+            // Guard: Interceptor.attach(undefined) would throw and abort the
+            // rest of execute_hooks (including the keylog install).
+            devlog_info("SSL_write unresolved for " + this.moduleName + "; skipping plaintext SSL_write hook");
+            return;
+        }
         if(this.do_read_write_hooks){
             function str2ab(str: string ) {
                 var buf = new ArrayBuffer(str.length + 1); // 2 bytes for each char

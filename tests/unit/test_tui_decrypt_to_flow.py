@@ -33,52 +33,19 @@ Two harnessing styles are used, mirroring the established repo patterns:
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import os
 import types
 from unittest.mock import MagicMock
 
 import pytest
 
-_SIGNAL_AVAILABLE = importlib.util.find_spec("friTap.offline.signal") is not None
-
 pytest.importorskip("textual")
 
-from friTap.output.keylog_paths import split_keylog_path  # noqa: E402
 from friTap.tui.app import FriTapApp  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
-
-FIXTURES = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)), "fixtures"
-)
-SIGNAL_PCAP = os.path.join(FIXTURES, "signal_h2_ws_modern.pcapng")
-SIGNAL_TLS_LOG = os.path.join(FIXTURES, "signal_h2_ws_modern.tls.log")
-SIGNAL_SIGNAL_LOG = os.path.join(FIXTURES, "signal_h2_ws_modern.signal.log")
-
-TSHARK = "/Applications/Wireshark.app/Contents/MacOS/tshark"
-
-
-def _make_signal_keylogs(tmp_path) -> tuple[str, str, str]:
-    """Create a base keylog name with realistic ``.tls`` / ``.signal`` siblings.
-
-    The production code resolves per-protocol keylogs from ``split_keylog_path``
-    siblings of the base keylog. We recreate that on-disk layout so the
-    resolution logic is exercised against real files.
-
-    Returns ``(base_keylog, tls_sibling, signal_sibling)``.
-    """
-    base = str(tmp_path / "keys.log")
-    tls_sib = split_keylog_path(base, "tls")
-    signal_sib = split_keylog_path(base, "signal")
-    # split_keylog_path("keys.log", "tls") -> "keys.tls.log"
-    with open(tls_sib, "w") as f:
-        f.write("CLIENT_RANDOM aa bb\n")
-    with open(signal_sib, "w") as f:
-        f.write("SIGNALKEYLOG dummy\n")
-    return base, tls_sib, signal_sib
 
 
 def _find_main_screen(app):
@@ -119,162 +86,28 @@ def _run_with_screen(coro_factory):
 class TestBuildConvertArgs:
     """Verify the kwargs dict assembled for ``convert_pcap_to_tap``."""
 
-    @pytest.mark.skipif(not _SIGNAL_AVAILABLE, reason="signal protocol is private/stripped in public build")
-    def test_resolves_tls_and_signal_siblings(self, tmp_path):
-        """Given a pcap + base keylog whose .tls/.signal siblings exist on
-        disk, the returned dict points at those siblings and defaults the
-        tap path to ``<pcap>.tap``."""
-        pcap = str(tmp_path / "capture.pcapng")
-        with open(pcap, "wb") as f:
-            f.write(b"\x00")  # contents irrelevant; only os.path.isfile matters
-        base, tls_sib, signal_sib = _make_signal_keylogs(tmp_path)
-
+    def test_missing_pcap_returns_none_and_alerts(self, tmp_path):
+        """A non-existent pcap yields None and a dismissible error alert modal."""
+        from friTap.tui.modals.alert_modal import AlertModal
         captured: dict = {}
 
         async def body(app, screen, pilot):
-            screen.app.notify = MagicMock()
-            args = screen._build_convert_args(
-                pcap=pcap, keylog=base, proto_keylog="",
-                protocol="tls", tap="",
+            pushed: list = []
+            screen.app.push_screen = MagicMock(
+                side_effect=lambda s, callback=None: pushed.append(s)
             )
-            captured["args"] = args
-            captured["notify"] = screen.app.notify
-
-        _run_with_screen(body)
-
-        args = captured["args"]
-        assert args is not None
-        assert args["pcap_path"] == pcap
-        assert args["keylog_path"] == tls_sib
-        assert args["signal_keylog"] == signal_sib
-        # No mtproto sibling on disk -> None.
-        assert args["mtproto_keylog"] is None
-        # Generic map carries every resolved protocol (incl. signal); the named
-        # signal_keylog/mtproto_keylog args are derived from it for back-compat
-        # (mirrors cli.merge_manifest). So protocol_keylogs holds the signal entry.
-        assert args["protocol_keylogs"] == {"signal": signal_sib}
-        # Default tap path = pcap stem + .tap
-        assert args["tap_path"] == os.path.splitext(pcap)[0] + ".tap"
-        # Nothing was missing -> no error notification.
-        captured["notify"].assert_not_called()
-
-    def test_decrypt_to_flow_multi_routes_signal_keylog(self, tmp_path):
-        """Regression (Signal capture -> 0 messages in the TUI .tap): the
-        post-capture decrypt offer passes the AUTHORITATIVE resolved keylog map to
-        start_decrypt_to_flow_multi. Signal's keylog must be its own .signal.log —
-        never the TLS log — so it decrypts the chat instead of skipping it."""
-        pcap = str(tmp_path / "s1capture.pcapng")
-        with open(pcap, "wb") as f:
-            f.write(b"\x00")
-        _base, tls_sib, signal_sib = _make_signal_keylogs(tmp_path)
-        keylog_files = {"tls": tls_sib, "signal": signal_sib}
-
-        captured: dict = {}
-
-        async def body(app, screen, pilot):
-            screen.app.notify = MagicMock()
-            screen._launch_decrypt_worker = MagicMock(
-                side_effect=lambda a: captured.update(args=a)
-            )
-            screen.start_decrypt_to_flow_multi(pcap, keylog_files)
-
-        _run_with_screen(body)
-        args = captured["args"]
-        assert args["keylog_path"] == tls_sib
-        assert args["signal_keylog"] == signal_sib          # NOT the TLS log
-        assert args["protocol_keylogs"] == {"signal": signal_sib}
-
-    def test_explicit_tap_path_is_honored(self, tmp_path):
-        pcap = str(tmp_path / "capture.pcapng")
-        with open(pcap, "wb") as f:
-            f.write(b"\x00")
-        base, _tls, _sig = _make_signal_keylogs(tmp_path)
-        explicit_tap = str(tmp_path / "out" / "result.tap")
-
-        captured: dict = {}
-
-        async def body(app, screen, pilot):
-            screen.app.notify = MagicMock()
-            captured["args"] = screen._build_convert_args(
-                pcap=pcap, keylog=base, proto_keylog="",
-                protocol="tls", tap=explicit_tap,
-            )
-
-        _run_with_screen(body)
-        assert captured["args"]["tap_path"] == explicit_tap
-
-    def test_falls_back_to_base_keylog_when_no_tls_sibling(self, tmp_path):
-        """When only the base keylog exists (no .tls sibling), keylog_path
-        falls back to the base file itself."""
-        pcap = str(tmp_path / "capture.pcapng")
-        with open(pcap, "wb") as f:
-            f.write(b"\x00")
-        base = str(tmp_path / "plain.log")
-        with open(base, "w") as f:
-            f.write("CLIENT_RANDOM aa bb\n")
-
-        captured: dict = {}
-
-        async def body(app, screen, pilot):
-            screen.app.notify = MagicMock()
-            captured["args"] = screen._build_convert_args(
-                pcap=pcap, keylog=base, proto_keylog="",
-                protocol="tls", tap="",
-            )
-
-        _run_with_screen(body)
-        args = captured["args"]
-        assert args["keylog_path"] == base
-        # No protocol siblings present.
-        assert args["signal_keylog"] is None
-        assert args["mtproto_keylog"] is None
-
-    @pytest.mark.skipif(not _SIGNAL_AVAILABLE, reason="signal protocol is private/stripped in public build")
-    def test_explicit_proto_keylog_used_for_matching_protocol(self, tmp_path):
-        """An explicit per-protocol keylog (proto_keylog) is used when the
-        chosen protocol matches its registry name, even without a sibling."""
-        pcap = str(tmp_path / "capture.pcapng")
-        with open(pcap, "wb") as f:
-            f.write(b"\x00")
-        # Only a TLS keylog base; signal provided explicitly.
-        base = str(tmp_path / "plain.log")
-        with open(base, "w") as f:
-            f.write("CLIENT_RANDOM aa bb\n")
-        explicit_signal = str(tmp_path / "my_signal.keys")
-        with open(explicit_signal, "w") as f:
-            f.write("SIGNALKEYLOG x\n")
-
-        captured: dict = {}
-
-        async def body(app, screen, pilot):
-            screen.app.notify = MagicMock()
-            captured["args"] = screen._build_convert_args(
-                pcap=pcap, keylog=base, proto_keylog=explicit_signal,
-                protocol="signal", tap="",
-            )
-
-        _run_with_screen(body)
-        assert captured["args"]["signal_keylog"] == explicit_signal
-
-    def test_missing_pcap_returns_none_and_notifies(self, tmp_path):
-        """A non-existent pcap yields None and an error notification."""
-        captured: dict = {}
-
-        async def body(app, screen, pilot):
-            screen.app.notify = MagicMock()
             result = screen._build_convert_args(
                 pcap=str(tmp_path / "does_not_exist.pcap"),
                 keylog="", proto_keylog="", protocol="tls", tap="",
             )
             captured["result"] = result
-            captured["notify"] = screen.app.notify
+            captured["pushed"] = pushed
 
         _run_with_screen(body)
         assert captured["result"] is None
-        captured["notify"].assert_called_once()
-        # Error severity on the notification.
-        _args, kwargs = captured["notify"].call_args
-        assert kwargs.get("severity") == "error"
+        alerts = [s for s in captured["pushed"] if isinstance(s, AlertModal)]
+        assert len(alerts) == 1
+        assert alerts[0]._severity == "error"
 
     def test_empty_pcap_returns_none(self, tmp_path):
         captured: dict = {}
@@ -605,41 +438,6 @@ class TestReloadReplay:
         assert captured["row_count"] == 2
         assert captured["filename"] == "second.tap"
 
-    @pytest.mark.skipif(
-        not (os.path.isfile(TSHARK) and os.path.isfile(SIGNAL_PCAP)),
-        reason="requires tshark + signal fixtures",
-    )
-    def test_reload_real_decrypted_tap(self, tmp_path):
-        """End-to-end: decrypt the Signal fixture into a .tap, then reload it
-        into the flow view and assert the flow count matches."""
-        from friTap.offline.pcap_to_tap import convert_pcap_to_tap
-
-        tap_path = str(tmp_path / "signal.tap")
-        result = convert_pcap_to_tap(
-            pcap_path=SIGNAL_PCAP,
-            keylog_path=SIGNAL_TLS_LOG,
-            signal_keylog=SIGNAL_SIGNAL_LOG,
-            tap_path=tap_path,
-            tshark_path=TSHARK,
-        )
-        expected = result.flow_count
-        assert expected > 0, "fixture decryption should yield flows"
-
-        captured: dict = {}
-
-        async def body(app, screen, pilot):
-            from friTap.tui.widgets.flow_list import FlowListWidget
-            screen.reload_replay(tap_path)
-            await pilot.pause()
-            captured["replay_count"] = screen._replay_ctrl.flow_count
-            captured["row_count"] = screen.query_one(
-                "#flow-list", FlowListWidget
-            ).row_count
-
-        _run_with_screen(body)
-        assert captured["replay_count"] == expected
-        assert captured["row_count"] == expected
-
 
 # ===========================================================================
 # 4. _on_decrypt_done / _on_decrypt_error worker handlers
@@ -683,26 +481,31 @@ class TestDecryptWorkerHandlers:
             signal_streams_degraded=0,
         )
 
+        from friTap.tui.modals.alert_modal import AlertModal
         captured: dict = {}
 
         async def body(app, screen, pilot):
             screen.app.notify = MagicMock()
+            pushed: list = []
+            screen.app.push_screen = MagicMock(
+                side_effect=lambda s, callback=None: pushed.append(s)
+            )
             screen.reload_replay = MagicMock()
             screen._on_decrypt_done(tap_path, result)
             captured["reload"] = screen.reload_replay
             captured["notify"] = screen.app.notify
+            captured["pushed"] = pushed
 
         _run_with_screen(body)
         captured["reload"].assert_called_once_with(tap_path)
-        # Two notifies: the success info, then a degraded warning.
-        assert captured["notify"].call_count == 2
-        severities = [c.kwargs.get("severity") for c in captured["notify"].call_args_list]
-        assert "information" in severities and "warning" in severities
-        warn_msg = next(
-            c.args[0] for c in captured["notify"].call_args_list
-            if c.kwargs.get("severity") == "warning"
-        )
-        assert "mid-connection" in warn_msg and "spawn" in warn_msg
+        # The success message stays a toast; the degraded-streams warning is now
+        # a dismissible modal (not a transient toast).
+        captured["notify"].assert_called_once()
+        assert captured["notify"].call_args.kwargs.get("severity") == "information"
+        alerts = [s for s in captured["pushed"] if isinstance(s, AlertModal)]
+        assert len(alerts) == 1
+        assert alerts[0]._severity == "warning"
+        assert "mid-connection" in alerts[0]._message and "spawn" in alerts[0]._message
 
     def test_on_decrypt_done_clean_capture_no_warning(self, tmp_path):
         """flows>0 with zero degraded streams -> exactly one (success) notify."""
@@ -725,38 +528,48 @@ class TestDecryptWorkerHandlers:
         _a, kw = captured["notify"].call_args
         assert kw.get("severity") == "information"
 
-    def test_on_decrypt_done_no_flows_warns(self, tmp_path):
-        """When flow_count is 0 and no .tap exists, warn instead of reloading."""
+    def test_on_decrypt_done_no_flows_alerts(self, tmp_path):
+        """When flow_count is 0 and no .tap exists, show a dismissible warning
+        modal (not a transient toast) instead of reloading."""
+        from friTap.tui.modals.alert_modal import AlertModal
         missing_tap = str(tmp_path / "nope.tap")
         result = types.SimpleNamespace(flow_count=0)
 
         captured: dict = {}
 
         async def body(app, screen, pilot):
-            screen.app.notify = MagicMock()
+            pushed: list = []
+            screen.app.push_screen = MagicMock(
+                side_effect=lambda s, callback=None: pushed.append(s)
+            )
             screen.reload_replay = MagicMock()
             screen._on_decrypt_done(missing_tap, result)
             captured["reload"] = screen.reload_replay
-            captured["notify"] = screen.app.notify
+            captured["pushed"] = pushed
 
         _run_with_screen(body)
         captured["reload"].assert_not_called()
-        _a, kw = captured["notify"].call_args
-        assert kw.get("severity") == "warning"
+        alerts = [s for s in captured["pushed"] if isinstance(s, AlertModal)]
+        assert len(alerts) == 1
+        assert alerts[0]._severity == "warning"
 
-    def test_on_decrypt_error_notifies_error(self):
+    def test_on_decrypt_error_alerts_error(self):
+        from friTap.tui.modals.alert_modal import AlertModal
         captured: dict = {}
 
         async def body(app, screen, pilot):
-            screen.app.notify = MagicMock()
+            pushed: list = []
+            screen.app.push_screen = MagicMock(
+                side_effect=lambda s, callback=None: pushed.append(s)
+            )
             screen._on_decrypt_error("boom failure")
-            captured["notify"] = screen.app.notify
+            captured["pushed"] = pushed
 
         _run_with_screen(body)
-        _a, kw = captured["notify"].call_args
-        assert kw.get("severity") == "error"
-        msg = captured["notify"].call_args[0][0]
-        assert "boom failure" in msg
+        alerts = [s for s in captured["pushed"] if isinstance(s, AlertModal)]
+        assert len(alerts) == 1
+        assert alerts[0]._severity == "error"
+        assert "boom failure" in alerts[0]._message
 
 
 # ===========================================================================
@@ -784,39 +597,6 @@ class TestActionOpenPcap:
         assert len(pushed) == 1
         assert isinstance(pushed[0][0], OpenPcapModal)
         assert pushed[0][1] is not None  # a result callback is wired
-
-    def test_modal_result_launches_decrypt_worker(self, tmp_path):
-        """The OpenPcapModal callback builds convert args and launches the
-        decrypt worker for a valid pcap."""
-        pcap = str(tmp_path / "capture.pcapng")
-        with open(pcap, "wb") as f:
-            f.write(b"\x00")
-        base, _tls, _sig = _make_signal_keylogs(tmp_path)
-
-        captured: dict = {}
-
-        async def body(app, screen, pilot):
-            screen.app.notify = MagicMock()
-            screen._launch_decrypt_worker = MagicMock()
-            cb_holder = {}
-            screen.app.push_screen = MagicMock(
-                side_effect=lambda s, callback=None: cb_holder.update(cb=callback)
-            )
-            screen.action_open_pcap()
-            # Simulate the modal accepting with these values.
-            cb_holder["cb"]({
-                "pcap": pcap,
-                "keylog": base,
-                "proto_keylog": "",
-                "protocol": "tls",
-                "tap": "",
-            })
-            captured["launch"] = screen._launch_decrypt_worker
-
-        _run_with_screen(body)
-        captured["launch"].assert_called_once()
-        args = captured["launch"].call_args[0][0]
-        assert args["pcap_path"] == pcap
 
     def test_modal_cancel_does_not_launch_worker(self):
         captured: dict = {}
@@ -962,3 +742,352 @@ class TestOpenPcapModal:
 
         asyncio.run(_run())
         assert result["dismissed"] is False
+
+
+# ---------------------------------------------------------------------------
+# 5. tshark-missing surfaces as a MODAL (not a transient toast), and the
+#    decrypt worker is never launched. Both the pre-flight and the reactive
+#    safety net funnel into the one shared presenter.
+# ---------------------------------------------------------------------------
+class TestTsharkMissingModal:
+    def test_preflight_shows_modal_and_skips_worker(self, monkeypatch):
+        """find_tshark failing in _launch_decrypt_worker -> AlertModal, no worker."""
+        from friTap.tui.screens.main_screen import MainScreen
+        from friTap.tui.modals.alert_modal import AlertModal
+        from friTap.offline import tshark as tshark_mod
+        from friTap.offline.tshark import TSHARK_INSTALL_MESSAGE, TsharkNotFoundError
+
+        screen, pushed, _ = _make_screen_stub()
+        screen.app.notify = MagicMock()
+        # Wire the real presenter onto the stub so the pre-flight exercises it.
+        screen._show_tshark_missing_modal = (
+            lambda: MainScreen._show_tshark_missing_modal(screen)
+        )
+
+        monkeypatch.setattr(
+            tshark_mod, "find_tshark",
+            lambda *a, **k: (_ for _ in ()).throw(TsharkNotFoundError("missing")),
+        )
+
+        MainScreen._launch_decrypt_worker(
+            screen, {"tshark_path": None, "tap_path": "out.tap"}
+        )
+
+        assert len(pushed) == 1, "expected exactly one modal pushed"
+        modal, _cb = pushed[0]
+        assert isinstance(modal, AlertModal)
+        assert modal._message == TSHARK_INSTALL_MESSAGE  # single-source text
+        assert modal._severity == "error"
+        # The worker must NOT start, and no "Decrypting..." toast should appear.
+        screen.run_worker.assert_not_called()
+        screen.app.notify.assert_not_called()
+
+    def test_preflight_launches_worker_when_tshark_present(self, monkeypatch):
+        """When tshark resolves, the worker runs behind a progress spinner modal."""
+        from friTap.tui.screens.main_screen import MainScreen
+        from friTap.tui.modals.decrypt_progress_modal import DecryptProgressModal
+        from friTap.offline import tshark as tshark_mod
+
+        screen, pushed, _ = _make_screen_stub()
+        screen.app.notify = MagicMock()
+        monkeypatch.setattr(tshark_mod, "find_tshark", lambda *a, **k: "/usr/bin/tshark")
+
+        MainScreen._launch_decrypt_worker(
+            screen, {"tshark_path": None, "tap_path": "out.tap"}
+        )
+
+        # A non-dismissible progress spinner is shown so a long decrypt never
+        # looks hung; the worker still starts.
+        assert len(pushed) == 1
+        assert isinstance(pushed[0][0], DecryptProgressModal)
+        screen.run_worker.assert_called_once()
+
+    def test_presenter_pushes_error_modal_and_logs(self):
+        """The shared presenter both front-ends/paths funnel into."""
+        from friTap.tui.screens.main_screen import MainScreen
+        from friTap.tui.modals.alert_modal import AlertModal
+        from friTap.offline.tshark import TSHARK_INSTALL_MESSAGE
+
+        screen, pushed, _ = _make_screen_stub()
+        logged: list = []
+        screen._get_activity_log = lambda: types.SimpleNamespace(
+            log_warning=lambda m: logged.append(m)
+        )
+
+        MainScreen._show_tshark_missing_modal(screen)
+
+        assert len(pushed) == 1
+        modal, _cb = pushed[0]
+        assert isinstance(modal, AlertModal)
+        assert modal._message == TSHARK_INSTALL_MESSAGE
+        assert modal._severity == "error"
+        assert modal._title == "tshark not found"
+        assert logged and "tshark not found" in logged[0]
+
+
+# ===========================================================================
+# 0-flow keylog-coverage explanation + per_protocol Signal counters
+# ===========================================================================
+
+class TestZeroFlowExplanation:
+    """_decrypt_worker computes keylog coverage for a 0-flow TLS conversion."""
+
+    _LINES = [
+        "TLS keylog matches 0 of 4 TLS handshakes in the capture (a.com TLS 1.3).",
+        "None of the keylog's 2 sessions appear in this capture.",
+    ]
+
+    def _coverage(self, args, flow_count, **patches):
+        from unittest.mock import patch
+
+        from friTap.tui.screens.main_screen import MainScreen
+        result = types.SimpleNamespace(flow_count=flow_count)
+        with patch("friTap.offline.tshark.find_tshark", return_value="tshark"), patch(
+            "friTap.offline.keylog_coverage.check_keylog_coverage", **patches,
+        ) as check, patch(
+            "friTap.offline.keylog_coverage.describe", return_value=("warning", self._LINES),
+        ):
+            return MainScreen._zero_flow_coverage(args, result), check
+
+    def test_zero_flows_with_tls_keylog_computes_coverage(self):
+        args = {"pcap_path": "c.pcapng", "keylog_path": "k.log", "tshark_path": None}
+        coverage, check = self._coverage(args, 0, return_value=object())
+        assert coverage == ("warning", self._LINES)
+        check.assert_called_once_with("tshark", "c.pcapng", "k.log")
+
+    def test_skipped_with_flows_or_without_tls_keylog(self):
+        args = {"pcap_path": "c.pcapng", "keylog_path": "k.log"}
+        assert self._coverage(args, 2, return_value=object())[0] is None
+        assert self._coverage(dict(args, keylog_path=None), 0, return_value=object())[0] is None
+
+    def test_failure_yields_none(self):
+        args = {"pcap_path": "c.pcapng", "keylog_path": "k.log"}
+        assert self._coverage(args, 0, side_effect=RuntimeError("boom"))[0] is None
+
+    def test_on_decrypt_done_shows_coverage_lines(self, tmp_path):
+        from friTap.tui.modals.alert_modal import AlertModal
+        captured: dict = {}
+
+        async def body(app, screen, pilot):
+            pushed: list = []
+            screen.app.push_screen = MagicMock(
+                side_effect=lambda s, callback=None: pushed.append(s)
+            )
+            screen._on_decrypt_done(
+                str(tmp_path / "none.tap"), types.SimpleNamespace(flow_count=0),
+                ("warning", self._LINES),
+            )
+            captured["pushed"] = pushed
+
+        _run_with_screen(body)
+        # The multi-sentence coverage explanation is a dismissible modal now
+        # (no more transient toast with a long timeout).
+        alerts = [s for s in captured["pushed"] if isinstance(s, AlertModal)]
+        assert len(alerts) == 1
+        msg = alerts[0]._message
+        assert msg.startswith("Decrypted 0 flows: TLS keylog matches 0 of 4")
+        assert "None of the keylog's 2 sessions" in msg
+        assert "Decryption produced no flows" not in msg
+
+    def test_signal_counters_read_from_per_protocol(self):
+        from friTap.offline.pcap_to_tap import ConvertResult
+        from friTap.tui.screens.main_screen import MainScreen
+        result = ConvertResult(tap_path="x.tap")
+        result.record_protocol("signal", undecryptable=3, degraded=2)
+        result.record_protocol("mtproto", degraded=1)
+        assert MainScreen._degraded_stream_count(result) == 3
+        assert MainScreen._undecryptable_record_count(result) == 3
+
+    def test_signal_undecryptable_explains_zero_flows(self, tmp_path):
+        from friTap.offline.pcap_to_tap import ConvertResult
+        result = ConvertResult(tap_path="x.tap")
+        result.record_protocol("signal", undecryptable=5)
+        from friTap.tui.modals.alert_modal import AlertModal
+        captured: dict = {}
+
+        async def body(app, screen, pilot):
+            pushed: list = []
+            screen.app.push_screen = MagicMock(
+                side_effect=lambda s, callback=None: pushed.append(s)
+            )
+            screen._on_decrypt_done(str(tmp_path / "none.tap"), result)
+            captured["pushed"] = pushed
+
+        _run_with_screen(body)
+        alerts = [s for s in captured["pushed"] if isinstance(s, AlertModal)]
+        assert len(alerts) == 1
+        assert "5 records had no matching key" in alerts[0]._message
+
+    def test_telegram_prefix_counters_reach_the_tui_helpers(self):
+        """A ``telegram``-prefixed keylog's degraded/undecryptable counts must reach
+        the TUI helpers — previously only ``mtproto_*`` legacy attrs were read, so a
+        ``telegram`` run's counters were silently dropped."""
+        from friTap.offline.pcap_to_tap import ConvertResult
+        from friTap.tui.screens.main_screen import MainScreen
+        result = ConvertResult(tap_path="x.tap")
+        result.record_protocol("telegram", degraded=2, undecryptable=3)
+        assert MainScreen._degraded_stream_count(result) == 2
+        assert MainScreen._undecryptable_record_count(result) == 3
+
+    def test_short_and_unsupported_framing_not_counted_as_degraded(self):
+        """D3/D5 streams (short / unsupported framing) must NOT be reported as
+        mid-connection: they never touch the degraded count."""
+        from friTap.offline.pcap_to_tap import ConvertResult
+        from friTap.tui.screens.main_screen import MainScreen
+        result = ConvertResult(tap_path="x.tap")
+        result.record_protocol("mtproto", short=4, unsupported_framing=2)
+        assert MainScreen._degraded_stream_count(result) == 0
+
+    def test_e2e_only_explains_zero_flows_before_degraded(self, tmp_path):
+        """E2E key present but no transport auth key -> the dedicated E2E-only
+        message, reported even when degraded streams are ALSO present (it is the
+        more specific, true cause and must not be masked)."""
+        from friTap.offline.pcap_to_tap import ConvertResult
+        from friTap.tui.modals.alert_modal import AlertModal
+        result = ConvertResult(tap_path="x.tap")
+        # Both signals present: e2e_only must win over the mid-connection fallback.
+        result.record_protocol("telegram", e2e_only=True, degraded=1, undecryptable=2)
+        captured: dict = {}
+
+        async def body(app, screen, pilot):
+            pushed: list = []
+            screen.app.push_screen = MagicMock(
+                side_effect=lambda s, callback=None: pushed.append(s)
+            )
+            screen._on_decrypt_done(str(tmp_path / "none.tap"), result)
+            captured["pushed"] = pushed
+
+        _run_with_screen(body)
+        alerts = [s for s in captured["pushed"] if isinstance(s, AlertModal)]
+        assert len(alerts) == 1
+        msg = alerts[0]._message
+        assert "secret-chat (E2E) key but no" in msg
+        assert "transport envelope can't be decrypted" in msg
+        assert "-ms" in msg and "-k" in msg
+        # NOT the mid-connection wording.
+        assert "started mid-connection" not in msg
+
+    def test_unknown_auth_key_ids_are_surfaced(self, tmp_path):
+        """Unknown auth_key_ids seen in the clear are named so the user knows which
+        transport keys to capture."""
+        from friTap.offline.pcap_to_tap import ConvertResult
+        from friTap.tui.modals.alert_modal import AlertModal
+        result = ConvertResult(tap_path="x.tap")
+        result.record_protocol(
+            "telegram", undecryptable=2,
+            unknown_key_ids={"1122334455667788": 1, "aabbccddeeff0011": 1},
+        )
+        captured: dict = {}
+
+        async def body(app, screen, pilot):
+            pushed: list = []
+            screen.app.push_screen = MagicMock(
+                side_effect=lambda s, callback=None: pushed.append(s)
+            )
+            screen._on_decrypt_done(str(tmp_path / "none.tap"), result)
+            captured["pushed"] = pushed
+
+        _run_with_screen(body)
+        alerts = [s for s in captured["pushed"] if isinstance(s, AlertModal)]
+        assert len(alerts) == 1
+        msg = alerts[0]._message
+        assert "1122334455667788" in msg
+        assert "aabbccddeeff0011" in msg
+        assert "Unknown auth_key_id" in msg
+
+    def test_recovered_via_obf_counter_reads_per_protocol(self):
+        """Mid-stream streams recovered from memory-scanned obfuscation keys are
+        summed generically across messaging prefixes."""
+        from friTap.offline.pcap_to_tap import ConvertResult
+        from friTap.tui.screens.main_screen import MainScreen
+        result = ConvertResult(tap_path="x.tap")
+        result.record_protocol("mtproto", recovered_via_obf=2)
+        result.record_protocol("telegram", recovered_via_obf=3)
+        assert MainScreen._recovered_via_obf_count(result) == 5
+
+    def test_degraded_unrecovered_counter_reads_per_protocol(self):
+        """Streams where obfuscation-key recovery was attempted but no key aligned
+        are counted separately from plain degraded streams."""
+        from friTap.offline.pcap_to_tap import ConvertResult
+        from friTap.tui.screens.main_screen import MainScreen
+        result = ConvertResult(tap_path="x.tap")
+        result.record_protocol("mtproto", degraded=1, degraded_unrecovered=4)
+        assert MainScreen._degraded_unrecovered_count(result) == 4
+        # ...and it does NOT leak into the mid-connection degraded figure.
+        assert MainScreen._degraded_stream_count(result) == 1
+
+    def test_short_stream_counter_reads_per_protocol(self):
+        """Short streams are surfaced on their own, never as degraded."""
+        from friTap.offline.pcap_to_tap import ConvertResult
+        from friTap.tui.screens.main_screen import MainScreen
+        result = ConvertResult(tap_path="x.tap")
+        result.record_protocol("mtproto", short=6)
+        assert MainScreen._short_stream_count(result) == 6
+        assert MainScreen._degraded_stream_count(result) == 0
+
+    def test_on_decrypt_done_reports_recovered_via_obf_as_positive_note(self, tmp_path):
+        """flows>0 with ONLY recovered_via_obf streams -> an informational note
+        (not a warning): those mid-stream streams were a success, recovered from
+        memory-scanned obfuscation keys."""
+        from friTap.offline.pcap_to_tap import ConvertResult
+        from friTap.tui.modals.alert_modal import AlertModal
+        tap_path = str(tmp_path / "recovered.tap")
+        _write_minimal_tap(tap_path)
+        result = ConvertResult(tap_path=tap_path)
+        result.flow_count = 4
+        result.record_protocol("telegram", recovered_via_obf=2)
+        captured: dict = {}
+
+        async def body(app, screen, pilot):
+            screen.app.notify = MagicMock()
+            pushed: list = []
+            screen.app.push_screen = MagicMock(
+                side_effect=lambda s, callback=None: pushed.append(s)
+            )
+            screen.reload_replay = MagicMock()
+            screen._on_decrypt_done(tap_path, result)
+            captured["pushed"] = pushed
+
+        _run_with_screen(body)
+        alerts = [s for s in captured["pushed"] if isinstance(s, AlertModal)]
+        assert len(alerts) == 1
+        assert alerts[0]._severity == "information"
+        msg = alerts[0]._message
+        assert "recovered from memory-scanned obfuscation key" in msg
+        assert "2 mid-stream" in msg
+
+    def test_on_decrypt_done_reports_degraded_unrecovered_and_short(self, tmp_path):
+        """flows>0 with degraded_unrecovered AND short streams -> one warning modal
+        that itemizes both buckets (additively, alongside the degraded note)."""
+        from friTap.offline.pcap_to_tap import ConvertResult
+        from friTap.tui.modals.alert_modal import AlertModal
+        tap_path = str(tmp_path / "buckets.tap")
+        _write_minimal_tap(tap_path)
+        result = ConvertResult(tap_path=tap_path)
+        result.flow_count = 4
+        result.record_protocol(
+            "mtproto", degraded=1, degraded_unrecovered=2, short=3
+        )
+        captured: dict = {}
+
+        async def body(app, screen, pilot):
+            screen.app.notify = MagicMock()
+            pushed: list = []
+            screen.app.push_screen = MagicMock(
+                side_effect=lambda s, callback=None: pushed.append(s)
+            )
+            screen.reload_replay = MagicMock()
+            screen._on_decrypt_done(tap_path, result)
+            captured["pushed"] = pushed
+
+        _run_with_screen(body)
+        alerts = [s for s in captured["pushed"] if isinstance(s, AlertModal)]
+        assert len(alerts) == 1
+        assert alerts[0]._severity == "warning"
+        msg = alerts[0]._message
+        # The existing mid-connection wording is preserved...
+        assert "started mid-connection" in msg and "spawn" in msg
+        # ...and the two new buckets are itemized.
+        assert "no key aligned" in msg
+        assert "2 stream" in msg
+        assert "3 short stream" in msg

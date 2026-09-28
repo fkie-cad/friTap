@@ -42,9 +42,12 @@ should take for new libraries.
 !!! warning "The modern path is opt-in (EXPERIMENTAL)"
     For TLS libraries the modern executors are selected only when the user
     passes `--modern` (`use_modern`); the **default is the legacy path**
-    (`friTap/friTap.py`, `default=False`). SSH and IPsec auto-enable modern.
-    Known modern-path regressions (`_MODERN_REGRESSIONS`) cover iOS/macOS Cronet,
-    Windows LSASS, and IPsec. Register your library on **both** the modern and
+    (`friTap/friTap.py`, `default=False`). No protocol auto-enables modern:
+    SSH, MTProto, Telegram, Signal, RC4 and IPsec hooks install on both paths
+    (IPsec only via `--protocol all`/`auto` — its Python handler is not
+    registered yet, so `--protocol ipsec` is not selectable).
+    iOS/macOS Cronet and Windows LSASS have no native modern implementation, so
+    `--modern` runs their legacy hooks (`_MODERN_LEGACY_DELEGATED`). Register your library on **both** the modern and
     legacy `hookFn`s (as the existing entries do) so it works regardless of the
     flag, and treat the modern path as experimental until verified on a device.
 
@@ -381,6 +384,10 @@ itself is new.
     (`agent/ipsec/definitions/strongswan.ts`). The `derive_ike_keys` /
     `ikev2_derive_child_sa_keys` hooks exist but are partial and do not yet
     extract usable key material. Detection works; key extraction does not.
+    The family exists on the agent side only: the Python `IPSecHandler` is not
+    registered (commented out in `friTap/protocols/registry.py`), so
+    `--protocol ipsec` is not selectable from the CLI/TUI yet — the IPsec hooks
+    install only via `--protocol all`/`auto`.
 
 ---
 

@@ -9,37 +9,98 @@ decoupling handler instantiation from SSL_Logger.
 
 
 
-def _active_keylog_formatters(protocol: str, protocol_registry):
+def _active_keylog_formatters(protocol, protocol_registry):
     """Return the list of :class:`KeylogFormatter` instances that should be wired
-    up for the current run, based on the active-protocol set.
+    up for the current run, based on the active-protocol SELECTION.
 
-    - ``tls`` / ``ssh`` / ``ipsec``: that single protocol, if its handler exposes
-      a formatter.
-    - ``all`` / ``auto``: every registered handler's formatter (preserves
-      registration order, which is the deterministic insertion order of
+    *protocol* may be a single protocol name (``"tls"``) or, since Foundation F1
+    multi-protocol selection, a list/set of names (``["tls", "rc4"]``). The
+    formatters are the UNION across the whole selection (each selected protocol
+    plus the companion protocols it implies), de-duplicated by protocol and
+    order-preserving.
+
+    - ``tls`` / ``ssh`` / ``ipsec`` / any named protocol: that protocol's
+      formatter if its handler exposes one, plus its implied companions.
+    - ``all`` / ``auto`` (in the selection): every registered handler's formatter
+      (preserves registration order, the deterministic insertion order of
       :class:`ProtocolRegistry`).
     - Anything else (defensive): empty list.
     """
     if protocol_registry is None:
         return []
-    if protocol in ("all", "auto"):
+    # Normalize the selection to an ordered list of protocol names.
+    if isinstance(protocol, (list, tuple, set)):
+        selected = list(protocol)
+    else:
+        selected = [protocol]
+    if any(p in ("all", "auto") for p in selected):
+        # Install-everything: every registered handler's formatter.
         handlers = protocol_registry.get_all()
     else:
-        # Any single named protocol: use its handler's formatter if registered,
-        # plus any companion protocols it implies (a TLS-wrapped protocol also
-        # emits TLS keys, so its keylog is split into <stem>.<proto><ext> +
+        # Each named protocol contributes its handler's formatter (if any) plus
+        # any companion protocols it implies (a TLS-wrapped protocol also emits
+        # TLS keys, so its keylog is split into <stem>.<proto><ext> +
         # <stem>.tls<ext>). Registry-driven (not a hardcoded tuple) so new
-        # protocols need no edit here; an unknown name resolves to no formatter.
+        # protocols need no edit here; unknown names resolve to no formatter.
         from ..protocols.registry import implied_protocols
-        names = [protocol] + implied_protocols(protocol)
+        names = []
+        for p in selected:
+            for n in [p] + implied_protocols(p):
+                if n not in names:
+                    names.append(n)
         handlers = [protocol_registry.get(n) for n in names]
         handlers = [h for h in handlers if h is not None]
     formatters = []
+    seen = set()
     for h in handlers:
         fmt = h.keylog_formatter()
-        if fmt is not None:
-            formatters.append(fmt)
+        if fmt is None:
+            continue
+        # De-dup by formatter protocol so two selections that both imply "tls"
+        # do not wire the TLS formatter (and its split file) twice.
+        key = getattr(fmt, "protocol", None)
+        key = key if key is not None else id(fmt)
+        if key in seen:
+            continue
+        seen.add(key)
+        formatters.append(fmt)
     return formatters
+
+
+def memory_scan_keylog_path(config):
+    """Resolve where memory-scan (``-ms``) findings are written.
+
+    The heap scanner always gets its OWN keylog file, never a handle onto the
+    ``-k`` file: two handlers opening one path in truncate mode would corrupt
+    each other's keys. When ``-k`` is set the memory-scan file is co-located
+    with it as ``<stem>.memscan<ext>`` (e.g. ``keys.log`` -> ``keys.memscan.log``),
+    reusing the same per-source split naming Wireshark users already see under
+    ``--protocol all``. On its own, ``-ms`` writes to
+    ``<sanitized-target>_memscan.keylog`` in the current directory so the flag
+    is useful with no other output flag. In memory-scan-only mode
+    (:func:`friTap.config.memory_scan_only`, e.g. the TUI's "memory only"
+    method) no hook handler writes ``-k``, so the scanner owns the ``-k`` path
+    itself. Returns ``None`` when memory scanning is not enabled.
+    """
+    import os
+    import re
+
+    from ..config import memory_scan_only
+
+    if not getattr(config.hooking, "memory_scan", False):
+        return None
+    keylog = config.output.keylog
+    if keylog and memory_scan_only(config):
+        return keylog
+    if keylog:
+        from .keylog_paths import split_keylog_path
+        return split_keylog_path(keylog, "memscan")
+    target = config.target
+    if isinstance(target, (list, tuple)):
+        target = "_".join(str(t) for t in target)
+    stem = os.path.basename(str(target or "target").strip()) or "target"
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("_") or "target"
+    return f"{stem}_memscan.keylog"
 
 
 def active_keylog_paths(base_keylog, protocol, protocol_registry, protocol_handler=None):
@@ -145,8 +206,14 @@ class OutputHandlerFactory:
         # split per protocol so each Wireshark-loadable format gets its own
         # file (``mykeys.log`` → ``mykeys.tls.log`` + ``mykeys.ssh.log``).
         keylog = config.output.keylog
+        # Memory-scan-only: the scanner writes -k itself (memory_scan_keylog_path
+        # below), so a hook keylog handler here would open the same file twice
+        # in truncate mode and clobber it.
+        from ..config import memory_scan_only
+        if keylog and memory_scan_only(config):
+            keylog = None
         if keylog:
-            active = _active_keylog_formatters(config.protocol, protocol_registry)
+            active = _active_keylog_formatters(config.protocols, protocol_registry)
             if not active and protocol_handler is not None \
                     and hasattr(protocol_handler, "keylog_formatter"):
                 # Fallback for callers without a registry: use the active
@@ -191,6 +258,28 @@ class OutputHandlerFactory:
         if split_paths and pcap_obj is not None \
                 and hasattr(pcap_obj, "set_active_keylogs"):
             pcap_obj.set_active_keylogs(split_paths)
+            # Also hand the un-split base -k path so the manifest can fall back to
+            # it when a per-protocol split (e.g. <base>.tls.keylog) is never written
+            # — on Windows the TLS secrets land in the base keylog, not the split.
+            # Use config.output.keylog (the original), NOT the local `keylog` var,
+            # which is nulled above for memory-scan-only captures.
+            if hasattr(pcap_obj, "set_base_keylog"):
+                pcap_obj.set_base_keylog(config.output.keylog)
+
+        # Memory-scan (--memory-scan / -ms). The heap secret-scanner runs as a
+        # separate injected agent and emits ready NSS keylog lines forwarded as
+        # KeylogEvent(protocol="memscan"). Following the --scan-keys-region
+        # precedent, it reuses the shared KeylogOutputHandler with a tagged
+        # formatter rather than a bespoke handler. Its own dedicated file
+        # (memory_scan_keylog_path) keeps it independent of -k, so -ms alone
+        # still writes a keylog, and it never shares a file handle with the
+        # hooked-key writer.
+        ms_path = memory_scan_keylog_path(config)
+        if ms_path:
+            from ..memory_scanning.formatter import MemoryScanKeylogFormatter
+            handlers.append(KeylogOutputHandler(ms_path, formatter=MemoryScanKeylogFormatter()))
+            live_info["memory_scan_keylog"] = ms_path
+            logger.info("memory-scan keylog → %s", ms_path)
 
         # JSON / JSONL
         json_output = config.output.json_output
@@ -199,7 +288,8 @@ class OutputHandlerFactory:
                 handlers.append(JsonlOutputHandler(json_output))
             else:
                 handlers.append(JsonOutputHandler(
-                    json_output, session_info=session_data.get("session_info", {})
+                    json_output, session_info=session_data.get("session_info", {}),
+                    auxiliary=getattr(config.output, "auxiliary_session", False),
                 ))
 
         # Live Wireshark modes

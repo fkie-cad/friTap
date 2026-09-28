@@ -1,5 +1,6 @@
 import { hookRegistry, HookRegistry } from "../shared/registry.js";
-import { selected_protocol, use_modern, scan_results } from "../fritap_agent.js";
+import { collectContributedHooks } from "../shared/hook_contributors.js";
+import { selected_protocols, use_modern, scan_results } from "../fritap_agent.js";
 import { processScanResults } from "../shared/library_scanner.js";
 import { log, devlog } from "../util/log.js";
 import { getModuleNames, ssl_library_loader, hookDynamicLoader, runInstallPhases } from "../shared/shared_functions.js";
@@ -20,7 +21,7 @@ export const socket_library = "libSystem.B.dylib"
 
 
 function hook_iOS_SSL_Libs(hookRegistry: HookRegistry, is_base_hook: boolean) {
-    ssl_library_loader(plattform_name, hookRegistry, getModuleNames(), "iOS", is_base_hook, selected_protocol)
+    ssl_library_loader(plattform_name, hookRegistry, getModuleNames(), "iOS", is_base_hook, selected_protocols)
 }
 
 
@@ -44,8 +45,14 @@ export function load_ios_hooking_agent() {
         { platform: plattform_name, pattern: VERSIONED_LIBSSL_DYLIB, hookFn: (use_modern ? libressl_execute_modern : libressl_execute), library: "LibreSSL", pathFilter: SYSTEM_LIBRESSL_PATH, priority: 150, libraryType: "libressl", protocol: "tls" },
         { platform: plattform_name, pattern: VERSIONED_LIBSSL_DYLIB, hookFn: (use_modern ? openssl_execute_modern : openssl_execute), library: "OpenSSL", excludePathFilter: SYSTEM_LIBRESSL_PATH, priority: 120, libraryType: "openssl", protocol: "tls" },
         { platform: plattform_name, pattern: ANY_LIBSSL_DYLIB, hookFn: (use_modern ? boring_execute_modern : boring_execute), library: "OpenSSL/BoringSSL", excludePattern: VERSIONED_LIBSSL_DYLIB, libraryType: "openssl", protocol: "tls" },
-        { platform: plattform_name, pattern: /.*cronet.*\.dylib/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet", libraryType: "boringssl", protocol: "tls" },
+        // Cronet on Apple: pinned to legacy on both paths — Apple's Cronet build
+        // omits SSL_CTX_set_keylog_callback, so only legacy's ssl_log_secret
+        // byte-pattern works. cronet_execute_modern kept imported for a future fix.
+        { platform: plattform_name, pattern: /.*cronet.*\.dylib/, hookFn: cronet_execute, library: "Cronet", libraryType: "boringssl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*flutter.*\.dylib/, hookFn: (use_modern ? flutter_execute_modern : flutter_execute), library: "Flutter BoringSSL", libraryType: "boringssl", protocol: "tls" },
+        // Hooks contributed by optional units (e.g. the public RC4 key-capture
+        // unit under `--protocol rc4`). Empty when no unit registered.
+        ...collectContributedHooks(),
     ]);
 
     const iosLoaderConfig = {
@@ -66,7 +73,7 @@ export function load_ios_hooking_agent() {
     // spawned app — the case that matters most on iOS.
     runInstallPhases("iOS", [
         { label: "ssl-libs",     fn: () => hook_iOS_SSL_Libs(hookRegistry, true) },
-        { label: "scan-results", fn: () => processScanResults(scan_results, plattform_name, true, selected_protocol) },
-        { label: "loader",       fn: () => hookDynamicLoader(iosLoaderConfig, hookRegistry, getModuleNames(), false, selected_protocol) },
+        { label: "scan-results", fn: () => processScanResults(scan_results, plattform_name, true, selected_protocols) },
+        { label: "loader",       fn: () => hookDynamicLoader(iosLoaderConfig, hookRegistry, getModuleNames(), false, selected_protocols) },
     ]);
 }

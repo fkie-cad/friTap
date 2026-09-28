@@ -1,5 +1,5 @@
 import { hookRegistry, HookRegistry } from "../shared/registry.js";
-import { getModuleNames, ssl_library_loader, hookDynamicLoader, installOhttpHooks, installStealthDynamicLoader, installPairipSafeWatcher } from "../shared/shared_functions.js";
+import { getModuleNames, ssl_library_loader, hookDynamicLoader, installOhttpHooks, installStealthDynamicLoader, installPairipSafeWatcher, isTlsFamilyRequested } from "../shared/shared_functions.js";
 import { matchAntiTamper, warnAntiTamper, scanForAntiTamper, bannerAntiTamper } from "../util/anti_tamper.js";
 import { matchNonTLSLibrary, noteNonTLSLibrary } from "../util/non_tls_libs.js";
 import { Platform, PLATFORM_LINUX } from "../shared/shared_structures.js";
@@ -27,7 +27,7 @@ import { s2ntls_execute } from "../legacy/tls/platforms/android/s2ntls_android.j
 import { java_execute } from "../tls/platforms/android/android_java_tls_libs.js";
 import { flutter_execute, flutter_execute_modern } from "../tls/platforms/android/flutter_android.js";
 import { mono_btls_execute, mono_btls_execute_modern } from "../tls/platforms/android/mono_btls_android.js";
-import { patterns, isPatternReplaced, selected_protocol, use_modern, scan_results, library_scan_enabled, quic_only, no_loader_hook, spawned, stealth_loader, pairip_safe } from "../fritap_agent.js"
+import { patterns, isPatternReplaced, selected_protocols, use_modern, scan_results, library_scan_enabled, quic_only, no_loader_hook, spawned, stealth_loader, pairip_safe } from "../fritap_agent.js"
 import { processScanResults, isModuleHooked, markModuleHooked } from "../shared/library_scanner.js";
 import { buildPairipSafeRegistrations, matchPairipSafeLib } from "../shared/pairip_safe_libs.js";
 import { pattern_execute } from "../tls/platforms/android/pattern_android.js"
@@ -56,7 +56,7 @@ function install_java_hooks(){
 }
 
 function hook_native_Android_SSL_Libs(hookRegistry: HookRegistry, is_base_hook: boolean){
-    ssl_library_loader(plattform_name, hookRegistry, getModuleNames(), "Android", is_base_hook, selected_protocol)
+    ssl_library_loader(plattform_name, hookRegistry, getModuleNames(), "Android", is_base_hook, selected_protocols)
 
 }
 
@@ -183,7 +183,12 @@ export function load_android_hooking_agent() {
         // statically linked in. `boring_execute` (libssl entry above) owns standalone
         // BoringSSL .so files that export SSL_* (e.g. stable_cronet_libssl.so).
         // Cronet-derived hosts are claimed by the named-out entries below.
-        { platform: plattform_name, pattern: /^libcronet([_.]|\.\d).*\.so$/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet", libraryType: "boringssl", protocol: "tls" },
+        // Matches libcronet.so, libcronet.<ver>.so and libcronet_<x>.so. Anchored
+        // at ^libcronet so libmainlinecronet.* (own row above) and stable_cronet_*
+        // (standalone BoringSSL, owned by the libssl row) stay excluded. The old
+        // /^libcronet([_.]|\.\d).*\.so$/ missed a plain libcronet.so, leaving it
+        // to the key-less supplementary QUICHE row only.
+        { platform: plattform_name, pattern: /^libcronet([_.].*)?\.so$/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet", libraryType: "boringssl", protocol: "tls" },
         // libringrtc_rffi.so is Signal's WebRTC/calls BoringSSL — it carries no
         // chat-TLS keys, and its ranges are churned by the call subsystem, which
         // makes the recursive readable-parts pattern scan fault the target
@@ -194,11 +199,16 @@ export function load_android_hooking_agent() {
         { platform: plattform_name, pattern: /.*monochrome.*\.so/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet (Monochrome)", libraryType: "boringssl", protocol: "tls" },
         // Android System WebView monolith — full Chromium with BoringSSL statically linked
         // (same shape as libmonochrome). The ssl_log_secret arm64 prologue is already covered
-        // by the shipped wildcard pattern (bundled_cronet_patterns.ts:58/193, cronet_android.ts:56):
-        //   3F 23 03 D5 FF ?3 02 D1 FD 7B 0? A9 F? ?? 0? ?9 F6 57 0? A9 F4 4F 0? A9 FD ?3 01 91 08 34 40 F9 08 ?? 41 F9 ?8 ?? 00 B4
+        // by the shipped wildcard pattern GENERIC_BORINGSSL_ARM64_FALLBACK (bundled_cronet_patterns.ts).
         // Verified concrete bytes (user-supplied, 2026-06):
         //   3F 23 03 D5 FF 03 02 D1 FD 7B 04 A9 F7 2B 00 F9 F6 57 06 A9 F4 4F 07 A9 FD 03 01 91 08 34 40 F9 08 29 41 F9 C8 05 00 B4
         { platform: plattform_name, pattern: /.*libwebviewchromium.*\.so/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet (WebView Chromium)", libraryType: "boringssl", protocol: "tls" },
+        // Chrome's own monolith (com.android.chrome) — full Chromium with BoringSSL
+        // statically linked, same shape as libmonochrome. Without this row the only
+        // match was the supplementary QUICHE row below, so no keys were extracted.
+        // Verified on Chrome 153.0.8010.52: libchrome.so has no .symtab, and the
+        // shipped arm64 fallback ssl_log_secret pattern hits exactly once.
+        { platform: plattform_name, pattern: /.*libchrome\.so/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet (Chrome)", libraryType: "boringssl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libwarp_mobile.*\.so/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet (Warp Mobile)", libraryType: "boringssl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*lib*quiche*.*\.so/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet (QUICHE)", libraryType: "boringssl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*librustls.*\.so/, hookFn: (use_modern ? rustls_execute_modern : rustls_execute), library: "Rustls", libraryType: "rustls", protocol: "tls" },
@@ -224,15 +234,17 @@ export function load_android_hooking_agent() {
         { platform: plattform_name, pattern: /libtmessages.*\.so/, hookFn: telegram_execute_modern, library: "Telegram Secret Chat (Java E2E)", libraryType: "telegram_e2e", protocol: "telegram" },
         // OHTTP (NSS HPKE) — gated under the TLS family for `--protocol tls`
         { platform: plattform_name, pattern: /.*libnss3?\.so/, hookFn: nss_hpke_execute_android, library: "NSS HPKE (OHTTP)", protocol: "tls", libraryType: "nss_hpke" },
-        // QUIC libraries — gated under the TLS family for `--protocol tls`
+        // QUIC libraries — gated under the TLS family for `--protocol tls`.
+        // google_quiche/neqo rows are `supplementary`: stream hooks only (no keys),
+        // so they never mark a module hooked for tls — see HookRegistration.supplementary.
         { platform: plattform_name, pattern: /.*libquiche\.so/, hookFn: quiche_execute, library: "Cloudflare QUICHE", libraryType: "quiche", protocol: "tls" },
-        { platform: plattform_name, pattern: /.*libchrome\.so/, hookFn: google_quiche_execute, library: "Google QUICHE (Chrome)", libraryType: "google_quiche", protocol: "tls" },
-        { platform: plattform_name, pattern: /.*libcronet.*\.so/, hookFn: google_quiche_execute, library: "Google QUICHE (Cronet)", libraryType: "google_quiche", protocol: "tls" },
+        { platform: plattform_name, pattern: /.*libchrome\.so/, hookFn: google_quiche_execute, library: "Google QUICHE (Chrome)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
+        { platform: plattform_name, pattern: /.*libcronet.*\.so/, hookFn: google_quiche_execute, library: "Google QUICHE (Cronet)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
         // libmainlinecronet does not match /.*libcronet.*\.so/ — "libcronet" is
         // not a substring of "libmainlinecronet". Needs its own entry.
-        { platform: plattform_name, pattern: /^libmainlinecronet\.[\d.]+\.so$/, hookFn: google_quiche_execute, library: "Google QUICHE (Mainline Cronet APEX)", libraryType: "google_quiche", protocol: "tls" },
-        { platform: plattform_name, pattern: /.*monochrome.*\.so/, hookFn: google_quiche_execute, library: "Google QUICHE (Monochrome)", libraryType: "google_quiche", protocol: "tls" },
-        { platform: plattform_name, pattern: /.*libxul\.so/, hookFn: neqo_execute, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo", protocol: "tls" },
+        { platform: plattform_name, pattern: /^libmainlinecronet\.[\d.]+\.so$/, hookFn: google_quiche_execute, library: "Google QUICHE (Mainline Cronet APEX)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
+        { platform: plattform_name, pattern: /.*monochrome.*\.so/, hookFn: google_quiche_execute, library: "Google QUICHE (Monochrome)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
+        { platform: plattform_name, pattern: /.*libxul\.so/, hookFn: neqo_execute, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo", protocol: "tls", supplementary: true },
         // Hooks contributed by optional, separately bundled units (empty in the
         // public build; a full build's private unit registers its rows before the
         // agent entry runs, so they are present here at registration time).
@@ -348,7 +360,18 @@ export function load_android_hooking_agent() {
     // (pattern scan of WebView/Cronet libs is what trips PairIP), and the
     // library-scan pass.
     if (pairip_safe) log("[*] --pairip-safe: symbol-only keylog on libssl/libjavacrypto/conscrypt; loader hook, pattern scan, Java & OHTTP hooks disabled.");
-    if (!quic_only && !pairip_safe) phases.push({ label: "java", fn: () => install_java_hooks() });
+    // The "java" phase installs ONLY the TLS/SSL provider hooks (conscrypt/OpenSSL
+    // via Java.perform + .implementation). Those deoptimize ART methods and are the
+    // source of the frida-java-bridge detach crash (SIGBUS on the app's UI thread).
+    // Skip them when the TLS family is not selected (e.g. --protocol mtproto/ssh/
+    // ipsec) — those capture paths are purely native, so the Java hooks are pointless
+    // there and only add the deopt/crash risk. Native hooks, the loader hook and the
+    // memory scanner are unaffected.
+    if (!quic_only && !pairip_safe && isTlsFamilyRequested()) {
+        phases.push({ label: "java", fn: () => install_java_hooks() });
+    } else if (!quic_only && !pairip_safe) {
+        log("[*] TLS not in the selected protocol set — skipping Android TLS Java hooks (ART instrumentation); this also avoids the frida-java-bridge deopt that can crash the app on detach.");
+    }
     phases.push({ label: "ssl-libs", fn: () => hook_native_Android_SSL_Libs(hookRegistry, true) });
     if (!quic_only && !pairip_safe) phases.push({
         label: "ohttp+scan-results",
@@ -357,7 +380,7 @@ export function load_android_hooking_agent() {
             // loader hook is gated (plain skip OR stealth mode) — it only hooks
             // already-loaded modules then.
             installOhttpHooks(plattform_name, hookRegistry, getModuleNames(), "Android", androidLoaderConfig, !installInlineLoaderHook);
-            processScanResults(scan_results, plattform_name, true, selected_protocol);
+            processScanResults(scan_results, plattform_name, true, selected_protocols);
         },
     });
     if (!pairip_safe) phases.push({
@@ -366,12 +389,12 @@ export function load_android_hooking_agent() {
             if (useStealthLoader) {
                 log("[!] EXPERIMENTAL: stealth loader enabled — watching android_dlopen_ext via hardware");
                 log("[!] breakpoint (no linker code patch). Unvalidated against PairIP; see friTap#64.");
-                if (!installStealthDynamicLoader(androidLoaderConfig, hookRegistry, getModuleNames, selected_protocol)) {
+                if (!installStealthDynamicLoader(androidLoaderConfig, hookRegistry, getModuleNames, selected_protocols)) {
                     log("[-] Stealth loader failed to arm — TLS libraries loaded later will NOT be hooked.");
                     log("[-] Re-run in attach mode (no -s) or with root frida-server. See friTap#64.");
                 }
             } else if (installInlineLoaderHook) {
-                hookDynamicLoader(androidLoaderConfig, hookRegistry, getModuleNames(), false, selected_protocol);
+                hookDynamicLoader(androidLoaderConfig, hookRegistry, getModuleNames(), false, selected_protocols);
             }
             if (isPatternReplaced()) install_pattern_based_hooks();
         },
@@ -384,7 +407,8 @@ export function load_android_hooking_agent() {
         fn: () => {
             let matchedModules = findModulesWithSSLKeyLogCallback();
             // Filter out modules already matched by registry to prevent double-hooking
-            matchedModules = matchedModules.filter(mod => !hookRegistry.findMatch(plattform_name, mod, "", selected_protocol));
+            // (supplementary QUICHE rows don't count — they extract no keys)
+            matchedModules = matchedModules.filter(mod => !hookRegistry.findPrimaryMatch(plattform_name, mod, "", selected_protocols));
             if (matchedModules.length > 0) {
                 for (const mod of matchedModules) {
                     devlog("[!] Installing BoringSSL hooks for " + mod);
@@ -402,7 +426,7 @@ export function load_android_hooking_agent() {
                 // avoided (fkie-cad/friTap#64). Stealth mode's HW-bp watcher
                 // already covers future loads.
                 if (installInlineLoaderHook) {
-                    hookDynamicLoader(androidLoaderConfig, hookRegistry, getModuleNames(), false, selected_protocol);
+                    hookDynamicLoader(androidLoaderConfig, hookRegistry, getModuleNames(), false, selected_protocols);
                 }
                 log("[*] Hooked additional modules with SSL_CTX_set_keylog_callback.");
             }
@@ -430,7 +454,7 @@ export function load_android_hooking_agent() {
         const PAIRIP_SAFE_HOOK_DELAY_MS = spawned ? 8000 : 1500;
         const PAIRIP_SAFE_POLL_MS = 1000;
         installPairipSafeWatcher(
-            plattform_name, hookRegistry, getModuleNames, selected_protocol,
+            plattform_name, hookRegistry, getModuleNames, selected_protocols,
             (n) => matchPairipSafeLib(n) !== undefined,
             PAIRIP_SAFE_HOOK_DELAY_MS, PAIRIP_SAFE_POLL_MS,
         );

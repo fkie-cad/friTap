@@ -17,6 +17,7 @@ except ImportError:
 
 if TEXTUAL_AVAILABLE:
     from ..themes import c
+    from .alert_modal import AlertModal
     from .base import FriTapModal
 
     class SaveTapModal(FriTapModal[Optional[str]]):
@@ -61,7 +62,13 @@ if TEXTUAL_AVAILABLE:
         def _submit(self) -> None:
             value = self.query_one("#tap-path-input", Input).value.strip()
             if not value:
-                self.notify("Please enter a file name.", severity="warning")
+                self.app.push_screen(
+                    AlertModal(
+                        message="Please enter a file name.",
+                        title="Missing File Name",
+                        severity="warning",
+                    )
+                )
                 return
 
             # Ensure .tap extension

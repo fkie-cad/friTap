@@ -7,6 +7,7 @@ import { patterns, isPatternReplaced } from "../../../../fritap_agent.js"
 import { devlog, devlog_debug, devlog_error } from "../../../../util/log.js";
 import { scheduleBoringSSLSymbolFallback, installBoringSSLSymbolHook } from "../../../../shared/boringssl_symbol_hook.js";
 import { lenArg } from "../../../../shared/keylog_length.js";
+import { GENERIC_BORINGSSL_ARM64_FALLBACK } from "../../../../shared/bundled_cronet_patterns.js";
 
 export type HookingResult = [success: boolean, handle: PatternBasedHooking | null];
 
@@ -20,7 +21,7 @@ export class Cronet_Linux extends Cronet {
             "x64": CRONET_X64_PATTERNS,
             "arm64": {
                 primary: "3F 23 03 D5 FF ?3 01 D1 FD 7B 0? A9 F6 57 0? A9 F4 4F 0? A9 FD ?3 0? 91 08 34 40 F9 08 1? 41 F9 ?8 0? 00 B4",
-                fallback: "3F 23 03 D5 FF ?3 02 D1 FD 7B 0? A9 F? ?? 0? ?9 F6 57 0? A9 F4 4F 0? A9 FD ?3 01 91 08 34 40 F9 08 ?? 41 F9 ?8 ?? 00 B4"
+                fallback: GENERIC_BORINGSSL_ARM64_FALLBACK
             }
         };
     }

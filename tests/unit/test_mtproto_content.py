@@ -14,9 +14,11 @@ from the parser spec (constructor ``0xfef48f62``). Coverage:
 
 from __future__ import annotations
 
+import gzip
 import struct
 import zlib
 
+from friTap.flow.display import _classify_method
 from friTap.offline.mtproto.content import (
     ctor_name,
     parse_mtproto_message,
@@ -44,6 +46,9 @@ _NEW_SESSION_CREATED = 0x9EC20908
 _USER_VERIFIED = 0x31774388
 _UPDATE_NEW_MESSAGE = 0x1F2B0AFD
 _PEER_USER = 0x59511722
+_MESSAGE = 0x7600B9D3          # message# (current telegram_api.tl schema)
+_UPDATES = 0x74AE4240          # updates: updates:Vector<Update> ...
+_UPDATES_DIFFERENCE = 0x00F49CA0  # updates.difference: new_messages:Vector<Message> ...
 
 
 def _u32(value: int) -> bytes:
@@ -162,6 +167,28 @@ def test_gzip_packed_inflate_is_bounded(monkeypatch):
     assert len(parse_mtproto_message(packed)) == 1
     # Cap below the inflated size: the inflate is refused, so nothing is parsed
     # (an unbounded zlib.decompress would still have inflated and parsed it).
+    monkeypatch.setattr(content, "_MAX_GZIP_INFLATE", len(inner) - 1)
+    assert parse_mtproto_message(packed) == []
+
+
+def test_gzip_packed_unwrap_real_gzip_member():
+    """Telegram ships real gzip members (1f 8b 08 ...), not bare zlib streams.
+    The inflater must auto-detect the gzip header (MAX_WBITS | 32)."""
+    inner = _verified_send_message()
+    member = gzip.compress(inner)
+    assert member[:3] == b"\x1f\x8b\x08"
+    packed = _u32(_GZIP_PACKED) + _tl_bytes(member)
+    msgs = parse_mtproto_message(packed)
+    assert len(msgs) == 1
+    assert msgs[0].body == "fritapP3CLOUD2026FRESH"
+
+
+def test_gzip_packed_real_gzip_member_inflate_is_bounded(monkeypatch):
+    """The bomb guard holds for a gzip member exactly as for a zlib stream."""
+    import friTap.offline.mtproto.content as content
+
+    inner = _verified_send_message()
+    packed = _u32(_GZIP_PACKED) + _tl_bytes(gzip.compress(inner))
     monkeypatch.setattr(content, "_MAX_GZIP_INFLATE", len(inner) - 1)
     assert parse_mtproto_message(packed) == []
 
@@ -391,21 +418,31 @@ def test_user_tolerant_no_phone():
 # Inbound full message# object via updateNewMessage
 # --------------------------------------------------------------------------- #
 
-def test_inbound_message_via_update_new_message():
-    """updateNewMessage → message# → best-effort text extraction."""
-    message_ctor = 0x96FDB04A  # a known full-message ctor
-    inner = (
-        _u32(message_ctor)
-        + _u32(0x00000100)              # flags: from_id present (bit8)
-        + _i32(555)                     # id
-        + _u32(_PEER_USER) + _i64(777)  # from_id:Peer
-        + _u32(_PEER_USER) + _i64(888)  # peer_id:Peer
-        + _i32(1700000000)              # date (plausible unix ts)
-        + _tl_str("inbound full message")
+def _schema_message(
+    text: str, *, user_id: int = 888, mid: int = 555, date: int = 1700000000,
+) -> bytes:
+    """Build a schema-valid ``message#7600b9d3`` (ctor + body).
+
+    Layout with flags=flags2=0: flags:int, flags2:int, id:int, peer_id:Peer
+    (peerUser + user_id:long), date:int, message:string — the common prefix the
+    schema decoder walks to reach ``message:string``.
+    """
+    return (
+        _u32(_MESSAGE)
+        + _i32(0)                          # flags (no optional bits set)
+        + _i32(0)                          # flags2
+        + _i32(mid)                        # id:int
+        + _u32(_PEER_USER) + _i64(user_id)  # peer_id:Peer (peerUser)
+        + _i32(date)                       # date:int
+        + _tl_str(text)                    # message:string
     )
+
+
+def test_inbound_message_via_update_new_message():
+    """updateNewMessage → schema message# → text extraction via the schema walk."""
     body = (
         _u32(_UPDATE_NEW_MESSAGE)
-        + inner
+        + _schema_message("inbound full message", user_id=888)
         + _i32(1) + _i32(1)             # pts, pts_count
     )
     msgs = parse_mtproto_message(body)
@@ -413,18 +450,60 @@ def test_inbound_message_via_update_new_message():
     assert texts, msgs
     assert texts[0].body == "inbound full message"
     assert texts[0].method == "message"
+    assert texts[0].peer_id == 888
 
 
 def test_inbound_misaligned_message_degrades():
     """A message# whose body is garbage degrades, never mis-reads wildly."""
-    message_ctor = 0x96FDB04A
-    inner = _u32(message_ctor) + _u32(0) + _i32(1) + b"\xff\xff\xff\xff\x10\x20"
+    inner = _u32(_MESSAGE) + _i32(0) + _i32(0) + _i32(1) + b"\xff\xff\xff\xff\x10\x20"
     body = _u32(_UPDATE_NEW_MESSAGE) + inner
     result = parse_mtproto_message(body)
     # Either nothing or an 'unparsed'/garbage item, but never an exception.
     assert isinstance(result, list)
     for m in result:
         assert m.kind in ("text", "unparsed")
+
+
+def test_inbound_updates_wrapped_message():
+    """updates → Vector<Update>[updateNewMessage + message#] → one inbound text."""
+    body = (
+        _u32(_UPDATES)
+        + _u32(_VECTOR) + _i32(1)          # updates:Vector<Update>
+        + _u32(_UPDATE_NEW_MESSAGE)
+        + _schema_message("wrapped inbound", user_id=424242)
+        + _i32(1) + _i32(1)                # pts, pts_count
+        + _u32(_VECTOR) + _i32(0)          # users:Vector<User>
+        + _u32(_VECTOR) + _i32(0)          # chats:Vector<Chat>
+        + _i32(1700000000) + _i32(1)       # date, seq
+    )
+    texts = [m for m in parse_mtproto_message(body) if m.kind == "text"]
+    assert len(texts) == 1, texts
+    assert texts[0].body == "wrapped inbound"
+    assert texts[0].peer_id == 424242
+    assert _classify_method(texts[0].method) == 4
+
+
+def test_inbound_updates_difference_message():
+    """updates.difference → Vector<Message>[message#] → inbound text (tolerant tail)."""
+    body = (
+        _u32(_UPDATES_DIFFERENCE)
+        + _u32(_VECTOR) + _i32(1)          # new_messages:Vector<Message>
+        + _schema_message("difference inbound", user_id=555)
+        # remaining fields (new_encrypted_messages, other_updates, ...) truncated
+        # on purpose to also exercise the decoder's tolerance.
+    )
+    texts = [m for m in parse_mtproto_message(body) if m.kind == "text"]
+    assert len(texts) == 1, texts
+    assert texts[0].body == "difference inbound"
+
+
+def test_verified_send_message_still_passes():
+    """The device-verified OUTBOUND path is unchanged and not double-counted."""
+    texts = [m for m in parse_mtproto_message(_verified_send_message())
+             if m.kind == "text"]
+    assert len(texts) == 1, texts
+    assert texts[0].method == "messages.sendMessage"
+    assert texts[0].body == "fritapP3CLOUD2026FRESH"
 
 
 # --------------------------------------------------------------------------- #
@@ -483,6 +562,21 @@ def test_user_self_flag_layout():
     assert "[you]" in item.body
     assert "you" in item.relationship
     assert "last seen recently" in item.body
+
+
+def test_user_current_schema_ctor_b1b8cc83():
+    """user#b1b8cc83 (current TDLib schema, seen on a real Android capture) uses
+    the same flags/flags2/id/... layout and is surfaced as a user."""
+    legacy = _make_user(
+        0x12000457, first="Alice", last="Example", phone="15550000000",
+        status_tail=_u32(_USER_STATUS_RECENTLY),
+    )
+    user = _u32(0xB1B8CC83) + legacy[4:]
+    msgs = parse_mtproto_message(user)
+    assert len(msgs) == 1
+    assert msgs[0].kind == "user"
+    assert "Alice" in msgs[0].body and "you" in msgs[0].relationship
+    assert ctor_name(0xB1B8CC83) == "user"
 
 
 def test_user_contact_mutual_flag_layout():
@@ -696,3 +790,96 @@ def test_msg_container_rejects_implausible_count():
     # And the public API degrades gracefully (returns a list, never hangs/raises).
     body = _u32(_MSG_CONTAINER) + _i32(500000) + b"\x00" * 32
     assert isinstance(parse_mtproto_message(body), list)
+
+
+# --------------------------------------------------------------------------- #
+# M7: only chat-message constructors surface as inbound 'text'
+# --------------------------------------------------------------------------- #
+#
+# Many non-chat constructors carry a ``message:string`` (drafts, service
+# notifications, sponsored messages, ...). The schema walk must emit text only
+# for the allowlisted chat-message constructors.
+
+_UPDATE_DRAFT_MESSAGE = 0xEDFC111E
+_DRAFT_MESSAGE = 0x60FE3294
+_SPONSORED_MESSAGE = 0x7DBF8673
+_UPDATE_SERVICE_NOTIFICATION = 0xEBE46819
+_MESSAGE_MEDIA_EMPTY = 0x3DED6320
+
+
+def _text_items(body: bytes) -> list:
+    return [m for m in parse_mtproto_message(body) if m.kind == "text"]
+
+
+def _wrap_in_updates(update: bytes) -> bytes:
+    """updates#74ae4240: updates:Vector<Update> users chats date seq."""
+    return (
+        _u32(_UPDATES)
+        + _u32(_VECTOR) + _i32(1) + update
+        + _u32(_VECTOR) + _i32(0)          # users
+        + _u32(_VECTOR) + _i32(0)          # chats
+        + _i32(1700000000) + _i32(1)       # date, seq
+    )
+
+
+def _draft_message(text: str) -> bytes:
+    """draftMessage#60fe3294 flags=0: message:string date:int."""
+    return _u32(_DRAFT_MESSAGE) + _i32(0) + _tl_str(text) + _i32(1700000000)
+
+
+def test_draft_message_is_not_chat_text():
+    assert _text_items(_draft_message("typing on another device")) == []
+
+
+def test_update_draft_message_in_updates_is_not_chat_text():
+    update = (
+        _u32(_UPDATE_DRAFT_MESSAGE) + _i32(0)          # flags
+        + _u32(_PEER_USER) + _i64(777)                  # peer:Peer
+        + _draft_message("half-typed draft")            # draft:DraftMessage
+    )
+    assert _text_items(_wrap_in_updates(update)) == []
+
+
+def test_sponsored_message_is_not_chat_text():
+    body = (
+        _u32(_SPONSORED_MESSAGE) + _i32(0)              # flags
+        + _tl_bytes(b"\x01" * 16)                       # random_id:bytes
+        + _tl_str("https://ad.example")                 # url
+        + _tl_str("Ad title")                           # title
+        + _tl_str("Buy our product")                    # message
+        + _tl_str("Open")                               # button_text
+    )
+    assert _text_items(body) == []
+
+
+def test_update_service_notification_is_not_chat_text():
+    update = (
+        _u32(_UPDATE_SERVICE_NOTIFICATION) + _i32(0)    # flags
+        + _tl_str("AUTH_KEY_DROP")                      # type
+        + _tl_str("Login from a new device")            # message
+        + _u32(_MESSAGE_MEDIA_EMPTY)                    # media
+        + _u32(_VECTOR) + _i32(0)                       # entities
+    )
+    assert _text_items(update) == []
+    assert _text_items(_wrap_in_updates(update)) == []
+
+
+def test_allowlisted_message_ctor_still_yields_text():
+    texts = _text_items(_wrap_in_updates(
+        _u32(_UPDATE_NEW_MESSAGE) + _schema_message("real chat", user_id=31337)
+        + _i32(1) + _i32(1)
+    ))
+    assert [t.body for t in texts] == ["real chat"]
+    assert texts[0].method == "message"
+    assert texts[0].peer_id == 31337
+
+
+def test_allowlisted_update_short_message_still_yields_text():
+    body = (
+        _u32(_UPDATE_SHORT_MESSAGE) + _u32(0) + _i32(7) + _i64(4242)
+        + _tl_str("short hi") + _i32(1) + _i32(1) + _i32(1700000000)
+    )
+    texts = _text_items(body)
+    assert [t.body for t in texts] == ["short hi"]
+    assert texts[0].method == "updateShortMessage"
+    assert texts[0].peer_id == 4242

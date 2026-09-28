@@ -1,0 +1,699 @@
+{
+  "schema": 1,
+  "_meta": {
+    "title": "BoringSSL TLS 1.2 / TLS 1.3 secret-scanning profile database",
+    "purpose": "Every byte pattern, stride, struct offset and label used by agent/scanner.js lives here. The agent contains no hardcoded layout knowledge; retargeting to a new BoringSSL build is a change to this file, not to code.",
+    "derived_from": "boringssl d777ea2a7004ff7ef40ef983b41a5125f316f898 (the revision chromium 133.0.6943.137 pins in DEPS)",
+    "cross_checked_against": "disassembly of the exported accessors in research/stable_cronet_libssl.so, BuildID b59c08745e5f94e15be1041593f60f9d",
+    "verified_on": "Chrome 133.0.6943.137, com.android.chrome browser process, Android 16 arm64 emulator, 2026-09-19",
+    "verification_method": "agent/calibrate.js hooks the internal bssl::ssl_log_secret to obtain ground-truth (SSL*, label, secret bytes), then walks every offset below and byte-compares. All seven SSL_HANDSHAKE slots, both Tier A anchors, the SSL3_STATE traffic secrets and the TLS 1.2 SSL_SESSION path matched exactly."
+  },
+  "_how_these_patterns_were_found": [
+    "STEP 1 - why a byte pattern is possible at all. Secret bytes are CSPRNG output and carry no signature. What IS distinctive is the container. BoringSSL stores every secret in an InplaceVector<uint8_t, N> (ssl/internal.h:508). Its layout is:",
+    "    alignas(T) char storage_[sizeof(T[N])];  PackedSize<N> size_;",
+    "  PackedSize<N> (ssl/internal.h:346) resolves to uint8_t whenever N <= 0xff, and alignas(char) means alignment 1. So there is NO padding: sizeof(InplaceVector<uint8_t,48>) == 49. That single trailing length byte is the anchor.",
+    "STEP 2 - the capacity. SSL_MAX_MD_SIZE is 48, not 64 (ssl/internal.h:728, 'size of the largest hash function used in TLS, SHA-384'). Getting this wrong makes every offset wrong, so it is worth stating loudly: the stride is 49.",
+    "STEP 3 - what is NOT there. storage_ is default-initialised (indeterminate for a heap object) and TryCopyFrom writes only in.size() bytes. With a SHA-256 suite the 16 bytes after the 32 secret bytes are stale heap garbage, NOT zeros. Any pattern anchored on a zero tail matches nothing. This was the first design that had to be thrown away.",
+    "STEP 4 - locating the run inside SSL_HANDSHAKE. Reading ssl/internal.h:2065 top-down for LP64: ssl@0, config@8, wait@16, state@20, tls13_state@24, min_version@28, max_version@30, then secret@32. The struct is align-1 from there on, so offsetof(SSL_HANDSHAKE, secret) == 32 is a constant - no runtime search is needed and slot indices are absolute, which is what lets us label every secret with certainty.",
+    "STEP 5 - the anchor bytes. min_version and max_version are adjacent uint16 at hs+28. Chrome negotiates TLS 1.2..1.3 over TCP (0x0303, 0x0304 -> '03 03 04 03' little-endian) and pins 1.3 for QUIC (0x0304, 0x0304 -> '04 03 04 03'). Four fixed bytes give ~0.07 expected random hits over a 300 MB heap, so this is a cheap phase-1 needle; everything else is verified in JS afterwards.",
+    "STEP 6 - offsets confirmed by disassembly, independently of the source. SSL_get_client_random decodes to 'ldr x10,[x0,#0x30]; add x1,x10,#0x30' -> SSL.s3=48, SSL3_STATE.client_random=48. SSL_get_server_random gives server_random=16. SSL_get_session gives 'ldr x8,[x8,#0x118]' and 'ldr x0,[x8,#0x1d0]' -> SSL3_STATE.hs=280, established_session=464. SSL_SESSION_get_master_key gives 'ldrb w9,[x0,#0x3a]; add x1,x0,#0xa' -> secret=10 with a ONE-BYTE length at 58. Source arithmetic independently predicts established_session = hs + 184 = 280 + 184 = 464, which matches the disassembled 0x1d0 exactly. Two methods, one answer.",
+    "STEP 7 - why we do not scan freed objects. ~InplaceVector() calls clear(), which sets size_ = 0 - destruction erases the very length bytes the pattern keys on. PartitionAlloc additionally poisons freed slots (a probe read of a freed pointer returned 0xefefefefefefeff3). Both were observed on the target. Hence every tier below walks LIVE objects only.",
+    "STEP 8 - why the output is never 'RSA Session-ID:'. ssl/handshake_client.cc:1714 overwrites session_id with SHA256(ticket) for TLS 1.2 ticket sessions ('Historically, OpenSSL filled in fake session IDs for ticket-based sessions'). That forged id never appears on the wire, so such a line would look plausible and decrypt nothing. All output is NSS 'LABEL <client_random> <secret>'."
+  ],
+  "profiles": [
+    {
+      "id": "boringssl-2025-inplacevector-u8len",
+      "engine": "boringssl",
+      "_engine_doc": "Which secret-extraction engine this profile targets: boringssl | schannel | rc4. Absent means boringssl, so this key is advisory here; the loader and agent both default to boringssl when it is missing.",
+      "protocol": "tls",
+      "platforms": [
+        "all"
+      ],
+      "scan_target": "self",
+      "_applicability_doc": "These three keys drive engine selection (see memory_scanning.loader.select_profiles): 'protocol' must be a member of the selected --protocol set (default 'tls'), 'platforms' is matched against the target OS name and is either the wildcard '[\"all\"]' or a list of friTap platform strings (windows | linux | android | macos | ios), and 'scan_target' names the process the scan runs in \u2014 'self' (the injected target, the default) or 'lsass' (a separate Frida session attached to lsass.exe on Windows). Absent means protocol='tls', platforms=['all'], scan_target='self'.",
+      "description": "BoringSSL builds using InplaceVector with a uint8_t length (roughly 2024-02 onwards). Covers Chrome/Chromium monochrome, Cronet and in-tree forks on LP64.",
+      "match": {
+        "_doc": "Advisory only - the agent uses the module the user selected. Listed so a profile can be auto-picked later.",
+        "modules": [
+          "libmonochrome_64.so",
+          "libmonochrome.so",
+          "libcronet*.so",
+          "libmainlinecronet*.so",
+          "stable_cronet_libssl.so"
+        ],
+        "pointer_size": 8
+      },
+      "scan_regions": {
+        "_doc": "Ranges come from Process.enumerateRanges({protection:'rw-'}), NEVER from parsing /proc/pid/maps by name: [anon:partition_alloc] super-page reservations interleave PROT_NONE guard pages with rw- slots and reading the guard pages faults. BoringSSL structs are OPENSSL_malloc'd, which Chrome shims onto PartitionAlloc, so that one allocator is the whole search space.",
+        "protection": "rw-",
+        "require_anonymous": true,
+        "name_allowlist": [
+          "partition_alloc"
+        ],
+        "name_denylist": [
+          "scudo",
+          "gwp-asan",
+          "hwasan",
+          "mte",
+          "stack_mte_ring",
+          "guard",
+          "frida",
+          "gum-js-loop",
+          "linker_alloc",
+          "bionic_alloc",
+          "dalvik",
+          "stack_and_tls",
+          "thread signal stack"
+        ],
+        "_name_denylist_doc": "Matched case-insensitively. Mirrors VOLATILE_PATH_PATTERNS in the parent repo agent/shared/scan/scan_safety.ts. Name matching alone is not sufficient: when /proc/self/maps is unreadable every name is empty and a name-only denylist silently switches itself off, so the agent additionally excludes its own module ranges by ADDRESS.",
+        "max_range_bytes": 268435456
+      },
+      "constants": {
+        "_doc": "inplace_vector_stride = sizeof(InplaceVector<uint8_t, SSL_MAX_MD_SIZE>) = 48 storage + 1 length byte.",
+        "ssl_max_md_size": 48,
+        "inplace_vector_stride": 49,
+        "ssl3_random_size": 32,
+        "valid_hash_lens": [
+          32,
+          48
+        ],
+        "ssl_version_tls12": 771,
+        "ssl_version_tls13": 772
+      },
+      "struct_offsets": {
+        "SSL": {
+          "_doc": "ssl_st, ssl/internal.h:4309. method is field 0 and is the Tier B needle.",
+          "method": 0,
+          "s3": 48,
+          "session": 88,
+          "ctx": 104
+        },
+        "SSL3_STATE": {
+          "_doc": "ssl/internal.h:2949 and :3115. The three traffic secrets are InplaceVectors at stride 49 starting 8 bytes after the hs pointer; each .size_ is its data offset + 48. hs is NULL once the handshake completes.",
+          "server_random": 16,
+          "client_random": 48,
+          "hs": 280,
+          "write_traffic_secret": 288,
+          "write_traffic_secret_len": 336,
+          "read_traffic_secret": 337,
+          "read_traffic_secret_len": 385,
+          "exporter_secret": 386,
+          "exporter_secret_len": 434,
+          "established_session": 464
+        },
+        "SSL_HANDSHAKE": {
+          "_doc": "ssl/internal.h:2065. secret_run_base is a compile-time constant, not something to search for.",
+          "ssl": 0,
+          "min_version": 28,
+          "max_version": 30,
+          "secret_run_base": 32
+        },
+        "SSL_SESSION": {
+          "_doc": "ssl_session_st, ssl/internal.h:574. RefCounted is a non-virtual CRTP base, so there is no vtable and references_ sits at 0. Both length fields are ONE unsigned byte - reading 4 or 8 bytes would drag in the following array's first bytes as high bytes.",
+          "ssl_version": 4,
+          "secret": 10,
+          "secret_len": 58,
+          "session_id": 59,
+          "session_id_len": 91
+        }
+      },
+      "tiers": {
+        "A_ssl_handshake": {
+          "enabled": true,
+          "rescan_every": 4,
+          "_rescan_every_doc": "How often to run this tier once it has done its one irreplaceable job - deriving the Tier B needle from a real object. A scan is three full Memory.scanSync passes (this tier's two anchors plus Tier B's needle) and each costs ~430 ms per ~55 MiB, so this tier is two thirds of the scan cost. Measured on Chrome 133: across 45 consecutive scans it produced 1736 candidates and validated NONE, because Tier B already reaches every in-flight handshake through s3->hs on the live SSL objects it enumerates. Running it every 4th scan instead of every scan cuts a steady-state scan from three passes to one. The point is recall, not CPU: handshake-epoch secrets are missed because we sample, and a handshake is live for milliseconds, so more scans per minute is the only lever that moves them. Set to 1 to restore the old always-on behaviour. The agent ignores this and runs the tier anyway whenever no needle is available at all (neither derived nor resolvable from the hint below), and whenever Tier B validated nothing on the previous scan - so throttling can never make the scanner go quietly blind. Note the first condition asks whether a needle is AVAILABLE, not whether Tier A produced one: in the steady state Tier A validates nothing, so keying it on Tier A's own success would make this setting do nothing at all.",
+          "_doc": "Finds in-flight handshakes. Anchor on min_version||max_version at hs+28, then validate the seven stride-49 length bytes and close a two-way pointer round trip (hs->ssl->s3->hs). Yields the complete TLS 1.3 secret set with certain labels, plus client_random. Also bootstraps Tier B by reading *(void**)ssl.",
+          "anchors": [
+            {
+              "pattern": "03 03 04 03",
+              "note": "min=TLS1.2 max=TLS1.3 - Chrome's TCP-TLS sockets"
+            },
+            {
+              "pattern": "04 03 04 03",
+              "note": "min=max=TLS1.3 - QUIC/HTTP3, which is most Chrome-to-Google traffic"
+            }
+          ],
+          "anchor_offset_in_struct": 28,
+          "slots": [
+            {
+              "index": 0,
+              "name": "secret",
+              "data": 32,
+              "len": 80,
+              "label": null,
+              "note": "running key-schedule input, not an NSS secret"
+            },
+            {
+              "index": 1,
+              "name": "early_traffic_secret",
+              "data": 81,
+              "len": 129,
+              "label": "CLIENT_EARLY_TRAFFIC_SECRET",
+              "note": "populated only for 0-RTT"
+            },
+            {
+              "index": 2,
+              "name": "client_handshake_secret",
+              "data": 130,
+              "len": 178,
+              "label": "CLIENT_HANDSHAKE_TRAFFIC_SECRET"
+            },
+            {
+              "index": 3,
+              "name": "server_handshake_secret",
+              "data": 179,
+              "len": 227,
+              "label": "SERVER_HANDSHAKE_TRAFFIC_SECRET"
+            },
+            {
+              "index": 4,
+              "name": "client_traffic_secret_0",
+              "data": 228,
+              "len": 276,
+              "label": "CLIENT_TRAFFIC_SECRET_0"
+            },
+            {
+              "index": 5,
+              "name": "server_traffic_secret_0",
+              "data": 277,
+              "len": 325,
+              "label": "SERVER_TRAFFIC_SECRET_0"
+            },
+            {
+              "index": 6,
+              "name": "expected_client_finished",
+              "data": 326,
+              "len": 374,
+              "label": null,
+              "note": "Finished MAC, not an NSS secret"
+            }
+          ]
+        },
+        "B_ssl_method_ptr": {
+          "enabled": true,
+          "_doc": "The workhorse. ssl->method points at one static SSL_PROTOCOL_METHOD shared by every TLS SSL object and sits at offset 0, so a single exact 8-byte needle enumerates every LIVE SSL in the heap - pointer walking instead of byte-pattern archaeology. From each SSL we read client_random, the three live SSL3_STATE traffic secrets (which survive the handshake for as long as the socket is pooled), the TLS 1.2 master secret via established_session/session, and the full Tier A slot set whenever s3->hs is non-NULL.",
+          "needle": {
+            "module": "libmonochrome_64.so",
+            "rva": "0x88dfba8",
+            "_rva_note": "Build-specific. Verified for Chrome 133.0.6943.137 / trichromelibrary 694313732. Treated only as a hint: Tier A re-derives it at runtime from *(void**)(hs->ssl) and the agent prefers the derived value.",
+            "derive_from_tier_a": true
+          },
+          "s3_secrets": [
+            {
+              "field": "write_traffic_secret",
+              "label": "CLIENT_TRAFFIC_SECRET_0"
+            },
+            {
+              "field": "read_traffic_secret",
+              "label": "SERVER_TRAFFIC_SECRET_0"
+            },
+            {
+              "field": "exporter_secret",
+              "label": "EXPORTER_SECRET"
+            }
+          ],
+          "_s3_secrets_doc": "Each entry names a field in struct_offsets.SSL3_STATE; its length byte is the '<field>_len' key, which the driver checks exists. Once the handshake finishes these hold the CURRENT epoch's application secrets. While a handshake is still in flight they hold the handshake-epoch secrets, so they are only emitted when s3->hs is NULL - otherwise Tier A's unambiguous slots are used instead.",
+          "tls12_session": {
+            "_doc": "TLS 1.2 master secret, reached from a live SSL. The label lives here rather than in the agent so that no NSS label is hardcoded in code.",
+            "label": "CLIENT_RANDOM",
+            "require_ssl_version": 771,
+            "require_secret_len": 48,
+            "paths": [
+              {
+                "from": "SSL3_STATE",
+                "field": "established_session",
+                "note": "set once the handshake completes"
+              },
+              {
+                "from": "SSL",
+                "field": "session",
+                "when_handshake_complete_only": true,
+                "note": "already set during the handshake - but while one is IN FLIGHT this is the session offered for RESUMPTION, i.e. the previous handshake's master secret, while s3->client_random is already the new ClientHello random. Pairing those two is a false positive whenever the server declines resumption, so the agent only follows this path once s3->hs is NULL."
+              }
+            ]
+          }
+        },
+        "C_orphan_session": {
+          "enabled": false,
+          "_doc": "Last resort: SSL_SESSION objects with no reachable SSL. Anchored on ssl_version == 0x0303 at base+4 plus secret_len == 48 at base+58. The version check is mandatory because a TLS 1.3 SHA-384 resumption PSK is byte-identical in shape to a TLS 1.2 master secret. Off by default: without a client_random these cannot form a usable keylog line, so they go to a separate unpaired report.",
+          "anchor": {
+            "pattern": "03 03",
+            "offset_in_struct": 4
+          },
+          "require_secret_len": 48
+        }
+      },
+      "validators": {
+        "_doc": "Applied to every candidate before anything is emitted. min_secret_len is 32, not 16, on purpose: Shannon entropy over n bytes cannot exceed log2(n), so a 4.0-bit floor is unreachable for about a third of genuine 16-byte buffers. Every secret this tool emits is 32 or 48 bytes (see constants.valid_hash_lens), which makes the gate length-stable.",
+        "max_zero_fraction": 0.5,
+        "min_shannon_entropy_bits": 4.0,
+        "min_secret_len": 32,
+        "max_secret_len": 48,
+        "pointer_min": "0x10000",
+        "pointer_tag_mask": "0xffffffffffff",
+        "_pointer_tag_note": "ARM64 top-byte-ignore: heap pointers can carry a tag in bits 56-63. Dereferences work through the tag, but any range lookup must use the untagged value."
+      },
+      "keylog_labels": [
+        "CLIENT_RANDOM",
+        "CLIENT_EARLY_TRAFFIC_SECRET",
+        "CLIENT_HANDSHAKE_TRAFFIC_SECRET",
+        "SERVER_HANDSHAKE_TRAFFIC_SECRET",
+        "CLIENT_TRAFFIC_SECRET_0",
+        "SERVER_TRAFFIC_SECRET_0",
+        "EXPORTER_SECRET"
+      ]
+    },
+    {
+      "id": "rc4-memscan-generic",
+      "engine": "rc4",
+      "protocol": "rc4",
+      "platforms": [
+        "all"
+      ],
+      "scan_target": "self",
+      "_engine_doc": "RC4 keystream/key recovery from a live heap. Ported from research/memory_scan_lsass/agent/rc4_decrypt.js (its Interceptor/SSPI/CAPI hooks are out of scope for this read-only memory scanner). Two strategies: (1) S-box detection \u2014 a 256-byte window of distinct bytes is a permutation of 0..255 (byte form) or 256 distinct <=255 LE dwords (int form); a live (non-identity) S-box is post-KSA keystream state, emitted with source 'memscan-sbox'. (2) trial-decrypt \u2014 every printable ASCII/UTF-16LE run is KSA'd and scored against params.ciphertext_sample if provided; the best key is emitted with source 'memscan-trial'.",
+      "_provenance": "S-box scan, candidate extraction, trial-decrypt and readAllFast burst-read ported verbatim from rc4_decrypt.js (2026-09-21). KAT below is the classic RC4 test vector.",
+      "description": "Generic RC4 heap S-box / candidate-key recovery. No layout knowledge is build-specific; every parameter is tunable here.",
+      "scan_regions": {
+        "_doc": "rw- ranges via Process.enumerateRanges; the agent excludes its own (frida) module ranges by address. No name allowlist (RC4 heaps are not one named allocator), so on POSIX selectRanges falls back to all anonymous rw- ranges.",
+        "protection": "rw-",
+        "require_anonymous": false,
+        "max_range_bytes": 268435456
+      },
+      "params": {
+        "_doc": "S-box + candidate-key tuning. Budgets bound the agent's own QuickJS heap and CPU. ciphertext_sample (lowercase hex, optional) enables trial-decrypt: without it only S-box recovery runs. sbox_first runs a dedicated S-box detection pass over every buffer before trialling; sbox_exact_validate turns KSA(candidate)==live-S-box into an exact, plaintext-free accept + early-stop; known_plaintext (lowercase hex, optional) is an exact key-confirmation oracle; prioritize_anonymous orders the CPU-scan phase anonymous/managed-heap first; require_exact_or_accept emits only exact-evidence keys or best-score keys >= accept_printable_fraction (no unconditional emit-best); grouped_read reads ranges in large read_group_bytes-sized bursts ordered anonymous-first (with prioritize_anonymous) so exact-evidence early-stop skips the tail READS, not just CPU (grouped_read=false restores the single whole-budget burst); needs_mapped_index=false skips the per-scan '---' range-index build the RC4 engine never uses (isMappedAddress falls back to findRangeByAddress).",
+        "min_key_len": 5,
+        "max_key_len": 64,
+        "trial_prefix": 64,
+        "accept_printable_fraction": 0.85,
+        "tokens": [
+          "GET ",
+          "POST ",
+          "HEAD ",
+          "PUT ",
+          "HTTP",
+          "Host:",
+          "User-Agent",
+          "{",
+          "</",
+          ": "
+        ],
+        "max_range_bytes": 67108864,
+        "max_total_bytes": 314572800,
+        "max_trials": 1000000,
+        "max_window_trials": 300000,
+        "max_windows_per_run": 20000,
+        "max_window_run_len": 256,
+        "max_sboxes": 64,
+        "max_seen": 1000000,
+        "detect_sboxes": true,
+        "recover_keys": true,
+        "ciphertext_sample": null,
+        "sbox_first": false,
+        "sbox_exact_validate": true,
+        "prioritize_anonymous": true,
+        "require_exact_or_accept": true,
+        "known_plaintext": null,
+        "grouped_read": true,
+        "read_group_bytes": 67108864,
+        "needs_mapped_index": false
+      },
+      "kat": {
+        "_doc": "Known-answer test run once before anything is emitted: RC4('Key','Plaintext') == bbf316e8d940af0ad3. A failing core emits nothing. key='Key', plaintext='Plaintext'.",
+        "key": "4b6579",
+        "plaintext": "506c61696e74657874",
+        "ciphertext": "bbf316e8d940af0ad3"
+      },
+      "validators": {
+        "_doc": "Present for shape consistency with the other engines (parseValidators). The RC4 S-box test is intrinsic (256 distinct values) and the trial-decrypt gate is the printable-fraction score, so the entropy/zero gates are advisory here.",
+        "max_zero_fraction": 0.5,
+        "min_shannon_entropy_bits": 4.0,
+        "pointer_min": "0x10000",
+        "pointer_tag_mask": "0xffffffffffff"
+      }
+    },
+    {
+      "id": "schannel-win11-ncryptsslp",
+      "engine": "schannel",
+      "protocol": "tls",
+      "platforms": [
+        "windows"
+      ],
+      "scan_target": "lsass",
+      "_engine_doc": "SChannel (Windows TLS) secret recovery from lsass.exe. READ-ONLY: no hooks, no writes \u2014 hooking crypto in lsass reboots the machine. Ported from research/memory_scan_lsass/agent/schannel_scanner.js + patterns/schannel_secrets.json.",
+      "_pairing_limitation": "The ClientHello random is NOT stored near the SChannel key struct, so the recovered 48-byte TLS 1.2 master and the TLS 1.3 secrets are emitted UNPAIRED. Workstream 5 joins them to the pcap's client_random offline. The session_cache tier is the one memory-resident correlator (session id -> master, directly Wireshark-ingestible), but its session_id_at is uncalibrated on this build.",
+      "_arch_doc": "Per-arch offset sets. arm64 is VERIFIED on Windows 11 Home 10.0.26200 arm64 (2026-09-19; tls12_master calibrate 70/70, tls13 confirmed 2026-09-20). x64 is UNCALIBRATED (calibrated:false): its struct offsets are seeded from the arm64 best-known values, but the needle RVAs are module-specific and NOT invented \u2014 x64 candidates is empty, so on x64 the tls12/session-cache tiers resolve no needle and no-op safely rather than emit garbage. The arch block is resolved in Python (loader.resolve_schannel_arch -> profile.resolved) at configure time so the agent stays data-driven.",
+      "match": {
+        "_doc": "Advisory: SChannel key material lives in lsass, which always has both modules mapped.",
+        "modules": [
+          "ncryptsslp.dll",
+          "ncrypt.dll"
+        ]
+      },
+      "scan_regions": {
+        "_doc": "SChannel key objects are LSA heap allocations (private committed rw-). No /proc/self/maps on Windows, so no name allowlist; the agent excludes its own (frida) ranges by address.",
+        "protection": "rw-",
+        "require_anonymous": false,
+        "max_range_bytes": 268435456
+      },
+      "validators": {
+        "_doc": "A TLS 1.2 master is always 48 bytes of CSPRNG output; the entropy/zero gates reject stale heap garbage at ssl5+0x1c.",
+        "max_zero_fraction": 0.5,
+        "min_shannon_entropy_bits": 4.0,
+        "pointer_min": "0x10000",
+        "pointer_tag_mask": "0xffffffffffff"
+      },
+      "arch": {
+        "arm64": {
+          "_verified": "Windows 11 Home 10.0.26200 arm64, 2026-09-19 (tls12_master 70/70) / 2026-09-20 (tls13 confirmed). Ported faithfully from research/memory_scan_lsass/patterns/schannel_secrets.json.",
+          "calibrated": true,
+          "needle": {
+            "_doc": "An invariant pointer stored at ssl5+0x10 that lands INSIDE ncryptsslp.dll \u2014 the SChannel analogue of BoringSSL's ssl->method. rva is a module offset, stable across reboots; ASLR randomizes only the base, resolved at runtime.",
+            "module": "ncryptsslp.dll",
+            "at_offset_in_struct": 16,
+            "candidates": [
+              {
+                "rva": "0x591f0",
+                "note": "seen 0x7ffe1d0c91f0; x60 at the SslGenerateMasterKey hook"
+              },
+              {
+                "rva": "0x58fb0",
+                "note": "seen 0x7ffe1d0c8fb0; x10 register"
+              }
+            ]
+          },
+          "tiers": {
+            "tls12_master": {
+              "enabled": true,
+              "_layout_doc": "ssl5 is the pointer at keyObj+0x10. The needle sits at ssl5+0x10, the 48-byte master at ssl5+0x1c. A needle hit is ssl5+0x10, so ssl5 = hit-16 and master = hit+12.",
+              "needle_at": 16,
+              "master_at": 28,
+              "master_len": 48,
+              "label": "CLIENT_RANDOM"
+            },
+            "tls13_secret": {
+              "enabled": false,
+              "_status": "CONFIRMED on 26200 arm64 (2026-09-20). Anchor on the '3lss' container tag (either byte order); secret at 3lss+0x6a; try lens [48,32] and let the validators decide (no clean length field on this build). UTF-16 'SHA384' often precedes. Off by default (opt-in): walking lsass, even read-only, is opt-in.",
+              "anchor_tag": "3lss",
+              "secret_at": 106,
+              "size_at": -1,
+              "secret_lens": [
+                48,
+                32
+              ]
+            },
+            "session_cache": {
+              "enabled": false,
+              "_status": "IMPLEMENTED read-only but session_id_at is the published x64 Win10 starting value, NOT calibrated for 26200 arm64. session_id_calibrated:false, so the tier DUMPS cache items (never emits a guessed session id) until calibrated. Off by default.",
+              "vftable_at": 0,
+              "bddd_ptr_at": 16,
+              "ssl5_ptr_at": 16,
+              "ssl5_needle_at": 16,
+              "master_at": 28,
+              "master_len": 48,
+              "bddd_magic": "BDDD",
+              "bddd_magic_at": 4,
+              "session_id_at": 216,
+              "session_id_maxlen": 32,
+              "session_id_calibrated": false,
+              "bootstrap_max_ssl5": 6,
+              "reverse_scan_cap": 128,
+              "dump_bytes": 288,
+              "dump": false
+            }
+          }
+        },
+        "x64": {
+          "_uncalibrated": "x64 is UNCALIBRATED (calibrated:false). Struct offsets are seeded from the arm64 best-known values; the needle RVAs are module-specific and are NOT invented \u2014 candidates is empty, so tls12_master/session_cache resolve no needle and no-op on x64. Run schannel_calibrate.py against x64 lsass and fill candidates before enabling.",
+          "calibrated": false,
+          "needle": {
+            "module": "ncryptsslp.dll",
+            "at_offset_in_struct": 16,
+            "candidates": []
+          },
+          "tiers": {
+            "tls12_master": {
+              "enabled": true,
+              "needle_at": 16,
+              "master_at": 28,
+              "master_len": 48,
+              "label": "CLIENT_RANDOM"
+            },
+            "tls13_secret": {
+              "enabled": false,
+              "anchor_tag": "3lss",
+              "secret_at": 106,
+              "size_at": -1,
+              "secret_lens": [
+                48,
+                32
+              ]
+            },
+            "session_cache": {
+              "enabled": false,
+              "vftable_at": 0,
+              "bddd_ptr_at": 16,
+              "ssl5_ptr_at": 16,
+              "ssl5_needle_at": 16,
+              "master_at": 28,
+              "master_len": 48,
+              "bddd_magic": "BDDD",
+              "bddd_magic_at": 4,
+              "session_id_at": 216,
+              "session_id_maxlen": 32,
+              "session_id_calibrated": false,
+              "bootstrap_max_ssl5": 6,
+              "reverse_scan_cap": 128,
+              "dump_bytes": 288,
+              "dump": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "tgnet-android-arm64-2026",
+      "engine": "mtproto",
+      "protocol": "mtproto",
+      "_max_hits_note": "Raised above the 200000 default so the single broad Tier-A anchor (~135k hits / 202 MiB measured) keeps truncation headroom now that the redundant 8-byte safety-net anchor was removed. See A_bytearray_authkey._anchor_order_note.",
+      "maxHitsPerScan": 300000,
+      "platforms": [
+        "android"
+      ],
+      "scan_target": "self",
+      "description": "Telegram for Android, native tgnet cloud auth keys (perm/temp/media-temp, all DCs) plus Secret-Chat E2E keys from the ART heap. Hook-free.",
+      "calibrated_lib_version": "libtmessages.49 / Telegram 12.10.x",
+      "match": {
+        "modules": [
+          "libtmessages*.so"
+        ],
+        "pointer_size": 8
+      },
+      "_scan_regions_note": "Telegram allocates ByteArray through scudo, so unlike the BoringSSL profile (which allowlists partition_alloc) the allowlist here is scudo. dalvik is denied for the native tiers and re-enabled per-tier by Tier C.",
+      "scan_regions": {
+        "protection": "rw-",
+        "require_anonymous": true,
+        "name_allowlist": [
+          "scudo"
+        ],
+        "name_denylist": [
+          "frida",
+          "gum-js-loop",
+          "quickjs",
+          "dalvik",
+          "linker_alloc",
+          "bionic_alloc",
+          "stack_and_tls",
+          "thread signal stack",
+          "guard",
+          "gwp-asan",
+          "hwasan",
+          "mte",
+          "stack_mte_ring"
+        ],
+        "max_range_bytes": 268435456
+      },
+      "constants": {
+        "auth_key_len": 256,
+        "auth_key_id_len": 8,
+        "datacenter_slot_stride": 16,
+        "max_slots_per_datacenter": 3,
+        "dc_id_min": 1,
+        "dc_id_max": 10,
+        "full_rescan_every": 8
+      },
+      "struct_offsets": {
+        "_note": "ByteArray and DatacenterKeySlot are native tgnet. ArtByteArray and EncryptedChat are Java objects on the ART heap; EncryptedChat offsets are relative to the key_fingerprint field, because that field is what the scan actually finds.",
+        "ByteArray": {
+          "length": 0,
+          "bytes": 8,
+          "size": 16
+        },
+        "DatacenterKeySlot": {
+          "byte_array_ptr": 0,
+          "auth_key_id": 8,
+          "stride": 16
+        },
+        "ArtByteArray": {
+          "klass": 0,
+          "monitor": 4,
+          "length": 8,
+          "data": 12
+        },
+        "EncryptedChat": {
+          "_note": "Relative to key_fingerprint. chat_id at +32 re-confirmed on 12.10.1 by reading -1355992074, which matched enc_chats.uid. The auth_key_ref candidates are NEGATIVE because the object's reference slots sit ahead of the fingerprint.",
+          "key_fingerprint": 0,
+          "chat_id": 32,
+          "_auth_key_ref_note": "The measured offset is candidates[0] = -60, RAW (not poisoned). Re-derived on the live Pixel 7 (Telegram 12.10.1, Android 17, arm64) by probe/find_art_ref_offset.py against a key cross-checked byte-for-byte with the enc_chats.authkey row of cache4.db, and seen in 2 independent object copies across 2 separate runs. It was -64 until that run, and -64 is not noise: it is a DIFFERENT, real byte[256] on the same object -- g_a_or_b, the DH exchange value -- whose own sha1-low-64 has zero hits in the heap, so it confirmed nothing and looked merely unlucky. EncryptedChat carries a run of consecutive reference slots at -64, -60, -56, -52, -48, -44 pointing at five byte[256]s allocated 0x110 apart, which is precisely why one sample could not tell them apart -- and why this is stated as an ordered candidate list rather than as one number. object_base >> 32 == 0 on this build, so the stored u32 is the object address truncated to 32 bits and no heap base is needed to decode it. Ordering: the confirmed offset first, then the other slots of that same run, so a build where the key lands in a different slot becomes a self-diagnosing runtime FACT -- the scanner reports which candidate closed, in stats.tierC.roundTripByOffset -- instead of a silent zero. A wrong candidate is harmless: a candidate only 'matches' when the u32 equals low32 of the key's OWN byte[] base, so the g_a_or_b slot cannot produce a false close, and with 6 candidates the accidental-match probability is ~6*2^-32.",
+          "auth_key_ref_candidates": [
+            -60,
+            -64,
+            -56,
+            -52,
+            -48,
+            -44
+          ]
+        },
+        "Connection": {
+          "_note": "MEASURED + on-device VALIDATED (Frida, 2026-09-25) for libtmessages.49.so, Telegram 12.10.3 arm64, BuildID 9d76d4cce5ebc03b8bd1d32254dbff5ef28a7481. Obtained by disassembling the obfuscation-init function sub_AFD68C (this=X19) in IDA, then confirmed live: 5/5 AES_ctr128_encrypt (sub_FAC76C) calls in both directions reproduced the app's own keystream from these offsets, and (ivec_ptr - encrypt_ivec) / (ivec_ptr - decrypt_ivec) both resolved to the Connection vtable (base + vtable_ptr_rva). Full write-up in re_tier_e/TIER_E_RE_NOTES.md. Recalibrate if the libtmessages soname/Telegram version changes.",
+          "_key_note": "encrypt_key/decrypt_key point at the expanded AES key schedule; the RAW AES-256 key is the FIRST raw_key_len (32) bytes of the schedule VERBATIM on this build (aes_hw path, byteswap_schedule_words=false; validated). encrypt_ivec/decrypt_ivec are the LIVE 16-byte CTR counter blocks at scan time (not the original init IV); encrypt_num/decrypt_num are the byte-phase (0..15) into the current keystream block. `encrypt_*` is client->server (key_out/iv_out/num_out); `decrypt_*` is server->client (key_in/iv_in/num_in).",
+          "encrypt_key": 716,
+          "encrypt_ivec": 960,
+          "encrypt_num": 976,
+          "decrypt_key": 996,
+          "decrypt_ivec": 1240,
+          "decrypt_num": 1256,
+          "raw_key_len": 32,
+          "byteswap_schedule_words": false,
+          "_endpoint_note": "ConnectionSocket peer-address offsets, relative to the same Connection object base (this[0]==base+vtable_ptr_rva) Tier E anchors on. ConnectionSocket is the primary base, so NO multiple-inheritance delta. MEASURED + LIVE-VALIDATED (2026-09-27) for libtmessages.49 / Telegram 12.10.x arm64. sockaddr_in @0x90 (family u16 host-order @0x90 AF_INET=2, port u16 BIG-ENDIAN @0x92, addr 4B @0x94); sockaddr_in6 @0xA0 (family u16 @0xA0 AF_INET6=10, port BE @0xA2, addr 16B @0xA8). Prefer the sockaddr \u2014 it survives socket_fd==-1 (idle). Recalibrate with the CTR offsets if the soname/version changes.",
+          "endpoint_sockaddr_in": 144,
+          "endpoint_sockaddr_in6": 160,
+          "socket_fd": 188
+        }
+      },
+      "tiers": {
+        "A_bytearray_authkey": {
+          "_role": "cheap anchor -> candidate 256-byte blobs. Emits nothing; hands auth_key_id needles to Tier B.",
+          "enabled": true,
+          "_anchor_order_note": "ONE anchor: '00 01 00 00' (uint32 length 256, length-only). It is the broad anchor that finds EVERY auth_key ByteArray, including structs whose 4 bytes at +4..+7 are dirty. The narrow 8-byte superset ('00 01 00 00 00 00 00 00', ~49.5k hits) was previously listed first purely as a hit-cap safety net; on measured device runs the broad scan is ~135k hits / 202 MiB, well under maxHitsPerScan, so the net never fired and only added ~23% redundant Tier-A cost. It was removed and maxHitsPerScan raised to keep headroom above the broad hit count. If a run ever records a 'hit cap reached' error for this pattern, RAISE maxHitsPerScan (or restore the 8-byte anchor FIRST as the safety net) — never drop the broad anchor, it is the one that finds everything.",
+          "anchors": [
+            {
+              "pattern": "00 01 00 00",
+              "note": "length only; tolerates dirty padding, ~135k hits / 202 MiB. The anchor that actually finds everything. See _anchor_order_note for why the redundant 8-byte safety-net anchor was removed and how the hit-cap headroom is preserved via maxHitsPerScan."
+            }
+          ],
+          "anchor_offset_in_struct": 0,
+          "require_alignment": 8,
+          "key_ptr_offset": 8,
+          "key_len": 256
+        },
+        "B_authkeyid_roundtrip": {
+          "_role": "THE precision tier. Scans for sha1(key)[-8:] and demands the qword 8 bytes before it points back at the ByteArray the key came from.",
+          "enabled": true,
+          "derive_from_tier_a": true,
+          "roundtrip_ptr_offset": -8,
+          "slot_group_window": 64,
+          "slot_roles": [
+            "perm",
+            "temp",
+            "media_temp"
+          ],
+          "role_keylog_key_type": {
+            "perm": "perm",
+            "temp": "temp",
+            "media_temp": "temp"
+          },
+          "dc_id_probe_window": 512,
+          "label": "MTPROTO_AUTH_KEY"
+        },
+        "C_art_secretchat_key": {
+          "_role": "Secret-Chat (E2EE) keys. Same SHA1 oracle, ART container instead of a native one.",
+          "enabled": true,
+          "scan_regions": {
+            "protection": "rw-",
+            "require_anonymous": false,
+            "name_allowlist": [
+              "dalvik-main space",
+              "dalvik-large object space",
+              "dalvik-free list large object space",
+              "dalvik-non moving space",
+              "dalvik-zygote space"
+            ],
+            "name_denylist": [
+              "frida",
+              "gum-js-loop",
+              "quickjs"
+            ],
+            "max_range_bytes": 1073741824
+          },
+          "anchors": [
+            {
+              "pattern": "00 00 00 00 00 01 00 00",
+              "note": "ArtByteArray.monitor(0) at +0 of the hit and .length(256) at +4; ~30.7k hits / 3.7 GiB"
+            }
+          ],
+          "anchor_offset_in_struct": 4,
+          "require_alignment": 4,
+          "key_data_offset_from_anchor": 8,
+          "key_data_offset_candidates_from_anchor": [
+            8,
+            12
+          ],
+          "_key_data_offset_note": "8 is measured: the key is at object_base + 12 = hit + 8, and the hit + 12 family produced 8 unique keys and 0 confirmations on 12.10.1, which excludes the larger ART header on this build. The list exists because the scalar alone fails SILENTLY: on a build with a different header size Tier C would return zero with no error, which is indistinguishable from 'this account has no Secret Chats' -- the exact failure the diagnose-on-silence design exists to prevent. Candidates are tried IN ORDER and the first whose 256 bytes pass the entropy gate wins; per-offset hits are counted in stats.tierC.dataOffsetHits, so a build where 8 stops working shows up in the funnel instead of as silence. [0] must stay equal to the key_data_offset_from_anchor scalar, which stays required. KNOWN LIMIT, stated rather than hoped away: two candidates closer together than key_len read OVERLAPPING windows -- 8 and 12 share 252 of their 256 bytes -- so on a build whose key is at 12 the read at 8 is 252 key bytes behind a four-byte header word, which passes the entropy gate, wins, and shadows the later candidate. For adjacent offsets this list therefore buys the DIAGNOSIS (dataOffsetHits={\"8\": n} with confirmed=0 says the offset is wrong, which is the report that did not exist before) rather than automatic recovery; recovery is automatic for a candidate far enough away that its window does not overlap. Trying every candidate instead of the first that passes would fix that, and would also double the number of full-heap fingerprint sweeps, which is this tier's dominant cost and the thing that ANR'd the app.",
+          "key_len": 256,
+          "label": "MTPROTO_E2E_KEY",
+          "art_ref_roundtrip": true,
+          "art_ref_accept_poisoned": true,
+          "_art_ref_note": "The ART back-reference round trip: for a fingerprint site S and an object base B holding the key, it closes when read_u32(S + k) == low32(B) for some k in struct_offsets.EncryptedChat.auth_key_ref_candidates -- or, with art_ref_accept_poisoned, when (-read_u32(S + k)) & 0xffffffff == low32(B), which is how an ART built with heap poisoning stores a reference. Be precise about what this buys: NOT 'is this a key' -- the SHA1 oracle is already a ~2^-64 argument for that, and the round trip does not make it stronger. What it adds is (a) a second independent fact tying the fingerprint site to THIS key's container and (b) trustworthy chat_id attribution, because chat_id is read relative to the site: if the site is a copy of the fingerprint in a serialisation buffer rather than the EncryptedChat object, the emitted chat_id is garbage and without this check nothing says so. It therefore GRADES the evidence and never gates emission -- a key that fails it is still confirmed by the oracle, and dropping it would be a recall regression. The distinction is carried in the emitted source field ('+ref@-60' vs 'colocated-only') so a keylog line states its own evidence level. If B >> 32 != 0 the 32-bit truncation is ambiguous on that build: the check is skipped and the reason recorded, rather than reported as a failure.",
+          "min_rescan_interval_ms": 20000,
+          "_min_rescan_interval_ms_note": "The PRIMARY throttle: Tier C runs when at least this much wall-clock time has elapsed since the last Tier C pass COMPLETED. Gated on completion, not on start, because what the ANR is actually about is the idle gap left for the app -- a pass that takes 18 s must be followed by real idle time, and measuring from the start would shrink that gap by the pass duration. 0 means every pass and the first pass always runs. This replaces rescan_every as the throttle in effect (they must never both apply) because a pass COUNT silently couples E2EE coverage to --interval: rescan_every 4 on a 5 s interval is a Tier C pass every ~20 s, and on a 60 s interval it is one every 4 minutes. Tier C is the only tier that finds Secret-Chat keys, and the one run that caught a secret-chat rekey -- it saw both the old and the new fingerprint -- was a --once run where Tier C ran on pass 1. A pcap spanning a rekey needs BOTH keys or half of it stays encrypted. --e2e-every-pass / --e2e-rescan-interval set this key.",
+          "rescan_every": 4,
+          "_rescan_every_note": "LEGACY, and now the fallback used only when min_rescan_interval_ms is absent -- kept so an older compiled profile, or a driver that has not learned the millisecond key, keeps throttling instead of hammering the ART heap. Tier C sweeps ~3.7 GiB of ART range. MEASURED: back-to-back passes ANR'd Telegram (18s pass on a 10s interval = no idle time); one pass alone is harmless. Secret-chat keys are long-lived, so scan them every 4th pass. Tiers A/B stay on every pass because temp keys rotate."
+        },
+        "D_entropy_sweep": {
+          "_role": "Escape hatch if tgnet ever changes ByteArray outright. Strided sweep confirmed ONLY against externally supplied ids. Expensive.",
+          "enabled": false,
+          "stride": 8,
+          "key_len": 256,
+          "require_external_ids": true
+        },
+        "E_connection_ctr_state": {
+          "_role": "Recover per-connection obfuscated-transport CTR state from live memory so an already-open (mid-stream) connection can be decrypted offline. Emits MTPROTO_OBF_KEY.",
+          "enabled": true,
+          "_enabled_note": "Offsets MEASURED + on-device VALIDATED (5/5 CTR-identity, both directions) and the agent-side runTierE reader (scanner.ts) is implemented; enabled 2026-09-25. The anchor is resolved by RVA (binary is stripped, so vtable_symbol does not resolve at runtime). RECALIBRATE if the libtmessages soname / Telegram version changes \u2014 the RVA + offsets are build-specific.",
+          "_impl": "runTierE: base = base of module matching module_name_regex; anchor value = base + vtable_ptr_rva. Scan rw- ranges for qwords == anchor (each hit is a live Connection*). For each hit read struct_offsets.Connection: raw key_out = first raw_key_len bytes at (this+encrypt_key) (no byteswap when byteswap_schedule_words=false); iv_out = 16 bytes at (this+encrypt_ivec) (LIVE counter); num_out = u32 at (this+encrypt_num); likewise decrypt_* for key_in/iv_in/num_in. Emit MTPROTO_OBF_KEY via emitObfKey with endpoint '-'. Connection MUST be alive (run on the live poll loop).",
+          "vtable_symbol": "_ZTV10Connection",
+          "rtti_type_name_mangled": "10Connection",
+          "_rtti_note": "SELF-HEALING primary anchor: the agent (scanner.ts deriveConnectionVtableViaRtti) rediscovers the Connection vtable at runtime from the Itanium C++ RTTI graph (type-name string -> std::type_info -> vtable), which is version-independent and survives Telegram updates that shift every RVA. vtable_ptr_rva below is now only a FALLBACK for builds where the RTTI walk fails. If the class is ever renamed, update this mangled type name (<len><name>, e.g. '10Connection').",
+          "vtable_ptr_rva": 19320464,
+          "_vtable_ptr_rva_hex": "0x126ce90",
+          "_vtable_ptr_rva_note": "FALLBACK only. Recalibrated 2026-09-28 for libtmessages.49.so / Telegram 12.10.5 (BuildID 81d17a1270e1b08d40aa75192baa551d8a88bd70) via the RTTI walk. Previous value 0x11ad8b8 was for Telegram 12.10.3 (BuildID 9d76d4cce5ebc03b8bd1d32254dbff5ef28a7481); the RTTI anchor above makes this fallback rarely needed.",
+          "module_name_regex": "libtmessages\\.\\d+\\.so",
+          "label": "MTPROTO_OBF_KEY"
+        }
+      },
+      "_validators_derivation": [
+        "WHAT THIS GATE IS FOR. looksLikeSecret() is a PERFORMANCE filter for the SHA1 oracle, not a correctness check: it decides which 256-byte windows are worth hashing, and in the measured run it cut 862 pointer-valid candidates down to 27 hashed. Nothing downstream depends on it being right -- the SHA1 id oracle is what actually decides whether a blob is a key. The two error directions are therefore NOT symmetric: a false positive costs one SHA1 of 256 bytes, i.e. nothing, while a false negative silently loses a key with no diagnostic anywhere. The numbers below are chosen to spend false positives freely and to make false negatives as rare as they can be shown to be -- about 7.5E-10 per key, which is small but is not zero.",
+        "THE MODEL. An MTProto auth key is a 2048-bit DH result, so its 256 bytes are i.i.d. uniform. (The top byte is constrained by the DH modulus p, which perturbs exactly one of 256 draws -- O(1/256) on E[D], far below the multi-sigma margins used here.) The previous window was FITTED to n=20 keys on one build; this one is DERIVED. The derivation is probe/derive_entropy_window.py: read it, do not re-derive it.",
+        "DISTINCT BYTES, exact. E[D] = 256*(1-(255/256)^256) = 162.0071. Var(D) = 256*p*(1-p) + 256*255*((254/256)^256 - (255/256)^512) = 24.9046, so sigma = 4.9904 -- NOT the 5.6 quoted previously, and nothing like the naive sqrt(m*p*(1-p)) = 7.71, which ignores the NEGATIVE covariance between bins (occupying one bin makes another less likely to be occupied). The exact law comes from an integer DP over balls, not from a normal approximation: P(D < 132) = 4.93E-10 and P(D > 192) = 2.57E-10, a two-sided budget of 7.50E-10 per key. Hence min_distinct_bytes 132 (was 130) and max_distinct_bytes 192 (was 200).",
+        "ENTROPY CEILING, implied rather than measured. Shannon entropy is Schur-concave, so it is maximised by the flattest histogram: with at most 192 distinct values, 256 bytes cannot exceed exactly 7.500000 bits. Pinning max_shannon_entropy_bits there therefore costs ZERO extra false negatives -- the distinct ceiling already rejects everything above it -- while making the bound as tight as it can be. The old 7.6 was unreachable under any distinct ceiling <= 192, i.e. dead code. The ceiling itself is still load-bearing for the reason it always was: a 256-byte AES S-box is a PERMUTATION of 0..255, scoring a perfect 8.000 bits over 256 distinct values, and Telegram's crypto code is full of such tables; a floor-only gate passes every one of them.",
+        "ENTROPY FLOOR, not analytically tractable -- its distribution is a sum over compositions of 256, so it is estimated, and the estimate is labelled as one. 8,000,000 Monte Carlo windows: mean 7.1750, sigma 0.0524, min 6.8713, and NONE below 6.8. That bounds P(H < 6.8) at <= 3/N = 3.8E-07 by the rule of three. A fitted GPD tail model puts it many orders of magnitude lower, but that is an extrapolation decades past any data; the rule-of-three bound is the defensible number and is the one stated. Note also that H's lower tail is measurably heavier than Gaussian (measured z 4.51 vs normal 4.27 at p=1e-5), so a normal approximation would understate how low the floor must go -- another reason not to tighten 6.8.",
+        "CROSS-CHECK. 21 real captured keys measure H 7.0321-7.2801 and D 150-171, sitting on the theoretical means (E[D] 162.01, E[H] 7.175). The nearest key is 0.23 bits and 18 distinct bytes clear of the nearest new bound. max_zero_fraction stays 0.05: the exact binomial for count[0] > 12 is 4.88E-11, and the worst real key measured 0.0117."
+      ],
+      "validators": {
+        "min_shannon_entropy_bits": 6.8,
+        "max_shannon_entropy_bits": 7.5,
+        "min_distinct_bytes": 132,
+        "max_distinct_bytes": 192,
+        "max_zero_fraction": 0.05,
+        "pointer_min": "0x10000",
+        "pointer_tag_mask": "0xffffffffffff"
+      },
+      "keylog_labels": [
+        "MTPROTO_AUTH_KEY",
+        "MTPROTO_E2E_KEY",
+        "MTPROTO_OBF_KEY"
+      ]
+    }
+  ]
+}

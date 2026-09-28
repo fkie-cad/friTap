@@ -30,14 +30,18 @@ if TEXTUAL_AVAILABLE:
     from friTap.analysis import Finding, Severity  # noqa: F401
     from friTap.analysis.filtering import FindingFilter, summarize
     from friTap.analysis.registry import available_analyzers, resolve_analyzers
+    from friTap.constants import PROTOCOL_MTPROTO, PROTOCOL_TELEGRAM_E2E
+    from friTap.flow.display import is_message_transport
+    from friTap.offline.mtproto.transport import DEFAULT_OBF_MAX_BLOCKS
+    from friTap.flow.layer_pipeline import MESSAGE_TRANSPORTS
 
     from ..capture_controller import CaptureController
+    from ..modals.decrypt_progress_modal import DecryptProgressModal
     from ..modals.device_modal import DeviceSelectModal
     from ..modals.filter_modal import FilterModal, FilterResult
     from ..modals.findings_filter_modal import FindingsFilterModal
     from ..modals.help_modal import HelpScreen
     from ..modals.process_modal import ProcessSelectModal
-    from ..modals.protocol_modal import ProtocolSelectModal
     from ..modals.spawn_modal import SpawnInputModal
     from ..mode_controller import ModeController
     from ..themes import c
@@ -53,6 +57,37 @@ if TEXTUAL_AVAILABLE:
     from ..widgets.status_bar import StatusBar
     from ..wizard import CaptureWizard, PcapToTapWizard
 
+    # Decrypted-TL transports whose flows must be parsed by their pinned TL
+    # parser (see ParserRegistry.pin_transport), and the protocols it yields.
+    _TL_PINNED_TRANSPORTS = MESSAGE_TRANSPORTS
+    _TL_PINNED_PROTOCOLS = frozenset({PROTOCOL_MTPROTO, PROTOCOL_TELEGRAM_E2E})
+
+    def _is_tl_pinned_flow(flow) -> bool:
+        """True for a flow riding a decrypted-TL (pinned-parser) transport."""
+        return is_message_transport(flow)
+
+    def _is_received_message_summary(flow, summary) -> bool:
+        """True for a one-packet message-stream row that was *received*.
+
+        Such a .tap summary records only a response side (``has_response``
+        without ``has_request``). The synthetic replay flow must then carry a
+        response stub rather than a request stub, or the Status column would
+        report every received MTProto / Secret-Chat packet as ``sent``.
+        Legacy paired taps (both sides) keep the request-first behaviour.
+        """
+        return (is_message_transport(flow)
+                and bool(getattr(summary, "has_response", False))
+                and not getattr(summary, "has_request", False))
+
+    def _needs_tl_reparse(flow) -> bool:
+        """A TL-transport flow whose stored parse came from blind byte sniffing."""
+        if not _is_tl_pinned_flow(flow):
+            return False
+        parsed = [r for r in (flow.request, flow.response) if r is not None]
+        if not parsed:
+            return True
+        return any(r.protocol not in _TL_PINNED_PROTOCOLS for r in parsed)
+
     def _needs_reparse(flow, summary) -> bool:
         """Check if a flow should be re-parsed with current parser code.
 
@@ -60,7 +95,11 @@ if TEXTUAL_AVAILABLE:
         - Unknown protocol (legacy .tap files without proper detection)
         - HTTP/2 ghost flows (old code skipped SETTINGS-only control frames)
         - WebSocket TEXT flows (old code missed permessage-deflate decompression)
+        - MTProto / Telegram-E2E flows not parsed by their pinned TL parser
+          (old code sniffed e.g. a decryptedMessageLayer as a WebSocket PING)
         """
+        if _needs_tl_reparse(flow):
+            return True
         proto = flow.display_protocol
         if proto == "unknown":
             return True
@@ -90,6 +129,7 @@ if TEXTUAL_AVAILABLE:
             Binding("c", "findings_quick_creds", "Creds", show=False),
             Binding("p", "findings_quick_pii", "PII", show=False),
             Binding("1", "findings_quick_critical", "Critical", show=False),
+            Binding("r", "restart_wizard", "Restart Wizard", show=False),
         ]
 
         def __init__(
@@ -151,6 +191,9 @@ if TEXTUAL_AVAILABLE:
             self.query_one("#findings-list").display = False
             self.query_one("#finding-detail").display = False
             self.query_one("#analyzer-panel").display = False
+            # ``frame contains`` filters load flow content through the same
+            # replay/live lookup the detail view uses.
+            self.query_one("#flow-list", FlowListWidget).set_flow_lookup(self._lookup_flow)
 
             # Replay mode — skip wizard, load .tap file directly
             if self._replay_file:
@@ -200,7 +243,7 @@ if TEXTUAL_AVAILABLE:
             """
             from pathlib import Path
 
-            from friTap.flow.models import Flow, FlowState
+            from friTap.flow.models import Flow, FlowState, FlowSummary
 
             from ..replay_controller import ReplayController
 
@@ -239,7 +282,7 @@ if TEXTUAL_AVAILABLE:
                 title.update(
                     f"[bold {c('primary')}]friTap Replay[/]  "
                     f"[dim]{filename} ({count} flow{'s' if count != 1 else ''})"
-                    f" | Enter: details | /: filter | a: analyzers | w: export | q: quit[/]"
+                    f" | Enter: details | /: filter | a: analyzers | w: export | r: restart wizard | q: quit[/]"
                 )
             except Exception:
                 pass
@@ -267,7 +310,8 @@ if TEXTUAL_AVAILABLE:
                     summary.method or summary.url or summary.host
                     or summary.protocol not in ("unknown", "")
                 )
-                if has_parsed_request:
+                received_message = _is_received_message_summary(flow, summary)
+                if has_parsed_request and not received_message:
                     flow.request = ParseResult(
                         protocol=summary.protocol,
                         method=summary.method,
@@ -285,6 +329,15 @@ if TEXTUAL_AVAILABLE:
                         is_request=False,
                         is_complete=True,
                     )
+                elif received_message:
+                    flow.response = ParseResult(
+                        protocol=summary.protocol,
+                        method=summary.method,
+                        url=summary.url,
+                        host=summary.host,
+                        is_request=False,
+                        is_complete=True,
+                    )
                 # Re-parse flows that can benefit from updated parsers:
                 # - Unknown protocol (legacy .tap files)
                 # - HTTP/2 ghost flows (old code skipped control frames)
@@ -296,6 +349,7 @@ if TEXTUAL_AVAILABLE:
                         flow.response = full_flow.response
                         self._replay_ctrl.store_reparse(
                             summary.flow_id, full_flow.request, full_flow.response,
+                            clear_trailing=_is_tl_pinned_flow(full_flow),
                         )
 
                 flow._total_bytes = summary.total_size
@@ -307,8 +361,13 @@ if TEXTUAL_AVAILABLE:
                 flow.inner_e2e_protocol = summary.inner_e2e_protocol
                 flow.inner_summary = summary.inner_summary
                 # Same rationale for the derived TL Method scalar.
-                flow.flow_method = getattr(summary, "flow_method", "")
-                flow_list.add_or_update_flow(flow)
+                flow.flow_method = getattr(summary, "flow_method", "") or (
+                    summary.method if received_message else "")
+                # Display-filter inputs (mtproto.method, protocol names, ohttp)
+                # come straight from the decoded tap summary, so filtering
+                # matches live capture despite the synthetic flow's missing layers.
+                flow_list.add_or_update_flow(
+                    flow, summary=FlowSummary.from_tap_summary(summary, flow))
 
         # ----------------------------------------------------------
         # Offline decrypt -> flow view
@@ -386,18 +445,24 @@ if TEXTUAL_AVAILABLE:
             proto_keylog: str,
             protocol: str,
             tap: str,
+            resync_search_depth: int = DEFAULT_OBF_MAX_BLOCKS,
         ) -> dict | None:
             """Assemble keyword args for ``convert_pcap_to_tap``.
 
-            Returns ``None`` (after notifying) when the pcap is missing.
+            ``resync_search_depth`` bounds mid-stream re-alignment search and
+            defaults to :data:`DEFAULT_OBF_MAX_BLOCKS` (behaviour unchanged unless
+            the caller supplies an advanced override).
+
+            Returns ``None`` (after showing an alert modal) when the pcap is missing.
             """
             import os
 
             from friTap.output.keylog_paths import split_keylog_path
 
             if not pcap or not os.path.isfile(pcap):
-                self.app.notify(
+                self._alert(
                     f"PCAP not found: {pcap or '(empty)'}",
+                    title="PCAP Not Found",
                     severity="error",
                 )
                 return None
@@ -457,6 +522,7 @@ if TEXTUAL_AVAILABLE:
                 "signal_keylog": protocol_keylogs.get("signal"),
                 "mtproto_keylog": protocol_keylogs.get("mtproto"),
                 "protocol_keylogs": protocol_keylogs or None,
+                "resync_search_depth": resync_search_depth,
                 "tshark_path": None,
             }
 
@@ -466,6 +532,7 @@ if TEXTUAL_AVAILABLE:
             tls_keylog: str,
             protocol_keylogs: dict[str, str],
             tap: str,
+            resync_search_depth: int = DEFAULT_OBF_MAX_BLOCKS,
         ) -> dict | None:
             """Assemble ``convert_pcap_to_tap`` kwargs from a pcap plus an explicit
             TLS keylog and a map of per-protocol (layered) keylogs.
@@ -477,13 +544,14 @@ if TEXTUAL_AVAILABLE:
             Telegram) can be supplied at once. Only entries pointing at an existing
             file are kept; a missing backend is surfaced (non-blocking) for each.
 
-            Returns ``None`` (after notifying) when the pcap is missing.
+            Returns ``None`` (after showing an alert modal) when the pcap is missing.
             """
             import os
 
             if not pcap or not os.path.isfile(pcap):
-                self.app.notify(
+                self._alert(
                     f"PCAP not found: {pcap or '(empty)'}",
+                    title="PCAP Not Found",
                     severity="error",
                 )
                 return None
@@ -511,6 +579,7 @@ if TEXTUAL_AVAILABLE:
                 "signal_keylog": resolved_protocols.get("signal"),
                 "mtproto_keylog": resolved_protocols.get("mtproto"),
                 "protocol_keylogs": resolved_protocols or None,
+                "resync_search_depth": resync_search_depth,
                 "tshark_path": None,
             }
 
@@ -523,57 +592,263 @@ if TEXTUAL_AVAILABLE:
                         signal_backend_available,
                     )
                     if not signal_backend_available():
-                        self.app.notify(SIGNAL_DEPENDENCY_HINT, severity="warning")
+                        self._alert(
+                            SIGNAL_DEPENDENCY_HINT,
+                            title="Signal Backend Missing",
+                            severity="warning",
+                        )
                 elif protocol == "mtproto":
                     from friTap.offline.mtproto import (
                         MTPROTO_DEPENDENCY_HINT,
                         mtproto_backend_available,
                     )
                     if not mtproto_backend_available():
-                        self.app.notify(MTPROTO_DEPENDENCY_HINT, severity="warning")
+                        self._alert(
+                            MTPROTO_DEPENDENCY_HINT,
+                            title="MTProto Backend Missing",
+                            severity="warning",
+                        )
             except Exception:
                 pass
 
         def _launch_decrypt_worker(self, args: dict) -> None:
             """Run the offline conversion in a thread worker."""
-            self.app.notify("Decrypting captured traffic...", severity="information")
+            # Pre-flight: the offline pipeline needs tshark. Fail fast with a modal
+            # (not a transient toast) before showing "Decrypting..." so the install
+            # instructions are readable and the worker never starts. A tshark call
+            # from deep inside a decryptor is still caught in _decrypt_worker.
+            from friTap.offline.tshark import TsharkNotFoundError, find_tshark
+            try:
+                find_tshark(args.get("tshark_path"))
+            except TsharkNotFoundError:
+                self._show_tshark_missing_modal()
+                return
+            # A spinner modal (not a transient toast) so a long decrypt never
+            # looks hung; the worker updates its status and dismisses it.
+            progress = DecryptProgressModal()
+            self._decrypt_progress = progress
+            self.app.push_screen(progress)
             self.run_worker(
-                lambda: self._decrypt_worker(args),
+                lambda: self._decrypt_worker(args, progress),
                 thread=True,
                 exclusive=True,
                 group="decrypt",
             )
 
-        def _decrypt_worker(self, args: dict) -> None:
-            """Worker body: convert the pcap, then return to the UI thread."""
+        def _on_decrypt_progress(self, message: str) -> None:
+            """UI-thread handler: update the decrypt spinner's status line."""
+            modal = getattr(self, "_decrypt_progress", None)
+            if modal is not None:
+                modal.update_status(message)
+
+        def _dismiss_decrypt_progress(self, modal=None) -> None:
+            """UI-thread handler: close the decrypt spinner if still shown.
+
+            *modal* names a specific spinner (a cancelled worker closing its
+            own); by default the current one. ``finish()`` never closes a
+            screen stacked above the spinner (see DecryptProgressModal).
+            """
+            current = getattr(self, "_decrypt_progress", None)
+            if modal is None:
+                modal = current
+            if modal is current:
+                self._decrypt_progress = None
+            if modal is not None:
+                try:
+                    modal.finish()
+                except Exception:
+                    pass
+
+        def _decrypt_worker(self, args: dict, progress=None) -> None:
+            """Worker body: convert the pcap, then return to the UI thread.
+
+            *progress* is this run's spinner; a cancelled run closes it (and
+            only it, so a newer run's spinner stays up).
+            """
             from textual.worker import get_current_worker
 
-            from friTap.offline.pcap_to_tap import convert_pcap_to_tap
+            from friTap.offline.pcap_to_tap import pcap_to_tap
+            from friTap.offline.tshark import TsharkNotFoundError
 
             worker = get_current_worker()
+
+            def _report(message: str) -> None:
+                if not worker.is_cancelled:
+                    self.app.call_from_thread(self._on_decrypt_progress, message)
+
             try:
-                result = convert_pcap_to_tap(**args)
+                # Manifest-aware wrapper: a ``<pcap>.fritap.json`` sidecar fills
+                # only values the caller did NOT pass (ports, gap keylogs), the
+                # same precedence the ``--from-pcap`` CLI uses. Explicit wizard/
+                # open-pcap args always win.
+                result = pcap_to_tap(**args, use_manifest=True, progress=_report)
+            except TsharkNotFoundError:  # tshark invoked by a decryptor but missing
+                if not worker.is_cancelled:
+                    self.app.call_from_thread(self._dismiss_decrypt_progress)
+                    self.app.call_from_thread(self._show_tshark_missing_modal)
+                else:
+                    self._close_cancelled_spinner(progress)
+                return
             except Exception as e:  # conversion failed
                 if not worker.is_cancelled:
                     self.app.call_from_thread(self._on_decrypt_error, str(e))
+                else:
+                    self._close_cancelled_spinner(progress)
                 return
             if worker.is_cancelled:
+                self._close_cancelled_spinner(progress)
                 return
+            coverage = self._zero_flow_coverage(args, result)
             self.app.call_from_thread(
-                self._on_decrypt_done, args["tap_path"], result
+                self._on_decrypt_done, args["tap_path"], result, coverage
+            )
+
+        def _close_cancelled_spinner(self, progress) -> None:
+            """Worker thread: a cancelled run still closes its own spinner.
+
+            Best effort — during app shutdown the UI loop may already be gone.
+            """
+            if progress is None:
+                return
+            try:
+                self.app.call_from_thread(self._dismiss_decrypt_progress, progress)
+            except Exception:
+                pass
+
+        @staticmethod
+        def _zero_flow_coverage(args: dict, result):
+            """``(severity, lines)`` explaining a 0-flow TLS conversion, else ``None``.
+
+            Runs in the decrypt worker thread (one tshark pass), only when the
+            conversion produced no flows and a TLS keylog was used. Advisory:
+            any failure yields ``None``.
+            """
+            keylog = args.get("keylog_path")
+            if getattr(result, "flow_count", 0) > 0 or not keylog:
+                return None
+            try:
+                from friTap.offline.keylog_coverage import (
+                    check_keylog_coverage,
+                    describe,
+                )
+                from friTap.offline.tshark import find_tshark
+                tshark = find_tshark(args.get("tshark_path"))
+                return describe(check_keylog_coverage(tshark, args["pcap_path"], keylog))
+            except Exception:
+                return None
+
+        @staticmethod
+        def _protocol_counter(result, prefix: str, key: str) -> int:
+            """``result.per_protocol[prefix][key]`` (see ``ConvertResult.record_protocol``), else 0."""
+            per_protocol = getattr(result, "per_protocol", None) or {}
+            return (per_protocol.get(prefix) or {}).get(key, 0)
+
+        @staticmethod
+        def _messaging_counter(result, key: str, legacy_attr: str) -> int:
+            """Sum ``per_protocol[<messaging prefix>][key]`` across all prefixes.
+
+            Falls back to the legacy ``mtproto_*`` attr ONLY when no ``per_protocol``
+            bucket exists for ``mtproto`` (e.g. a ``SimpleNamespace`` result in tests
+            that sets just the legacy field), so the mtproto count is never counted
+            twice — ``record_protocol`` mirrors mtproto into BOTH places.
+            """
+            from friTap.offline.pcap_to_tap import messaging_buckets
+            total = sum(counts.get(key, 0) for _prefix, counts in messaging_buckets(result))
+            if "mtproto" not in (getattr(result, "per_protocol", None) or {}):
+                total += getattr(result, legacy_attr, 0)
+            return total
+
+        @classmethod
+        def _degraded_stream_count(cls, result) -> int:
+            """Streams skipped because capture began mid-connection (all messaging protos).
+
+            Reads ``per_protocol[*]["degraded"]`` generically so MTProto, Telegram AND
+            Signal are all counted; short/unsupported-framing streams are deliberately
+            NOT included here (they are not "started mid-connection").
+            """
+            return cls._messaging_counter(result, "degraded", "mtproto_streams_degraded")
+
+        @classmethod
+        def _recovered_via_obf_count(cls, result) -> int:
+            """Mid-stream streams re-derived from memory-scanned obfuscation keys.
+
+            A positive outcome (Workstream F): a capture that began mid-connection
+            was still opened because its obfuscation key was recovered from memory.
+            Counted generically across all messaging protocols.
+            """
+            return cls._messaging_counter(
+                result, "recovered_via_obf", "mtproto_streams_recovered_via_obf"
+            )
+
+        @classmethod
+        def _degraded_unrecovered_count(cls, result) -> int:
+            """Streams where obfuscation-key recovery was attempted but no key aligned.
+
+            Distinct from plain ``degraded``: a recovery pass ran but could not line
+            up a key, so the honest fix is to capture the keys concurrently or widen
+            the search rather than simply re-capturing in spawn mode.
+            """
+            return cls._messaging_counter(
+                result, "degraded_unrecovered", "mtproto_streams_degraded_unrecovered"
+            )
+
+        @classmethod
+        def _short_stream_count(cls, result) -> int:
+            """Streams too short to open (a start gap / too little client data).
+
+            NOT counted as ``degraded`` (they are not "started mid-connection"), so
+            they are surfaced on their own line.
+            """
+            return cls._messaging_counter(result, "short", "mtproto_streams_short")
+
+        @classmethod
+        def _undecryptable_record_count(cls, result) -> int:
+            """Records with no matching key in the keylog (all messaging protos)."""
+            return cls._messaging_counter(
+                result, "undecryptable", "mtproto_records_undecryptable"
             )
 
         @staticmethod
-        def _degraded_stream_count(result) -> int:
-            """Streams skipped because capture began mid-connection (MTProto+Signal)."""
-            return (
-                getattr(result, "mtproto_streams_degraded", 0)
-                + getattr(result, "signal_streams_degraded", 0)
-            )
+        def _e2e_only_no_transport(result) -> bool:
+            """True if an E2E key was present but no transport auth key (any messaging proto).
 
-        def _on_decrypt_done(self, tap_path: str, result) -> None:
-            """UI-thread handler: load the produced .tap into the flow view."""
+            In that case the transport envelope never decrypted, so the E2E
+            (secret-chat) blobs inside it were never reached — a distinct, honest
+            explanation for a 0-flow result.
+            """
+            from friTap.offline.pcap_to_tap import messaging_buckets
+            return any(bool(counts.get("e2e_only")) for _prefix, counts in messaging_buckets(result))
+
+        @staticmethod
+        def _unknown_key_ids(result) -> list:
+            """Sorted hex auth_key_ids seen on the wire with no matching key.
+
+            These travel in the clear, so surfacing them tells the user exactly which
+            transport keys to go capture.
+            """
+            from friTap.offline.pcap_to_tap import messaging_buckets
+            ids: set = set()
+            for _prefix, counts in messaging_buckets(result):
+                ids.update(counts.get("unknown_key_ids") or {})
+            return sorted(ids)
+
+        @staticmethod
+        def _coverage_message(coverage) -> Optional[str]:
+            """0-flow explanation from a keylog-coverage ``(severity, lines)``."""
+            if not coverage or not coverage[1]:
+                return None
+            severity, lines = coverage
+            prefix = "Decryption produced no flows" if severity == "ok" else "Decrypted 0 flows"
+            return f"{prefix}: " + " ".join(lines)
+
+        def _on_decrypt_done(self, tap_path: str, result, coverage=None) -> None:
+            """UI-thread handler: load the produced .tap into the flow view.
+
+            *coverage* is the worker-computed TLS keylog coverage
+            ``(severity, lines)`` used to explain a 0-flow result.
+            """
             import os
+            self._dismiss_decrypt_progress()
             flow_count = getattr(result, "flow_count", 0)
             if flow_count > 0:
                 self.reload_replay(tap_path)
@@ -588,35 +863,72 @@ if TEXTUAL_AVAILABLE:
                 # transports (MTProto/Signal). Warn so the user knows messages on
                 # those streams are absent and how to recover them — otherwise the
                 # "Decrypted N flows" success message hides the gap.
+                # Report EVERY per-stream outcome bucket the decryptor produced, not
+                # just the mid-connection one — mirroring the CLI summary in
+                # friTap/offline/cli.py so the TUI no longer hides both the
+                # memory-key successes and the true reason a stream failed.
                 degraded = self._degraded_stream_count(result)
+                recovered = self._recovered_via_obf_count(result)
+                degraded_unrecovered = self._degraded_unrecovered_count(result)
+                short = self._short_stream_count(result)
+                positive_notes: list = []
+                warning_notes: list = []
+                if recovered > 0:
+                    positive_notes.append(
+                        f"{recovered} mid-stream Telegram stream"
+                        f"{'s' if recovered != 1 else ''} recovered from "
+                        f"memory-scanned obfuscation key"
+                        f"{'s' if recovered != 1 else ''}."
+                    )
                 if degraded > 0:
-                    self.app.notify(
+                    warning_notes.append(
                         f"{degraded} stream{'s' if degraded != 1 else ''} started "
                         "mid-connection and could not be decrypted — messages on "
                         f"{'those' if degraded != 1 else 'that'} stream"
                         f"{'s' if degraded != 1 else ''} are missing. Re-capture from "
-                        "connection start (spawn mode) to recover them.",
-                        severity="warning",
+                        "connection start (spawn mode) to recover them."
                     )
+                if degraded_unrecovered > 0:
+                    warning_notes.append(
+                        f"{degraded_unrecovered} stream"
+                        f"{'s' if degraded_unrecovered != 1 else ''}: obfuscation-key "
+                        "recovery attempted but no key aligned (capture the keys "
+                        "concurrently / widen the search)."
+                    )
+                if short > 0:
+                    warning_notes.append(
+                        f"{short} short stream{'s' if short != 1 else ''} "
+                        "(start gap / too little data)."
+                    )
+                notes = positive_notes + warning_notes
+                if notes:
+                    if warning_notes:
+                        title, severity = "Partial Decryption", "warning"
+                    else:
+                        title, severity = "Decryption Note", "information"
+                    self._alert("\n".join(notes), title=title, severity=severity)
                 return
 
-            # 0 flows: explain *why* instead of a bare message. Degraded streams
-            # (capture started after the connection opened) are the common cause
-            # for non-TLS protocols whose obfuscated transport needs the
-            # connection-start bytes; undecryptable records mean the matching key
-            # was not in the keylog.
+            # 0 flows: explain *why* instead of a bare message. Report the causes
+            # MOST-SPECIFIC-FIRST so the true one is not masked by a vaguer fallback:
+            #   1. E2E-only  -- an E2E key but no transport auth key: the envelope
+            #      can't be opened, so the messages inside can't be reached.
+            #   2. undecryptable -- records named a key the keylog did not hold.
+            #   3. degraded  -- streams that genuinely started mid-connection.
+            #   4. coverage / bare fallback.
+            # (Previously "degraded" was checked first and masked the real cause; a
+            # short/lossy or unsupported-framing stream no longer counts as degraded.)
+            e2e_only = self._e2e_only_no_transport(result)
             degraded = self._degraded_stream_count(result)
-            undecryptable = (
-                getattr(result, "mtproto_records_undecryptable", 0)
-                + getattr(result, "signal_records_undecryptable", 0)
-            )
-            if degraded > 0:
+            undecryptable = self._undecryptable_record_count(result)
+            unknown_key_ids = self._unknown_key_ids(result)
+            coverage_message = self._coverage_message(coverage)
+            if e2e_only:
                 message = (
-                    f"Decrypted 0 flows: {degraded} stream"
-                    f"{'s' if degraded != 1 else ''} started mid-connection "
-                    "(capture began after the connection opened). Re-capture from "
-                    "connection start — open chats/scroll to force new connections, "
-                    "or use spawn mode."
+                    "Decrypted 0 flows: the keylog has a secret-chat (E2E) key but no "
+                    "MTProto transport auth key — the transport envelope can't be "
+                    "decrypted, so the messages inside can't be reached. Capture "
+                    "transport auth keys with a spawn `-k` run or `-ms` memory-scan."
                 )
             elif undecryptable > 0:
                 message = (
@@ -624,17 +936,67 @@ if TEXTUAL_AVAILABLE:
                     f"{'s' if undecryptable != 1 else ''} had no matching key in the "
                     "keylog (key not captured this session)."
                 )
+            elif degraded > 0:
+                message = (
+                    f"Decrypted 0 flows: {degraded} stream"
+                    f"{'s' if degraded != 1 else ''} started mid-connection "
+                    "(capture began after the connection opened). Re-capture from "
+                    "connection start — open chats/scroll to force new connections, "
+                    "or use spawn mode."
+                )
+            elif coverage_message:
+                message = coverage_message
             else:
                 message = "Decryption produced no flows."
+
+            # The unknown auth_key_id(s) travel in the clear, so name them: they are
+            # the exact search terms for a follow-up key hunt / memory scan.
+            if unknown_key_ids:
+                shown = ", ".join(unknown_key_ids[:8])
+                if len(unknown_key_ids) > 8:
+                    shown += f", … (+{len(unknown_key_ids) - 8} more)"
+                message += (
+                    f" Unknown auth_key_id{'s' if len(unknown_key_ids) != 1 else ''} "
+                    f"seen on the wire (capture these keys): {shown}."
+                )
 
             # Still load the (empty) tap if one was written, to keep the view consistent.
             if os.path.isfile(tap_path):
                 self.reload_replay(tap_path)
-            self.app.notify(message, severity="warning")
+            # The 0-flow explanation is several sentences (coverage/degraded/
+            # undecryptable): show a dismissible modal, not a transient toast, so
+            # it stays readable until the user acknowledges it.
+            self._alert(message, title="No Flows Decrypted", severity="warning")
 
         def _on_decrypt_error(self, message: str) -> None:
             """UI-thread handler: report a conversion failure."""
-            self.app.notify(f"Decrypt failed: {message}", severity="error")
+            self._dismiss_decrypt_progress()
+            self._alert(
+                f"Decrypt failed: {message}",
+                title="Decrypt Failed",
+                severity="error",
+            )
+
+        def _show_tshark_missing_modal(self) -> None:
+            """UI-thread handler: show the single-source 'install tshark' modal.
+
+            The install instructions are multi-line, so a dismissible modal (not a
+            transient toast) is used; the message text comes from the one source in
+            friTap.offline.tshark so the TUI and CLI stay in sync.
+            """
+            from friTap.offline.tshark import TSHARK_INSTALL_MESSAGE
+
+            from ..modals.alert_modal import AlertModal
+            self.app.push_screen(
+                AlertModal(
+                    message=TSHARK_INSTALL_MESSAGE,
+                    title="tshark not found",
+                    severity="error",
+                )
+            )
+            self._get_activity_log().log_warning(
+                "tshark not found — offline decryption unavailable"
+            )
 
         @staticmethod
         def _signal_server_endpoint(flow):
@@ -680,6 +1042,90 @@ if TEXTUAL_AVAILABLE:
                 and self._signal_server_endpoint(f) == key
             ]
 
+        def _telegram_e2e_conversation_siblings(self, flow) -> list:
+            """Secret-Chat flows sharing *flow*'s chat key (same ``ssl_session_id``).
+
+            A Secret Chat's messages can land in several flows (one per packet
+            pair); the shared ``telegram_e2e:<fingerprint>`` session id reunites
+            them so the Message tab renders one deduped, time-ordered transcript.
+            """
+            if getattr(flow, "transport", "") != "telegram_e2e":
+                return []
+            session_id = getattr(flow, "ssl_session_id", "") or ""
+            if not session_id:
+                return []
+
+            def matches(candidate) -> bool:
+                return (getattr(candidate, "transport", "") == "telegram_e2e"
+                        and getattr(candidate, "ssl_session_id", "") == session_id)
+
+            return self._sibling_flows_matching(matches)
+
+        def _sibling_flows_matching(self, matches) -> list:
+            """Full Flows whose summary (replay) or live flow satisfies *matches*.
+
+            Replay filters the cheap summaries first and loads only the hits
+            (on-demand, LRU-cached); live mode filters the collector's flows.
+            """
+            if self._replay_ctrl is not None:
+                sibling_ids = [s.flow_id for s in self._replay_ctrl.get_summaries()
+                               if matches(s)]
+                siblings = [self._replay_ctrl.get_flow(fid) for fid in sibling_ids]
+                return [f for f in siblings if f is not None]
+            collector = self._capture.flow_collector
+            flows = collector.get_flows() if collector else []
+            return [f for f in flows if matches(f)]
+
+        def _mtproto_conversation_siblings(self, flow) -> list:
+            """Cloud-chat flows carrying text for the same peer as *flow*.
+
+            Every MTProto packet is its own flow, so a cloud chat spreads over
+            many rows. Candidates are pre-filtered on the cheap chat-ranked
+            Method scalar, then loaded and kept when one of their chat-text
+            entries shares a conversation key with *flow*'s.
+            """
+            from friTap.flow import telegram_conversation as tconv
+            if getattr(flow, "transport", "") != "mtproto":
+                return []
+            self_id = self._telegram_self_id(flow)
+            keys = tconv.conversation_keys_of(flow, self_id)
+            if not keys:
+                return []
+
+            def matches(candidate) -> bool:
+                return (getattr(candidate, "transport", "") == "mtproto"
+                        and tconv.flow_has_chat_text(candidate))
+
+            return [f for f in self._sibling_flows_matching(matches)
+                    if tconv.conversation_keys_of(f, self_id) & keys]
+
+        @staticmethod
+        def _telegram_self_id(flow) -> int:
+            """The capturing account's user id from *flow*'s structured users (0 if unknown)."""
+            try:
+                layer = flow.layer(getattr(flow, "transport", ""))
+            except Exception:
+                layer = None
+            for user in getattr(layer, "users", None) or []:
+                if isinstance(user, dict) and "self" in (user.get("flags") or []):
+                    return int(user.get("id") or 0)
+            return 0
+
+        def _conversation_siblings(self, flow) -> list:
+            """Dispatch to the per-protocol conversation-sibling lookup."""
+            if getattr(flow, "transport", "") == "telegram_e2e":
+                return self._telegram_e2e_conversation_siblings(flow)
+            if getattr(flow, "transport", "") == "mtproto":
+                return self._mtproto_conversation_siblings(flow)
+            return self._signal_conversation_siblings(flow)
+
+        def _flow_row_resolver(self):
+            """``flow_id -> row number`` of the flow list, for ``#N`` cross-references."""
+            try:
+                return self.query_one("#flow-list", FlowListWidget).row_number_of
+            except Exception:
+                return None
+
         def _present_flow_detail(self, flow) -> None:
             """Show the flow detail widget for a given Flow object."""
             self.query_one("#flow-list").display = False
@@ -690,10 +1136,11 @@ if TEXTUAL_AVAILABLE:
             # non-Signal flows -> single-flow behavior) before rendering.
             try:
                 detail.set_conversation_siblings(
-                    self._signal_conversation_siblings(flow)
+                    self._conversation_siblings(flow)
                 )
             except Exception:
                 detail.set_conversation_siblings([])
+            detail.set_row_resolver(self._flow_row_resolver())
             detail.show_flow(flow)
             detail.display = True
             self._update_detail_title()
@@ -853,6 +1300,19 @@ if TEXTUAL_AVAILABLE:
         def _get_menu_panel(self) -> MenuPanel:
             return self.query_one("#menu-panel", MenuPanel)
 
+        def _alert(
+            self, message: str, title: str = "", severity: str = "warning",
+        ) -> None:
+            """Push a dismissible AlertModal for an error/warning.
+
+            Used instead of a transient ``notify`` toast so multi-line
+            explanations stay on screen until the user dismisses them.
+            """
+            from ..modals.alert_modal import AlertModal
+            self.app.push_screen(
+                AlertModal(message=message, title=title, severity=severity)
+            )
+
         # ----------------------------------------------------------
         # Background checks
         # ----------------------------------------------------------
@@ -940,8 +1400,13 @@ if TEXTUAL_AVAILABLE:
             self._capture.action_stop_capture()
 
         def stop_if_capturing(self) -> None:
-            """Stop capture if one is running. Also cleans up replay. Safe to call from app shutdown."""
-            if self._ssl_logger and self._ssl_logger.running:
+            """Stop capture if one is running. Also cleans up replay. Safe to call from app shutdown.
+
+            Keys off the capture STATE, not ``SSL_Logger.running``: while the
+            worker is still building the logger (``_ssl_logger`` is None) the
+            capture is already RUNNING and must still be stopped.
+            """
+            if self._capture.is_running:
                 self._capture.action_stop_capture()
             if self._replay_ctrl is not None:
                 self._replay_ctrl.close()
@@ -949,6 +1414,40 @@ if TEXTUAL_AVAILABLE:
 
         def action_toggle_capture(self) -> None:
             self._capture.action_toggle_capture()
+
+        def action_restart_wizard(self) -> None:
+            """Tear down any live capture or replay and relaunch the setup wizard.
+
+            Reachable via ``r`` from both the capture/console view and the replay
+            (.tap) flow-list view, so the user can start a fresh session without
+            quitting friTap. Teardown is best-effort: restarting from the replay
+            view (where no capture is running) must succeed just the same.
+
+            A capture still in flight (starting, running or tearing down) is
+            stopped first and the wizard opens only once it has fully ended —
+            otherwise the old worker's late teardown would clobber the wizard's
+            new selections or tear down the next capture.
+            """
+            if self._capture.capture_in_flight:
+                self._capture.restart_when_stopped(self._restart_wizard_now)
+                return
+            self._restart_wizard_now()
+
+        def _restart_wizard_now(self) -> None:
+            """Reset to IDLE and launch the wizard (no capture may be in flight)."""
+            try:
+                self.stop_if_capturing()
+            except Exception:
+                pass
+            try:
+                self._capture.reset_capture_state()
+            except Exception:
+                pass
+            try:
+                self._activate_legacy_view()
+            except Exception:
+                pass
+            self._start_wizard()
 
         def action_escape_action(self) -> None:
             # Analyzer finding-detail → back to the findings list (filter kept).
@@ -1275,15 +1774,23 @@ if TEXTUAL_AVAILABLE:
             if self._wizard_guard():
                 return
             state = self._get_state()
+            from ..protocol_selection import (
+                apply_protocol_selection,
+                format_protocols,
+                select_protocols,
+            )
 
-            def _on_result(protocol: Optional[str]) -> None:
-                if protocol is None:
-                    return
-                state.protocol = protocol
-                self._get_status_bar().protocol = protocol
-                self._get_activity_log().log_info(f"Protocol: {protocol.upper()}")
+            def _on_done(protocol: str, protocols: list) -> None:
+                apply_protocol_selection(state, protocols)
+                # Status bar upper-cases this, e.g. "TLS+RC4".
+                self._get_status_bar().protocol = "+".join(protocols)
+                self._get_activity_log().log_info(f"Protocol: {format_protocols(protocols)}")
 
-            self.app.push_screen(ProtocolSelectModal(), callback=_on_result)
+            select_protocols(
+                self.app,
+                on_done=_on_done,
+                registry=getattr(self, '_protocol_registry', None),
+            )
 
         # ----------------------------------------------------------
         # Flow view management
@@ -1333,6 +1840,7 @@ if TEXTUAL_AVAILABLE:
                 pass
             hints.append("[dim]a: analyzers[/]")
             hints.append("[dim]w: save .tap[/]")
+            hints.append("[dim]r: restart wizard[/]")
             if self._replay_ctrl is None:
                 hints.append("[dim]f: console view[/]")
             if capturing:
@@ -1838,10 +2346,13 @@ if TEXTUAL_AVAILABLE:
                 filter_bar = self.query_one("#filter-bar", FilterBar)
                 if not filter_bar.display:
                     return
+                flow_list = self.query_one("#flow-list", FlowListWidget)
                 self.app.push_screen(
                     FilterModal(
                         current_text=filter_bar.filter_text,
                         active_toggles=filter_bar.active_toggles,
+                        match_counter=flow_list.count_matches,
+                        row_count=lambda: flow_list.total_count,
                     ),
                     callback=self._on_filter_result,
                 )

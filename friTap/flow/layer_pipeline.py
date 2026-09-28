@@ -70,6 +70,9 @@ _APP_NAME_BY_PROTOCOL: dict[str, str] = {
 # (Signal is unaffected: it rides inside real HTTP/2, so its transport is ``tls``
 # and ``signal`` is an inner owned layer — not a transport in this set.)
 _NON_HTTP_E2E_TRANSPORTS = frozenset({"mtproto", "telegram_e2e"})
+# Public alias: the transports whose flows are message streams, not HTTP
+# exchanges (used by the display layer for status / pane rendering).
+MESSAGE_TRANSPORTS = _NON_HTTP_E2E_TRANSPORTS
 
 
 def _is_transport_descriptor(descriptor) -> bool:

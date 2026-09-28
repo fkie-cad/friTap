@@ -11,6 +11,7 @@ TapReader provides:
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -78,6 +79,12 @@ class TapReader:
         # instead of re-scanning the whole file.
         self._finding_offsets: list[int] = []
         self._opened: bool = False
+        # Serializes every seek+read on the shared file handle. get_flow runs
+        # on the UI thread, the analyzer worker and the filter content index,
+        # and an interleaved seek between another caller's seek and read would
+        # read the wrong bytes (CRC mismatch / garbage). Re-entrant because
+        # open() and the findings-index build nest record reads.
+        self._io_lock = threading.RLock()
 
     @property
     def path(self) -> str:
@@ -100,33 +107,34 @@ class TapReader:
 
         Returns the file-level TapMeta.
         """
-        self._file = open(self._path, "rb")
-        self._opened = True
+        with self._io_lock:
+            self._file = open(self._path, "rb")
+            self._opened = True
 
-        try:
-            # Read header
-            header_raw = self._file.read(_HEADER_STRUCT.size + 4096)  # read extra for ext
-            self._header, self._data_start = decode_header(header_raw)
+            try:
+                # Read header
+                header_raw = self._file.read(_HEADER_STRUCT.size + 4096)  # read extra for ext
+                self._header, self._data_start = decode_header(header_raw)
 
-            # Try to read META record (should be the first record)
-            self._file.seek(self._data_start)
-            self._meta = self._try_read_meta()
+                # Try to read META record (should be the first record)
+                self._file.seek(self._data_start)
+                self._meta = self._try_read_meta()
 
-            # Build flow index
-            if self._header.flags & FLAG_HAS_INDEX:
-                self._build_index_from_footer()
-            else:
-                logger.info("No index in .tap file, performing linear scan")
-                self._build_index_linear_scan()
-        except Exception:
-            self.close()
-            raise
+                # Build flow index
+                if self._header.flags & FLAG_HAS_INDEX:
+                    self._build_index_from_footer()
+                else:
+                    logger.info("No index in .tap file, performing linear scan")
+                    self._build_index_linear_scan()
+            except Exception:
+                self.close()
+                raise
 
-        logger.info(
-            "TapReader opened: %s (%d flows)",
-            self._path, len(self._flow_offsets),
-        )
-        return self._meta or TapMeta()
+            logger.info(
+                "TapReader opened: %s (%d flows)",
+                self._path, len(self._flow_offsets),
+            )
+            return self._meta or TapMeta()
 
     def read_flow_summaries(self) -> list[FlowSummary]:
         """Read lightweight flow metadata for all flows (no chunks/bodies).
@@ -230,30 +238,42 @@ class TapReader:
         the file) and cached. Returns an empty list if the file carries none.
         """
         self._ensure_open()
-        if self._findings_index is None:
-            self._build_findings_index()
-        return self._findings_index.get(flow_id, [])
+        return self._ensure_findings_index().get(flow_id, [])
 
     def has_findings(self) -> bool:
         """True if the file contains any persisted findings."""
         self._ensure_open()
-        if self._findings_index is None:
-            self._build_findings_index()
-        return bool(self._findings_index)
+        return bool(self._ensure_findings_index())
+
+    def _ensure_findings_index(self) -> dict:
+        """Build the findings index once, holding the I/O lock while it reads.
+
+        Returns the index itself (never re-read from ``self``), so a
+        concurrent ``close()`` resetting ``_findings_index`` to None cannot
+        turn the caller's lookup into ``None.get``.
+        """
+        index = self._findings_index
+        if index is not None:
+            return index
+        with self._io_lock:
+            if self._findings_index is None:
+                self._build_findings_index()
+            return self._findings_index or {}
 
     def close(self) -> None:
         """Close the file. Safe to call multiple times."""
-        if self._file is not None:
-            try:
-                self._file.close()
-            except Exception:
-                pass
-            self._file = None
-        self._opened = False
-        self._flow_offsets.clear()
-        self._findings_index = None
-        self._saw_finding_record = None
-        self._finding_offsets = []
+        with self._io_lock:
+            if self._file is not None:
+                try:
+                    self._file.close()
+                except Exception:
+                    pass
+                self._file = None
+            self._opened = False
+            self._flow_offsets.clear()
+            self._findings_index = None
+            self._saw_finding_record = None
+            self._finding_offsets = []
 
     def __enter__(self) -> "TapReader":
         self.open()
@@ -496,8 +516,24 @@ class TapReader:
         """Read and verify a single record's payload at the given file offset.
 
         Returns the raw payload bytes, or None if the record is invalid.
+        Thread-safe: the seek+read pair runs under ``_io_lock``.
         """
-        assert self._file is not None
+        with self._io_lock:
+            raw = self._read_record_raw_at(offset)
+        if raw is None:
+            return None
+        payload, stored_crc = raw
+
+        if not verify_payload_crc(payload, stored_crc):
+            logger.warning("CRC mismatch at offset %d", offset)
+            return None
+
+        return payload
+
+    def _read_record_raw_at(self, offset: int) -> Optional[tuple[bytes, int]]:
+        """Seek to *offset* and read ``(payload, stored_crc)``; caller holds the lock."""
+        if self._file is None:
+            return None
         self._file.seek(offset)
 
         envelope_raw = self._file.read(_RECORD_ENVELOPE.size)
@@ -505,19 +541,14 @@ class TapReader:
             return None
 
         try:
-            rec_type, payload_len, stored_crc, _ = decode_record_envelope(envelope_raw)
+            _, payload_len, stored_crc, _ = decode_record_envelope(envelope_raw)
         except ValueError:
             return None
 
         payload = self._file.read(payload_len)
         if len(payload) < payload_len:
             return None
-
-        if not verify_payload_crc(payload, stored_crc):
-            logger.warning("CRC mismatch at offset %d", offset)
-            return None
-
-        return payload
+        return payload, stored_crc
 
     def _try_read_meta(self) -> Optional[TapMeta]:
         """Try to read a META record at the current position."""

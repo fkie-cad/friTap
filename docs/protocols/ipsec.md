@@ -2,14 +2,22 @@
 
 friTap has **early, experimental** support for IPsec targets built on
 **strongSwan** / **libcharon**. Today this support is limited to **connection
-detection** — friTap can recognise that a strongSwan IPsec stack is loaded and
-route it through the modern agent path. **Key extraction (IKEv2 / ESP) is not
+detection** — friTap can recognise that a strongSwan IPsec stack is loaded on
+both the default legacy agent path and the explicit `--modern` path. **Key extraction (IKEv2 / ESP) is not
 yet functional.**
 
+!!! note "Not yet selectable as `--protocol ipsec`"
+    The Python-side `IPSecHandler` is not registered yet (it is commented out in
+    `friTap/protocols/registry.py` and `friTap/protocols/__init__.py`), so
+    `--protocol ipsec` is **rejected by the CLI** and does not appear in the TUI.
+    Today the strongSwan hooks install only when you select **`--protocol all`**
+    or **`--protocol auto`**: the agent then hooks every supported protocol,
+    including IPsec, on both the legacy and `--modern` paths.
+
 !!! warning "EXPERIMENTAL — detection works, key extraction does not (yet)"
-    IPsec support is at the **detection-only stub** stage. Selecting
-    `--protocol ipsec` installs the strongSwan hook definition and detects the
-    connection, but it **does not yet decrypt IKEv2 or ESP traffic**.
+    IPsec support is at the **detection-only stub** stage. With
+    `--protocol all`/`auto` the agent installs the strongSwan hook definition and
+    detects the connection, but it **does not yet decrypt IKEv2 or ESP traffic**.
 
     The strongSwan definition is explicitly described in source as a
     *"detection-only stub"* (`agent/ipsec/definitions/strongswan.ts:4`).
@@ -23,7 +31,8 @@ yet functional.**
 | Capability | Status |
 |---|---|
 | Detect a strongSwan / libcharon IPsec stack | **Works** |
-| Route IPsec targets through the modern agent path | **Works** |
+| Hook IPsec targets on the legacy (default) and `--modern` agent paths (via `--protocol all`/`auto`) | **Works** |
+| Select IPsec alone with `--protocol ipsec` | **Not yet** (handler not registered) |
 | Emit synthetic, metadata-only flow records for the connection | **Works** |
 | Extract IKEv2 SA keys (`derive_ike_keys`) | **Partial / non-functional** |
 | Extract ESP Child SA keys (`ikev2_derive_child_sa_keys`) | **Partial / non-functional** |
@@ -34,27 +43,29 @@ and surface **metadata-only** flow records for it. It will **not** hand you
 decrypted IKEv2 or ESP payloads. Treat any IPsec run as a detection and
 groundwork exercise, not a decryption workflow.
 
-## How `--protocol ipsec` works
+## How to enable the IPsec hooks
 
-IPsec is selected through the same `--protocol` selector as the other
-protocols. Valid choices are `tls`, `ipsec`, `ssh`, `all`, and `auto`
-(`friTap/friTap.py`). `ipsec` is **exclusive** — only the IPsec hooks install,
-not TLS/QUIC/SSH:
+`ipsec` is **not** one of the `--protocol` choices yet: the CLI only accepts
+protocols registered in `friTap/protocols/registry.py`, and the IPsec handler
+there is still commented out, so `--protocol ipsec` fails with an
+"unknown protocol" error. The agent-side strongSwan hooks are installed when
+every protocol is hooked, i.e. with `--protocol all` (asks for confirmation;
+skip with `-y`) or `--protocol auto`:
 
 ```bash
 # Detect a strongSwan target (Linux). Key extraction is NOT yet functional.
-sudo fritap --protocol ipsec -p out.pcapng -- /usr/sbin/charon
+sudo fritap --protocol auto -p out.pcapng -- /usr/sbin/charon
 ```
 
-!!! info "`--protocol ipsec` auto-enables the modern agent path"
-    The strongSwan executor is registered **only** on the modern agent path.
-    To avoid silently falling back to the legacy TLS-only agent (which would
-    no-op a strongSwan target), `--protocol ipsec` **automatically forces
-    `use_modern=true`** (`friTap/friTap.py`):
+Once the handler is registered, `ipsec` will become a selectable, **exclusive**
+protocol (only the IPsec hooks install, not TLS/QUIC/SSH).
 
-    > `[ipsec] --protocol ipsec auto-enables use_modern=true (legacy path has no IPSec support)`
-
-    You do not need to pass `--modern` yourself; selecting IPsec implies it.
+!!! info "IPsec does not force the modern agent path"
+    The IPsec hooks keep the agent path you choose. On the default legacy
+    path the strongSwan libraries are hooked by the legacy IPsec executor
+    (`agent/ipsec/platforms/linux/ipsec_linux.ts`, with the partial
+    key-derivation hooks); passing `--modern` explicitly selects the
+    definition-based strongSwan executor instead.
 
 ## Under the hood
 
@@ -87,9 +98,11 @@ IKEv2 + ESP SA decryption tables. That work has not landed.
 * **No IKEv2/ESP decryption today.** The key-derivation hooks are present but
   non-functional. Captured output is synthetic metadata only.
 * **strongSwan / libcharon only.** Other IPsec implementations are out of scope.
-* **Modern path required.** IPsec is registered only on the modern agent; this
-  is auto-enabled when you pass `--protocol ipsec`. (The modern path is itself
-  EXPERIMENTAL for IPsec.)
+* **Not selectable on its own yet.** `--protocol ipsec` is rejected until the
+  IPsec handler is registered; use `--protocol all`/`auto`.
+* **No agent-path override.** IPsec no longer forces `--modern`; its hooks
+  run on the default legacy path unless you pass `--modern` explicitly.
+  (The modern path is itself EXPERIMENTAL for IPsec.)
 
 ## Next steps
 

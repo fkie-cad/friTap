@@ -20,6 +20,7 @@ from friTap.flow.layers import (
     IpsecLayer,
     MtprotoLayer,
     QuicLayer,
+    Rc4Layer,
     SignalLayer,
     SshLayer,
     TelegramE2ELayer,
@@ -119,6 +120,8 @@ def _register_builtins(registry: ProtocolRegistry) -> None:
     registry.register(ProtocolDescriptor("mtproto", MtprotoLayer, data_source="chunks"))
     registry.register(ProtocolDescriptor("telegram_e2e", TelegramE2ELayer, data_source="chunks"))
     registry.register(ProtocolDescriptor("signal", SignalLayer, data_source="chunks"))
+    # RC4 is independent of TLS; its decrypted plaintext rides the flow's chunks.
+    registry.register(ProtocolDescriptor("rc4", Rc4Layer, data_source="chunks"))
     for app_name in APP_PROTOCOL_NAMES:
         registry.register(
             ProtocolDescriptor(app_name, AppLayer, data_source="chunks")

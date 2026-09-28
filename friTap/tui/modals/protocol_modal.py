@@ -5,8 +5,10 @@ Protocol selection modal for friTap TUI.
 
 Presents available protocols and returns the selected protocol string,
 or None if the user cancels. Builds the protocol list dynamically from
-the ProtocolRegistry when provided, with custom protocol plugins
-shown as "[N] DisplayName (plugin)".
+the ProtocolRegistry (the default registry when none is passed): registry
+protocols are shown as "[N] DisplayName — description" (or "(plugin)" when
+they have no description), and custom ciphers (RC4, ...) are grouped under a
+single "Custom Encryption" entry.
 """
 
 from __future__ import annotations
@@ -44,6 +46,29 @@ if TEXTUAL_AVAILABLE:
     # Auto-detect always last among built-ins
     _AUTO_ENTRY = ("auto", "Auto — Auto-detect from loaded libraries")
 
+    def _registry_label(handler) -> str:
+        """Menu label for a registry protocol: its description when it has one."""
+        from .custom_cipher_modal import menu_label
+
+        display_name = getattr(handler, "display_name", handler.name)
+        return menu_label(
+            display_name, getattr(handler, "description", ""), f"{display_name} (plugin)"
+        )
+
+    def _custom_encryption_entry(ciphers=None) -> Optional[tuple[str, str]]:
+        """The grouped "Custom Encryption" entry, or None when no custom cipher
+        is registered in this build. The individual ciphers are picked in the
+        follow-up :class:`CustomCipherModal`, so the label names none of them.
+        *ciphers* defaults to :func:`available_custom_ciphers`."""
+        from friTap.protocols.registry import CUSTOM_GROUP
+
+        if ciphers is None:
+            from .custom_cipher_modal import available_custom_ciphers
+            ciphers = available_custom_ciphers()
+        if not ciphers:
+            return None
+        return (CUSTOM_GROUP, "Custom Encryption — custom cipher key extraction")
+
     class ProtocolSelectModal(FriTapModal[Optional[str]]):
         """Modal for selecting the target protocol."""
 
@@ -67,13 +92,17 @@ if TEXTUAL_AVAILABLE:
         def __init__(
             self,
             registry=None,
+            ciphers=None,
             **kwargs,
         ) -> None:
             super().__init__(**kwargs)
             self._protocol_entries: list[tuple[str, str]] = []
-            self._build_entries(registry)
+            if registry is None:
+                from friTap.protocols.registry import create_default_registry
+                registry = create_default_registry()
+            self._build_entries(registry, ciphers)
 
-        def _build_entries(self, registry) -> None:
+        def _build_entries(self, registry, ciphers=None) -> None:
             """Build the protocol entry list from built-ins + registry."""
             self._protocol_entries = list(_BUILTIN_PROTOCOLS)
 
@@ -91,8 +120,15 @@ if TEXTUAL_AVAILABLE:
                         continue
                     if getattr(handler, "upcoming", False):
                         continue
-                    label = f"{handler.display_name} (plugin)"
-                    self._protocol_entries.append((handler.name, label))
+                    # Custom ciphers (e.g. RC4) are offered via the grouped
+                    # "Custom Encryption" entry / follow-up modal, not standalone.
+                    if getattr(handler, "category", "protocol") == "custom_cipher":
+                        continue
+                    self._protocol_entries.append((handler.name, _registry_label(handler)))
+
+            custom_entry = _custom_encryption_entry(ciphers)
+            if custom_entry is not None:
+                self._protocol_entries.append(custom_entry)
 
             # Auto-detect always at the end
             self._protocol_entries.append(_AUTO_ENTRY)

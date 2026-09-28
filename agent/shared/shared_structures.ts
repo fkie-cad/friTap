@@ -50,7 +50,8 @@ export type LibraryType =
     | "ipsec_strongswan"
     | "mtproto_tgnet"
     | "signal_libsignal"
-    | "telegram_e2e";
+    | "telegram_e2e"
+    | "rc4";
 export const PLATFORM_LINUX: Platform = "linux";
 export const PLATFORM_DARWIN: Platform = "darwin";
 export const PLATFORM_WINDOWS: Platform = "windows";
@@ -76,14 +77,38 @@ export const AddressFamilyMapping: { [key: number]: string } = {
 // for hook filtering). Avoids require() on every TLS packet.
 export let selected_protocol: string = "tls";
 
+// The FULL set of protocols selected on the CLI (Foundation F1: multi-protocol
+// selection). `--protocol tls,rc4` or `--protocol tls --protocol rc4` activates
+// several independent protocols at once; the host serializes the selection as a
+// comma-joined string in `protocol_select`, which `setSelectedProtocol` parses
+// into this set. Hook filtering (per-platform loaders -> HookRegistry) reads
+// this set so EVERY selected protocol's hooks install. `selected_protocol`
+// above stays the PRIMARY (first) member for the single-value string contexts
+// (message tagging, dedup keys) that predate multi-select, so the common
+// single-protocol case is byte-for-byte unchanged.
+export let selected_protocols: Set<string> = new Set(["tls"]);
+
 /**
- * Set the active protocol used by sendWithProtocol and hook filtering.
+ * Set the active protocol selection used by sendWithProtocol and hook filtering.
  * Called once from fritap_agent.ts after the recv handshake completes.
  *
- * @param protocol  The protocol string (e.g., "tls", "ssh", "ipsec")
+ * Accepts the historical single name ("tls"), a comma-joined multi-selection
+ * ("tls,rc4"), or an already-split list/set. `selected_protocols` becomes the
+ * de-duplicated, order-preserving set; `selected_protocol` becomes its primary
+ * (first) member so single-value consumers keep working unchanged.
+ *
+ * @param protocol  The protocol selection (e.g., "tls", "tls,rc4", ["tls","rc4"])
  */
-export function setSelectedProtocol(protocol: string): void {
-    selected_protocol = protocol;
+export function setSelectedProtocol(protocol: string | string[] | Set<string>): void {
+    const names = (typeof protocol === "string"
+        ? protocol.split(",")
+        : [...protocol])
+        .map((s) => (s ?? "").trim())
+        .filter(Boolean);
+    const set = new Set(names.length ? names : ["tls"]);
+    selected_protocols = set;
+    // Primary = first selected protocol; preserves the legacy single-string tag.
+    selected_protocol = [...set][0] || "tls";
 }
 
 /**

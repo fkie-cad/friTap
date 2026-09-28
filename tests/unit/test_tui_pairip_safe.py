@@ -84,3 +84,10 @@ def test_toggle_flips_only_on_android():
     other = StartConfirmModal(summary=_summary("linux", device_type="local"))
     other.action_toggle_pairip_safe()
     assert other.pairip_safe is False  # guarded: no-op off Android
+
+
+def test_summary_shows_full_protocol_selection():
+    modal = StartConfirmModal(summary=_summary("linux", protocols_display="TLS+RC4"))
+    assert "Protocol:      TLS+RC4" in modal._build_summary_text()
+    # Absent key -> no protocol row (older callers keep working).
+    assert "Protocol:" not in StartConfirmModal(summary=_summary("linux"))._build_summary_text()

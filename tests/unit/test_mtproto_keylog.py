@@ -57,6 +57,35 @@ def test_format_line_defaults_key_type_and_dc():
     assert line == f"{spec.LABEL} 0 {_AID} {_AK} perm"
 
 
+def test_e2e_roundtrip_three_field_has_no_peer():
+    """A chat with no resolved peer stays in the legacy 3-field layout."""
+    line = spec.format_e2e_line(key_fingerprint="ab" * 8, shared_key="cd" * 256, chat_id=-42)
+    assert line == f"{spec.E2E_LABEL} {'ab' * 8} {'cd' * 256} -42"
+    parsed = spec.parse_e2e_line(line)
+    assert parsed is not None
+    assert parsed.chat_id == -42 and parsed.peer_user_id == 0
+
+
+def test_e2e_roundtrip_four_field_carries_peer():
+    line = spec.format_e2e_line(key_fingerprint="ab" * 8, shared_key="cd" * 256,
+                                chat_id=-42, peer_user_id=8586353341)
+    assert line == f"{spec.E2E_LABEL} {'ab' * 8} {'cd' * 256} -42 8586353341"
+    parsed = spec.parse_e2e_line(line)
+    assert parsed is not None
+    assert parsed.chat_id == -42 and parsed.peer_user_id == 8586353341
+
+
+def test_e2e_legacy_three_field_line_still_parses():
+    """Backward compat: an old 3-field line parses with peer_user_id defaulted to 0."""
+    parsed = spec.parse_e2e_line(f"{spec.E2E_LABEL} {'ab' * 8} {'cd' * 256} 7")
+    assert parsed is not None and parsed.chat_id == 7 and parsed.peer_user_id == 0
+
+
+def test_e2e_bad_peer_field_is_ignored():
+    parsed = spec.parse_e2e_line(f"{spec.E2E_LABEL} {'ab' * 8} {'cd' * 256} 7 notanint")
+    assert parsed is not None and parsed.chat_id == 7 and parsed.peer_user_id == 0
+
+
 def test_parse_line_skips_noise():
     assert spec.parse_line("") is None
     assert spec.parse_line("   ") is None

@@ -48,6 +48,7 @@ PROTOCOL_TLS = "TLS"
 PROTOCOL_SIGNAL = "Signal"
 PROTOCOL_MTPROTO = "MTProto"
 PROTOCOL_TELEGRAM_E2E = "Telegram-E2E"
+PROTOCOL_RC4 = "RC4"
 
 
 # Agent ABI version — the contract between this Python host and the compiled
@@ -76,6 +77,7 @@ LAYER_DISPLAY_NAMES = {
     "signal": PROTOCOL_SIGNAL,
     "mtproto": PROTOCOL_MTPROTO,
     "telegram_e2e": PROTOCOL_TELEGRAM_E2E,
+    "rc4": PROTOCOL_RC4,
 }
 
 

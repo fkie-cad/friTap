@@ -15,8 +15,9 @@ import { installKeylogHook } from "../core/executors/keylog_callback.js";
 import { installBoringSSLSymbolHook, makeBoringSslDumpKeys, attemptSymbolFallback, KEYLOG_NOT_INSTALLED_MSG } from "./boringssl_symbol_hook.js";
 import { installBoringSSLPatternHook } from "./boringssl_pattern_hook.js";
 import { detectBoringSSLFamily } from "./boringssl_family_detect.js";
+import { onAllKeylogTiersMissed } from "./boringssl_keylog_outcome.js";
 import { devlog, devlog_debug, devlog_error, log } from "../util/log.js";
-import { keylog_enabled, pairip_safe } from "../fritap_agent.js";
+import { keylog_enabled, pairip_safe, force_anchor_locator } from "../fritap_agent.js";
 
 export type BoringSSLHookOutcome = "callback" | "symbol" | "pattern" | "none";
 
@@ -83,6 +84,16 @@ export function installBoringSSLKeylogChain(
     // floor at 3d — see boringssl_pattern_hook.ts.)
     if (pairip_safe) {
         devlog(`[bssl-chain] ${moduleName}: pattern tier disabled (--pairip-safe); exports/offsets only`);
+        onAllKeylogTiersMissed(moduleName, dumpKeysCb, { detail: "pattern tier disabled by --pairip-safe", pairipDisabled: true });
+        return "none";
+    }
+
+    // --boringssl-anchor-only: skip the pattern tier and route straight to
+    // onAllKeylogTiersMissed, which runs tier 4 (the anchor locator). A debugging
+    // aid for exercising tier 4 on modules a pattern would otherwise cover.
+    if (force_anchor_locator) {
+        devlog(`[bssl-chain] ${moduleName}: pattern tier skipped (--boringssl-anchor-only); trying anchor locator`);
+        onAllKeylogTiersMissed(moduleName, dumpKeysCb, { detail: "pattern tier skipped by --boringssl-anchor-only", pairipDisabled: false });
         return "none";
     }
 
@@ -93,7 +104,10 @@ export function installBoringSSLKeylogChain(
     //   3d — bundled openssl.<arch>.ssl_log_secret[] floor
     // The async settled promise lets us retry via the symbol resolver if every
     // sub-tier exhausts — the counterpart of scheduleBoringSSLSymbolFallback
-    // in the legacy executor.
+    // in the legacy executor. It resolves false only once the scan really
+    // completed without a match (or is still unmatched at the poll's hard
+    // bound); a slow scan past the soft timeout keeps it pending, so tier 4 is
+    // not started next to a scan that is still running.
     const family = def.family ?? detectBoringSSLFamily(moduleName);
     const libraryType = def.libraryType ?? "boringssl";
     const patternResult = installBoringSSLPatternHook(
@@ -106,6 +120,7 @@ export function installBoringSSLKeylogChain(
     if (!patternResult.scheduled) {
         devlog_debug(`[bssl-chain] ${moduleName}: tier=pattern reason=${patternResult.reason}`);
         devlog(KEYLOG_NOT_INSTALLED_MSG(moduleName, `tier 3 not scheduled (${patternResult.reason})`));
+        onAllKeylogTiersMissed(moduleName, dumpKeysCb, { detail: `pattern tier not scheduled: ${patternResult.reason}`, pairipDisabled: false });
         return "none";
     }
 
@@ -115,9 +130,11 @@ export function installBoringSSLKeylogChain(
             return;
         }
         devlog(
-            `[bssl-chain] ${moduleName}: tier 3 exhausted (family=${family}); falling back to symbol re-scan`,
+            `[bssl-chain] ${moduleName}: tier 3 exhausted or gave up (family=${family}); falling back to symbol re-scan`,
         );
-        attemptSymbolFallback(moduleName, dumpKeysCb, "bssl-chain");
+        if (!attemptSymbolFallback(moduleName, dumpKeysCb, "bssl-chain")) {
+            onAllKeylogTiersMissed(moduleName, dumpKeysCb, { pairipDisabled: false });
+        }
     }).catch((e) => {
         devlog_error(`[bssl-chain] ${moduleName}: settled-promise rejected: ${e}`);
     });

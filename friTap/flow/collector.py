@@ -1,6 +1,7 @@
 """Thread-safe flow collector that groups SSL events into flows."""
 
 import copy
+import dataclasses
 import logging
 import re
 import threading
@@ -33,8 +34,9 @@ from friTap.parsers.http2 import Http2Parser, is_h2_control_frame_data
 from friTap.parsers.http3 import build_h3_result_from_headers
 from friTap.parsers.registry import get_default_registry
 
-from .layer_pipeline import LayerPipeline
+from .layer_pipeline import MESSAGE_TRANSPORTS, LayerPipeline
 from .models import Flow, FlowChunk, FlowEventType, FlowState
+from .quic_flow import QuicStreamFlowMixin
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +56,13 @@ _READ_FUNCTIONS = SSL_READ | frozenset({
     'SSL_read_ex', 'PR_Recv', 'SSLRead',
 })
 
+# Decrypted-TL transports (Flow.transport values) whose parser is pinned by the
+# registry instead of byte-sniffed; every event on them is exactly one packet.
+_TRANSPORT_TELEGRAM_E2E = "telegram_e2e"
+_TRANSPORT_MTPROTO = "mtproto"
 
-class FlowCollector:
+
+class FlowCollector(QuicStreamFlowMixin):
     """Thread-safe flow collector that groups SSL events into flows."""
 
     def __init__(self, event_bus=None, show_control_frames: bool = True,
@@ -92,7 +99,23 @@ class FlowCollector:
         self._session_tls: dict[str, dict] = {}  # conn_id -> {version,sni,alpn,cipher}
         # Orphan request index: dst_key -> [(timestamp, flow_id), ...]
         self._orphan_requests: dict[str, list[tuple[float, str]]] = {}
+        # Merge targets that were already COMPLETE when an orphan response was
+        # folded in (refreshed via UPDATED by flush). Reset per merge pass.
+        self._stale_merge_targets: list[Flow] = []
+        # Telegram Secret-Chat pairing: conn_id -> flow_id of the newest sent
+        # (write) message still awaiting its received reply. Lives on the
+        # collector, outside the resettable _ConnectionState, so pairing
+        # survives a connection-state rebuild. See _pair_e2e_event.
+        # Retained, currently unused (see T1): message transports now emit one
+        # flow per packet (_emit_packet_flow), so nothing populates this.
+        self._e2e_open_requests: dict[str, str] = {}
         self._event_count = 0
+        # Opt-in event clock (offline conversion): when enabled, sweep/idle logic
+        # measures "now" as the newest event timestamp seen instead of the wall
+        # clock, so replayed pcap timestamps are not all "hours ago". Live capture
+        # leaves this off and keeps using time.time().
+        self._use_event_clock = False
+        self._max_event_ts = 0.0
         # Cheaply-available metadata stamped onto each new Flow. Populated by
         # on_library_detected() and set_capture_target(); read under _lock.
         self._detected_library: str = ""
@@ -302,28 +325,31 @@ class FlowCollector:
         with self._lock:
             # Get or create connection state
             if conn_id not in self._connections:
-                self._connections[conn_id] = _ConnectionState(conn_id)
+                self._connections[conn_id] = self._new_connection_state(conn_id, event)
 
             conn = self._connections[conn_id]
 
             # Time-gap heuristic: if idle too long, reset connection state
-            if conn.last_activity > 0 and (event.timestamp - conn.last_activity) > IDLE_THRESHOLD:
+            if self._is_idle_gap(conn, event.timestamp):
                 self._finalize_connection(conn, conn.last_activity, pending)
                 # Reset to fresh state
-                self._connections[conn_id] = _ConnectionState(conn_id)
+                self._connections[conn_id] = self._new_connection_state(conn_id, event)
                 conn = self._connections[conn_id]
 
             conn.last_activity = event.timestamp
+            self._observe_event_time(event.timestamp)
 
             # Prefer event.direction; fall back to function-name heuristic
             direction = getattr(event, 'direction', '') or self._get_direction(event.function)
+            is_quic_stream = self._is_quic_stream_event(conn, event)
 
             # Create chunk
             chunk = FlowChunk(
                 data=event.data,
                 direction=direction,
                 timestamp=event.timestamp,
-                function=event.function
+                function=event.function,
+                stream_id=self._chunk_stream_id(conn, event, is_quic_stream),
             )
 
             # Boundary-4 (app-api) mode: the agent forwarded already-decoded
@@ -331,13 +357,18 @@ class FlowCollector:
             # parsing — and correlate it into a flow by (synthetic) stream id.
             h3_headers = getattr(event, 'http3_headers', None)
             if h3_headers is not None:
-                real_qsid = getattr(event, 'stream_id', None)
-                synthetic_id = (conn.map_qsid(real_qsid)
-                                if isinstance(real_qsid, int) and real_qsid >= 0
-                                else 0)
+                real_qsid = self._quic_stream_id(event)
+                synthetic_id = conn.map_qsid(real_qsid) if real_qsid is not None else 0
                 result = build_h3_result_from_headers(h3_headers, synthetic_id, direction)
                 flow = self._create_or_update_flow(conn, chunk, result, event, pending)
                 self._append_progress(pending, flow)
+            # Registry-pinned transport (decrypted Telegram TL): no sniffing,
+            # buffering, upgrade or trailing-data handling — one event, one packet.
+            elif self._is_pinned_transport(conn):
+                self._feed_pinned_packet(conn, chunk, event, pending)
+            # QUIC raw stream bytes with a real stream id: per-stream HTTP/3.
+            elif is_quic_stream:
+                self._handle_quic_stream_chunk(conn, chunk, event, pending)
             # Parser detection with buffering retry
             elif conn.parser is None:
                 # Buffer chunks until we have enough data for reliable detection
@@ -347,7 +378,7 @@ class FlowCollector:
                 try:
                     registry = get_default_registry()
                     combined = b"".join(c.data for c in conn.pending_chunks)
-                    detected = registry.detect(combined)
+                    detected = registry.detect(combined, transport=conn.transport)
                 except Exception:
                     logger.debug("Parser detection failed", exc_info=True)
                     detected = HexdumpParser()
@@ -371,13 +402,11 @@ class FlowCollector:
                             self._append_progress(pending, flow)
                     # Stamp detected_protocol on the active flow when the parser
                     # matched a real protocol but produced no ParseResult yet
-                    # (e.g. HTTP/2 SETTINGS-only prelude).
-                    if (not is_fallback
-                            and conn.active_flow_id
-                            and conn.active_flow_id in self._flows):
-                        active = self._flows[conn.active_flow_id]
-                        if not active.detected_protocol:
-                            active.detected_protocol = conn.parser.PROTOCOL
+                    # (e.g. HTTP/2 SETTINGS-only prelude). A parser that has not
+                    # recognized anything yet (WebSocket false positive) defers
+                    # the stamp to its first successful direct feed.
+                    if not is_fallback:
+                        conn.protocol_stamp_pending = not self._stamp_detected_protocol(conn)
                     # Propagate trailing data from buffered-chunk parsing
                     if conn.active_flow_id and conn.active_flow_id in self._flows:
                         self._propagate_trailing_data(conn.parser, self._flows[conn.active_flow_id])
@@ -396,10 +425,11 @@ class FlowCollector:
                 # Feed directly. For QUIC the agent supplies a real stream id;
                 # remap it onto a dense positive id so HTTP/3 multiplexing works
                 # (and never collides with the stream_id == 0 "ghost" sentinel).
-                qsid = getattr(event, 'stream_id', None)
-                feed_sid = (conn.map_qsid(qsid)
-                            if isinstance(qsid, int) and qsid >= 0 else None)
+                qsid = self._quic_stream_id(event)
+                feed_sid = conn.map_qsid(qsid) if qsid is not None else None
                 results = conn.parser.feed(event.data, direction, stream_id=feed_sid)
+                if conn.protocol_stamp_pending:
+                    conn.protocol_stamp_pending = not self._stamp_detected_protocol(conn)
 
                 if results:
                     results = self._filter_control_frames(results)
@@ -438,6 +468,72 @@ class FlowCollector:
             self._notify(event_type, flow)
         self._emit_errors(errors_to_emit)
         self._emit_message_events(signal_events)
+
+    def _stamp_detected_protocol(self, conn: '_ConnectionState') -> bool:
+        """Stamp the parser's PROTOCOL on the active flow if it recognized any.
+
+        Returns True when no further stamping is needed (stamped, or the flow
+        already carries a protocol); False while it is still pending.
+        """
+        active = self._flows.get(conn.active_flow_id) if conn.active_flow_id else None
+        if active is None or not conn.parser.recognized_any():
+            return False
+        if not active.detected_protocol:
+            active.detected_protocol = conn.parser.PROTOCOL
+        return True
+
+    @staticmethod
+    def _new_connection_state(conn_id: str, event) -> '_ConnectionState':
+        """Fresh per-connection state carrying the event's transport."""
+        transport = getattr(event, 'protocol', 'tls') or 'tls'
+        return _ConnectionState(conn_id, transport=transport)
+
+    @staticmethod
+    def _is_exempt_from_idle(conn: '_ConnectionState') -> bool:
+        """Secret-Chat connections keep their open request across idle gaps.
+
+        A reply to a sent Secret-Chat message routinely arrives minutes later;
+        an idle reset/sweep would finalize the waiting request-only flow and
+        break the request/response pairing (see _pair_e2e_event).
+        """
+        return conn.transport == _TRANSPORT_TELEGRAM_E2E
+
+    def _is_idle_gap(self, conn: '_ConnectionState', timestamp: float) -> bool:
+        """True if *conn* sat idle longer than IDLE_THRESHOLD before *timestamp*."""
+        if conn.last_activity <= 0 or self._is_exempt_from_idle(conn):
+            return False
+        return (timestamp - conn.last_activity) > IDLE_THRESHOLD
+
+    @staticmethod
+    def _is_pinned_transport(conn: '_ConnectionState') -> bool:
+        """True if the registry pins a parser to *conn*'s transport."""
+        registry = get_default_registry()
+        return registry.pinned_parser_for(conn.transport) is not None
+
+    def _feed_pinned_packet(self, conn, chunk, event, pending) -> None:
+        """Feed ONE event to the transport-pinned parser as its own packet.
+
+        Pinned parsers never buffer, so each result stems solely from *chunk*
+        and no bytes of one event can bleed into another event's result.
+        Must be called under lock.
+        """
+        if conn.parser is None:
+            registry = get_default_registry()
+            conn.parser = self._wrap_parser(
+                registry.detect(b"", transport=conn.transport), conn)
+        results = self._filter_control_frames(
+            conn.parser.feed(chunk.data, chunk.direction))
+        if not results and conn.transport in MESSAGE_TRANSPORTS:
+            self._emit_packet_flow(conn, chunk, None, event, pending)
+            return
+        if not results:
+            flow = self._get_or_create_active_flow(conn, event, pending)
+            self._append_chunk(flow, chunk)
+            self._append_progress(pending, flow)
+            return
+        for result in results:
+            flow = self._create_or_update_flow(conn, chunk, result, event, pending)
+            self._append_progress(pending, flow)
 
     def _collect_signal_messages(self, conn, direction, event, out_events) -> None:
         """Decode newly-arrived live Signal messages for one DatalogEvent.
@@ -760,6 +856,7 @@ class FlowCollector:
             self._h2_stream_flows.clear()
             self._orphan_requests.clear()
             self._session_tls.clear()
+            self._e2e_open_requests.clear()
 
     def add_synthetic_flow(
         self,
@@ -865,8 +962,39 @@ class FlowCollector:
         if flow.state == FlowState.ACTIVE:
             pending.append((FlowEventType.UPDATED, flow))
 
-    def flush(self) -> None:
+    def use_event_clock(self, enabled: bool = True) -> None:
+        """Measure sweep/idle time by the newest event timestamp, not the wall clock.
+
+        For offline conversion, where event timestamps are pcap capture times: with
+        the wall clock every replayed connection looks idle for hours and is
+        finalized on each periodic sweep. Live capture should leave this off.
+        """
+        with self._lock:
+            self._use_event_clock = enabled
+
+    def _observe_event_time(self, ts: float) -> None:
+        """Advance the event clock to *ts* if it is newer. Under lock."""
+        if ts > self._max_event_ts:
+            self._max_event_ts = ts
+
+    def _now(self) -> float:
+        """Current time for sweeps: the event clock if enabled and known, else wall time."""
+        if self._use_event_clock and self._max_event_ts > 0:
+            return self._max_event_ts
+        return time.time()
+
+    @staticmethod
+    def _last_activity_of(flow: Flow) -> float:
+        """Newest chunk timestamp of *flow*, falling back to ``flow.started``."""
+        latest = max((c.timestamp for c in flow.chunks), default=0.0)
+        return latest if latest > 0 else flow.started
+
+    def flush(self, *, end_at_last_activity: bool = False) -> None:
         """Flush all parsers and finalize active flows.
+
+        With ``end_at_last_activity`` (offline conversion) each flow finalized here
+        ends at its newest chunk timestamp (fallback ``flow.started``) instead of
+        the wall-clock time of the flush.
 
         Emits a COMPLETED FlowEvent for every flow this call transitions from
         ACTIVE to COMPLETE, mirroring _finalize_connection. This lets the
@@ -880,6 +1008,8 @@ class FlowCollector:
         completed_events: list = []
         with self._lock:
             for conn in self._connections.values():
+                if self._is_quic_connection(conn):
+                    self._flush_quic_connection(conn, completed_events)
                 # Commit parser for connections still in the buffering phase
                 if conn.parser is None and conn.pending_chunks:
                     self._commit_pending(conn)
@@ -889,13 +1019,20 @@ class FlowCollector:
 
             # Merge orphan request-only + response-only flows by destination
             removed_flows = self._merge_remaining_orphans()
+            # A merge target that had ALREADY completed was notified (and
+            # possibly written) without the absorbed response: tell
+            # subscribers it changed so persisted copies can be refreshed.
+            for stale_flow in self._stale_merge_targets:
+                completed_events.append((FlowEventType.UPDATED, stale_flow))
 
             # Complete every still-active flow (building its layer stack first,
             # inside the lock, before the COMPLETE flip). Already-COMPLETE flows
             # are skipped by _complete_flow's guard, so they are never notified
             # twice.
             for flow in self._flows.values():
-                self._complete_flow(flow, time.time(), completed_events)
+                ended = (self._last_activity_of(flow) if end_at_last_activity
+                         else time.time())
+                self._complete_flow(flow, ended, completed_events)
 
             self._orphan_requests.clear()
             errors_to_emit = self._drain_pending_errors()
@@ -907,6 +1044,19 @@ class FlowCollector:
         for event_type, completed_flow in completed_events:
             self._notify(event_type, completed_flow)
         self._emit_errors(errors_to_emit)
+
+    @staticmethod
+    def _is_orphan_merge_candidate(flow: Flow) -> bool:
+        """True when *flow* may take part in request/response orphan merging.
+
+        Message-stream transports (MTProto cloud, Telegram Secret Chats) are
+        excluded: their records are independent TL messages, not the two halves
+        of one HTTP exchange, so folding a lone ``pong`` read into a later
+        ``msgs_ack`` write would graft unrelated messages together (and move
+        the chunks without the inner layer's parsed messages). Secret-Chat flows
+        are additionally one flow per packet (``_emit_packet_flow``).
+        """
+        return (getattr(flow, "transport", "") or "") not in MESSAGE_TRANSPORTS
 
     def _merge_remaining_orphans(self) -> list[Flow]:
         """Pair leftover request-only and response-only flows. Under lock.
@@ -930,12 +1080,15 @@ class FlowCollector:
         request_only: list[str] = []
         response_only: list[str] = []
         for fid, flow in self._flows.items():
+            if not self._is_orphan_merge_candidate(flow):
+                continue
             if flow.request is not None and flow.response is None:
                 request_only.append(fid)
             elif flow.response is not None and flow.request is None:
                 response_only.append(fid)
 
         removed: list[Flow] = []
+        self._stale_merge_targets = []
         if not request_only or not response_only:
             return removed
 
@@ -950,6 +1103,9 @@ class FlowCollector:
                 return False
             if abs(resp_flow.started - req_flow.started) > IDLE_THRESHOLD:
                 return False
+            if req_flow.state == FlowState.COMPLETE:
+                # Already persisted/notified: its record is now stale.
+                self._stale_merge_targets.append(req_flow)
             req_flow.response = resp_flow.response
             req_flow.chunks.extend(resp_flow.chunks)
             req_flow._total_bytes += resp_flow._total_bytes
@@ -996,6 +1152,7 @@ class FlowCollector:
     def _finalize_connection(self, conn: '_ConnectionState', ended: float,
                               pending: list) -> None:
         """Flush parser and mark the active flow as complete. Must be called under lock."""
+        self._complete_quic_stream_flows(conn, ended, pending)
         # Commit parser for connections still in the buffering phase
         if conn.parser is None and conn.pending_chunks:
             self._commit_pending(conn)
@@ -1020,7 +1177,7 @@ class FlowCollector:
 
         Must be called under lock.
         """
-        now = time.time()
+        now = self._now()
 
         # 1. Sweep orphan requests: prune entries older than IDLE_THRESHOLD
         #    or referencing flows that no longer exist
@@ -1052,6 +1209,7 @@ class FlowCollector:
         idle_conn_ids = [
             cid for cid, conn in self._connections.items()
             if conn.last_activity > 0 and (now - conn.last_activity) > idle_threshold
+            and not self._is_exempt_from_idle(conn)
         ]
         for conn_id in idle_conn_ids:
             conn = self._connections[conn_id]
@@ -1134,7 +1292,8 @@ class FlowCollector:
                 prefix += c.data
                 if len(prefix) >= PARSER_DETECTION_BUFFER_SIZE:
                     break
-            conn.parser = self._wrap_parser(registry.detect(bytes(prefix)), conn)
+            conn.parser = self._wrap_parser(
+                registry.detect(bytes(prefix), transport=conn.transport), conn)
         except Exception:
             conn.parser = self._wrap_parser(HexdumpParser(), conn)
 
@@ -1192,14 +1351,30 @@ class FlowCollector:
         td = getattr(parser, 'trailing_data', None)
         if td is None:
             return
-        flow.trailing_bytes = td
-        flow.trailing_protocol = getattr(parser, 'trailing_protocol', '')
-        flow.trailing_parse = getattr(parser, 'trailing_sub_parse', None)
+        protocol = getattr(parser, 'trailing_protocol', '')
+        sub_parse = getattr(parser, 'trailing_sub_parse', None)
         parser.trailing_data = None
+        if getattr(parser, 'trailing_direction', '') == "read":
+            self._store_response_trailing(flow, td, protocol, sub_parse)
+            return
+        flow.trailing_bytes = td
+        flow.trailing_protocol = protocol
+        flow.trailing_parse = sub_parse
         if flow.trailing_parse is not None:
             self._pipeline.push_layer(
                 flow, protocol="trailing", source="trailing",
                 parsed_field="trailing_parse")
+
+    def _store_response_trailing(self, flow: Flow, data: bytes, protocol: str,
+                                 sub_parse) -> None:
+        """Keep read-direction leftovers in the response_* slot (never the request's)."""
+        flow.response_trailing_bytes = data
+        flow.response_trailing_protocol = protocol
+        flow.response_trailing_parse = sub_parse
+        if sub_parse is not None:
+            self._pipeline.push_layer(
+                flow, protocol="response_trailing", source="response_trailing",
+                parsed_field="response_trailing_parse")
 
     def _check_parser_upgrade(self, conn: '_ConnectionState') -> None:
         """Swap the parser if the current one signals a protocol upgrade (e.g., 101 → WebSocket)."""
@@ -1231,9 +1406,11 @@ class FlowCollector:
         """
         if not isinstance(unwrap_parser(conn.parser), HexdumpParser):
             return False
+        if self._is_pinned_transport(conn):
+            return False
         try:
             registry = get_default_registry()
-            detected = registry.detect(data)
+            detected = registry.detect(data, transport=conn.transport)
         except Exception:
             return False
         if isinstance(detected, HexdumpParser):
@@ -1250,6 +1427,8 @@ class FlowCollector:
 
     def _create_or_update_flow(self, conn, chunk, result, event, pending):
         """Create new flow or update existing based on parse result."""
+        if conn.transport in MESSAGE_TRANSPORTS:
+            return self._emit_packet_flow(conn, chunk, result, event, pending)
         stream_id = getattr(result, 'stream_id', 0)
 
         if result.is_request:
@@ -1264,10 +1443,17 @@ class FlowCollector:
                 flow = self._flows[conn.active_flow_id]
                 if flow.state == FlowState.ACTIVE:
                     is_ghost = flow.request is None and stream_id == 0
-                    is_unknown_group = result.protocol == "unknown"
+                    # Decrypted cloud MTProto records group like unknown bytes:
+                    # writes accumulate, the first read completes the exchange.
+                    # Retained, currently unused (see T1): mtproto connections
+                    # are routed to _emit_packet_flow before reaching here.
+                    is_unknown_group = (result.protocol == "unknown"
+                                        or conn.transport == _TRANSPORT_MTPROTO)
                     if is_ghost or is_unknown_group:
                         if flow.request is None:
                             flow.request = result
+                        elif conn.transport == _TRANSPORT_MTPROTO:
+                            flow.request = _merge_tl_records(flow.request, result)
                         self._append_chunk(flow, chunk)
                         return flow
             # HTTP/2: update existing flow for this stream if headers already emitted
@@ -1338,6 +1524,94 @@ class FlowCollector:
                 self._attach_response(flow, result, chunk, event.timestamp, pending)
                 return flow
 
+    def _emit_packet_flow(self, conn, chunk, result, event, pending) -> Flow:
+        """Emit ONE complete flow for one decrypted message-transport packet.
+
+        MTProto cloud records and Secret-Chat messages are independent
+        packets, so each becomes its own row (forensic, Wireshark-like): the
+        flow keeps the event's REAL src/dst, a write lands in ``request`` and
+        a read in ``response``, it holds exactly this packet's chunk, and it
+        completes immediately (CREATED then COMPLETED). *result* may be None
+        when the pinned parser produced nothing. Must be called under lock.
+        """
+        flow = self._make_flow(conn, event)
+        pending.append((FlowEventType.CREATED, flow))
+        if chunk.direction == "read":
+            flow.response = result
+        else:
+            flow.request = result
+        self._append_chunk(flow, chunk)
+        self._complete_flow(flow, event.timestamp, pending)
+        conn.active_flow_id = None
+        return flow
+
+    def _pair_e2e_event(self, conn, chunk, result, event, pending) -> Flow:
+        """Pair Telegram Secret-Chat packets into request/response flows.
+
+        Retained, currently unused (see T1): message transports now emit one
+        flow per packet via :meth:`_emit_packet_flow`.
+
+        A sent message (write) always opens a NEW flow whose request is that
+        packet alone. A received message (read) becomes the response of the
+        newest open request — one without a response and not superseded by a
+        later write — otherwise it opens a response-only flow. Every flow is
+        oriented device -> Telegram DC. Must be called under lock.
+        """
+        if result.is_request:
+            return self._open_e2e_request(conn, chunk, result, event, pending)
+        flow = self._take_open_e2e_request(conn.conn_id)
+        if flow is None:
+            flow = self._make_flow(
+                conn, event, self._oriented_endpoints(event, chunk.direction))
+            pending.append((FlowEventType.CREATED, flow))
+        conn.active_flow_id = flow.flow_id
+        self._attach_response(flow, result, chunk, event.timestamp, pending)
+        return flow
+
+    def _open_e2e_request(self, conn, chunk, result, event, pending) -> Flow:
+        """Start a request-only Secret-Chat flow, closing a superseded one.
+
+        Retained, currently unused (see T1 / :meth:`_emit_packet_flow`).
+        """
+        superseded = self._take_open_e2e_request(conn.conn_id)
+        if superseded is not None:
+            self._complete_flow(
+                superseded, self._last_activity_of(superseded), pending)
+        flow = self._make_flow(
+            conn, event, self._oriented_endpoints(event, chunk.direction))
+        flow.request = result
+        self._append_chunk(flow, chunk)
+        conn.active_flow_id = flow.flow_id
+        self._e2e_open_requests[conn.conn_id] = flow.flow_id
+        pending.append((FlowEventType.CREATED, flow))
+        return flow
+
+    def _take_open_e2e_request(self, conn_id: str) -> Optional[Flow]:
+        """Pop *conn_id*'s open Secret-Chat request flow if it can still pair.
+
+        Retained, currently unused (see T1 / :meth:`_emit_packet_flow`).
+        """
+        flow = self._flows.get(self._e2e_open_requests.pop(conn_id, ""))
+        if flow is None or flow.response is not None:
+            return None
+        if flow.state != FlowState.ACTIVE:
+            return None
+        return flow
+
+    @staticmethod
+    def _oriented_endpoints(event, direction: str = "") -> tuple:
+        """``(src_addr, src_port, dst_addr, dst_port)`` oriented device -> server.
+
+        A received (read) packet travels server -> device, so its src/dst are
+        swapped; a sent (write) packet is already device -> server. *direction*
+        overrides ``event.direction`` (e.g. the function-name fallback).
+        """
+        if (direction or getattr(event, 'direction', '')) == "read":
+            return (event.dst_addr, event.dst_port,
+                    event.src_addr, event.src_port)
+        return (event.src_addr, event.src_port,
+                event.dst_addr, event.dst_port)
+
     def _match_orphan_request(self, event) -> Optional[Flow]:
         """Find a recent request-only flow to the same destination."""
         dst_key = f"{event.dst_addr}:{event.dst_port}"
@@ -1382,15 +1656,22 @@ class FlowCollector:
         self._flow_seq[conn_id] = seq + 1
         return seq
 
-    def _make_flow(self, conn, event) -> Flow:
+    def _make_flow(self, conn, event, endpoints: Optional[tuple] = None) -> Flow:
+        """Create and index a new Flow for *event*.
+
+        *endpoints* optionally overrides the event's ``(src_addr, src_port,
+        dst_addr, dst_port)`` orientation (see :meth:`_oriented_endpoints`).
+        """
+        src_addr, src_port, dst_addr, dst_port = endpoints or (
+            event.src_addr, event.src_port, event.dst_addr, event.dst_port)
         flow_id = f"{conn.conn_id}:{self._next_flow_sequence(conn.conn_id)}"
         flow = Flow(
             flow_id=flow_id,
             connection_id=conn.conn_id,
-            src_addr=event.src_addr,
-            src_port=event.src_port,
-            dst_addr=event.dst_addr,
-            dst_port=event.dst_port,
+            src_addr=src_addr,
+            src_port=src_port,
+            dst_addr=dst_addr,
+            dst_port=dst_port,
             ssl_session_id=getattr(event, 'ssl_session_id', ''),
             started=event.timestamp,
         )
@@ -1450,11 +1731,26 @@ class FlowCollector:
         if not hook:
             hook = getattr(event, 'function', '') or ''
         flow.hook_function = hook
-        # Default local/remote endpoints from the event's src/dst.
-        flow.local_addr = event.src_addr
-        flow.local_port = event.src_port
-        flow.remote_addr = event.dst_addr
-        flow.remote_port = event.dst_port
+        # Default local/remote endpoints, orientation-aware for per-packet
+        # message-transport flows (see _local_remote_endpoints).
+        (flow.local_addr, flow.local_port,
+         flow.remote_addr, flow.remote_port) = self._local_remote_endpoints(flow, event)
+
+    def _local_remote_endpoints(self, flow: Flow, event) -> tuple:
+        """``(local_addr, local_port, remote_addr, remote_port)`` for *flow*.
+
+        Message-transport flows keep the packet's real src/dst, so a received
+        (read) packet travels remote -> local: local is its dst. Every other
+        flow is oriented local -> remote already (src = local).
+        """
+        if flow.transport in MESSAGE_TRANSPORTS and self._event_direction(event) == "read":
+            return (flow.dst_addr, flow.dst_port, flow.src_addr, flow.src_port)
+        return (flow.src_addr, flow.src_port, flow.dst_addr, flow.dst_port)
+
+    def _event_direction(self, event) -> str:
+        """The event's direction, falling back to the hook-function heuristic."""
+        return (getattr(event, 'direction', '')
+                or self._get_direction(getattr(event, 'function', '') or ''))
 
     def _notify(self, event_type: str, flow: Flow) -> None:
         """Call all subscribers and emit FlowEvent to EventBus (outside lock)."""
@@ -1473,10 +1769,35 @@ class FlowCollector:
                 logger.debug("FlowEvent emit error", exc_info=True)
 
 
+def _merge_tl_records(grouped, record):
+    """Fold one more decrypted TL *record* into a flow's *grouped* ParseResult.
+
+    Used for cloud MTProto exchanges, where several write records form one
+    request: raw/body concatenate in arrival order (mirroring the flow's
+    chunks), and the method is the best-ranked of the grouped records.
+
+    Retained, currently unused (see T1): cloud MTProto records now become one
+    flow per packet (``FlowCollector._emit_packet_flow``).
+    """
+    from friTap.flow.display import _classify_method
+
+    method = grouped.method
+    if _classify_method(record.method) > _classify_method(method):
+        method = record.method
+    return dataclasses.replace(
+        grouped, method=method, raw=grouped.raw + record.raw,
+        body=grouped.body + record.body,
+        body_size=grouped.body_size + record.body_size,
+    )
+
+
 class _ConnectionState:
     """Internal per-connection tracking."""
-    def __init__(self, conn_id: str):
+    def __init__(self, conn_id: str, transport: str = ""):
         self.conn_id = conn_id
+        # Flow.transport of this connection's events (``tls``/``quic``/
+        # ``mtproto``/``telegram_e2e``); selects a registry-pinned parser.
+        self.transport = transport
         self.parser = None  # BaseParser instance
         self.active_flow_id: Optional[str] = None
         # Flow-id sequencing lives on FlowCollector._flow_seq (keyed by conn_id),
@@ -1486,6 +1807,9 @@ class _ConnectionState:
         self.last_activity: float = 0.0
         self.pending_chunks: list[FlowChunk] = []  # buffered before parser committed
         self.pending_bytes: int = 0  # total bytes in pending_chunks
+        # detected_protocol stamp deferred until the committed parser
+        # recognizes something (see FlowCollector._stamp_detected_protocol).
+        self.protocol_stamp_pending: bool = False
         # Raw decrypted-TLS bytes per direction, accumulated only when live
         # Signal message decoding is enabled. The offline Signal pipeline needs
         # the full per-direction WebSocket/HTTP-2 byte stream (it does its own
@@ -1498,6 +1822,12 @@ class _ConnectionState:
         # stream share one synthetic id (and therefore one flow).
         self._qsid_map: dict[int, int] = {}
         self._qsid_next: int = 1
+        # QUIC stream plumbing (see QuicStreamFlowMixin): the single HTTP/3
+        # control flow, real stream id -> flow_id, and the newest stream event
+        # (needed to create flows for chunks still buffered at finalize).
+        self.h3_control_flow_id: Optional[str] = None
+        self.quic_stream_flows: dict[int, str] = {}
+        self.quic_last_event = None
 
     def map_qsid(self, real_qsid: int) -> int:
         """Return the dense positive synthetic id for a real QUIC stream id."""

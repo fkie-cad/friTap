@@ -44,14 +44,26 @@ class PcapngOutputHandler(OutputHandler):
         self._epb_count = 0
 
     def setup(self, event_bus: "EventBus") -> None:
-        self.setup_with_file(open(self._path, "wb"), event_bus)
+        # Shared per path: the Windows LSASS session writes the same -p file.
+        # Only the first opener writes the SHB+IDB; every block is one write.
+        from .shared_output_file import open_shared_output_file
+        file_obj, _created = open_shared_output_file(
+            self._path, "wb", initializer=self._write_section_header)
+        self._attach(file_obj, event_bus)
 
     def setup_with_file(self, file_obj: IO, event_bus: "EventBus") -> None:
         """Set up with an already-open file handle (used by LivePcapngHandler)."""
+        self._write_section_header(file_obj)
+        self._attach(file_obj, event_bus)
+
+    @staticmethod
+    def _write_section_header(file_obj: IO) -> None:
+        file_obj.write(build_shb())
+        file_obj.write(build_idb())
+
+    def _attach(self, file_obj: IO, event_bus: "EventBus") -> None:
         from ..events import DatalogEvent, KeylogEvent
         self._file = file_obj
-        self._file.write(build_shb())
-        self._file.write(build_idb())
         event_bus.subscribe(KeylogEvent, self.on_keylog)
         event_bus.subscribe(DatalogEvent, self.on_data)
 

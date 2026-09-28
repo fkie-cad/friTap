@@ -3,6 +3,7 @@ import { executeSSLLibrary } from "../../../shared/shared_functions_legacy.js";
 import { socket_library } from "../../../../platforms/windows.js";
 import { devlog, log } from "../../../../util/log.js";
 import { sendKeylog } from "../../../../shared/shared_structures.js";
+import { Tls13PhaseTracker, makeHandshakeKey } from "../../../../shared/tls13_phase_tracker.js";
 
 /*
  * ToDo:
@@ -174,7 +175,12 @@ export class LSASS_Windows {
 
         /* ----- TLS1.3-specific ----- */
 
-        var stages: any = {};
+        // Phase (handshake vs application) of SslExpandTrafficKeys, tracked per
+        // HANDSHAKE (thread + client_random) rather than per thread. lsass pools
+        // worker threads across concurrent handshakes, so a thread-keyed flag
+        // left over from another handshake would swap the HANDSHAKE_TRAFFIC_SECRET
+        // and TRAFFIC_SECRET_0 labels and break Wireshark decryption.
+        var phase_tracker = new Tls13PhaseTracker();
         var get_secret_from_BDDD = function(struct_BDDD: any){
             var struct_3lss = struct_BDDD.add(0x10).readPointer();
             var struct_RUUU = struct_3lss.add(0x20).readPointer();
@@ -190,13 +196,9 @@ export class LSASS_Windows {
                     this.retkey1 = ptr(args[3]);
                     this.retkey2 = ptr(args[4]);
                     this.client_random = client_randoms[this.threadId] || "???";
-                    if(stages[this.threadId]){
-                        stages[this.threadId] = null;
-                        this.suffix = "TRAFFIC_SECRET_0";
-                    }else{
-                        stages[this.threadId] = "handshake";
-                        this.suffix = "HANDSHAKE_TRAFFIC_SECRET";
-                    }
+                    this.suffix = phase_tracker.nextPhase(
+                        makeHandshakeKey(this.threadId, this.client_random),
+                    );
                 },
                 onLeave: function (retval) {
                     var key1 = get_secret_from_BDDD(this.retkey1.readPointer());
@@ -213,7 +215,12 @@ export class LSASS_Windows {
                     this.client_random = client_randoms[this.threadId] || "???";
                 },
                 onLeave: function (retval) {
-                    var key = this.retkey.readPointer().add(0x10).readPointer().add(0x20).readPointer().add(0x10).readPointer().add(0x18).readPointer().readByteArray(48);
+                    // Reuse the same BDDD walk as the traffic secrets, which reads
+                    // the DYNAMIC secret length (struct_YKSM+0x10) instead of a
+                    // hardcoded 48. A SHA-256 connection's exporter is 32 bytes;
+                    // hardcoding 48 appended 16 bytes of adjacent struct memory
+                    // (garbage) to the emitted EXPORTER_SECRET line.
+                    var key = get_secret_from_BDDD(this.retkey.readPointer());
                     keylog("EXPORTER_SECRET " + this.client_random + " " + buf2hex(key), TLSVersion.ONE_THREE);
                 }
             });

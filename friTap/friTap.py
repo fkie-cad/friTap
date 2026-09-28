@@ -78,9 +78,49 @@ def _repair_shadowed_package_path():
 _repair_shadowed_package_path()
 
 
-# Libraries the modern agent path does not yet cover; users opting into --modern
-# (or --protocol ssh, which auto-enables it) fall back to legacy behavior for these.
-_MODERN_REGRESSIONS = "iOS/macOS Cronet, Windows LSASS, IPsec"
+# Targets with no native modern implementation yet: under --modern the agent runs
+# the proven legacy hooks for these, so both paths behave the same there.
+_MODERN_LEGACY_DELEGATED = "iOS/macOS Cronet, Windows LSASS"
+
+
+def _build_lsass_config(pid_of_lsass, *, pcap_name, verbose, keylog, live, debug_mode,
+                        host, debug_output, enable_default_fd, patterns,
+                        custom_hook_script, json_output, full_capture):
+    """Config for the LSASS helper session, which contributes to the target's outputs.
+
+    It is marked ``auxiliary_session`` and shares the target session's -p, -k
+    and --json paths through the process-wide shared writers
+    (friTap/output/shared_output_file.py, shared_keylog_writer.py). When the
+    target session runs a full capture (-f) it alone owns the -p file (sniffer,
+    finalize, manifest), so the LSASS session gets no pcap and contributes keys.
+    """
+    config = FriTapConfig.from_legacy_params(
+        app=str(pid_of_lsass),
+        pcap_name=None if full_capture else pcap_name,
+        verbose=verbose,
+        spawn=False,  # Always attach, never spawn LSASS
+        keylog=keylog,
+        enable_spawn_gating=False,
+        mobile=False,
+        live=live,
+        environment_file=None,
+        debug_mode=debug_mode,
+        full_capture=False,
+        socket_trace=False,
+        host=host,
+        offsets=None,
+        debug_output=debug_output,
+        experimental=False,
+        anti_root=False,
+        payload_modification=False,
+        enable_default_fd=enable_default_fd,
+        patterns=patterns,
+        custom_hook_script=custom_hook_script,
+        json_output=json_output,
+        install_lsass_hook=True
+    )
+    config.output.auxiliary_session = True
+    return config
 
 
 class LsassHookManager:
@@ -101,9 +141,23 @@ class LsassHookManager:
     def start_lsass_hook(self, pcap_name=None, verbose=False, keylog=False, live=False, 
                         debug_mode=False, host=False, debug_output=False, 
                         enable_default_fd=False, patterns=None, custom_hook_script=None, 
-                        json_output=None):
-        """Start LSASS hooking in a background thread."""
-        
+                        json_output=None, full_capture=False):
+        """Start LSASS hooking in a background thread.
+
+        ``full_capture`` is the TARGET session's -f mode: that session alone owns
+        the -p file (sniffer, finalize, manifest), so the LSASS session then gets
+        no pcap at all and only contributes keys.
+        """
+
+        # LSASS is a Windows service; hooking it off Windows is never valid.
+        # Guard here as well as at the call sites so a direct call is a clear
+        # no-op (never an attempt) regardless of how it was reached.
+        if sys.platform != "win32":
+            self.logger.info(
+                "LSASS hooking is a Windows-only feature; skipping on %s.",
+                sys.platform)
+            return None
+
         pid_of_lsass = get_pid_of_lsass()
         if pid_of_lsass is None:
             self.logger.warning("LSASS process not found. Skipping LSASS hook.")
@@ -115,31 +169,13 @@ class LsassHookManager:
             """Worker function that runs in the background thread."""
             try:
                 # Create SSL_Logger instance for LSASS
-                self.lsass_logger = SSL_Logger(
-                    app=str(pid_of_lsass),
-                    pcap_name=pcap_name,
-                    verbose=verbose,
-                    spawn=False,  # Always attach, never spawn LSASS
-                    keylog=keylog,
-                    enable_spawn_gating=False,
-                    mobile=False,
-                    live=live,
-                    environment_file=None,
-                    debug_mode=debug_mode,
-                    full_capture=False,
-                    socket_trace=False,
-                    host=host,
-                    offsets=None,
-                    debug_output=debug_output,
-                    experimental=False,
-                    anti_root=False,
-                    payload_modification=False,
-                    enable_default_fd=enable_default_fd,
-                    patterns=patterns,
-                    custom_hook_script=custom_hook_script,
-                    json_output=json_output,
-                    install_lsass_hook=True
-                )
+                config = _build_lsass_config(
+                    pid_of_lsass, pcap_name=pcap_name, verbose=verbose, keylog=keylog,
+                    live=live, debug_mode=debug_mode, host=host, debug_output=debug_output,
+                    enable_default_fd=enable_default_fd, patterns=patterns,
+                    custom_hook_script=custom_hook_script, json_output=json_output,
+                    full_capture=full_capture)
+                self.lsass_logger = SSL_Logger(config=config)
                 
                 # Start the LSASS session
                 self.lsass_process, self.lsass_script = self.lsass_logger.start_fritap_session()
@@ -173,8 +209,11 @@ class LsassHookManager:
     def stop_lsass_hook(self):
         """Stop the LSASS hook and cleanup resources."""
         if not self.running:
+            # The worker may have ended on its own (lsass session detached);
+            # its output handlers are still open and must be released too.
+            self._close_lsass_output_handlers()
             return
-            
+
         self.logger.info("Stopping LSASS hook...")
         self.running = False
         
@@ -193,7 +232,12 @@ class LsassHookManager:
                     
         except Exception as e:
             self.logger.error(f"Error during LSASS cleanup: {e}")
-            
+
+        # Release the shared -k keylog handle (and any other outputs): nothing
+        # else closes them before the process os._exit()s, and the SChannel
+        # auto-relabel cannot rename a keylog that is still open on Windows.
+        self._close_lsass_output_handlers()
+
         # Wait for thread to finish (with timeout)
         if self.lsass_thread and self.lsass_thread.is_alive():
             self.lsass_thread.join(timeout=5.0)
@@ -202,6 +246,15 @@ class LsassHookManager:
                 
         self.logger.info("LSASS hook stopped")
         
+    def _close_lsass_output_handlers(self):
+        """Flush and close the LSASS logger's output handlers (idempotent, never raises)."""
+        if self.lsass_logger is None:
+            return
+        try:
+            self.lsass_logger.close_output_handlers()
+        except Exception as e:
+            self.logger.debug(f"LSASS output handler close error: {e}")
+
     def is_running(self):
         """Check if LSASS hook is currently running."""
         return self.running and (self.lsass_thread and self.lsass_thread.is_alive())
@@ -211,7 +264,7 @@ _lsass_hook_manager = LsassHookManager()
 
 def hook_lsass(pcap_name=None, verbose=False, keylog=False, live=False, debug_mode=False, 
                host=False, debug_output=False, enable_default_fd=False, patterns=None, 
-               custom_hook_script=None, json_output=None):
+               custom_hook_script=None, json_output=None, full_capture=False):
     """
     Hook the Local Security Authority Subsystem Service (LSASS) process.
     This runs in a background thread and doesn't block the main friTap session.
@@ -227,7 +280,8 @@ def hook_lsass(pcap_name=None, verbose=False, keylog=False, live=False, debug_mo
         enable_default_fd=enable_default_fd,
         patterns=patterns,
         custom_hook_script=custom_hook_script,
-        json_output=json_output
+        json_output=json_output,
+        full_capture=full_capture
     )
 
 def cleanup_lsass_hook():
@@ -365,6 +419,100 @@ def _probe_conflict_warnings(parsed):
     ]
 
 
+def _confirm_full_capture_without_keylog(parsed, logger):
+    """Handle ``-f`` without ``-k``: ask before capturing with no key material.
+
+    With ``-ms`` the heap scanner records the keys into its own keylog, so the
+    capture is decryptable and the blocking prompt is skipped.
+    """
+    if getattr(parsed, "memory_scan", False):
+        logger.info("Full capture without -k: key material will be recorded by the memory scanner (-ms).")
+        return
+    logger.warning("Are you sure you want to proceed without recording the key material (-k <keys.log>)?")
+    logger.warning("Without the key material, you have a complete network record, but no way to view the contents of the TLS traffic.")
+    logger.info("Do you want to proceed without recording keys? : <press any key to proceed or Ctrl+C to abort>")
+    input()
+
+
+def _normalize_protocol_selection(raw, parser, valid_names):
+    """Normalize and validate the multi-select ``--protocol`` values.
+
+    *raw* is what argparse's ``action="append"`` produced: ``None`` (flag never
+    given) or a list of strings, each of which may itself be comma-separated
+    (``["tls,rc4", "ssh"]``). Returns an ordered, de-duplicated list of protocol
+    names. The default (flag absent, or only empty tokens) collapses to
+    ``["tls"]`` so the common single-protocol case is unchanged.
+
+    Validation (all via ``parser.error`` for a clean CLI message):
+      * every token must be a known protocol name or a meta value (all/auto);
+      * ``all``/``auto`` are standalone meta-values — never combined with a
+        named protocol;
+      * ``ssh``/``ipsec``/``mtproto`` are exclusive — never combined with any
+        other *non-custom* protocol (only their own hooks install);
+      * ``custom`` expands to every registered custom cipher (category
+        ``custom_cipher``, e.g. rc4). Custom ciphers combine with anything
+        except ``all``/``auto`` — including the exclusive protocols — and are
+        ordered after the non-custom protocols so ``protocols[0]`` stays the
+        primary protocol.
+    """
+    from friTap.protocols.registry import (
+        CUSTOM_GROUP,
+        custom_cipher_handlers,
+        expand_custom_group,
+        order_protocol_selection,
+    )
+    META = ("all", "auto")
+    EXCLUSIVE = ("ssh", "ipsec", "mtproto")
+    if not raw:
+        return ["tls"]
+    tokens = []
+    for item in raw:
+        for part in str(item).split(","):
+            part = part.strip()
+            if part:
+                tokens.append(part)
+    if not tokens:
+        return ["tls"]
+    known = set(valid_names) | set(META) | {CUSTOM_GROUP}
+    unknown = [t for t in tokens if t not in known]
+    if unknown:
+        parser.error(
+            "--protocol: unknown protocol(s): " + ", ".join(unknown) + "; "
+            "choose from " + ", ".join(list(valid_names) + list(META) + [CUSTOM_GROUP])
+        )
+    # Every custom cipher (incl. upcoming ones selectable by explicit name)
+    # classifies tokens; only the announced ones expand the `custom` group.
+    cipher_handlers = custom_cipher_handlers(include_upcoming=True)
+    all_cipher_names = [h.name for h in cipher_handlers]
+    custom_ciphers = set(all_cipher_names)
+    if CUSTOM_GROUP in tokens:
+        group_names = [h.name for h in cipher_handlers if not getattr(h, "upcoming", False)]
+        if not group_names:
+            parser.error("--protocol custom: no custom ciphers available in this build")
+        # Expand `custom` in place, then de-duplicate (order-preserving).
+        selection = expand_custom_group(tokens, group_names)
+    else:
+        selection = list(dict.fromkeys(tokens))
+    if len(selection) > 1:
+        metas = [t for t in selection if t in META]
+        if metas:
+            parser.error(
+                f"--protocol: '{metas[0]}' is a standalone meta-value and cannot "
+                "be combined with other protocols."
+            )
+        # Custom ciphers ride along with any protocol, so exclusivity is only
+        # checked among the non-custom (main) protocols.
+        main_protocols = [t for t in selection if t not in custom_ciphers]
+        exclusives = [t for t in main_protocols if t in EXCLUSIVE]
+        if exclusives and len(main_protocols) > 1:
+            parser.error(
+                f"--protocol: '{exclusives[0]}' is exclusive and cannot be "
+                "combined with other protocols."
+            )
+    # Keep the main protocol first: protocols[0] is the primary protocol.
+    return order_protocol_selection(selection, all_cipher_names)
+
+
 def _make_inspection_config(parsed):
     """Build the FriTapConfig the library-inspection commands run against.
 
@@ -427,6 +575,28 @@ def _run_early_exit_command(label, action_fn, logger, special_logger):
     raise Failure
 
 
+def _reject_invalid_headless_filter(filter_expression, logger):
+    """Exit with :class:`Failure` (code 2) when ``--filter`` cannot be used headless.
+
+    ``cli()`` calls this after the ``-ll``/``--extract-libraries`` early-exit
+    commands (which ignore ``--filter``) and before the capture banners, the
+    LSASS hook, device lookup or spawning. The check used to sit inside the
+    capture ``try:`` after "Start logging" had been printed, and its bare
+    ``return`` fell out of ``cli()`` with exit status 0, so a rejected filter
+    looked like a successful (empty) run to wrapper scripts.
+
+    Only the headless CLI reaches this: the TUI is launched without ``--filter``
+    and builds flows, so it accepts the full filter engine (``telegram``,
+    ``http.host`` ...). ``headless_filter_error`` is therefore applied here only.
+    """
+    if not filter_expression:
+        return
+    from friTap.filter.pipeline_filter import headless_filter_error
+    err = headless_filter_error(filter_expression)
+    if err:
+        raise Failure(info=err, logger=logger)
+
+
 class ArgParser(argparse.ArgumentParser):
     """Argument parser that prints the full help on a usage error.
 
@@ -445,6 +615,51 @@ class ArgParser(argparse.ArgumentParser):
         print()
         print(self.format_help().replace("usage:", "Usage:"))
         self.exit(2)
+
+
+def _hex_text_or_none(data):
+    """*data* as lowercase hex when it is hex text (whitespace ignored), else None."""
+    try:
+        text = "".join(data.decode("ascii").split())
+    except UnicodeDecodeError:
+        return None
+    if not text or len(text) % 2:
+        return None
+    try:
+        bytes.fromhex(text)
+    except ValueError:
+        return None
+    return text.lower()
+
+
+def _resolve_ms_rc4_ciphertext(value):
+    """Resolve the ``--ms-rc4-ciphertext`` argument into a string.
+
+    A leading ``@`` means the rest is a path whose contents are the sample. The
+    file is read as BYTES: contents that are hex text (whitespace/newlines
+    ignored) are used as that hex, anything else is the raw ciphertext and is
+    hex-encoded byte for byte (a text decode would corrupt binary samples).
+    Any other value is returned unchanged -- inline hex/plain-text
+    normalisation stays in ``loader.apply_rc4_param_overrides`` so the CLI and
+    config paths agree. ``None`` stays ``None``.
+
+    Raises ``ValueError`` with a user-facing message when the file is missing,
+    unreadable or empty.
+    """
+    if not value or not isinstance(value, str) or not value.startswith("@"):
+        return value
+    path = value[1:]
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read()
+    except OSError as exc:
+        raise ValueError(
+            f"--ms-rc4-ciphertext: cannot read '{path}': {exc.strerror or exc}"
+        ) from exc
+    if not data:
+        raise ValueError(f"--ms-rc4-ciphertext: file '{path}' is empty")
+    return _hex_text_or_none(data) or data.hex()
+
 
 def cli():
     # Initial setup - will be reconfigured after parsing arguments
@@ -584,8 +799,9 @@ Offline (read / analyze .tap):
                            "ssl_log_secret symbol / byte pattern) on every platform, and improved "
                            "Cronet hooks on Android/Windows. On Apple the callback tier resolves "
                            "SSL_CTX_set_keylog_callback from the symbol table, since Apple does not "
-                           "export it. Known regressions vs the legacy default: "
-                           f"{_MODERN_REGRESSIONS}. Default: legacy.")
+                           "export it. Every protocol works on both paths; for "
+                           f"{_MODERN_LEGACY_DELEGATED} --modern uses the legacy hooks. "
+                           "Default: legacy.")
     args.add_argument("--quic-capture-mode", required=False,
                       choices=["stream", "app-api"], default="stream",
                       dest="quic_capture_mode",
@@ -602,6 +818,53 @@ Offline (read / analyze .tap):
                            "anonymous candidates to the keylog (requires -k). "
                            "Value is a module name, an explicit '0xADDR,SIZE' "
                            "region, or 'heap' (all writable ranges).")
+    args.add_argument("-ms", "--memory-scan", required=False, nargs='?',
+                      const=True, default=False, dest="memory_scan",
+                      metavar="<pattern.json|engine>",
+                      help="Recover TLS secrets by scanning the target's heap memory "
+                           "instead of hooking the TLS library — a complementary, "
+                           "independently-injected agent. Passed ALONE it is the only "
+                           "thing loaded (the normal TLS-hooking agent is skipped) and "
+                           "keys are written to '<target>_memscan.keylog'; combined with "
+                           "-k it shares that keylog, and with -p/-c it runs alongside "
+                           "them. Which scan engine(s) run is derived from --protocol "
+                           "and the target platform. The optional value overrides that: "
+                           "a pattern FILE overrides/extends the shipped patterns, or an "
+                           "ENGINE name (boringssl | schannel | rc4 | mtproto) or "
+                           "profile id targets just that engine ('mtproto' and its "
+                           "alias 'telegram' recover Telegram MTProto cloud + E2E "
+                           "keys on Android). NOTE: because the value is "
+                           "optional, put the target after it or use '--' (e.g. "
+                           "'fritap -ms -- com.app', 'fritap -ms my_patterns.json com.app', "
+                           "'fritap -ms schannel -- app.exe').")
+    args.add_argument("--memory-scan-interval", required=False, type=float,
+                      default=2.0, dest="memory_scan_interval", metavar="<seconds>",
+                      help="Poll cadence (seconds) at which the memory-scan agent "
+                           "re-scans the heap (default: 2.0). Only effective with -ms.")
+    args.add_argument("--ms-emit-unconfirmed", required=False, action="store_const",
+                      const=True, default=False, dest="ms_emit_unconfirmed",
+                      help="Also write memory-scan key candidates the confirmation "
+                           "oracle could NOT verify (currently MTProto auth/E2E keys) "
+                           "to the keylog. OFF by default. Safe offline: a wrong "
+                           "candidate matches no record (harmless), a real one recovers "
+                           "messages — at the cost of extra keylog noise. Only with -ms.")
+    args.add_argument("--ms-rc4-known-plaintext", required=False, default=None,
+                      dest="ms_rc4_known_plaintext", metavar="<HEX_OR_TEXT>",
+                      help="Known-plaintext oracle for the RC4 memory scanner: a "
+                           "candidate key is accepted only when its keystream "
+                           "reproduces this prefix. Accepts lowercase hex "
+                           "(e.g. '474554202f') or plain text (e.g. 'GET /'), which "
+                           "is utf-8-encoded to hex automatically. Turns the heap "
+                           "sweep into an exact, zero-false-accept test. Only with "
+                           "-ms and the rc4 engine.")
+    args.add_argument("--ms-rc4-ciphertext", required=False, default=None,
+                      dest="ms_rc4_ciphertext", metavar="<HEX_OR_@FILE>",
+                      help="Ciphertext sample for the RC4 memory scanner's trial-"
+                           "decrypt scoring (there is no SSPI oracle on Android). "
+                           "Accepts lowercase hex, plain text (utf-8-encoded to hex), "
+                           "or '@<path>' to read the sample from a file (its contents "
+                           "used as hex if valid, else raw->hex). Only with -ms and "
+                           "the rc4 engine.")
     args.add_argument("--quic-egress-headers-layer", required=False,
                       choices=["auto", "quiche-internal", "chrome-shim", "session-level"],
                       default="auto",
@@ -668,6 +931,15 @@ Offline (read / analyze .tap):
                            "target survives --probe, the agent loaded fine and the crash "
                            "is in hook installation. No keys, pcap or plaintext are "
                            "produced in probe mode.")
+    args.add_argument("--boringssl-anchor-only", required=False, action="store_const",
+                      const=True, default=False, dest="force_anchor_locator",
+                      help="DEBUGGING AID (Android, arm64). Force friTap's last-resort BoringSSL "
+                           "keylog tier (the 'anchor locator') by SKIPPING the byte-pattern tier, so "
+                           "a fully-stripped BoringSSL library (Chrome libchrome.so, libhttpengine.so) "
+                           "routes straight to the anchor locator that finds ssl_log_secret from the "
+                           "keylog label strings and derives the ctx offsets from its prologue. Use it "
+                           "to verify tier 4 on modules a pattern would otherwise cover. Still honours "
+                           "--pairip-safe (tier 4 is a memory scan). No effect on non-arm64 targets.")
     args.add_argument("--owner-capture", "-oc", required=False, action="store_const",
                       const=True, default=False, dest="owner_capture",
                       help="Android/Linux: scope the full packet capture (-f) to ONLY the target "
@@ -712,18 +984,36 @@ Offline (read / analyze .tap):
                       help="Set a timeout in seconds for the process. After the timeout, the process will be resumed automatically. If not set, the process will resume immediately.")
     args.add_argument("--backend", choices=[b.value for b in BackendName], default=BackendName.FRIDA,
                       help="Instrumentation backend to use (default: frida)")
-    from friTap.protocols.registry import available_protocol_names
-    args.add_argument("--protocol", type=str, default="tls",
-                      choices=available_protocol_names() + ["all", "auto"],
-                      help="Protocol to intercept (default: tls). "
+    from friTap.protocols.registry import (
+        CUSTOM_GROUP,
+        available_protocol_names,
+        custom_cipher_names,
+    )
+    # --protocol is MULTI-SELECT (Foundation F1): repeatable and/or
+    # comma-separated, so `--protocol tls,rc4` and `--protocol tls --protocol rc4`
+    # both select TLS AND a companion protocol (each active and independent).
+    # Values are normalized (split on commas, de-duplicated, order-preserving)
+    # and validated after parsing in _normalize_protocol_selection(); the default
+    # collapses to ["tls"], identical to the historical single-value behaviour.
+    args.add_argument("--protocol", action="append", default=None,
+                      metavar="<proto[,proto...]>", dest="protocol",
+                      help="Protocol(s) to intercept (default: tls). Repeatable and "
+                           "comma-separated for multi-select, e.g. --protocol tls,rc4 or "
+                           "--protocol tls --protocol rc4 (both protocols active, independent). "
                            "'tls' covers the TLS family — TLS, QUIC, and OHTTP. "
-                           "'ssh', 'ipsec' and 'mtproto' (Telegram) are exclusive (only their hooks install). "
+                           "'ssh', 'ipsec' and 'mtproto' (Telegram) are EXCLUSIVE — each installs "
+                           "only its own hooks and cannot be combined with another protocol "
+                           "(custom ciphers excepted). "
                            "'telegram' extracts MTProto cloud-chat keys AND Secret-Chat E2E keys into one keylog. "
                            "Some protocols are TLS-wrapped and additionally extract TLS keys; their -k "
                            "keylog is then split into <stem>.<proto><ext> + <stem>.tls<ext>. "
                            "'all' hooks every supported protocol and asks for confirmation "
                            "(skip with -y/--yes). 'auto' is a script-friendly alias for 'all' "
-                           "that does NOT prompt.")
+                           "that does NOT prompt. 'all'/'auto' are standalone and cannot be combined. "
+                           f"'{CUSTOM_GROUP}' = all custom ciphers (currently: "
+                           f"{', '.join(custom_cipher_names()) or 'none'}); combinable with any protocol "
+                           "except 'all'/'auto'. "
+                           f"Available: {', '.join(available_protocol_names() + ['all', 'auto', CUSTOM_GROUP])}.")
     args.add_argument("-y", "--yes", required=False, action="store_true", default=False,
                       help="Auto-confirm interactive prompts (e.g. --protocol all warning).")
     args.add_argument("--proxy", metavar="<host:port>", required=False, default=None,
@@ -735,10 +1025,31 @@ Offline (read / analyze .tap):
                       default=True, dest="filter_infrastructure",
                       help="Include frida/adb control traffic in captures (by default, ports "
                            "5037/5555/27042/27043 are dropped).")
+    # Loopback capture/inclusion is OFF by default and opt-in via --loopback: a full
+    # capture (-f) then also sniffs the loopback adapter and the pipeline keeps loopback
+    # traffic, so a client talking to a local server (e.g. 127.0.0.1) is captured.
+    args.add_argument("--loopback", required=False, action="store_true",
+                      default=False, dest="include_loopback",
+                      help="Also capture loopback (localhost, 127.0.0.1/::1) traffic. "
+                           "Off by default. Only relevant for a full capture (-f) of a "
+                           "client talking to a local server. On Windows this needs "
+                           "Npcap with loopback support.")
+    # Deprecated spelling kept so existing scripts keep working (allow_abbrev is
+    # off, so the old flag would otherwise be rejected). Hidden from --help.
     args.add_argument("--include-loopback", required=False, action="store_true",
                       default=False, dest="include_loopback",
-                      help="Include loopback/localhost traffic (e.g. Firefox internal NSS IPC). "
-                           "By default loopback traffic is filtered out to reduce noise.")
+                      help=argparse.SUPPRESS)
+    # Windows SChannel/lsass keylogs come out with swapped TLS 1.3 labels and ???
+    # client_randoms (lsass is system-wide; correlation is per-thread). By default a
+    # full capture (-f) auto-relabels the keylog by trial decryption at teardown so it
+    # loads directly in Wireshark (the raw agent output is kept as <stem>.raw.keylog).
+    args.add_argument("--no-auto-relabel", required=False, action="store_false",
+                      default=True, dest="auto_relabel",
+                      help="Do NOT auto-relabel the Windows SChannel keylog after a full "
+                           "capture. By default friTap trial-decrypts the capture to fix "
+                           "TLS 1.3 label swaps / ??? client_randoms and overwrites the "
+                           "keylog with the corrected version (raw kept as <stem>.raw.keylog); "
+                           "pass this to keep the raw keylog untouched.")
     args.add_argument("--script-load-timeout", metavar="<seconds>", type=float,
                       required=False, default=20.0, dest="script_load_timeout",
                       help="Upper bound in seconds for loading the friTap agent into the "
@@ -762,6 +1073,17 @@ Offline (read / analyze .tap):
         parsed.exec = " ".join(parsed.exec)
     else:
         parsed.exec_argv = None
+
+    # Foundation F1 — multi-protocol selection. Normalize/validate the repeatable,
+    # comma-separated --protocol values into an ordered, de-duplicated list.
+    # `parsed.protocols` is the canonical selection; `parsed.protocol` is kept as
+    # the primary (first) element so the single-value branches and config threading
+    # below keep working unchanged.
+    from friTap.protocols.registry import available_protocol_names as _avail_names
+    parsed.protocols = _normalize_protocol_selection(
+        parsed.protocol, parser, _avail_names()
+    )
+    parsed.protocol = parsed.protocols[0]
 
     # Configure logging after parsing arguments to respect debug flags
     logger, special_logger = setup_fritap_logging(
@@ -811,19 +1133,34 @@ Offline (read / analyze .tap):
                 parsed.extract_libraries),
             logger, special_logger)
 
-    if are_we_running_on_windows() and not parsed.mobile:
+    # A rejected --filter is an invalid-argument error: fail with exit 2 before
+    # the capture starts (no banners, no LSASS hook, no attach/spawn). It runs
+    # after -ll/--extract-libraries on purpose: those commands never use the
+    # filter, so `fritap -ll app --filter telegram` must not be rejected by it.
+    _reject_invalid_headless_filter(getattr(parsed, 'filter', None), logger)
+
+    # LSASS is a Windows service: hooking it only makes sense when friTap runs on
+    # a local Windows host analysing a local Windows process. A mobile target
+    # (--mobile, Android/iOS) or a remote frida-server (--host) is never Windows
+    # LSASS on THIS machine, so LSASS must stay off for those even when the
+    # analyst's own OS is Windows.
+    if are_we_running_on_windows() and not parsed.mobile and not parsed.host:
         if parsed.no_lsass:
             logger.info("LSASS hooking is disabled. Proceeding without LSASS.")
         else:
             logger.info("Hooking LSASS process for SSL/TLS traffic decryption.")
-            hook_lsass(parsed.pcap, parsed.verbose, parsed.keylog, parsed.live, parsed.debug, parsed.host, parsed.debug_output, parsed.enable_default_fd, parsed.patterns, parsed.custom_script, parsed.json)
+            # --owner-capture implies -f (enabled further below), so it counts here.
+            hook_lsass(parsed.pcap, parsed.verbose, parsed.keylog, parsed.live, parsed.debug, parsed.host, parsed.debug_output, parsed.enable_default_fd, parsed.patterns, parsed.custom_script, parsed.json,
+                       full_capture=bool(parsed.full_capture or getattr(parsed, 'owner_capture', False)))
             atexit.register(cleanup_lsass_hook)
+    elif (parsed.mobile or parsed.host) and not parsed.no_lsass:
+        logger.debug("LSASS hooking is a local-Windows-only feature; skipping for the mobile/remote target.")
 
     install_lsass_hook = False
 
     # --protocol all: install every protocol's hooks, but make the user confirm.
     # auto is the script-friendly alias (same hooks, no prompt) for unattended runs.
-    if parsed.protocol == "all" and not parsed.yes:
+    if "all" in parsed.protocols and not parsed.yes:
         if not sys.stdin.isatty():
             parser.error(
                 "--protocol all requires interactive confirmation. Pass -y/--yes "
@@ -841,13 +1178,7 @@ Offline (read / analyze .tap):
             logger.info("Aborted by user.")
             raise Failure
 
-    # --protocol ssh: the SSH agent lives only in the modern path. Force
-    # use_modern=true so the user doesn't silently fall back to the legacy
-    # TLS-only agent (which has no SSH support and would no-op SSH targets).
-    if parsed.protocol == "ssh":
-        if not getattr(parsed, "use_modern", False):
-            logger.info("[ssh] --protocol ssh auto-enables use_modern=true (legacy path has no SSH support)")
-            parsed.use_modern = True
+    if "ssh" in parsed.protocols:
         # sshd forks a pre-auth child for KEX and re-execs into sshd-session post-auth.
         # Frida hooks only follow forks when child-gating is on. Auto-enable when the
         # target name looks like an sshd binary.
@@ -857,31 +1188,27 @@ Offline (read / analyze .tap):
             logger.info("[ssh] sshd target detected — enabling --enable_child_gating automatically")
             parsed.enable_child_gating = True
 
-    # --protocol ipsec: the IPSec strongSwan executor is registered only on the
-    # modern path. Force use_modern=true so the user doesn't silently fall back
-    # to the legacy TLS-only agent (which would no-op strongSwan targets).
-    if parsed.protocol == "ipsec":
-        if not getattr(parsed, "use_modern", False):
-            logger.info("[ipsec] --protocol ipsec auto-enables use_modern=true (legacy path has no IPSec support)")
-            parsed.use_modern = True
-
-    # MTProto and Telegram CLI rules (modern-path auto-enable, spawn nudge,
-    # capture-intent gate, offline-backend warning) now live with their handlers
-    # in MTProtoHandler/TelegramHandler.validate_cli_intent, dispatched below —
-    # same protocol-agnostic seam the Signal handler already uses.
+    # MTProto and Telegram CLI rules (spawn nudge, capture-intent gate,
+    # offline-backend warning) live in MTProtoHandler/TelegramHandler
+    # .validate_cli_intent, dispatched below.
 
     # Let the selected protocol's handler validate/adjust CLI intent. This keeps
     # protocol-specific rules (e.g. a TLS-wrapped E2E protocol that needs a
-    # capture intent and the modern agent path) with the handler, out of the
+    # capture intent) with the handler, out of the
     # generic parser and out of the public core. Meta values ('all'/'auto') and
     # unknown names have no single handler -> skipped.
     from friTap.protocols.registry import (
         available_protocol_names,
         create_default_registry,
     )
-    if parsed.protocol in available_protocol_names():
+    # Run EACH selected protocol's handler validation (multi-protocol selection),
+    # not just the primary. Meta values ('all'/'auto') and unknown names have no
+    # single handler and are skipped.
+    for _proto_name in parsed.protocols:
+        if _proto_name not in available_protocol_names():
+            continue
         try:
-            _selected_handler = create_default_registry([parsed.protocol]).get(parsed.protocol)
+            _selected_handler = create_default_registry([_proto_name]).get(_proto_name)
         except Exception:
             _selected_handler = None
         if _selected_handler is not None:
@@ -889,8 +1216,8 @@ Offline (read / analyze .tap):
 
     if parsed.use_modern:
         logger.warning(
-            f"friTap modern hooks active (experimental). Known regressions vs legacy: "
-            f"{_MODERN_REGRESSIONS}. Omit --modern to use the stable legacy path."
+            f"friTap modern hooks active (experimental; {_MODERN_LEGACY_DELEGATED} "
+            "use the legacy hooks). Omit --modern to use the stable legacy path."
         )
 
     # Surfaced before the output-flag validations below so the user learns that
@@ -902,11 +1229,16 @@ Offline (read / analyze .tap):
     if parsed.full_capture and parsed.pcap is None:
         parser.error("--full_capture requires -p to set the pcap name")
 
+    # Resolve '@file' up front so a missing/unreadable sample is a clean CLI
+    # error instead of a traceback from inside config construction.
+    try:
+        parsed.ms_rc4_ciphertext = _resolve_ms_rc4_ciphertext(
+            getattr(parsed, 'ms_rc4_ciphertext', None))
+    except ValueError as exc:
+        parser.error(str(exc))
+
     if parsed.full_capture and parsed.keylog is None:
-        logger.warning("Are you sure you want to proceed without recording the key material (-k <keys.log>)?")
-        logger.warning("Without the key material, you have a complete network record, but no way to view the contents of the TLS traffic.")
-        logger.info("Do you want to proceed without recording keys? : <press any key to proceed or Ctrl+C to abort>")
-        input() 
+        _confirm_full_capture_without_keylog(parsed, logger)
     # Chrome's network service runs in a child process on modern Android builds,
     # so attaching to the browser process and hoping to see HTTP/3 page traffic
     # is a frequent footgun: the socket observer fires for the browser process's
@@ -1001,10 +1333,12 @@ Offline (read / analyze .tap):
             script_load_timeout=parsed.script_load_timeout,
             backend=parsed.backend,
             protocol=parsed.protocol,
+            protocols=parsed.protocols,
             proxy=parsed.proxy,
             filter_expression=getattr(parsed, 'filter', None),
             filter_infrastructure=getattr(parsed, 'filter_infrastructure', True),
             include_loopback=getattr(parsed, 'include_loopback', False),
+            auto_relabel=getattr(parsed, 'auto_relabel', True),
             force_scan_modules=getattr(parsed, 'force_scan_modules', None),
             quic_capture_mode=getattr(parsed, 'quic_capture_mode', 'stream'),
             quic_only=getattr(parsed, 'quic_only', False),
@@ -1012,8 +1346,23 @@ Offline (read / analyze .tap):
             stealth_loader=getattr(parsed, 'stealth_loader', False),
             pairip_safe=getattr(parsed, 'pairip_safe', False),
             probe=parsed.probe,
+            force_anchor_locator=getattr(parsed, 'force_anchor_locator', False),
             quic_egress_headers_layer=getattr(parsed, 'quic_egress_headers_layer', 'auto'),
             scan_keys_region=getattr(parsed, 'scan_keys_region', None),
+            memory_scan=bool(getattr(parsed, 'memory_scan', False)),
+            memory_scan_patterns=(
+                parsed.memory_scan
+                if isinstance(getattr(parsed, 'memory_scan', False), str)
+                else None
+            ),
+            memory_scan_interval=getattr(parsed, 'memory_scan_interval', 2.0),
+            memory_scan_emit_unconfirmed=bool(
+                getattr(parsed, 'ms_emit_unconfirmed', False)
+            ),
+            memory_scan_rc4_known_plaintext=getattr(
+                parsed, 'ms_rc4_known_plaintext', None
+            ),
+            memory_scan_rc4_ciphertext=getattr(parsed, 'ms_rc4_ciphertext', None),
             scan=getattr(parsed, 'scan', None),
             scan_report=getattr(parsed, 'scan_report', 'table'),
             scan_report_out=getattr(parsed, 'scan_report_out', None),
@@ -1025,19 +1374,14 @@ Offline (read / analyze .tap):
             scan_analyzer_path=getattr(parsed, 'scan_analyzer_path', None),
         )
 
-        # Validate filter expression early (before session starts)
-        if config.output.filter_expression:
-            from friTap.filter import FilterEngine
-            err = FilterEngine.validate(config.output.filter_expression)
-            if err:
-                logger.error(f"Invalid filter expression: {err}")
-                return
+        # --filter was already validated by _reject_invalid_headless_filter()
+        # right after argument parsing, before the banners above.
 
         ssl_log = SSL_Logger(config=config)
 
-        # Propagate --protocol ssh's auto-enabled use_modern onto the logger so
-        # the agent config_batch sees use_modern=true (legacy/ssl_logger_core.py
-        # reads via getattr(self, 'use_modern', False)).
+        # Propagate an explicit --modern onto the logger so the agent
+        # config_batch sees use_modern=true (legacy/ssl_logger_core.py reads
+        # via getattr(self, 'use_modern', False)).
         if getattr(parsed, "use_modern", False):
             ssl_log.use_modern = True
 
@@ -1065,11 +1409,20 @@ Offline (read / analyze .tap):
         else:
             logger.error(f"Backend transport error: {fe}")
             crumb = getattr(_ssl_log, "_last_hook_breadcrumb", "")
-            hint = "The target process appears to have terminated unexpectedly"
-            if crumb:
-                hint += f" (last hook entered: {crumb})"
-            hint += " — it may have crashed inside an instrumented hook. Check the debug log."
-            logger.error(hint)
+            spawn = getattr(_ssl_log, "spawn", False)
+            # Call it a plain exit only when the agent fully initialised in attach
+            # mode ("agent-init: complete"); an empty/partial crumb (especially in
+            # spawn mode) is treated as a possible hook crash, as before.
+            if not spawn and crumb == "agent-init: complete":
+                logger.error(
+                    "The target process ended (last agent stage: agent-init: "
+                    "complete); if this was unexpected, check the debug log.")
+            else:
+                extra = f" (last instrumented: {crumb})" if crumb else ""
+                logger.error(
+                    f"The target process appears to have terminated unexpectedly"
+                    f"{extra} — it may have crashed inside an instrumented hook. "
+                    f"Check the debug log.")
     except BackendScriptLoadTimeout as se:
         # The agent's breadcrumb lives on SSL_Logger; prefer the one the
         # exception already carries (set by whoever raised it with context).

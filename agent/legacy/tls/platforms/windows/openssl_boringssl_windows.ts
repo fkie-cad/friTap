@@ -6,6 +6,7 @@ import { patterns, isPatternReplaced, experimental } from "../../../../fritap_ag
 import { sendKeylog } from "../../../../shared/shared_structures.js";
 import { executeSSLLibrary } from "../../../shared/shared_functions_legacy.js";
 import { enableDeepSymbolResolution } from "../../../../shared/deep_symbol_resolution.js";
+import { createKeylogCallbackTracker } from "../../../../shared/keylog_callback_tracker.js";
 
 export class OpenSSL_BoringSSL_Windows extends OpenSSL_BoringSSL {
 
@@ -73,6 +74,9 @@ export class OpenSSL_From_Python_Windows extends OpenSSL_BoringSSL {
         }
 
         this.SSL_CTX_set_keylog_callback = new NativeFunction(set_keylog_cb_ptr, "void", ["pointer", "pointer"]);
+        // Records every SSL_CTX we point at our script-owned keylog callback so
+        // releaseAgentHooks can undo it (see shared/keylog_callback_tracker.ts).
+        const tracker = createKeylogCallbackTracker(this.module_name, set_keylog_cb_ptr, instance.keylog_callback, true);
 
         try {
             const SSL_get_SSL_CTX = new NativeFunction(ssl_get_ctx_ptr,'pointer', ['pointer']) as (ssl: NativePointer) => NativePointer;
@@ -99,7 +103,7 @@ export class OpenSSL_From_Python_Windows extends OpenSSL_BoringSSL {
 
                     try {
                         devlog("Installing callback for OpenSSL_From_Python for module: " + instance.module_name);
-                        instance.SSL_CTX_set_keylog_callback(ctx_ptr, instance.keylog_callback);
+                        tracker.install(ctx_ptr);
                     } catch (e) {
                         devlog_error(`Failed to set keylog callback: ${e}`);
                     }
@@ -119,6 +123,8 @@ export class OpenSSL_From_Python_Windows extends OpenSSL_BoringSSL {
             Interceptor.attach(set_keylog_cb_ptr, {
                 onEnter: function (args: any) {
                     let callback_func = args[1];
+                    if (callback_func.isNull() || tracker.sealed) return;
+                    tracker.noteAppCallback(args[0], callback_func);
 
                     Interceptor.attach(callback_func, {
                         onEnter: function (args: any) {

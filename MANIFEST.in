@@ -2,7 +2,10 @@ include requirements.txt
 include requirements-minimal.txt
 include LICENSE
 include README.md
+include friTap/fritap_memscan.js
 recursive-include friTap/patterns *.json
+recursive-include friTap/memory_scanning *.json
+recursive-include friTap/offline/mtproto/schema *.tl SOURCE.txt
 recursive-include friTap/plugins/shared_utility *.js
 recursive-include friTap/tui/css *.tcss
 recursive-include friTap/assets *

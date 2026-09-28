@@ -28,12 +28,19 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
+from friTap.constants import PROTOCOL_MTPROTO, PROTOCOL_TELEGRAM_E2E
+from friTap.flow import telegram_conversation as _tconv
+from friTap.flow.display import TELEGRAM_LAYER_NAMES
 from friTap.flow.models import format_byte_size
 from friTap.tui.modals.body_processing_modal import (
     BodyProcessingModal,
     BodyProcessingResult,
 )
 from friTap.tui.themes import c
+from friTap.tui.widgets import telegram_panes
+from friTap.tui.widgets.tl_tree_render import local_datetime, local_time
+
+from ..modals.alert_modal import AlertModal
 
 
 def _is_text(data: bytes) -> bool:
@@ -100,6 +107,12 @@ if TEXTUAL_AVAILABLE:
     _TAB_DETAIL = "tab-detail"
     _TAB_MESSAGE = "tab-message"
     _TAB_LAYERS = "tab-layers"
+    # Fixed pool of per-layer byte panes ("Decrypted TLS (98 bytes)", ...),
+    # hidden until a flow has >= 2 decrypted layers. A fixed pool shown/hidden
+    # via TabbedContent.show_tab/hide_tab avoids async add_pane/remove_pane races.
+    _TAB_BYTES_PREFIX = "tab-bytes-"
+    _BYTE_TAB_POOL_SIZE = 4
+    _BYTE_TAB_IDS = tuple(f"{_TAB_BYTES_PREFIX}{i}" for i in range(_BYTE_TAB_POOL_SIZE))
 
     def _flow_signal_layer(flow):
         """Return a flow's parsed Signal layer (non-mutating), or None.
@@ -137,6 +150,22 @@ if TEXTUAL_AVAILABLE:
             if layer is not None and getattr(layer, "messages", None):
                 chosen = layer
         return chosen
+
+    def _escape_bracket_label(text: str) -> str:
+        """Escape every ``[`` so Textual markup keeps labels like ``TLS[RC4]``.
+
+        Rich's ``escape`` only guards lowercase-led tags, but Textual's
+        ``Static`` markup also consumes ``[RC4]`` / ``[Signal]``, which
+        truncated the detail header to the bare carrier (``TLS``).
+        """
+        return text.replace("[", "\\[")
+
+    def _safe_layer(flow, name: str):
+        """Non-mutating ``flow.layer(name)`` lookup; None when absent/unsupported."""
+        try:
+            return flow.layer(name)
+        except Exception:
+            return None
 
     def _flow_has_messages(flow) -> bool:
         """True if any Signal / MTProto / Telegram-E2E layer carries messages."""
@@ -182,6 +211,8 @@ if TEXTUAL_AVAILABLE:
             # before show_flow; the Message tab merges their messages into one
             # time-ordered transcript. Empty -> single-flow behavior.
             self._conversation_siblings: list = []
+            # flow_id -> visible row number (set by the screen); drives "#N" refs.
+            self._row_resolver = None
             self._last_explorer_result = None  # ExplorerResult from last explorer session
             # Widget refs assigned in compose(); None until then
             self._header_widget: Static | None = None
@@ -191,6 +222,9 @@ if TEXTUAL_AVAILABLE:
             self._detail_log: RichLog | None = None
             self._message_log: RichLog | None = None
             self._layers_log: RichLog | None = None
+            # Byte-tab pool: RichLogs by pane id, and the layer each visible pane shows.
+            self._byte_logs: dict[str, RichLog] = {}
+            self._byte_tab_layers: dict = {}
             self._segment_offsets: list[int] = []  # RichLog line offsets for n/N navigation
             # Layers-tab navigation state
             self._current_layer_idx: int = 0
@@ -214,6 +248,7 @@ if TEXTUAL_AVAILABLE:
             self._header_widget = Static("", id="flow-detail-header")
             yield self._header_widget
             tab_titles = ["Request", "Response", "Detail", "Message", "Layers"]
+            tab_titles += [f"Bytes {i}" for i in range(_BYTE_TAB_POOL_SIZE)]
             for tab_provider in self._extra_tabs:
                 tab_titles.append(tab_provider.title)
 
@@ -223,6 +258,10 @@ if TEXTUAL_AVAILABLE:
             self._detail_log = RichLog(id="detail-log", wrap=True, highlight=True, markup=True, auto_scroll=False)
             self._message_log = RichLog(id="message-log", wrap=True, highlight=True, markup=True, auto_scroll=False)
             self._layers_log = RichLog(id="layers-log", wrap=True, highlight=True, markup=True, auto_scroll=False)
+            self._byte_logs = {
+                pane_id: RichLog(id=f"{pane_id}-log", wrap=True, highlight=True, markup=True, auto_scroll=False)
+                for pane_id in _BYTE_TAB_IDS
+            }
 
             with TabbedContent(*tab_titles, id="flow-tabs") as self._tabs:
                 with TabPane("Request", id=_TAB_REQUEST):
@@ -235,9 +274,17 @@ if TEXTUAL_AVAILABLE:
                     yield self._message_log
                 with TabPane("Layers", id=_TAB_LAYERS):
                     yield self._layers_log
+                for i, pane_id in enumerate(_BYTE_TAB_IDS):
+                    with TabPane(f"Bytes {i}", id=pane_id):
+                        yield self._byte_logs[pane_id]
                 for tab_provider in self._extra_tabs:
                     with TabPane(tab_provider.title, id=f"tab-{tab_provider.tab_id}"):
                         yield RichLog(id=f"{tab_provider.tab_id}-log", wrap=True, highlight=True, markup=True, auto_scroll=False)
+
+        def on_mount(self) -> None:
+            """Hide the byte-tab pool until a multi-layer flow is shown."""
+            for pane_id in _BYTE_TAB_IDS:
+                self._set_byte_tab_visible(pane_id, False)
 
         def _reset_view_state(self) -> None:
             self._raw_request = False
@@ -280,6 +327,7 @@ if TEXTUAL_AVAILABLE:
                     _TAB_DETAIL: self._detail_log,
                     _TAB_MESSAGE: self._message_log,
                     _TAB_LAYERS: self._layers_log,
+                    **self._byte_logs,
                 }
                 log = log_map.get(active)
                 if log:
@@ -317,6 +365,7 @@ if TEXTUAL_AVAILABLE:
                     tab.label = label
                 except Exception:
                     pass
+            self._update_byte_tabs(flow)
 
         def _render_tab(self, flow: "Flow", tab_id: str) -> None:
             """Render a single tab by its pane ID."""
@@ -330,6 +379,8 @@ if TEXTUAL_AVAILABLE:
                 self._render_message_tab(flow)
             elif tab_id == _TAB_LAYERS:
                 self._render_layers_tab(flow)
+            elif tab_id.startswith(_TAB_BYTES_PREFIX):
+                self._render_byte_tab_by_id(tab_id)
             else:
                 self._update_extra_tabs(flow)
 
@@ -352,6 +403,127 @@ if TEXTUAL_AVAILABLE:
             self._render_tab(self._current_flow, event.pane.id)
 
         # ----------------------------------------------------------
+        # Per-layer decrypted byte tabs (Wireshark-style)
+        # ----------------------------------------------------------
+
+        @staticmethod
+        def _layer_bytes_total(layer) -> int:
+            """Total decrypted bytes (write + read) a layer carries, 0 if none."""
+            data = getattr(layer, "data", None)
+            if data is None:
+                return 0
+            try:
+                return len(data.write) + len(data.read)
+            except Exception:
+                return 0
+
+        @staticmethod
+        def _byte_tab_label(layer, total: int) -> str:
+            """Tab label like ``Decrypted TLS (98 bytes)``."""
+            from friTap.flow.display import _layer_display_name
+
+            name = getattr(layer, "name", "") or "?"
+            display = _layer_display_name(name) or name.upper()
+            return f"Decrypted {display} ({total:,} bytes)"
+
+        @staticmethod
+        def _is_chunk_backed(layer) -> bool:
+            """True when *layer* views the flow's chunks rather than owning bytes."""
+            data = getattr(layer, "data", None)
+            return getattr(data, "data_source", "") == "chunks"
+
+        def _byte_sources(self, flow: "Flow") -> list:
+            """``(layer, label)`` per distinct byte buffer, outer -> inner.
+
+            Chunk-backed layers all view the same flow chunks (e.g. TLS and
+            HTTP/1.x on a plain HTTPS flow), so only the innermost of them is a
+            distinct buffer; layers with owned bytes (an RC4-in-TLS carrier)
+            are each their own buffer.
+            """
+            sources = []
+            for layer in getattr(flow, "layers", None) or []:
+                if getattr(layer, "metadata_only", False):
+                    continue
+                total = self._layer_bytes_total(layer)
+                if not total:
+                    continue
+                if self._is_chunk_backed(layer):
+                    sources = [s for s in sources
+                               if not self._is_chunk_backed(s[0])]
+                sources.append((layer, self._byte_tab_label(layer, total)))
+            return sources
+
+        def _set_byte_tab_visible(self, pane_id: str, visible: bool) -> None:
+            """Show or hide one byte-tab pane (no-op before compose)."""
+            if self._tabs is None:
+                return
+            try:
+                if visible:
+                    self._tabs.show_tab(pane_id)
+                else:
+                    self._tabs.hide_tab(pane_id)
+            except Exception:
+                pass
+
+        def _update_byte_tabs(self, flow: "Flow") -> None:
+            """Bind the byte-tab pool to *flow*'s layers; hide unused panes.
+
+            Tabs appear only for a flow with >= 2 byte-carrying layers, so a
+            plain single-layer flow keeps the ordinary tab set.
+            """
+            sources = self._byte_sources(flow)
+            if len(sources) < 2:
+                sources = []
+            self._byte_tab_layers = {}
+            for i, pane_id in enumerate(_BYTE_TAB_IDS):
+                if i < len(sources):
+                    layer, label = sources[i]
+                    self._byte_tab_layers[pane_id] = layer
+                    self._set_byte_tab_label(pane_id, label)
+                self._set_byte_tab_visible(pane_id, i < len(sources))
+
+        def _set_byte_tab_label(self, pane_id: str, label: str) -> None:
+            try:
+                self._tabs.get_tab(pane_id).label = label
+            except Exception:
+                pass
+
+        def _render_byte_tab_by_id(self, pane_id: str) -> None:
+            """Render the byte pane *pane_id* for the layer currently bound to it."""
+            log = self._byte_logs.get(pane_id)
+            layer = self._byte_tab_layers.get(pane_id)
+            if log is None:
+                return
+            if layer is None:
+                log.clear()
+                log.write("[dim]No decrypted bytes[/]")
+                return
+            self._render_byte_tab(log, layer)
+
+        _BYTE_TAB_DIRECTIONS = (
+            ("write", "→", "client→server"),
+            ("read", "←", "server→client"),
+        )
+
+        def _render_byte_tab(self, log: RichLog, layer) -> None:
+            """Write a layer's decrypted bytes as per-direction hexdump sections."""
+            log.clear()
+            total = self._layer_bytes_total(layer)
+            log.write(f"[bold {c('primary')}]{self._byte_tab_label(layer, total)}[/]")
+            log.write("")
+            for direction, arrow, label in self._BYTE_TAB_DIRECTIONS:
+                try:
+                    raw = layer.data.direction(direction)
+                except Exception:
+                    raw = b""
+                if not raw:
+                    continue
+                log.write(f"[bold {c('success')}]{arrow} {label} ({len(raw):,} bytes)[/]")
+                self._write_hexdump(log, raw)
+                log.write("")
+            log.scroll_home(animate=False)
+
+        # ----------------------------------------------------------
         # Actions
         # ----------------------------------------------------------
 
@@ -364,7 +536,7 @@ if TEXTUAL_AVAILABLE:
                 return
             body = self._get_active_body_preview()
             self._pre_modal_processing = self._active_processing
-            seg_count = len(self._current_flow.segments) if self._current_flow else 1
+            seg_count = len(self._current_flow.pane_segments(self._active_pane()))
             self.app.push_screen(
                 BodyProcessingModal(
                     current=self._active_processing,
@@ -378,19 +550,30 @@ if TEXTUAL_AVAILABLE:
         def _on_body_processing_change(self, result) -> None:
             """Live-update the flow detail while the body processing modal is open."""
             self._active_processing = result
-            if self._current_flow:
-                self.show_flow(self._current_flow)
+            self._rerender_active_tab()
 
         def _on_body_processing_result(self, result) -> None:
             if result is None:
                 # User cancelled — revert to pre-modal state
                 self._active_processing = self._pre_modal_processing
-                if self._current_flow:
-                    self.show_flow(self._current_flow)
+                self._rerender_active_tab()
                 return
             self._active_processing = result
-            if self._current_flow:
-                self.show_flow(self._current_flow)
+            self._rerender_active_tab()
+
+        def _rerender_active_tab(self) -> None:
+            """Re-render the tab the user is on, keeping it selected.
+
+            ``show_flow`` would auto-select a tab (e.g. jump from Response to
+            Message) and so hide the pane the processing was applied to.
+            """
+            flow = self._current_flow
+            if not flow:
+                return
+            try:
+                self._render_tab(flow, self._tabs.active)
+            except Exception:
+                self.show_flow(flow)
 
         def action_processing_reset(self) -> None:
             self._reset_view_state()
@@ -563,12 +746,73 @@ if TEXTUAL_AVAILABLE:
             self._last_explorer_result = result
 
         def _get_active_body_preview(self) -> bytes:
-            """Get first 4096 bytes of the currently displayed body for preview."""
+            """Get first 4096 bytes of the currently displayed body for preview.
+
+            Previews the trailing segment when the active processing targets it.
+            """
             flow = self._current_flow
             if not flow:
                 return b""
-            body = flow.response_body or flow.request_body
+            pane = self._active_pane()
+            if self._processing_applies_to(1) and self._trailing_slot(flow, pane)[0] is not None:
+                body = self._trailing_segment_body(flow, pane)
+            else:
+                body = self._active_pane_body(flow, pane)
             return body[:4096] if body else b""
+
+        @classmethod
+        def _active_pane_body(cls, flow: "Flow", pane: str) -> bytes:
+            """Primary body shown in *pane* (``"request"`` / ``"response"``).
+
+            For MTProto / Secret-Chat flows this is the pane's parsed TL body
+            (write direction on the request pane, read on the response pane);
+            otherwise the request / response body.
+            """
+            direction = "read" if pane == "response" else "write"
+            if cls._is_message_transport_flow(flow):
+                msg = cls._parsed_tl_message(flow, direction)
+                if msg is not None:
+                    return msg.body or b""
+            return flow.response_body if pane == "response" else flow.request_body
+
+        def _active_pane(self) -> str:
+            """``"response"`` when the Response tab is active, else ``"request"``.
+
+            Segment indices are per pane: segment 1 is the active pane's own
+            trailing data (request tab -> write-direction trailing, response
+            tab -> read-direction trailing).
+            """
+            try:
+                return "response" if self._tabs.active == _TAB_RESPONSE else "request"
+            except Exception:
+                return "request"
+
+        @staticmethod
+        def _trailing_slot(flow: "Flow", which: str = "request"):
+            """``(bytes, protocol, parse)`` of the request or response trailing slot."""
+            if which == "response":
+                return (getattr(flow, "response_trailing_bytes", None),
+                        getattr(flow, "response_trailing_protocol", ""),
+                        getattr(flow, "response_trailing_parse", None))
+            return flow.trailing_bytes, flow.trailing_protocol, flow.trailing_parse
+
+        def _processing_applies_to(self, segment: int) -> bool:
+            """True when user-selected body processing targets *segment*.
+
+            Segment 0 is the primary message, segment 1 the trailing data.
+            """
+            processing = self._active_processing
+            if not processing:
+                return False
+            return getattr(processing, "segment_index", 0) == segment
+
+        @staticmethod
+        def _trailing_segment_body(flow: "Flow", which: str = "request") -> bytes:
+            """Body bytes of the trailing segment: sub-parsed body, else raw bytes."""
+            tb, _proto, sp = FlowDetailWidget._trailing_slot(flow, which)
+            if sp is not None and sp.body:
+                return sp.body
+            return tb or b""
 
         def _describe_pipeline(self) -> str:
             """Human-readable description of the active processing chain."""
@@ -609,13 +853,25 @@ if TEXTUAL_AVAILABLE:
                 direction = "response"
 
             if msg is None:
-                self.app.notify(f"No {direction} data to save.", severity="warning")
+                self.app.push_screen(
+                    AlertModal(
+                        message=f"No {direction} data to save.",
+                        title="Nothing to Save",
+                        severity="warning",
+                    )
+                )
                 return
 
             dir_key = "write" if direction == "request" else "read"
             raw_body = msg.body if msg.body else flow.reconstruct_body(dir_key)
             if not raw_body:
-                self.app.notify(f"Empty {direction} body.", severity="warning")
+                self.app.push_screen(
+                    AlertModal(
+                        message=f"Empty {direction} body.",
+                        title="Empty Body",
+                        severity="warning",
+                    )
+                )
                 return
 
             # Decompress via Flow helper; _active_processing overrides auto-detected encoding
@@ -640,7 +896,13 @@ if TEXTUAL_AVAILABLE:
                 size_str = format_byte_size(len(body))
                 self.app.notify(f"Saved {size_str} to {save_path}")
             except OSError as e:
-                self.app.notify(f"Save failed: {e}", severity="error")
+                self.app.push_screen(
+                    AlertModal(
+                        message=f"Save failed: {e}",
+                        title="Save Failed",
+                        severity="error",
+                    )
+                )
 
         # ----------------------------------------------------------
         # Tab updates
@@ -666,8 +928,10 @@ if TEXTUAL_AVAILABLE:
             ts = datetime.fromtimestamp(flow.started).strftime("%H:%M:%S.%f")[:-3]
             method = flow.display_method or "-"
             host = flow.display_host or "-"
-            status = flow.display_status or "pending"
-            proto = flow.display_protocol.upper() if flow.display_protocol != "unknown" else "???"
+            status_part = self._header_status_part(flow)
+            proto = self._layered_detail_protocol(flow)
+            if not proto:
+                proto = flow.display_protocol.upper() if flow.display_protocol != "unknown" else "???"
 
             pipeline_desc = self._describe_pipeline()
             raw_hints = []
@@ -690,11 +954,56 @@ if TEXTUAL_AVAILABLE:
                 decomp_hint += "  [dim][ ] prev/next layer · l hex/parsed[/]"
 
             header.update(
-                f"[bold {c('primary')}]{proto}[/] [bold]{method}[/] {host}  "
-                f"[dim]>[/] {status}  [dim]@{ts}[/]  "
+                f"[bold {c('primary')}]{_escape_bracket_label(proto)}[/] [bold]{method}[/] {host}  "
+                f"{status_part}[dim]@{ts}[/]  "
                 f"[dim italic]Escape: back[/]{decomp_hint}\n"
                 f"[dim]{flow.src_addr}:{flow.src_port} \u2192 {flow.dst_addr}:{flow.dst_port}[/]"
             )
+
+        @staticmethod
+        def _has_inner_e2e_layer(flow: "Flow") -> bool:
+            """True when *flow* carries an inner E2E layer (Signal, MTProto, RC4...)."""
+            from friTap.flow.display import INNER_E2E_LAYER_NAMES
+
+            return any(_safe_layer(flow, name) is not None
+                       for name in INNER_E2E_LAYER_NAMES)
+
+        @staticmethod
+        def _layered_detail_protocol(flow: "Flow") -> str:
+            """Layered protocol label (as in the flow list) for message flows, else "".
+
+            Applies when the flow rides a message transport (MTProto / Secret
+            Chat) or carries an inner E2E layer, so the header / Detail tab agree
+            with the list instead of echoing the carrier (e.g. "WebSocket").
+            """
+            from friTap.flow.display import (
+                display_protocol_layered,
+                is_message_transport,
+            )
+
+            has_inner = FlowDetailWidget._has_inner_e2e_layer(flow)
+            if not (has_inner or is_message_transport(flow)):
+                return ""
+            label = display_protocol_layered(flow)
+            return "" if label in ("", "unknown") else label
+
+        @classmethod
+        def _detail_protocol(cls, flow: "Flow") -> str:
+            """Protocol string for the detail view: layered label, else the parsed one."""
+            return cls._layered_detail_protocol(flow) or flow.display_protocol
+
+        @staticmethod
+        def _header_status_part(flow: "Flow") -> str:
+            """Header ``> status`` fragment; omitted for message transports."""
+            from friTap.flow.display import display_status_for, is_message_transport
+
+            if is_message_transport(flow):
+                return ""
+            status = display_status_for(flow)
+            if not status and FlowDetailWidget._has_inner_e2e_layer(flow):
+                return ""  # opaque inner-cipher payload: no HTTP-style status
+            status = status or "pending"
+            return f"[dim]>[/] {_markup_escape(status)}  "
 
         def _render_raw_hex(self, log: RichLog, flow: "Flow", direction: str, label: str) -> None:
             """Render full raw hexdump for a direction, bypassing all parsing.
@@ -756,10 +1065,189 @@ if TEXTUAL_AVAILABLE:
             """
             layer = _flow_message_layer(flow)
             name = getattr(layer, "name", "") if layer is not None else ""
-            if name in ("mtproto", "telegram_e2e"):
+            if name in TELEGRAM_LAYER_NAMES:
                 from friTap.constants import LAYER_DISPLAY_NAMES
                 return LAYER_DISPLAY_NAMES.get(name, name)
             return ""
+
+        # ParseResult protocols produced by the transport-pinned TL parsers.
+        _TL_MESSAGE_PROTOCOLS = frozenset({PROTOCOL_TELEGRAM_E2E, PROTOCOL_MTPROTO})
+        # Per-direction (title, time label) of the TL message pane.
+        _TL_PANE_LABELS = {"write": ("SENT message", "Sent"),
+                           "read": ("RECEIVED message", "Received")}
+        # TL display headers not worth a row in the message pane.
+        _TL_PANE_SKIP_HEADERS = frozenset({"content-type"})
+
+        @staticmethod
+        def _is_message_transport_flow(flow: "Flow") -> bool:
+            """True for MTProto / Secret-Chat flows (message streams, not HTTP)."""
+            from friTap.flow.display import is_message_transport
+            return is_message_transport(flow)
+
+        @classmethod
+        def _parsed_tl_message(cls, flow: "Flow", direction: str):
+            """The pinned-TL ParseResult for *direction* ("write"/"read"), else None."""
+            msg = flow.request if direction == "write" else flow.response
+            if msg is None or getattr(msg, "protocol", "") not in cls._TL_MESSAGE_PROTOCOLS:
+                return None
+            return msg
+
+        @classmethod
+        def _first_chunk_time(cls, flow: "Flow", direction: str) -> float:
+            """Timestamp of the first chunk in *direction*, or 0.0 when none."""
+            return cls._nth_chunk_time(flow, direction, 0)
+
+        @staticmethod
+        def _format_pane_time(ts: float) -> str:
+            """``YYYY-MM-DD HH:MM:SS.mmm`` for an epoch-seconds ts; "" when unknown."""
+            return local_time(ts, millis=True) if ts and ts > 0 else ""
+
+        def _render_tl_message_pane(self, log: RichLog, flow: "Flow", direction: str) -> bool:
+            """Render one decrypted TL packet forensically.
+
+            Order: processing banner (when ``p`` is active), title/time,
+            Envelope, Cross-references, TL fields, the decoded TL tree, then the
+            processed body (or, for E2E, the message text). The raw hexdump of
+            an MTProto record stays behind ``h``. Returns False (nothing
+            written) when *direction* has no pinned-TL parse, so the caller can
+            fall back to the transport note. No segment / trailing-data
+            rendering: a TL packet is self-contained.
+            """
+            msg = self._parsed_tl_message(flow, direction)
+            if msg is None:
+                return False
+            body, processed = msg.body, self._processing_applies_to(0) and bool(msg.body)
+            if processed:
+                body, notes, error = self._decompress_active(body)
+                self._write_processing_banner(log, notes, error)
+            self._write_tl_pane_title(log, flow, msg, direction)
+            layer = self._telegram_layer(flow)
+            self._write_packet_forensics(log, layer, with_users=False)
+            self._write_tl_fields(log, msg.headers or {})
+            if msg.error:
+                log.write(f"[{c('warning')}]{_markup_escape(msg.error)}[/]")
+            records = self._tl_pane_records(flow, direction, msg)
+            self._write_decoded_tl(log, flow, layer, records)
+            self._write_tl_message_body(log, msg, body, processed, records)
+            return True
+
+        def _write_tl_pane_title(self, log: RichLog, flow: "Flow", msg, direction: str) -> None:
+            """``SENT message  MTProto · method`` plus the packet time."""
+            title, time_label = self._TL_PANE_LABELS[direction]
+            method = _markup_escape(msg.method or "")
+            log.write(f"[bold {c('accent')}]{title}[/]  "
+                      f"[dim]{_markup_escape(msg.protocol)} · {method}[/]")
+            when = self._format_pane_time(self._first_chunk_time(flow, direction))
+            if when:
+                log.write(f"[bold]{time_label}:[/] {when}")
+
+        @staticmethod
+        def _telegram_layer(flow: "Flow"):
+            """The flow's own ``mtproto`` / ``telegram_e2e`` layer, else None."""
+            return _safe_layer(flow, getattr(flow, "transport", "") or "")
+
+        def set_row_resolver(self, resolver) -> None:
+            """Set ``flow_id -> row number | None`` used for ``#N`` cross-references."""
+            self._row_resolver = resolver
+
+        def _row_of(self, flow_id) -> int | None:
+            """Row number of *flow_id* in the flow list, else None (never raises)."""
+            resolver = getattr(self, "_row_resolver", None)
+            if resolver is None or flow_id is None:
+                return None
+            try:
+                return resolver(flow_id)
+            except Exception:
+                return None
+
+        @staticmethod
+        def _write_tl_section(log: RichLog, title: str, lines: list[str]) -> None:
+            """A bold section heading followed by *lines* (nothing when empty)."""
+            if not lines:
+                return
+            log.write("")
+            log.write(f"[bold {c('primary')}]{title}[/]")
+            for line in lines:
+                log.write(line)
+
+        @staticmethod
+        def _tl_pane_records(flow: "Flow", direction: str, msg) -> list[bytes]:
+            """TL record bytes of *direction*; an MTProto parse body when no chunks."""
+            records = telegram_panes.tl_records_for(flow, direction)
+            if records or telegram_panes.tl_domain_for(flow) != "mtproto" or not msg.body:
+                return records
+            return [bytes(msg.body)]
+
+        def _write_decoded_tl(self, log: RichLog, flow: "Flow", layer,
+                              records: list[bytes]) -> None:
+            """The schema-decoded TL tree of every record (msg_ids resolved to rows)."""
+            if not records:
+                return
+            refs = getattr(layer, "refs", None) or {}
+            lines = telegram_panes.decoded_tree_lines(
+                records, telegram_panes.tl_domain_for(flow),
+                request_method=refs.get("request_method"),
+                ref_label=telegram_panes.make_ref_label(refs, self._row_of))
+            self._write_tl_section(log, "Decoded TL", lines)
+
+        def _write_tl_message_body(self, log: RichLog, msg, body: bytes, processed: bool,
+                                   records: list[bytes]) -> None:
+            """Processed body / E2E message text; a raw MTProto record stays behind ``h``."""
+            if not msg.body:
+                return
+            if not processed and bytes(msg.body) in records:
+                log.write("")
+                log.write(f"[dim]{len(msg.body):,} raw bytes — press h for the hexdump, "
+                          f"p to process[/]")
+                return
+            log.write("")
+            log.write(f"[bold {c('success')}]--- Message ---[/]")
+            if processed:
+                self._render_processed_body(log, body, msg.headers or {})
+            else:
+                self._render_body(log, body, msg.headers or {})
+
+        def _write_tl_fields(self, log: RichLog, headers: dict) -> None:
+            """Write the decoded TL fields (display headers) as ``name: value`` rows."""
+            rows = [(k, v) for k, v in headers.items()
+                    if k.lower() not in self._TL_PANE_SKIP_HEADERS]
+            if not rows:
+                return
+            log.write("")
+            for name, value in rows:
+                log.write(f"[bold]{_markup_escape(str(name))}:[/] {_markup_escape(str(value))}")
+
+        def _render_unparsed_side(self, log: RichLog, flow: "Flow", direction: str,
+                                  label: str) -> None:
+            """A side without an HTTP parse: the pinned-TL message pane, else raw bytes.
+
+            *label* ("Request"/"Response") names the side in the fallback notes.
+            A message-transport flow without a pinned TL parse for *direction*
+            falls back to the raw transport bytes like any unparsed side.
+            """
+            if (self._is_message_transport_flow(flow)
+                    and self._render_tl_message_pane(log, flow, direction)):
+                return
+            raw = flow.get_direction_bytes(direction, max_bytes=self._TEXT_RENDER_LIMIT)
+            if not raw:
+                log.write(f"[dim]No {label.lower()} data captured[/]")
+                return
+            self._write_raw_fallback_note(log, flow, raw, label)
+            log.write("")
+            self._render_body(log, raw, {})
+
+        def _write_raw_fallback_note(self, log: RichLog, flow: "Flow", raw: bytes,
+                                     label: str) -> None:
+            """Why raw bytes are shown: non-HTTP transport, partial HTTP/2, or no parse."""
+            proto = self._nonhttp_transport_label(flow)
+            if proto:
+                log.write(f"[dim]{proto} transport — decrypted messages are on the "
+                          f"Message tab. Raw transport bytes:[/]")
+            elif "HTTP/2" in (flow.detected_protocol or ""):
+                log.write("[dim]HTTP/2 connection data (partial capture)[/]")
+                self._render_incomplete_h2_note(log, raw)
+            else:
+                log.write(f"[dim]{label} headers could not be parsed (raw data shown)[/]")
 
         def _update_request(self, flow: "Flow") -> None:
             log = self._request_log
@@ -780,22 +1268,8 @@ if TEXTUAL_AVAILABLE:
                 return
 
             req = flow.request
-            if req is None:
-                raw = flow.get_direction_bytes("write", max_bytes=self._TEXT_RENDER_LIMIT)
-                if raw:
-                    proto = self._nonhttp_transport_label(flow)
-                    if proto:
-                        log.write(f"[dim]{proto} transport — decrypted messages are on the "
-                                  f"Message tab. Raw transport bytes:[/]")
-                    elif "HTTP/2" in (flow.detected_protocol or ""):
-                        log.write("[dim]HTTP/2 connection data (partial capture)[/]")
-                        self._render_incomplete_h2_note(log, raw)
-                    else:
-                        log.write("[dim]Request headers could not be parsed (raw data shown)[/]")
-                    log.write("")
-                    self._render_body(log, raw, {})
-                else:
-                    log.write("[dim]No request data captured[/]")
+            if req is None or self._is_message_transport_flow(flow):
+                self._render_unparsed_side(log, flow, "write", "Request")
                 log.scroll_home(animate=False)
                 return
 
@@ -859,22 +1333,8 @@ if TEXTUAL_AVAILABLE:
                 return
 
             resp = flow.response
-            if resp is None:
-                raw = flow.get_direction_bytes("read", max_bytes=self._TEXT_RENDER_LIMIT)
-                if raw:
-                    proto = self._nonhttp_transport_label(flow)
-                    if proto:
-                        log.write(f"[dim]{proto} transport — decrypted messages are on the "
-                                  f"Message tab. Raw transport bytes:[/]")
-                    elif "HTTP/2" in (flow.detected_protocol or ""):
-                        log.write("[dim]HTTP/2 connection data (partial capture)[/]")
-                        self._render_incomplete_h2_note(log, raw)
-                    else:
-                        log.write("[dim]Response headers could not be parsed (raw data shown)[/]")
-                    log.write("")
-                    self._render_body(log, raw, {})
-                else:
-                    log.write("[dim]No response data captured[/]")
+            if resp is None or self._is_message_transport_flow(flow):
+                self._render_unparsed_side(log, flow, "read", "Response")
                 log.scroll_home(animate=False)
                 return
 
@@ -883,6 +1343,12 @@ if TEXTUAL_AVAILABLE:
                 self._render_control_frame(log, resp)
                 log.scroll_home(animate=False)
                 return
+
+            # Segment header when read-direction trailing data forms a second segment
+            if getattr(flow, "response_trailing_bytes", None) is not None:
+                proto_label = getattr(resp, 'protocol', '') or flow.display_protocol
+                log.write(f"[bold {c('accent')}]SEGMENT 1  {proto_label}[/]")
+                log.write(f"[bold {c('accent')}]{'═' * 60}[/]")
 
             # Status line
             if hasattr(resp, 'status_code') and resp.status_code:
@@ -916,6 +1382,9 @@ if TEXTUAL_AVAILABLE:
             # Warn when parsed view shows much less data than raw chunks
             self._render_data_mismatch_banner(log, flow, "read", len(body) if body else 0)
 
+            # Read-direction trailing data (the request tab shows the write side)
+            self._render_trailing_data(log, flow, which="response")
+
             log.scroll_home(animate=False)
 
         def _update_detail(self, flow: "Flow") -> None:
@@ -946,33 +1415,120 @@ if TEXTUAL_AVAILABLE:
                 log.write(f"[bold]SSL Session:[/]    {flow.ssl_session_id}")
             log.write("")
 
-            ts_start = datetime.fromtimestamp(flow.started).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+            ts_start = local_time(flow.started, millis=True)
             log.write(f"[bold]Started:[/]        {ts_start}")
             if flow.state == FlowState.COMPLETE and flow.ended > 0:
-                ts_end = datetime.fromtimestamp(flow.ended).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+                ts_end = local_time(flow.ended, millis=True)
                 log.write(f"[bold]Ended:[/]          {ts_end}")
                 log.write(f"[bold]Duration:[/]       {flow.duration * 1000:.1f}ms")
 
             log.write("")
-            log.write(f"[bold]Protocol:[/]       {flow.display_protocol}")
+            log.write(f"[bold]Protocol:[/]       {_markup_escape(self._detail_protocol(flow))}")
             log.write(f"[bold]Chunks:[/]         {len(flow.chunks)}")
 
             total_bytes = bytes_sent + bytes_recv
             log.write(f"[bold]Total bytes:[/]    {total_bytes}")
 
-            # Trailing data summary in detail tab
-            if flow.trailing_bytes:
-                tb = flow.trailing_bytes
-                log.write("")
-                log.write(f"[bold {c('warning')}]Trailing Data[/]")
-                log.write(f"[bold]Unconsumed:[/]     {len(tb):,} bytes")
-                if flow.trailing_protocol:
-                    log.write(f"[bold]Protocol:[/]       {flow.trailing_protocol}")
-                if flow.trailing_parse:
-                    sp = flow.trailing_parse
-                    log.write(f"[bold]Sub-parsed:[/]     {sp.method} {sp.url}")
+            if getattr(flow, "transport", "") == "telegram_e2e":
+                self._render_secret_chat_section(log, flow)
+            elif getattr(flow, "transport", "") == "mtproto":
+                self._render_telegram_packet_section(log, flow)
+
+            # Trailing data summary in detail tab (never for TL message packets)
+            if not self._is_message_transport_flow(flow):
+                self._render_trailing_summary(log, flow, "request", "Trailing Data")
+                self._render_trailing_summary(
+                    log, flow, "response", "Trailing Data (response)")
 
             log.scroll_home(animate=False)
+
+        def _render_trailing_summary(self, log: RichLog, flow: "Flow",
+                                     which: str, title: str) -> None:
+            """Detail-tab summary of one trailing slot (no-op when empty)."""
+            tb, protocol, sp = self._trailing_slot(flow, which)
+            if not tb:
+                return
+            log.write("")
+            log.write(f"[bold {c('warning')}]{title}[/]")
+            log.write(f"[bold]Unconsumed:[/]     {len(tb):,} bytes")
+            if protocol:
+                log.write(f"[bold]Protocol:[/]       {protocol}")
+            if sp:
+                log.write(f"[bold]Sub-parsed:[/]     {sp.method} {sp.url}")
+
+        @staticmethod
+        def _secret_chat_fingerprint(flow: "Flow") -> str:
+            """Chat key fingerprint from the E2E layer, else the session id suffix."""
+            layer = _safe_layer(flow, "telegram_e2e")
+            fp = getattr(layer, "key_fingerprint", "") if layer is not None else ""
+            if fp:
+                return fp
+            sid = getattr(flow, "ssl_session_id", "") or ""
+            prefix = "telegram_e2e:"
+            return sid[len(prefix):] if sid.startswith(prefix) else ""
+
+        def _secret_chat_header_values(self, flow: "Flow", name: str) -> str:
+            """``sent X · recv Y`` for TL header *name*; sides lacking it are omitted."""
+            parts = []
+            for side, direction in (("sent", "write"), ("recv", "read")):
+                msg = self._parsed_tl_message(flow, direction)
+                value = (msg.headers or {}).get(name) if msg is not None else None
+                if value not in (None, ""):
+                    parts.append(f"{side} {value}")
+            return " · ".join(parts)
+
+        def _render_telegram_section(self, log: RichLog, layer, title: str,
+                                     extra_rows=(), *, with_peer: bool = False) -> None:
+            """Detail-tab Telegram block: title, non-empty ``label: value`` rows,
+            then the (peer,) envelope, cross-reference and users sections."""
+            log.write("")
+            log.write(f"[bold {c('primary')}]{title}[/]")
+            for label, value in extra_rows:
+                if value:
+                    log.write(f"[bold]{label + ':':<17}[/] {_markup_escape(value)}")
+            self._write_packet_forensics(log, layer, with_users=True, with_peer=with_peer)
+
+        def _secret_chat_rows(self, flow: "Flow", layer) -> list[tuple[str, str]]:
+            """``(label, value)`` summary rows of a Secret-Chat flow (values may be empty)."""
+            rows = [("Key fingerprint", self._secret_chat_fingerprint(flow))]
+            if layer is not None and getattr(layer, "chat_id", 0):
+                rows.append(("Chat ID", str(layer.chat_id)))
+            for label, direction in (("Sent", "write"), ("Received", "read")):
+                rows.append((label, self._format_pane_time(
+                    self._first_chunk_time(flow, direction))))
+            rows.append(("Random IDs", self._secret_chat_header_values(flow, "random_id")))
+            rows.append(("In seq no", self._secret_chat_header_values(flow, "in_seq_no")))
+            rows.append(("Out seq no", self._secret_chat_header_values(flow, "out_seq_no")))
+            return rows
+
+        def _render_secret_chat_section(self, log: RichLog, flow: "Flow") -> None:
+            """Detail-tab block summarising a Telegram Secret Chat flow."""
+            layer = _safe_layer(flow, "telegram_e2e")
+            self._render_telegram_section(log, layer, "Telegram Secret Chat",
+                                          self._secret_chat_rows(flow, layer), with_peer=True)
+
+        def _render_secret_chat_forensics(self, log: RichLog, layer) -> None:
+            """Secret-Chat peer, envelope, carrier reference and users (Detail tab)."""
+            self._write_packet_forensics(log, layer, with_users=True, with_peer=True)
+
+        def _write_packet_forensics(self, log: RichLog, layer, *, with_users: bool,
+                                    with_peer: bool = False) -> None:
+            """(Peer +) Envelope + Cross-references (+ Users) sections of a Telegram layer."""
+            if with_peer:
+                self._write_tl_section(log, "Peer", telegram_panes.peer_lines(
+                    getattr(layer, "peer", None)))
+            self._write_tl_section(log, "Envelope", telegram_panes.envelope_lines(layer))
+            self._write_tl_section(log, "Cross-references",
+                                   telegram_panes.refs_lines(layer, self._row_of))
+            if with_users:
+                self._write_tl_section(log, "Users", telegram_panes.users_lines(
+                    getattr(layer, "users", None)))
+
+        def _render_telegram_packet_section(self, log: RichLog, flow: "Flow") -> None:
+            """Detail-tab block of one MTProto packet: envelope, refs, users."""
+            layer = _safe_layer(flow, "mtproto")
+            if layer is not None:
+                self._render_telegram_section(log, layer, "Telegram Packet (MTProto)")
 
         # ----------------------------------------------------------
         # Layer stack rendering
@@ -985,6 +1541,7 @@ if TEXTUAL_AVAILABLE:
             "quic": ("sni", "version", "alpn", "cipher"),
             "signal": ("chat_type", "identifier", "message_count"),
             "mtproto": ("transport", "dc_id", "auth_key_id", "message_count"),
+            "rc4": ("source", "key_len", "framing", "direction", "message_count"),
         }
 
         _LAYER_BYTES_PREVIEW = 256
@@ -1059,10 +1616,7 @@ if TEXTUAL_AVAILABLE:
                 return None
             if ts <= 0:
                 return None
-            try:
-                return datetime.fromtimestamp(ts if secs else ts / 1000)
-            except (OverflowError, OSError, ValueError):
-                return None
+            return local_datetime(ts if secs else ts / 1000)
 
         def _render_signal_messages(self, log: RichLog, flow: "Flow",
                                     *, direction_filter: str | None = None,
@@ -1107,8 +1661,18 @@ if TEXTUAL_AVAILABLE:
             # Signal conversations are merged across the session's sibling flows so
             # outbound and inbound (which ride separate TCP connections) appear as
             # one time-ordered transcript. Other protocols render single-flow.
-            self._render_conversation(log, flow, layer, merge_siblings=is_signal)
+            merge = is_signal or self._is_mergeable_telegram_layer(flow, layer)
+            self._render_conversation(log, flow, layer, merge_siblings=merge)
             log.scroll_home(animate=False)
+
+        @staticmethod
+        def _is_mergeable_telegram_layer(flow, layer) -> bool:
+            """Secret-Chat layers, and cloud MTProto layers carrying chat text,
+            render the whole conversation merged across sibling flows."""
+            name = getattr(layer, "name", "")
+            if name == "telegram_e2e":
+                return True
+            return name == "mtproto" and _tconv.flow_has_chat_text(flow)
 
         # CHAT kinds form the visible message flow; bodies render in quotes.
         _CHAT_KINDS = frozenset({"text", "data", "message"})
@@ -1123,7 +1687,7 @@ if TEXTUAL_AVAILABLE:
         )
         # Direction values that mean "sent by this device" (→). The decrypted
         # message-dict contract uses "write"; live/other producers may use synonyms.
-        _OUTBOUND_DIRECTIONS = frozenset({"write", "outgoing", "sent"})
+        _OUTBOUND_DIRECTIONS = _tconv.OUTBOUND_DIRECTIONS
         # Per-kind glyph for the Session-metadata rows.
         _META_ICONS = {"profile": "👤", "device-list": "📱", "prekey": "🔑",
                        "rest": "✉", "ws-request": "·"}
@@ -1154,6 +1718,82 @@ if TEXTUAL_AVAILABLE:
             if users:
                 return self._participants_from_users(users)
             return self._participants_from_senders(messages)
+
+        # Layers carrying structured Telegram identity metadata (users / peer).
+        _TELEGRAM_META_LAYERS = TELEGRAM_LAYER_NAMES
+
+        def _telegram_meta_layers(self, sources) -> list:
+            """The Telegram layers (cloud + Secret-Chat) of every source flow."""
+            return [lyr for src in sources for lyr in _tconv.telegram_layers_of(src)]
+
+        def _structured_users_for(self, flow, layer, merge_siblings: bool,
+                                  sources=None) -> list:
+            """Structured ``layer.users`` across *flow* (and siblings when merged).
+
+            *sources* is the precomputed :meth:`_secret_chat_sources` result.
+            """
+            if getattr(layer, "name", "") not in self._TELEGRAM_META_LAYERS:
+                return []
+            if sources is None:
+                sources = self._secret_chat_sources(flow, merge_siblings)
+            return self._structured_users(sources)
+
+        def _structured_users(self, sources) -> list:
+            return [u for lyr in self._telegram_meta_layers(sources)
+                    for u in (getattr(lyr, "users", None) or []) if isinstance(u, dict)]
+
+        def _structured_self_id(self, sources, users=None) -> int:
+            """The capturing account's user id from structured users (0 if unknown).
+
+            *users* is the precomputed :meth:`_structured_users` of *sources*.
+            """
+            if users is None:
+                users = self._structured_users(sources)
+            for user in users:
+                if "self" in (user.get("flags") or []):
+                    return _tconv.as_int(user.get("id"))
+            return 0
+
+        def _secret_chat_peer(self, sources):
+            """First linked Secret-Chat ``peer`` (a resolved user preferred)."""
+            peers = [getattr(lyr, "peer", None) for lyr in self._telegram_meta_layers(sources)]
+            peers = [p for p in peers if isinstance(p, dict) and p]
+            return next((p for p in peers if p.get("user_id")), peers[0] if peers else None)
+
+        def _cloud_chat_peer(self, messages, self_id: int):
+            """The 1:1 cloud peer when all chat text shares one conversation key."""
+            keys = _tconv.conversation_keys_of_entries(messages, self_id)
+            if len(keys) != 1:
+                return None
+            peer_id = int(next(iter(keys)))
+            return {"user_id": peer_id, "label": f"peer {peer_id}"}
+
+        def _structured_participants(self, flow, layer, messages,
+                                     merge_siblings: bool, sources=None, users=None):
+            """Participants from structured users/peer, or None for old taps.
+
+            Self renders by name (the header adds ``(you)``), then the peer's
+            name or its label (``peer (unknown, chat_id X)``). A synthetic
+            ``you`` stands in when outbound messages exist but self is unknown.
+            """
+            name = getattr(layer, "name", "")
+            if name not in self._TELEGRAM_META_LAYERS:
+                return None
+            if sources is None:
+                sources = self._secret_chat_sources(flow, merge_siblings)
+            if users is None:
+                users = self._structured_users(sources)
+            if name == "telegram_e2e":
+                peer = self._secret_chat_peer(sources)
+            else:
+                peer = self._cloud_chat_peer(messages, self._structured_self_id(sources, users))
+            if not users and not (peer and name == "telegram_e2e"):
+                return None
+            participants = _tconv.participants_from_structured_users(users, peer)
+            if not any(p.get("is_self") for p in participants) and any(
+                    self._is_outbound(m) for m in messages):
+                participants.insert(0, {"name": "you", "detail": "you", "is_self": True})
+            return participants or None
 
         def _participants_from_users(self, users) -> list[dict]:
             """Build participant dicts from MTProto/E2E ``kind=="user"`` items."""
@@ -1248,14 +1888,15 @@ if TEXTUAL_AVAILABLE:
                     name = name[:idx]
             return name.strip()
 
-        def _sender_id_to_name(self, messages) -> dict:
+        def _sender_id_to_name(self, messages, structured_users=None) -> dict:
             """Map ``user_id`` -> display name from the ``kind=="user"`` records.
 
             Lets group chat rows resolve a numeric ``sender`` id to a readable
             name. Keyed by the stringified id to match the message-dict
-            ``sender`` field (also a string).
+            ``sender`` field (also a string). Structured users (newer taps)
+            seed the map; the body-string records fill in the rest.
             """
-            mapping: dict = {}
+            mapping: dict = _tconv.user_names_by_id(structured_users or [])
             for entry in messages:
                 if (entry.get("kind") or "") != self._PARTICIPANT_KIND:
                     continue
@@ -1264,7 +1905,7 @@ if TEXTUAL_AVAILABLE:
                     continue
                 name = self._participant_name(entry.get("body") or "")
                 if name:
-                    mapping[str(uid)] = name
+                    mapping.setdefault(str(uid), name)
             return mapping
 
         def _participants_header_parts(self, participants) -> tuple[str, str, str]:
@@ -1383,8 +2024,8 @@ if TEXTUAL_AVAILABLE:
             annotated.sort(key=lambda t: (t[0], t[1]))
             return [m for _, _, m in annotated]
 
-        def _gather_conversation_messages(self, flow, layer,
-                                          merge_siblings: bool) -> list:
+        def _gather_conversation_messages(self, flow, layer, merge_siblings: bool,
+                                          sources=None, users=None) -> list:
             """Collect this flow's messages, optionally merged with sibling flows.
 
             When *merge_siblings* is set (the Message tab), union the message lists
@@ -1394,21 +2035,144 @@ if TEXTUAL_AVAILABLE:
             genuinely identical messages on the wire both survive. Keying by
             flow_id is required because the sibling list arrives as ``copy.copy``
             snapshots, so the selected flow's own snapshot is not ``is flow``.
+            *sources* / *users* are the precomputed :meth:`_secret_chat_sources`
+            / :meth:`_structured_users_for` results.
             """
+            if sources is None:
+                sources = self._secret_chat_sources(flow, merge_siblings)
+            if getattr(layer, "name", "") == "telegram_e2e":
+                return self._gather_secret_chat_messages(flow, layer, merge_siblings, sources)
+            if merge_siblings and getattr(layer, "name", "") == "mtproto":
+                return self._gather_cloud_chat_messages(flow, layer, sources, users)
             messages = list(getattr(layer, "messages", None) or [])
-            siblings = getattr(self, "_conversation_siblings", None) or []
-            if not merge_siblings or not siblings:
-                return messages
             layer_name = getattr(layer, "name", "")
-            seen_ids = {getattr(flow, "flow_id", id(flow))}
-            for sib in siblings:
-                sib_id = getattr(sib, "flow_id", id(sib))
-                if sib_id in seen_ids:
-                    continue
-                seen_ids.add(sib_id)
+            for sib in sources[1:]:
                 sib_layer = sib.layer(layer_name) if hasattr(sib, "layer") else None
                 messages.extend(getattr(sib_layer, "messages", None) or [])
             return messages
+
+        def _gather_cloud_chat_messages(self, flow, layer, sources=None, users=None) -> list:
+            """This flow's messages plus its cloud siblings' chat text for the
+            same conversation (and their identity records), deduped by identity.
+            """
+            if sources is None:
+                sources = self._secret_chat_sources(flow, True)
+            self_id = self._structured_self_id(sources, users)
+            keys = _tconv.conversation_keys_of(flow, self_id)
+            messages = list(getattr(layer, "messages", None) or [])
+            for sib in sources[1:]:
+                sib_layer = _safe_layer(sib, "mtproto")
+                messages.extend(m for m in getattr(sib_layer, "messages", None) or []
+                                if self._belongs_to_conversation(m, keys, self_id))
+            return self._dedupe_by_message_identity(messages)
+
+        def _belongs_to_conversation(self, entry, keys: set, self_id: int) -> bool:
+            """A sibling entry joins the transcript when it is chat text of the
+            same conversation, or an identity (``user``) record."""
+            if (entry.get("kind") or "") == self._PARTICIPANT_KIND:
+                return True
+            return (_tconv.is_chat_text(entry)
+                    and _tconv.conversation_peer_key(entry, self_id) in keys)
+
+        def _secret_chat_sources(self, flow, merge_siblings: bool) -> list:
+            """The flow plus (when merging) each distinct sibling flow, flow first."""
+            sources = [flow]
+            if not merge_siblings:
+                return sources
+            seen_ids = {getattr(flow, "flow_id", id(flow))}
+            for sib in getattr(self, "_conversation_siblings", None) or []:
+                sib_id = getattr(sib, "flow_id", id(sib))
+                if sib_id not in seen_ids:
+                    seen_ids.add(sib_id)
+                    sources.append(sib)
+            return sources
+
+        def _gather_secret_chat_messages(self, flow, layer, merge_siblings: bool,
+                                         sources=None) -> list:
+            """Secret-Chat messages across the chat's flows, deduped, times backfilled.
+
+            A Secret Chat's messages can be repeated per flow (and legacy .tap
+            files stored every message twice in two flows), so the union is
+            collapsed by message identity. Messages lacking a timestamp inherit
+            the pcap time of their source flow's matching-direction chunk.
+            """
+            if sources is None:
+                sources = self._secret_chat_sources(flow, merge_siblings)
+            source_of = {}
+            messages = []
+            for src in sources:
+                src_layer = layer if src is flow else _safe_layer(src, "telegram_e2e")
+                for m in getattr(src_layer, "messages", None) or []:
+                    source_of[id(m)] = src
+                    messages.append(m)
+            unique = self._dedupe_by_message_identity(messages)
+            return self._backfill_chunk_timestamps(unique, source_of)
+
+        @staticmethod
+        def _message_identity(entry) -> tuple:
+            """Identity key: the TL random_id when non-zero, else direction/body/time."""
+            try:
+                random_id = int(entry.get("random_id") or 0)
+            except (TypeError, ValueError):
+                random_id = 0
+            if random_id:
+                return ("random_id", random_id)
+            return ("content", entry.get("direction") or "",
+                    entry.get("body") or "", entry.get("timestamp") or 0)
+
+        @classmethod
+        def _dedupe_by_message_identity(cls, messages: list) -> list:
+            """Drop repeated messages (same identity), keeping first occurrences in order."""
+            seen = set()
+            unique = []
+            for m in messages:
+                key = cls._message_identity(m)
+                if key in seen:
+                    continue
+                seen.add(key)
+                unique.append(m)
+            return unique
+
+        def _backfill_chunk_timestamps(self, messages: list, source_of: dict) -> list:
+            """Copy of *messages* where a missing timestamp takes its chunk's pcap time.
+
+            The k-th message of a direction in a flow maps to that flow's k-th
+            chunk of the same direction (clamped to the last one). Messages that
+            already carry a timestamp are returned unchanged.
+            """
+            per_flow_index: dict = {}
+            times_of: dict = {}  # (source, direction) -> chunk times, built once
+            result = []
+            for m in messages:
+                if m.get("timestamp"):
+                    result.append(m)
+                    continue
+                src = source_of.get(id(m))
+                direction = "write" if self._is_outbound(m) else "read"
+                key = (id(src), direction)
+                idx = per_flow_index.get(key, 0)
+                per_flow_index[key] = idx + 1
+                if key not in times_of:
+                    times_of[key] = self._chunk_times(src, direction)
+                ts = self._clamped_time(times_of[key], idx)
+                result.append({**m, "timestamp": ts} if ts else m)
+            return result
+
+        @staticmethod
+        def _chunk_times(flow, direction: str) -> list:
+            """Non-zero timestamps of *flow*'s *direction* chunks, in chunk order."""
+            return [ch.timestamp for ch in (getattr(flow, "chunks", None) or [])
+                    if ch.direction == direction and ch.timestamp]
+
+        @staticmethod
+        def _clamped_time(times: list, index: int) -> float:
+            """``times[index]`` clamped to the last entry; 0.0 when *times* is empty."""
+            return times[min(index, len(times) - 1)] if times else 0.0
+
+        @classmethod
+        def _nth_chunk_time(cls, flow, direction: str, index: int) -> float:
+            """Timestamp of the *index*-th *direction* chunk (clamped), 0.0 if none."""
+            return cls._clamped_time(cls._chunk_times(flow, direction), index)
 
         def _render_conversation(self, log: RichLog, flow: "Flow", layer,
                                  *, direction_filter: str | None = None,
@@ -1427,7 +2191,11 @@ if TEXTUAL_AVAILABLE:
             direction (Request = outbound, Response = inbound); *merge_siblings*
             unions the conversation's other per-connection flows (Message tab).
             """
-            messages = self._gather_conversation_messages(flow, layer, merge_siblings)
+            # Sibling sources and structured users are computed once per render.
+            sources = self._secret_chat_sources(flow, merge_siblings)
+            structured_users = self._structured_users_for(flow, layer, merge_siblings, sources)
+            messages = self._gather_conversation_messages(
+                flow, layer, merge_siblings, sources, structured_users)
             messages = self._sorted_by_time(messages)
             if direction_filter in ("write", "read"):
                 want_outbound = direction_filter == "write"
@@ -1443,11 +2211,15 @@ if TEXTUAL_AVAILABLE:
 
             chat_msgs = [m for m in messages
                          if (m.get("kind") or "") in self._CHAT_KINDS]
-            participants = self._conversation_participants(layer, messages)
+            participants = (
+                self._structured_participants(flow, layer, messages, merge_siblings,
+                                              sources, structured_users)
+                or self._conversation_participants(layer, messages)
+            )
             # Map numeric user ids -> display names from the identity records so
             # group chat rows attribute "from <name>" instead of a raw id. 1:1
             # flows are unaffected (their incoming sender is empty/peer-only).
-            id_to_name = self._sender_id_to_name(messages)
+            id_to_name = self._sender_id_to_name(messages, structured_users)
             transport = [m for m in messages
                          if (m.get("kind") or "") not in self._CHAT_KINDS
                          and (m.get("kind") or "") != self._PARTICIPANT_KIND]
@@ -1844,11 +2616,12 @@ if TEXTUAL_AVAILABLE:
                 tags.append("metadata-only")
             marker = "▸ " if idx == self._current_layer_idx else "  "
             log.write(
-                f"[bold {c('accent')}]{marker}[{depth}] {name}[/] "
+                f"[bold {c('accent')}]{marker}{self._tree_prefix(depth)}[{depth}] {name}[/] "
                 f"[dim]({', '.join(tags)})[/]"
             )
 
             self._render_layer_metadata(log, layer, name)
+            self._render_layer_records(log, layer)
 
             view = self._layer_view.get(idx, self._default_layer_view(layer))
             if view == "parsed":
@@ -1892,7 +2665,7 @@ if TEXTUAL_AVAILABLE:
 
                 # "write" = client->server = sent by this device (outgoing);
                 # "read" = received. Accept the synonyms defensively.
-                arrow = "→" if direction in ("write", "outgoing", "sent") else "←"
+                arrow = "→" if direction in _tconv.OUTBOUND_DIRECTIONS else "←"
                 head_bits = [b for b in (arrow, sender, kind) if b]
                 # Escape wire-derived fields (sender/kind) — a literal "[" would be
                 # parsed as Rich markup and can raise MarkupError on the RichLog.
@@ -1954,10 +2727,63 @@ if TEXTUAL_AVAILABLE:
                 value = meta.get(key)
                 if value in (None, "", 0, False):
                     continue
+                # rc4 ``records`` get their own renderer (_render_layer_records).
+                if key == "records" and isinstance(value, list):
+                    continue
                 log.write(f"    [bold]{key}:[/] {value}")
                 wrote_any = True
             if not wrote_any:
                 log.write("    [dim]no metadata[/]")
+
+        @staticmethod
+        def _tree_prefix(depth: int) -> str:
+            """Tree connector for a layer header: "" at depth 0, else indented "└─ "."""
+            if depth <= 0:
+                return ""
+            return "  " * (depth - 1) + "└─ "
+
+        @staticmethod
+        def _record_frames_text(frames) -> str:
+            """``from TLS frame #28`` / ``reassembled from TLS frames #22, #26``."""
+            frames = [f for f in (frames or []) if isinstance(f, int)]
+            if not frames:
+                return ""
+            refs = ", ".join(f"#{f}" for f in frames)
+            if len(frames) == 1:
+                return f"from TLS frame {refs}"
+            return f"reassembled from TLS frames {refs}"
+
+        @staticmethod
+        def _record_framing_text(record: dict, framing: str) -> str:
+            """``u32be-length framed @offset 0`` (offset = start of the frame header)."""
+            if not framing:
+                return ""
+            offset = int(record.get("cipher_offset", 0) or 0) - int(record.get("frame_header_len", 0) or 0)
+            return f"{framing} framed @offset {max(offset, 0)}"
+
+        def _format_layer_record(self, record: dict, framing: str) -> str:
+            """One-line summary of a per-message layer record (rc4 ``records``)."""
+            direction = record.get("direction", "") or ""
+            arrow = "→" if direction == "write" else "←"
+            ts = record.get("timestamp")
+            parts = [
+                f"{arrow} {direction} {int(record.get('length', 0) or 0):,} B",
+                self._record_framing_text(record, framing),
+                self._record_frames_text(record.get("tls_frames")),
+                local_time(ts, millis=True) if ts else "",
+            ]
+            return "  ".join(self._esc(p) for p in parts if p)
+
+        def _render_layer_records(self, log: RichLog, layer) -> None:
+            """Render a layer's per-message ``records`` list (e.g. RC4-in-TLS)."""
+            records = getattr(layer, "records", None)
+            if not isinstance(records, list) or not records:
+                return
+            framing = getattr(layer, "framing", "") or ""
+            log.write(f"    [bold]records:[/] {len(records)}")
+            for record in records:
+                if isinstance(record, dict):
+                    log.write(f"      {self._format_layer_record(record, framing)}")
 
         def _render_layer_bytes(self, log: RichLog, data) -> None:
             """Render a short read/write byte summary for a layer with data."""
@@ -1980,9 +2806,13 @@ if TEXTUAL_AVAILABLE:
 
         _TRAILING_HEX_LIMIT = 512
 
-        def _render_trailing_data(self, log: RichLog, flow: "Flow") -> None:
-            """Render trailing data as a second segment with parsed content if available."""
-            tb = flow.trailing_bytes
+        def _render_trailing_data(self, log: RichLog, flow: "Flow",
+                                  which: str = "request") -> None:
+            """Render trailing data as a second segment with parsed content if available.
+
+            *which* selects the request (write) or response (read) trailing slot.
+            """
+            tb, trailing_protocol, sp = self._trailing_slot(flow, which)
             if tb is None:
                 return
 
@@ -1994,7 +2824,7 @@ if TEXTUAL_AVAILABLE:
                 pass
             log.write("")
             log.write(f"[bold {c('warning')}]{'═' * 60}[/]")
-            proto_label = flow.trailing_protocol or "unknown"
+            proto_label = trailing_protocol or "unknown"
             log.write(
                 f"[bold {c('warning')}]SEGMENT 2  "
                 f"[{c('accent')}]{proto_label}[/]  "
@@ -2002,7 +2832,6 @@ if TEXTUAL_AVAILABLE:
             )
             log.write(f"[bold {c('warning')}]{'═' * 60}[/]")
 
-            sp = flow.trailing_parse
             if sp is not None:
                 # Request/status line
                 if sp.method:
@@ -2023,13 +2852,19 @@ if TEXTUAL_AVAILABLE:
                 if body:
                     log.write("")
                     log.write(f"[bold {c('success')}]--- Body ---[/]")
-                    if _is_text(body):
+                    if self._processing_applies_to(1):
+                        self._render_body(log, body, headers, segment=1)
+                    elif _is_text(body):
                         text = body.decode("utf-8", errors="replace")
                         if len(text) > 2048:
                             text = text[:2048] + "\n... (truncated)"
                         log.write(text)
                     else:
                         self._write_hexdump(log, body[:self._TRAILING_HEX_LIMIT])
+            elif self._processing_applies_to(1):
+                # No sub-parse, but the user targeted this segment for processing
+                log.write("")
+                self._render_body(log, tb, {}, segment=1)
             else:
                 # No sub-parse — show raw hexdump preview
                 log.write("")
@@ -2141,6 +2976,18 @@ if TEXTUAL_AVAILABLE:
         def _decode_raw_utf8(log: RichLog, body: bytes, _headers: dict) -> None:
             log.write(body.decode("utf-8", errors="replace"))
 
+        def _tl_domain(self) -> str:
+            """TL schema domain of the current flow: Secret-Chat or MTProto."""
+            return telegram_panes.tl_domain_for(self._current_flow)
+
+        def _decode_tl(self, log: RichLog, body: bytes, _headers: dict) -> None:
+            """Schema-driven TL decode rendered as a tree (MTProto / Secret Chat)."""
+            from friTap.offline.mtproto.tl import decode_tl_cached
+            from friTap.tui.widgets.tl_tree_render import render_tl_tree
+            node = decode_tl_cached(bytes(body), self._tl_domain())
+            for line in render_tl_tree(node):
+                log.write(line)
+
         # Dispatch table: decoder name → method
         _DECODERS = {
             "protobuf": _decode_protobuf,
@@ -2148,6 +2995,7 @@ if TEXTUAL_AVAILABLE:
             "base64": _decode_base64,
             "hex": _decode_hex,
             "raw_utf8": _decode_raw_utf8,
+            "tl": _decode_tl,
         }
 
         def _render_control_frame(self, log: RichLog, req) -> None:
@@ -2189,15 +3037,18 @@ if TEXTUAL_AVAILABLE:
             except Exception:
                 pass
 
-        def _render_body(self, log: RichLog, body: bytes, headers: dict) -> None:
+        def _render_body(
+            self, log: RichLog, body: bytes, headers: dict, segment: int = 0,
+        ) -> None:
             """Render body content with appropriate formatting.
 
             Two modes:
             1. **Active processing** — user-selected decompression + decoder
-               from the Body Processing modal (press ``p``).
+               from the Body Processing modal (press ``p``), applied only when
+               it targets *segment* (0 = primary, 1 = trailing data).
             2. **Standard rendering** — auto-detect from Content-Type / Content-Encoding.
             """
-            if self._active_processing:
+            if self._processing_applies_to(segment):
                 body = self._apply_active_processing(log, body, headers)
                 if body is None:
                     return  # decoder already rendered output
@@ -2212,24 +3063,47 @@ if TEXTUAL_AVAILABLE:
             Returns the (possibly decompressed) body for standard rendering,
             or ``None`` if a decoder already wrote output to *log*.
             """
-            processed = body
-            if self._active_processing.decompression:
-                try:
-                    from friTap.parsers.decompress import decompress_body
-                    processed, err = decompress_body(processed, self._active_processing.decompression)
-                    if err:
-                        log.write(f"[dim yellow]Decompression note: {err}[/]")
-                except ImportError:
-                    log.write("[dim yellow]Decompression module not available[/]")
+            processed, notes, error = self._decompress_active(body)
+            self._write_processing_banner(log, notes, error)
+            return self._run_active_decoder(log, processed, headers)
 
+        def _decompress_active(self, body: bytes) -> tuple[bytes, list[str], str | None]:
+            """Apply the user-selected decompression leniently.
+
+            Returns ``(data, notes, error)``; a gzip member behind a framing
+            header (e.g. an MTProto ``rpc_result``) is found and noted.
+            """
+            encoding = self._active_processing.decompression if self._active_processing else None
+            if not encoding:
+                return body, [], None
+            from friTap.parsers.decompress import decompress_lenient
+            return decompress_lenient(body, encoding)
+
+        def _run_active_decoder(self, log: RichLog, body: bytes, headers: dict) -> bytes | None:
+            """Run the selected decoder; ``None`` when it wrote output, else *body*."""
             decoder_name = self._active_processing.decoder or ""
             decoder_fn = self._DECODERS.get(decoder_name)
             if decoder_fn is not None:
-                decoder_fn(self, log, processed, headers)
+                decoder_fn(self, log, body, headers)
                 return None  # decoder handled output
-
             # Decompression only, no decoder — fall through to standard rendering
-            return processed
+            return body
+
+        def _render_processed_body(self, log: RichLog, body: bytes, headers: dict) -> None:
+            """Render an already-decompressed body through the selected decoder."""
+            remaining = self._run_active_decoder(log, body, headers)
+            if remaining is not None:
+                self._render_body_standard(log, remaining, headers)
+
+        @staticmethod
+        def _write_processing_banner(log: RichLog, notes: list[str], error: str | None) -> None:
+            """Bold ⚠ lines describing what body processing did (or why it failed)."""
+            for note in notes:
+                log.write(f"[bold {c('warning')}]⚠ Processing: {_markup_escape(note)}[/]")
+            if error:
+                log.write(f"[bold {c('error')}]⚠ Processing failed: {_markup_escape(error)}[/]")
+            if notes or error:
+                log.write("")
 
         def _render_body_standard(self, log: RichLog, body: bytes, headers: dict) -> None:
             """Auto-render body based on Content-Encoding and Content-Type."""

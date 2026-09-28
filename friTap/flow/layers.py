@@ -357,12 +357,18 @@ class MtprotoLayer(ProtocolLayer):
     # {direction, kind, body, sender_id, peer_id, has_media}. Populated by the
     # offline TL parser (friTap.offline.mtproto.content) at emit time.
     messages: list = field(default_factory=list)
+    # Per-packet forensic metadata (offline, one record per flow): the MTProto
+    # envelope (salt, session_id, msg_id, seq_no, lengths, ...), cross-references
+    # to other records, and structured users seen in this record.
+    envelope: dict = field(default_factory=dict)
+    refs: dict = field(default_factory=dict)
+    users: list = field(default_factory=list)
 
     def is_empty(self) -> bool:
         return not (
             self.transport or self.obfuscated or self.fake_tls
             or self.dc_id or self.auth_key_id or self.message_count
-            or self.messages
+            or self.messages or _has_packet_meta(self)
         ) and self.data.is_empty()
 
     def to_dict(self) -> dict:
@@ -376,6 +382,7 @@ class MtprotoLayer(ProtocolLayer):
             "message_count": self.message_count,
             "messages": self.messages,
         })
+        d.update(_packet_meta_to_dict(self))
         return d
 
     @classmethod
@@ -389,7 +396,32 @@ class MtprotoLayer(ProtocolLayer):
         layer.auth_key_id = d.get("auth_key_id", "")
         layer.message_count = d.get("message_count", 0)
         layer.messages = d.get("messages", []) or []
+        _packet_meta_from_dict(layer, d)
         return layer
+
+
+# Additive per-packet metadata shared by MtprotoLayer and TelegramE2ELayer.
+# Serialized only when set, so layers without it keep their exact old shape and
+# taps written before these fields existed load with empty defaults.
+_PACKET_META_FIELDS = (("envelope", dict), ("refs", dict), ("users", list))
+_E2E_EXTRA_META = (("peer", dict),)
+
+
+def _has_packet_meta(layer) -> bool:
+    return any(getattr(layer, name, None) for name, _ in _PACKET_META_FIELDS) or bool(
+        getattr(layer, "peer", None)
+    )
+
+
+def _packet_meta_to_dict(layer, extra: tuple = ()) -> dict:
+    names = [name for name, _ in _PACKET_META_FIELDS + tuple(extra)]
+    return {name: getattr(layer, name) for name in names if getattr(layer, name)}
+
+
+def _packet_meta_from_dict(layer, d: dict, extra: tuple = ()) -> None:
+    for name, kind in _PACKET_META_FIELDS + tuple(extra):
+        value = d.get(name)
+        setattr(layer, name, value if isinstance(value, kind) else kind())
 
 
 @dataclass
@@ -415,11 +447,17 @@ class TelegramE2ELayer(ProtocolLayer):
     # {direction, kind, body, sender_id, peer_id, has_media}. Populated by the
     # offline TL parser (friTap.offline.mtproto.content) at emit time.
     messages: list = field(default_factory=list)
+    # Per-packet forensic metadata, as on MtprotoLayer, plus the resolved
+    # Secret-Chat ``peer`` (the other participant, when it can be linked).
+    envelope: dict = field(default_factory=dict)
+    refs: dict = field(default_factory=dict)
+    users: list = field(default_factory=list)
+    peer: dict = field(default_factory=dict)
 
     def is_empty(self) -> bool:
         return not (
             self.chat_id or self.key_fingerprint or self.message_count
-            or self.layer_version or self.messages
+            or self.layer_version or self.messages or _has_packet_meta(self)
         ) and self.data.is_empty()
 
     def to_dict(self) -> dict:
@@ -432,6 +470,7 @@ class TelegramE2ELayer(ProtocolLayer):
             "layer_version": self.layer_version,
             "messages": self.messages,
         })
+        d.update(_packet_meta_to_dict(self, extra=_E2E_EXTRA_META))
         return d
 
     @classmethod
@@ -444,6 +483,7 @@ class TelegramE2ELayer(ProtocolLayer):
         layer.origin = d.get("origin", "decrypted")
         layer.layer_version = d.get("layer_version", 0)
         layer.messages = d.get("messages", []) or []
+        _packet_meta_from_dict(layer, d, extra=_E2E_EXTRA_META)
         return layer
 
 
@@ -493,6 +533,70 @@ class SignalLayer(ProtocolLayer):
         layer.identifier = d.get("identifier", "")
         layer.message_count = d.get("message_count", 0)
         layer.messages = d.get("messages", []) or []
+        return layer
+
+
+@dataclass
+class Rc4Layer(ProtocolLayer):
+    """RC4 cipher layer.
+
+    The decrypted RC4 plaintext bytes ride the flow's chunks (the registry
+    descriptor registers this layer with ``data_source="chunks"``, like
+    tls/quic/signal), fed by a later offline RC4-decrypt workstream. When RC4 is
+    nested inside TLS (``--protocol tls,rc4``) this layer renders INSIDE the TLS
+    layer; standalone (``--protocol rc4``) it is the sole cipher layer. This
+    layer carries only identity metadata (which key/hook recovered it); byte
+    parsing is left to a downstream parser.
+    """
+
+    NAME: ClassVar[str] = "rc4"
+
+    source: str = ""          # hook that recovered the key (RC4_set_key, BCrypt…, …)
+    direction: str = ""       # "out" / "in" / "unknown"
+    key_len: int = 0          # RC4 key length in bytes
+    assoc: str = ""           # association hint (agent thread id) for the nested case
+    message_count: int = 0
+    # RC4-in-TLS record framing of the RC4 stream inside the TLS plaintext:
+    # "u32be-length" (4-byte big-endian length prefix per record) or
+    # "continuous" (one unframed keystream). Empty when unknown/standalone.
+    framing: str = ""
+    # Per-RC4-record metadata. Each entry is a dict {"direction": "write"|"read",
+    # "length": int, "tls_frames": [int, ...], "timestamp": float,
+    # "cipher_offset": int, "frame_header_len": int}. Deliberately NOT named
+    # ``messages``: the TUI treats a layer's ``messages`` as a chat transcript.
+    records: list = field(default_factory=list)
+
+    def is_empty(self) -> bool:
+        return not (
+            self.source or self.direction or self.key_len
+            or self.assoc or self.message_count
+            or self.framing or self.records
+        ) and self.data.is_empty()
+
+    def to_dict(self) -> dict:
+        d = super().to_dict()
+        d.update({
+            "source": self.source,
+            "direction": self.direction,
+            "key_len": self.key_len,
+            "assoc": self.assoc,
+            "message_count": self.message_count,
+            "framing": self.framing,
+            "records": self.records,
+        })
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Rc4Layer":
+        layer = cls()
+        layer.depth = d.get("depth", 0)
+        layer.source = d.get("source", "")
+        layer.direction = d.get("direction", "")
+        layer.key_len = d.get("key_len", 0)
+        layer.assoc = d.get("assoc", "")
+        layer.message_count = d.get("message_count", 0)
+        layer.framing = d.get("framing", "") or ""
+        layer.records = d.get("records", []) or []
         return layer
 
 

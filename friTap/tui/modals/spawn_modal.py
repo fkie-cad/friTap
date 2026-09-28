@@ -24,6 +24,7 @@ except ImportError:
 if TEXTUAL_AVAILABLE:
     from friTap.tui.themes import c
 
+    from .alert_modal import AlertModal
     from .base import FriTapModal
 
     class SpawnInputModal(FriTapModal[Optional[str]]):
@@ -134,7 +135,13 @@ if TEXTUAL_AVAILABLE:
             self._all_apps.clear()
 
             if self._device is None:
-                self.notify("No device available. Switching to manual input.", severity="warning")
+                self.app.push_screen(
+                    AlertModal(
+                        message="No device available. Switching to manual input.",
+                        title="No Device",
+                        severity="warning",
+                    )
+                )
                 self._manual_mode = True
                 return
 
@@ -144,9 +151,12 @@ if TEXTUAL_AVAILABLE:
                 # Sort alphabetically by name
                 self._all_apps.sort(key=lambda x: x[0].lower())
             except Exception as e:
-                self.notify(
-                    f"Failed to list applications: {e}. Switching to manual input.",
-                    severity="warning",
+                self.app.push_screen(
+                    AlertModal(
+                        message=f"Failed to list applications: {e}. Switching to manual input.",
+                        title="Enumerate Failed",
+                        severity="warning",
+                    )
                 )
                 self._manual_mode = True
                 return
@@ -245,7 +255,13 @@ if TEXTUAL_AVAILABLE:
                     return
             except Exception:
                 pass
-            self.notify("No application selected.", severity="warning")
+            self.app.push_screen(
+                AlertModal(
+                    message="No application selected.",
+                    title="No Selection",
+                    severity="warning",
+                )
+            )
 
         def _submit(self) -> None:
             """Dismiss with the manually entered input value."""
@@ -254,4 +270,10 @@ if TEXTUAL_AVAILABLE:
             if value:
                 self.dismiss(value)
             else:
-                self.notify("Please enter a target to spawn.", severity="warning")
+                self.app.push_screen(
+                    AlertModal(
+                        message="Please enter a target to spawn.",
+                        title="No Target",
+                        severity="warning",
+                    )
+                )

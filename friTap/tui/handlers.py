@@ -105,7 +105,16 @@ class TuiOutputHandler(OutputHandler):
 
     def _update_keylog_ui(self, event: KeylogEvent) -> None:
         log = self._get_activity_log()
-        if log:
+        if not log:
+            return
+        # Heap memory-scan findings arrive as KeylogEvent(protocol="memscan");
+        # render them as distinct SECRET lines rather than generic keys.
+        if event.protocol == "memscan":
+            payload = event.payload or {}
+            label = payload.get("label") or "SECRET"
+            secret = payload.get("secret") or event.key_data
+            log.log_secret(label, secret)
+        else:
             log.log_key(self._keylog_preview(event))
 
     @staticmethod

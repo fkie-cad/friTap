@@ -176,10 +176,13 @@ async function scanRange(
 }
 
 /**
- * Entry point. Runs only when the host passed --scan-keys-region (carried via
- * config_batch.extensions.scan_region) and/or a scan provider registered.
- * Async + fire-and-forget; emission is gated by keylog_enabled (so the host
- * must also pass -k).
+ * Entry point. A scan only actually runs — and only then does it emit any
+ * user-facing "[scan] ..." line — when the host passed --scan-keys-region
+ * (carried via config_batch.extensions.scan_region) or a registered provider
+ * resolves at least one region. A provider that is merely *registered* (as one
+ * always is in the full build) but contributes nothing produces no output.
+ * Async + fire-and-forget; candidate emission is gated by keylog_enabled (so
+ * the host must also pass -k).
  */
 export async function maybeRunRegionScan(extensions: Record<string, any>): Promise<void> {
     const cliRegion: string | undefined = extensions && typeof extensions.scan_region === "string"
@@ -187,17 +190,34 @@ export async function maybeRunRegionScan(extensions: Record<string, any>): Promi
     const providers = collectScanProviders();
     if (!cliRegion && providers.length === 0) return; // nothing requested
 
-    if (!keylog_enabled) {
-        log("[scan] --scan-keys-region set but keylog is disabled; pass -k to receive candidates.");
-    }
-
+    // Resolve the regions BEFORE emitting anything user-facing. A provider being
+    // *registered* is not a scan *request*: in the full build a provider (e.g.
+    // signal) is always registered at module-load, but only contributes regions
+    // when --scan-keys-region was actually passed. Reporting "no scannable
+    // regions" just because a provider is present is misleading noise on an
+    // ordinary capture (it reads like key extraction failed, which it didn't).
     const specs: ScanRegionSpec[] = [];
     if (cliRegion) specs.push(...parseRegionValue(cliRegion));
     for (const p of providers) {
         try { specs.push(...p.selectRegions(extensions)); }
         catch (e) { devlog(`[scan] provider ${p.name} selectRegions failed: ${e}`); }
     }
-    if (specs.length === 0) { log("[scan] no scannable regions resolved."); return; }
+
+    if (specs.length === 0) {
+        // Only surface this when the user explicitly asked for a scan; otherwise
+        // it is the normal "no region scan requested" no-op and stays debug-only.
+        if (cliRegion) {
+            log("[scan] --scan-keys-region set but no scannable regions resolved.");
+        } else {
+            devlog("[scan] no region scan requested; nothing to scan.");
+        }
+        return;
+    }
+
+    // A scan is actually going to run now, so a missing keylog is worth flagging.
+    if (!keylog_enabled) {
+        log("[scan] region scan active but keylog is disabled; pass -k to receive candidates.");
+    }
 
     log(`[scan] starting memory-region key scan over ${specs.length} region spec(s)`);
     const owned: OwnedRange[] = buildAgentOwnedRanges();

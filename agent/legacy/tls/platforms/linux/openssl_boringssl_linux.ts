@@ -7,6 +7,8 @@ import { devlog, devlog_error } from "../../../../util/log.js";
 import { executeSSLLibrary } from "../../../shared/shared_functions_legacy.js";
 import { sendKeylog } from "../../../../shared/shared_structures.js";
 import { enableDeepSymbolResolution } from "../../../../shared/deep_symbol_resolution.js";
+import { GENERIC_BORINGSSL_ARM64_FALLBACK } from "../../../../shared/bundled_cronet_patterns.js";
+import { createKeylogCallbackTracker } from "../../../../shared/keylog_callback_tracker.js";
 
 
 export class OpenSSL_BoringSSL_Linux extends OpenSSL_BoringSSL {
@@ -26,7 +28,7 @@ export class OpenSSL_BoringSSL_Linux extends OpenSSL_BoringSSL {
             },
             "arm64": {
                 primary: "3F 23 03 D5 FD 7B BF A9 E4 03 01 AA FD 03 00 91 FD 7B C1 A8 BF 23 03 D5 E1 03 00 AA E5 03 03 AA E0 03 04 AA 03 04 80 D2 E4 03 02 AA 22 80 05 91", // Primary pattern
-                fallback: "3F 23 03 D5 FF ?3 02 D1 FD 7B 0? A9 F? ?? 0? ?9 F6 57 0? A9 F4 4F 0? A9 FD ?3 01 91 08 34 40 F9 08 ?? 41 F9 ?8 ?? 00 B4" // Fallback pattern
+                fallback: GENERIC_BORINGSSL_ARM64_FALLBACK // Fallback pattern
             },
 
             "arm": {
@@ -38,9 +40,13 @@ export class OpenSSL_BoringSSL_Linux extends OpenSSL_BoringSSL {
 
     install_tls_keys_callback_hook (){
 
-        this.SSL_CTX_set_keylog_callback = new NativeFunction(this.addresses[this.module_name]["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"]);
+        const setKeylogAddr = this.addresses[this.module_name]["SSL_CTX_set_keylog_callback"];
+        this.SSL_CTX_set_keylog_callback = new NativeFunction(setKeylogAddr, "void", ["pointer", "pointer"]);
         var instance = this;
         let callback_already_set = false;
+        // Records every SSL_CTX we point at our script-owned keylog callback so
+        // releaseAgentHooks can undo it (see shared/keylog_callback_tracker.ts).
+        const tracker = createKeylogCallbackTracker(this.module_name, setKeylogAddr, instance.keylog_callback, true);
 
 
         Interceptor.attach(this.addresses[this.module_name]["SSL_new"],
@@ -48,7 +54,7 @@ export class OpenSSL_BoringSSL_Linux extends OpenSSL_BoringSSL {
                 onEnter: function (args: any) {
                     try{
                         callback_already_set = true;
-                        instance.SSL_CTX_set_keylog_callback(args[0], instance.keylog_callback);
+                        tracker.install(args[0]);
                     }catch (e) {
                         callback_already_set = false;
                         devlog_error(`Error in SSL_new hook: ${e}`);
@@ -66,7 +72,7 @@ export class OpenSSL_BoringSSL_Linux extends OpenSSL_BoringSSL {
                                 devlog_error("SSL_CTX_new returned NULL");
                                 return;
                             }
-                            instance.SSL_CTX_set_keylog_callback(retval, instance.keylog_callback);
+                            tracker.install(retval);
                         }catch (e) {
                             devlog_error(`Error in SSL_CTX_new hook: ${e}`);
                         }
@@ -82,6 +88,8 @@ export class OpenSSL_BoringSSL_Linux extends OpenSSL_BoringSSL {
             onEnter: function(args: any) {
                 let callback_func = args[1];
                 //devlog("args[1]: " + callback_func);
+                if (callback_func.isNull() || tracker.sealed) return;
+                tracker.noteAppCallback(args[0], callback_func);
 
                 Interceptor.attach(callback_func, {
                     onEnter: function(args: any) {
@@ -202,6 +210,9 @@ export class OpenSSL_From_Python_Linux extends OpenSSL_BoringSSL {
         }
 
         this.SSL_CTX_set_keylog_callback = new NativeFunction(set_keylog_cb_ptr, "void", ["pointer", "pointer"]);
+        // Records every SSL_CTX we point at our script-owned keylog callback so
+        // releaseAgentHooks can undo it (see shared/keylog_callback_tracker.ts).
+        const tracker = createKeylogCallbackTracker(this.module_name, set_keylog_cb_ptr, instance.keylog_callback, true);
 
         try {
             const SSL_get_SSL_CTX = new NativeFunction(ssl_get_ctx_ptr,'pointer', ['pointer']) as (ssl: NativePointer) => NativePointer;
@@ -228,7 +239,7 @@ export class OpenSSL_From_Python_Linux extends OpenSSL_BoringSSL {
 
                     try {
                         devlog("Installing callback for OpenSSL_From_Python for module: " + instance.module_name);
-                        instance.SSL_CTX_set_keylog_callback(ctx_ptr, instance.keylog_callback);
+                        tracker.install(ctx_ptr);
                     } catch (e) {
                         devlog_error(`Failed to set keylog callback: ${e}`);
                     }
@@ -248,6 +259,8 @@ export class OpenSSL_From_Python_Linux extends OpenSSL_BoringSSL {
             Interceptor.attach(set_keylog_cb_ptr, {
                 onEnter: function (args: any) {
                     let callback_func = args[1];
+                    if (callback_func.isNull() || tracker.sealed) return;
+                    tracker.noteAppCallback(args[0], callback_func);
 
                     Interceptor.attach(callback_func, {
                         onEnter: function (args: any) {

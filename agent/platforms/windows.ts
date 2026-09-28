@@ -1,5 +1,6 @@
 import { hookRegistry, HookRegistry } from "../shared/registry.js";
-import { selected_protocol, use_modern, scan_results } from "../fritap_agent.js";
+import { collectContributedHooks } from "../shared/hook_contributors.js";
+import { selected_protocols, use_modern, scan_results } from "../fritap_agent.js";
 import { processScanResults } from "../shared/library_scanner.js";
 import { log, devlog } from "../util/log.js";
 import { getModuleNames, ssl_library_loader, hookDynamicLoader, installOhttpHooks } from "../shared/shared_functions.js";
@@ -33,7 +34,7 @@ var plattform_name: Platform = PLATFORM_WINDOWS;
 export const socket_library = "WS2_32.dll";
 
 function hook_Windows_SSL_Libs(hookRegistry: HookRegistry, is_base_hook: boolean) {
-    ssl_library_loader(plattform_name, hookRegistry, getModuleNames(), "Windows", is_base_hook, selected_protocol)
+    ssl_library_loader(plattform_name, hookRegistry, getModuleNames(), "Windows", is_base_hook, selected_protocols)
 }
 
 export function load_windows_hooking_agent() {
@@ -56,8 +57,12 @@ export function load_windows_hooking_agent() {
         { platform: plattform_name, pattern: /^(nspr|NSPR)[0-9]*\.dll/, hookFn: nss_hpke_execute_windows, library: "NSS HPKE (OHTTP)", protocol: "tls", libraryType: "nss_hpke" },
         // QUIC libraries — gated under the TLS family for `--protocol tls`
         { platform: plattform_name, pattern: /.*quiche\.dll/i, hookFn: quiche_execute, library: "Cloudflare QUICHE", libraryType: "quiche", protocol: "tls" },
-        { platform: plattform_name, pattern: /chrome\.dll/i, hookFn: google_quiche_execute, library: "Google QUICHE (Chrome)", libraryType: "google_quiche", protocol: "tls" },
-        { platform: plattform_name, pattern: /.*xul\.dll/i, hookFn: neqo_execute, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo", protocol: "tls" },
+        { platform: plattform_name, pattern: /chrome\.dll/i, hookFn: google_quiche_execute, library: "Google QUICHE (Chrome)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
+        { platform: plattform_name, pattern: /.*xul\.dll/i, hookFn: neqo_execute, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo", protocol: "tls", supplementary: true },
+        // Hooks contributed by optional units (e.g. the public RC4 key-capture
+        // unit under `--protocol rc4`: BCrypt/CryptoAPI/OpenSSL RC4_set_key).
+        // Empty when no unit registered.
+        ...collectContributedHooks(),
     ]);
 
     hook_Windows_SSL_Libs(hookRegistry, true);
@@ -79,19 +84,25 @@ export function load_windows_hooking_agent() {
         extractModulePath: true,
     };
     installOhttpHooks(plattform_name, hookRegistry, getModuleNames(), "Windows", windowsLoaderConfig);
-    processScanResults(scan_results, plattform_name, true, selected_protocol);
+    processScanResults(scan_results, plattform_name, true, selected_protocols);
     hookDynamicLoader({
         ...windowsLoaderConfig,
         onMatchExtra: () => {
             log("\n[*] Remember to hook the default SSL provider for the Windows API you have to hook lsass.exe\n");
         },
-    }, hookRegistry, getModuleNames(), false, selected_protocol);
+    }, hookRegistry, getModuleNames(), false, selected_protocols);
 }
 
 export function load_windows_lsass_agent() {
     devlog("Loading Windows LSASS agent...");
     hookRegistry.registerAll([
-        { platform: plattform_name, pattern: /ncrypt*\.dll/, hookFn: (use_modern ? lsass_execute_modern : lsass_execute), library: "LSASS NCrypt" },
+        // LSASS NCrypt: pinned to legacy on both paths (ignores use_modern).
+        // The modern def (createLsassDefinition -> installNcryptKeylogHooks) now
+        // has full parity, including the per-thread client-random state machine
+        // that correlates SslGenerateMasterKey/SslImportMasterKey across NCrypt
+        // callbacks; legacy stays the pinned, verified path for the out-of-process
+        // lsass.exe session. lsass_execute_modern kept imported for the eventual switch.
+        { platform: plattform_name, pattern: /ncrypt*\.dll/, hookFn: lsass_execute, library: "LSASS NCrypt" },
         { platform: plattform_name, pattern: /(sspicli|SSPICLI|SspiCli)\.dll$/, hookFn: (use_modern ? sspi_execute_modern : sspi_execute), library: "SSPI" },
     ]);
 
@@ -105,6 +116,6 @@ export function load_windows_lsass_agent() {
         onMatchExtra: () => {
             log("\n[*] Remember to hook the default SSL provider for the Windows API you have to hook lsass.exe\n");
         },
-    }, hookRegistry, getModuleNames(), false, selected_protocol);
+    }, hookRegistry, getModuleNames(), false, selected_protocols);
 
 }

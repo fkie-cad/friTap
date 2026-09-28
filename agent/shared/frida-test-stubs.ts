@@ -99,6 +99,9 @@ G.Script = { nextTick: (fn: () => void) => fn(), bindWeak: noop, runtime: "QJS" 
 // the stub has to be here.
 G.send = G.send || noop;
 G.recv = G.recv || ((_channel: string, _cb: (value: any) => void) => ({ wait: noop }));
+// fritap_agent.ts touches the Frida `rpc` global at module-evaluation time, so
+// any test that imports the loader/definition graph needs it defined up front.
+G.rpc = G.rpc || { exports: {} };
 G.setTimeout = G.setTimeout || ((fn: () => void) => { fn(); return 0; });
 
 export function setPlatform(p: string): void { G.Process.platform = p; }

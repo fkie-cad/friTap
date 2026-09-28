@@ -3,25 +3,17 @@
 Verifies that ``FriTap.start()`` subscribes the FlowCollector to the events a
 third-party consumer needs for parity with friTap's own TUI:
   * OHTTP inner payloads (``on_flow`` consumers) — the gap this milestone closed;
-  * Signal key intake + structured ``MessageEvent`` delivery (``on_message``).
+  * keylog-only sessions do not build a FlowCollector.
 
 Pure Python — SSL_Logger is faked so nothing launches Frida/tshark.
 """
 
 from __future__ import annotations
 
-import importlib.util
-
-import pytest
-
-_SIGNAL_AVAILABLE = importlib.util.find_spec("friTap.offline.signal") is not None
-
 import friTap.api as api  # noqa: E402
 from friTap.events import (  # noqa: E402
     EventBus,
     FlowEvent,
-    KeylogEvent,
-    MessageEvent,
     OhttpEvent,
 )
 from friTap.flow.collector import FlowCollector  # noqa: E402
@@ -62,18 +54,6 @@ def test_on_flow_wires_ohttp(monkeypatch):
     assert _subscriber_callables(bus, FlowEvent), "FlowEvent subscription missing"
 
 
-@pytest.mark.skipif(not _SIGNAL_AVAILABLE, reason="signal protocol is private/stripped in public build")
-def test_on_message_wires_keylog_and_message(monkeypatch):
-    session = FriTap_start_with(monkeypatch, lambda f: f.on_message(lambda m: None))
-
-    bus = session.event_bus
-    keylog_subs = _subscriber_callables(bus, KeylogEvent)
-    assert any(getattr(cb, "__name__", "") == "on_keylog" for cb in keylog_subs), (
-        "on_message must feed Signal keys to the collector's on_keylog"
-    )
-    assert _subscriber_callables(bus, MessageEvent), "MessageEvent subscription missing"
-
-
 def test_no_collector_without_flow_or_message(monkeypatch):
     """A keylog-only session does not build a FlowCollector."""
     created = []
@@ -86,20 +66,6 @@ def test_no_collector_without_flow_or_message(monkeypatch):
     monkeypatch.setattr(FlowCollector, "__init__", spy_init)
     FriTap_start_with(monkeypatch, lambda f: f.on_keylog(lambda e: None))
     assert created == [], "no FlowCollector should be built for a keylog-only session"
-
-
-@pytest.mark.skipif(not _SIGNAL_AVAILABLE, reason="signal protocol is private/stripped in public build")
-def test_on_message_enables_signal_messages(monkeypatch):
-    captured = {}
-    orig_init = FlowCollector.__init__
-
-    def spy_init(self, *a, **kw):
-        captured.update(kw)
-        orig_init(self, *a, **kw)
-
-    monkeypatch.setattr(FlowCollector, "__init__", spy_init)
-    FriTap_start_with(monkeypatch, lambda f: f.on_message(lambda m: None))
-    assert captured.get("signal_messages") is True
 
 
 # --------------------------------------------------------------------------- #

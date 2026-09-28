@@ -15,15 +15,12 @@ tshark or the fixture is unavailable.
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import logging
 import os
 import struct
 
 import pytest
-
-_SIGNAL_AVAILABLE = importlib.util.find_spec("friTap.offline.signal") is not None
 
 from friTap.flow.tap_reader import TapReader  # noqa: E402
 from friTap.offline import cli as offline_cli  # noqa: E402
@@ -797,44 +794,6 @@ def test_manifest_cli_flags_take_precedence(tmp_path):
 
     assert merged["tls_ports"] == (9999,)
     assert merged["keylog_path"] == "/tmp/cli_keys.log"
-
-
-@pytest.mark.skipif(not _SIGNAL_AVAILABLE, reason="signal protocol is private/stripped in public build")
-def test_manifest_keylogs_map_wins_over_wrong_toplevel(tmp_path):
-    """Regression: a multi-protocol (signal) capture splits the -k keylog, but the
-    manifest's top-level ``signal_keylog`` historically held the BASE/TLS path.
-    The authoritative ``keylogs`` map must win so Signal decrypt gets its own keys
-    (the bug: signal_keylog pointed at the TLS log -> 0 Signal messages)."""
-    pcap = tmp_path / "s.pcap"
-    pcap.write_bytes(b"\x00")
-    manifest = tmp_path / "s.pcap.fritap.json"
-    manifest.write_text(json.dumps({
-        "keylog": "skeys.tls.log",
-        "signal_keylog": "skeys.tls.log",          # WRONG top-level (base/TLS path)
-        "keylogs": {"signal": "skeys.signal.log", "tls": "skeys.tls.log"},
-    }))
-
-    loaded = offline_cli.load_manifest(str(pcap))
-    merged = offline_cli.merge_manifest(_ns(), loaded)
-
-    assert merged["signal_keylog"] == "skeys.signal.log"
-    assert merged["protocol_keylogs"]["signal"] == "skeys.signal.log"
-
-
-@pytest.mark.skipif(not _SIGNAL_AVAILABLE, reason="signal protocol is private/stripped in public build")
-def test_manifest_explicit_signal_keylog_beats_keylogs_map(tmp_path):
-    """Explicit --signal-keylog still wins over the manifest keylogs map."""
-    pcap = tmp_path / "s.pcap"
-    pcap.write_bytes(b"\x00")
-    manifest = tmp_path / "s.pcap.fritap.json"
-    manifest.write_text(json.dumps({
-        "keylogs": {"signal": "skeys.signal.log"},
-    }))
-
-    loaded = offline_cli.load_manifest(str(pcap))
-    merged = offline_cli.merge_manifest(_ns(signal_keylog="/cli/explicit.log"), loaded)
-
-    assert merged["signal_keylog"] == "/cli/explicit.log"
 
 
 def test_manifest_missing_returns_empty(tmp_path):
@@ -1630,3 +1589,69 @@ def test_pcap_to_tap_use_manifest_false_ignores_sidecar(tmp_path, monkeypatch):
     assert captured["keylog_path"] is None
     assert captured["tls_ports"] == ()
     assert captured["quic_ports"] == ()
+
+
+# ---------------------------------------------------------------------------
+# Manifest memory-scan keylog merge (pcap_to_tap wrapper) — Fix A2
+# ---------------------------------------------------------------------------
+
+_AUTH_LINE = (
+    "MTPROTO_AUTH_KEY 2 e1e6386c9a9eff65 " + ("a" * 512) + " temp"
+)
+_OBF_LINE = (
+    "MTPROTO_OBF_KEY " + ("4a" * 32) + " " + ("1e" * 16) + " "
+    + ("0c" * 32) + " " + ("7a" * 16) + " 10 5 149.154.167.41:5222"
+)
+
+
+def test_pcap_to_tap_merges_memscan_keylog_from_manifest(tmp_path, monkeypatch):
+    """A2: the manifest's ``memory_scan_keylogs`` map (OBF keys) is merged into
+    the mtproto keylog the offline decryptor receives — not ignored."""
+    pcap = tmp_path / "cap.pcapng"
+    pcap.write_bytes(b"\x00")
+    # Hook keylog: AUTH only, no OBF (mirrors the reported mtkeys.log).
+    hook = tmp_path / "keys.log"
+    hook.write_text("# hdr\n" + _AUTH_LINE + "\n")
+    # Memscan sidecar: carries the OBF key needed to de-obfuscate.
+    memscan = tmp_path / "keys.memscan.mtproto.keylog"
+    memscan.write_text("# hdr\n" + _AUTH_LINE + "\n" + _OBF_LINE + "\n")
+    (tmp_path / "cap.pcapng.fritap.json").write_text(json.dumps({
+        "mtproto_keylog": str(hook),
+        "memory_scan_keylogs": {"mtproto": str(memscan)},
+    }))
+
+    captured = {}
+
+    def _fake_convert(pcap_path, **kwargs):
+        captured.update(kwargs)
+        return p2t.ConvertResult(tap_path=str(tmp_path / "cap.tap"))
+
+    monkeypatch.setattr(p2t, "convert_pcap_to_tap", _fake_convert)
+    p2t.pcap_to_tap(str(pcap), use_manifest=True)
+
+    merged_path = captured["mtproto_keylog"]
+    assert merged_path and os.path.isfile(merged_path)
+    lines = [l.strip() for l in open(merged_path) if not l.startswith("#")]
+    assert any(l.startswith("MTPROTO_OBF_KEY") for l in lines), "OBF key must be merged in"
+    assert any(l.startswith("MTPROTO_AUTH_KEY") for l in lines)
+
+
+def test_merge_manifest_unions_memory_scan_keylog(tmp_path):
+    """A2 (CLI path): merge_manifest folds the manifest's memory_scan_keylogs map
+    into the mtproto keylog, so `fritap --from-pcap` uses the scanner's OBF keys."""
+    pcap = tmp_path / "cap.pcapng"
+    pcap.write_bytes(b"\x00")
+    hook = tmp_path / "keys.log"
+    hook.write_text("# hdr\n" + _AUTH_LINE + "\n")            # AUTH only, no OBF
+    memscan = tmp_path / "keys.memscan.mtproto.keylog"
+    memscan.write_text("# hdr\n" + _AUTH_LINE + "\n" + _OBF_LINE + "\n")
+    manifest = {
+        "mtproto_keylog": str(hook),
+        "memory_scan_keylogs": {"mtproto": str(memscan)},
+    }
+    merged = offline_cli.merge_manifest(_ns(from_pcap=str(pcap)), manifest)
+    mt = merged["mtproto_keylog"]
+    assert mt and os.path.isfile(mt)
+    lines = [l.strip() for l in open(mt) if not l.startswith("#")]
+    assert any(l.startswith("MTPROTO_OBF_KEY") for l in lines)   # OBF merged in
+    assert any(l.startswith("MTPROTO_AUTH_KEY") for l in lines)

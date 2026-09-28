@@ -17,6 +17,7 @@ import importlib.util
 import inspect
 import logging
 import os
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .base import BaseParser
@@ -29,6 +30,22 @@ _DISABLE_ENV = "FRITAP_DISABLE_PARSER_DISCOVERY"
 _DEFAULT_DISCOVERED_PRIORITY = 50
 
 
+@dataclass(frozen=True)
+class _TransportRule:
+    """How the parser for one transport (``Flow.transport``) is chosen.
+
+    ``pinned`` - a parser class that always handles the transport, no sniffing.
+    ``allowed`` - when set, the only parser classes sniffed for it (plus any
+    class opting in via a ``TRANSPORTS`` attribute naming the transport).
+    """
+
+    pinned: "type[BaseParser] | None" = None
+    allowed: "frozenset[type] | None" = None
+
+
+_NO_RULE = _TransportRule()
+
+
 class ParserRegistry:
     """Registry of protocol parsers, tried in priority order (highest first).
 
@@ -39,6 +56,12 @@ class ParserRegistry:
 
     def __init__(self) -> None:
         self._parsers: list[tuple[int, type[BaseParser]]] = []
+        # transport name (Flow.transport) -> its parser-selection rule
+        self._rules: dict[str, _TransportRule] = {}
+
+    def _rule(self, transport: str | None) -> _TransportRule:
+        """The selection rule for *transport* (the no-op rule when none/unset)."""
+        return self._rules.get(transport, _NO_RULE) if transport else _NO_RULE
 
     def register(self, parser_cls: type[BaseParser], priority: int = 50) -> None:
         """Register a parser class for protocol detection.
@@ -50,9 +73,54 @@ class ParserRegistry:
         self._parsers.append((priority, parser_cls))
         self._parsers.sort(key=lambda p: p[0], reverse=True)
 
-    def detect(self, data: bytes) -> BaseParser:
-        """Try each parser's can_parse() in descending priority, return first match or HexdumpParser."""
-        for _priority, parser_cls in self._parsers:
+    def pin_transport(self, transport: str, parser_cls: type[BaseParser]) -> None:
+        """Always use *parser_cls* for flows whose transport is *transport*.
+
+        Pinned parsers bypass byte sniffing entirely: decrypted TL payloads
+        (MTProto, Telegram Secret Chats) are not self-identifying and would
+        otherwise be mis-detected (e.g. as WebSocket: a 4-byte big-endian
+        length prefix like ``00 00 00 1a`` parses as leading CONTINUATION
+        frames).
+        """
+        self._rules[transport] = replace(self._rule(transport), pinned=parser_cls)
+
+    def pinned_parser_for(self, transport: str | None) -> type[BaseParser] | None:
+        """Return the parser class pinned to *transport*, or None."""
+        return self._rule(transport).pinned
+
+    def restrict_transport(self, transport: str, allowed) -> None:
+        """Only sniff the parser classes in *allowed* for *transport*.
+
+        QUIC stream bytes are HTTP/3 (or a QUIC-native protocol) by
+        construction; letting the TCP parsers sniff them mislabels control
+        streams as HTTP/2 or WebSocket. A parser class may additionally opt
+        in with ``TRANSPORTS = ("quic", ...)``. Hexdump stays the fallback.
+        """
+        self._rules[transport] = replace(self._rule(transport), allowed=frozenset(allowed))
+
+    def _candidates_for(self, transport: str | None) -> list[type[BaseParser]]:
+        """Parser classes, in priority order, that may sniff *transport*."""
+        allowed = self._rule(transport).allowed
+        if allowed is None:
+            return [parser_cls for _priority, parser_cls in self._parsers]
+        return [
+            parser_cls for _priority, parser_cls in self._parsers
+            if parser_cls in allowed
+            or transport in getattr(parser_cls, "TRANSPORTS", ())
+        ]
+
+    def detect(self, data: bytes, transport: str | None = None) -> BaseParser:
+        """Return a parser instance for *data*.
+
+        A parser pinned to *transport* wins outright; otherwise each candidate
+        parser's can_parse() is tried in descending priority, falling back to
+        HexdumpParser. A restricted transport only sniffs its allowed parsers.
+        ``transport=None`` keeps the pure byte-sniffing behaviour.
+        """
+        pinned_cls = self.pinned_parser_for(transport)
+        if pinned_cls is not None:
+            return pinned_cls()
+        for parser_cls in self._candidates_for(transport):
             try:
                 parser = parser_cls()
                 if parser.can_parse(data):
@@ -210,4 +278,24 @@ def get_default_registry() -> ParserRegistry:
 
         # HexdumpParser is always available as the guaranteed fallback
         _default_registry.register(HexdumpParser, priority=0)
+        _pin_telegram_transports(_default_registry)
+        _restrict_quic_transport(_default_registry)
     return _default_registry
+
+
+def _pin_telegram_transports(registry: ParserRegistry) -> None:
+    """Pin the decrypted-TL transports to their Telegram parsers."""
+    from .telegram_tl import MtprotoParser, TelegramE2EParser
+
+    registry.pin_transport("telegram_e2e", TelegramE2EParser)
+    registry.pin_transport("mtproto", MtprotoParser)
+
+
+def _restrict_quic_transport(registry: ParserRegistry) -> None:
+    """Sniff QUIC stream bytes only with the HTTP/3 parser (Hexdump fallback)."""
+    try:
+        from .http3 import Http3Parser
+    except ImportError as exc:
+        logger.warning("HTTP/3 parser unavailable; QUIC not restricted: %s", exc)
+        return
+    registry.restrict_transport("quic", {Http3Parser})

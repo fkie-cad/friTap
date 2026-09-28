@@ -20,7 +20,9 @@
 import { log, devlog } from "../../util/log.js";
 import { sendKeyMaterial, sendDatalog } from "../../shared/shared_structures.js";
 import { toHexString } from "../../shared/shared_functions.js";
-import { pcap_enabled } from "../../fritap_agent.js";
+import { pcap_enabled, getParsedPatterns } from "../../fritap_agent.js";
+import { PatternStrategy } from "../../shared/strategies/pattern_strategy.js";
+import { currentPlatformKey, normalizeArchKey } from "../../util/process_infos.js";
 import {
     SYM_DATACENTER_GET_AUTH_KEY_CANDIDATES,
     SYM_DATACENTER_GET_DATACENTER_ID,
@@ -33,6 +35,8 @@ import {
     MTPROTO_AUTH_KEY_ID_LEN,
     BYTEARRAY_BYTES_OFFSET,
     BYTEARRAY_LENGTH_OFFSET,
+    DATACENTER_ID_OFFSET,
+    TGNET_LIBRARY_NAME,
     getTgnetPatternsForArch,
 } from "../definitions/tgnet.js";
 
@@ -72,9 +76,22 @@ export class TGNET_Telegram {
         log(`[TGNET_Telegram] Installing MTProto hooks on ${this.module_name}`);
         const keylog_ok = this.install_keylog_hook();
         const plaintext_ok = this.install_plaintext_hook();
-        if (!keylog_ok && !plaintext_ok) {
-            log(`[TGNET_Telegram] No MTProto hooks installed — Phase 0 reverse engineering required for ${this.module_name}`);
+        if (keylog_ok) {
+            return; // getAuthKey resolved by symbol and attached synchronously.
         }
+        // Symbol resolution failed (release builds strip Datacenter::getAuthKey).
+        // Fall back to the async byte-pattern scan — fire-and-forget, because our
+        // caller (tgnet_execute_modern) is synchronous and PatternStrategy scans
+        // with the non-blocking async Memory.scan. The interceptor attaches once
+        // the scan resolves; the final "nothing installed" summary is emitted
+        // inside the promise so it accounts for the pattern attempt.
+        this._installKeylogViaPattern()
+            .then((pattern_ok) => {
+                if (!pattern_ok && !plaintext_ok) {
+                    log(`[TGNET_Telegram] No MTProto hooks installed — Phase 0 reverse engineering required for ${this.module_name}`);
+                }
+            })
+            .catch((e) => devlog(`[TGNET_Telegram] pattern keylog install error: ${e}`));
     }
 
     /**
@@ -91,31 +108,95 @@ export class TGNET_Telegram {
         try {
             const target = this._resolveGetAuthKey();
             if (target === null) {
-                // Phase-0 byte patterns live in definitions/tgnet.ts; the field
-                // is currently empty for every arch, so we cannot scan yet.
-                const patterns = getTgnetPatternsForArch();
-                if (patterns.getAuthKey && patterns.getAuthKey.length > 0) {
-                    // TODO(Phase 0): when a pattern exists, scan r-x ranges of the
-                    // module here (Memory.scanSync over executable ranges only —
-                    // whole-module scanSync access-violates on large libs) and
-                    // attach to the match. Left unimplemented until a real pattern
-                    // is committed.
-                    devlog(`[TGNET_Telegram] getAuthKey byte-pattern present but pattern-scan path not yet implemented (Phase 0)`);
-                }
-                console.warn(
-                    `[TGNET_Telegram] Could not resolve Datacenter::getAuthKey in ${this.module_name}. ` +
-                    `Phase 0 byte-pattern scan needed — fill TGNET_PATTERNS_<arch>.getAuthKey in agent/mtproto/definitions/tgnet.ts.`
-                );
-                log(`[TGNET_Telegram] keylog hook NOT installed (Phase 0 byte-pattern needed)`);
+                // Not resolvable by symbol (release builds strip Datacenter::*).
+                // The caller (install_hooks) falls back to the async byte-pattern
+                // scan, so we only note it here and defer the user-facing warning
+                // to the pattern path (which knows if a pattern is even available).
+                devlog(`[TGNET_Telegram] getAuthKey unresolved by symbol; deferring to byte-pattern scan`);
                 return false;
             }
 
             this.addresses["Datacenter::getAuthKey"] = target;
             this._attachGetAuthKey(target);
-            log(`[TGNET_Telegram] Hooked Datacenter::getAuthKey at ${target}`);
+            log(`[TGNET_Telegram] Hooked Datacenter::getAuthKey at ${target} (symbol)`);
             return true;
         } catch (e) {
             devlog(`[TGNET_Telegram] install_keylog_hook error: ${e}`);
+            return false;
+        }
+    }
+
+    /**
+     * Async byte-pattern fallback for Datacenter::getAuthKey when symbol
+     * resolution fails (release Telegram builds strip the tgnet C++ methods:
+     * they are in neither .dynsym nor .symtab, so enumerateExports/enumerateSymbols
+     * both miss them — a memory scan is the only path).
+     *
+     * Reuses the shared `PatternStrategy` (async `Memory.scan` over executable
+     * ranges only) exactly like the QUIC install path. Pattern sources, in order:
+     *   1. Patterns delivered from Python (friTap/patterns/default_mtproto.json,
+     *      merged into the config_batch and exposed via getParsedPatterns()).
+     *   2. The compiled-in TGNET_PATTERNS_<arch>.getAuthKey fallback, so the hook
+     *      still works if the agent runs without delivered patterns.
+     *
+     * `tryHookAsync(moduleName, libraryType, ...)` looks up
+     * `patternData[moduleName] || patternData[libraryType]`, so we pass the real
+     * loaded soname (e.g. libtmessages.49.so) as moduleName — needed for
+     * Process.getModuleByName — and the canonical library name as libraryType,
+     * which is the key used in the pattern JSON. Fully guarded; never crashes.
+     */
+    private async _installKeylogViaPattern(): Promise<boolean> {
+        try {
+            const candidates: any[] = [];
+            const delivered = getParsedPatterns();
+            if (delivered) {
+                candidates.push(delivered);
+            }
+            const compiled = getTgnetPatternsForArch().getAuthKey;
+            if (compiled && compiled.length > 0) {
+                candidates.push({
+                    [TGNET_LIBRARY_NAME]: {
+                        [currentPlatformKey()]: {
+                            [normalizeArchKey(Process.arch)]: { getAuthKey: [compiled] },
+                        },
+                    },
+                });
+            }
+            if (candidates.length === 0) {
+                console.warn(
+                    `[TGNET_Telegram] Could not resolve Datacenter::getAuthKey in ${this.module_name} ` +
+                    `(no byte pattern available). Ship a getAuthKey pattern in ` +
+                    `friTap/patterns/default_mtproto.json (library "${TGNET_LIBRARY_NAME}"), ` +
+                    `or fill TGNET_PATTERNS_<arch>.getAuthKey in agent/mtproto/definitions/tgnet.ts.`
+                );
+                log(`[TGNET_Telegram] keylog hook NOT installed (no byte pattern available)`);
+                return false;
+            }
+            for (const patternData of candidates) {
+                try {
+                    const ps = new PatternStrategy(patternData);
+                    const res = await ps.tryHookAsync(
+                        this.module_name, TGNET_LIBRARY_NAME, ["getAuthKey"]);
+                    const addr = res.resolvedAddresses.get("getAuthKey");
+                    if (addr && !addr.isNull()) {
+                        this.addresses["Datacenter::getAuthKey"] = addr;
+                        this._attachGetAuthKey(addr);
+                        log(`[TGNET_Telegram] Hooked Datacenter::getAuthKey at ${addr} (byte pattern)`);
+                        return true;
+                    }
+                } catch (e) {
+                    devlog(`[TGNET_Telegram] getAuthKey pattern attempt failed: ${e}`);
+                }
+            }
+            console.warn(
+                `[TGNET_Telegram] Could not resolve Datacenter::getAuthKey in ${this.module_name} ` +
+                `by symbol or byte pattern — the getAuthKey pattern may need updating for this build ` +
+                `(see friTap/patterns/default_mtproto.json).`
+            );
+            log(`[TGNET_Telegram] keylog hook NOT installed (byte-pattern scan found no match)`);
+            return false;
+        } catch (e) {
+            devlog(`[TGNET_Telegram] _installKeylogViaPattern error: ${e}`);
             return false;
         }
     }
@@ -232,12 +313,22 @@ export class TGNET_Telegram {
 
                     const keyType = this.perm ? "perm" : "temp";
 
-                    // dc_id via the verified Datacenter::getDatacenterId getter.
+                    // dc_id: prefer the verified Datacenter::getDatacenterId getter;
+                    // on release builds that symbol is stripped, so fall back to
+                    // reading the plain int id field on the Datacenter object
+                    // directly (the RE-verified getter is just
+                    // `LDR W0,[X0,#DATACENTER_ID_OFFSET]; RET`). dc_id is only
+                    // informational — offline decrypt joins by auth_key_id — so any
+                    // failure here just leaves it 0.
                     let dcId = 0;
                     try {
-                        const getDcId = self._resolveGetDatacenterId();
-                        if (getDcId !== null && this.datacenterPtr && !this.datacenterPtr.isNull()) {
-                            dcId = getDcId(this.datacenterPtr) as number;
+                        if (this.datacenterPtr && !this.datacenterPtr.isNull()) {
+                            const getDcId = self._resolveGetDatacenterId();
+                            if (getDcId !== null) {
+                                dcId = getDcId(this.datacenterPtr) as number;
+                            } else {
+                                dcId = this.datacenterPtr.add(DATACENTER_ID_OFFSET).readS32();
+                            }
                         }
                     } catch (_e) {
                         dcId = 0;

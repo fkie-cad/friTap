@@ -147,6 +147,10 @@ if TEXTUAL_AVAILABLE:
                 f"  Target:        {target_name} [{target_mode_upper}]",
                 f"  Mode:          {capture_mode_display}",
             ]
+            protocols_display = self._summary.get("protocols_display")
+            if protocols_display:
+                lines.append(f"  Protocol:      {protocols_display}")
+            lines.append(f"  Method:        {self._extraction_method_display()}")
 
             # QUIC capture boundary only matters for plaintext TLS/auto capture
             # (mirrors the wizard gate that presents the QUIC capture-mode step).
@@ -173,6 +177,15 @@ if TEXTUAL_AVAILABLE:
             lines.append(f"  Debug Log:     {debug_log_indicator}")
 
             return "\n".join(lines)
+
+        def _extraction_method_display(self) -> str:
+            """Read-only label for the key extraction method chosen in step 5a."""
+            methods = []
+            if self._summary.get("intercept", True):
+                methods.append("Intercepting")
+            if self._summary.get("memory_scan", False):
+                methods.append("Memory scan")
+            return " + ".join(methods) or "\u2014"
 
         def watch_verbose(self, value: bool) -> None:
             self._refresh_summary()

@@ -4,6 +4,12 @@ import { load_macos_hooking_agent } from "./platforms/macos.js";
 import { load_linux_hooking_agent } from "./platforms/linux.js";
 import { load_windows_hooking_agent, load_windows_lsass_agent } from "./platforms/windows.js";
 import { load_wine_hooking_agent } from "./platforms/wine.js";
+// PUBLIC RC4 key-capture unit. Side-effecting import: registers the RC4 hook
+// contributors (protocol "rc4", no TLS implication) at module-load time, before
+// the platform loaders call collectContributedHooks() during platform-load. RC4
+// is a first-class public protocol, so it is wired into the public entry here
+// (unlike the private Signal unit, which is wired only into fritap_agent_full).
+import "./rc4/index.js";
 import { isWindows, isLinux, isWine, isAndroid, isiOS, isMacOS, getDetailedPlatformInfo } from "./util/process_infos.js";
 import { anti_root_execute } from "./util/anti_root.js";
 import { socket_trace_execute } from "./misc/socket_tracer.js"
@@ -18,12 +24,14 @@ import { AGENT_ABI_VERSION } from "./shared/generated_constants.js";
 // working unchanged.
 import {
     setSelectedProtocol,
-    offsets, pcap_enabled, keylog_enabled, _isShuttingDown, ohttp_enabled, selected_protocol, config_extensions,
+    offsets, pcap_enabled, keylog_enabled, _isShuttingDown, ohttp_enabled, selected_protocol, selected_protocols, config_extensions,
     setOffsets, setPcapEnabled, setKeylogEnabled, setIsShuttingDown, setOhttpEnabled, setConfigExtensions,
 } from "./shared/shared_structures.js";
-export { offsets, pcap_enabled, keylog_enabled, _isShuttingDown, ohttp_enabled, selected_protocol, config_extensions };
+export { offsets, pcap_enabled, keylog_enabled, _isShuttingDown, ohttp_enabled, selected_protocol, selected_protocols, config_extensions };
 import { maybeRunRegionScan } from "./shared/scan/scan_engine.js";
 import { stopBlink } from "./shared/pairip_blink.js";
+import { restoreAnchorLocatorKeylogFields } from "./shared/boringssl_anchor_locator.js";
+import { restoreTrackedKeylogCallbacks } from "./shared/keylog_callback_tracker.js";
 
 // global address which stores the addresses of the hooked modules which aren't loaded via the dynamic loader
 (globalThis as any).init_addresses = {};
@@ -56,6 +64,38 @@ function initStage<T>(stage: string, fn: () => T, fatal: boolean = true): T | un
     }
 }
 
+/**
+ * Shared teardown for the gracefulDetach RPC and Frida's `dispose` hook.
+ * Idempotent: every step is a flag set, a detach, or a restore that clears
+ * its own bookkeeping, so running it twice (graceful_detach then unload) is safe.
+ */
+function releaseAgentHooks(): void {
+    // Set the shutdown flag BEFORE Interceptor.detachAll so any callback
+    // already mid-execution (or queued on the JS message loop) sees the
+    // flag at sendDatalog/emit and short-circuits. Order matters: if we
+    // detached first and then set the flag, callbacks already queued
+    // between the two statements would still pay the full IPC cost.
+    setIsShuttingDown(true);
+    try { stopBlink(); } catch (_e) { /* blink not active */ }
+    // BEFORE detachAll, on purpose: the callback tier's SSL_CTX_free hook must
+    // still be live so a CTX being freed right now blocks in its onEnter (we
+    // hold the script lock) instead of being written after release. The
+    // registry is sealed first, so the SSL_new/SSL_CTX_new hooks that are
+    // still attached can no longer re-install the callback behind the restore.
+    try { restoreTrackedKeylogCallbacks(); } catch (_e) { /* best effort */ }
+    try {
+        Interceptor.detachAll();
+    } catch (e) {
+        try {
+            log(`[gracefulDetach] Interceptor.detachAll threw: ${e}`);
+        } catch (_e2) { /* host already gone */ }
+    }
+    // After detachAll (so no hook can re-install it): NULL the SSL_CTX
+    // keylog_callback fields tier 4 filled with a script-owned callback,
+    // which would otherwise dangle once the script unloads.
+    try { restoreAnchorLocatorKeylogFields(); } catch (_e) { /* best effort */ }
+}
+
 // Declared BEFORE anything that can throw or kill the target, so the host's
 // agent_abi_version() / graceful_detach() calls keep working even when startup
 // fails. Previously this sat at the very end of the module, so any init failure
@@ -74,20 +114,19 @@ rpc.exports = {
     },
     //@ts-ignore
     gracefulDetach(): void {
-        // Set the shutdown flag BEFORE Interceptor.detachAll so any callback
-        // already mid-execution (or queued on the JS message loop) sees the
-        // flag at sendDatalog/emit and short-circuits. Order matters: if we
-        // detached first and then set the flag, callbacks already queued
-        // between the two statements would still pay the full IPC cost.
-        setIsShuttingDown(true);
-        try { stopBlink(); } catch (_e) { /* blink not active */ }
-        try {
-            Interceptor.detachAll();
-        } catch (e) {
-            try {
-                log(`[gracefulDetach] Interceptor.detachAll threw: ${e}`);
-            } catch (_e2) { /* host already gone */ }
-        }
+        releaseAgentHooks();
+    },
+    //@ts-ignore
+    dispose(): void {
+        // frida-core calls the `dispose` RPC export on EVERY script unload
+        // (lib/payload/script-engine.vala: ensure_dispose_called ->
+        // rpc_client.call("dispose", [reason]) from close() and
+        // prepare_for_termination()), including the unclean paths where the
+        // host never reached graceful_detach: host killed, connection drop,
+        // graceful_detach failure followed by a plain unload. Without this,
+        // tier 4's SSL_CTX->keylog_callback write would dangle after unload
+        // and SIGSEGV the target on its next handshake.
+        try { releaseAgentHooks(); } catch (_e) { /* never block unload */ }
     }
 };
 
@@ -315,6 +354,14 @@ export let pairip_safe: boolean = false;
 //@ts-ignore
 export let probe: boolean = false;
 
+// --boringssl-anchor-only (debugging aid, fkie-cad/friTap#... Chrome/libhttpengine):
+// force the last-resort BoringSSL anchor locator (tier 4) by SKIPPING the pattern
+// tier so a total-miss is reported straight to onAllKeylogTiersMissed, which runs
+// tier 4. Lets the anchor locator be exercised on-device even where a pattern
+// would otherwise win. arm64 only; still honours --pairip-safe (tier 4 is a scan).
+//@ts-ignore
+export let force_anchor_locator: boolean = false;
+
 /**
  * Perform a send/recv handshake with the Python host to receive a configuration value.
  * @param sendChannel Channel name to send on
@@ -384,6 +431,7 @@ pairip_safe = config_batch.pairip_safe ?? pairip_safe;
 quic_egress_headers_layer = config_batch.quic_egress_headers_layer ?? quic_egress_headers_layer;
 debug_output = config_batch.debug_output ?? debug_output;
 probe = config_batch.probe ?? probe;
+force_anchor_locator = config_batch.force_anchor_locator ?? force_anchor_locator;
 // Generic feature-config passthrough (e.g. { scan_region } for the public
 // memory-scan engine). Protocol-agnostic: the public core never inspects a
 // private sub-key; private units read their own keys from config_extensions.

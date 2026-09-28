@@ -15,11 +15,12 @@ def _simulate_missing_backend_and_tshark(monkeypatch):
     """Backend "missing" + find_tshark raising, so the CLI hint prints before
     any tshark work is attempted (the two CLI tests share this setup)."""
     from friTap.offline import cli
+    from friTap.offline.tshark import TsharkNotFoundError
 
     monkeypatch.setattr(mt, "mtproto_backend_available", lambda: False)
     monkeypatch.setattr(
         cli, "find_tshark",
-        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no tshark")),
+        lambda *a, **k: (_ for _ in ()).throw(TsharkNotFoundError("no tshark")),
     )
     return cli
 

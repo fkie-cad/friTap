@@ -99,3 +99,28 @@ def test_flow_summary_from_flow_copies_transport():
     tls_flow, _ = _signal_flow()
     tls_flow.transport = "tls"
     assert TapSummary.from_flow(tls_flow).transport == "tls"
+
+
+def test_update_capture_start_lowers_header_to_earliest_real_time(tmp_path):
+    path = tmp_path / "cs.tap"
+    w = TapWriter()
+    w.open(str(path), target="t")  # provisional start = wall clock
+    w.update_capture_start(2000.0)
+    w.update_capture_start(1500.0)
+    w.update_capture_start(1800.0)  # later — ignored
+    w.update_capture_start(0.0)     # unknown — ignored
+    w.close()
+    with TapReader(str(path)) as reader:
+        reader.open()
+        assert reader.header.capture_start == 1500.0
+
+
+def test_update_capture_start_never_raises_start(tmp_path):
+    path = tmp_path / "cs2.tap"
+    w = TapWriter()
+    w.open(str(path), target="t", capture_start=100.0)
+    w.update_capture_start(200.0)
+    w.close()
+    with TapReader(str(path)) as reader:
+        reader.open()
+        assert reader.header.capture_start == 100.0

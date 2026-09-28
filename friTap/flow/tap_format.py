@@ -16,8 +16,9 @@ from __future__ import annotations
 import json
 import struct
 import zlib
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from friTap.flow.models import Flow
@@ -164,6 +165,22 @@ class FlowSummary:
     # Primary TL operation derived from the flow's message-bearing layers (e.g.
     # "sendMessage", "users"). See friTap.flow.display.method_from_messages.
     flow_method: str = ""
+    # Which exchange halves were parsed (derived from the FLOW meta's
+    # ``request``/``response`` entries, so old taps decode them too). Lets
+    # message-stream status (sent / recv / sent+recv) render from the summary.
+    has_request: bool = False
+    has_response: bool = False
+    # OHTTP inner request/response present (derived from the FLOW meta's
+    # ``ohttp_inner_*`` entries), so the OHTTP filter preset works in replay.
+    has_ohttp: bool = False
+    # Precomputed display-filter inputs (parity with
+    # friTap.flow.models.FlowSummary): per-protocol filter fields derived from
+    # ``meta["layers"]`` and the canonical protocol names. Derived on decode,
+    # never persisted, so old tap files gain filtering without a format change.
+    # A plain dict (picklable / deepcopy- / asdict-able) to be treated as
+    # READ-ONLY.
+    filter_attrs: Mapping[str, tuple] = field(default_factory=dict)
+    protocols: frozenset[str] = frozenset()
 
     @property
     def display_method(self) -> str:
@@ -200,6 +217,11 @@ class FlowSummary:
         flow_method = getattr(flow, "flow_method", "") or _display.method_from_messages(flow)
         total = getattr(flow, "_total_bytes", 0) or sum(len(c.data) for c in flow.chunks)
         state = flow.state.value if hasattr(flow.state, "value") else str(flow.state)
+        # Local imports: friTap.filter's package __init__ pulls in the
+        # evaluator, which must stay free to import friTap.flow without a cycle.
+        from friTap.filter.layer_fields import filter_inputs_from_flow
+        from friTap.filter.protocols import flow_has_ohttp
+        filter_attrs, protocols = filter_inputs_from_flow(flow)
         return FlowSummary(
             flow_id=flow.flow_id,
             connection_id=flow.connection_id,
@@ -233,6 +255,11 @@ class FlowSummary:
             inner_e2e_protocol=inner_e2e,
             inner_summary=inner_summary,
             flow_method=flow_method,
+            has_request=req is not None,
+            has_response=resp is not None,
+            has_ohttp=flow_has_ohttp(flow),
+            filter_attrs=filter_attrs,
+            protocols=protocols,
         )
 
     def to_dict(self) -> dict:
@@ -413,14 +440,22 @@ def encode_flow(flow: "Flow") -> bytes:
     """
     blobs: list[bytes] = []
     blob_offset = 0
+    # Identical payloads within one flow share a single blob region (e.g. an
+    # MTProto ParseResult body IS its chunk's bytes), so each is stored once.
+    registered: dict[bytes, tuple[int, int]] = {}
 
     def register_blob(data: bytes) -> tuple[int, int]:
         nonlocal blob_offset
-        offset = blob_offset
-        length = len(data)
-        blobs.append(data)
-        blob_offset += length
-        return offset, length
+        if not data:
+            return blob_offset, 0
+        key = data if isinstance(data, bytes) else bytes(data)
+        known = registered.get(key)
+        if known is not None:
+            return known
+        registered[key] = (blob_offset, len(key))
+        blobs.append(key)
+        blob_offset += len(key)
+        return registered[key]
 
     # Encode chunks
     chunks_meta = []
@@ -465,6 +500,7 @@ def encode_flow(flow: "Flow") -> bytes:
         meta["trailing_protocol"] = flow.trailing_protocol
         if flow.trailing_parse is not None:
             meta["trailing_parse"] = _encode_parse_result(flow.trailing_parse, register_blob)
+    _encode_response_trailing(flow, meta, register_blob)
 
     if flow.detected_protocol:
         meta["detected_protocol"] = flow.detected_protocol
@@ -518,7 +554,7 @@ def encode_flow(flow: "Flow") -> bytes:
     layers_meta = [
         _encode_layer(ly, register_blob)
         for ly in getattr(flow, "layers", [])
-        if not ly.is_empty() or ly.metadata_only
+        if not ly.is_empty() or ly.metadata_only or _has_owned_bytes(ly)
     ]
     if layers_meta:
         meta["layers"] = layers_meta
@@ -543,6 +579,32 @@ def encode_flow(flow: "Flow") -> bytes:
     blob_bytes = b"".join(blobs)
 
     return _META_LEN.pack(len(meta_bytes)) + meta_bytes + blob_bytes
+
+
+def _encode_response_trailing(flow: "Flow", meta: dict, register_blob) -> None:
+    """Additive ``resp_trailing_*`` meta keys for read-direction trailing data."""
+    data = getattr(flow, "response_trailing_bytes", None)
+    if not data:
+        return
+    r_off, r_len = register_blob(data)
+    meta["resp_trailing_blob_offset"] = r_off
+    meta["resp_trailing_blob_len"] = r_len
+    meta["resp_trailing_protocol"] = flow.response_trailing_protocol
+    if flow.response_trailing_parse is not None:
+        meta["resp_trailing_parse"] = _encode_parse_result(
+            flow.response_trailing_parse, register_blob)
+
+
+def _decode_response_trailing(flow: "Flow", meta: dict, read_blob) -> None:
+    """Restore ``resp_trailing_*``; taps written before it keep the defaults."""
+    r_len = meta.get("resp_trailing_blob_len", 0)
+    if not r_len:
+        return
+    flow.response_trailing_bytes = read_blob(
+        meta.get("resp_trailing_blob_offset", 0), r_len)
+    flow.response_trailing_protocol = meta.get("resp_trailing_protocol", "")
+    flow.response_trailing_parse = _decode_parse_result(
+        meta.get("resp_trailing_parse"), read_blob)
 
 
 def encode_flow_index(entries: list[dict]) -> bytes:
@@ -736,6 +798,7 @@ def decode_flow(payload: bytes) -> "Flow":
         flow.trailing_parse = _decode_parse_result(
             meta.get("trailing_parse"), read_blob
         )
+    _decode_response_trailing(flow, meta, read_blob)
 
     flow.detected_protocol = meta.get("detected_protocol", "")
     flow.transport = meta.get("transport", "tls")
@@ -860,7 +923,7 @@ def decode_flow_summary(payload: bytes, file_offset: int = 0) -> FlowSummary:
     else:
         protocol = "unknown"
 
-    return FlowSummary(
+    summary = FlowSummary(
         flow_id=meta.get("flow_id", ""),
         connection_id=meta.get("connection_id", ""),
         src_addr=meta.get("src_addr", ""),
@@ -893,7 +956,36 @@ def decode_flow_summary(payload: bytes, file_offset: int = 0) -> FlowSummary:
         inner_e2e_protocol=meta.get("inner_e2e_protocol", ""),
         inner_summary=meta.get("inner_summary", ""),
         flow_method=meta.get("flow_method", ""),
+        has_request=req is not None,
+        has_response=resp is not None,
+        has_ohttp=(meta.get("ohttp_inner_request") is not None
+                   or meta.get("ohttp_inner_response") is not None),
     )
+    _attach_filter_inputs(summary, meta.get("layers"))
+    return summary
+
+
+def _attach_filter_inputs(summary: FlowSummary, layers_meta: Any) -> None:
+    """Derive ``filter_attrs`` / ``protocols`` for a decoded summary.
+
+    Uses the already-parsed ``meta["layers"]`` (v3 records); v1/v2 records
+    without layers fall back to the scalar protocol labels alone. Never raises:
+    a malformed layer list only loses its filter attributes.
+    """
+    # Local imports: friTap.filter's package __init__ pulls in the evaluator,
+    # which must stay free to import friTap.flow without a cycle.
+    from friTap.filter.layer_fields import LAYER_NAME_KEY, extract_filter_attrs
+    from friTap.filter.protocols import canonical_protocols
+
+    layers = layers_meta if isinstance(layers_meta, list) else []
+    summary.filter_attrs = dict(extract_filter_attrs(layers))
+    # A flat summary exposes neither its layer names nor the request/response
+    # ``protocol`` scalar to canonical_protocols(), so pass them as extra
+    # labels (they then take part in implied protocols: bhttp -> ohttp).
+    labels = [summary.protocol] + [
+        lm.get(LAYER_NAME_KEY, "") for lm in layers if isinstance(lm, dict)
+    ]
+    summary.protocols = canonical_protocols(summary, labels)
 
 
 def decode_flow_index(payload: bytes) -> list[dict]:
@@ -917,6 +1009,17 @@ def find_sync_marker(data: bytes, start: int = 0) -> int:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _has_owned_bytes(layer) -> bool:
+    """True when a layer carries its own bytes (e.g. an RC4-in-TLS carrier).
+
+    Metadata-based ``is_empty()`` checks (TlsLayer looks only at version/SNI/
+    cipher) would otherwise drop such a layer, losing its owned plaintext.
+    """
+    data = getattr(layer, "data", None)
+    return (data is not None and data.data_source == "owned"
+            and not data.is_empty())
+
 
 def _encode_layer(layer, register_blob) -> dict:
     """Encode one ProtocolLayer for ``meta["layers"]``.
@@ -945,11 +1048,17 @@ def _encode_layer(layer, register_blob) -> dict:
         # view (transport tls/quic + app layers) — mark it so regardless of how
         # the instance was built, so the view is never serialized as bytes. Only
         # genuine owned-data layers (decryptor output, unregistered names) blob.
+        # An instance that actually OWNS bytes (e.g. the TLS layer of an
+        # RC4-in-TLS flow, holding the decrypted TLS plaintext while the flow's
+        # chunks carry the inner RC4 plaintext) overrides the registry default —
+        # otherwise those bytes would be silently dropped as a "chunks view".
         desc = get_registry().get(layer.name)
-        if (desc is not None and desc.data_source == "chunks") \
-                or layer.data.data_source == "chunks":
+        owns_data = layer.data.data_source == "owned"
+        if not owns_data and (
+                (desc is not None and desc.data_source == "chunks")
+                or layer.data.data_source == "chunks"):
             d["data_from_chunks"] = True
-        elif layer.data.data_source == "owned":
+        elif owns_data:
             read = layer.data.read
             write = layer.data.write
             r_off, r_len = register_blob(read) if read else (0, 0)

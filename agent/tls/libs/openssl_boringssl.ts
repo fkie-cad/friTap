@@ -1,11 +1,11 @@
 import { readAddresses, getPortsAndAddresses, resolveOffsets, isSymbolAvailable, checkNumberOfExports, calculateZeroBytePercentage } from "../../shared/shared_functions.js";
-import { isDeepSymbolResolutionEnabled } from "../../shared/deep_symbol_resolution.js";
 import { enable_default_fd, pcap_enabled } from "../../fritap_agent.js";
 import { devlog, devlog_error, log, devlog_info } from "../../util/log.js";
 import { initializePipeline as sharedInitializePipeline, resolveWithPipelineAsync as sharedResolveWithPipelineAsync } from "../../shared/pipeline_utils.js";
 import { ObjC } from "../../shared/objclib.js";
 import { sendKeylog, sendDatalog } from "../../shared/shared_structures.js";
 import { readKeylogLine, isNssKeylogLine } from "../shared/keylog_line.js";
+import { addModuleMethod, hasResolvableSslSurface } from "../../legacy/tls/libs/ssl_method_mapping.js";
 
 class ModifyReceiver{
     public readModification: ArrayBuffer | null = null;
@@ -96,7 +96,7 @@ export class OpenSSL_BoringSSL {
         // .symtab — where readAddresses' symbol-table fallback resolves SSL_*.
         // Computed once: the export count is invariant for this install, so this
         // also avoids a second checkNumberOfExports() (enumerateExports) pass below.
-        const sslSurfaceResolvable = checkNumberOfExports(moduleName) > 2 || isDeepSymbolResolutionEnabled(moduleName);
+        const sslSurfaceResolvable = hasResolvableSslSurface(moduleName, checkNumberOfExports(moduleName));
 
         if(typeof passed_library_method_mapping !== 'undefined'){
             this.library_method_mapping = passed_library_method_mapping;
@@ -111,13 +111,13 @@ export class OpenSSL_BoringSSL {
         }
 
         if (isSymbolAvailable(moduleName, "SSL_CTX_new")) {
-            this.library_method_mapping[`*${moduleName}*`].push("SSL_CTX_new");
+            addModuleMethod(this.library_method_mapping, moduleName, "SSL_CTX_new");
         }
 
     
         // Check and add SSL_read_ex if available
         if (isSymbolAvailable(moduleName, "SSL_read_ex")) {
-            this.library_method_mapping[`*${moduleName}*`].push("SSL_read_ex");
+            addModuleMethod(this.library_method_mapping, moduleName, "SSL_read_ex");
             this.is_openssl = true;
         }else{
             this.is_openssl = false;
@@ -146,7 +146,7 @@ export class OpenSSL_BoringSSL {
 
         // Check and add SSL_write_ex if available
         if (isSymbolAvailable(moduleName, "SSL_write_ex")) {
-            this.library_method_mapping[`*${moduleName}*`].push("SSL_write_ex");
+            addModuleMethod(this.library_method_mapping, moduleName, "SSL_write_ex");
         }
 
 

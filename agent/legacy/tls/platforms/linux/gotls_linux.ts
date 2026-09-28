@@ -4,6 +4,7 @@ import { socket_library } from "../../../../platforms/linux.js";
 import {PatternBasedHooking, get_CPU_specific_pattern, hasUsablePatternsFor } from "../../../../tls/shared/pattern_based_hooking.js";
 import { patterns, isPatternReplaced } from "../../../../fritap_agent.js"
 import { devlog, devlog_error } from "../../../../util/log.js";
+import { GENERIC_BORINGSSL_ARM64_FALLBACK } from "../../../../shared/bundled_cronet_patterns.js";
 
 
 export class GoTLS_Linux extends GoTLS {
@@ -28,7 +29,7 @@ export class GoTLS_Linux extends GoTLS {
             },
             "arm64": {
                 primary: "90 0B 40 F9 F1 43 00 D1 3F 02 10 EB E9 10 00 54 FE 0F 17 F8 FD 83 1F F8 FD 23 00 D1 E1 53 00 F9 E3 5B 00 F9 E6 67 00 F9 09 94 40 F9 49 0F 00 B4", // ARM64 primary pattern
-                fallback: "3F 23 03 D5 FF ?3 02 D1 FD 7B 0? A9 F? ?? 0? ?9 F6 57 0? A9 F4 4F 0? A9 FD ?3 01 91 08 34 40 F9 08 ?? 41 F9 ?8 ?? 00 B4", // ARM64 fallback pattern
+                fallback: GENERIC_BORINGSSL_ARM64_FALLBACK, // ARM64 fallback pattern
             },
 
             "arm": {

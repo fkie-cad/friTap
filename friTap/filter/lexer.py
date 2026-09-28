@@ -52,6 +52,70 @@ class Token:
     position: int
 
 
+# Characters allowed after the first one of a bare word. "/" lets unquoted
+# protocol labels such as HTTP/2 or HTTP/1.1 be written as values.
+_BARE_WORD_CHARS = "._-/"
+
+
+def _starts_bare_word(ch: str) -> bool:
+    return ch.isalpha() or ch == "_"
+
+
+def _scan_bare_word(text: str, i: int) -> int:
+    """Return the index just past the bare word continuing at *i*."""
+    while i < len(text) and (text[i].isalnum() or text[i] in _BARE_WORD_CHARS):
+        i += 1
+    return i
+
+
+_QUOTES = ('"', "'")
+
+# Escapes decoded inside a (non-raw) quoted string. Anything else keeps its
+# backslash verbatim, so regex escapes such as \s \d \w \b \. \( \x41
+# reach ``matches`` unchanged. Decision (Wireshark is the reference): only the
+# escapes friTap already decoded (\\ \n \t and the quotes \" \') plus \r
+# are translated. \b is NOT backspace here (it stays a regex word boundary)
+# and \x / octal / \u are not decoded -- use a raw string r"..." whenever a
+# pattern must reach the regex engine completely untouched.
+_STRING_ESCAPES = {
+    "\\": "\\",
+    '"': '"',
+    "'": "'",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+}
+
+
+def _scan_string(text: str, i: int, raw: bool) -> tuple[Token, int]:
+    """Scan a quoted string starting at *i* (at the ``r`` prefix if *raw*).
+
+    Returns the STRING token and the index just past the closing quote. In a
+    raw string every backslash is literal; a backslash still protects the
+    next character, so ``r"a\\"b"`` keeps ``\\"`` and does not end there.
+    """
+    start = i
+    if raw:
+        i += 1
+    quote = text[i]
+    i += 1
+    parts: list[str] = []
+    while i < len(text):
+        c = text[i]
+        if c == "\\" and i + 1 < len(text):
+            nc = text[i + 1]
+            parts.append(c + nc if raw else _STRING_ESCAPES.get(nc, c + nc))
+            i += 2
+        elif c == quote:
+            return Token(TokenType.STRING, "".join(parts), start), i + 1
+        else:
+            parts.append(c)
+            i += 1
+    kind = "raw string" if raw else "string"
+    prefix = text[start] if raw else ""
+    raise FilterSyntaxError(f"Unterminated {kind} starting with {prefix}{quote}", start)
+
+
 def tokenize(text: str) -> list[Token]:
     """Tokenize a filter expression string into a list of Tokens."""
     tokens: list[Token] = []
@@ -110,37 +174,17 @@ def tokenize(text: str) -> list[Token]:
             i += 1
             continue
 
+        # Raw string: r"..." / R'...' -- only when the r is IMMEDIATELY
+        # followed by a quote, so bare words like rc4 or rc4.key_len stay fields.
+        if ch in "rR" and i + 1 < length and text[i + 1] in _QUOTES:
+            token, i = _scan_string(text, i, raw=True)
+            tokens.append(token)
+            continue
+
         # Quoted string
-        if ch in ('"', "'"):
-            start = i
-            quote = ch
-            i += 1
-            parts: list[str] = []
-            while i < length:
-                c = text[i]
-                if c == "\\" and i + 1 < length:
-                    # Escape sequence
-                    nc = text[i + 1]
-                    if nc == quote:
-                        parts.append(quote)
-                    elif nc == "\\":
-                        parts.append("\\")
-                    elif nc == "n":
-                        parts.append("\n")
-                    elif nc == "t":
-                        parts.append("\t")
-                    else:
-                        parts.append(nc)
-                    i += 2
-                elif c == quote:
-                    i += 1
-                    break
-                else:
-                    parts.append(c)
-                    i += 1
-            else:
-                raise FilterSyntaxError(f"Unterminated string starting with {quote}", start)
-            tokens.append(Token(TokenType.STRING, "".join(parts), start))
+        if ch in _QUOTES:
+            token, i = _scan_string(text, i, raw=False)
+            tokens.append(token)
             continue
 
         # Number or dotted numeric value (e.g. IP address: 10.0.0.1)
@@ -163,6 +207,12 @@ def tokenize(text: str) -> list[Token]:
                         break
                 else:
                     i += 1
+            if i < length and _starts_bare_word(text[i]):
+                # A digit run followed by letters is a bare word, e.g. the
+                # hex id 0a1b2c or 0x1f — not a number plus a stray token.
+                i = _scan_bare_word(text, i)
+                tokens.append(Token(TokenType.FIELD, text[start:i], start))
+                continue
             word = text[start:i]
             if word.endswith(".") or dot_count >= 2:
                 # Trailing dot or multiple dots → IP address / partial, treat as bare word
@@ -172,10 +222,9 @@ def tokenize(text: str) -> list[Token]:
             continue
 
         # Bare word (field name or keyword or bare value)
-        if ch.isalpha() or ch == "_":
+        if _starts_bare_word(ch):
             start = i
-            while i < length and (text[i].isalnum() or text[i] in "._-"):
-                i += 1
+            i = _scan_bare_word(text, i)
             word = text[start:i]
             lower = word.lower()
             if lower in _KEYWORDS:

@@ -124,6 +124,8 @@ def _probe_logger() -> SSL_Logger:
     obj._platform_report = None
     obj._platform_report_received = threading.Event()
     obj.agent_script = "fritap_agent.js"
+    # Hermetic: ignore a locally built full bundle next to the package.
+    obj._resolve_full_agent_bundle = lambda default_bundle: None
     return obj
 
 

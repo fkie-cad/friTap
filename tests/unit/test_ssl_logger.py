@@ -115,6 +115,51 @@ class TestSSLSessionAppend:
         assert sessions[0]["cipher_suite"] == "TLS_AES_256_GCM_SHA384"
 
 
+class TestDetachWithTimeoutNoMainScript:
+    """Regression for the Ctrl+C crash on memory-scan-only runs.
+
+    When no main agent script is loaded (`self.script is None` — e.g. a
+    `-ms`-only Telegram/MTProto run), `detach()` must still issue the
+    best-effort `session.detach()` and must NOT raise
+    ``UnboundLocalError: cannot access local variable 'unload_thread' ...``
+    (previously surfaced as "Error while detaching: ...").
+    """
+
+    def test_detach_without_main_script_does_not_crash(self):
+        logger = SSL_Logger("test_app")
+        logger.script = None                 # memory-scan-only: no main script
+        logger.process = MagicMock()
+        logger._backend = MagicMock()
+        logger.logger = MagicMock()
+        # debug_output/debug are read-only properties, already False by default.
+
+        # Runs the detach on a daemon thread and joins within the timeout.
+        logger.detach_with_timeout(timeout=5)
+
+        # Best-effort session.detach() still issued for the target process.
+        logger._backend.detach.assert_called_once_with(logger.process)
+        # No "Error while detaching: ..." was logged (the old UnboundLocalError).
+        for call in logger.logger.error.call_args_list:
+            assert "Error while detaching" not in str(call)
+
+
+class TestExitHintSuppressedAfterCapture:
+    """The "No <PROTO> libraries were detected" exit hint must not fire when
+    keys were actually captured by a path that emits no LibraryDetectedEvent
+    (Java Secret-Chat/E2E hooks, the memory-scan engine). A KeylogEvent on the
+    bus is the source-agnostic "we got keys" signal."""
+
+    def test_keylog_event_marks_captured_secret(self):
+        from friTap.events import KeylogEvent
+
+        logger = SSL_Logger("test_app")
+        assert logger._captured_any_secret is False
+
+        logger._event_bus.emit(KeylogEvent(key_data="MTPROTO_AUTH_KEY 0 ffff ..."))
+
+        assert logger._captured_any_secret is True
+
+
 class TestAgentBundleResolution:
     """FRITAP_AGENT_BUNDLE override (§C step 6.5) + regression guard for the name
     collision it must NOT reintroduce.
@@ -131,6 +176,9 @@ class TestAgentBundleResolution:
 
         from friTap.legacy.ssl_logger_core import here
         logger = SSL_Logger("test_app")
+        # Hermetic: ignore a locally built full bundle next to the package
+        # (covered separately in test_agent_bundle_resolver.py).
+        logger._resolve_full_agent_bundle = lambda default_bundle: None
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("FRITAP_AGENT_BUNDLE", None)
             assert logger._resolve_agent_bundle_path() == os.path.join(here, "fritap_agent.js")
@@ -195,6 +243,7 @@ class TestAgentBundleEntryPointDiscovery:
         from friTap.constants import AGENT_ABI_VERSION
         from friTap.legacy.ssl_logger_core import here
         logger = SSL_Logger("test_app")
+        logger._resolve_full_agent_bundle = lambda default_bundle: None  # hermetic
         ep = self._fake_ep("stale", AGENT_ABI_VERSION + 99, "/tmp/stale.js")
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("FRITAP_AGENT_BUNDLE", None)

@@ -24,14 +24,10 @@ except ImportError:
 
 if TEXTUAL_AVAILABLE:
 
-    # Toggle label lookup for display
-    _TOGGLE_LABELS: dict[str, str] = {
-        "toggle-http": "HTTP",
-        "toggle-errors": "Errors",
-        "toggle-ohttp": "OHTTP",
-        "toggle-ipsec": "IPSec",
-        "toggle-ssh": "SSH",
-    }
+    from friTap.filter.presets import FILTER_PRESETS, preset_label
+
+    # Toggle label lookup for display (derived from the shared preset table)
+    _TOGGLE_LABELS: dict[str, str] = {p.toggle_id: p.label for p in FILTER_PRESETS}
 
     class FilterBar(Horizontal):
         """Compact filter status indicator shown in flow view.
@@ -122,7 +118,7 @@ if TEXTUAL_AVAILABLE:
 
             if self._active_toggles:
                 toggle_names = [
-                    _TOGGLE_LABELS.get(tid, tid)
+                    preset_label(tid)
                     for tid in sorted(self._active_toggles)
                 ]
                 parts.append("[" + "] [".join(toggle_names) + "]")

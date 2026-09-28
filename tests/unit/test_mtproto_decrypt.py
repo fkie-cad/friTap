@@ -176,7 +176,7 @@ def test_wrong_key_marks_undecryptable(tmp_path):
     assert stats.messages == 0
 
 
-def test_truncated_first_bytes_is_degraded(tmp_path):
+def test_truncated_first_bytes_is_short_not_mid_connection(tmp_path):
     auth_key = os.urandom(crypto.AUTH_KEY_LEN)
     keymap = _make_keymap(auth_key)
 
@@ -184,7 +184,9 @@ def test_truncated_first_bytes_is_degraded(tmp_path):
     rec = crypto.build_encrypted_record(auth_key, b"hi", "write")
     client_wire, server_wire = _obfuscate_stream(init, _intermediate_frame(rec), b"")
 
-    # Drop the leading client bytes so the init block is incomplete -> degraded.
+    # Drop the leading client bytes so the init block is incomplete. A SYN is seen
+    # but a start gap swallowed the opening bytes -> SHORT/lossy stream, counted
+    # under streams_short (NOT streams_degraded / "mid-connection").
     pkts = [
         _segment(CLIENT, SERVER, 1000, b"", syn=True),  # anchor at 1001
         _segment(CLIENT, SERVER, 1040, client_wire[39:]),  # start gap
@@ -196,7 +198,8 @@ def test_truncated_first_bytes_is_degraded(tmp_path):
     stats = MtprotoStats()
     out = list(iter_decrypted_messages(str(pcap), keymap, stats=stats))
     assert out == []
-    assert stats.streams_degraded >= 1
+    assert stats.streams_short >= 1
+    assert stats.streams_degraded == 0
 
 
 def test_non_mtproto_stream_not_yielded(tmp_path):
@@ -215,3 +218,168 @@ def test_non_mtproto_stream_not_yielded(tmp_path):
     assert stats.messages == 0
     # Counted as a stream but not degraded (it had its first 64 bytes), just skipped.
     assert stats.streams >= 1
+
+
+# --------------------------------------------------------------------------- #
+# Why a record did not open: the three buckets behind records_undecryptable
+# --------------------------------------------------------------------------- #
+
+
+def test_the_total_is_derived_from_the_buckets_and_cannot_be_bumped_alone():
+    """There is no way to say "one failed" without saying why.
+
+    The total is a read-only property over the three buckets, so a caller that
+    does not name a reason cannot contribute to it -- and the buckets can never
+    drift away from the total they add up to.
+    """
+    stats = MtprotoStats()
+    assert stats.records_undecryptable == 0
+    assert not hasattr(MtprotoStats, "add_undecryptable")
+    with pytest.raises(AttributeError):
+        stats.records_undecryptable = 2  # type: ignore[misc]
+
+
+def test_the_three_kinds_each_bump_the_total_and_their_own_bucket():
+    stats = MtprotoStats()
+    stats.add_malformed_record()
+    stats.add_unknown_key("a1b2c3d4e5f60718")
+    stats.add_unknown_key("a1b2c3d4e5f60718")
+    stats.add_unknown_key("0011223344556677")
+    stats.add_crypto_failure()
+    assert stats.records_undecryptable == 5
+    assert stats.records_malformed == 1
+    assert stats.records_unknown_key == 3
+    assert stats.records_crypto_failed == 1
+    # Counted per id, not merely collected: the count is what says whether a
+    # missing key hides one stray record or a whole session.
+    assert stats.unknown_key_ids == {"a1b2c3d4e5f60718": 2, "0011223344556677": 1}
+
+
+def test_two_stats_objects_do_not_share_one_dict():
+    """A mutable dataclass default is the classic way to get this wrong."""
+    first, second = MtprotoStats(), MtprotoStats()
+    first.add_unknown_key("a1b2c3d4e5f60718")
+    assert second.unknown_key_ids == {}
+
+
+def test_records_under_a_key_we_do_not_hold_report_their_auth_key_id(tmp_path):
+    """The recoverable failure, end to end.
+
+    The capture is real MTProto under a real key; we simply do not have that
+    key. The id travels in the clear in each record's first 8 bytes, so the
+    decryptor can hand it back and the user can go hunt exactly that key.
+    """
+    unseen_key = os.urandom(crypto.AUTH_KEY_LEN)
+    # A keymap holding some OTHER key: not empty, just not the right one.
+    keymap = _make_keymap(os.urandom(crypto.AUTH_KEY_LEN))
+
+    init = _build_init(b"\xee\xee\xee\xee")
+    client_payload = b"".join(
+        _intermediate_frame(crypto.build_encrypted_record(unseen_key, m, "write"))
+        for m in (b"one", b"two", b"three")
+    )
+    server_payload = _intermediate_frame(
+        crypto.build_encrypted_record(unseen_key, b"reply", "read")
+    )
+    client_wire, server_wire = _obfuscate_stream(init, client_payload, server_payload)
+
+    pcap = tmp_path / "unknownkey.pcap"
+    _write_pcap(pcap, client_wire, server_wire, n_client_segs=2)
+
+    stats = MtprotoStats()
+    assert list(iter_decrypted_messages(str(pcap), keymap, stats=stats)) == []
+    unseen_id = crypto.compute_auth_key_id(unseen_key).hex()
+    assert stats.unknown_key_ids == {unseen_id: 4}
+    assert stats.records_unknown_key == 4
+    assert stats.records_undecryptable == 4
+    assert stats.records_crypto_failed == 0
+
+
+def test_a_msg_key_failure_is_not_reported_as_a_missing_key(tmp_path):
+    """The un-recoverable failure. Same keymap as
+    ``test_wrong_key_marks_undecryptable``: the id IS known, the key behind it
+    is wrong. Feeding that id into a key hunt would only find the key already in
+    hand, so it must stay out of ``unknown_key_ids``.
+    """
+    real_key = os.urandom(crypto.AUTH_KEY_LEN)
+    aid = crypto.compute_auth_key_id(real_key)
+    keymap = {aid: MtprotoAuthKey(dc_id=2, auth_key_id=aid,
+                                  auth_key=os.urandom(crypto.AUTH_KEY_LEN))}
+
+    init = _build_init(b"\xee\xee\xee\xee")
+    client_payload = _intermediate_frame(
+        crypto.build_encrypted_record(real_key, b"secret", "write")
+    )
+    client_wire, server_wire = _obfuscate_stream(init, client_payload, b"")
+
+    pcap = tmp_path / "badmsgkey.pcap"
+    _write_pcap(pcap, client_wire, server_wire, n_client_segs=2)
+
+    stats = MtprotoStats()
+    assert list(iter_decrypted_messages(str(pcap), keymap, stats=stats)) == []
+    assert stats.records_crypto_failed >= 1
+    assert stats.records_unknown_key == 0
+    assert stats.unknown_key_ids == {}
+
+
+# --------------------------------------------------------------------------- #
+# Capture timestamps
+# --------------------------------------------------------------------------- #
+
+
+def _timed_segment(src, dst, seq, payload, ts):
+    pkt = _segment(src, dst, seq, payload)
+    pkt.time = ts
+    return pkt
+
+
+def test_messages_carry_capture_time_of_their_last_byte(tmp_path):
+    """Each record is stamped with the time of the segment holding its LAST byte.
+
+    Client record 0 is split across two segments (t=100, t=101): its stamp must be
+    101. The 64-byte init block sits in front of the client payload, so this also
+    proves the INIT_BLOCK_LEN offset is accounted for. Yield order is unchanged.
+    """
+    auth_key = os.urandom(crypto.AUTH_KEY_LEN)
+    keymap = _make_keymap(auth_key)
+    init = _build_init(b"\xee\xee\xee\xee")
+    c_frames = [_intermediate_frame(crypto.build_encrypted_record(auth_key, m, "write"))
+                for m in (b"first-write-msg", b"second-write-msg")]
+    s_frame = _intermediate_frame(crypto.build_encrypted_record(auth_key, b"reply", "read"))
+    client_wire, server_wire = _obfuscate_stream(init, b"".join(c_frames), s_frame)
+
+    split = 64 + len(c_frames[0]) - 3  # last 3 bytes of record 0 arrive later
+    end0 = 64 + len(c_frames[0])
+    pkts = [
+        _timed_segment(CLIENT, SERVER, 1000, client_wire[:split], 100.0),
+        _timed_segment(CLIENT, SERVER, 1000 + split, client_wire[split:end0], 101.0),
+        _timed_segment(SERVER, CLIENT, 5000, server_wire, 102.0),
+        _timed_segment(CLIENT, SERVER, 1000 + end0, client_wire[end0:], 103.0),
+    ]
+    pcap = tmp_path / "timed.pcap"
+    wrpcap(str(pcap), pkts)
+
+    out = list(iter_decrypted_messages(str(pcap), keymap))
+    assert [(m.direction, m.timestamp) for m in out] == [
+        ("write", 101.0), ("write", 103.0), ("read", 102.0),
+    ]
+
+
+def test_message_timestamp_falls_back_to_msg_id_seconds():
+    from friTap.offline.mtproto.decrypt import _message_timestamp, _msg_id_seconds
+
+    msg_id = (1790358568 << 32) | 0x1234
+    assert _msg_id_seconds(msg_id) == 1790358568.0
+    assert _msg_id_seconds(0) == 0.0
+    assert _msg_id_seconds(5 << 32) == 0.0  # implausible epoch
+    assert _message_timestamp(None, 10, msg_id) == 1790358568.0
+    assert _message_timestamp(lambda off: 0.0, 10, msg_id) == 1790358568.0
+    assert _message_timestamp(lambda off: 42.5, 10, msg_id) == 42.5
+
+
+def test_ts_lookup_is_queried_at_frame_last_byte():
+    from friTap.offline.mtproto.decrypt import _message_timestamp
+
+    seen = []
+    _message_timestamp(lambda off: seen.append(off) or 1.0, 57, 0)
+    assert seen == [56]

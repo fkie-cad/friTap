@@ -212,6 +212,71 @@ def available_protocol_names() -> List[str]:
     return sorted(_all_handler_factories().keys())
 
 
+# Meta token that selects every registered custom cipher (category
+# "custom_cipher"), e.g. `--protocol custom` → rc4 (+ future aes/chacha).
+CUSTOM_GROUP = "custom"
+
+
+def _is_custom_cipher(handler) -> bool:
+    """True if *handler* is a custom cipher. Duck-typed plugin handlers may
+    lack ``category`` (base default: ``"protocol"``)."""
+    return getattr(handler, "category", "protocol") == "custom_cipher"
+
+
+def custom_cipher_handlers(include_upcoming: bool = False) -> List[ProtocolHandler]:
+    """Fresh instances of the available handlers whose ``category`` is
+    ``"custom_cipher"``, sorted by name. Single source of truth for the
+    ``custom`` group (one pass: each factory is instantiated once).
+
+    *upcoming* (not-yet-announced) ciphers are excluded unless
+    *include_upcoming* is set, so they are neither offered in the TUI nor
+    pulled in by ``--protocol custom``; an explicit ``--protocol <name>``
+    still selects them."""
+    handlers = (factory() for factory in _all_handler_factories().values())
+    return sorted(
+        (
+            handler for handler in handlers
+            if _is_custom_cipher(handler)
+            and (include_upcoming or not getattr(handler, "upcoming", False))
+        ),
+        key=lambda handler: handler.name,
+    )
+
+
+def custom_cipher_names(include_upcoming: bool = False) -> List[str]:
+    """Sorted names of the available custom-cipher handlers (see
+    :func:`custom_cipher_handlers` for *include_upcoming*)."""
+    return [handler.name for handler in custom_cipher_handlers(include_upcoming)]
+
+
+def expand_custom_group(tokens, cipher_names: Optional[List[str]] = None) -> List[str]:
+    """Replace each ``custom`` token in place with *cipher_names* (default:
+    :func:`custom_cipher_names`, computed once), preserving order and
+    dropping duplicates."""
+    if cipher_names is None and CUSTOM_GROUP in tokens:
+        cipher_names = custom_cipher_names()
+    expanded: List[str] = []
+    for token in tokens:
+        expanded.extend(cipher_names if token == CUSTOM_GROUP else [token])
+    return list(dict.fromkeys(expanded))
+
+
+def order_protocol_selection(tokens, cipher_names: Optional[List[str]] = None) -> List[str]:
+    """Order a protocol selection: non-custom protocols first, then custom
+    ciphers, each keeping its relative order, with duplicates dropped.
+
+    Keeps ``protocols[0]`` the primary (non-custom) protocol whenever one is
+    selected. *cipher_names* defaults to every custom cipher (including
+    upcoming ones, which may be selected explicitly by name).
+    """
+    unique = list(dict.fromkeys(tokens))
+    if cipher_names is None:
+        cipher_names = custom_cipher_names(include_upcoming=True)
+    custom_ciphers = set(cipher_names)
+    main_protocols = [t for t in unique if t not in custom_ciphers]
+    return main_protocols + [t for t in unique if t in custom_ciphers]
+
+
 def implied_protocols(name) -> List[str]:
     """Companion protocols pulled in by *name* (after extension discovery)."""
     _discover_protocol_extensions()

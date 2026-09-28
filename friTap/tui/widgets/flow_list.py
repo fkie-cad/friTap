@@ -24,11 +24,34 @@ from friTap.constants import (
     PROTOCOL_TELEGRAM_E2E,
     PROTOCOL_WEBSOCKET,
 )
+from friTap.filter.content_index import FlowContentIndex
+from friTap.filter.layer_fields import filter_attrs_key
 from friTap.tui.themes import c
+
+
+def layer_signature(flow: object) -> tuple:
+    """Cheap fingerprint of a flow's layer-derived, byte-independent state.
+
+    Captures what can change without the byte count moving (a reparse, late
+    TLS metadata, MTProto messages or dc_id/auth_key_id set after the fact):
+    the detected protocol, the process name, the TLS session id (it adds the
+    ``tls`` protocol) and, as the LAST element, :func:`filter_attrs_key` --
+    per layer its name, message count and every scalar a display-filter field
+    reads (TLS SNI/ALPN/version/cipher, MTProto dc_id/envelope ...), so a
+    filterable attribute can never change without a summary rebuild.
+    Iterates ``flow.layers`` directly and never reads ``flow.<layer name>``,
+    which would auto-create an empty layer.
+    """
+    return (getattr(flow, "detected_protocol", "") or "",
+            getattr(flow, "process_name", "") or "",
+            getattr(flow, "ssl_session_id", "") or "",
+            filter_attrs_key(flow))
+
 
 if TEXTUAL_AVAILABLE:
     from datetime import datetime
 
+    from friTap.flow.display import is_message_transport, message_direction_status
     from friTap.flow.models import FlowState, FlowSummary
 
     class FlowListWidget(DataTable):
@@ -57,6 +80,10 @@ if TEXTUAL_AVAILABLE:
             self._extra_columns: list = []  # ColumnProvider instances
             # Filter state — preserves insertion order (Python 3.7+)
             self._all_flow_data: dict[str, "FlowSummary"] = {}
+            # flow_id -> layer_signature() the stored summary was built from.
+            self._layer_signatures: dict[str, tuple] = {}
+            # flow_id -> filter_attrs_key() the stored summary's attrs came from.
+            self._filter_attrs_keys: dict[str, tuple] = {}
             self._filter_engine: "FilterEngine | None" = None
             # Cell value cache — only update cells whose values changed
             self._row_cache: dict[str, list] = {}
@@ -66,6 +93,9 @@ if TEXTUAL_AVAILABLE:
             # row actually needs it (e.g. HTTP/2[Signal], "1:1 · 4 msgs").
             self._proto_w = self._BASE_PROTO_WIDTH
             self._method_w = self._BASE_METHOD_WIDTH
+            # Searchable content for ``frame`` filters; built lazily, only for
+            # engines that need it. The owning screen injects the flow lookup.
+            self._content_index = FlowContentIndex()
 
         # Compact defaults — fit plain protos (HTTP/2, WS) and short methods.
         _BASE_PROTO_WIDTH = 10
@@ -137,14 +167,20 @@ if TEXTUAL_AVAILABLE:
                 self._method_w = new_method
                 self._apply_column_widths()
 
-        def _recompute_proto_method_widths(self) -> None:
+        def _recompute_proto_method_widths(self, visible_flows=None) -> None:
             """Full recompute over all visible flows (can shrink back to base when
-            wide rows are filtered out). Used on rebuild/filter, not per-row."""
+            wide rows are filtered out). Used on rebuild/filter, not per-row.
+
+            *visible_flows* is the already-filtered flow list; when omitted the
+            filter is evaluated here (callers that just filtered should pass it
+            so the — possibly content-searching — filter runs once per flow).
+            """
+            if visible_flows is None:
+                visible_flows = [s for s in self._all_flow_data.values()
+                                 if self._passes_filter(s)]
             proto_w = self._BASE_PROTO_WIDTH
             method_w = self._BASE_METHOD_WIDTH
-            for summary in self._all_flow_data.values():
-                if not self._passes_filter(summary):
-                    continue
+            for summary in visible_flows:
                 proto_w = max(proto_w, min(len(self._format_proto(summary)),
                                            self._MAX_PROTO_WIDTH))
                 method_w = max(method_w, min(self._method_plain_len(summary),
@@ -167,11 +203,39 @@ if TEXTUAL_AVAILABLE:
 
         def _passes_filter(self, flow: "Flow | FlowSummary") -> bool:
             """Return True if the flow passes both the text and toggle filters."""
-            if self._filter_engine and not self._filter_engine.matches(flow):
-                return False
-            if self._toggle_engine and not self._toggle_engine.matches(flow):
-                return False
-            return True
+            return all(self._engine_matches(engine, flow)
+                       for engine in (self._filter_engine, self._toggle_engine)
+                       if engine)
+
+        def _engine_matches(self, engine: "FilterEngine", flow) -> bool:
+            """Evaluate *engine* with the content index as its context.
+
+            An engine without ``frame`` terms never touches the context, so
+            passing it unconditionally loads no flow content.
+            """
+            return engine.matches(flow, ctx=self._content_index)
+
+        def set_flow_lookup(self, flow_lookup) -> None:
+            """Inject ``flow_id -> Flow | None`` used to load content for ``frame``."""
+            self._content_index.set_flow_lookup(flow_lookup)
+
+        @property
+        def content_index(self) -> FlowContentIndex:
+            return self._content_index
+
+        def count_matches(self, engine: "FilterEngine") -> int:
+            """Number of current flows (visible or not) that *engine* matches.
+
+            Ignores the active filters; used for live suggestion row counts.
+            """
+            count = 0
+            for summary in list(self._all_flow_data.values()):
+                try:
+                    if self._engine_matches(engine, summary):
+                        count += 1
+                except Exception:
+                    continue
+            return count
 
         @property
         def visible_count(self) -> int:
@@ -183,23 +247,37 @@ if TEXTUAL_AVAILABLE:
 
         # -- Flow operations --------------------------------------------------
 
-        def add_or_update_flow(self, flow: "Flow") -> None:
+        def add_or_update_flow(
+            self, flow: "Flow", summary: "FlowSummary | None" = None,
+        ) -> None:
             """Add a new flow row or update an existing one.
 
             Converts the Flow to a FlowSummary (~200 bytes) so the list
             widget does not pin full Flow objects with chunks and body data.
             Skips re-creation when nothing display-relevant has changed.
+            A prebuilt *summary* (replay rows) is stored as-is.
             """
             old = self._all_flow_data.get(flow.flow_id)
-            if (old is not None
+            signature = layer_signature(flow)
+            if (summary is None and old is not None
+                    and self._layer_signatures.get(flow.flow_id) == signature
                     and old.state == flow.state
                     and old.total_bytes == flow._total_bytes
                     and (old.request is not None) == (flow.request is not None)
                     and (old.response is not None) == (flow.response is not None)):
                 summary = old
             else:
-                summary = FlowSummary.from_flow(flow)
+                if summary is None:
+                    summary = self._summarize(flow, old, attrs_key=signature[-1])
+                else:
+                    self._filter_attrs_keys.pop(flow.flow_id, None)
                 self._all_flow_data[flow.flow_id] = summary
+                self._layer_signatures[flow.flow_id] = signature
+                if old is not None:
+                    # Content (bytes/parse results/layers) changed — drop
+                    # stale text; the index key alone (flow_id, total_bytes)
+                    # can't see a same-size reparse.
+                    self._content_index.invalidate(flow.flow_id)
 
             visible = self._passes_filter(summary)
 
@@ -217,6 +295,21 @@ if TEXTUAL_AVAILABLE:
                 self._add_row(summary)
 
             self._notify_match_count()
+
+        def _summarize(
+            self, flow: "Flow", old: "FlowSummary | None", attrs_key: "tuple | None" = None,
+        ) -> "FlowSummary":
+            """Build *flow*'s summary, reusing *old*'s filter attrs (the costly
+            part of a live rebuild) while the layer state they derive from is
+            unchanged. *attrs_key* is a precomputed :func:`filter_attrs_key`
+            (``layer_signature`` already holds it)."""
+            if attrs_key is None:
+                attrs_key = filter_attrs_key(flow)
+            reusable = (old is not None
+                        and self._filter_attrs_keys.get(flow.flow_id) == attrs_key)
+            self._filter_attrs_keys[flow.flow_id] = attrs_key
+            return FlowSummary.from_flow(
+                flow, filter_attrs=old.filter_attrs if reusable else None)
 
         _SHORT_PROTO = {
             PROTOCOL_HTTP1: "HTTP",
@@ -250,11 +343,19 @@ if TEXTUAL_AVAILABLE:
                 inner = getattr(flow, "inner_summary", "") or ""
                 if inner:
                     method = inner
-            badge = ""
+            return method, FlowListWidget._trailing_badge(flow)
+
+        @staticmethod
+        def _trailing_badge(flow) -> str:
+            """``+WS``-style badge for request- or response-direction trailing data."""
             if flow.has_trailing_data:
-                short = FlowListWidget._SHORT_PROTO.get(flow.trailing_protocol, "")
-                badge = f"+{short}" if short else "+data"
-            return method, badge
+                protocol = flow.trailing_protocol
+            elif getattr(flow, "has_response_trailing_data", False):
+                protocol = getattr(flow, "response_trailing_protocol", "")
+            else:
+                return ""
+            short = FlowListWidget._SHORT_PROTO.get(protocol, "")
+            return f"+{short}" if short else "+data"
 
         @staticmethod
         def _format_method(flow) -> str:
@@ -349,13 +450,15 @@ if TEXTUAL_AVAILABLE:
             self._row_cache.clear()
             self._flow_counter = 0
 
-            for flow in self._all_flow_data.values():
-                if self._passes_filter(flow):
-                    self._add_row(flow)
+            visible_flows = [flow for flow in self._all_flow_data.values()
+                             if self._passes_filter(flow)]
+            for flow in visible_flows:
+                self._add_row(flow)
 
             # Full recompute so columns can shrink back to base when the wide
-            # (Signal/E2E) rows were filtered out.
-            self._recompute_proto_method_widths()
+            # (Signal/E2E) rows were filtered out. Reuses the filtered list so
+            # the filter is evaluated once per flow per rebuild.
+            self._recompute_proto_method_widths(visible_flows)
             self._notify_match_count()
 
         def _notify_match_count(self) -> None:
@@ -371,6 +474,16 @@ if TEXTUAL_AVAILABLE:
             except Exception:
                 self._filter_bar_ref = None
 
+        def row_number_of(self, flow_id: str) -> int | None:
+            """The ``#`` shown for *flow_id*'s visible row, else None (filtered/unknown)."""
+            row_key = self._flow_row_keys.get(flow_id)
+            if row_key is None:
+                return None
+            try:
+                return int(str(self.get_row(row_key)[0]))
+            except Exception:
+                return None
+
         def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
             """When a row is selected, emit FlowSelected."""
             flow_id = str(event.row_key.value) if event.row_key else None
@@ -383,12 +496,27 @@ if TEXTUAL_AVAILABLE:
             self._flow_row_keys.clear()
             self._flow_counter = 0
             self._all_flow_data.clear()
+            self._layer_signatures.clear()
+            self._filter_attrs_keys.clear()
+            self._content_index.clear()
             # Reset Proto/Method back to compact defaults.
             self._proto_w = self._BASE_PROTO_WIDTH
             self._method_w = self._BASE_METHOD_WIDTH
             self._apply_column_widths()
 
+        @staticmethod
+        def _message_transport_status(flow) -> str:
+            """Status cell for a message-stream flow (no HTTP status exists).
+
+            Every message-stream flow is one packet, so the cell shows its
+            direction (``sent`` / ``recv``; ``sent+recv`` only for legacy
+            paired taps) and ``-`` only when nothing was parsed.
+            """
+            return message_direction_status(flow) or "-"
+
         def _format_status(self, flow: "Flow") -> str:
+            if is_message_transport(flow):
+                return self._message_transport_status(flow)
             status = flow.display_status
             if not status:
                 return "..."

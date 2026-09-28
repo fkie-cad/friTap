@@ -35,6 +35,18 @@ def iter_e2e_blobs(data: bytes, fingerprints: Set[bytes]) -> Iterator[Tuple[byte
     accepted only when the framed length describes a valid E2E blob
     (``>= header + one AES block``, block-aligned body, in bounds); the blob is
     then yielded and the scan resumes past it.
+
+    Note on *unknown* fingerprints: this scanner cannot report them, and that is
+    structural rather than an omission. The known-fingerprint match IS the
+    anchor -- the TL length is only validated once a candidate position has been
+    found. Inverting the scan (anchor on a plausible TL length, then read the 8
+    bytes after it as a fingerprint) has no precision left to stand on: the
+    accepted short-form lengths are the 14 values ``40, 56, ... 248``, so roughly
+    one random byte in 18 opens a "blob" and every one of them would report a
+    fake 8-byte fingerprint. Surfacing real unknown fingerprints needs a TL-aware
+    walk that locates ``encryptedMessage`` constructors, which is a different
+    scanner. The cloud layer has no such problem: there the auth_key_id sits at a
+    known offset in every record (see ``MtprotoStats.unknown_key_ids``).
     """
     if not fingerprints:
         return
@@ -78,8 +90,10 @@ def iter_secret_chat_messages(
 
     For each transport message, every embedded E2E blob keyed by a known
     fingerprint is decrypted with the per-chat shared key and unframed into its
-    TL payload. An unknown fingerprint is ignored; a blob whose msg_key fails to
-    verify (or whose framing is bad) counts as ``records_undecryptable``. The
+    TL payload. An unknown fingerprint is ignored -- it is invisible to this
+    layer by construction, see :func:`iter_e2e_blobs`, so unlike the cloud layer
+    there is no unknown-fingerprint counter to report. A blob whose msg_key fails
+    to verify (or whose framing is bad) counts as ``records_undecryptable``. The
     address/port/family/direction are copied from the carrying transport message.
     """
     if stats is None:
@@ -108,7 +122,15 @@ def iter_secret_chat_messages(
                 chat_id=key.chat_id,
                 key_fingerprint_hex=fp.hex(),
                 origin="decrypted",
+                msg_key_hex=_blob_msg_key_hex(blob),
+                timestamp=getattr(msg, "timestamp", 0.0) or 0.0,
+                peer_user_id=getattr(key, "peer_user_id", 0) or 0,
             )
+
+
+def _blob_msg_key_hex(blob: bytes) -> str:
+    """Hex of an E2E blob's 16-byte msg_key (after the 8-byte fingerprint)."""
+    return blob[crypto.E2E_FINGERPRINT_LEN:crypto.E2E_HEADER_LEN].hex()
 
 
 def iter_decrypted_secret_chats(

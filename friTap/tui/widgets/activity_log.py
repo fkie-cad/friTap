@@ -167,6 +167,18 @@ if TEXTUAL_AVAILABLE:
             self._trim_lines()
             self.write(f"[{c('text-dim')}]{ts}[/] [{c('primary')}]KEY[/]   {preview}")
 
+        def log_secret(self, label: str, secret: str) -> None:
+            """Log a secret recovered by the memory scanner (--memory-scan)."""
+            ts = _ts()
+            secret = (secret or "").strip()
+            preview = f"{secret[:32]}…" if len(secret) > 32 else secret
+            self._plain_lines.append(f"{ts} SECRET: {label} {preview}")
+            self._trim_lines()
+            self.write(
+                f"[{c('text-dim')}]{ts}[/] [{c('warning-amber')}]SECRET[/] "
+                f"[bold]{label}[/] {preview}"
+            )
+
         def log_data(self, function: str, src: str, dst: str, size: str) -> None:
             """Log a captured data event."""
             ts = _ts()

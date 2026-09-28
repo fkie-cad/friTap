@@ -121,6 +121,10 @@ MUST_BE_GONE=(
   "friTap/flow/signal_live.py"
   "docs/protocols/signal.md"
   "scripts/private_terms.txt"
+  "agent/fritap_agent_full.ts"
+  "friTap/fritap_agent_full.js"
+  "friTap/fritap_agent_full.js.src"
+  ".gitlab-ci.yml"
 )
 for rel in "${MUST_BE_GONE[@]}"; do
   if [ -e "$PUBLIC_TREE/$rel" ]; then

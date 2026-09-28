@@ -8,6 +8,7 @@
 import { sendKeylog } from "../../shared/shared_structures.js";
 import { toHexString } from "../../shared/shared_functions.js";
 import { devlog } from "../../util/log.js";
+import { Tls13PhaseTracker, makeHandshakeKey } from "../../shared/tls13_phase_tracker.js";
 
 // NCryptBuffer / SecBuffer share layout: ULONG + ULONG + PVOID.
 // 16 bytes on 64-bit, 12 bytes on 32-bit.
@@ -76,11 +77,16 @@ export function installNcryptKeylogHooks(
 ): boolean {
     const moduleAddrs = addresses[moduleName] ?? {};
     const { logPrefix, includeHkdfAlias } = options;
-    // Module-scoped per-thread state. Entries are .delete()'d when the
-    // handshake's final keylog line is emitted to keep maps bounded over
-    // long-lived (LSASS) agent sessions.
+    // Module-scoped per-thread state. clientRandomByThread entries are
+    // .delete()'d when the handshake's final keylog line is emitted; the TLS 1.3
+    // phase tracker is additionally size-bounded (oldest-first eviction) so
+    // handshakes that abort after the first SslExpandTrafficKeys cannot grow it.
+    // Both stay bounded over long-lived (LSASS) agent sessions.
     const clientRandomByThread = new Map<number, string>();
-    const tls13HandshakeSeenByThread = new Map<number, boolean>();
+    // Handshake- vs application-phase of SslExpandTrafficKeys, tracked per
+    // handshake (`${threadId}:${client_random}`), NOT by thread alone: see the
+    // note in the SslExpandTrafficKeys hook. Shared with legacy sspi/lsass.
+    const tls13PhaseTracker = new Tls13PhaseTracker();
 
     const hashHsAddr = moduleAddrs["SslHashHandshake"];
     const genMasterAddr = moduleAddrs["SslGenerateMasterKey"];
@@ -192,16 +198,21 @@ export function installNcryptKeylogHooks(
                 (this as any).tid = tid;
                 (this as any).retkey1 = ptr(args[3].toString());
                 (this as any).retkey2 = ptr(args[4].toString());
-                (this as any).client_random = clientRandomByThread.get(tid) || "???";
-                if (tls13HandshakeSeenByThread.get(tid)) {
-                    tls13HandshakeSeenByThread.delete(tid);
-                    (this as any).suffix = "TRAFFIC_SECRET_0";
-                    (this as any).isAppPhase = true;
-                } else {
-                    tls13HandshakeSeenByThread.set(tid, true);
-                    (this as any).suffix = "HANDSHAKE_TRAFFIC_SECRET";
-                    (this as any).isAppPhase = false;
-                }
+                const clientRandom = clientRandomByThread.get(tid) || "???";
+                (this as any).client_random = clientRandom;
+                // Distinguish the handshake- vs application-phase expansion by
+                // per-HANDSHAKE call order, not per-thread. lsass is system-wide and
+                // its worker threads are pooled across concurrent (and foreign)
+                // handshakes, so a thread-keyed "seen" flag left over from another
+                // handshake flips these two labels — the HANDSHAKE_TRAFFIC_SECRET <->
+                // TRAFFIC_SECRET_0 swap that makes Wireshark unable to decrypt. Keying
+                // on (thread, client_random) scopes the flag to one handshake. When
+                // client_random is "???" (uncorrelated), the label may still swap, but
+                // the offline `--repair-keylog` pass relabels every secret by trial
+                // decryption regardless.
+                const suffix = tls13PhaseTracker.nextPhase(makeHandshakeKey(tid, clientRandom));
+                (this as any).suffix = suffix;
+                (this as any).isAppPhase = suffix === "TRAFFIC_SECRET_0";
             },
             onLeave() {
                 try {
@@ -236,13 +247,12 @@ export function installNcryptKeylogHooks(
             },
             onLeave() {
                 try {
-                    const key = (this as any).retkey
-                        .readPointer()
-                        .add(0x10).readPointer()
-                        .add(0x20).readPointer()
-                        .add(0x10).readPointer()
-                        .add(0x18).readPointer()
-                        .readByteArray(48);
+                    // Reuse the same BDDD->3lss->RUUU->YKSM walk as the traffic
+                    // secrets, which reads the DYNAMIC secret length (YKSM+0x10)
+                    // instead of a hardcoded 48. A SHA-256 connection's exporter is
+                    // 32 bytes; hardcoding 48 appended 16 bytes of adjacent struct
+                    // memory (garbage) to the emitted EXPORTER_SECRET line.
+                    const key = getSecretFromBDDD((this as any).retkey.readPointer());
                     noteKeylog(
                         "EXPORTER_SECRET " + (this as any).client_random + " " + toHexString(key),
                         TLSVersion.ONE_THREE,

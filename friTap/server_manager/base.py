@@ -9,7 +9,6 @@ that platform-specific managers must implement.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import lzma
 import shutil
@@ -19,6 +18,8 @@ import urllib.request
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Callable, Optional
+
+from friTap.fritap_utility import sha256_file
 
 
 class BaseFridaServerManager(ABC):
@@ -92,11 +93,7 @@ class BaseFridaServerManager(ABC):
             True if verification passed or was skipped, False if mismatch.
         """
         # Compute hash of downloaded file
-        sha256 = hashlib.sha256()
-        with open(file_path, "rb") as f:
-            for chunk in iter(lambda: f.read(8192), b""):
-                sha256.update(chunk)
-        computed_hash = sha256.hexdigest()
+        computed_hash = sha256_file(file_path)
         self._logger.info("Downloaded file SHA256: %s", computed_hash)
 
         if expected_url:

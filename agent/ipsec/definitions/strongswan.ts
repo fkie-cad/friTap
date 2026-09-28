@@ -58,16 +58,23 @@ export function createStrongswanDefinition(): HookDefinition {
         // extraction will live in dedicated derive_ike_keys /
         // ikev2_derive_child_sa_keys hooks (see future work above),
         // not in the generic read/write executors.
-        keylog: {
-            kind: "custom",
-            install: (_addresses, moduleName, _resolvedFns, _enableDefaultFd) => {
+        // No loader-driven keylog install: the legacy ipsec_detect_execute()
+        // executor owns library detection and IKE/ESP key extraction (keys
+        // self-gate on keylog_enabled via sendKeyMaterial). Wired via extraHooks
+        // so library detection still runs on a `-p`-only run.
+        keylog: { kind: "none" },
+        extraHooks: [
+            {
                 // Delegate to the legacy executor. It currently handles
                 // library detection and the partial derive_ike_keys /
                 // ikev2_derive_child_sa_keys hooks that exist today.
-                ipsec_detect_execute(moduleName, /* is_base_hook */ true);
-                return true;
+                // extraHooks always runs in the loader (step 7), independent of
+                // keylog_enabled.
+                install: (_addresses, moduleName, _resolvedFns, _enableDefaultFd) => {
+                    ipsec_detect_execute(moduleName, /* is_base_hook */ true);
+                },
             },
-        },
+        ],
         libraryType: "ipsec_strongswan",
     };
 }

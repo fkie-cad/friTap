@@ -17,7 +17,7 @@ capture* (produced separately, e.g. via tcpdump).
 
 ```bash
 # Linux x86_64, client side
-fritap --protocol ssh --include-loopback \
+fritap --protocol ssh --loopback \
     -p out.pcapng \
     -- /usr/bin/ssh user@host 'echo hello'
 

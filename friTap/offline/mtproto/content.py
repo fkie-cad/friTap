@@ -32,6 +32,20 @@ import zlib
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+from .tl.decoder import (
+    BOOL_FALSE_ID,
+    BOOL_TRUE_ID,
+    GZIP_PACKED_ID,
+    MAX_INFLATE,
+    MSG_CONTAINER_ID,
+    RPC_RESULT_ID,
+    VECTOR_ID,
+    InflateLimitError,
+    decode_tl_cached,
+    inflate_bounded,
+)
+from .tl.nodes import TlNode, iter_nodes
+
 # --------------------------------------------------------------------------- #
 # TL constructor ids
 # --------------------------------------------------------------------------- #
@@ -48,13 +62,13 @@ from typing import Dict, List, Optional
 # ids are stable across layers and safe to hardcode.
 
 # --- Stable core containers (NOT layer-versioned) -------------------------- #
-_MSG_CONTAINER = 0x73F1F8DC      # msg_container: count × {msg_id, seqno, len, body}
-_RPC_RESULT = 0xF35C6D01         # rpc_result: req_msg_id:long, result:Object
-_GZIP_PACKED = 0x3072CFA1        # gzip_packed: packed_data:bytes → zlib → Object
+_MSG_CONTAINER = MSG_CONTAINER_ID  # msg_container: count × {msg_id, seqno, len, body}
+_RPC_RESULT = RPC_RESULT_ID       # rpc_result: req_msg_id:long, result:Object
+_GZIP_PACKED = GZIP_PACKED_ID     # gzip_packed: packed_data:bytes → zlib → Object
 _INVOKE_WITH_LAYER = 0xDA9B0D0D  # invokeWithLayer: layer:int, query:Object
 _INVOKE_AFTER_MSG = 0xCB9F372D   # invokeAfterMsg: msg_id:long, query:Object
 _MSGS_ACK = 0x62D6B459           # msgs_ack: msg_ids:Vector<long> (no message body)
-_VECTOR = 0x1CB5C415             # Vector<T>: count:int, items
+_VECTOR = VECTOR_ID              # Vector<T>: count:int, items
 
 # --- Service / system messages (stable; no chat body) ---------------------- #
 _PONG = 0x347773C5                  # pong: msg_id:long, ping_id:long
@@ -70,8 +84,8 @@ _RPC_ERROR = 0x2144CA19             # rpc_error: error_code:int, error_message:s
 # --- RPC result inner types (stable enough to name) ------------------------ #
 # These let rpc_result name itself after the INNER result type.
 _CONFIG = 0x232D5905                # config (verify per layer; named "config")
-_BOOL_TRUE = 0x997275B5
-_BOOL_FALSE = 0xBC799737
+_BOOL_TRUE = BOOL_TRUE_ID
+_BOOL_FALSE = BOOL_FALSE_ID
 
 # --- InputPeer (stable; used to skip the `peer` field in sendMessage) ------ #
 # Maps ctor → fixed byte length of the peer body that FOLLOWS the 4-byte ctor,
@@ -140,8 +154,11 @@ _MESSAGE_SERVICE_IDS = {0x2B085862, 0xD3672C00}
 # user#... ctor changes per layer; the spec captured 0x31774388. We keep a SET
 # of known recent ids AND a tolerant fallback that scans TL-strings after
 # id+access_hash regardless of the exact ctor.
+# 0xB1B8CC83 is the current (TDLib telegram_api.tl) user, verified on a real
+# Android capture: its flags/flags2/id/... layout parses via Attempt 1 below.
 _USER_IDS_LAYER_VERSIONED = {
     0x31774388, 0x8F97C628, 0x215C4438, 0x83314FCA, 0xD49A2697, 0x4B46C37E,
+    0xB1B8CC83,
 }
 _USER_EMPTY = 0xD3BC4B7A
 
@@ -261,6 +278,9 @@ class ParsedMtprotoMessage:
     user_id: int = 0
     relationship: tuple = ()
     last_seen: str = ""
+    # Secret-Chat only: the sender-chosen ``random_id:long`` (signed TL int64)
+    # identifying one E2E message; 0 for cloud messages / unknown.
+    random_id: int = 0
 
 
 class _Reader:
@@ -847,11 +867,9 @@ def _mostly_printable(text: str) -> bool:
 # can't spin on attacker-controlled input.
 _MAX_TL_COUNT = 100_000
 
-# Upper bound on the INFLATED size of a gzip_packed body. The packed bytes are
-# peer-supplied wire data, so an unbounded zlib.decompress() is a decompression
-# bomb: a few KB can expand to gigabytes and OOM the offline driver. 16 MiB is
-# far above any real Telegram TL payload while keeping a hostile record cheap.
-_MAX_GZIP_INFLATE = 16 * 1024 * 1024
+# Upper bound on the INFLATED size of a gzip_packed body (decompression-bomb
+# guard; see :data:`~.tl.decoder.MAX_INFLATE`).
+_MAX_GZIP_INFLATE = MAX_INFLATE
 
 
 def _parse_typed_vector(
@@ -928,12 +946,12 @@ def _dispatch_object(
         # cap, so this is a (possibly malicious) oversized/bomb payload — reject
         # rather than inflating it unbounded into memory.
         try:
-            dobj = zlib.decompressobj()
-            inflated = dobj.decompress(packed, _MAX_GZIP_INFLATE)
-            if dobj.unconsumed_tail:
-                raise _TLError(
-                    f"gzip_packed inflate exceeds {_MAX_GZIP_INFLATE} bytes"
-                )
+            # Auto-detects the zlib *or* gzip header (Telegram sends real gzip).
+            inflated = inflate_bounded(packed, _MAX_GZIP_INFLATE)
+        except InflateLimitError:
+            raise _TLError(
+                f"gzip_packed inflate exceeds {_MAX_GZIP_INFLATE} bytes"
+            ) from None
         except zlib.error as exc:
             raise _TLError("gzip_packed inflate failed") from exc
         _parse_into(inflated, out, depth + 1)
@@ -966,31 +984,13 @@ def _dispatch_object(
         return
 
     # --- Updates ---------------------------------------------------------- #
-    if ctor == _UPDATE_SHORT_MESSAGE:
-        msg = _parse_update_short_message(reader)
-        if msg is not None:
-            out.append(msg)
-        return
-
-    if ctor == _UPDATE_SHORT_CHAT_MESSAGE:
-        msg = _parse_update_short_chat_message(reader)
-        if msg is not None:
-            out.append(msg)
-        return
-
-    if ctor == _UPDATE_SHORT:
-        _dispatch(reader, out, depth + 1)   # update:Update (single), date:int after
-        return
-
-    if ctor in (
-        _UPDATE_NEW_MESSAGE, _UPDATE_NEW_CHANNEL_MESSAGE,
-        _UPDATE_EDIT_MESSAGE, _UPDATE_EDIT_CHANNEL_MESSAGE,
-    ):
-        inner = reader.uint32()             # message:Message ctor
-        msg = _parse_message_object(reader, inner)
-        if msg is not None:
-            out.append(msg)
-        return
+    # NOTE: the inbound message-bearing update paths (updateShortMessage,
+    # updateShortChatMessage, updateShort and the updateNewMessage / message#
+    # families) are superseded by the schema walk in
+    # ``_inbound_messages_from_schema``; the hand-rolled emitters kept below
+    # (_parse_update_short_message, _parse_update_short_chat_message,
+    # _parse_message_object, _scan_message_text, _try_read_text) remain for tests
+    # and helper reuse but are no longer dispatched here.
 
     # updates / updatesCombined: ... updates:Vector<Update>, users:Vector<User>,
     # chats:Vector<Chat>, date:int, seq:int. The leading layout differs between
@@ -1013,12 +1013,8 @@ def _dispatch_object(
             out.append(msg)
         return
 
-    # A full `message` object encountered directly.
-    if ctor in _MESSAGE_IDS_LAYER_VERSIONED:
-        msg = _parse_message_object(reader, ctor)
-        if msg is not None:
-            out.append(msg)
-        return
+    # A full `message#` object encountered directly is now surfaced by the schema
+    # walk (_inbound_messages_from_schema), not the hand path.
 
     # A bare Vector (e.g. rpc_result = Vector<User>).
     if ctor == _VECTOR:
@@ -1132,17 +1128,98 @@ def _parse_into(tl_bytes: bytes, out: List[ParsedMtprotoMessage], depth: int) ->
         return
 
 
+# --------------------------------------------------------------------------- #
+# Inbound text via the comprehensive schema decoder
+# --------------------------------------------------------------------------- #
+#
+# The hand path above emits the device-verified OUTBOUND sendMessage, users,
+# service and container records. Inbound chat text lives in flag-heavy,
+# layer-versioned ``message#`` constructors that the schema decoder
+# (:func:`~.tl.decoder.decode_tl_cached`) already decodes precisely, so we
+# delegate inbound extraction to it: walk the decoded tree and emit one text
+# item per CHAT-MESSAGE constructor (see :data:`_CHAT_MESSAGE_CTORS`).
+
+#: Schema predicate names (as :class:`TlNode.name` exposes them, without the
+#: ``#id`` suffix) whose ``message:string`` is chat text. Many other
+#: constructors carry a ``message:string`` too — ``draftMessage`` (sent on
+#: every keystroke on another device and in every getDialogs reply),
+#: ``updateServiceNotification``, ``sponsoredMessage``, ``botInlineMessage*``,
+#: ``messageActionCustomAction``, ``help.inviteText``, ``businessChatLink`` ...
+#: — and must NOT surface as chat messages. ``updateShortSentMessage`` carries
+#: no text; ``messageService`` / ``messageEmpty`` carry no ``message`` field.
+_CHAT_MESSAGE_CTORS = frozenset({
+    "message",
+    "updateShortMessage",
+    "updateShortChatMessage",
+})
+
+
+def _peer_node_id(peer) -> int:
+    """First of a ``Peer`` node's user/chat/channel id fields, or 0."""
+    if not isinstance(peer, TlNode):
+        return 0
+    for name in ("user_id", "chat_id", "channel_id"):
+        value = peer.value(name)
+        if isinstance(value, int):
+            return value
+    return 0
+
+
+def _message_node_ids(node: TlNode) -> tuple:
+    """Return ``(sender_id, peer_id)`` for a message-bearing constructor."""
+    if node.name == "updateShortMessage":
+        return 0, node.value("user_id", 0)
+    if node.name == "updateShortChatMessage":
+        return node.value("from_id", 0), node.value("chat_id", 0)
+    return _peer_node_id(node.value("from_id")), _peer_node_id(node.value("peer_id"))
+
+
+def _node_to_text(node: TlNode) -> Optional[ParsedMtprotoMessage]:
+    """Project a message-bearing constructor node onto a text display record."""
+    if node.kind != "constructor" or node.name not in _CHAT_MESSAGE_CTORS:
+        return None
+    text = node.value("message")
+    if not isinstance(text, str) or not text:
+        return None
+    sender_id, peer_id = _message_node_ids(node)
+    media = node.field("media")
+    has_media = media is not None and getattr(media.value, "name", "") != "messageMediaEmpty"
+    date = node.value("date", 0)
+    return ParsedMtprotoMessage(
+        kind="text", body=text, method=node.name,
+        sender_id=sender_id, peer_id=peer_id,
+        timestamp=date if isinstance(date, int) else 0, has_media=has_media,
+    )
+
+
+def _inbound_messages_from_schema(tl_bytes: bytes) -> List[ParsedMtprotoMessage]:
+    """Extract inbound chat text by walking the schema-decoded TL tree."""
+    try:
+        root = decode_tl_cached(bytes(tl_bytes), "mtproto")
+    except Exception:  # pragma: no cover - decode_tl_cached is itself tolerant
+        return []
+    out: List[ParsedMtprotoMessage] = []
+    for node in iter_nodes(root):
+        msg = _node_to_text(node)
+        if msg is not None:
+            out.append(msg)
+    return out
+
+
 def parse_mtproto_message(tl_bytes: bytes) -> List[ParsedMtprotoMessage]:
     """Parse a decrypted cloud MTProto record's TL payload into messages.
 
     Tolerant by contract: returns ``[]`` when nothing readable is found and
     NEVER raises. A single record may yield several messages (a container fans
-    out), so the result is a list.
+    out), so the result is a list. The hand path emits the OUTBOUND sendMessage,
+    users, service and container records; inbound chat text is surfaced by the
+    schema walk (:func:`_inbound_messages_from_schema`).
     """
     if not tl_bytes:
         return []
     out: List[ParsedMtprotoMessage] = []
     _parse_into(tl_bytes, out, 0)
+    out.extend(_inbound_messages_from_schema(tl_bytes))
     return out
 
 
@@ -1176,48 +1253,185 @@ def _decrypted_has_media(reader: _Reader, ctor: int, flags: int) -> bool:
     return bool(flags & _DECRYPTED_MSG_MEDIA_FLAG)
 
 
+# decryptedMessageService: a secret-chat control message (no text) carrying one
+# DecryptedMessageAction. Every id below was verified by recomputing the TL
+# constructor hash (CRC32 of the normalised secret_api.tl schema line).
+_DECRYPTED_MSG_SERVICE = 0x73164160   # layer 17+: random_id:long action:DecryptedMessageAction
+_DECRYPTED_MSG_SERVICE8 = 0xAA48327D  # layer 8: random_id:long random_bytes:bytes action
+_DECRYPTED_MESSAGE_SERVICE_IDS = {_DECRYPTED_MSG_SERVICE, _DECRYPTED_MSG_SERVICE8}
+
+_DECRYPTED_ACTION_NAMES: Dict[int, str] = {
+    0xA1733AEC: "decryptedMessageActionSetMessageTTL",
+    0x0C4F40BE: "decryptedMessageActionReadMessages",
+    0x65614304: "decryptedMessageActionDeleteMessages",
+    0x8AC1F475: "decryptedMessageActionScreenshotMessages",
+    0x6719E45C: "decryptedMessageActionFlushHistory",
+    0x511110B0: "decryptedMessageActionResend",
+    0xF3048883: "decryptedMessageActionNotifyLayer",
+    0xCCB27641: "decryptedMessageActionTyping",
+    0xF3C9611B: "decryptedMessageActionRequestKey",
+    0x6FE1735B: "decryptedMessageActionAcceptKey",
+    0xDD05EC6B: "decryptedMessageActionAbortKey",
+    0xEC2E0B9B: "decryptedMessageActionCommitKey",
+    0xA82FDD63: "decryptedMessageActionNoop",
+}
+
+_SECRET_CTOR_NAMES: Dict[int, str] = {
+    _DECRYPTED_MESSAGE_LAYER: "decryptedMessageLayer",
+    _DECRYPTED_MSG_SERVICE: "decryptedMessageService",
+    _DECRYPTED_MSG_SERVICE8: "decryptedMessageService",
+    _DECRYPTED_MSG_MEDIA_EMPTY: "decryptedMessageMediaEmpty",
+    **{ctor: "decryptedMessage" for ctor in _DECRYPTED_MESSAGE_IDS},
+}
+
+
+def secret_ctor_name(ctor: int) -> str:
+    """Return the secret-chat TL name for *ctor*, or a hex fallback."""
+    return _SECRET_CTOR_NAMES.get(ctor) or _DECRYPTED_ACTION_NAMES.get(ctor) \
+        or f"0x{ctor:08x}"
+
+
+@dataclass
+class SecretChatFields:
+    """Every decoded field of one Secret-Chat plaintext, for display.
+
+    ``ctor_name`` names the INNER message (``decryptedMessage`` or
+    ``decryptedMessageService``); the envelope fields (``layer``, seq numbers,
+    ``random_bytes_len``) stay 0 for a bare message without a layer wrapper.
+    """
+
+    ctor_name: str = ""
+    layer: int = 0
+    in_seq_no: int = 0
+    out_seq_no: int = 0
+    random_bytes_len: int = 0
+    flags: int = 0
+    random_id: int = 0
+    ttl: int = 0
+    message: str = ""
+    has_media: bool = False
+    media_ctor: str = ""
+    action: str = ""
+    ctor: int = 0
+    has_layer_envelope: bool = False
+
+
+def _read_layer_envelope(reader: _Reader, fields: SecretChatFields) -> int:
+    """decryptedMessageLayer body (ctor consumed) → the inner message ctor."""
+    fields.random_bytes_len = len(reader.tl_bytes())  # random_bytes:bytes
+    fields.layer = reader.int32()                      # layer:int
+    fields.in_seq_no = reader.int32()                  # in_seq_no:int
+    fields.out_seq_no = reader.int32()                 # out_seq_no:int
+    fields.has_layer_envelope = True
+    return reader.uint32()                             # message:DecryptedMessage
+
+
+def _peek_media_ctor(reader: _Reader) -> str:
+    """Name of the media object at the cursor, or "" when it is truncated."""
+    try:
+        return secret_ctor_name(reader.peek_uint32())
+    except _TLError:
+        return ""
+
+
+def _read_decrypted_message_fields(
+    reader: _Reader, ctor: int, fields: SecretChatFields,
+) -> None:
+    """decryptedMessage body (ctor consumed): flags?, random_id, ttl, message.
+
+    The layer-17 form (``0x204d3878``) has no leading ``flags:int``; the
+    layer-45+/73+ forms do. Media presence comes from :func:`_decrypted_has_media`.
+    """
+    if ctor != _DECRYPTED_MSG_L17:
+        fields.flags = reader.uint32()   # flags:int (layer 45+/73+ only)
+    fields.random_id = reader.int64()    # random_id:long (message identity)
+    fields.ttl = reader.int32()          # ttl:int
+    fields.message = reader.tl_string()  # message:string (EXTRACT)
+    fields.has_media = _decrypted_has_media(reader, ctor, fields.flags)
+    if fields.has_media:
+        fields.media_ctor = _peek_media_ctor(reader)
+    fields.ctor = ctor
+    fields.ctor_name = "decryptedMessage"
+
+
+def _read_decrypted_service_fields(
+    reader: _Reader, ctor: int, fields: SecretChatFields,
+) -> None:
+    """decryptedMessageService body (ctor consumed): random_id, [random_bytes], action."""
+    fields.random_id = reader.int64()     # random_id:long
+    if ctor == _DECRYPTED_MSG_SERVICE8:
+        reader.tl_bytes()                 # random_bytes:bytes (layer 8 only)
+    fields.action = secret_ctor_name(reader.uint32())  # action:DecryptedMessageAction
+    fields.ctor = ctor
+    fields.ctor_name = "decryptedMessageService"
+
+
+def _read_secret_chat_fields(reader: _Reader) -> Optional[SecretChatFields]:
+    """Decode an optional layer envelope plus one inner message, or ``None``.
+
+    Raises :class:`_TLError` on truncation; callers swallow it.
+    """
+    fields = SecretChatFields()
+    ctor = reader.uint32()
+    if ctor == _DECRYPTED_MESSAGE_LAYER:
+        ctor = _read_layer_envelope(reader, fields)
+    if ctor in _DECRYPTED_MESSAGE_IDS:
+        _read_decrypted_message_fields(reader, ctor, fields)
+        return fields
+    if ctor in _DECRYPTED_MESSAGE_SERVICE_IDS:
+        _read_decrypted_service_fields(reader, ctor, fields)
+        return fields
+    return None
+
+
+def decode_secret_chat_fields(tl_bytes: bytes) -> Optional[SecretChatFields]:
+    """Decode a Secret-Chat plaintext (layer-wrapped or bare) into its fields.
+
+    Tolerant by contract: returns ``None`` for empty, truncated or unknown input
+    and NEVER raises.
+    """
+    if not tl_bytes:
+        return None
+    try:
+        return _read_secret_chat_fields(_Reader(tl_bytes))
+    except _TLError:
+        return None
+    except Exception:  # pragma: no cover - defensive
+        return None
+
+
+def _fields_to_parsed(fields: SecretChatFields) -> ParsedMtprotoMessage:
+    """Project decoded Secret-Chat fields onto the shared display record."""
+    if fields.ctor_name == "decryptedMessageService":
+        return ParsedMtprotoMessage(
+            kind="service", body=fields.action, method="decryptedMessageService",
+            random_id=fields.random_id,
+        )
+    return ParsedMtprotoMessage(
+        kind="text", body=fields.message, has_media=fields.has_media,
+        method="decryptedMessage", random_id=fields.random_id,
+    )
+
+
 def _parse_decrypted_message(reader: _Reader, ctor: int) -> Optional[ParsedMtprotoMessage]:
     """decryptedMessage (ctor already consumed): reach ``message:string``.
 
     The layout's leading fields are layer-versioned: the layer-17 form
     (``0x204d3878``) is ``random_id:long, ttl:int, message:string, …`` while the
     layer-45+/73+ forms (``0x36b091de``/``0x91cc4674``) prepend a ``flags:int``.
-    We extract ``message`` and report media presence via :func:`_decrypted_has_media`.
+    Built on :func:`_read_decrypted_message_fields`.
     """
-    flags = 0
-    if ctor != _DECRYPTED_MSG_L17:
-        flags = reader.uint32()  # flags:int (layer 45+/73+ only)
-    reader.int64()              # random_id:long
-    reader.int32()              # ttl:int
-    body = reader.tl_string()   # message:string (EXTRACT)
-    return ParsedMtprotoMessage(
-        kind="text", body=body, has_media=_decrypted_has_media(reader, ctor, flags),
-        method="decryptedMessage",
-    )
+    fields = SecretChatFields()
+    _read_decrypted_message_fields(reader, ctor, fields)
+    return _fields_to_parsed(fields)
 
 
 def parse_secret_chat_message(tl_bytes: bytes) -> List[ParsedMtprotoMessage]:
     """Parse a decrypted secret-chat E2E payload into messages.
 
     Reaches ``message:string`` via ``decryptedMessageLayer`` →
-    ``decryptedMessage``. Tolerant: returns ``[]`` on any failure, never raises.
+    ``decryptedMessage`` (or the action of a ``decryptedMessageService``, as
+    kind ``"service"``). Tolerant: returns ``[]`` on any failure, never raises.
     """
-    if not tl_bytes:
-        return []
-    try:
-        reader = _Reader(tl_bytes)
-        ctor = reader.uint32()
-        if ctor == _DECRYPTED_MESSAGE_LAYER:
-            reader.tl_bytes()       # random_bytes:bytes
-            reader.int32()          # layer:int
-            reader.int32()          # in_seq_no:int
-            reader.int32()          # out_seq_no:int
-            ctor = reader.uint32()  # message:DecryptedMessage ctor
-        if ctor in _DECRYPTED_MESSAGE_IDS:
-            msg = _parse_decrypted_message(reader, ctor)
-            return [msg] if msg is not None else []
-    except _TLError:
-        return []
-    except Exception:  # pragma: no cover - defensive
-        return []
-    return []
+    fields = decode_secret_chat_fields(tl_bytes)
+    return [_fields_to_parsed(fields)] if fields is not None else []

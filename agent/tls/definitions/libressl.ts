@@ -14,6 +14,7 @@ import { findNonExportedSymbols } from "../../shared/shared_functions.js";
 import { readHexFromPointer } from "../decoders/hex_utils.js";
 import { STANDARD_SOCKET_SYMBOLS, TLS13_LABEL_MAP } from "./shared_constants.js";
 import { openSslClientRandomDecoder, openSslFdDecoder, openSslSessionIdDecoder } from "./openssl.js";
+import { createKeylogCallbackTracker } from "../../shared/keylog_callback_tracker.js";
 
 // Pre-allocated buffers reused across hook invocations
 const _clientRandomBuf = Memory.alloc(32);
@@ -31,7 +32,8 @@ function createLibreSslKeylogApproach(): KeylogApproach {
             let keylogCallbackInstalled = false;
 
             // ── Tier 1: SSL_CTX_set_keylog_callback (LibreSSL 3.5+) ──
-            if (resolvedFns["SSL_CTX_set_keylog_callback"]) {
+            const setKeylogAddr = addresses[modName]?.["SSL_CTX_set_keylog_callback"];
+            if (resolvedFns["SSL_CTX_set_keylog_callback"] && setKeylogAddr && !setKeylogAddr.isNull()) {
                 const keylogCb = new NativeCallback(
                     function (_ssl: NativePointer, line: NativePointer) {
                         devlog(`invoking keylog_callback from LibreSSL (${modName})`);
@@ -43,10 +45,15 @@ function createLibreSslKeylogApproach(): KeylogApproach {
 
                 const sslNewAddr = addresses[modName]?.["SSL_new"];
                 if (sslNewAddr && !sslNewAddr.isNull()) {
+                    // Records every SSL_CTX we point at keylogCb so releaseAgentHooks can
+                    // undo it before keylogCb is freed (shared/keylog_callback_tracker.ts).
+                    // SSL_CTX_up_ref / SSL_CTX_get_keylog_callback are optional: the
+                    // tracker degrades safely when this LibreSSL build lacks them.
+                    const tracker = createKeylogCallbackTracker(modName, setKeylogAddr, keylogCb, true);
                     Interceptor.attach(sslNewAddr, {
                         onEnter: function (args: any) {
                             try {
-                                resolvedFns["SSL_CTX_set_keylog_callback"](args[0], keylogCb);
+                                tracker.install(args[0]);
                             } catch (e) {
                                 devlog_error(`[LibreSSL] Error in SSL_new keylog hook: ${e}`);
                             }

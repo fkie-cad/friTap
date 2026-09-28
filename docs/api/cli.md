@@ -272,6 +272,55 @@ fritap -m -k keys.log --scan-keys-region libfoo.so com.example.app
     [`--script-load-timeout`](#-script-load-timeout-seconds) when this flag is
     active.
 
+#### `-ms, --memory-scan [<pattern.json>]`
+Recover TLS secrets by **scanning the target's heap memory** instead of hooking
+the TLS library. This is a complementary, **independently-injected** Frida agent
+(`friTap/fritap_memscan.js`) that periodically re-scans the process heap for
+secret-carrying structures and writes what it finds as an NSS keylog. It works on
+**both** the legacy (default) and `--modern` agent paths and on every OS Frida
+supports; the scan engine is platform-generic, and the shipped default profile
+targets **BoringSSL** (validated on Android/Chrome).
+
+The optional value is a path to a custom pattern/profile JSON that
+overrides/extends the shipped defaults (`friTap/memory_scanning/patterns.json`).
+See [Memory-scan secret profiles](../advanced/patterns.md#memory-scan-secret-profiles).
+
+Where recovered keys are written depends on the other flags:
+
+| Command shape | Behavior |
+| --- | --- |
+| `-ms` **alone** | Only the memory-scan agent is loaded — the normal TLS-hooking agent is **skipped** — and keys are written to `<target>_memscan.keylog` in the current directory. |
+| `-ms` with `-k <file>` | Recovered keys are written to a dedicated file **beside** it — `<stem>.memscan<ext>` (e.g. `keys.log` → `keys.memscan.log`) — never a second handle onto the `-k` file. |
+| `-ms` with `-p`/`-c`/etc. | The memory-scan agent runs **alongside** the normal capture. |
+
+```bash
+fritap -ms -- com.android.chrome
+fritap -ms -k keys.keylog -p out.pcap -- com.android.chrome
+fritap -ms my_patterns.json com.android.chrome
+```
+
+!!! warning "Put the target after `--` (or after the pattern file)"
+    Because the pattern file is optional (argparse `nargs='?'`), `fritap -ms com.app`
+    wrongly consumes `com.app` as the pattern file. Either separate the target with
+    `--` (`fritap -ms -- com.app`), or pass the pattern file explicitly **before**
+    the target (`fritap -ms my_patterns.json com.app`). This mirrors the existing
+    [`-sot`](#-sot-socket_tracing-path) behavior.
+
+Verify the recovered keylog by decrypting a matching pcap:
+
+```bash
+tshark -r capture.pcap -o tls.keylog_file:keys.keylog \
+  -o tls.ignore_ssl_mac_failed:FALSE -Y "http || http2"
+```
+
+#### `--memory-scan-interval <seconds>`
+Poll cadence at which the memory-scan agent re-scans the heap. **Default `2.0`.**
+Only effective together with `-ms`.
+
+```bash
+fritap -ms --memory-scan-interval 5 -- com.android.chrome
+```
+
 ---
 
 ### Hooking and libraries
@@ -426,15 +475,23 @@ build accepts; at the time of writing it is
 - `tls` covers the **TLS family** — TLS, QUIC, and **OHTTP**. There is no
   separate `--protocol ohttp` / `--ohttp` flag; OHTTP is on by default within
   `--protocol tls`. See [OHTTP](../protocols/ohttp.md).
-- `ssh` and `ipsec` are exclusive (only their hooks install). `ssh` and `ipsec`
-  auto-enable the modern agent path.
+- `ssh` is exclusive (only its hooks install). No protocol
+  auto-enables the modern agent path; every protocol runs on the default legacy
+  path and on `--modern`.
 - `all` hooks every supported protocol and asks for confirmation (skip with
   `-y`/`--yes`).
 - `auto` is a script-friendly alias for `all` that does **not** prompt.
+- `custom` selects every custom cipher (e.g. `rc4`) and combines with any
+  protocol. With more than one protocol, `-k keys.log` is split into one file
+  per protocol/cipher (`keys.tls.log`, `keys.rc4.log`, …); a single protocol
+  (e.g. `--protocol rc4`) writes `keys.log` directly.
 
-!!! warning "IPsec is EXPERIMENTAL"
-    `--protocol ipsec` is **detection-only**. IPsec/IKE detection works, but
-    key extraction does not yet. See [IPsec](../protocols/ipsec.md).
+!!! warning "IPsec is EXPERIMENTAL and not selectable yet"
+    `--protocol ipsec` is **not accepted yet** — the IPsec handler is not
+    registered, so the CLI rejects it. The agent-side strongSwan hooks install
+    (on both the legacy and `--modern` paths) only via `--protocol all`/`auto`,
+    and are **detection-only**: IPsec/IKE detection works, key extraction does
+    not yet. See [IPsec](../protocols/ipsec.md).
 
 ```bash
 fritap --protocol ssh -k keys.log sshd
@@ -537,9 +594,16 @@ view.
 Include frida/adb control traffic in captures. By default ports
 `5037`/`5555`/`27042`/`27043` are dropped.
 
-#### `--include-loopback`
-Include loopback/localhost traffic (e.g. Firefox internal NSS IPC). By default
-loopback traffic is filtered out to reduce noise.
+#### `--loopback`
+Also capture loopback/localhost traffic (`127.0.0.1`/`::1`, e.g. a client talking
+to a local server, or Firefox internal NSS IPC). Off by default: loopback traffic
+is filtered out to reduce noise, and a full capture (`-f`) does not sniff the
+loopback adapter unless this flag is passed. On Windows this needs Npcap with
+loopback support.
+
+`--include-loopback` is the deprecated former name of this flag. It is still
+accepted as an alias so existing scripts keep working, but it is hidden from
+`--help`; use `--loopback` in new scripts.
 
 #### `--proxy <host:port>`
 Redirect connections to a proxy (e.g. mitmproxy) and bypass certificate pinning.
@@ -693,9 +757,10 @@ BoringSSL keylog chain and improved Cronet hooks on Android/Windows.
 
 !!! warning "Default is legacy"
     `--modern` is **opt-in**; the default agent path is **legacy** for TLS
-    libraries. It is auto-enabled for `--protocol ssh` and `--protocol ipsec`.
-    Known regressions vs. the legacy default: **iOS/macOS Cronet, Windows LSASS,
-    IPsec**.
+    libraries and for every `--protocol`; no protocol auto-enables it.
+    Every protocol works on both paths. For **iOS/macOS Cronet** and **Windows
+    LSASS**, `--modern` runs the legacy hooks, since those have no native modern
+    implementation yet.
 
 #### `-exp, --experimental`
 Activate all existing experimental features. See the relevant feature docs.
@@ -776,7 +841,8 @@ already-plaintext capture directly. `--from-pcap` may appear anywhere in argv.
 Sub-flags (own parser): `--from-pcap <file>` (required), `--keylog <path>`,
 `--tap <path>`, `--scan`, `--tls-port <n>` (repeatable), `--quic-port <n>`
 (repeatable), `--decode-as <rule>` (repeatable), `--tls-heuristic`,
-`--tshark-path <path>`. A sidecar manifest `<pcap>.fritap.json` supplies
+`--tshark-path <path>`, `--repair-keylog` (re-pair keylog secrets whose
+client_random is not in the capture by trial decryption). A sidecar manifest `<pcap>.fritap.json` supplies
 defaults (CLI flags win). Exit codes: `0` success, `2` pcap not found, `3` tshark
 missing, `4` ran but produced no decrypted packets (wrong keys/ports), `5` no
 decryption keys (no keylog and no embedded DSB), `1` other failure.

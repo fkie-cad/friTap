@@ -30,6 +30,7 @@ from ._mtproto_helpers import (
     _obfuscate,
     _patch_tshark,
     _seg,
+    _stamp_capture_times,
 )
 
 
@@ -58,7 +59,7 @@ def test_offline_mtproto_golden(tmp_path, monkeypatch):
         _seg(SERVER, CLIENT, base_s, server_wire),
     ]
     pcap_path = str(tmp_path / "tg.pcapng")
-    wrpcap(pcap_path, pkts)
+    wrpcap(pcap_path, _stamp_capture_times(pkts))
 
     # Write the MTProto keylog.
     keylog_path = str(tmp_path / "tg.keys")
@@ -86,12 +87,15 @@ def test_offline_mtproto_golden(tmp_path, monkeypatch):
     reader.open()
     flows = reader.read_all_flows()
     mtproto_flows = [f for f in flows if f.transport == "mtproto"]
-    assert mtproto_flows, "expected at least one mtproto flow"
-    flow = mtproto_flows[0]
-    assert isinstance(flow.mtproto, MtprotoLayer)
-    blob = flow.get_direction_bytes("write") + flow.get_direction_bytes("read")
-    assert msg_c2s in blob
-    assert msg_s2c in blob
+    # One flow per decrypted packet (T1), each with the packet's real direction.
+    assert len(mtproto_flows) == 2
+    sent, received = sorted(mtproto_flows, key=lambda f: f.started)
+    for flow in (sent, received):
+        assert isinstance(flow.mtproto, MtprotoLayer)
+        assert len(flow.chunks) == 1
+    assert msg_c2s in sent.get_direction_bytes("write")
+    assert msg_s2c in received.get_direction_bytes("read")
+    assert (received.src_addr, received.dst_addr) == (sent.dst_addr, sent.src_addr)
 
 
 def test_offline_mtproto_wrong_key_undecryptable(tmp_path, monkeypatch):
@@ -107,7 +111,7 @@ def test_offline_mtproto_wrong_key_undecryptable(tmp_path, monkeypatch):
         _seg(CLIENT, SERVER, 1001, client_wire),
     ]
     pcap_path = str(tmp_path / "tg.pcapng")
-    wrpcap(pcap_path, pkts)
+    wrpcap(pcap_path, _stamp_capture_times(pkts))
 
     # Keylog with a DIFFERENT auth_key -> auth_key_id won't match -> undecryptable.
     wrong = os.urandom(crypto.AUTH_KEY_LEN)
@@ -123,3 +127,16 @@ def test_offline_mtproto_wrong_key_undecryptable(tmp_path, monkeypatch):
         pcap_path, mtproto_keylog=keylog_path, tap_path=str(tmp_path / "tg.tap"))
     assert result.mtproto_messages == 0
     assert result.mtproto_records_undecryptable >= 1
+
+
+def test_stamp_capture_times_overrides_wall_clock_order():
+    # Construction-time (wall-clock) stamps that run backwards with a >30 s gap:
+    # exactly the order that split the golden flow in two before pinning.
+    pkts = [_seg(CLIENT, SERVER, 1000 + i, b"x") for i in range(3)]
+    for pkt, wall in zip(pkts, (3000.0, 2000.0, 1000.0)):
+        pkt.time = wall
+
+    stamped = _stamp_capture_times(pkts, start=10.0, step=0.5)
+
+    assert stamped is pkts
+    assert [float(p.time) for p in pkts] == [10.0, 10.5, 11.0]

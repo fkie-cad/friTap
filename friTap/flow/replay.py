@@ -72,6 +72,9 @@ class ReplayController:
         self._summaries: list[FlowSummary] = []
         self._flow_cache: _LRUCache = _LRUCache(maxsize=128)
         self._reparse_results: dict[str, tuple[Optional["ParseResult"], Optional["ParseResult"]]] = {}
+        # Flow ids whose stale trailing-data segments must be dropped on every
+        # (re)load, e.g. decrypted TL flows once mis-parsed as WebSocket.
+        self._clear_trailing_ids: set[str] = set()
 
     @property
     def replay_file(self) -> str:
@@ -133,6 +136,9 @@ class ReplayController:
                 flow.request = req
             if resp is not None:
                 flow.response = resp
+        if flow_id in self._clear_trailing_ids:
+            from friTap.flow.reparse import clear_trailing_data
+            clear_trailing_data(flow)
         return flow
 
     def store_reparse(
@@ -140,9 +146,16 @@ class ReplayController:
         flow_id: str,
         request: Optional["ParseResult"],
         response: Optional["ParseResult"],
+        clear_trailing: bool = False,
     ) -> None:
-        """Store reparse results so they survive cache eviction."""
+        """Store reparse results so they survive cache eviction.
+
+        With *clear_trailing*, every later :meth:`get_flow` also drops the
+        flow's trailing-data state (re-read from disk after eviction).
+        """
         self._reparse_results[flow_id] = (request, response)
+        if clear_trailing:
+            self._clear_trailing_ids.add(flow_id)
 
     def read_all_findings(self) -> list:
         """Return persisted findings (as dicts) across all flows in the .tap.
@@ -172,6 +185,7 @@ class ReplayController:
             self._reader = None
         self._flow_cache.clear()
         self._reparse_results.clear()
+        self._clear_trailing_ids.clear()
         self._summaries.clear()
 
     def __enter__(self) -> "ReplayController":

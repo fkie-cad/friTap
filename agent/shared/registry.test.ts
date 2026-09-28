@@ -39,6 +39,7 @@ import assert from "node:assert/strict";
 // Side-effect import: defines Process/Java/etc. BEFORE registry.js loads.
 import "./frida-test-stubs.js";
 import { HookRegistry } from "./registry.js";
+import { registerHookContributor, collectContributedHooks } from "./hook_contributors.js";
 import { Platform, PLATFORM_DARWIN, PLATFORM_LINUX, PLATFORM_WINDOWS } from "./shared_structures.js";
 // The REAL predicates, not copies. darwin_library_patterns.ts is deliberately
 // dependency-free (it has no imports at all), so pulling it in here is safe —
@@ -742,4 +743,166 @@ test("findByLibraryType(darwin, 'openssl') deterministically returns the priorit
     // The libressl type still resolves to the priority-150 system entry.
     const libressl = makeRegistry().findByLibraryType(PLATFORM_DARWIN, "libressl", "tls");
     assert.equal(libressl?.library, "LibreSSL");
+});
+
+// ---------------------------------------------------------------------------
+// G. Foundation F1 — multi-protocol selection (set-based protocolMatches)
+// ---------------------------------------------------------------------------
+//
+// `protocolMatches` is private, so its contract is asserted through
+// `findAllMatches`, which the loaders actually call. A hook tagged
+// protocol:"tls" must install when the requested SET contains "tls" (alone or
+// alongside another protocol), but NOT when the set contains only an unrelated
+// protocol with no implication. A single string and a Set of one behave
+// identically, and a comma-joined string parses to the same set.
+
+function makeMultiProtocolRegistry(): HookRegistry {
+    const reg = new HookRegistry();
+    reg.registerAll([
+        { platform: PLATFORM_LINUX, pattern: /libfoo\.so/, hookFn: noopHook, library: "Foo-TLS", protocol: "tls" },
+        // An unrelated companion protocol with no implication to/from tls.
+        { platform: PLATFORM_LINUX, pattern: /libfoo\.so/, hookFn: noopHook, library: "Foo-X", protocol: "xproto" },
+    ]);
+    return reg;
+}
+
+test("multiselect: tls hook installs for {tls}, {tls,xproto}; not for {xproto}", () => {
+    const reg = makeMultiProtocolRegistry();
+    const libs = (p: any) =>
+        reg.findAllMatches(PLATFORM_LINUX, "libfoo.so", undefined, p).map(h => h.library).sort();
+
+    // {tls} → only the tls hook.
+    assert.deepEqual(libs(new Set(["tls"])), ["Foo-TLS"]);
+    // {tls, xproto} → BOTH hooks (each selected protocol is independent).
+    assert.deepEqual(libs(new Set(["tls", "xproto"])), ["Foo-TLS", "Foo-X"]);
+    // {xproto} → the tls hook does NOT install (x is not tls, no implication).
+    assert.deepEqual(libs(new Set(["xproto"])), ["Foo-X"]);
+});
+
+test("multiselect: single string, one-element set and comma-joined string agree", () => {
+    const reg = makeMultiProtocolRegistry();
+    const libs = (p: any) =>
+        reg.findAllMatches(PLATFORM_LINUX, "libfoo.so", undefined, p).map(h => h.library).sort();
+
+    // Legacy single string and its one-element set are identical.
+    assert.deepEqual(libs("tls"), ["Foo-TLS"]);
+    assert.deepEqual(libs("tls"), libs(new Set(["tls"])));
+    // A comma-joined string is split into the same multi-protocol set.
+    assert.deepEqual(libs("tls,xproto"), ["Foo-TLS", "Foo-X"]);
+    assert.deepEqual(libs("tls,xproto"), libs(new Set(["tls", "xproto"])));
+});
+
+test("multiselect: auto/all and a set containing them install everything (no filter)", () => {
+    const reg = makeMultiProtocolRegistry();
+    const libs = (p: any) =>
+        reg.findAllMatches(PLATFORM_LINUX, "libfoo.so", undefined, p).map(h => h.library).sort();
+
+    assert.deepEqual(libs("auto"), ["Foo-TLS", "Foo-X"]);
+    assert.deepEqual(libs("all"), ["Foo-TLS", "Foo-X"]);
+    assert.deepEqual(libs(new Set(["all"])), ["Foo-TLS", "Foo-X"]);
+    // A meta value anywhere in the set collapses to "install everything".
+    assert.deepEqual(libs(new Set(["tls", "auto"])), ["Foo-TLS", "Foo-X"]);
+});
+
+// ---------------------------------------------------------------------------
+// G'. RC4 as an INDEPENDENT protocol (Workstream 1)
+// ---------------------------------------------------------------------------
+//
+// A `protocol:"rc4"` hook must install when the requested set contains `rc4`
+// (alone or alongside `tls`) but NOT for `{tls}` — RC4 neither implies nor is
+// implied by TLS. This mirrors the `agent/rc4/` contributor's rows (which tag
+// their key-setup hooks `protocol:"rc4"`), asserted through `findAllMatches`.
+
+function makeRc4Registry(): HookRegistry {
+    const reg = new HookRegistry();
+    reg.registerAll([
+        { platform: PLATFORM_LINUX, pattern: /libcrypto\.so/, hookFn: noopHook, library: "TLS-openssl", protocol: "tls" },
+        { platform: PLATFORM_LINUX, pattern: /libcrypto\.so/, hookFn: noopHook, library: "RC4-set-key", protocol: "rc4" },
+    ]);
+    return reg;
+}
+
+test("rc4: a protocol:'rc4' hook installs for {rc4} and {tls,rc4} but NOT {tls}", () => {
+    const reg = makeRc4Registry();
+    const libs = (p: any) =>
+        reg.findAllMatches(PLATFORM_LINUX, "libcrypto.so", undefined, p).map(h => h.library).sort();
+
+    // {rc4} → only the rc4 hook (no TLS hooks: rc4 does not imply tls).
+    assert.deepEqual(libs(new Set(["rc4"])), ["RC4-set-key"]);
+    // {tls, rc4} → BOTH (each explicitly selected; independent).
+    assert.deepEqual(libs(new Set(["tls", "rc4"])), ["RC4-set-key", "TLS-openssl"]);
+    // {tls} → the rc4 hook does NOT install (no implication tls → rc4).
+    assert.deepEqual(libs(new Set(["tls"])), ["TLS-openssl"]);
+    // A comma-joined string parses to the same set.
+    assert.deepEqual(libs("tls,rc4"), ["RC4-set-key", "TLS-openssl"]);
+});
+
+// ---------------------------------------------------------------------------
+// G''. RC4 as a SECONDARY protocol behind a non-TLS primary
+// ---------------------------------------------------------------------------
+//
+// The CLI/TUI can send e.g. `protocol_select: "ssh,rc4"` or "mtproto,rc4" (the
+// primary first). Every platform loader registers its core table PLUS
+// `...collectContributedHooks()` and installs through the registry filtered by
+// the FULL selection set — there is no ssh/mtproto early-return path — so the
+// contributed RC4 rows must install alongside the primary's hooks regardless of
+// which protocol is primary. Built the way the platform loaders build it: core
+// rows + the contributor seam (`registerHookContributor` →
+// `collectContributedHooks`).
+
+// Registered ONCE at module scope: contributor state is process-global (as it
+// is in the agent, where agent/rc4/index.ts registers at import time).
+registerHookContributor({
+    platform: PLATFORM_LINUX, pattern: /libcrypto.*\.so/, hookFn: noopHook,
+    library: "RC4 (contributed)", libraryType: "rc4", protocol: "rc4",
+});
+
+function makePrimaryPlusRc4Registry(): HookRegistry {
+    const reg = new HookRegistry();
+    reg.registerAll([
+        { platform: PLATFORM_LINUX, pattern: /.*libssl\.so/, hookFn: noopHook, library: "TLS-openssl", protocol: "tls" },
+        { platform: PLATFORM_LINUX, pattern: /.*libssh2?\.so/, hookFn: noopHook, library: "libssh", protocol: "ssh" },
+        { platform: PLATFORM_LINUX, pattern: /^(\/.+\/)?(ssh|sshd)$/, hookFn: noopHook, library: "OpenSSH", protocol: "ssh" },
+        { platform: PLATFORM_LINUX, pattern: /libtmessages.*\.so/, hookFn: noopHook, library: "Telegram tgnet", protocol: "mtproto" },
+        { platform: PLATFORM_LINUX, pattern: /libtmessages.*\.so/, hookFn: noopHook, library: "Telegram Secret Chat", protocol: "telegram" },
+        { platform: PLATFORM_LINUX, pattern: /.*libringrtc_rffi.*\.so/, hookFn: noopHook, library: "Cronet (RingRTC)", protocol: "tls", excludeProtocols: ["signal"] },
+        ...collectContributedHooks(),
+    ]);
+    return reg;
+}
+
+test("rc4 secondary: contributed rc4 hooks install behind ssh/mtproto/telegram/signal primaries", () => {
+    const reg = makePrimaryPlusRc4Registry();
+    const libs = (p: any) => reg.getHooks(PLATFORM_LINUX, p).map(h => h.library).sort();
+
+    assert.deepEqual(libs("ssh,rc4"), ["OpenSSH", "RC4 (contributed)", "libssh"]);
+    assert.deepEqual(libs("mtproto,rc4"), ["RC4 (contributed)", "Telegram tgnet"]);
+    // telegram implies mtproto; rc4 still rides along.
+    assert.deepEqual(libs("telegram,rc4"), ["RC4 (contributed)", "Telegram Secret Chat", "Telegram tgnet"]);
+    // No public signal rows; rc4 still installs, and nothing TLS leaks in.
+    assert.deepEqual(libs("signal,rc4"), ["RC4 (contributed)"]);
+    // Order-insensitive: rc4 as primary yields the same set.
+    assert.deepEqual(libs("rc4,ssh"), libs("ssh,rc4"));
+});
+
+test("rc4 secondary: ssh/mtproto alone are unchanged (no rc4 rows)", () => {
+    const reg = makePrimaryPlusRc4Registry();
+    const libs = (p: any) => reg.getHooks(PLATFORM_LINUX, p).map(h => h.library).sort();
+
+    assert.deepEqual(libs("ssh"), ["OpenSSH", "libssh"]);
+    assert.deepEqual(libs("mtproto"), ["Telegram tgnet"]);
+    assert.deepEqual(libs("telegram"), ["Telegram Secret Chat", "Telegram tgnet"]);
+    assert.deepEqual(libs("signal"), []);
+});
+
+test("rc4 secondary: module-level match on libcrypto under ssh,rc4 / mtproto,rc4", () => {
+    const reg = makePrimaryPlusRc4Registry();
+    const libs = (p: any, mod: string) =>
+        reg.findAllMatches(PLATFORM_LINUX, mod, undefined, p).map(h => h.library);
+
+    assert.deepEqual(libs("ssh,rc4", "libcrypto.so.3"), ["RC4 (contributed)"]);
+    assert.deepEqual(libs("mtproto,rc4", "libcrypto.so.3"), ["RC4 (contributed)"]);
+    assert.deepEqual(libs("ssh", "libcrypto.so.3"), []);
+    // The primary's own module still matches alongside.
+    assert.deepEqual(libs("ssh,rc4", "sshd"), ["OpenSSH"]);
 });

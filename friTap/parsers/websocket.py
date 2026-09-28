@@ -163,12 +163,61 @@ def unmask_payload(data: bytes, mask_key: bytes) -> bytes:
     return bytes(a ^ b for a, b in zip(data, mask))
 
 
+_OPCODE_CLOSE = 0x8
+_CLOSE_CODE_MIN = 1000
+_CLOSE_CODE_MAX = 4999
+
+
+def _is_valid_close_payload(payload: bytes, mask_key: bytes) -> bool:
+    """RFC 6455 §5.5.1: a CLOSE body is empty or starts with a 2-byte status code.
+
+    A 1-byte body is invalid; a status code outside 1000-4999 is not a code
+    a real endpoint sends, so it disqualifies the frame for *detection*.
+    """
+    if not payload:
+        return True
+    if len(payload) < 2:
+        return False
+    raw_code = unmask_payload(payload[:2], mask_key) if mask_key else payload[:2]
+    code = int.from_bytes(raw_code, "big")
+    return _CLOSE_CODE_MIN <= code <= _CLOSE_CODE_MAX
+
+
+def _is_plausible_leading_control_frame(data: bytes, opcode: int, frame_end: int,
+                                        header_size: int, mask_key: bytes) -> bool:
+    """Detection-only check for a buffer that STARTS with a control frame.
+
+    A 2-byte control header (e.g. ``0x89 0x17``) is common in arbitrary binary
+    data, so it is accepted only when the frame spans the whole buffer or the
+    bytes after it start another valid, non-CONTINUATION frame; a CLOSE must
+    also carry a sane status code. Feed-time parsing is unaffected.
+    """
+    if opcode == _OPCODE_CLOSE and not _is_valid_close_payload(
+            data[header_size:frame_end], mask_key):
+        return False
+    remainder = len(data) - frame_end
+    if remainder == 0:
+        return True
+    return remainder >= 2 and _starts_unfragmented_frame(data[frame_end:])
+
+
+def _starts_unfragmented_frame(data: bytes) -> bool:
+    """A valid frame header that a FRESH parser would parse (no orphan CONT).
+
+    Mirrors feed()'s orphan-CONT rejection: detection runs on a stream start,
+    where a CONTINUATION (opcode 0x0) cannot follow — ``00 00`` after a
+    2-byte control header is just zero padding in arbitrary binary data.
+    """
+    return _is_websocket_frame(data) and (data[0] & 0x0F) != 0x0
+
+
 def _is_websocket_data(data: bytes) -> bool:
     """Stricter WebSocket detection for standalone protocol identification.
 
     Requires at least one complete frame fitting in the buffer.
-    If enough data exists for a second frame, requires it to also be valid
-    (only for data frames — control frames commonly have trailing non-WS data).
+    If enough data exists for a second frame, requires it to also be valid.
+    A leading control frame (PING/PONG/CLOSE) must span the whole buffer or be
+    followed by a valid frame (see ``_is_plausible_leading_control_frame``).
     """
     if not _is_websocket_frame(data):
         return False
@@ -177,17 +226,25 @@ def _is_websocket_data(data: bytes) -> bool:
     if hdr is None:
         return False
 
-    opcode, _fin, _rsv1, _masked, payload_len, header_size, _mask_key = hdr
+    opcode, _fin, _rsv1, _masked, payload_len, header_size, mask_key = hdr
     frame_end = header_size + payload_len
+
+    # A stream cannot START with a CONTINUATION frame (feed() rejects orphan
+    # CONT too); ``00 00 00 1a`` is a 4-byte big-endian length prefix.
+    if opcode == 0x0:
+        return False
 
     # Complete frame must fit in the buffer
     if frame_end > len(data):
         return False
 
+    if opcode >= 0x8:
+        return _is_plausible_leading_control_frame(
+            data, opcode, frame_end, header_size, mask_key)
+
     # For data frames (TEXT/BIN/CONT), if enough data for a second frame
-    # header, require it to also be valid. Control frames (PING/PONG/CLOSE)
-    # commonly appear with trailing non-WebSocket data, so skip this check.
-    if opcode < 0x8 and frame_end + 2 <= len(data):
+    # header, require it to also be valid.
+    if frame_end + 2 <= len(data):
         if not _is_websocket_frame(data[frame_end:]):
             return False
 
@@ -254,9 +311,15 @@ class WebSocketParser(BaseParser):
         self.trailing_data: Optional[bytes] = None
         self.trailing_protocol: str = ""
         self.trailing_sub_parse: Optional[ParseResult] = None
+        # Direction ("read"/"write") of the feed() that left trailing_data
+        self.trailing_direction: str = ""
 
     def can_parse(self, data: bytes) -> bool:
         return _is_websocket_data(data)
+
+    def recognized_any(self) -> bool:
+        """True once at least one frame was parsed (detection alone is weak)."""
+        return self._has_parsed
 
     def feed(self, data: bytes, direction: str,
              stream_id: int | None = None) -> list[ParseResult]:
@@ -270,6 +333,7 @@ class WebSocketParser(BaseParser):
         self.trailing_data = None
         self.trailing_protocol = ""
         self.trailing_sub_parse = None
+        self.trailing_direction = ""
 
         while offset < len(data):
             remaining = data[offset:]
@@ -396,6 +460,7 @@ class WebSocketParser(BaseParser):
             self.trailing_data = unconsumed
             self.trailing_protocol = protocol
             self.trailing_sub_parse = sub
+            self.trailing_direction = direction
 
         return results
 

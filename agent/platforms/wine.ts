@@ -1,8 +1,9 @@
 import { hookRegistry } from "../shared/registry.js";
-import { selected_protocol, use_modern, getParsedPatterns } from "../fritap_agent.js";
+import { selected_protocols, use_modern, getParsedPatterns } from "../fritap_agent.js";
 import { log, devlog } from "../util/log.js";
 import { getModuleNames } from "../shared/shared_functions.js";
 import { Platform, PLATFORM_WINE } from "../shared/shared_structures.js";
+import { contributedHooksFor } from "../shared/hook_contributors.js";
 import { load_linux_hooking_agent } from "./linux.js";
 import { installWineKeylogPatternHooks } from "../shared/wine_keylog_pattern_hook.js";
 
@@ -156,7 +157,7 @@ function hook_Wine_LdrLoadDll(is_base_hook: boolean): boolean {
                     const dllName = this.dllName as string;
                     const dllBaseName = dllName.split(/[/\\]/).pop() || dllName;
 
-                    const matches = hookRegistry.findAllMatches(platform_name, dllBaseName, undefined, selected_protocol);
+                    const matches = hookRegistry.findAllMatches(platform_name, dllBaseName, undefined, selected_protocols);
                     for (const match of matches) {
                         log(`[Wine] ${dllBaseName} loaded & will be hooked (${match.library})!`);
                         try {
@@ -514,7 +515,7 @@ function hook_Wine_Existing_DLLs(is_base_hook: boolean): void {
             continue;
         }
 
-        const matches = hookRegistry.findAllMatches(platform_name, mod.name, mod.path, selected_protocol);
+        const matches = hookRegistry.findAllMatches(platform_name, mod.name, mod.path, selected_protocols);
         if (matches.length > 0) {
             const match = matches[0];
             log(`[Wine] Found pre-loaded DLL ${mod.name} (${match.library}), hooking...`);
@@ -565,6 +566,15 @@ export function load_wine_hooking_agent(): void {
         { platform: platform_name, pattern: /mbedTLS\.dll/i, hookFn: (use_modern ? mbedTLS_execute_modern_windows : mbedTLS_execute_windows), library: "mbedTLS", libraryType: "mbedtls" },
         { platform: platform_name, pattern: /^.*(cronet|CRONET).*\.dll/i, hookFn: cronet_execute_windows, library: "Cronet", libraryType: "boringssl" },
     ]);
+
+    // Windows-DLL contributor rows (e.g. the `--protocol rc4` unit's hooks)
+    // register under platform "windows" and would never match a Wine target;
+    // contributedHooksFor(PLATFORM_WINE) re-tags them to wine at the contributor
+    // seam (see agent/shared/hook_contributors.ts for the full rationale).
+    const contributedWindowsRows = contributedHooksFor(platform_name);
+    if (contributedWindowsRows.length > 0) {
+        hookRegistry.registerAll(contributedWindowsRows);
+    }
 
 
     // Hook existing Windows DLLs that are already loaded. At spawn time this

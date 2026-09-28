@@ -52,9 +52,34 @@ class BodyProcessingResult:
     """Result returned when the body processing modal is dismissed with Apply."""
 
     decompression: str | None = None  # "gzip", "deflate", "brotli", "zstd"
-    decoder: str | None = None  # "json", "protobuf", "base64", "hex", "raw_utf8"
+    decoder: str | None = None  # "json", "protobuf", "base64", "hex", "raw_utf8", "tl"
     protobuf_config: ProtobufConfig | None = None
     segment_index: int = 0  # 0=primary, 1=trailing segment
+
+
+# ── Markup helpers (always available) ────────────────────────────
+
+
+def _segment_hint(count: int) -> str:
+    """Key-hint fragment for segment switching; empty for single-segment flows.
+
+    The ``[/]`` key label is escaped so it is not parsed as a closing tag.
+    """
+    if count <= 1:
+        return ""
+    return "  |  " + _escape_markup("[/]") + ": Segment"
+
+
+def _key_label(key: str) -> str:
+    """``[key]`` button prefix, escaped so a letter key (``[t]``) is not a tag."""
+    return _escape_markup(f"[{key}]")
+
+
+def _escape_markup(text: object) -> str:
+    """Escape an interpolated value so it is rendered literally in markup."""
+    from rich.markup import escape
+
+    return escape(str(text))
 
 
 # ── Modals (only when Textual is available) ──────────────────────
@@ -249,13 +274,13 @@ if TEXTUAL_AVAILABLE:
 
                 message, _ = blackboxprotobuf.decode_message(data)
                 for field_num, value in message.items():
-                    preview.write(f"field {field_num}: {value!r}")
+                    preview.write(f"field {field_num}: {_escape_markup(repr(value))}")
             except ImportError:
                 # Fallback: basic varint field display
                 self._preview_raw_fields(preview, data)
             except Exception as exc:
                 preview.write(
-                    f"[{c('error')}]Decode error: {exc}[/]"
+                    f"[{c('error')}]Decode error: {_escape_markup(exc)}[/]"
                 )
 
         def _preview_raw_fields(self, preview: RichLog, data: bytes) -> None:
@@ -295,7 +320,7 @@ if TEXTUAL_AVAILABLE:
                         try:
                             text = chunk.decode("utf-8")
                             if text.isprintable():
-                                preview.write(f'field {field_number}: "{text}"')
+                                preview.write(f'field {field_number}: "{_escape_markup(text)}"')
                             else:
                                 preview.write(
                                     f"field {field_number}: ({length} bytes) {chunk[:32].hex()}..."
@@ -323,7 +348,7 @@ if TEXTUAL_AVAILABLE:
                         f"[{c('text-muted')}](no protobuf fields detected)[/]"
                     )
             except Exception as exc:
-                preview.write(f"[{c('error')}]Parse error: {exc}[/]")
+                preview.write(f"[{c('error')}]Parse error: {_escape_markup(exc)}[/]")
 
         @staticmethod
         def _read_varint(data: bytes, offset: int) -> tuple[int | None, int]:
@@ -370,7 +395,7 @@ if TEXTUAL_AVAILABLE:
                 schema_path = self._config.schema_path
                 if not os.path.isfile(schema_path):
                     preview.write(
-                        f"[{c('error')}]Schema file not found: {schema_path}[/]"
+                        f"[{c('error')}]Schema file not found: {_escape_markup(schema_path)}[/]"
                     )
                     return
 
@@ -392,7 +417,7 @@ if TEXTUAL_AVAILABLE:
                     )
                     if result.returncode != 0:
                         preview.write(
-                            f"[{c('error')}]protoc error: {result.stderr.strip()}[/]"
+                            f"[{c('error')}]protoc error: {_escape_markup(result.stderr.strip())}[/]"
                         )
                         return
 
@@ -417,7 +442,7 @@ if TEXTUAL_AVAILABLE:
                     msg.ParseFromString(data)
                     formatted = text_format.MessageToString(msg, indent=2)
                     for line in formatted.splitlines()[:20]:
-                        preview.write(line)
+                        preview.write(_escape_markup(line))
                 finally:
                     try:
                         os.unlink(tmp_path)
@@ -430,7 +455,7 @@ if TEXTUAL_AVAILABLE:
                     f"(pip install protobuf)[/]"
                 )
             except Exception as exc:
-                preview.write(f"[{c('error')}]Schema decode error: {exc}[/]")
+                preview.write(f"[{c('error')}]Schema decode error: {_escape_markup(exc)}[/]")
 
         def on_button_pressed(self, event: Button.Pressed) -> None:
             if event.button.id == "btn-apply":
@@ -460,7 +485,16 @@ if TEXTUAL_AVAILABLE:
         ("7", "base64", "Base64 decode", False),
         ("8", "hex", "Hex view", False),
         ("9", "raw_utf8", "Raw text (force UTF-8)", False),
+        ("t", "tl", "TL decode (MTProto/Telegram)", False),
     ]
+
+    def _toggle_keys_hint() -> str:
+        """``1-9/t``: the option shortcut keys, digits as a range, then letters."""
+        keys = [opt[0] for opt in _DECOMPRESS_OPTIONS + _DECODER_OPTIONS]
+        digits = [k for k in keys if k.isdigit()]
+        letters = [k for k in keys if not k.isdigit()]
+        digit_range = [f"{digits[0]}-{digits[-1]}"] if digits else []
+        return "/".join(digit_range + letters)
 
     class BodyProcessingModal(FriTapModal[Optional[BodyProcessingResult]]):
         """Modal for configuring body processing pipeline (decompression + decode)."""
@@ -525,6 +559,7 @@ if TEXTUAL_AVAILABLE:
             Binding("7", "toggle_7", "Base64", show=False, priority=True),
             Binding("8", "toggle_8", "Hex", show=False, priority=True),
             Binding("9", "toggle_9", "Raw UTF-8", show=False, priority=True),
+            Binding("t", "toggle_tl", "TL decode", show=False, priority=True),
             Binding("0", "reset", "Reset", show=False, priority=True),
             Binding("bracketright", "next_segment", "Next Segment", show=False, priority=True),
             Binding("bracketleft", "prev_segment", "Prev Segment", show=False, priority=True),
@@ -575,7 +610,7 @@ if TEXTUAL_AVAILABLE:
                 with Horizontal(id="decompress-row"):
                     for key, opt_id, label in _DECOMPRESS_OPTIONS:
                         yield Button(
-                            f"[{key}] {label}",
+                            f"{_key_label(key)} {label}",
                             id=f"opt-{opt_id}",
                             classes="option-btn",
                         )
@@ -589,7 +624,7 @@ if TEXTUAL_AVAILABLE:
                     arrow = "  ->" if opens_sub else ""
                     with Horizontal(classes="option-row"):
                         yield Button(
-                            f"[{key}] {label}{arrow}",
+                            f"{_key_label(key)} {label}{arrow}",
                             id=f"opt-{opt_id}",
                             classes="option-btn",
                         )
@@ -602,9 +637,9 @@ if TEXTUAL_AVAILABLE:
                         classes="option-btn",
                     )
 
-                seg_hint = "  |  [/]: Segment" if self._segment_count > 1 else ""
+                seg_hint = _segment_hint(self._segment_count)
                 yield Static(
-                    f"[{c('text-muted')}]1-9: Toggle  |  0: Reset  |  Arrows/Tab: Navigate{seg_hint}  |  Enter: Select/Apply  |  Esc: Cancel[/]",
+                    f"[{c('text-muted')}]{_toggle_keys_hint()}: Toggle  |  0: Reset  |  Arrows/Tab: Navigate{seg_hint}  |  Enter: Select/Apply  |  Esc: Cancel[/]",
                     classes="key-hints",
                 )
                 with Horizontal(classes="button-row"):
@@ -698,6 +733,8 @@ if TEXTUAL_AVAILABLE:
                     label = f"protobuf ({mode})"
                 elif self._decoder == "raw_utf8":
                     label = "raw text (UTF-8)"
+                elif self._decoder == "tl":
+                    label = "TL decode"
                 parts.append(label)
 
             try:
@@ -842,6 +879,15 @@ if TEXTUAL_AVAILABLE:
             self._update_active_line()
             self._notify_change()
             # Focus Apply so user can quickly confirm after protobuf config
+            self._focus_apply()
+
+        def _focus_apply(self) -> None:
+            """Move focus to the Apply button.
+
+            Called after every shortcut-key toggle so a following Enter
+            applies the selection instead of pressing (and so re-toggling)
+            whichever option button happened to be focused.
+            """
             try:
                 self.query_one("#btn-apply", Button).focus()
             except Exception:
@@ -877,32 +923,54 @@ if TEXTUAL_AVAILABLE:
 
         # -- Key bindings → actions -------------------------------------------
 
+        def _toggle_by_key(self, key: str) -> None:
+            """Toggle the option bound to shortcut *key*, then focus Apply.
+
+            Opening the protobuf sub-modal skips the focus move: its result
+            callback (:meth:`_on_protobuf_result`) focuses Apply itself.
+            """
+            for opt_key, opt_id, _ in _DECOMPRESS_OPTIONS:
+                if opt_key == key:
+                    self._toggle_decompression(opt_id)
+                    self._focus_apply()
+                    return
+            for opt_key, opt_id, _, opens_sub_modal in _DECODER_OPTIONS:
+                if opt_key == key:
+                    opening_sub_modal = opens_sub_modal and self._decoder != opt_id
+                    self._toggle_decoder(opt_id)
+                    if not opening_sub_modal:
+                        self._focus_apply()
+                    return
+
         def action_toggle_1(self) -> None:
-            self._toggle_decompression("gzip")
+            self._toggle_by_key("1")
 
         def action_toggle_2(self) -> None:
-            self._toggle_decompression("deflate")
+            self._toggle_by_key("2")
 
         def action_toggle_3(self) -> None:
-            self._toggle_decompression("brotli")
+            self._toggle_by_key("3")
 
         def action_toggle_4(self) -> None:
-            self._toggle_decompression("zstd")
+            self._toggle_by_key("4")
 
         def action_toggle_5(self) -> None:
-            self._toggle_decoder("json")
+            self._toggle_by_key("5")
 
         def action_toggle_6(self) -> None:
-            self._toggle_decoder("protobuf")
+            self._toggle_by_key("6")
 
         def action_toggle_7(self) -> None:
-            self._toggle_decoder("base64")
+            self._toggle_by_key("7")
 
         def action_toggle_8(self) -> None:
-            self._toggle_decoder("hex")
+            self._toggle_by_key("8")
 
         def action_toggle_9(self) -> None:
-            self._toggle_decoder("raw_utf8")
+            self._toggle_by_key("9")
+
+        def action_toggle_tl(self) -> None:
+            self._toggle_by_key("t")
 
         def action_reset(self) -> None:
             self._reset_all()
@@ -937,9 +1005,14 @@ if TEXTUAL_AVAILABLE:
                     return
 
         def action_do_apply(self) -> None:
-            """Enter key: toggle focused option, or apply if on Apply/Cancel."""
+            """Enter key: toggle a focused inactive option, otherwise apply.
+
+            Enter on an option that is already active applies the selection
+            rather than toggling it back off (``1`` then Enter keeps gzip).
+            """
             focused = self.focused
-            if focused is not None and focused.has_class("option-btn"):
+            if focused is not None and focused.has_class("option-btn") \
+                    and not focused.has_class("active"):
                 focused.press()
                 return
             self._apply()

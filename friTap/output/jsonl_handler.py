@@ -24,7 +24,10 @@ class JsonlOutputHandler(OutputHandler):
 
     def setup(self, event_bus: "EventBus") -> None:
         from ..events import FriTapEvent
-        self._file = open(self._path, "w")
+        from .shared_output_file import open_shared_output_file
+        # Shared per path: the Windows LSASS session streams into the same
+        # --json file; each line is one write, so lines never interleave.
+        self._file, _created = open_shared_output_file(self._path, "w")
         event_bus.subscribe(FriTapEvent, self._on_any_event)
 
     def _on_any_event(self, event: "FriTapEvent") -> None:

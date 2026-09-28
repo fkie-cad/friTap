@@ -238,3 +238,69 @@ def test_set_capture_target_package_name_classification():
         collector.set_capture_target(bad)
         assert collector._package_name == "", f"{bad!r} wrongly treated as package"
         assert collector._process_name == bad
+
+
+# --------------------------------------------------------------------------- #
+# Offline opt-ins: flush(end_at_last_activity) and the event clock
+# --------------------------------------------------------------------------- #
+
+
+def test_flush_end_at_last_activity_uses_newest_chunk_time():
+    collector = FlowCollector()
+    first = _make_datalog(timestamp=1000.0)
+    first.data = b"GET / HTTP/1.1\r\nHost: example.com\r\n"
+    second = _make_datalog(timestamp=1005.0)
+    second.data = b"\r\n"  # completes the same request
+    collector.on_data(first)
+    collector.on_data(second)
+    collector.flush(end_at_last_activity=True)
+    (flow,) = collector.get_flows()
+    assert flow.started == 1000.0
+    assert flow.ended == 1005.0
+
+
+def test_flush_default_still_ends_at_wall_clock():
+    collector = FlowCollector()
+    collector.on_data(_make_datalog(timestamp=1000.0))
+    collector.flush()
+    (flow,) = collector.get_flows()
+    assert flow.ended > 1e9 and flow.ended != 1000.0
+
+
+def test_last_activity_falls_back_to_started():
+    from friTap.flow.models import Flow
+
+    flow = Flow(started=42.0)
+    assert FlowCollector._last_activity_of(flow) == 42.0
+
+
+def test_event_clock_tracks_newest_event_time():
+    collector = FlowCollector()
+    collector.use_event_clock(True)
+    collector.on_data(_make_datalog(timestamp=1000.0))
+    collector.on_data(_make_datalog(timestamp=900.0))  # older — clock stays
+    assert collector._now() == 1000.0
+
+
+def test_wall_clock_is_default():
+    collector = FlowCollector()
+    collector.on_data(_make_datalog(timestamp=1000.0))
+    assert collector._now() > 1e9 + 1000
+
+
+def test_event_clock_sweep_keeps_recent_connection_alive():
+    """With pcap-era timestamps the wall-clock sweep finalizes every connection;
+    the event clock only finalizes connections idle relative to the capture."""
+    collector = FlowCollector()
+    collector.use_event_clock(True)
+    collector.on_data(_make_datalog(timestamp=1000.0))
+    pending: list = []
+    with collector._lock:
+        collector._periodic_sweep(pending)
+    assert pending == [] and len(collector._connections) == 1
+
+    wall = FlowCollector()
+    wall.on_data(_make_datalog(timestamp=1000.0))
+    with wall._lock:
+        wall._periodic_sweep(pending)
+    assert len(wall._connections) == 0

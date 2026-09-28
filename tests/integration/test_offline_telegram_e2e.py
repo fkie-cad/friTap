@@ -38,6 +38,7 @@ from ._mtproto_helpers import (
     _obfuscate,
     _patch_tshark,
     _seg,
+    _stamp_capture_times,
 )
 
 
@@ -79,7 +80,7 @@ def test_offline_telegram_golden(tmp_path, monkeypatch):
         _seg(SERVER, CLIENT, 5000, server_wire),
     ]
     pcap_path = str(tmp_path / "tg.pcapng")
-    wrpcap(pcap_path, pkts)
+    wrpcap(pcap_path, _stamp_capture_times(pkts))
 
     # --- Combined Telegram keylog: one cloud line + one E2E line. ---
     keylog_path = str(tmp_path / "tg.keys")

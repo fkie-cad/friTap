@@ -1,5 +1,6 @@
 import { hookRegistry, HookRegistry } from "../shared/registry.js";
-import { selected_protocol, use_modern, scan_results, quic_only } from "../fritap_agent.js";
+import { collectContributedHooks } from "../shared/hook_contributors.js";
+import { selected_protocols, use_modern, scan_results, quic_only } from "../fritap_agent.js";
 import { processScanResults } from "../shared/library_scanner.js";
 import { log, devlog } from "../util/log.js";
 import { getModuleNames, ssl_library_loader, hookDynamicLoader, installOhttpHooks } from "../shared/shared_functions.js";
@@ -40,7 +41,7 @@ var plattform_name: Platform = PLATFORM_LINUX;
 export const socket_library = "libc"
 
 function hook_Linux_SSL_Libs(hookRegistry: HookRegistry, is_base_hook: boolean) {
-    ssl_library_loader(plattform_name, hookRegistry, getModuleNames(), "Linux", is_base_hook, selected_protocol)
+    ssl_library_loader(plattform_name, hookRegistry, getModuleNames(), "Linux", is_base_hook, selected_protocols)
 }
 
 // --quic-only on Linux: install ONLY QUIC hooks (Cloudflare quiche, Google
@@ -53,8 +54,8 @@ function hook_Linux_SSL_Libs(hookRegistry: HookRegistry, is_base_hook: boolean) 
 // Chrome/Cronet builds, which is the common case).
 const QUIC_ONLY_LINUX_HOOKS: Parameters<typeof hookRegistry.registerAll>[0] = [
     { platform: plattform_name, pattern: /.*libquiche\.so/, hookFn: quiche_execute, library: "Cloudflare QUICHE", libraryType: "quiche", protocol: "tls" },
-    { platform: plattform_name, pattern: /.*libcronet.*\.so/, hookFn: google_quiche_execute, library: "Google QUICHE (Cronet)", libraryType: "google_quiche", protocol: "tls" },
-    { platform: plattform_name, pattern: /.*libxul\.so/, hookFn: neqo_execute, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo", protocol: "tls" },
+    { platform: plattform_name, pattern: /.*libcronet.*\.so/, hookFn: google_quiche_execute, library: "Google QUICHE (Cronet)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
+    { platform: plattform_name, pattern: /.*libxul\.so/, hookFn: neqo_execute, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo", protocol: "tls", supplementary: true },
 ];
 
 
@@ -85,7 +86,7 @@ export function load_linux_hooking_agent(skipLoaderHook: boolean = false) {
         phases.push({ label: "quic-hooks", fn: () => hook_Linux_SSL_Libs(hookRegistry, true) });
         phases.push({
             label: "loader",
-            fn: () => hookDynamicLoader(linuxLoaderConfig, hookRegistry, getModuleNames(), false, selected_protocol),
+            fn: () => hookDynamicLoader(linuxLoaderConfig, hookRegistry, getModuleNames(), false, selected_protocols),
         });
 
         const runPhase = (i: number) => {
@@ -133,8 +134,11 @@ export function load_linux_hooking_agent(skipLoaderHook: boolean = false) {
         { platform: plattform_name, pattern: /.*libnss3?\.so/, hookFn: nss_hpke_execute_linux, library: "NSS HPKE (OHTTP)", protocol: "tls", libraryType: "nss_hpke" },
         // QUIC libraries — gated under the TLS family for `--protocol tls`
         { platform: plattform_name, pattern: /.*libquiche\.so/, hookFn: quiche_execute, library: "Cloudflare QUICHE", libraryType: "quiche", protocol: "tls" },
-        { platform: plattform_name, pattern: /.*libcronet.*\.so/, hookFn: google_quiche_execute, library: "Google QUICHE (Cronet)", libraryType: "google_quiche", protocol: "tls" },
-        { platform: plattform_name, pattern: /.*libxul\.so/, hookFn: neqo_execute, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo", protocol: "tls" },
+        { platform: plattform_name, pattern: /.*libcronet.*\.so/, hookFn: google_quiche_execute, library: "Google QUICHE (Cronet)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
+        { platform: plattform_name, pattern: /.*libxul\.so/, hookFn: neqo_execute, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo", protocol: "tls", supplementary: true },
+        // Hooks contributed by optional units (e.g. the public RC4 key-capture
+        // unit under `--protocol rc4`). Empty when no unit registered.
+        ...collectContributedHooks(),
     ]);
 
     hook_Linux_SSL_Libs(hookRegistry, true);
@@ -147,13 +151,13 @@ export function load_linux_hooking_agent(skipLoaderHook: boolean = false) {
     };
 
     installOhttpHooks(plattform_name, hookRegistry, getModuleNames(), "Linux", linuxLoaderConfig, skipLoaderHook);
-    processScanResults(scan_results, plattform_name, true, selected_protocol);
+    processScanResults(scan_results, plattform_name, true, selected_protocols);
     // Wine callers pass skipLoaderHook=true: Wine uses its own preloader, not
     // libdl.dlopen, so the inline trampoline only grows the spawn-time footprint
     // without catching anything Wine actually loads. DLL interception runs via
     // hook_Wine_LdrLoadDll (see agent/platforms/wine.ts), armed once ntdll
     // appears.
     if (!skipLoaderHook) {
-        hookDynamicLoader(linuxLoaderConfig, hookRegistry, getModuleNames(), false, selected_protocol);
+        hookDynamicLoader(linuxLoaderConfig, hookRegistry, getModuleNames(), false, selected_protocols);
     }
 }

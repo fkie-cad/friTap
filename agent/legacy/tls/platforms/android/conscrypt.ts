@@ -7,6 +7,7 @@ import { Java, JavaMethod, JavaWrapper } from "../../../../shared/javalib.js";
 import { patterns, isPatternReplaced, experimental } from "../../../../fritap_agent.js";
 import { sendKeylog } from "../../../../shared/shared_structures.js";
 import { installBoringSSLSymbolHook, boringSslDumpKeys, isResolvedSymbol } from "../../../../shared/boringssl_symbol_hook.js";
+import { createKeylogCallbackTracker } from "../../../../shared/keylog_callback_tracker.js";
 
 
 export class Consycrypt_BoringSSL_Android extends OpenSSL_BoringSSL {
@@ -21,17 +22,21 @@ export class Consycrypt_BoringSSL_Android extends OpenSSL_BoringSSL {
 
 
     install_conscrypt_tls_keys_callback_hook (){
-        this.SSL_CTX_set_keylog_callback = new NativeFunction(this.addresses[this.module_name]["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"]);
+        const setKeylogAddr = this.addresses[this.module_name]["SSL_CTX_set_keylog_callback"];
+        this.SSL_CTX_set_keylog_callback = new NativeFunction(setKeylogAddr, "void", ["pointer", "pointer"]);
         var instance = this;
 
         if (isSymbolAvailable(this.module_name, "SSL_CTX_new")){
+            // Records every SSL_CTX we point at our script-owned keylog callback so
+            // releaseAgentHooks can undo it (see shared/keylog_callback_tracker.ts).
+            const tracker = createKeylogCallbackTracker(this.module_name, setKeylogAddr, instance.keylog_callback, true);
 
             Interceptor.attach(this.addresses[this.module_name]["SSL_CTX_new"], {
                 onLeave: function(retval) {
                     const ssl = new NativePointer(retval);
                     if (!ssl.isNull()) {
                         devlog("BoringSSL/Conscrypt SSL_CTX_new - setting keylog callback");
-                        instance.SSL_CTX_set_keylog_callback(ssl, instance.keylog_callback);
+                        tracker.install(ssl);
                     }
                 }
             });

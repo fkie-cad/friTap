@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
-from typing import Union
+from dataclasses import dataclass, field as _dc_field
+from typing import Any, Union
 
 
 @dataclass(frozen=True)
@@ -18,12 +18,20 @@ class ComparisonNode:
     value_type: str = "str"       # from field registry
     value_lower: str = ""         # lowercased value for string comparisons
     value_numeric: float | None = None  # pre-parsed numeric value
+    value_bytes: bytes = b""      # value_lower UTF-8 encoded (bytes fields)
+    # Lowercase values equal to the operand for ==/!= (FieldDef
+    # ``operand_equivalents``); None means plain case-insensitive equality.
+    value_set: frozenset[str] | None = None
+    # Resolved FieldDef (static or dynamic); excluded from equality/repr.
+    field_def: Any = _dc_field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
 class ExistenceNode:
     """Truthy/existence check on a field."""
     field: str
+    # Resolved FieldDef (static or dynamic); excluded from equality/repr.
+    field_def: Any = _dc_field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)

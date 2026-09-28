@@ -59,16 +59,25 @@ export function createOpenSshDefinition(): HookDefinition {
         // readHook / writeHook intentionally undefined — SSH plaintext
         // capture lives inside installSshPacketHooks() which is wired up
         // by the legacy ssh_detect_execute() invoked from keylog.install.
-        keylog: {
-            kind: "custom",
-            install: (_addresses, moduleName, _resolvedFns, _enableDefaultFd) => {
+        // No loader-driven keylog install: the legacy ssh_detect_execute()
+        // executor owns BOTH key extraction and packet/plaintext capture, and
+        // self-gates keys on keylog_enabled and packets on pcap_enabled
+        // internally. It is wired up via extraHooks (below) so it runs on every
+        // run — including a `-p`-only run — because extraHooks is not subject to
+        // the loader's keylog gate.
+        keylog: { kind: "none" },
+        extraHooks: [
+            {
                 // Delegate to the legacy executor. It handles cookie
                 // correlation, kex_derive_keys, cipher_init, sshenc-walk
                 // fallback, and packet plaintext extraction in one place.
-                ssh_detect_execute(moduleName, /* is_base_hook */ true);
-                return true;
+                // extraHooks always runs in the loader (step 7), independent of
+                // keylog_enabled — so `-p`-only runs still install packet hooks.
+                install: (_addresses, moduleName, _resolvedFns, _enableDefaultFd) => {
+                    ssh_detect_execute(moduleName, /* is_base_hook */ true);
+                },
             },
-        },
+        ],
         libraryType: "ssh_openssh",
     };
 }

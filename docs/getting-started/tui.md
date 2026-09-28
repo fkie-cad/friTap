@@ -239,6 +239,13 @@ Press `/` to open the filter dialog. friTap uses **Wireshark-style display
 filter** syntax. The input field validates as you type (leniently, with a short
 debounce) and strictly when you press `Enter`.
 
+!!! note "Headless mode"
+    The same syntax is accepted by the headless CLI's `--filter` option, but
+    there only the connection fields `ip.*`, `tcp.*` and `protocol` are
+    available. TUI-only fields (`http.*`, `flow.*`, `method`, `frame`,
+    protocol-layer fields, …) are rejected with an error instead of silently
+    matching nothing.
+
 ### Available fields
 
 | Field | Type | Meaning |
@@ -255,17 +262,62 @@ debounce) and strictly when you press `Enter`.
 | `http.response.code` | int | HTTP status code |
 | `http.content_type` | str | Response (or request) content type |
 | `http.content_length` | int | Response body size |
-| `http` / `http2` / `http3` | bool | Protocol family predicates |
-| `frame.protocol` | str | Detected protocol label |
+| `http` | bool | Any HTTP flow: HTTP/1.x, HTTP/2 or HTTP/3 (never other protocols such as Telegram) |
+| `http1` / `http2` / `http3` | bool | One HTTP version only (same as `protocol == http1`, …) |
+| `frame.protocol` | str (multi) | Same as `protocol`; accepts display labels such as `"HTTP/1.x"`, `"HTTP/2"` or names such as `http1` |
 | `flow.state` | str | Flow state |
 | `flow.duration` | float | Flow duration (seconds) |
 | `flow.size` | int | Total bytes in the flow |
 | `flow.has_request` / `flow.has_response` | bool | Presence predicates |
-| `tls` | bool | Flow carried a TLS session |
+| `tls` | bool | TLS flow (TLS transport or session ID present) |
 | `tls.session_id` | str | TLS session id |
 | `ohttp.present` | bool | Oblivious HTTP inner request/response present |
 | `ssh` | bool | Flow is SSH |
 | `ipsec` | bool | Flow is IPsec |
+| `protocol` | str (multi) | Every protocol of the flow (layered), e.g. `telegram` |
+| `method` | str (multi) | TL/RPC methods carried by the flow, e.g. `upload.getFile` |
+| `transport` | str | Transport (`tcp`, `udp`, …) |
+| `info` | str | The Info column text |
+| `process` | str | Process name that produced the flow |
+| `frame` | bytes | Decrypted flow content, for `frame contains "…"` |
+
+### Protocols and protocol fields
+
+Every protocol name (`mtproto`, `telegram_e2e`, `signal`, `ssh`, `ipsec`,
+`tls`, `quic`, `websocket`, `http1`/`http2`/`http3`, `ohttp`, …) works as a bare
+word (`telegram`) or as `protocol.<name>`, in any case. Aliases match any of
+their members: `telegram`/`tg` → `mtproto`, `telegram_e2e`; `e2e`/`secretchat` →
+`telegram_e2e`; `http` → `http1`, `http2`, `http3`; `ws` → `websocket`.
+
+Fields parsed from the decoded protocol layers are available per protocol, for
+example `mtproto.dc_id`, `mtproto.method`, `telegram.msg`, `telegram_e2e.chat_id`,
+`signal.msg`, `signal.sender`, `tls.sni`, `quic.version`, `ssh.kex` and
+`ipsec.enc`. The filter help (`F1` in the filter dialog) lists all of them,
+generated from the same tables the engine uses.
+
+**Multi-valued fields.** `protocol`, `method` and most protocol fields can hold
+several values per flow. A comparison matches if **any** value matches; `!=`
+matches only if **no** value is equal.
+
+**Content search.** `frame contains "text"` searches the decrypted flow
+content, case-insensitively. It can be slower on large captures; the engine
+evaluates the cheaper terms of an `and` first.
+
+**Values.** Quote strings that contain spaces or special characters
+(`frame.protocol == "HTTP/1.x"`). Plain words, numbers and hex ids work
+unquoted, e.g. `protocol == http1` or `mtproto.session_id == 0a1b2c`.
+Inside quotes, `\"`, `\'`, `\n`, `\r`, `\t` and `\\` (a literal backslash)
+are escapes; any other backslash is kept as-is, so regex escapes work directly:
+`frame matches "id=\d+"`, `http.host matches "^api\.example\.com$"`. The same
+kept backslash is literal in `contains`/`==` (`frame contains "a\sb"` looks for
+the four characters `a\sb`). Raw strings `r"..."` / `r'...'` keep every
+backslash (`frame matches r"\bhi\b"`).
+
+**Unknown fields.** When you type an unknown field such as `TELE`, the dialog
+shows "Did you mean" names and three replacement suggestions with live row
+counts: `F2` applies `protocol contains "TELE"`, `F3` `method contains "TELE"`,
+`F4` `frame contains "TELE"` (content search, not counted), and `F5` the first
+"did you mean" name. Clicking a suggestion line applies it too.
 
 ### Example expressions
 
@@ -276,6 +328,17 @@ ip.addr == 10.0.0.5
 tcp.port == 443 and tls
 flow.size > 100000
 ohttp.present
+telegram
+protocol contains "tele"
+method == "upload.getFile"
+mtproto.dc_id == 2
+signal.msg contains "hi"
+frame contains "password"
+telegram and not method contains msgs_ack
+http1
+protocol == http1
+frame.protocol == "HTTP/1.x"
+mtproto.session_id == 0a1b2c
 ```
 
 ### Toggle presets
@@ -285,15 +348,27 @@ filter with `and`:
 
 | Toggle | Expression applied |
 |--------|--------------------|
-| HTTP | `frame.protocol != "unknown"` |
+| HTTP | `http` |
 | Errors | `http.response.code >= 400` |
 | OHTTP | `ohttp.present` |
-| IPSec | `frame.protocol == "ipsec"` |
-| SSH | `frame.protocol == "ssh"` |
+| IPSec | `ipsec` |
+| SSH | `ssh` |
+| Telegram | `telegram` |
+| Signal | `signal` |
 
-Press `Shift+Esc` from the flow view to clear the text filter and all toggles
-at once. Inside the dialog, `Apply` confirms, `Clear` resets, `F1`/`?` opens
-filter help, and `Esc` cancels.
+Click a toggle (or focus it and press `Space`) to switch it on or off. Press
+`Shift+Esc` from the flow view to clear the text filter and all toggles at once.
+
+Inside the dialog:
+
+| Key / button | Action |
+|--------------|--------|
+| `Enter` | Apply the filter, wherever the focus is (input or a toggle). With the `Apply`, `Clear`, `?` or `Cancel` button focused, `Enter` presses that button |
+| `Space` | Switch the focused toggle on or off |
+| `F1` or the `?` button | Open the filter help (typing `?` in the input just inserts the character) |
+| `F2`–`F5` | Apply an unknown-field suggestion |
+| `Clear` | Reset the text filter and all toggles |
+| `Esc` | Cancel |
 
 ## Flow detail view
 

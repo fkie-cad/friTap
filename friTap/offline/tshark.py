@@ -146,6 +146,30 @@ _TSHARK_FALLBACK_PATHS = (
     r"C:\Program Files (x86)\Wireshark\tshark.exe",       # Windows (32-bit)
 )
 
+# Single source of truth for the user-facing "tshark is missing" message. Both
+# front-ends render this exact text: the CLI prints it, the TUI shows it in a
+# modal (see TsharkNotFoundError). Keep it actionable and platform-agnostic.
+TSHARK_INSTALL_MESSAGE = (
+    "tshark could not be located. The offline pcap-to-tap pipeline needs it "
+    "to decrypt captures. Install Wireshark/tshark (e.g. 'brew install "
+    "wireshark', 'apt install tshark', or download from "
+    "https://www.wireshark.org/). If it is installed in a non-standard "
+    "location (e.g. macOS' Wireshark.app), pass --tshark-path /path/to/tshark "
+    "or set the FRITAP_TSHARK environment variable."
+)
+
+
+class TsharkNotFoundError(RuntimeError):
+    """Raised by :func:`find_tshark` when a usable tshark cannot be located.
+
+    Subclasses ``RuntimeError`` so existing ``except RuntimeError`` handlers keep
+    working, while letting front-ends distinguish "tshark is missing" (present a
+    dedicated install message / modal) from any other conversion failure. Because
+    every tshark invocation resolves the binary through ``find_tshark``, this
+    exception surfaces at every call site.
+    """
+
+
 # tshark releases below this version use older/unstable QUIC field names.
 # We warn (never hard-fail) when an older tshark is detected.
 MINIMUM_RECOMMENDED_TSHARK = (4, 0)
@@ -168,6 +192,15 @@ _QUIC_FIELDS = (
     "udp.dstport",
     "quic.stream.stream_id",
     "quic.stream_data",
+    # Per-STREAM-frame flag lists (aligned with quic.stream.stream_id) plus the
+    # sparse offset/length values they gate: quic.stream.offset only has entries
+    # for frames whose OFF bit is set, quic.stream.length only where LEN is set.
+    # Used to reassemble retransmitted / out-of-order stream data offline.
+    "quic.stream.off",
+    "quic.stream.len",
+    "quic.stream.fin",
+    "quic.stream.offset",
+    "quic.stream.length",
 )
 
 # Display filter for the QUIC export: only packets carrying decrypted QUIC
@@ -690,7 +723,7 @@ def find_tshark(explicit_path: str | None = None) -> str:
         resolved = _resolve_executable(explicit_path)
         if resolved:
             return resolved
-        raise RuntimeError(
+        raise TsharkNotFoundError(
             f"The tshark path you provided is not an executable: {explicit_path!r}"
         )
 
@@ -715,14 +748,7 @@ def find_tshark(explicit_path: str | None = None) -> str:
             logger.info("tshark not on PATH; using fallback location: %s", candidate)
             return candidate
 
-    raise RuntimeError(
-        "tshark could not be located. The offline pcap-to-tap pipeline needs it "
-        "to decrypt captures. Install Wireshark/tshark (e.g. 'brew install "
-        "wireshark', 'apt install tshark', or download from "
-        "https://www.wireshark.org/). If it is installed in a non-standard "
-        "location (e.g. macOS' Wireshark.app), pass --tshark-path /path/to/tshark "
-        "or set the FRITAP_TSHARK environment variable."
-    )
+    raise TsharkNotFoundError(TSHARK_INSTALL_MESSAGE)
 
 
 def tshark_version(path: str) -> tuple[int, ...]:
@@ -878,11 +904,17 @@ def build_quic_detection_command(
 # TLS records. Keyed/demuxed by ``tcp.stream`` (the TLS stream index).
 _TLS_DATA_FIELDS = (
     "frame.time_epoch",
+    # Per-frame provenance for TLS-riding decryptors (friTap.offline.tls_spans);
+    # surfaces as ``frame_number`` in -T ek, read via pcap_to_tap._field.
+    "frame.number",
     "ip.src",
     "ip.dst",
     "ipv6.src",
     "ipv6.dst",
     "tcp.stream",
+    # The handshake-metadata pass keys by ``tls.stream`` (not ``tcp.stream``);
+    # exported so the single pass can look its stream's metadata up.
+    "tls.stream",
     "tcp.srcport",
     "tcp.dstport",
     "data.data",

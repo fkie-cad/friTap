@@ -129,3 +129,67 @@ def test_router_emits_telegram_e2e_key_event():
     assert ev.payload["key_fingerprint"] == _FP
     # and the formatter turns it into the canonical E2E line
     assert TelegramKeylogFormatter().format(ev) == [f"{spec.E2E_LABEL} {_FP} {_SK} 42"]
+
+
+# --------------------------------------------------------------------------- #
+# preflight (validate_cli_intent): the transport-auth-key note (B6). EMIT ONLY —
+# the note must never mutate the user's flags.
+# --------------------------------------------------------------------------- #
+
+
+class _FakeParser:
+    """Records parser.error calls instead of exiting, for hermetic tests."""
+
+    def __init__(self) -> None:
+        self.errors: list[str] = []
+
+    def error(self, message: str) -> None:
+        self.errors.append(message)
+
+
+class _RecordingLogger:
+    """Captures info/warning lines emitted by a handler's validate_cli_intent."""
+
+    def __init__(self) -> None:
+        self.infos: list[str] = []
+        self.warnings: list[str] = []
+
+    def info(self, msg, *args) -> None:
+        self.infos.append(msg % args if args else msg)
+
+    def warning(self, msg, *args) -> None:
+        self.warnings.append(msg % args if args else msg)
+
+
+def _parsed(**overrides):
+    from types import SimpleNamespace
+    base = dict(spawn=False, keylog="tg.keylog", pcap=None, full_capture=False)
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def test_preflight_emits_transport_auth_key_note():
+    logger = _RecordingLogger()
+    parser = _FakeParser()
+    parsed = _parsed()
+    before = dict(parsed.__dict__)
+
+    TelegramHandler().validate_cli_intent(parsed, parser, logger)
+
+    joined = "\n".join(logger.infos)
+    assert "transport auth keys are captured by the spawn getAuthKey hook" in joined
+    assert "-ms" in joined
+    assert "E2E-only keylog yields 0 flows" in joined
+    # EMIT ONLY: the user's flags are untouched, and no capture-intent error.
+    assert parsed.__dict__ == before
+    assert parser.errors == []
+
+
+def test_preflight_transport_note_emitted_even_in_spawn_mode():
+    logger = _RecordingLogger()
+    TelegramHandler().validate_cli_intent(_parsed(spawn=True), _FakeParser(), logger)
+    joined = "\n".join(logger.infos)
+    # The attach-mode nudge is suppressed under spawn, but the transport-auth-key
+    # note is unconditional.
+    assert "transport auth keys are captured" in joined
+    assert "attach mode:" not in joined

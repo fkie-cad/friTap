@@ -2,10 +2,14 @@
 import {Cronet } from "../../../tls/libs/cronet.js";
 import { socket_library } from "../../../../platforms/android.js";
 import {PatternBasedHooking, get_CPU_specific_pattern, hasUsablePatternsFor } from "../../../tls/shared/pattern_based_hooking.js";
-import { patterns, isPatternReplaced, keylog_enabled } from "../../../../fritap_agent.js"
+import { patterns, isPatternReplaced, keylog_enabled, force_anchor_locator } from "../../../../fritap_agent.js"
 import { devlog, devlog_debug, devlog_error, devlog_info, log } from "../../../../util/log.js";
 import { sendKeylog } from "../../../../shared/shared_structures.js";
-import { scheduleBoringSSLSymbolFallback, installBoringSSLSymbolHook } from "../../../../shared/boringssl_symbol_hook.js";
+import { scheduleBoringSSLSymbolFallback, installBoringSSLSymbolHook, type DumpKeysCb } from "../../../../shared/boringssl_symbol_hook.js";
+import { runForcedAnchorTier, guardKeylogDumpKeys } from "../../../../shared/boringssl_keylog_outcome.js";
+import { pollPatternOutcome } from "../../../../shared/boringssl_pattern_hook.js";
+import { GENERIC_BORINGSSL_ARM64_FALLBACK } from "../../../../shared/bundled_cronet_patterns.js";
+import { createKeylogCallbackTracker } from "../../../../shared/keylog_callback_tracker.js";
 
 export type HookingResult = [success: boolean, handle: PatternBasedHooking | null];
 const EXCLUDED_MODULE_SUFFIXES = ["_libpki.so", "_libcrypto.so", "libsignal_jni_testing.so", "_vr_partition.so"]; // extensible list
@@ -23,7 +27,7 @@ interface Patterns {
 const STABLE_CRONET_PATTERNS = {
     "arm64": {
         primary:  "FF 83 02 D1 FD 7B 05 A9 F9 33 00 F9 F8 5F 07 A9 F6 57 08 A9 F4 4F 09 A9 FD 43 01 91 58 D0 3B D5 08 17 40 F9 A8 83 1F F8 08 34 40 F9 08 21 41 F9 28 11", // Primary pattern
-        fallback: "3F 23 03 D5 FF ?3 02 D1 FD 7B 0? A9 F? ?? 0? ?9 F6 57 0? A9 F4 4F 0? A9 FD ?3 01 91 08 34 40 F9 08 ?? 41 F9 ?8 ?? 00 B4" // Fallback pattern
+        fallback: GENERIC_BORINGSSL_ARM64_FALLBACK // Fallback pattern
     }
 };
 
@@ -57,7 +61,7 @@ export class Cronet_Android extends Cronet {
             "arm64": {
                 primary: "3F 23 03 D5 FF ?3 01 D1 FD 7B 0? A9 F6 57 0? A9 F4 4F 0? A9 FD ?3 0? 91 08 34 40 F9 08 1? 41 F9 ?8 0? 00 B4", // Primary pattern
                 //fallback: "3F 23 03 D5 FF 03 02 D1 FD 7B 04 A9 F7 2B 00 F9 F6 57 06 A9 F4 4F 07 A9 FD 03 01 91 08 34 40 F9 08 ?? 41 F9 ?8 0? 00 B4",  // old Fallback pattern
-                fallback: "3F 23 03 D5 FF ?3 02 D1 FD 7B 0? A9 F? ?? 0? ?9 F6 57 0? A9 F4 4F 0? A9 FD ?3 01 91 08 34 40 F9 08 ?? 41 F9 ?8 ?? 00 B4", // Fallback pattern
+                fallback: GENERIC_BORINGSSL_ARM64_FALLBACK, // Fallback pattern
                 second_fallback: "3F 23 03 D5 FF C3 05 D1 FD 7B 14 A9 FC 57 15 A9 F4 4F 16 A9 FD 03 05 91 54 D0 3B D5 88 16 40 F9 40 00 80 52 F3",
             },
 
@@ -94,26 +98,38 @@ export class Cronet_Android extends Cronet {
             }
         }
         const hooker = new PatternBasedHooking(cronetModule);
+        // Guarded: the symbol fallback (and, on a total miss, tier 4) can hook
+        // the same ssl_log_secret while this scan still runs; only the first
+        // tier to deliver a secret for this module emits.
+        const patternDumpKeys = guardKeylogDumpKeys(this.module_name, "pattern",
+            (label, ssl, data, len) => this.dumpKeys(label, ssl, data, len));
 
         if (isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, "libcronet.so", "Dump-Keys")){
             devlog("Hooking libcronet functions by patterns from JSON file");
             hooker.hook_DumpKeys(this.module_name,"libcronet.so",patterns,(args: any[]) => {
-                devlog("Installed ssl_log_secret() hooks using byte patterns for module "+this.module_name+".");
-                this.dumpKeys(args[1], args[0], args[2], Number(args[3]));  // Unpack args into dumpKeys
+                patternDumpKeys(args[1], args[0], args[2], Number(args[3]));  // Unpack args into dumpKeys
             });
         }else{
             // This are the default patterns for hooking ssl_log_secret in BoringSSL inside Cronet
             hooker.hookModuleByPattern(
                 get_CPU_specific_pattern(this.default_pattern),
                 (args) => {
-                    devlog("Installed ssl_log_secret() hooks using byte patterns for module "+this.module_name+".");
-                    this.dumpKeys(args[1], args[0], args[2], Number(args[3]));  // Hook args passed to dumpKeys
+                    patternDumpKeys(args[1], args[0], args[2], Number(args[3]));  // Hook args passed to dumpKeys
                 }
             );
         }
 
+        this.logPatternHookInstalledOnce(hooker);
         return hooker;
 
+    }
+
+    // Install-time (not per-call) confirmation: the hook callbacks above fire
+    // once per secret, so the log lives here and waits for the scan's match.
+    private logPatternHookInstalledOnce(hooker: PatternBasedHooking): void {
+        pollPatternOutcome(hooker, this.module_name).then((matched) => {
+            if (matched) devlog("Installed ssl_log_secret() hooks using byte patterns for module "+this.module_name+".");
+        }).catch(() => { /* informational only */ });
     }
 
     // Symbol-based fallback for ssl_log_secret. Runs only after pattern-based
@@ -122,28 +138,43 @@ export class Cronet_Android extends Cronet {
     // shared resolver chain in agent/shared/boringssl_symbol_hook.ts so every
     // BoringSSL-tagged lib uses the same logic and the same correct
     // (label, ssl, data, len) interceptor signature.
-    execute_symbol_based_hooking(hooker: PatternBasedHooking){
-        if (!hooker.no_hooking_success) return;
+    // Returns false only when the symbol tier missed, so the scheduler can
+    // report a total miss once the pattern scan has settled too.
+    execute_symbol_based_hooking(hooker: PatternBasedHooking): boolean {
+        if (!hooker.no_hooking_success) return true; // pattern tier already installed
 
         devlog_debug("Trying symbol based hooking in "+ this.module_name);
-        installBoringSSLSymbolHook(
+        return installBoringSSLSymbolHook(
             this.module_name,
             (label, ssl, data, len) => this.dumpKeys(label, ssl, data, len)
         );
     }
 
+    // --boringssl-anchor-only: skip the byte-pattern tier, run the symbol tier
+    // synchronously (nothing to wait for), then tier 4 on a symbol miss. Same
+    // ordering as the modern chain (agent/shared/boringssl_hook_chain.ts).
+    install_key_extraction_anchor_only(): void {
+        devlog(`[cronet_android] ${this.module_name}: pattern tier skipped (--boringssl-anchor-only); trying symbol tier, then anchor locator`);
+        const dumpKeys: DumpKeysCb = (label, ssl, data, len) => this.dumpKeys(label, ssl, data, len);
+        runForcedAnchorTier(this.module_name, dumpKeys, () => installBoringSSLSymbolHook(this.module_name, dumpKeys));
+    }
+
         install_tls_keys_callback_hook (){
 
-            this.SSL_CTX_set_keylog_callback = new NativeFunction(this.addresses[this.module_name]["SSL_CTX_set_keylog_callback"], "void", ["pointer", "pointer"]);
+            const setKeylogAddr = this.addresses[this.module_name]["SSL_CTX_set_keylog_callback"];
+            this.SSL_CTX_set_keylog_callback = new NativeFunction(setKeylogAddr, "void", ["pointer", "pointer"]);
             var instance = this;
             let callback_already_set = false;
+            // Records every SSL_CTX we point at our script-owned keylog callback so
+            // releaseAgentHooks can undo it (see shared/keylog_callback_tracker.ts).
+            const tracker = createKeylogCallbackTracker(this.module_name, setKeylogAddr, instance.keylog_callback, true);
 
             Interceptor.attach(this.addresses[this.module_name]["SSL_new"],
                 {
                     onEnter: function (args: any) {
                         try{
                             callback_already_set = true;
-                            instance.SSL_CTX_set_keylog_callback(args[0], instance.keylog_callback);
+                            tracker.install(args[0]);
                         }catch (e) {
                             callback_already_set = false;
                             devlog_error(`Error in SSL_new hook: ${e}`);
@@ -161,7 +192,7 @@ export class Cronet_Android extends Cronet {
                                     devlog_error("SSL_CTX_new returned NULL");
                                     return;
                                 }
-                                instance.SSL_CTX_set_keylog_callback(retval, instance.keylog_callback);
+                                tracker.install(retval);
                             }catch (e) {
                                 devlog_error(`Error in SSL_CTX_new hook: ${e}`);
                             }
@@ -175,6 +206,8 @@ export class Cronet_Android extends Cronet {
             Interceptor.attach(this.addresses[this.module_name]["SSL_CTX_set_keylog_callback"], {
                 onEnter: function (args: any) {
                     let callback_func = args[1];
+                    if (callback_func.isNull() || tracker.sealed) return;
+                    tracker.noteAppCallback(args[0], callback_func);
 
                     Interceptor.attach(callback_func, {
                         onEnter: function (args: any) {
@@ -199,6 +232,13 @@ export class Cronet_Android extends Cronet {
             this.install_tls_keys_callback_hook();
             // Unified install banner — `log()` so default-verbosity stdout shows it.
             log(`[*] ${this.module_name}: keylog hooks installed via callback (SSL_CTX_set_keylog_callback)`);
+            this.install_plaintext_read_hook();
+            this.install_plaintext_write_hook();
+            return [true, null];
+        }else if (force_anchor_locator){
+            // --boringssl-anchor-only: no pattern hooker, no deferred fallback.
+            // [true, null] keeps cronet_execute from scheduling the symbol fallback.
+            this.install_key_extraction_anchor_only();
             this.install_plaintext_read_hook();
             this.install_plaintext_write_hook();
             return [true, null];

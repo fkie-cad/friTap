@@ -13,6 +13,7 @@ import { findNonExportedSymbols } from "../../../../shared/shared_functions.js";
 import { readHexFromPointer } from "../../../../tls/decoders/hex_utils.js";
 import { executeSSLLibrary } from "../../../shared/shared_functions_legacy.js";
 import { TLS13_LABEL_MAP } from "../../../../tls/definitions/shared_constants.js";
+import { createKeylogCallbackTracker } from "../../../../shared/keylog_callback_tracker.js";
 
 // Pre-allocated buffers reused across hook invocations
 const _clientRandomBuf = Memory.alloc(32);
@@ -73,10 +74,15 @@ export class LibreSSL_MacOS extends OpenSSL_BoringSSL {
 
                 const sslNewAddr = this.addresses[this.moduleName]["SSL_new"];
                 if (sslNewAddr && !sslNewAddr.isNull()) {
+                    // Records every SSL_CTX we point at our script-owned keylog callback so
+                    // releaseAgentHooks can undo it (see shared/keylog_callback_tracker.ts).
+                    // SSL_CTX_up_ref / SSL_CTX_get_keylog_callback are optional: the
+                    // tracker degrades safely when this LibreSSL build lacks them.
+                    const tracker = createKeylogCallbackTracker(this.moduleName, setKeylogAddr, instance.keylog_callback, true);
                     Interceptor.attach(sslNewAddr, {
                         onEnter: function (args: any) {
                             try {
-                                instance.SSL_CTX_set_keylog_callback(args[0], instance.keylog_callback);
+                                tracker.install(args[0]);
                             } catch (e) {
                                 devlog_error(`[LibreSSL] Error in SSL_new keylog hook: ${e}`);
                             }
