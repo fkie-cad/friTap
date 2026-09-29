@@ -10,8 +10,22 @@ import { log } from "./log.js";
  * annotations and without them the allowlist can never match.
  * ------------------------------------------------------------------------- */
 
-/* start-address (hex string, no 0x) -> "[anon:partition_alloc]" and friends. */
-var anonNames: any = null;
+/* Numeric sorted intervals [loNum, hiNum, name] parsed from /proc/self/maps and
+ * binary-searched by numeric address — NOT a hex-STRING-keyed dict. /proc/self/maps
+ * zero-pads start addresses ("02000000") while NativePointer.toString(16) does not
+ * ("2000000"), so a string-key lookup silently drops every zero-padded range —
+ * exactly the scudo ranges libsignal's TLS structs live in on Android (measured on
+ * Pixel 7 / Android 17). A numeric interval search is immune to that formatting
+ * mismatch, and containment (not exact-start) also tolerates a range base that is
+ * not itself a maps start. Ported from research/memory_scan_signal/agent/scanner.js
+ * (loadMapsIndex / findInterval / labelAt). */
+var mapsIndex: any = null;
+
+/* NativePointer -> Number. Android arm64 user addresses are <= 2^48, well within
+ * the 2^53 exact-integer range, so no precision is lost. */
+export function addressToNumber(ptr): number {
+    return parseInt(ptr.toString(16), 16);
+}
 
 /* Only names that one of the two lists could possibly match are worth keeping:
  * the map then holds tens of entries instead of the thousands of lines
@@ -21,7 +35,7 @@ export function nameNeedles(cfg) {
 }
 
 export function loadAnonNames(needles) {
-    anonNames = {};
+    mapsIndex = [];
     var text;
     try {
         text = File.readAllText('/proc/self/maps');
@@ -40,16 +54,32 @@ export function loadAnonNames(needles) {
         if (line.indexOf('[') === -1 && line.indexOf('/') === -1) continue;
         if (!matchesAny(line, needles)) continue;
         /* "7000001000-7000002000 rw-p 00000000 00:00 0    [anon:partition_alloc]" */
-        var m = /^([0-9a-f]+)-[0-9a-f]+\s+\S+\s+\S+\s+\S+\s+\S+\s+(.+)$/.exec(line);
-        if (m !== null) anonNames[m[1]] = m[2].trim();
+        var m = /^([0-9a-f]+)-([0-9a-f]+)\s+\S+\s+\S+\s+\S+\s+\S+\s+(.+)$/.exec(line);
+        if (m !== null) mapsIndex.push([parseInt(m[1], 16), parseInt(m[2], 16), m[3].trim()]);
     }
+    /* Sorted by numeric start so rangeLabel() can binary-search. */
+    mapsIndex.sort(function (a, b) { return a[0] - b[0]; });
+}
+
+/* Binary-search the sorted interval index for the entry CONTAINING `value`. */
+export function findInterval(index, value) {
+    var lo = 0, hi = index.length - 1;
+    while (lo <= hi) {
+        var mid = (lo + hi) >> 1;
+        var e = index[mid];
+        if (value < e[0]) hi = mid - 1;
+        else if (value >= e[1]) lo = mid + 1;
+        else return e;
+    }
+    return null;
 }
 
 export function rangeLabel(range) {
     if (range.file) return range.file.path;
     if (range.name) return range.name;
-    var key = range.base.toString(16);
-    return anonNames[key] || '';
+    if (mapsIndex === null) return '';
+    var e = findInterval(mapsIndex, addressToNumber(range.base));
+    return e === null ? '' : e[2];
 }
 
 /* Both sides are lower-cased. The kernel, Frida and the profile each pick their

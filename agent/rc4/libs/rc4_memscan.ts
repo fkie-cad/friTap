@@ -838,6 +838,24 @@ function decryptFrameWithKey(ct: Uint8Array, dir: string): void {
     } catch (e) { /* observational only */ }
 }
 
+/** Return the RC4 body of a captured SSPI frame, stripping a leading 4-byte BIG-ENDIAN
+ * length prefix ONLY when that uint32 exactly equals the remaining byte count. The demo's
+ * inbound path (and any [len][payload] framing that coalesces into one TLS record) delivers
+ * `[4-byte BE length N][N bytes RC4 ciphertext]`, so DecryptMessage hands us the length
+ * PREPENDED to the ciphertext; trial-decrypting from offset 0 misaligns RC4 by 4 bytes, so
+ * nothing scores printable and the printable/structural early-stop never fires (the whole-
+ * memory grind). The exact-length match is an unambiguous structural signal — a bare
+ * ciphertext matching it by chance is ~2^-32 per frame — so bare-ciphertext frames (the
+ * outbound path, whose 4-byte length rides its own tiny SSPI frame) are returned unchanged.
+ * Exported for unit tests. */
+export function rc4FrameBody(ct: Uint8Array): Uint8Array {
+    if (ct.length > 4) {
+        const declared = ((ct[0] << 24) | (ct[1] << 16) | (ct[2] << 8) | ct[3]) >>> 0;
+        if (declared === ct.length - 4) return ct.subarray(4);
+    }
+    return ct;
+}
+
 /** Called from the SSPI capture with one RC4 ciphertext frame. Recovers the key once
  * (memory scan + trial-decrypt), emits it, then decrypts every later frame directly.
  * Exported for unit tests (the L4 re-scan logic); production drives it via the SSPI hooks. */
@@ -855,7 +873,11 @@ export async function handleCiphertext(ct: Uint8Array, dir: string): Promise<voi
     if (state.scannedLengths[ct.length]) return;
     state.scanning = true;
     try {
-        const r = await recover(ct);
+        // Realign coalesced [4-byte BE length][ciphertext] frames before recovery; the
+        // scannedLengths memo below stays keyed on the ORIGINAL ct.length so a bare-
+        // ciphertext frame of a different length still earns its own scan.
+        const body = rc4FrameBody(ct);
+        const r = await recover(body);
         if (!r.ok) {
             state.scannedLengths[ct.length] = true;   // remember only after a completed miss
             devlog("[rc4] memscan: could not confidently decrypt " + dir + " ciphertext (" + ct.length + "B); best='" + r.plaintextAscii + "'");

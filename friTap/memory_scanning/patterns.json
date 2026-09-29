@@ -264,6 +264,251 @@
       ]
     },
     {
+      "id": "boringssl-signal-libsignal-scudo",
+      "engine": "boringssl",
+      "_engine_doc": "Which secret-extraction engine this profile targets: boringssl | schannel | rc4. Absent means boringssl, so this key is advisory here; the loader and agent both default to boringssl when it is missing.",
+      "protocol": "tls",
+      "platforms": [
+        "android"
+      ],
+      "scan_target": "self",
+      "_applicability_doc": "These three keys drive engine selection (see memory_scanning.loader.select_profiles): 'protocol' must be a member of the selected --protocol set (default 'tls'), 'platforms' is matched against the target OS name and is either the wildcard '[\"all\"]' or a list of friTap platform strings (windows | linux | android | macos | ios), and 'scan_target' names the process the scan runs in — 'self' (the injected target, the default) or 'lsass' (a separate Frida session attached to lsass.exe on Windows). Absent means protocol='tls', platforms=['all'], scan_target='self'.",
+      "description": "Signal's in-tree BoringSSL fork (libsignal-net transport), statically linked into libsignal_jni.so and allocated via Rust's global allocator -> scudo on Android. Same InplaceVector<uint8_t,48> layout as the Chrome profile (SSL.s3=48, SSL3_STATE.hs=280), BUT SSL_HANDSHAKE.secret is at 64 (not 32) on this fork, so the Tier-A slot run is shifted +32. Verified on Signal 8.27.1 arm64 (Pixel 7, Android 17): Tier A derived the needle from a live handshake, Tier B read CLIENT/SERVER_TRAFFIC_SECRET_0 + EXPORTER_SECRET off the pooled socket. Recovers TLS keys Conscrypt hooking never sees. Coexists with the Chrome partition_alloc profile in one session (each scans its own region set).",
+      "match": {
+        "_doc": "Advisory only - the boringssl engine is module-agnostic and scans the scan_regions heap.",
+        "modules": [
+          "libsignal_jni.so"
+        ],
+        "pointer_size": 8
+      },
+      "scan_regions": {
+        "_doc": "libsignal's BoringSSL structs are Rust-heap (scudo) allocations on Android, NOT Chrome's partition_alloc. Allowlist scudo, deny the dalvik/managed and volatile pages. Measured surface on Pixel 7/Signal 8.27.1: ~96 rw- ranges / ~67 MiB. If range names are unavailable selectRanges() falls back to ALL anonymous rw- ranges (not observed on this device).",
+        "protection": "rw-",
+        "require_anonymous": true,
+        "name_allowlist": [
+          "scudo:primary",
+          "scudo:secondary",
+          "scudo"
+        ],
+        "name_denylist": [
+          "dalvik-linearalloc",
+          "dalvik-non moving space",
+          "dalvik-boot.art",
+          "jit-cache",
+          "bionic_alloc",
+          "linker_alloc",
+          ".bss",
+          "stack_and_tls",
+          "thread signal stack",
+          "guard",
+          "gwp-asan",
+          "hwasan",
+          "mte",
+          "stack_mte_ring",
+          "partition_alloc",
+          "frida",
+          "gum-js-loop",
+          "quickjs",
+          "linker64"
+        ],
+        "max_range_bytes": 268435456
+      },
+      "constants": {
+        "_doc": "inplace_vector_stride = sizeof(InplaceVector<uint8_t, SSL_MAX_MD_SIZE>) = 48 storage + 1 length byte.",
+        "ssl_max_md_size": 48,
+        "inplace_vector_stride": 49,
+        "ssl3_random_size": 32,
+        "valid_hash_lens": [
+          32,
+          48
+        ],
+        "ssl_version_tls12": 771,
+        "ssl_version_tls13": 772
+      },
+      "struct_offsets": {
+        "SSL": {
+          "_doc": "ssl_st, ssl/internal.h:4309. method is field 0 and is the Tier B needle.",
+          "method": 0,
+          "s3": 48,
+          "session": 88,
+          "ctx": 104
+        },
+        "SSL3_STATE": {
+          "_doc": "ssl/internal.h:2949 and :3115. The three traffic secrets are InplaceVectors at stride 49 starting 8 bytes after the hs pointer; each .size_ is its data offset + 48. hs is NULL once the handshake completes.",
+          "server_random": 16,
+          "client_random": 48,
+          "hs": 280,
+          "write_traffic_secret": 288,
+          "write_traffic_secret_len": 336,
+          "read_traffic_secret": 337,
+          "read_traffic_secret_len": 385,
+          "exporter_secret": 386,
+          "exporter_secret_len": 434,
+          "established_session": 464
+        },
+        "SSL_HANDSHAKE": {
+          "_doc": "libsignal fork: offsetof(SSL_HANDSHAKE, secret) == 64 (measured on Signal 8.27.1 arm64), NOT the 32 of Chromium's BoringSSL. min_version/max_version at 28/30 are unchanged (they precede the shifted secret run). Anchor stays at +28.",
+          "ssl": 0,
+          "min_version": 28,
+          "max_version": 30,
+          "secret_run_base": 64
+        },
+        "SSL_SESSION": {
+          "_doc": "ssl_session_st, ssl/internal.h:574. RefCounted is a non-virtual CRTP base, so there is no vtable and references_ sits at 0. Both length fields are ONE unsigned byte - reading 4 or 8 bytes would drag in the following array's first bytes as high bytes.",
+          "ssl_version": 4,
+          "secret": 10,
+          "secret_len": 58,
+          "session_id": 59,
+          "session_id_len": 91
+        }
+      },
+      "tiers": {
+        "A_ssl_handshake": {
+          "enabled": true,
+          "rescan_every": 4,
+          "_rescan_every_doc": "How often to run this tier once it has done its one irreplaceable job - deriving the Tier B needle from a real object. A scan is three full Memory.scanSync passes (this tier's two anchors plus Tier B's needle) and each costs ~430 ms per ~55 MiB, so this tier is two thirds of the scan cost. Measured on Chrome 133: across 45 consecutive scans it produced 1736 candidates and validated NONE, because Tier B already reaches every in-flight handshake through s3->hs on the live SSL objects it enumerates. Running it every 4th scan instead of every scan cuts a steady-state scan from three passes to one. The point is recall, not CPU: handshake-epoch secrets are missed because we sample, and a handshake is live for milliseconds, so more scans per minute is the only lever that moves them. Set to 1 to restore the old always-on behaviour. The agent ignores this and runs the tier anyway whenever no needle is available at all (neither derived nor resolvable from the hint below), and whenever Tier B validated nothing on the previous scan - so throttling can never make the scanner go quietly blind. Note the first condition asks whether a needle is AVAILABLE, not whether Tier A produced one: in the steady state Tier A validates nothing, so keying it on Tier A's own success would make this setting do nothing at all.",
+          "_doc": "Finds in-flight handshakes. Anchor on min_version||max_version at hs+28, then validate the seven stride-49 length bytes and close a two-way pointer round trip (hs->ssl->s3->hs). Yields the complete TLS 1.3 secret set with certain labels, plus client_random. Also bootstraps Tier B by reading *(void**)ssl.",
+          "anchors": [
+            {
+              "pattern": "03 03 04 03",
+              "note": "min=TLS1.2 max=TLS1.3 - Chrome's TCP-TLS sockets"
+            },
+            {
+              "pattern": "04 03 04 03",
+              "note": "min=max=TLS1.3 - QUIC/HTTP3, which is most Chrome-to-Google traffic"
+            }
+          ],
+          "anchor_offset_in_struct": 28,
+          "slots": [
+            {
+              "index": 0,
+              "name": "secret",
+              "data": 64,
+              "len": 112,
+              "label": null,
+              "note": "running key-schedule input, not an NSS secret"
+            },
+            {
+              "index": 1,
+              "name": "early_traffic_secret",
+              "data": 113,
+              "len": 161,
+              "label": "CLIENT_EARLY_TRAFFIC_SECRET",
+              "note": "populated only for 0-RTT"
+            },
+            {
+              "index": 2,
+              "name": "client_handshake_secret",
+              "data": 162,
+              "len": 210,
+              "label": "CLIENT_HANDSHAKE_TRAFFIC_SECRET"
+            },
+            {
+              "index": 3,
+              "name": "server_handshake_secret",
+              "data": 211,
+              "len": 259,
+              "label": "SERVER_HANDSHAKE_TRAFFIC_SECRET"
+            },
+            {
+              "index": 4,
+              "name": "client_traffic_secret_0",
+              "data": 260,
+              "len": 308,
+              "label": "CLIENT_TRAFFIC_SECRET_0"
+            },
+            {
+              "index": 5,
+              "name": "server_traffic_secret_0",
+              "data": 309,
+              "len": 357,
+              "label": "SERVER_TRAFFIC_SECRET_0"
+            },
+            {
+              "index": 6,
+              "name": "expected_client_finished",
+              "data": 358,
+              "len": 406,
+              "label": null,
+              "note": "Finished MAC, not an NSS secret"
+            }
+          ]
+        },
+        "B_ssl_method_ptr": {
+          "enabled": true,
+          "_doc": "The workhorse. ssl->method points at one static SSL_PROTOCOL_METHOD shared by every TLS SSL object and sits at offset 0, so a single exact 8-byte needle enumerates every LIVE SSL in the heap - pointer walking instead of byte-pattern archaeology. From each SSL we read client_random, the three live SSL3_STATE traffic secrets (which survive the handshake for as long as the socket is pooled), the TLS 1.2 master secret via established_session/session, and the full Tier A slot set whenever s3->hs is non-NULL.",
+          "needle": {
+            "_note": "No static RVA for libsignal's in-tree BoringSSL: rva=null so resolveNeedleValue() returns null until Tier A anchors a live SSL_HANDSHAKE and derives ssl->method. A capture must be running while a Signal chat connection handshakes (force one with `adb shell svc wifi disable && svc wifi enable` — airplane mode does NOT drop WiFi on Pixel 7).",
+            "module": "libsignal_jni.so",
+            "rva": null,
+            "derive_from_tier_a": true
+          },
+          "s3_secrets": [
+            {
+              "field": "write_traffic_secret",
+              "label": "CLIENT_TRAFFIC_SECRET_0"
+            },
+            {
+              "field": "read_traffic_secret",
+              "label": "SERVER_TRAFFIC_SECRET_0"
+            },
+            {
+              "field": "exporter_secret",
+              "label": "EXPORTER_SECRET"
+            }
+          ],
+          "_s3_secrets_doc": "Each entry names a field in struct_offsets.SSL3_STATE; its length byte is the '<field>_len' key, which the driver checks exists. Once the handshake finishes these hold the CURRENT epoch's application secrets. While a handshake is still in flight they hold the handshake-epoch secrets, so they are only emitted when s3->hs is NULL - otherwise Tier A's unambiguous slots are used instead.",
+          "tls12_session": {
+            "_doc": "TLS 1.2 master secret, reached from a live SSL. The label lives here rather than in the agent so that no NSS label is hardcoded in code.",
+            "label": "CLIENT_RANDOM",
+            "require_ssl_version": 771,
+            "require_secret_len": 48,
+            "paths": [
+              {
+                "from": "SSL3_STATE",
+                "field": "established_session",
+                "note": "set once the handshake completes"
+              },
+              {
+                "from": "SSL",
+                "field": "session",
+                "when_handshake_complete_only": true,
+                "note": "already set during the handshake - but while one is IN FLIGHT this is the session offered for RESUMPTION, i.e. the previous handshake's master secret, while s3->client_random is already the new ClientHello random. Pairing those two is a false positive whenever the server declines resumption, so the agent only follows this path once s3->hs is NULL."
+              }
+            ]
+          }
+        },
+        "C_orphan_session": {
+          "enabled": false,
+          "_doc": "Last resort: SSL_SESSION objects with no reachable SSL. Anchored on ssl_version == 0x0303 at base+4 plus secret_len == 48 at base+58. The version check is mandatory because a TLS 1.3 SHA-384 resumption PSK is byte-identical in shape to a TLS 1.2 master secret. Off by default: without a client_random these cannot form a usable keylog line, so they go to a separate unpaired report.",
+          "anchor": {
+            "pattern": "03 03",
+            "offset_in_struct": 4
+          },
+          "require_secret_len": 48
+        }
+      },
+      "validators": {
+        "_doc": "Applied to every candidate before anything is emitted. min_secret_len is 32, not 16, on purpose: Shannon entropy over n bytes cannot exceed log2(n), so a 4.0-bit floor is unreachable for about a third of genuine 16-byte buffers. Every secret this tool emits is 32 or 48 bytes (see constants.valid_hash_lens), which makes the gate length-stable.",
+        "max_zero_fraction": 0.5,
+        "min_shannon_entropy_bits": 4.0,
+        "min_secret_len": 32,
+        "max_secret_len": 48,
+        "pointer_min": "0x10000",
+        "pointer_tag_mask": "0xffffffffffff",
+        "_pointer_tag_note": "ARM64 top-byte-ignore: heap pointers can carry a tag in bits 56-63. Dereferences work through the tag, but any range lookup must use the untagged value."
+      },
+      "keylog_labels": [
+        "CLIENT_RANDOM",
+        "CLIENT_EARLY_TRAFFIC_SECRET",
+        "CLIENT_HANDSHAKE_TRAFFIC_SECRET",
+        "SERVER_HANDSHAKE_TRAFFIC_SECRET",
+        "CLIENT_TRAFFIC_SECRET_0",
+        "SERVER_TRAFFIC_SECRET_0",
+        "EXPORTER_SECRET"
+      ]
+    },
+    {
       "id": "rc4-memscan-generic",
       "engine": "rc4",
       "protocol": "rc4",

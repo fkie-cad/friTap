@@ -12,7 +12,7 @@ from threading import Event, Thread
 
 import psutil
 
-from friTap.constants import build_infrastructure_bpf
+from friTap.constants import build_capture_bpf
 
 from .android import Android
 from .pcap_utility import is_pcapng_filename
@@ -231,7 +231,7 @@ class PCAP:
 
     def __init__(self,pcap_file_name,SSL_READ,SSL_WRITE, doFullCapture, isMobile, print_debug_infos=False,
                  owner_capture=False, owner_capture_opts=None, target_package=None, target_pid=None,
-                 include_loopback=False):
+                 include_loopback=False, filter_infrastructure=True):
         self.pcap_file_name = pcap_file_name
         self.logger = logging.getLogger('friTap')
         # Full local capture (-f): also sniff the loopback interface so localhost
@@ -241,6 +241,9 @@ class PCAP:
         # Best-effort: if the loopback adapter can't be opened (e.g. Npcap without
         # loopback support), the primary capture still runs.
         self.include_loopback = include_loopback
+        # --no-filter-infrastructure: when False, frida/adb control ports are no
+        # longer excluded by the capture-side BPF.
+        self.filter_infrastructure = filter_infrastructure
         # --owner-capture: delegate full capture to the AppTap library to acquire an
         # app-scoped (UID-scoped) pcap instead of capturing the whole device. These
         # are intent (config); the *runtime* state lives in apptap_session/
@@ -544,9 +547,13 @@ class PCAP:
 
                     pcap_class.logger.info("doing full local capture")
 
+                    capture_bpf = build_capture_bpf(
+                        filter_infrastructure=getattr(pcap_class, "filter_infrastructure", True),
+                        include_loopback=getattr(pcap_class, "include_loopback", False),
+                    )
                     sniff(
                         opened_socket=sockets if len(sockets) > 1 else self.socket,
-                        filter=build_infrastructure_bpf(),
+                        filter=capture_bpf or None,
                         prn=self.write_packet_to_pcap,
                         stop_filter=self.stop_capture_thread
                     )
@@ -565,6 +572,39 @@ class PCAP:
                 except Scapy_Exception as e:
                     pcap_class.logger.error(f"Full capture (-f) failed: {e}")
                     pcap_class.logger.error(_libpcap_hint())
+                    self.clean_up_and_exit()
+                except TypeError as e:
+                    # Shutdown race: when the target exits, the stop path signals stop and
+                    # closes the capture socket(s) while scapy's sniff() is still blocked in
+                    # select_objects. A closed Windows pcap socket's fileno() returns None, so
+                    # scapy's `i.fileno() < 0` raises "'<' not supported between ... NoneType
+                    # and int". That is a benign teardown artifact, not a capture failure, so
+                    # we end cleanly here without the misleading "unexpected error"/Npcap hint.
+                    tearing_down = False
+                    sc = getattr(self, "stop_capture", None)
+                    if sc is not None:
+                        try:
+                            tearing_down = sc.is_set() if hasattr(sc, "is_set") else sc.isSet()
+                        except Exception:
+                            pass
+                    if not tearing_down:
+                        for s in (self.socket, getattr(self, "loopback_socket", None)):
+                            if s is None:
+                                continue
+                            try:
+                                if s.fileno() is None:   # closed pcap handle -> teardown race
+                                    tearing_down = True
+                                    break
+                            except Exception:
+                                tearing_down = True   # fileno() on a dead socket -> teardown
+                                break
+                    if tearing_down:
+                        pcap_class.logger.debug(f"Full capture stopped during teardown ({e}).")
+                    else:
+                        pcap_class.logger.error(f"Full capture (-f) failed with an unexpected error: {e}")
+                        pcap_class.logger.error(_libpcap_hint())
+                        pcap_class.logger.debug("Full traceback for debugging:")
+                        pcap_class.logger.debug(traceback.format_exc())
                     self.clean_up_and_exit()
                 except Exception as e:
                     pcap_class.logger.error(f"Full capture (-f) failed with an unexpected error: {e}")
@@ -652,7 +692,10 @@ class PCAP:
 
                     if not pcap_class.android_Instance.is_tcpdump_available:
                         pcap_class.android_Instance.install_tcpdump()
-                    self.android_capture_process = pcap_class.android_Instance.run_tcpdump_capture("_"+self._get_pcap_base_name())
+                    self.android_capture_process = pcap_class.android_Instance.run_tcpdump_capture(
+                        "_"+self._get_pcap_base_name(),
+                        include_loopback=getattr(pcap_class, "include_loopback", False),
+                        filter_infrastructure=getattr(pcap_class, "filter_infrastructure", True))
 
                     pcap_class.logger.info("doing full capture on Android")
                     return self.android_capture_process

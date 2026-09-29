@@ -32,6 +32,7 @@ import { maybeRunRegionScan } from "./shared/scan/scan_engine.js";
 import { stopBlink } from "./shared/pairip_blink.js";
 import { restoreAnchorLocatorKeylogFields } from "./shared/boringssl_anchor_locator.js";
 import { restoreTrackedKeylogCallbacks } from "./shared/keylog_callback_tracker.js";
+import { runDetachTeardowns } from "./shared/detach_teardown.js";
 
 // global address which stores the addresses of the hooked modules which aren't loaded via the dynamic loader
 (globalThis as any).init_addresses = {};
@@ -77,6 +78,11 @@ function releaseAgentHooks(): void {
     // between the two statements would still pay the full IPC cost.
     setIsShuttingDown(true);
     try { stopBlink(); } catch (_e) { /* blink not active */ }
+    // Revert ART (Java) .implementation swaps FIRST, while the VM is attached and
+    // before Interceptor.detachAll()/dispose. Interceptor.detachAll only reverts
+    // native hooks; a Java method left for frida's implicit dispose-restore races
+    // the app's threads and SIGBUSes it on stop (seen on Signal). Best-effort.
+    try { runDetachTeardowns(); } catch (_e) { /* best effort */ }
     // BEFORE detachAll, on purpose: the callback tier's SSL_CTX_free hook must
     // still be live so a CTX being freed right now blocks in its onEnter (we
     // hold the script lock) instead of being written after release. The

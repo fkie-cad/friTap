@@ -12,7 +12,7 @@ import {
     observeHandshakeSecret,
 } from "./tls13_secret_recovery.js";
 import { keylog_enabled, offsets } from "../fritap_agent.js";
-import { guardKeylogDumpKeys, onAllKeylogTiersMissed } from "./boringssl_keylog_outcome.js";
+import { guardKeylogDumpKeys, onAllKeylogTiersMissed, startTier4InParallelWithPattern } from "./boringssl_keylog_outcome.js";
 import { PatternOutcomeSource, pollPatternOutcome } from "./boringssl_pattern_hook.js";
 // Side-effect import: registers the tier-4 anchor locator with
 // boringssl_keylog_outcome. Imported here because this module is on the BoringSSL
@@ -267,9 +267,11 @@ export function attemptSymbolFallback(
  * Total-miss reporting (onAllKeylogTiersMissed): the hooker-absent arm reports
  * as soon as the symbol fallback fails (no pattern scan is running). The
  * with-hooker arm can only report when `runHookerFallback` returns `false`
- * (symbol tier missed); it then waits for the still-running pattern scan to
- * settle and reports only if that also missed. A `void` fallback (the other
- * platforms' wrappers) opts out of the report.
+ * (symbol tier missed); it then starts tier 4 immediately, in parallel with the
+ * still-running pattern scan (startTier4InParallelWithPattern), and still waits
+ * for that scan to settle to report a total miss only if it also missed (the
+ * report reuses the tier-4 run, never starts a second). A `void` fallback (the
+ * other platforms' wrappers) opts out of both.
  */
 export function scheduleBoringSSLSymbolFallback(
     moduleName: string,
@@ -294,6 +296,12 @@ export function scheduleBoringSSLSymbolFallback(
                     `[!] Pattern scan still in progress on ${moduleName} after ${delayMs}ms; running symbol-based fallback in parallel…`,
                 );
                 if (runHookerFallback() === false) {
+                    // Tier 4 starts NOW, next to the still-running pattern scan
+                    // (it used to wait for the scan to settle, up to the poll's
+                    // hard bound — too late for one-handshake targets like
+                    // Signal). The settle wait below is kept for the final
+                    // miss report only; tier 4 runs at most once per module.
+                    startTier4InParallelWithPattern(moduleName, hooker, dumpKeys);
                     reportMissOncePatternSettles(moduleName, hooker, dumpKeys);
                 }
             } else if (!attemptSymbolFallback(moduleName, dumpKeys)) {

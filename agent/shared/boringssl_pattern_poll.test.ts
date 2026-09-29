@@ -40,6 +40,14 @@ test("classify: legacy hookers (no cascadeCompleted) wait for the hard bound", (
     assert.equal(classifyPatternPoll({ found_ssl_log_secret: false }, 120000, T), "gave-up");
 });
 
+test("classify: a hooker exposing cascadeCompleted=true settles no-match at the grace window, not the hard bound", () => {
+    // The legacy PatternBasedHooking now carries the flag too; once its cascade
+    // has terminated it must NOT wait the 120 s hard bound like a flagless source.
+    const legacyShapedHooker = { found_ssl_log_secret: false, no_hooking_success: true, cascadeCompleted: true };
+    assert.equal(classifyPatternPoll(legacyShapedHooker, T.graceMs - 1, T), "still-scanning");
+    assert.equal(classifyPatternPoll(legacyShapedHooker, T.graceMs, T), "no-match");
+});
+
 test("classify: the hard bound gives up on a scan that is still running", () => {
     assert.equal(classifyPatternPoll({ found_ssl_log_secret: false, cascadeCompleted: false }, 120000, T), "gave-up");
 });

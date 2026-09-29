@@ -813,6 +813,7 @@ export class PatternBasedHooking {
             // Skip rather than scanning the whole module with an empty pattern.
             devlog_debug("hookModuleByPattern: no usable pattern, skipping scan");
             this.no_hooking_success = true;
+            this.cascadeCompleted = true;
             return;
         }
         const moduleName = this.module?.name;

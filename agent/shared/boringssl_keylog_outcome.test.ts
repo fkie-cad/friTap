@@ -21,6 +21,8 @@ import {
     claimKeylogHook,
     guardKeylogDumpKeys,
     keylogHookOwner,
+    startTier4Once,
+    startTier4InParallelWithPattern,
 } from "./boringssl_keylog_outcome.js";
 
 const noDump = () => { };
@@ -217,4 +219,104 @@ test("a claim after the total-miss warning prints a superseding note", () => {
     const lines = consoleLines();
     assert.equal(lines.length, 2, "the note is printed once");
     assert.ok(lines[1].includes("libx.so") && lines[1].includes("pattern tier") && lines[1].includes("supersedes"));
+});
+
+// ---- tier 4 in parallel with a still-running pattern scan (legacy Cronet) --
+
+const SCANNING = () => ({ found_ssl_log_secret: false });
+
+test("parallel start: tier 4 runs before the pattern poll settles, without warning", () => {
+    const calls: string[] = [];
+    registerBoringSSLTier4((mod) => { calls.push(mod); return new Promise<boolean>(() => { }); });
+    assert.equal(startTier4InParallelWithPattern("libsignal_jni.so", SCANNING(), noDump), true);
+    assert.deepEqual(calls, ["libsignal_jni.so"], "started immediately, no poll involved");
+    assert.deepEqual(consoleLines(), [], "no total-miss warning while the pattern scan runs");
+});
+
+test("parallel start: skipped when the pattern hook already matched or is not a pattern hooker", () => {
+    let calls = 0;
+    registerBoringSSLTier4(() => { calls++; return true; });
+    assert.equal(startTier4InParallelWithPattern("libsignal_jni.so", { found_ssl_log_secret: true }, noDump), false);
+    assert.equal(startTier4InParallelWithPattern("libsignal_jni.so", {}, noDump), false);
+    assert.equal(calls, 0);
+});
+
+test("parallel start: skipped when another tier already owns the module", () => {
+    let calls = 0;
+    registerBoringSSLTier4(() => { calls++; return true; });
+    claimKeylogHook("libsignal_jni.so", "pattern");
+    assert.equal(startTier4InParallelWithPattern("libsignal_jni.so", SCANNING(), noDump), false);
+    assert.equal(calls, 0);
+});
+
+test("tier 4 runs at most once per module: a later miss report reuses the parallel run", async () => {
+    let calls = 0;
+    registerBoringSSLTier4(async () => { calls++; return false; });
+    startTier4InParallelWithPattern("libsignal_jni.so", SCANNING(), noDump);
+    startTier4InParallelWithPattern("libsignal_jni.so", SCANNING(), noDump); // a second chain
+    await onAllKeylogTiersMissed("libsignal_jni.so", noDump, NO_PAIRIP); // pattern settled: no match
+    assert.equal(calls, 1);
+    assert.deepEqual(consoleLines(), [ALL_KEYLOG_TIERS_MISSED_MSG("libsignal_jni.so",
+        "anchor-locator (tier 4) also missed")], "the miss is still reported, once, naming tier 4");
+});
+
+test("miss report while the parallel tier 4 is still in flight waits for that same run", async () => {
+    let calls = 0;
+    let finish: (v: boolean) => void = () => { };
+    registerBoringSSLTier4(() => { calls++; return new Promise<boolean>((r) => { finish = r; }); });
+    startTier4InParallelWithPattern("libsignal_jni.so", SCANNING(), noDump);
+    const p = onAllKeylogTiersMissed("libsignal_jni.so", noDump, NO_PAIRIP);
+    assert.deepEqual(consoleLines(), []);
+    finish(false);
+    await p;
+    assert.equal(calls, 1);
+    assert.equal(consoleLines().length, 1);
+});
+
+test("parallel tier 4 that installed: the later miss report is silent", async () => {
+    registerBoringSSLTier4(async () => true);
+    const run = startTier4Once("libsignal_jni.so", noDump);
+    assert.equal(await run, true);
+    assert.equal(keylogHookOwner("libsignal_jni.so"), "anchor", "claimed on install, not on report");
+    await onAllKeylogTiersMissed("libsignal_jni.so", noDump, NO_PAIRIP);
+    assert.deepEqual(consoleLines(), []);
+});
+
+test("late pattern match after the parallel tier 4 installed does not double-emit", async () => {
+    let tier4Dump: any = null;
+    registerBoringSSLTier4(async (_m, dump) => { tier4Dump = dump; return true; });
+    const emitted: string[] = [];
+    startTier4InParallelWithPattern("libsignal_jni.so", SCANNING(), () => emitted.push("anchor"));
+    await startTier4Once("libsignal_jni.so", noDump);
+    const latePattern = guardKeylogDumpKeys("libsignal_jni.so", "pattern", () => emitted.push("pattern"));
+    // Both interceptors fire on the same ssl_log_secret call.
+    latePattern(P(1), P(2), P(3), 32);
+    tier4Dump(P(1), P(2), P(3), 32);
+    assert.deepEqual(emitted, ["anchor"]);
+});
+
+test("pattern delivering first while tier 4 scans: tier 4's later install does not take over", async () => {
+    let finish: (v: boolean) => void = () => { };
+    let tier4Dump: any = null;
+    registerBoringSSLTier4((_m, dump) => { tier4Dump = dump; return new Promise<boolean>((r) => { finish = r; }); });
+    const emitted: string[] = [];
+    startTier4InParallelWithPattern("libsignal_jni.so", SCANNING(), () => emitted.push("anchor"));
+    const pattern = guardKeylogDumpKeys("libsignal_jni.so", "pattern", () => emitted.push("pattern"));
+    pattern(P(1), P(2), P(3), 32); // pattern matched mid-scan and emitted first
+    finish(true);
+    await startTier4Once("libsignal_jni.so", noDump);
+    assert.equal(keylogHookOwner("libsignal_jni.so"), "pattern");
+    assert.equal(claimKeylogHook("libsignal_jni.so", "anchor"), false, "the ctx-write callback's guard refuses");
+    tier4Dump(P(1), P(2), P(3), 32);
+    pattern(P(1), P(2), P(3), 32);
+    assert.deepEqual(emitted, ["pattern", "pattern"]);
+});
+
+test("startTier4Once without a registered runner returns null and records nothing", () => {
+    assert.equal(startTier4Once("libx.so", noDump), null);
+    let calls = 0;
+    registerBoringSSLTier4(() => { calls++; return false; });
+    assert.equal(startTier4Once("libx.so", noDump), false);
+    assert.equal(startTier4Once("libx.so", noDump), false);
+    assert.equal(calls, 1);
 });

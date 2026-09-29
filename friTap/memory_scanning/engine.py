@@ -144,6 +144,9 @@ class MemoryScanEngine:
         # The selected --protocol set drives which engine(s) apply; default to
         # TLS so a plugin built without an explicit set behaves as before.
         self._protocols: List[str] = list(protocols) if protocols else ["tls"]
+        # The protocol set actually used for profile selection: self._protocols
+        # plus registry implications (e.g. signal -> tls), filled in on start().
+        self._scan_protocols: List[str] = list(self._protocols)
         # Honour -nl/--no-lsass: when False, the separate lsass session is skipped.
         self._install_lsass_hook = install_lsass_hook
         self._source_cache: Optional[str] = None
@@ -286,10 +289,19 @@ class MemoryScanEngine:
                 load_database,
                 select_profiles,
             )
+            from ..protocols.registry import expand_protocols
             os_name = self._detect_target_os(context)
             database = load_database(None)
+            # Expand protocol implications (e.g. signal -> tls) so a memory-scan
+            # profile registered for an IMPLIED protocol is still selected. Without
+            # this, `--protocol signal` reached select_profiles as {"signal"} only,
+            # and the tls-tagged BoringSSL profiles (including the libsignal-net
+            # scudo profile) were filtered out — "no scan engine for protocol(s)
+            # signal". Mirrors the main keylog path, which selects TLS hooks under
+            # signal via the same registry implication.
+            self._scan_protocols = sorted(expand_protocols(self._protocols))
             self._profiles = select_profiles(
-                database, self._protocols, os_name, self._ms_arg
+                database, self._scan_protocols, os_name, self._ms_arg
             )
         except Exception as exc:  # noqa: BLE001 - surface a clear message, skip cleanly
             logger.error("memory-scan: failed to resolve pattern profile(s): %s", exc)
@@ -302,7 +314,7 @@ class MemoryScanEngine:
             logger.info(
                 "memory-scan: no scan engine for protocol(s) %s on %s — "
                 "nothing to scan (skipping)",
-                ", ".join(self._protocols), os_name or "unknown platform",
+                ", ".join(self._scan_protocols), os_name or "unknown platform",
             )
             return
 

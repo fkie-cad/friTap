@@ -1,5 +1,5 @@
 📦
-101847 /agent/memory_scan_agent.js
+102388 /agent/memory_scan_agent.js
 ✄
 // agent/ms_agent/state.ts
 var state = {
@@ -2853,12 +2853,15 @@ var MtprotoEngine = {
 registerEngine(MtprotoEngine);
 
 // agent/ms_agent/core/ranges.ts
-var anonNames = null;
+var mapsIndex = null;
+function addressToNumber3(ptr2) {
+  return parseInt(ptr2.toString(16), 16);
+}
 function nameNeedles(cfg) {
   return [].concat(cfg.name_allowlist || [], cfg.name_denylist || []);
 }
 function loadAnonNames(needles) {
-  anonNames = {};
+  mapsIndex = [];
   var text;
   try {
     text = File.readAllText("/proc/self/maps");
@@ -2873,18 +2876,37 @@ function loadAnonNames(needles) {
       continue;
     if (!matchesAny2(line, needles))
       continue;
-    var m = /^([0-9a-f]+)-[0-9a-f]+\s+\S+\s+\S+\s+\S+\s+\S+\s+(.+)$/.exec(line);
+    var m = /^([0-9a-f]+)-([0-9a-f]+)\s+\S+\s+\S+\s+\S+\s+\S+\s+(.+)$/.exec(line);
     if (m !== null)
-      anonNames[m[1]] = m[2].trim();
+      mapsIndex.push([parseInt(m[1], 16), parseInt(m[2], 16), m[3].trim()]);
   }
+  mapsIndex.sort(function(a, b) {
+    return a[0] - b[0];
+  });
+}
+function findInterval2(index, value) {
+  var lo = 0, hi = index.length - 1;
+  while (lo <= hi) {
+    var mid = lo + hi >> 1;
+    var e = index[mid];
+    if (value < e[0])
+      hi = mid - 1;
+    else if (value >= e[1])
+      lo = mid + 1;
+    else
+      return e;
+  }
+  return null;
 }
 function rangeLabel2(range) {
   if (range.file)
     return range.file.path;
   if (range.name)
     return range.name;
-  var key = range.base.toString(16);
-  return anonNames[key] || "";
+  if (mapsIndex === null)
+    return "";
+  var e = findInterval2(mapsIndex, addressToNumber3(range.base));
+  return e === null ? "" : e[2];
 }
 function matchesAny2(label, needles) {
   if (!needles || needles.length === 0)

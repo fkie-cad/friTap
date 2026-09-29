@@ -9,7 +9,7 @@ from functools import cached_property, wraps
 from os.path import exists as file_exists
 
 from .backends import BackendInvalidArgumentError, get_backend
-from .constants import build_infrastructure_bpf
+from .constants import build_capture_bpf
 from .fritap_utility import Failure
 
 
@@ -277,10 +277,13 @@ class Android:
 
 
     @assure_android
-    def run_tcpdump_capture(self, pcap_name):
+    def run_tcpdump_capture(self, pcap_name, include_loopback=False, filter_infrastructure=True):
         self.pcap_name = pcap_name
-        bpf = build_infrastructure_bpf()
-        tcpdump_cmd = f'{self.tcpdump_path} -U -i any -s 0 -w {self.dst_path}{pcap_name} "{bpf}"'
+        bpf = build_capture_bpf(filter_infrastructure=filter_infrastructure,
+                                include_loopback=include_loopback)
+        tcpdump_cmd = f'{self.tcpdump_path} -U -i any -s 0 -w {self.dst_path}{pcap_name}'
+        if bpf:
+            tcpdump_cmd += f' "{bpf}"'
         return self.adb.shell(tcpdump_cmd, background=True)
 
     def start_tcpdump(self, pcap_name):

@@ -77,6 +77,7 @@ let analyze: (ct: Uint8Array | null) => Promise<any>;
 let handleCiphertext: (ct: Uint8Array, dir: string) => Promise<void>;
 let configureRc4Memscan: (opts: any) => void;
 let resetRc4RecoveryStateForTest: () => void;
+let rc4FrameBody: (ct: Uint8Array) => Uint8Array;
 before(async () => {
     const mod: any = await import("./rc4_memscan.js");
     recover = mod.recover;
@@ -84,6 +85,7 @@ before(async () => {
     handleCiphertext = mod.handleCiphertext;
     configureRc4Memscan = mod.configureRc4Memscan;
     resetRc4RecoveryStateForTest = mod.resetRc4RecoveryStateForTest;
+    rc4FrameBody = mod.rc4FrameBody;
 });
 
 // --- RC4 reference helpers (independent of the module under test) --------------------
@@ -114,6 +116,14 @@ const KEY_BYTES = ascii(KEY);
 function lenPrefixedCt(keyBytes: number[], payload: string): number[] {
     const pt = be32(payload.length).concat(ascii(payload));
     return rc4(keyBytes, pt);
+}
+// The server's ACTUAL inbound framing (demo/tls13_server.py: sendall(len(rc).to_bytes(4,
+// "big") + rc)): [BE uint32 cipher-length][RC4 ciphertext] coalesced into one TLS record.
+// The 4-byte length is PLAINTEXT, prepended OUTSIDE the RC4 stream — distinct from
+// lenPrefixedCt above, whose length is encrypted INSIDE the RC4 stream.
+function demoInboundFrame(keyBytes: number[], payload: string): number[] {
+    const cipher = rc4(keyBytes, ascii(payload));
+    return be32(cipher.length).concat(cipher);
 }
 // A range holding the printable key as its own run (isolated by NUL separators).
 function keyRange(keyBytes: number[]): Uint8Array {
@@ -288,4 +298,45 @@ test("no-regression: a length-prefixed frame still recovers via the structural e
     assert.ok(r.ok, "recovered");
     assert.deepEqual(Array.from(r.key), KEY_BYTES, "recovered the exact key bytes");
     assert.match(r.source, /length-prefix/, "accepted via the structural length-prefix path");
+});
+
+
+// --- (g) rc4FrameBody: strip a PLAINTEXT 4-byte BE length prefix only on an exact match ----
+
+test("(g) rc4FrameBody strips a plaintext 4-byte BE length prefix only on an exact length match", () => {
+    // Demo inbound frame [BE cipherlen][cipher] -> body is the ciphertext at offset 4.
+    const frame = new Uint8Array(demoInboundFrame(KEY_BYTES, "hello over the rc4 tls demo channel here"));
+    const body = rc4FrameBody(frame);
+    assert.equal(body.length, frame.length - 4, "stripped the 4-byte length prefix");
+    assert.deepEqual(Array.from(body), Array.from(frame.subarray(4)), "body is the ciphertext at offset 4");
+
+    // Bare ciphertext (no prefix, the outbound path): returned unchanged.
+    const bare = new Uint8Array(rc4(KEY_BYTES, ascii("hello over the rc4 tls demo channel here")));
+    assert.deepEqual(Array.from(rc4FrameBody(bare)), Array.from(bare), "bare ciphertext returned unchanged");
+
+    // Length-INSIDE frame (structuralAccept convention): the RC4-encrypted prefix ~never equals
+    // len-4, so it is NOT stripped (the structural path decrypts it whole). Guards against the
+    // realignment cannibalising the existing structural-accept path.
+    const inside = new Uint8Array(lenPrefixedCt(KEY_BYTES, "hello over the rc4 tls demo channel here"));
+    assert.deepEqual(Array.from(rc4FrameBody(inside)), Array.from(inside), "length-inside frame returned unchanged");
+
+    // A <= 4-byte frame has nothing to strip.
+    assert.deepEqual(Array.from(rc4FrameBody(new Uint8Array([1, 2, 3, 4]))), [1, 2, 3, 4], "4-byte frame unchanged");
+});
+
+// --- (h) the demo's coalesced inbound [len][cipher] frame recovers the key ------------------
+// Regression for the 4-byte misalignment that made the real inbound frame miss AND grind the
+// whole heap (no early-stop). handleCiphertext() must realign via rc4FrameBody, then recover.
+
+test("(h) the demo's coalesced inbound [len][cipher] frame recovers and emits the key", async () => {
+    resetOpts({ largestFirst: true, groupedRead: true, asciiOnly: true });
+    resetRc4RecoveryStateForTest();
+    sentKeys = [];
+    setMemory([{ buf: keyRange(KEY_BYTES), file: null }]);
+    // Like the bug report's 52-byte inbound frame: [BE len=48][48B RC4 ciphertext].
+    const frame = new Uint8Array(demoInboundFrame(KEY_BYTES, "received \"hi there\" (8 bytes) over rc4-in-tls!!!"));
+    assert.equal(frame.length, 52, "the fixture reproduces the bug report's 52-byte inbound frame");
+    await handleCiphertext(frame, "in");
+    assert.equal(sentKeys.length, 1, "recovered and emitted the key from the coalesced inbound frame");
+    assert.equal(sentKeys[0].key, hexOf(KEY_BYTES), "emitted the exact key hex");
 });

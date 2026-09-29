@@ -142,6 +142,34 @@ def build_infrastructure_bpf(ports: frozenset[int] | None = None) -> str:
     return _build_port_exclusion(ports, "tcp port {p}")
 
 
+def build_loopback_exclusion() -> str:
+    """Build a BPF clause that drops loopback traffic (both ends loopback).
+
+    Mirrors ``InfrastructureFilterStage._is_loopback`` in pipeline.py: a packet
+    is loopback only when *both* source and destination are loopback, so a
+    host talking to 127.0.0.1 through a NAT'd/routed interface is kept.
+    """
+    return ("not (src net 127.0.0.0/8 and dst net 127.0.0.0/8) "
+            "and not (ip6 src host ::1 and ip6 dst host ::1)")
+
+
+def build_capture_bpf(
+    filter_infrastructure: bool = True,
+    include_loopback: bool = False,
+    ports: frozenset[int] | None = None,
+) -> str:
+    """Build the capture-side BPF honouring --no-filter-infrastructure / --loopback.
+
+    Returns "" when no clause applies (capture everything).
+    """
+    clauses = []
+    if filter_infrastructure:
+        clauses.append(build_infrastructure_bpf(ports))
+    if not include_loopback:
+        clauses.append(build_loopback_exclusion())
+    return " and ".join(c for c in clauses if c)
+
+
 def build_infrastructure_display_filter(ports: frozenset[int] | None = None) -> str:
     """Build a Wireshark display filter that excludes infrastructure ports."""
     return _build_port_exclusion(ports, "tcp.port == {p}")

@@ -1033,7 +1033,8 @@ Offline (read / analyze .tap):
                       help="Also capture loopback (localhost, 127.0.0.1/::1) traffic. "
                            "Off by default. Only relevant for a full capture (-f) of a "
                            "client talking to a local server. On Windows this needs "
-                           "Npcap with loopback support.")
+                           "Npcap with loopback support. Note: Frida's own agent link "
+                           "uses ephemeral loopback ports, so it will also appear.")
     # Deprecated spelling kept so existing scripts keep working (allow_abbrev is
     # off, so the old flag would otherwise be rejected). Hidden from --help.
     args.add_argument("--include-loopback", required=False, action="store_true",

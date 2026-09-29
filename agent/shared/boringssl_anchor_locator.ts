@@ -5,7 +5,9 @@
 // tier has missed: no SSL_CTX_set_keylog_callback export (tier 1), no
 // ssl_log_secret symbol (tier 2), and no byte pattern matched (tier 3). It runs
 // from onAllKeylogTiersMissed() (boringssl_keylog_outcome.ts), which registers
-// this module as its tier-4 runner.
+// this module as its tier-4 runner — or, in the legacy Cronet chain, right after
+// the symbol tier missed, in parallel with a still-running pattern scan
+// (startTier4InParallelWithPattern). Either way at most once per module.
 //
 // HOW IT FINDS ssl_log_secret WITHOUT SYMBOLS OR PATTERNS
 //   BoringSSL logs each secret by calling ssl_log_secret(ssl, LABEL, secret),
@@ -52,7 +54,7 @@ import {
     findAnchorStringsAsync, findStringLoadSitesAsync, firstCallTargetForward,
 } from "./arm64_xref.js";
 import { isReadable, isWritable, safeReadPointer, resetReadableCache } from "../util/safe_memory.js";
-import { registerBoringSSLTier4 } from "./boringssl_keylog_outcome.js";
+import { claimKeylogHook, keylogHookOwner, registerBoringSSLTier4 } from "./boringssl_keylog_outcome.js";
 import type { DumpKeysCb } from "./boringssl_symbol_hook.js";
 
 /**
@@ -235,9 +237,21 @@ function installViaCtxWrite(
     offs: { ctxOff: number; cbOff: number },
 ): boolean {
     const { ctxOff, cbOff } = offs;
+    let dropLogged = false;
     const keylogCb = new NativeCallback(function (_ssl: NativePointer, linePtr: NativePointer) {
         try {
             if (linePtr.isNull()) return;
+            // This path emits through BoringSSL's keylog_callback, not through
+            // the guarded dumpKeys, so apply the per-module ownership guard
+            // here: tier 4 can run in parallel with a pattern scan, and a
+            // pattern hook that delivered a secret first owns the module.
+            if (!claimKeylogHook(moduleName, "anchor")) {
+                if (!dropLogged) {
+                    dropLogged = true;
+                    devlog(`[anchor-locator] ${moduleName}: the ${keylogHookOwner(moduleName)} tier owns this module; dropping duplicate keylog lines`);
+                }
+                return;
+            }
             const line = linePtr.readCString();
             if (line) sendKeylog(line);
         } catch (e) {

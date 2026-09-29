@@ -665,7 +665,8 @@ class SSL_Logger():
                                   },
                                   target_package=self.target_app,
                                   target_pid=getattr(self, 'pid', None),
-                                  include_loopback=getattr(self._config.output, 'include_loopback', False))
+                                  include_loopback=getattr(self._config.output, 'include_loopback', False),
+                                  filter_infrastructure=getattr(self._config.output, 'filter_infrastructure', True))
             self._seed_known_server_ports()
 
 

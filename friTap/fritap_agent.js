@@ -1,5 +1,5 @@
 📦
-1613580 /agent/fritap_agent.js
+1618669 /agent/fritap_agent.js
 ✄
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -19544,14 +19544,62 @@ function warnTotalMiss(moduleName, detail, tier4Ran) {
   warnedModules.add(moduleName);
   log(ALL_KEYLOG_TIERS_MISSED_MSG(moduleName, finalDetail));
 }
-function reportTier4Outcome(moduleName, detail, installed) {
-  if (!installed) {
-    warnTotalMiss(moduleName, detail, true);
-    return;
-  }
+function claimForTier4Install(moduleName) {
   if (!claimKeylogHook(moduleName, "anchor")) {
     devlog(`[bssl-keylog] ${moduleName}: tier 4 installed, but the ${keylogHookOwner(moduleName)} tier already owns this module`);
   }
+}
+function reportTier4Outcome(moduleName, detail, installed) {
+  if (!installed)
+    warnTotalMiss(moduleName, detail, true);
+}
+var tier4Runs = /* @__PURE__ */ new Map();
+function invokeTier4Runner(runner, moduleName, dumpKeys, detail) {
+  let result;
+  try {
+    result = runner(moduleName, guardKeylogDumpKeys(moduleName, "anchor", dumpKeys), detail);
+  } catch (e) {
+    log(`[!] ${moduleName}: tier-4 anchor locator threw: ${e}`);
+    return false;
+  }
+  const settle = (installed) => {
+    if (installed)
+      claimForTier4Install(moduleName);
+    return installed;
+  };
+  if (!isThenable(result))
+    return settle(result === true);
+  return result.then((installed) => settle(installed === true), (e) => {
+    log(`[!] ${moduleName}: tier-4 anchor locator threw: ${e}`);
+    return false;
+  });
+}
+function startTier4Once(moduleName, dumpKeys, detail) {
+  const existing = tier4Runs.get(moduleName);
+  if (existing !== void 0)
+    return existing;
+  if (tier4Runner === null)
+    return null;
+  const run = invokeTier4Runner(tier4Runner, moduleName, dumpKeys, detail);
+  tier4Runs.set(moduleName, run);
+  return run;
+}
+function startTier4InParallelWithPattern(moduleName, hooker, dumpKeys) {
+  if (hooker.found_ssl_log_secret !== false)
+    return false;
+  if (keylogHookOwners.has(moduleName))
+    return false;
+  if (tier4Runner === null)
+    return false;
+  devlog(`[bssl] ${moduleName}: symbol tier missed; starting anchor-locator in parallel with the running pattern scan`);
+  const run = startTier4Once(moduleName, dumpKeys);
+  if (isThenable(run)) {
+    run.then((installed) => {
+      if (!installed)
+        devlog(`[bssl] ${moduleName}: parallel anchor-locator missed; waiting for the pattern scan to settle`);
+    });
+  }
+  return true;
 }
 function onAllKeylogTiersMissed(moduleName, dumpKeys, report) {
   if (reportedModules.has(moduleName))
@@ -19560,25 +19608,16 @@ function onAllKeylogTiersMissed(moduleName, dumpKeys, report) {
   if (keylogHookOwners.has(moduleName))
     return;
   const { detail, pairipDisabled } = report;
-  if (tier4Runner === null || pairipDisabled) {
+  const run = pairipDisabled ? null : startTier4Once(moduleName, dumpKeys, detail);
+  if (run === null) {
     warnTotalMiss(moduleName, detail, false);
     return;
   }
-  let result;
-  try {
-    result = tier4Runner(moduleName, guardKeylogDumpKeys(moduleName, "anchor", dumpKeys), detail);
-  } catch (e) {
-    log(`[!] ${moduleName}: tier-4 anchor locator threw: ${e}`);
-    result = false;
-  }
-  if (!isThenable(result)) {
-    reportTier4Outcome(moduleName, detail, result === true);
+  if (!isThenable(run)) {
+    reportTier4Outcome(moduleName, detail, run);
     return;
   }
-  return result.then((installed) => reportTier4Outcome(moduleName, detail, installed === true), (e) => {
-    log(`[!] ${moduleName}: tier-4 anchor locator threw: ${e}`);
-    reportTier4Outcome(moduleName, detail, false);
-  });
+  return run.then((installed) => reportTier4Outcome(moduleName, detail, installed));
 }
 var FORCED_ANCHOR_ONLY_DETAIL = "forced by --boringssl-anchor-only";
 function runForcedAnchorTier(moduleName, dumpKeys, trySymbolTier) {
@@ -20431,6 +20470,7 @@ var PatternBasedHooking = class {
     if (!patterns2 || !patterns2.primary && !patterns2.fallback) {
       devlog_debug("hookModuleByPattern: no usable pattern, skipping scan");
       this.no_hooking_success = true;
+      this.cascadeCompleted = true;
       return;
     }
     const moduleName = this.module?.name;
@@ -21292,10 +21332,18 @@ function deriveOffsetsAt(addr) {
 }
 function installViaCtxWrite(moduleName, fnAddr, offs) {
   const { ctxOff, cbOff } = offs;
+  let dropLogged = false;
   const keylogCb = new NativeCallback(function(_ssl, linePtr) {
     try {
       if (linePtr.isNull())
         return;
+      if (!claimKeylogHook(moduleName, "anchor")) {
+        if (!dropLogged) {
+          dropLogged = true;
+          devlog(`[anchor-locator] ${moduleName}: the ${keylogHookOwner(moduleName)} tier owns this module; dropping duplicate keylog lines`);
+        }
+        return;
+      }
       const line = linePtr.readCString();
       if (line)
         sendKeylog(line);
@@ -21587,6 +21635,7 @@ function scheduleBoringSSLSymbolFallback(moduleName, hooker, runHookerFallback, 
           return;
         devlog(`[!] Pattern scan still in progress on ${moduleName} after ${delayMs}ms; running symbol-based fallback in parallel\u2026`);
         if (runHookerFallback() === false) {
+          startTier4InParallelWithPattern(moduleName, hooker, dumpKeys);
           reportMissOncePatternSettles(moduleName, hooker, dumpKeys);
         }
       } else if (!attemptSymbolFallback(moduleName, dumpKeys)) {
@@ -27617,9 +27666,20 @@ function get_CPU_specific_pattern2(default_pattern) {
   devlog_error(`No shipped hardcoded pattern for CPU architecture: ${arch}`);
   return null;
 }
+var LARGE_MODULE_SCAN_BYTES = 4 * 1024 * 1024;
 var PatternBasedHooking2 = class {
   found_ssl_log_secret;
   no_hooking_success;
+  // True once every scan cascade started on this instance has terminated
+  // (matched or exhausted every pattern variant). Read by
+  // agent/shared/boringssl_pattern_hook.ts:pollPatternOutcome so a settled
+  // miss is reported at the grace window instead of the 120 s hard bound.
+  // Mirrors agent/tls/shared/pattern_based_hooking.ts, but backed by a
+  // counter: one legacy instance can run several cascades at once (the
+  // onError readable-parts rescan beside the outer cascade, both actions of
+  // hook_tls_keylog_callback, the per-JSON-module loop).
+  cascadeCompleted = false;
+  activeCascades = 0;
   module;
   patterns = {};
   rescannedRanges = /* @__PURE__ */ new Set();
@@ -27633,6 +27693,23 @@ var PatternBasedHooking2 = class {
       return;
     }
     this.no_hooking_success = true;
+  }
+  /** A scan cascade started: the hooker is no longer settled. */
+  beginCascade() {
+    this.activeCascades++;
+    this.cascadeCompleted = false;
+  }
+  /** A scan cascade reached a terminal outcome; settle once none is left running. */
+  endCascade() {
+    if (this.activeCascades > 0)
+      this.activeCascades--;
+    if (this.activeCascades === 0)
+      this.cascadeCompleted = true;
+  }
+  /** Nothing to scan (no usable pattern / non-TLS module): settled unless a cascade is still running. */
+  settleWithoutScan() {
+    this.beginCascade();
+    this.endCascade();
   }
   createRegexFromModule(moduleName) {
     const baseName = moduleName.replace(/\d+(\.\d+)*\.so$/, ".so");
@@ -27680,14 +27757,18 @@ var PatternBasedHooking2 = class {
         if (!this.found_ssl_log_secret) {
           devlog_error("There was an error scanning memory: " + reason);
           devlog_error("Trying to rescan memory with permissions in mind");
+          this.beginCascade();
           this.hookByPatternOnlyReadablePartsOnReturn(patterns2, pattern_name, userCallback, (patternSuccess) => {
-            if (!patternSuccess) {
+            if (patternSuccess) {
+              this.endCascade();
+            } else {
               devlog("Primary pattern failed, trying fallback pattern (onReturn)...");
               this.hookByPatternOnlyReadablePartsOnReturn(patterns2, "fallback_pattern", userCallback, (patternSuccessAlt) => {
                 if (!patternSuccessAlt) {
                   devlog_debug(`None of the patterns worked. You may need to adjust the patterns for ${moduleName}`);
                   this.no_hooking_success = true;
                 }
+                this.endCascade();
               }, maxArgs);
             }
           }, maxArgs);
@@ -27705,25 +27786,31 @@ var PatternBasedHooking2 = class {
     if (!patterns2 || !patterns2.primary && !patterns2.fallback) {
       devlog_debug("hookModuleByPatternOnReturn: no usable pattern, skipping scan");
       this.no_hooking_success = true;
+      this.settleWithoutScan();
       return;
     }
     if (matchNonTLSLibrary(this.module?.name)) {
       devlog_debug(`hookModuleByPatternOnReturn: skipping non-TLS module ${this.module?.name}`);
       this.no_hooking_success = true;
+      this.settleWithoutScan();
       return;
     }
     const moduleBase = this.module.base;
     const moduleSize = this.module.size;
     devlog(`Module Base Address: ${moduleBase}`);
     devlog(`Module Size: ${moduleSize}`);
+    this.beginCascade();
     this.hookByPatternOnReturn(patterns2, "primary_pattern", userCallback, maxArgs, (pattern_success) => {
-      if (!pattern_success) {
+      if (pattern_success) {
+        this.endCascade();
+      } else {
         devlog("Primary pattern failed, trying fallback pattern (onReturn)...");
         this.hookByPatternOnReturn(patterns2, "fallback_pattern", userCallback, maxArgs, (pattern_success_alt) => {
           if (!pattern_success_alt) {
             devlog("None of the onReturn patterns worked. Adjust patterns as needed.");
             this.no_hooking_success = true;
           }
+          this.endCascade();
         });
       }
     });
@@ -27734,6 +27821,14 @@ var PatternBasedHooking2 = class {
     this.hookModuleByPatternOnReturn(action_specific_patterns, userCallback, maxArgs);
   }
   hook_with_pattern_from_json_onReturn(action_type, module_name, json_module_name, jsonContent, userCallback, maxArgs) {
+    this.beginCascade();
+    try {
+      this.startPatternScansFromJsonOnReturn(action_type, module_name, json_module_name, jsonContent, userCallback, maxArgs);
+    } finally {
+      this.endCascade();
+    }
+  }
+  startPatternScansFromJsonOnReturn(action_type, module_name, json_module_name, jsonContent, userCallback, maxArgs) {
     this.loadPatternsFromJSON(jsonContent);
     const platform = currentPlatformKey();
     const arch = normalizeArchKey(Process.arch);
@@ -27774,6 +27869,11 @@ var PatternBasedHooking2 = class {
       onCompleteCallback(false);
       return;
     }
+    if (moduleSize >= LARGE_MODULE_SCAN_BYTES) {
+      devlog(`[pattern-scan] ${moduleName ?? "<unknown>"}: large module (${Math.floor(moduleSize / 1048576)} MiB) \u2014 scanning executable (r-x) ranges only for ${pattern_name}, skipping whole-module scan`);
+      this.hookByPatternOnlyReadableParts(patterns2, pattern_name, onMatchCallback, onCompleteCallback);
+      return;
+    }
     Memory.scan(moduleBase, moduleSize, pattern, {
       onMatch: (address) => {
         this.found_ssl_log_secret = true;
@@ -27795,28 +27895,26 @@ var PatternBasedHooking2 = class {
           return;
         devlog_error("There was an error scanning memory: " + reason);
         devlog_error(`Trying to rescan memory with permissions in mind on ${moduleName}`);
+        this.beginCascade();
         this.hookByPatternOnlyReadableParts(patterns2, pattern_name, onMatchCallback, (primary_success) => {
-          if (this.found_ssl_log_secret)
-            return;
-          if (!primary_success) {
-            devlog(`Primary pattern failed, trying fallback pattern on ${moduleName}`);
-            this.hookByPatternOnlyReadableParts(patterns2, "fallback_pattern", onMatchCallback, (fallback_success) => {
+          if (this.found_ssl_log_secret || primary_success)
+            return this.endCascade();
+          devlog(`Primary pattern failed, trying fallback pattern on ${moduleName}`);
+          this.hookByPatternOnlyReadableParts(patterns2, "fallback_pattern", onMatchCallback, (fallback_success) => {
+            if (this.found_ssl_log_secret || fallback_success)
+              return this.endCascade();
+            devlog(`Fallback pattern failed, trying second fallback pattern on ${moduleName}`);
+            this.hookByPatternOnlyReadableParts(patterns2, "second_fallback_pattern", onMatchCallback, (second_fallback_success) => {
               if (this.found_ssl_log_secret)
-                return;
-              if (!fallback_success) {
-                devlog(`Fallback pattern failed, trying second fallback pattern on ${moduleName}`);
-                this.hookByPatternOnlyReadableParts(patterns2, "second_fallback_pattern", onMatchCallback, (second_fallback_success) => {
-                  if (this.found_ssl_log_secret)
-                    return;
-                  if (!second_fallback_success) {
-                    this.no_hooking_success = true;
-                  } else {
-                    this.no_hooking_success = false;
-                  }
-                });
+                return this.endCascade();
+              if (!second_fallback_success) {
+                this.no_hooking_success = true;
+              } else {
+                this.no_hooking_success = false;
               }
+              this.endCascade();
             });
-          }
+          });
         });
       },
       onComplete: () => {
@@ -27832,7 +27930,8 @@ var PatternBasedHooking2 = class {
     }
     const mod = this.module;
     const moduleName = mod?.name;
-    const protSets = ["r-x", "r--", "rw-", "rwx"];
+    const isLargeModule = (mod?.size ?? 0) >= LARGE_MODULE_SCAN_BYTES;
+    const protSets = isLargeModule ? ["r-x"] : ["r-x", "r--", "rw-", "rwx"];
     devlog(`trying to scan only readable parts of ${moduleName} ...`);
     var pattern = "";
     if (pattern_name === "primary_pattern") {
@@ -28100,32 +28199,39 @@ var PatternBasedHooking2 = class {
     if (!patterns2 || !patterns2.primary && !patterns2.fallback) {
       devlog_debug("hookModuleByPattern: no usable pattern, skipping scan");
       this.no_hooking_success = true;
+      this.settleWithoutScan();
       return;
     }
     if (matchNonTLSLibrary(this.module?.name)) {
       devlog_debug(`hookModuleByPattern: skipping non-TLS module ${this.module?.name}`);
       this.no_hooking_success = true;
+      this.settleWithoutScan();
       return;
     }
     const moduleName = this.module?.name;
+    this.beginCascade();
     this.hookByPattern(patterns2, "primary_pattern", onMatchCallback, (primary_success) => {
-      if (!primary_success) {
-        devlog("Primary pattern failed, trying fallback pattern...");
-        this.hookByPattern(patterns2, "fallback_pattern", onMatchCallback, (fallback_success) => {
-          if (!fallback_success && patterns2.second_fallback) {
-            devlog("Fallback pattern failed, trying second fallback pattern...");
-            this.hookByPattern(patterns2, "second_fallback_pattern", onMatchCallback, (second_fallback_success) => {
-              if (!second_fallback_success) {
-                devlog_debug(`None of the patterns worked. You may need to adjust the patterns for ${moduleName}`);
-                this.no_hooking_success = true;
-              }
-            });
-          } else if (!fallback_success) {
-            devlog_debug(`None of the patterns worked. You may need to adjust the patterns for ${moduleName}`);
-            this.no_hooking_success = true;
-          }
-        });
-      }
+      if (primary_success)
+        return this.endCascade();
+      devlog("Primary pattern failed, trying fallback pattern...");
+      this.hookByPattern(patterns2, "fallback_pattern", onMatchCallback, (fallback_success) => {
+        if (!fallback_success && patterns2.second_fallback) {
+          devlog("Fallback pattern failed, trying second fallback pattern...");
+          this.hookByPattern(patterns2, "second_fallback_pattern", onMatchCallback, (second_fallback_success) => {
+            if (!second_fallback_success) {
+              devlog_debug(`None of the patterns worked. You may need to adjust the patterns for ${moduleName}`);
+              this.no_hooking_success = true;
+            }
+            this.endCascade();
+          });
+          return;
+        }
+        if (!fallback_success) {
+          devlog_debug(`None of the patterns worked. You may need to adjust the patterns for ${moduleName}`);
+          this.no_hooking_success = true;
+        }
+        this.endCascade();
+      });
     });
   }
   loadPatternsFromJSON(jsonContent) {
@@ -28167,6 +28273,14 @@ var PatternBasedHooking2 = class {
   }
   // Method to hook functions using patterns from JSON
   hook_with_pattern_from_json(action_type, module_name, json_module_name, jsonContent, hookCallback) {
+    this.beginCascade();
+    try {
+      this.startPatternScansFromJson(action_type, module_name, json_module_name, jsonContent, hookCallback);
+    } finally {
+      this.endCascade();
+    }
+  }
+  startPatternScansFromJson(action_type, module_name, json_module_name, jsonContent, hookCallback) {
     this.loadPatternsFromJSON(jsonContent);
     const platform = currentPlatformKey();
     const arch = normalizeArchKey(Process.arch);
@@ -43119,6 +43233,14 @@ function decryptFrameWithKey(ct, dir) {
   } catch (e) {
   }
 }
+function rc4FrameBody(ct) {
+  if (ct.length > 4) {
+    const declared = (ct[0] << 24 | ct[1] << 16 | ct[2] << 8 | ct[3]) >>> 0;
+    if (declared === ct.length - 4)
+      return ct.subarray(4);
+  }
+  return ct;
+}
 async function handleCiphertext(ct, dir) {
   if (!ct || ct.length < MIN_CT_LEN)
     return;
@@ -43132,7 +43254,8 @@ async function handleCiphertext(ct, dir) {
     return;
   state.scanning = true;
   try {
-    const r = await recover(ct);
+    const body = rc4FrameBody(ct);
+    const r = await recover(body);
     if (!r.ok) {
       state.scannedLengths[ct.length] = true;
       devlog("[rc4] memscan: could not confidently decrypt " + dir + " ciphertext (" + ct.length + "B); best='" + r.plaintextAscii + "'");
@@ -44607,6 +44730,19 @@ function emitCandidate(c, extensions, providers) {
   }
 }
 
+// agent/shared/detach_teardown.ts
+init_node_globals();
+var teardowns = [];
+function runDetachTeardowns() {
+  for (let i = teardowns.length - 1; i >= 0; i--) {
+    try {
+      teardowns[i].fn();
+    } catch (_e) {
+    }
+  }
+  teardowns.length = 0;
+}
+
 // agent/fritap_agent.ts
 globalThis.init_addresses = {};
 function initStage(stage, fn, fatal = true) {
@@ -44626,6 +44762,10 @@ function releaseAgentHooks() {
   setIsShuttingDown(true);
   try {
     stopBlink();
+  } catch (_e) {
+  }
+  try {
+    runDetachTeardowns();
   } catch (_e) {
   }
   try {

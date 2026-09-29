@@ -35,8 +35,10 @@ const warnedModules = new Set<string>();
  *  Several tiers can end up hooking the SAME bssl::ssl_log_secret of one
  *  module: a pattern Memory.scan still running when the chain gave up on it
  *  (poll hard timeout) can match after tier 4 already installed, and the legacy
- *  Cronet chain runs the symbol tier in parallel with a still-running pattern
- *  scan. Without a guard every secret is then emitted twice.
+ *  Cronet chain runs the symbol tier AND tier 4 in parallel with a still-running
+ *  pattern scan. Without a guard every secret is then emitted twice. (Tier 4's
+ *  ctx-write path emits through a keylog_callback, not dumpKeys, so it checks
+ *  claimKeylogHook itself — see boringssl_anchor_locator.ts.)
  *
  *  The FIRST tier to claim a module owns it; the others' dumpKeys become
  *  no-ops. A tier claims either when it delivers its first secret (the
@@ -119,17 +121,97 @@ function warnTotalMiss(moduleName: string, detail: string | undefined, tier4Ran:
 }
 
 /**
- * Tier 4's outcome: on success claim the module (so a late pattern match
- * stays silent; tier 4 prints its own banner), else the warning.
+ * A successful tier-4 install claims the module (so a late pattern match stays
+ * silent; tier 4 prints its own banner). Runs as soon as tier 4 installs, not
+ * when the miss is reported: tier 4 may have been started in parallel with a
+ * still-running pattern scan (startTier4InParallelWithPattern).
  */
-function reportTier4Outcome(moduleName: string, detail: string | undefined, installed: boolean): void {
-    if (!installed) {
-        warnTotalMiss(moduleName, detail, true);
-        return;
-    }
+function claimForTier4Install(moduleName: string): void {
     if (!claimKeylogHook(moduleName, "anchor")) {
         devlog(`[bssl-keylog] ${moduleName}: tier 4 installed, but the ${keylogHookOwner(moduleName)} tier already owns this module`);
     }
+}
+
+/** Tier 4's outcome as reported by the miss path: the warning if it missed. */
+function reportTier4Outcome(moduleName: string, detail: string | undefined, installed: boolean): void {
+    if (!installed) warnTotalMiss(moduleName, detail, true);
+}
+
+/* ------------------------------------------------------------------------- *
+ *  Tier 4, at most once per module
+ *
+ *  Tier 4 can be started from two places: the total-miss report below, and
+ *  (legacy Cronet chain) right after the symbol tier missed, in parallel with
+ *  a pattern scan that is still running. Whoever starts it first runs it; any
+ *  later start gets the SAME run (a boolean, or the in-flight promise).
+ * ------------------------------------------------------------------------- */
+
+/** A tier-4 run: sync runners yield a boolean, the real (async) one a promise. */
+export type Tier4Run = boolean | Promise<boolean>;
+
+const tier4Runs = new Map<string, Tier4Run>();
+
+function invokeTier4Runner(runner: Tier4Runner, moduleName: string, dumpKeys: DumpKeysCb, detail?: string): Tier4Run {
+    let result: boolean | Promise<boolean>;
+    try {
+        result = runner(moduleName, guardKeylogDumpKeys(moduleName, "anchor", dumpKeys), detail);
+    } catch (e) {
+        log(`[!] ${moduleName}: tier-4 anchor locator threw: ${e}`);
+        return false;
+    }
+    const settle = (installed: boolean): boolean => {
+        if (installed) claimForTier4Install(moduleName);
+        return installed;
+    };
+    if (!isThenable(result)) return settle(result === true);
+    return result.then(
+        (installed) => settle(installed === true),
+        (e) => {
+            log(`[!] ${moduleName}: tier-4 anchor locator threw: ${e}`);
+            return false;
+        },
+    );
+}
+
+/**
+ * Start tier 4 for `moduleName` unless it already ran / is running; returns
+ * that one run, or null when no tier-4 runner is registered. Does NOT warn:
+ * the total-miss warning stays with onAllKeylogTiersMissed. --pairip-safe
+ * gating is the caller's job.
+ */
+export function startTier4Once(moduleName: string, dumpKeys: DumpKeysCb, detail?: string): Tier4Run | null {
+    const existing = tier4Runs.get(moduleName);
+    if (existing !== undefined) return existing;
+    if (tier4Runner === null) return null;
+    const run = invokeTier4Runner(tier4Runner, moduleName, dumpKeys, detail);
+    tier4Runs.set(moduleName, run);
+    return run;
+}
+
+/**
+ * Legacy Cronet chain: the symbol tier just missed while the pattern scan may
+ * still be running. Waiting for that scan to settle (pollPatternOutcome, up to
+ * the hard bound) put Signal's libsignal_jni.so keylog hook live only AFTER its
+ * single TLS handshake, so tier 4 is started NOW, in parallel. The ownership
+ * guard keeps a later pattern match from emitting the same secrets twice.
+ * Returns true iff tier 4 was started (or had already been started).
+ */
+export function startTier4InParallelWithPattern(
+    moduleName: string, hooker: { found_ssl_log_secret?: boolean }, dumpKeys: DumpKeysCb,
+): boolean {
+    // Only a pattern hooker that has not matched yet; a non-pattern hooker
+    // never reports a miss either (reportMissOncePatternSettles).
+    if (hooker.found_ssl_log_secret !== false) return false;
+    if (keylogHookOwners.has(moduleName)) return false; // a tier already delivers secrets
+    if (tier4Runner === null) return false;
+    devlog(`[bssl] ${moduleName}: symbol tier missed; starting anchor-locator in parallel with the running pattern scan`);
+    const run = startTier4Once(moduleName, dumpKeys);
+    if (isThenable(run)) {
+        run.then((installed) => {
+            if (!installed) devlog(`[bssl] ${moduleName}: parallel anchor-locator missed; waiting for the pattern scan to settle`);
+        });
+    }
+    return true;
 }
 
 /** Why the tier chain missed, as reported by the calling chain. */
@@ -171,29 +253,18 @@ export function onAllKeylogTiersMissed(
     const { detail, pairipDisabled } = report;
     // --pairip-safe disables the pattern tier (a memory scan); tier 4 scans too,
     // so honour the same gate.
-    if (tier4Runner === null || pairipDisabled) {
+    const run = pairipDisabled ? null : startTier4Once(moduleName, dumpKeys, detail);
+    if (run === null) {
         warnTotalMiss(moduleName, detail, false);
         return;
     }
-
-    let result: boolean | Promise<boolean>;
-    try {
-        result = tier4Runner(moduleName, guardKeylogDumpKeys(moduleName, "anchor", dumpKeys), detail);
-    } catch (e) {
-        log(`[!] ${moduleName}: tier-4 anchor locator threw: ${e}`);
-        result = false;
-    }
-    if (!isThenable(result)) {
-        reportTier4Outcome(moduleName, detail, result === true);
+    // `run` may be one started earlier in parallel with the pattern scan
+    // (startTier4InParallelWithPattern): its outcome is reused, never re-run.
+    if (!isThenable(run)) {
+        reportTier4Outcome(moduleName, detail, run);
         return;
     }
-    return result.then(
-        (installed) => reportTier4Outcome(moduleName, detail, installed === true),
-        (e) => {
-            log(`[!] ${moduleName}: tier-4 anchor locator threw: ${e}`);
-            reportTier4Outcome(moduleName, detail, false);
-        },
-    );
+    return run.then((installed) => reportTier4Outcome(moduleName, detail, installed));
 }
 
 /** Total-miss detail used when --boringssl-anchor-only skipped the pattern tier. */
@@ -226,5 +297,6 @@ export function _resetKeylogOutcomeReportsForTests(): void {
     reportedModules.clear();
     warnedModules.clear();
     keylogHookOwners.clear();
+    tier4Runs.clear();
     tier4Runner = null;
 }

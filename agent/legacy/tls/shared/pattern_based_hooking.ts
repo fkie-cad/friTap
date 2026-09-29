@@ -35,9 +35,32 @@ export function get_CPU_specific_pattern(
     return null;
 }
 
+// ssl_log_secret is executable code, so its byte pattern can only ever match an
+// r-x range. Scanning a module's whole address space — its data, .bss and (for
+// Rust libs such as Signal's libsignal_jni.so) runtime-churned writable ranges —
+// is pure cost and fault surface: the whole-module Memory.scan on libsignal_jni.so
+// faults on churned ranges and drops into the readable-parts cascade, which is the
+// 10s+ "pattern scan still running" with no result seen on Signal. For modules
+// at/above this size we skip the whole-module scan and scan only executable (r-x)
+// ranges. The bound sits between the small TLS libs that the existing whole-module
+// path already handles well (libssl.so / libconscrypt_jni.so are ~1-2 MiB) and
+// libsignal_jni.so (measured 8.6 MiB total, 6.4 MiB of it r-x, on Signal 8.27.1
+// arm64); larger BoringSSL monoliths (libcronet, libmonochrome) benefit too.
+const LARGE_MODULE_SCAN_BYTES = 4 * 1024 * 1024;
+
 export class PatternBasedHooking {
     found_ssl_log_secret: boolean;
     no_hooking_success: boolean;
+    // True once every scan cascade started on this instance has terminated
+    // (matched or exhausted every pattern variant). Read by
+    // agent/shared/boringssl_pattern_hook.ts:pollPatternOutcome so a settled
+    // miss is reported at the grace window instead of the 120 s hard bound.
+    // Mirrors agent/tls/shared/pattern_based_hooking.ts, but backed by a
+    // counter: one legacy instance can run several cascades at once (the
+    // onError readable-parts rescan beside the outer cascade, both actions of
+    // hook_tls_keylog_callback, the per-JSON-module loop).
+    public cascadeCompleted = false;
+    private activeCascades = 0;
     module: Module;
     private patterns: any = {};
     private rescannedRanges: Set<string> = new Set(); // Set to keep track of memory ranges that have been rescanned
@@ -51,6 +74,24 @@ export class PatternBasedHooking {
             return;
         }
         this.no_hooking_success = true;
+    }
+
+    /** A scan cascade started: the hooker is no longer settled. */
+    private beginCascade(): void {
+        this.activeCascades++;
+        this.cascadeCompleted = false;
+    }
+
+    /** A scan cascade reached a terminal outcome; settle once none is left running. */
+    private endCascade(): void {
+        if (this.activeCascades > 0) this.activeCascades--;
+        if (this.activeCascades === 0) this.cascadeCompleted = true;
+    }
+
+    /** Nothing to scan (no usable pattern / non-TLS module): settled unless a cascade is still running. */
+    private settleWithoutScan(): void {
+        this.beginCascade();
+        this.endCascade();
     }
 
     private createRegexFromModule(moduleName: string): RegExp {
@@ -116,12 +157,15 @@ export class PatternBasedHooking {
                 if (!this.found_ssl_log_secret) {
                     devlog_error("There was an error scanning memory: " + reason);
                     devlog_error("Trying to rescan memory with permissions in mind");
+                    this.beginCascade();
                     this.hookByPatternOnlyReadablePartsOnReturn(
                         patterns,
                         pattern_name,
                         userCallback,
                         (patternSuccess) => {
-                            if (!patternSuccess) {
+                            if (patternSuccess) {
+                                this.endCascade();
+                            } else {
                                 devlog("Primary pattern failed, trying fallback pattern (onReturn)...");
                                 this.hookByPatternOnlyReadablePartsOnReturn(
                                     patterns,
@@ -132,6 +176,7 @@ export class PatternBasedHooking {
                                             devlog_debug(`None of the patterns worked. You may need to adjust the patterns for ${moduleName}`);
                                             this.no_hooking_success = true;
                                         }
+                                        this.endCascade();
                                     },
                                     maxArgs
                                 );
@@ -160,6 +205,7 @@ export class PatternBasedHooking {
                 // Skip rather than scanning with an empty pattern.
                 devlog_debug("hookModuleByPatternOnReturn: no usable pattern, skipping scan");
                 this.no_hooking_success = true;
+                this.settleWithoutScan();
                 return;
             }
             // Known non-TLS library (OS-aware), e.g. WebView plat_support/loader:
@@ -167,6 +213,7 @@ export class PatternBasedHooking {
             if (matchNonTLSLibrary(this.module?.name)) {
                 devlog_debug(`hookModuleByPatternOnReturn: skipping non-TLS module ${this.module?.name}`);
                 this.no_hooking_success = true;
+                this.settleWithoutScan();
                 return;
             }
             const moduleBase = this.module.base;
@@ -174,8 +221,11 @@ export class PatternBasedHooking {
             devlog(`Module Base Address: ${moduleBase}`);
             devlog(`Module Size: ${moduleSize}`);
     
+            this.beginCascade();
             this.hookByPatternOnReturn(patterns, "primary_pattern", userCallback, maxArgs, (pattern_success) => {
-                if (!pattern_success) {
+                if (pattern_success) {
+                    this.endCascade();
+                } else {
                     devlog("Primary pattern failed, trying fallback pattern (onReturn)...");
                     this.hookByPatternOnReturn(
                         patterns,
@@ -187,6 +237,7 @@ export class PatternBasedHooking {
                                 devlog("None of the onReturn patterns worked. Adjust patterns as needed.");
                                 this.no_hooking_success = true;
                             }
+                            this.endCascade();
                         }
                     );
                 }
@@ -207,6 +258,25 @@ export class PatternBasedHooking {
     }
 
     public hook_with_pattern_from_json_onReturn(
+        action_type: keyof ActionPatterns,
+        module_name: string,
+        json_module_name: string,
+        jsonContent: string,
+        userCallback: (args: any[], retval?: NativePointer) => void,
+        maxArgs: number
+    ): void {
+        // Kickoff guard: settles the hooker if no branch below starts a cascade
+        // (no JSON entry for this module), and keeps it unsettled until every
+        // cascade started here has been counted.
+        this.beginCascade();
+        try {
+            this.startPatternScansFromJsonOnReturn(action_type, module_name, json_module_name, jsonContent, userCallback, maxArgs);
+        } finally {
+            this.endCascade();
+        }
+    }
+
+    private startPatternScansFromJsonOnReturn(
         action_type: keyof ActionPatterns,
         module_name: string,
         json_module_name: string,
@@ -303,6 +373,16 @@ export class PatternBasedHooking {
             return;
         }
 
+        // Large modules (e.g. libsignal_jni.so): skip the whole-module scan and
+        // scan only executable (r-x) ranges via the readable-parts path. This is
+        // where ssl_log_secret always lives, and it avoids the multi-MB whole-module
+        // scan + churned-range fault cascade that stalls the pattern tier.
+        if (moduleSize >= LARGE_MODULE_SCAN_BYTES) {
+            devlog(`[pattern-scan] ${moduleName ?? "<unknown>"}: large module (${Math.floor(moduleSize / 1048576)} MiB) — scanning executable (r-x) ranges only for ${pattern_name}, skipping whole-module scan`);
+            this.hookByPatternOnlyReadableParts(patterns, pattern_name, onMatchCallback, onCompleteCallback);
+            return;
+        }
+
         Memory.scan(moduleBase, moduleSize, pattern, {
             onMatch: (address) => {
                 this.found_ssl_log_secret = true;
@@ -327,25 +407,26 @@ export class PatternBasedHooking {
                 if (this.found_ssl_log_secret) return;
                 devlog_error('There was an error scanning memory: ' + reason);
                 devlog_error(`Trying to rescan memory with permissions in mind on ${moduleName}`);
+                // Counted as its own cascade: it runs beside the outer one (whose
+                // onComplete still fires), so the hooker must not settle until
+                // this rescan has terminated too.
+                this.beginCascade();
                 this.hookByPatternOnlyReadableParts(patterns, pattern_name, onMatchCallback, (primary_success) => {
-                    if (this.found_ssl_log_secret) return;
-                    if (!primary_success) {
-                        devlog(`Primary pattern failed, trying fallback pattern on ${moduleName}`);
-                        this.hookByPatternOnlyReadableParts(patterns, "fallback_pattern", onMatchCallback, (fallback_success) => {
-                            if (this.found_ssl_log_secret) return;
-                            if (!fallback_success) {
-                                devlog(`Fallback pattern failed, trying second fallback pattern on ${moduleName}`);
-                                this.hookByPatternOnlyReadableParts(patterns, "second_fallback_pattern", onMatchCallback, (second_fallback_success) => {
-                                    if (this.found_ssl_log_secret) return;
-                                    if (!second_fallback_success) {
-                                        this.no_hooking_success = true;
-                                    } else {
-                                        this.no_hooking_success = false;
-                                    }
-                                });
+                    if (this.found_ssl_log_secret || primary_success) return this.endCascade();
+                    devlog(`Primary pattern failed, trying fallback pattern on ${moduleName}`);
+                    this.hookByPatternOnlyReadableParts(patterns, "fallback_pattern", onMatchCallback, (fallback_success) => {
+                        if (this.found_ssl_log_secret || fallback_success) return this.endCascade();
+                        devlog(`Fallback pattern failed, trying second fallback pattern on ${moduleName}`);
+                        this.hookByPatternOnlyReadableParts(patterns, "second_fallback_pattern", onMatchCallback, (second_fallback_success) => {
+                            if (this.found_ssl_log_secret) return this.endCascade();
+                            if (!second_fallback_success) {
+                                this.no_hooking_success = true;
+                            } else {
+                                this.no_hooking_success = false;
                             }
+                            this.endCascade();
                         });
-                    }
+                    });
                 });
             },
             onComplete: () => {
@@ -367,7 +448,14 @@ export class PatternBasedHooking {
         }
         const mod = this.module;
         const moduleName = mod?.name;
-        const protSets = ["r-x", "r--", "rw-", "rwx"] as const;
+        // ssl_log_secret is executable code: only r-x can ever match. For large
+        // modules restrict to r-x (the r--/rw-/rwx passes are wasted work and the
+        // fault surface that stalls the scan); small modules keep the full set so
+        // the already-working Conscrypt/libssl.so path is unchanged.
+        const isLargeModule = (mod?.size ?? 0) >= LARGE_MODULE_SCAN_BYTES;
+        const protSets: readonly ("r-x" | "r--" | "rw-" | "rwx")[] = isLargeModule
+            ? ["r-x"]
+            : ["r-x", "r--", "rw-", "rwx"];
 
         devlog(`trying to scan only readable parts of ${moduleName} ...`);
 
@@ -653,6 +741,7 @@ export class PatternBasedHooking {
             // Skip rather than scanning the whole module with an empty pattern.
             devlog_debug("hookModuleByPattern: no usable pattern, skipping scan");
             this.no_hooking_success = true;
+            this.settleWithoutScan();
             return;
         }
         // Known non-TLS library (OS-aware), e.g. WebView plat_support/loader:
@@ -660,27 +749,35 @@ export class PatternBasedHooking {
         if (matchNonTLSLibrary(this.module?.name)) {
             devlog_debug(`hookModuleByPattern: skipping non-TLS module ${this.module?.name}`);
             this.no_hooking_success = true;
+            this.settleWithoutScan();
             return;
         }
         const moduleName = this.module?.name;
+        // cascadeCompleted settles at every terminal branch below (match,
+        // fallback miss without second_fallback, second_fallback done), once
+        // no other cascade on this instance is still running.
+        this.beginCascade();
         this.hookByPattern(patterns, "primary_pattern", onMatchCallback, (primary_success) => {
-            if (!primary_success) {
-                devlog("Primary pattern failed, trying fallback pattern...");
-                this.hookByPattern(patterns, "fallback_pattern", onMatchCallback, (fallback_success) => {
-                    if (!fallback_success && patterns.second_fallback) {
-                        devlog("Fallback pattern failed, trying second fallback pattern...");
-                        this.hookByPattern(patterns, "second_fallback_pattern", onMatchCallback, (second_fallback_success) => {
-                            if (!second_fallback_success) {
-                                devlog_debug(`None of the patterns worked. You may need to adjust the patterns for ${moduleName}`);
-                                this.no_hooking_success = true;
-                            }
-                        });
-                    } else if (!fallback_success) {
-                        devlog_debug(`None of the patterns worked. You may need to adjust the patterns for ${moduleName}`);
-                        this.no_hooking_success = true;
-                    }
-                });
-            }
+            if (primary_success) return this.endCascade();
+            devlog("Primary pattern failed, trying fallback pattern...");
+            this.hookByPattern(patterns, "fallback_pattern", onMatchCallback, (fallback_success) => {
+                if (!fallback_success && patterns.second_fallback) {
+                    devlog("Fallback pattern failed, trying second fallback pattern...");
+                    this.hookByPattern(patterns, "second_fallback_pattern", onMatchCallback, (second_fallback_success) => {
+                        if (!second_fallback_success) {
+                            devlog_debug(`None of the patterns worked. You may need to adjust the patterns for ${moduleName}`);
+                            this.no_hooking_success = true;
+                        }
+                        this.endCascade();
+                    });
+                    return;
+                }
+                if (!fallback_success) {
+                    devlog_debug(`None of the patterns worked. You may need to adjust the patterns for ${moduleName}`);
+                    this.no_hooking_success = true;
+                }
+                this.endCascade();
+            });
         });
     }
 
@@ -749,6 +846,17 @@ export class PatternBasedHooking {
 
     // Method to hook functions using patterns from JSON
     private hook_with_pattern_from_json(action_type:keyof ActionPatterns, module_name: string, json_module_name: string, jsonContent: string, hookCallback: (args: any[]) => void): void {
+        // Kickoff guard: settles the hooker if no branch starts a cascade (no JSON
+        // entry for this module), otherwise defers to the cascades started here.
+        this.beginCascade();
+        try {
+            this.startPatternScansFromJson(action_type, module_name, json_module_name, jsonContent, hookCallback);
+        } finally {
+            this.endCascade();
+        }
+    }
+
+    private startPatternScansFromJson(action_type:keyof ActionPatterns, module_name: string, json_module_name: string, jsonContent: string, hookCallback: (args: any[]) => void): void {
         // Load patterns from the JSON file
         this.loadPatternsFromJSON(jsonContent);
 

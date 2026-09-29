@@ -23,7 +23,7 @@ import threading
 import time
 from typing import IO, TYPE_CHECKING, List, Optional
 
-from friTap.constants import build_infrastructure_bpf
+from friTap.constants import build_capture_bpf
 
 from .base import OutputHandler
 
@@ -44,9 +44,12 @@ PCAP_MAGIC_BE = 0xD4C3B2A1
 class LiveAutoDecryptHandler(OutputHandler):
     """Raw packet capture + TLS keys → PCAPNG FIFO for Wireshark auto-decrypt."""
 
-    def __init__(self, is_mobile: bool = False, device_id: Optional[str] = None) -> None:
+    def __init__(self, is_mobile: bool = False, device_id: Optional[str] = None,
+                 include_loopback: bool = False, filter_infrastructure: bool = True) -> None:
         self._is_mobile = is_mobile
         self._device_id = device_id
+        self._include_loopback = include_loopback
+        self._filter_infrastructure = filter_infrastructure
         self._tmpdir: Optional[str] = None
         self._fifo_path: Optional[str] = None
         self._file: Optional[IO] = None
@@ -282,9 +285,17 @@ class LiveAutoDecryptHandler(OutputHandler):
         raw_bytes = bytes(packet)
         self._write_epb(raw_bytes)
 
+    def _capture_bpf(self) -> str:
+        """Capture-side BPF honouring --no-filter-infrastructure / --loopback."""
+        return build_capture_bpf(filter_infrastructure=self._filter_infrastructure,
+                                 include_loopback=self._include_loopback)
+
     def _capture_local_tcpdump(self) -> None:
         """Capture using local tcpdump subprocess writing pcap to stdout."""
         cmd = ["tcpdump", "-U", "-i", "any", "-s", "0", "-w", "-"]
+        bpf = self._capture_bpf()
+        if bpf:
+            cmd.append(bpf)
         try:
             self._subprocess = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
@@ -320,10 +331,10 @@ class LiveAutoDecryptHandler(OutputHandler):
             android.install_tcpdump()
 
         adb_cmd = self._build_adb_cmd()
-        tcpdump_cmd = (
-            f'{android.tcpdump_path} -U -i any -s 0 -w - '
-            f'"{build_infrastructure_bpf()}"'
-        )
+        tcpdump_cmd = f'{android.tcpdump_path} -U -i any -s 0 -w -'
+        bpf = self._capture_bpf()
+        if bpf:
+            tcpdump_cmd += f' "{bpf}"'
         full_cmd = adb_cmd + ["shell", tcpdump_cmd]
 
         self._logger.info("Starting mobile capture via adb exec-out tcpdump")

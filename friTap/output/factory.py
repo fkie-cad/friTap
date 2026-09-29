@@ -317,7 +317,9 @@ class OutputHandlerFactory:
                         else None
                     )
                     live_handler = LiveAutoDecryptHandler(
-                        is_mobile=is_mobile, device_id=device_id
+                        is_mobile=is_mobile, device_id=device_id,
+                        include_loopback=getattr(config.output, "include_loopback", False),
+                        filter_infrastructure=getattr(config.output, "filter_infrastructure", True),
                     )
                     description = 'friTap live auto-decrypt (raw capture + TLS keys)'
                 elif live_mode == "wireshark":
