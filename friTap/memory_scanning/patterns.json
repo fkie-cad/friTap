@@ -191,6 +191,10 @@
         },
         "B_ssl_method_ptr": {
           "enabled": true,
+          "emit_secret_bundle": true,
+          "_emit_secret_bundle_doc": "Opt-in: on the HS_COMPLETE path, additionally emit a leak-safe tls_secret_bundle message (both randoms + the three application-epoch traffic secrets) so an offline mid-stream decrypter can pair flows that have NO ClientHello in the pcap. The ordinary NSS keylog line is still emitted; this is a supplement, not a replacement. No cipher_id: this build has no verified SSL3_STATE offset for it.",
+          "seed_from_ssl_io": true,
+          "_seed_from_ssl_io_doc": "Additional Tier B needle source: the agent Interceptor.attaches SSL_read/SSL_write (arg0 = SSL*) once per process and reads ssl->method (field 0) to derive the needle. SSL_read/SSL_write fire on ANY active session, including one already open before friTap attached, so Tier B recovers a purely pre-existing TLS session even though no SSL_HANDSHAKE (03 03 04 03) ever appears for Tier A to anchor on. The hooks detach after the first successful seed (zero hot-path overhead), never overwrite a needle Tier A already derived, and fall back silently to Tier A / the RVA hint if the exports do not resolve. Opt-out with false.",
           "_doc": "The workhorse. ssl->method points at one static SSL_PROTOCOL_METHOD shared by every TLS SSL object and sits at offset 0, so a single exact 8-byte needle enumerates every LIVE SSL in the heap - pointer walking instead of byte-pattern archaeology. From each SSL we read client_random, the three live SSL3_STATE traffic secrets (which survive the handshake for as long as the socket is pooled), the TLS 1.2 master secret via established_session/session, and the full Tier A slot set whenever s3->hs is non-NULL.",
           "needle": {
             "module": "libmonochrome_64.so",
@@ -436,6 +440,10 @@
         },
         "B_ssl_method_ptr": {
           "enabled": true,
+          "emit_secret_bundle": true,
+          "_emit_secret_bundle_doc": "Opt-in: on the HS_COMPLETE path, additionally emit a leak-safe tls_secret_bundle message (both randoms + the three application-epoch traffic secrets) so an offline mid-stream decrypter can pair flows that have NO ClientHello in the pcap. The ordinary NSS keylog line is still emitted; this is a supplement, not a replacement. No cipher_id: this build has no verified SSL3_STATE offset for it.",
+          "seed_from_ssl_io": true,
+          "_seed_from_ssl_io_doc": "Additional Tier B needle source: the agent Interceptor.attaches SSL_read/SSL_write (arg0 = SSL*) once per process and reads ssl->method (field 0) to derive the needle. SSL_read/SSL_write fire on ANY active session, including one already open before friTap attached, so Tier B recovers a purely pre-existing TLS session even though no SSL_HANDSHAKE (03 03 04 03) ever appears for Tier A to anchor on. The hooks detach after the first successful seed (zero hot-path overhead), never overwrite a needle Tier A already derived, and fall back silently to Tier A / the RVA hint if the exports do not resolve. Opt-out with false.",
           "_doc": "The workhorse. ssl->method points at one static SSL_PROTOCOL_METHOD shared by every TLS SSL object and sits at offset 0, so a single exact 8-byte needle enumerates every LIVE SSL in the heap - pointer walking instead of byte-pattern archaeology. From each SSL we read client_random, the three live SSL3_STATE traffic secrets (which survive the handshake for as long as the socket is pooled), the TLS 1.2 master secret via established_session/session, and the full Tier A slot set whenever s3->hs is non-NULL.",
           "needle": {
             "_note": "No static RVA for libsignal's in-tree BoringSSL: rva=null so resolveNeedleValue() returns null until Tier A anchors a live SSL_HANDSHAKE and derives ssl->method. A capture must be running while a Signal chat connection handshakes (force one with `adb shell svc wifi disable && svc wifi enable` — airplane mode does NOT drop WiFi on Pixel 7).",

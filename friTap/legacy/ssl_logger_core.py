@@ -2504,16 +2504,29 @@ class SSL_Logger():
     # rather than blocking the capture / Frida callback thread.
     _SCAN_QUEUE_MAXSIZE = 2048
 
+    def _signal_live_selected(self) -> bool:
+        """True when 'signal' is among the configured capture protocols.
+
+        Enables live Signal message decoding on the flow collector even when no
+        passive-analysis (--scan) plugins are active.
+        """
+        if getattr(self._config, "protocol", None) == "signal":
+            return True
+        protocols = getattr(self._config, "protocols", None) or []
+        return "signal" in protocols
+
     def _setup_live_scan(self):
         """Wire up live passive analysis of observed traffic, if requested.
 
         Must be called BEFORE instrumentation starts so no completed flows are
         missed. Subscribes a lightweight handler that ENQUEUES completed flows
         onto a bounded queue; a daemon worker thread drains it and runs the
-        analyzers off the Frida callback thread. No-op when --scan is unset.
+        analyzers off the Frida callback thread. No-op when neither --scan nor
+        live Signal decoding is requested.
         """
         scan_spec = getattr(self._config.output, "scan", None)
-        if not scan_spec:
+        signal_live = self._signal_live_selected()
+        if not scan_spec and not signal_live:
             return
 
         try:
@@ -2523,24 +2536,35 @@ class SSL_Logger():
             from ..flow.collector import FlowCollector
             from ..flow.models import FlowEventType
 
-            # Forward reveal_pii so the privacy analyzer keeps raw values when
-            # --scan-show-pii is set; other analyzers ignore the opt. Redaction
-            # is still enforced at the reporter layer in _finalize_live_scan.
-            reveal_pii = getattr(self._config.output, "scan_show_pii", False)
-            analyzer_path = getattr(self._config.output, "scan_analyzer_path", None)
-            self._scan_plugins = [
-                AnalyzerPlugin(a)
-                for a in resolve_analyzers(
-                    scan_spec, analyzer_path=analyzer_path, reveal_pii=reveal_pii
-                )
-            ]
-            if not self._scan_plugins:
+            # Passive-analysis plugins are only built when --scan is set.
+            if scan_spec:
+                # Forward reveal_pii so the privacy analyzer keeps raw values
+                # when --scan-show-pii is set; other analyzers ignore the opt.
+                # Redaction is still enforced at the reporter layer in
+                # _finalize_live_scan.
+                reveal_pii = getattr(self._config.output, "scan_show_pii", False)
+                analyzer_path = getattr(self._config.output, "scan_analyzer_path", None)
+                self._scan_plugins = [
+                    AnalyzerPlugin(a)
+                    for a in resolve_analyzers(
+                        scan_spec, analyzer_path=analyzer_path, reveal_pii=reveal_pii
+                    )
+                ]
+
+            # Nothing to wire when --scan resolved to no plugins and live Signal
+            # decoding was not requested.
+            if not self._scan_plugins and not signal_live:
                 return
 
             # Mirror the TUI wiring (capture_controller.py): give the collector
             # the event bus and subscribe it to the data/ohttp/library events.
+            # ``signal_messages`` turns on live Signal message decoding, which
+            # only catches keys arriving before/at the DATA; late keys are
+            # recovered by the session-end offline reprocess (_maybe_reprocess_signal).
             if self._flow_collector is None:
-                self._flow_collector = FlowCollector(event_bus=self._event_bus)
+                self._flow_collector = FlowCollector(
+                    event_bus=self._event_bus, signal_messages=signal_live
+                )
             self._flow_collector.set_event_bus(self._event_bus)
             self._event_bus.subscribe(DatalogEvent, self._flow_collector.on_data)
             self._event_bus.subscribe(OhttpEvent, self._flow_collector.on_ohttp)
@@ -2550,31 +2574,37 @@ class SSL_Logger():
             self._event_bus.subscribe(
                 SessionEvent, self._flow_collector.on_session_event
             )
+            # Feed Signal key material to the live decryptor (no-op unless the
+            # collector was built with signal_messages=True).
+            self._event_bus.subscribe(KeylogEvent, self._flow_collector.on_keylog)
             self._flow_collector.set_capture_target(self._config.target)
 
-            # Bounded queue + daemon worker so analyzers never run inline on the
-            # Frida callback thread.
-            self._scan_queue = queue.Queue(maxsize=self._SCAN_QUEUE_MAXSIZE)
-            self._scan_stop.clear()
+            # The bounded queue + daemon worker only make sense with passive
+            # analysis plugins; a signal-only collector needs none of it.
+            if self._scan_plugins:
+                # Bounded queue + daemon worker so analyzers never run inline on
+                # the Frida callback thread.
+                self._scan_queue = queue.Queue(maxsize=self._SCAN_QUEUE_MAXSIZE)
+                self._scan_stop.clear()
 
-            def _enqueue_completed_flow(event):
-                if event.flow_event_type != FlowEventType.COMPLETED or event.flow is None:
-                    return
-                try:
-                    self._scan_queue.put_nowait(event.flow)
-                except queue.Full:
-                    self._scan_drop_count += 1
+                def _enqueue_completed_flow(event):
+                    if event.flow_event_type != FlowEventType.COMPLETED or event.flow is None:
+                        return
+                    try:
+                        self._scan_queue.put_nowait(event.flow)
+                    except queue.Full:
+                        self._scan_drop_count += 1
 
-            self._event_bus.subscribe(FlowEvent, _enqueue_completed_flow)
+                self._event_bus.subscribe(FlowEvent, _enqueue_completed_flow)
 
-            self._scan_thread = threading.Thread(
-                target=self._scan_worker, name="fritap-scan", daemon=True,
-            )
-            self._scan_thread.start()
-            self.logger.info(
-                "Passive analysis enabled (%s) — analyzing observed traffic",
-                ", ".join(p.name for p in self._scan_plugins),
-            )
+                self._scan_thread = threading.Thread(
+                    target=self._scan_worker, name="fritap-scan", daemon=True,
+                )
+                self._scan_thread.start()
+                self.logger.info(
+                    "Passive analysis enabled (%s) — analyzing observed traffic",
+                    ", ".join(p.name for p in self._scan_plugins),
+                )
         except Exception as e:
             # A scan setup failure must never break normal capture.
             self.logger.warning("Could not enable passive analysis: %s", e)

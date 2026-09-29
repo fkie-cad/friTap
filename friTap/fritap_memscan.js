@@ -1,5 +1,5 @@
 📦
-102388 /agent/memory_scan_agent.js
+108663 /agent/memory_scan_agent.js
 ✄
 // agent/ms_agent/state.ts
 var state = {
@@ -419,6 +419,189 @@ function resolveNeedleValue() {
   var mod = Process.findModuleByName(hint.module);
   return mod === null ? null : mod.base.add(ptr(hint.rva));
 }
+var needleSeedInstalled = false;
+var needleSeedListeners = [];
+function seedFromSslIoEnabled() {
+  var tier = state.profile && state.profile.tiers && state.profile.tiers.B_ssl_method_ptr;
+  return !!tier && tier.seed_from_ssl_io !== false;
+}
+function seedNeedleFromSsl(ssl, source) {
+  if (ssl === null || ssl.isNull())
+    return false;
+  var method;
+  try {
+    method = readPointerOrNull(ssl.add(state.profile.struct_offsets.SSL.method));
+  } catch (e) {
+    return false;
+  }
+  if (!looksLikeHeapPointer(method))
+    return false;
+  if (state.needle !== null)
+    return state.needle.value.equals(method);
+  var mod = null;
+  try {
+    mod = Process.findModuleByAddress(untag(method));
+  } catch (e) {
+    mod = null;
+  }
+  state.needle = {
+    value: method,
+    module: mod === null ? null : mod.name,
+    rva: mod === null ? null : "0x" + untag(method).sub(mod.base).toString(16),
+    source
+  };
+  log("info", "Tier B needle derived from SSL_read/SSL_write: " + method + (mod === null ? "" : " (" + state.needle.module + "+" + state.needle.rva + ")"));
+  return true;
+}
+function candidateModules() {
+  var out = [];
+  var profiles = state.profiles !== null ? state.profiles : [state.profile];
+  for (var i = 0; i < profiles.length; i++) {
+    var p = profiles[i];
+    var mods = p && p.match && p.match.modules;
+    if (!mods)
+      continue;
+    for (var j = 0; j < mods.length; j++) {
+      if (typeof mods[j] === "string" && mods[j].indexOf("*") === -1)
+        out.push(mods[j]);
+    }
+  }
+  return out;
+}
+function resolveSslExport(name) {
+  var mods = candidateModules();
+  for (var i = 0; i < mods.length; i++) {
+    try {
+      var m = Process.findModuleByName(mods[i]);
+      var a = m === null ? null : m.findExportByName(name);
+      if (a !== null && !a.isNull())
+        return a;
+    } catch (e2) {
+    }
+  }
+  try {
+    var g = Module.findGlobalExportByName(name);
+    if (g !== null && !g.isNull())
+      return g;
+  } catch (e2) {
+  }
+  try {
+    var all = Process.enumerateModules();
+    for (var k = 0; k < all.length; k++) {
+      try {
+        var e = all[k].findExportByName(name);
+        if (e !== null && !e.isNull())
+          return e;
+      } catch (err) {
+      }
+    }
+  } catch (e2) {
+  }
+  return null;
+}
+function resolveSslExportsAll(name) {
+  var out = [];
+  var seen = {};
+  function add(p) {
+    if (p === null || p.isNull())
+      return;
+    var key = p.toString();
+    if (seen[key])
+      return;
+    seen[key] = true;
+    out.push(p);
+  }
+  var single = resolveSslExport(name);
+  if (single !== null)
+    add(single);
+  try {
+    var all = Process.enumerateModules();
+    for (var i = 0; i < all.length; i++) {
+      var m = all[i];
+      try {
+        var ex = m.findExportByName(name);
+        if (ex !== null && !ex.isNull())
+          add(ex);
+      } catch (e) {
+      }
+      var nm = (m.name || "").toLowerCase();
+      var sslBearing = [
+        "libssl",
+        "boringssl",
+        "conscrypt",
+        "httpengine",
+        "signal"
+      ];
+      var isSslBearing = false;
+      for (var s = 0; s < sslBearing.length; s++) {
+        if (nm.indexOf(sslBearing[s]) !== -1) {
+          isSslBearing = true;
+          break;
+        }
+      }
+      if (!isSslBearing)
+        continue;
+      try {
+        var syms = m.enumerateSymbols();
+        for (var j = 0; j < syms.length; j++) {
+          if (syms[j].name === name && syms[j].address !== null && !syms[j].address.isNull())
+            add(syms[j].address);
+        }
+      } catch (e2) {
+      }
+    }
+  } catch (e3) {
+  }
+  return out;
+}
+function detachNeedleSeedHooks() {
+  for (var i = 0; i < needleSeedListeners.length; i++) {
+    try {
+      needleSeedListeners[i].detach();
+    } catch (e) {
+    }
+  }
+  needleSeedListeners = [];
+}
+function onSslIoEnter(args) {
+  try {
+    seedNeedleFromSsl(args[0], "ssl_io");
+  } catch (e) {
+  }
+  if (state.needle !== null)
+    detachNeedleSeedHooks();
+}
+function attachSslIoHook(name) {
+  var addrs = resolveSslExportsAll(name);
+  var n = 0;
+  for (var i = 0; i < addrs.length; i++) {
+    try {
+      needleSeedListeners.push(Interceptor.attach(addrs[i], { onEnter: onSslIoEnter }));
+      n++;
+    } catch (e) {
+    }
+  }
+  return n > 0;
+}
+function installNeedleSeedHooks() {
+  if (needleSeedInstalled)
+    return;
+  needleSeedInstalled = true;
+  if (!seedFromSslIoEnabled())
+    return;
+  if (typeof Interceptor === "undefined" || Interceptor === null)
+    return;
+  var names = ["SSL_read", "SSL_write", "SSL_read_ex", "SSL_write_ex"];
+  var attached = 0;
+  for (var i = 0; i < names.length; i++)
+    if (attachSslIoHook(names[i]))
+      attached++;
+  if (attached === 0) {
+    log("warn", "Tier B needle seed: could not resolve SSL_read/SSL_write in this process; falling back to Tier A / profile hint");
+  } else {
+    log("info", "Tier B needle seed hooks installed on " + attached + " SSL I/O export(s)");
+  }
+}
 function emitS3TrafficSecrets(ssl, s3, clientRandom, stats) {
   var secrets = state.profile.tiers.B_ssl_method_ptr.s3_secrets;
   var off = state.profile.struct_offsets.SSL3_STATE;
@@ -432,6 +615,42 @@ function emitS3TrafficSecrets(ssl, s3, clientRandom, stats) {
       continue;
     emitKeylog(entry.label, clientRandom, hexBytes(bytes), "B", ssl, entry.field, stats);
   }
+}
+function emitSecretBundle(ssl, s3, clientRandom, stats) {
+  var tier = state.profile.tiers.B_ssl_method_ptr;
+  if (!tier.emit_secret_bundle)
+    return false;
+  var off = state.profile.struct_offsets.SSL3_STATE;
+  var c = state.profile.constants;
+  var serverRandomBytes = readBytes(s3.add(off.server_random), c.ssl3_random_size);
+  if (!looksLikeRandom(serverRandomBytes))
+    return false;
+  var fields = [
+    { field: "write_traffic_secret", key: "client_traffic_secret_0" },
+    { field: "read_traffic_secret", key: "server_traffic_secret_0" },
+    { field: "exporter_secret", key: "exporter_secret" }
+  ];
+  var bundle = {};
+  for (var i = 0; i < fields.length; i++) {
+    var len = readU8OrNull(s3.add(off[fields[i].field + "_len"]));
+    if (len === null || len === 0)
+      return false;
+    var bytes = readBytes(s3.add(off[fields[i].field]), len);
+    if (!looksLikeSecret(bytes))
+      return false;
+    bundle[fields[i].key] = hexBytes(bytes);
+  }
+  send({
+    type: "tls_secret_bundle",
+    client_random: clientRandom,
+    server_random: hexBytes(serverRandomBytes),
+    client_traffic_secret_0: bundle.client_traffic_secret_0,
+    server_traffic_secret_0: bundle.server_traffic_secret_0,
+    exporter_secret: bundle.exporter_secret,
+    ssl: ssl.toString()
+  });
+  stats.emitted++;
+  return true;
 }
 function sessionBaseFor(path, ssl, s3) {
   var off = state.profile.struct_offsets;
@@ -498,6 +717,7 @@ function processSslCandidate(ssl, stats) {
     }
   } else if (handshakeState === HS_COMPLETE) {
     emitS3TrafficSecrets(ssl, s3, clientRandom, stats);
+    emitSecretBundle(ssl, s3, clientRandom, stats);
   } else {
     stats.indeterminateHs++;
   }
@@ -558,6 +778,7 @@ function runTierC(ranges, stats, errors) {
 var BoringsslEngine = {
   name: "boringssl",
   runTiers: function(ranges, stats, errors) {
+    installNeedleSeedHooks();
     if (shouldRunTierA())
       runTierA(ranges, stats, errors);
     else

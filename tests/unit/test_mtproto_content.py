@@ -883,3 +883,55 @@ def test_allowlisted_update_short_message_still_yields_text():
     assert [t.body for t in texts] == ["short hi"]
     assert texts[0].method == "updateShortMessage"
     assert texts[0].peer_id == 4242
+
+
+# --------------------------------------------------------------------------- #
+# TL ``out`` flag: who authored the message (not which way the packet went)
+# --------------------------------------------------------------------------- #
+
+_TL_OUT_FLAG = 1 << 1
+_TL_FROM_ID_FLAG = 1 << 8
+
+
+def _update_short_message(flags: int, *, user_id: int = 4242) -> bytes:
+    return (
+        _u32(_UPDATE_SHORT_MESSAGE) + _u32(flags) + _i32(7) + _i64(user_id)
+        + _tl_str("short hi") + _i32(1) + _i32(1) + _i32(1700000000)
+    )
+
+
+def test_echoed_own_message_is_outgoing():
+    """A server->client ``message#`` with out (flags 0x102) is ours: outgoing."""
+    echo = (
+        _u32(_MESSAGE)
+        + _i32(_TL_OUT_FLAG | _TL_FROM_ID_FLAG)  # flags = 0x102
+        + _i32(0)                                # flags2
+        + _i32(555)                              # id:int
+        + _u32(_PEER_USER) + _i64(1111)          # from_id:Peer (self)
+        + _u32(_PEER_USER) + _i64(2222)          # peer_id:Peer (the peer)
+        + _i32(1700000000)                       # date:int
+        + _tl_str("my own echo")                 # message:string
+    )
+    texts = _text_items(_u32(_UPDATE_NEW_MESSAGE) + echo + _i32(1) + _i32(1))
+    assert [t.body for t in texts] == ["my own echo"]
+    assert texts[0].outgoing is True
+    assert texts[0].sender_id == 1111
+    assert texts[0].peer_id == 2222
+
+
+def test_incoming_message_is_not_outgoing():
+    texts = _text_items(_u32(_UPDATE_NEW_MESSAGE) + _schema_message("hi") + _i32(1) + _i32(1))
+    assert texts[0].outgoing is False
+
+
+def test_incoming_update_short_message_sender_is_peer():
+    texts = _text_items(_update_short_message(0))
+    assert texts[0].outgoing is False
+    assert texts[0].sender_id == texts[0].peer_id == 4242
+
+
+def test_outgoing_update_short_message_has_no_sender():
+    texts = _text_items(_update_short_message(_TL_OUT_FLAG))
+    assert texts[0].outgoing is True
+    assert texts[0].sender_id == 0
+    assert texts[0].peer_id == 4242

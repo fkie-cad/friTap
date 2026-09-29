@@ -108,6 +108,11 @@ class Http3Parser(BaseParser):
 
     PROTOCOL = PROTOCOL_HTTP3
 
+    # HTTP/3 only ever rides QUIC (RFC 9114 3.2). Declaring the transport lets
+    # the registry treat this parser as the QUIC opt-in candidate; it must never
+    # be chosen for a raw TCP/UDP payload that is not QUIC.
+    TRANSPORTS = ("quic",)
+
     def __init__(self) -> None:
         self._buffers: dict[str, bytearray] = {}  # per-direction buffers
         self._active_streams: dict[str, dict[int, _H3StreamState]] = {}  # direction -> {stream_id: state}
@@ -150,9 +155,17 @@ class Http3Parser(BaseParser):
             if type_len + 1 > len(data):
                 return False
             frame_length, _ = decode_varint(data, type_len)
-            # Must be a known HTTP/3 frame type with reasonable length
-            if frame_type in _KNOWN_FRAME_TYPES and frame_length <= _MAX_FRAME_LENGTH:
-                return True
+            # Must be a known HTTP/3 frame type with reasonable length.
+            if frame_type not in _KNOWN_FRAME_TYPES or frame_length > _MAX_FRAME_LENGTH:
+                return False
+            # A stream never opens with a zero-length DATA frame: request
+            # streams begin with HEADERS, control/QPACK streams with a non-DATA
+            # frame. mDNS/DNS-over-UDP packets start "00 00 .." (transaction id
+            # 0), which decodes as a DATA frame (type 0x00) of length 0; reject
+            # that shape so plaintext DNS on UDP is not mislabelled HTTP/3.
+            if frame_type == _FRAME_DATA and frame_length == 0:
+                return False
+            return True
         except (ValueError, IndexError):
             pass
         return False

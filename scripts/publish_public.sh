@@ -3,7 +3,7 @@
 # publish_public.sh — regenerate the scrubbed PUBLIC snapshot (friTap tiering §E).
 #
 # Git cannot push a SUBSET of a commit, so the public tree is a regenerated
-# snapshot: take the publishable set (git-tracked + non-ignored), strip every
+# snapshot: take the publishable set (the committed HEAD tree), strip every
 # private.txt path, scrub the substantive Signal-E2E reveals, run the leak guard,
 # then commit-tree that tree onto a local `public-main` branch. The maintainer
 # pushes `public-main -> github:main` separately (today github push = DISABLE).
@@ -57,8 +57,13 @@ mkdir -p "$TREE"
 
 echo "== §E publish ($([ "$DRY_RUN" -eq 1 ] && echo dry-run || echo FULL)) =="
 
-# --- 1. publishable set (tracked + non-ignored), into the throwaway tree -------
-fritap_assemble_public_tree "$REPO_ROOT" "$TREE"
+# --- 1. publishable set (committed HEAD only), into the throwaway tree ---------
+# Untracked files and uncommitted edits are never published — commit first.
+fritap_assemble_public_tree "$REPO_ROOT" "$TREE" head
+DIRTY_COUNT="$(git -C "$REPO_ROOT" status --porcelain | wc -l | tr -d ' ')"
+if [ "$DIRTY_COUNT" -gt 0 ]; then
+  echo "  note: $DIRTY_COUNT uncommitted/untracked path(s) NOT published (publishing HEAD $(git -C "$REPO_ROOT" rev-parse --short HEAD))"
+fi
 
 # --- 2. strip private.txt paths ------------------------------------------------
 fritap_strip_private_paths "$TREE" "$PRIVATE_TXT"

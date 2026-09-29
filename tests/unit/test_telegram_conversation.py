@@ -193,6 +193,32 @@ def test_sender_id_to_name_consults_structured_users():
     assert w._sender_id_to_name([], [PEER_USER]) == {str(PEER_ID): "db Forscher"}
 
 
+def _bubble_header(text: str, body: str) -> str:
+    """The bubble-header line (arrow + caption) directly above *body*'s line."""
+    lines = text.splitlines()
+    return lines[next(i for i, ln in enumerate(lines) if body in ln) - 1]
+
+
+def test_tl_out_message_on_read_packet_renders_as_sent():
+    echo = _text("read", "my echo", 100, PEER_ID, sender=str(SELF_ID), out=True)
+    text = _message_tab(_cloud_flow("e", [echo], users=[SELF_USER, PEER_USER]))
+    assert "→" in _bubble_header(text, "my echo")
+    assert "from Evil kneebel" not in text
+
+
+def test_server_echo_and_genuine_reply_keep_their_own_directions():
+    """Regression: a server->client echo of our message is ours, the reply is not."""
+    echo = _cloud_flow("e", [_text("read", "my echo", 100, PEER_ID,
+                                   sender=str(SELF_ID), out=True)], users=[SELF_USER])
+    reply = _cloud_flow("r", [_text("read", "their reply", 200, PEER_ID,
+                                    sender=str(PEER_ID))], users=[PEER_USER])
+    text = _message_tab(echo, [echo, reply])
+    assert "2 messages" in text
+    assert "→" in _bubble_header(text, "my echo")
+    assert "←" in _bubble_header(text, "their reply")
+    assert "from db Forscher" in _bubble_header(text, "their reply")
+
+
 # ---------------------------------------------------------------------------
 # Secret Chat: both rows show the whole chat + participants
 # ---------------------------------------------------------------------------

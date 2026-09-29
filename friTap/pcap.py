@@ -1304,6 +1304,31 @@ class PCAP:
                 manifest["memory_scan_keylogs"] = {
                     proto: str(path) for proto, path in memscan_keylogs.items()
                 }
+            # Mid-stream TLS 1.3 secret-bundle sidecar (flows with no captured
+            # ClientHello). The BoringSSL memscan engine writes it co-located with
+            # the memory-scan keylog as ``<stem>.tls_midstream.secrets.jsonl``;
+            # record its path when it exists with content so the offline pipeline
+            # runs the mid-stream binding stage. Best-effort: never break finalize.
+            try:
+                from friTap.memory_scanning import _sidecar_paths_for
+                # All memscan sidecars share one base stem, so any memscan keylog
+                # entry resolves to the same tls_midstream path. Prefer the "tls"
+                # entry, but fall back to any available one — under --protocol
+                # signal there is no "tls" keylog even though the BoringSSL engine
+                # still writes the mid-stream bundle sidecar.
+                _ms_keylogs = getattr(self, "memory_scan_keylogs", None) or {}
+                ms_stem_source = _ms_keylogs.get("tls")
+                if not ms_stem_source and _ms_keylogs:
+                    ms_stem_source = next(iter(_ms_keylogs.values()), None)
+                if ms_stem_source:
+                    midstream_secrets = _sidecar_paths_for(
+                        str(ms_stem_source)).get("tls_midstream_secrets")
+                    if (midstream_secrets and os.path.isfile(midstream_secrets)
+                            and os.path.getsize(midstream_secrets) > 0):
+                        manifest["tls_midstream_secrets"] = str(midstream_secrets)
+            except Exception as e:
+                self.logger.debug(
+                    f"manifest tls_midstream secrets mapping skipped: {e}")
             # Prefer the per-protocol TLS split, then the BASE -k file, then the
             # last-handler split path. On Windows the target's TLS is SChannel, so
             # the <base>.tls split is never written and the real TLS secrets land in

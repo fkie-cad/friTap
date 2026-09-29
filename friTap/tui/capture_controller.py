@@ -737,7 +737,12 @@ class CaptureController:
         if self._capture_mode in data_modes:
             try:
                 from friTap.flow.collector import FlowCollector
-                self._flow_collector = FlowCollector()
+                # Live Signal message decoding is opt-in: only build the Signal
+                # decryptor when 'signal' is among the selected protocols. Live
+                # decoding only catches keys arriving before/at the DATA; late
+                # keys are recovered by the session-end offline reprocess below.
+                signal_messages = "signal" in _selected_protocols(state)
+                self._flow_collector = FlowCollector(signal_messages=signal_messages)
                 self._flow_collector.set_capture_target(state.target or "")
                 self._flow_collector.subscribe(self._on_flow_update)
             except ImportError:
@@ -863,12 +868,18 @@ class CaptureController:
             if self._flow_collector is not None:
                 from friTap.events import (
                     DatalogEvent,
+                    KeylogEvent,
                     LibraryDetectedEvent,
                     OhttpEvent,
                     SessionEvent,
                 )
                 self._ssl_logger._event_bus.subscribe(
                     DatalogEvent, self._flow_collector.on_data
+                )
+                # Feed Signal key material to the live decryptor. A no-op unless
+                # the collector was built with signal_messages=True.
+                self._ssl_logger._event_bus.subscribe(
+                    KeylogEvent, self._flow_collector.on_keylog
                 )
                 self._ssl_logger._event_bus.subscribe(
                     OhttpEvent, self._flow_collector.on_ohttp
@@ -1248,6 +1259,59 @@ class CaptureController:
             existing = {fallback_proto: base_keylog}
         return existing
 
+    def _maybe_reprocess_signal_late_keys(
+        self,
+        tap_path: str,
+        pcap_path: str,
+        keylog_files: dict,
+        protocols,
+    ) -> None:
+        """Session-end safety net: re-decode Signal offline to catch LATE keys.
+
+        Live Signal decoding (``FlowCollector(signal_messages=True)``) only
+        decodes a message whose ratchet key arrived BEFORE or WITH its ciphertext
+        DATA — the common live ordering. A key that lands strictly AFTER its
+        message's bytes is missed live. The offline pipeline re-reads the whole
+        pcap with the complete keylog and recovers those, so at session end we
+        rewrite the live ``.tap`` in place from the captured pcap + keylog,
+        headlessly (no modal), in a background worker.
+
+        Best-effort: fully guarded and never raises, so a failed reprocess never
+        breaks the normal capture-end flow. No-op unless 'signal' was captured
+        and a Signal keylog + a pcap are present on disk.
+        """
+        if "signal" not in (protocols or []):
+            return
+        if not tap_path or not pcap_path or not os.path.isfile(pcap_path):
+            return
+        keylog_files = keylog_files or {}
+        if not keylog_files.get("signal"):
+            return
+
+        tls_keylog = keylog_files.get("tls", "")
+        protocol_keylogs = {
+            proto: path for proto, path in keylog_files.items() if proto != "tls"
+        }
+
+        def _reprocess() -> None:
+            try:
+                from friTap.offline.pcap_to_tap import pcap_to_tap
+                pcap_to_tap(
+                    pcap_path,
+                    keylog_path=tls_keylog or None,
+                    tap_path=tap_path,
+                    protocol_keylogs=protocol_keylogs or None,
+                    use_manifest=True,
+                )
+            except Exception:
+                logger.debug(
+                    "Signal late-key offline reprocess failed", exc_info=True
+                )
+
+        # Runs off the Textual event loop; the interactive DecryptConfirmModal
+        # offer below is a separate, user-driven path and writes its own .tap.
+        self._screen.run_worker(_reprocess, thread=True)
+
     def _on_session_ended(
         self,
         result_stats: dict[str, str] | None = None,
@@ -1390,8 +1454,21 @@ class CaptureController:
                 if flow.flow_id not in written_ids:
                     self._tap_writer.write_flow(flow)
 
+        # Capture the live .tap path before stop_tap_recording() clears the
+        # writer, so the Signal late-key safety net can rewrite it offline.
+        reprocess_tap_path = (
+            self._tap_writer.path if self._tap_writer is not None else ""
+        )
+
         # Close tap writer after catching up remaining flows
         self.stop_tap_recording()
+
+        # Late-key safety net: if this was a Signal capture, re-decode the pcap
+        # offline into the same .tap so messages whose keys arrived AFTER their
+        # ciphertext (missed by live decoding) are still recovered.
+        self._maybe_reprocess_signal_late_keys(
+            reprocess_tap_path, decrypt_pcap, keylog_files, decrypt_protocols
+        )
 
         if flow_count > 0:
                 self._screen._get_activity_log().log_info(

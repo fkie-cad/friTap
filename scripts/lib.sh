@@ -8,14 +8,26 @@
 # private terms). Callers run under `set -euo pipefail`; these helpers are safe
 # under it.
 
-# Assemble the publishable set into the tree dir ($2) from repo root ($1):
-# tracked files PLUS new files that aren't gitignored (honoring .gitignore's
-# public-mirror allowlist), which auto-excludes every gitignored runtime
-# artifact without enumerating them.
+# Assemble the publishable set into the tree dir ($2) from repo root ($1).
+# Optional $3 selects the source:
+#   worktree (default) — tracked files PLUS new files that aren't gitignored
+#       (honoring .gitignore's public-mirror allowlist), copied from the working
+#       tree. Auto-excludes every gitignored runtime artifact without enumerating
+#       them; used by the pre-flight checks so uncommitted work is covered too.
+#   head — exactly the committed HEAD tree (no untracked files, no uncommitted
+#       edits). Used by the real publish so the snapshot matches its source commit.
 fritap_assemble_public_tree() {
-  local repo_root="$1" tree="$2"
-  ( cd "$repo_root" && git ls-files --cached --others --exclude-standard -z ) \
-    | rsync -a --files-from=- --from0 "$repo_root/" "$tree/"
+  local repo_root="$1" tree="$2" source="${3:-worktree}"
+  case "$source" in
+    worktree)
+      ( cd "$repo_root" && git ls-files --cached --others --exclude-standard -z ) \
+        | rsync -a --files-from=- --from0 "$repo_root/" "$tree/" ;;
+    head)
+      git -C "$repo_root" archive --format=tar HEAD | tar -x -C "$tree" ;;
+    *)
+      echo "fritap_assemble_public_tree: unknown source '$source' (worktree|head)" >&2
+      return 2 ;;
+  esac
 }
 
 # Strip every glob listed in private.txt ($2) from the public tree ($1).

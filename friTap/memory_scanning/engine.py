@@ -50,6 +50,26 @@ logger = logging.getLogger("friTap.memory_scanning.engine")
 MS_BACKOFF_FACTOR = 2.0
 MS_BACKOFF_CAP_SECONDS = 60.0
 
+# Granularity of the inter-scan wait. The wait between scans is served in slices
+# no longer than this, on the stop Event, rather than as a single blocking sleep.
+# Two reasons, both about staying responsive to Ctrl+C / stop:
+#   * a requested stop is observed within ~one slice regardless of how large the
+#     wait has grown via backoff (up to MS_BACKOFF_CAP_SECONDS);
+#   * each slice boundary RELEASES and re-acquires the GIL, so the main thread —
+#     which is the only thread CPython runs the SIGINT handler on — gets a fresh
+#     chance to win the GIL and service the pending signal every slice instead of
+#     just once per scan cycle. At small intervals the poll thread and Frida's
+#     message-dispatch thread otherwise saturate the GIL and starve it (device-
+#     confirmed: with --memory-scan-interval <= 0.3s friTap ignored 20+ SIGINTs).
+MS_STOP_POLL_SECONDS = 0.1
+
+# Guaranteed minimum yield between two scans. A very small configured interval
+# (or a backoff wait that has just reset to a tiny base) must never let scans run
+# effectively back-to-back with no GIL-releasing gap, or the signal/main thread
+# never runs. This floor is small enough not to change the intended cadence at
+# normal intervals yet always leaves one yield window per scan cycle.
+MS_MIN_YIELD_SECONDS = 0.05
+
 # The poll-thread name of the in-process ("self") scan session. Only this
 # session's unexpected termination ends a memory-scan-only capture (see
 # _poll_loop / set_scan_ended_callback); the lsass session is Windows-side and
@@ -126,6 +146,7 @@ class MemoryScanEngine:
         unpaired_path: Optional[str] = None,
         rc4_path: Optional[str] = None,
         mtproto_path: Optional[str] = None,
+        tls_secret_bundle_path: Optional[str] = None,
         emit_unconfirmed: bool = False,
         rc4_known_plaintext: Optional[str] = None,
         rc4_ciphertext: Optional[str] = None,
@@ -181,6 +202,24 @@ class MemoryScanEngine:
         self._mtproto_path = mtproto_path
         self._mtproto_file: Any = None
         self._mtproto_lock = threading.Lock()
+        # TLS mid-stream "secret bundle" sidecar. When the BoringSSL engine recovers
+        # a handshake-complete TLS 1.3 socket it can additionally send a
+        # ``tls_secret_bundle`` message carrying BOTH randoms plus the three
+        # application-epoch traffic secrets. We persist these as a leak-safe JSONL
+        # sidecar (one JSON object per line) so an offline mid-stream decrypter can
+        # decrypt flows that have NO ClientHello in the pcap (nothing to pair the
+        # ordinary NSS keylog line against). The NSS keylog line is written
+        # independently by the normal keylog path; this file is a pure supplement.
+        self._tls_secret_bundle_path = tls_secret_bundle_path
+        self._tls_secret_bundle_file: Any = None
+        self._tls_secret_bundle_lock = threading.Lock()
+        # Dedup identical bundles (same client_random + the three secrets): the heap
+        # scanner re-reads the same pooled socket on every pass, so without this the
+        # sidecar would grow one duplicate record per scan.
+        self._tls_secret_bundle_seen: set = set()
+        # Whether at least one bundle was actually written (files are created lazily),
+        # so the capture manifest only advertises a sidecar that exists.
+        self._tls_secret_bundle_written = False
         # E4: opt-in (--ms-emit-unconfirmed, default OFF). When True we (a) stamp
         # ``emitUnconfirmed`` onto mtproto profiles so the agent emits heap key
         # candidates the auth_key_id oracle could NOT confirm as real keylog lines,
@@ -651,6 +690,11 @@ class MemoryScanEngine:
         """
         wait = self._interval
         while not self._stop.is_set():
+            # Re-check right before the (potentially long, non-cancellable) scan:
+            # a stop requested during the previous wait must skip this scan rather
+            # than block the teardown behind one more full pass.
+            if self._stop.is_set():
+                return
             try:
                 stats = rpc.scanOnce()
                 emitted = stats.get("emitted", 0) if isinstance(stats, dict) else 0
@@ -690,7 +734,28 @@ class MemoryScanEngine:
                 wait = self._interval
             else:
                 wait = min(wait * MS_BACKOFF_FACTOR, MS_BACKOFF_CAP_SECONDS)
-            self._stop.wait(wait)
+            # Always leave one GIL-releasing gap per cycle (even for a sub-100ms
+            # interval), then serve the wait in short interruptible slices so stop
+            # is observed promptly and the main thread keeps getting the GIL.
+            if self._wait_between_scans(max(wait, MS_MIN_YIELD_SECONDS)):
+                return
+
+    def _wait_between_scans(self, seconds: float) -> bool:
+        """Wait up to *seconds* on the stop Event, in short interruptible slices.
+
+        Returns ``True`` as soon as a stop is requested (so the caller exits the
+        poll loop promptly), else ``False`` once the full wait has elapsed. Serving
+        the wait as slices of at most ``MS_STOP_POLL_SECONDS`` — instead of one
+        blocking sleep — bounds how long a stop / SIGINT goes unobserved and gives
+        the main thread a fresh GIL-acquisition window each slice, which is what
+        keeps Ctrl+C responsive at small scan intervals (see ``_poll_loop``).
+        """
+        remaining = seconds
+        while remaining > 0:
+            if self._stop.wait(min(remaining, MS_STOP_POLL_SECONDS)):
+                return True
+            remaining -= MS_STOP_POLL_SECONDS
+        return self._stop.is_set()
 
     def _notify_scan_ended(self, name: str) -> None:
         """Fire the scan-ended callback for an UNEXPECTED end of the self session.
@@ -734,6 +799,8 @@ class MemoryScanEngine:
                 self._publish_finding(payload)
         elif kind == "rc4_key":
             self._publish_rc4_key(payload)
+        elif kind == "tls_secret_bundle":
+            self._write_tls_secret_bundle(payload)
         elif kind == "log":
             level = str(payload.get("level", "info")).upper()
             logger.log(getattr(logging, level, logging.INFO),
@@ -1093,6 +1160,123 @@ class MemoryScanEngine:
                                  exc_info=True)
                 self._mtproto_file = None
 
+    # ------------------------------------------------------------------
+    # TLS mid-stream secret-bundle sidecar (offline no-ClientHello decrypt)
+    # ------------------------------------------------------------------
+
+    # The bundle fields the offline mid-stream decrypter needs, in a stable order.
+    # All are lowercase hex strings; the two randoms are 32 bytes (64 hex chars) and
+    # each traffic secret is a 32- or 48-byte hash output (64 or 96 hex chars).
+    _TLS_BUNDLE_FIELDS = (
+        "client_random",
+        "server_random",
+        "client_traffic_secret_0",
+        "server_traffic_secret_0",
+        "exporter_secret",
+    )
+
+    def _resolve_tls_secret_bundle_path(self) -> str:
+        """Where TLS mid-stream secret bundles are written; cached on first use.
+
+        Prefers the path handed in at construction (co-located with the memory-scan
+        keylog as ``<stem>.tls_midstream.secrets.jsonl``); falls back to a file in
+        the current directory so the bundle is always persisted regardless of
+        ``--protocol``/``-k``.
+        """
+        if self._tls_secret_bundle_path:
+            return self._tls_secret_bundle_path
+        self._tls_secret_bundle_path = "tls_midstream_memscan.tls_midstream.secrets.jsonl"
+        return self._tls_secret_bundle_path
+
+    @staticmethod
+    def _is_lower_hex(value: str, expected_lens: Optional[tuple] = None) -> bool:
+        """True iff *value* is non-empty even-length lowercase hex (optionally sized)."""
+        if not value or len(value) % 2 != 0:
+            return False
+        if expected_lens is not None and len(value) not in expected_lens:
+            return False
+        try:
+            int(value, 16)
+        except ValueError:
+            return False
+        return value == value.lower()
+
+    def _bundle_record(self, payload: dict) -> Optional[dict]:
+        """Validate a ``tls_secret_bundle`` payload into a leak-safe record, or None.
+
+        Every field must be present as lowercase hex of the expected length. A
+        partial or malformed bundle is dropped rather than written: it cannot
+        decrypt anything and a half-written record would only confuse the offline
+        consumer. This mirrors the agent's own all-or-nothing emission.
+        """
+        record = {}
+        for field in self._TLS_BUNDLE_FIELDS:
+            value = str(payload.get(field, "")).strip().lower()
+            expected = (64,) if field.endswith("random") else (64, 96)
+            if not self._is_lower_hex(value, expected):
+                return None
+            record[field] = value
+        return record
+
+    def _write_tls_secret_bundle(self, payload: dict) -> None:
+        """Append one validated, de-duplicated secret bundle to the JSONL sidecar.
+
+        Leak-safe: the record is written ONLY to the dedicated sidecar file (never to
+        stdout or an info log — only the path is logged), and it is machine-readable
+        JSON, so it can never masquerade as a forged ``RSA Session-ID:`` NSS line.
+        """
+        record = self._bundle_record(payload)
+        if record is None:
+            logger.debug("memory-scan: dropping malformed tls_secret_bundle: %s",
+                         {k: v for k, v in payload.items() if k != "ssl"})
+            return
+        dedup_key = (
+            record["client_random"],
+            record["client_traffic_secret_0"],
+            record["server_traffic_secret_0"],
+            record["exporter_secret"],
+        )
+        path = self._resolve_tls_secret_bundle_path()
+        with self._tls_secret_bundle_lock:
+            if dedup_key in self._tls_secret_bundle_seen:
+                return
+            try:
+                import json
+                if self._tls_secret_bundle_file is None:
+                    self._tls_secret_bundle_file = open(
+                        path, "w", encoding="utf-8", newline="\n")
+                    logger.info("memory-scan: tls mid-stream secret bundles → %s", path)
+                self._tls_secret_bundle_file.write(
+                    json.dumps(record, separators=(",", ":")) + "\n")
+                self._tls_secret_bundle_file.flush()
+                self._tls_secret_bundle_seen.add(dedup_key)
+                self._tls_secret_bundle_written = True
+            except Exception:  # noqa: BLE001
+                logger.debug("memory-scan: failed to write tls secret bundle",
+                             exc_info=True)
+
+    def _close_tls_secret_bundle(self) -> None:
+        with self._tls_secret_bundle_lock:
+            if self._tls_secret_bundle_file is not None:
+                try:
+                    self._tls_secret_bundle_file.close()
+                except Exception:  # noqa: BLE001
+                    logger.debug("memory-scan: failed to close tls secret-bundle sidecar",
+                                 exc_info=True)
+                self._tls_secret_bundle_file = None
+
+    def tls_midstream_manifest_entry(self) -> dict:
+        """The capture-manifest entry for the mid-stream secret sidecar.
+
+        Returns ``{"tls_midstream_secrets": <path>}`` once at least one bundle has
+        actually been written (the file is created lazily), else ``{}`` — so the
+        manifest only ever advertises a sidecar that exists. The offline mid-stream
+        decrypter reads this key to find the no-ClientHello secrets.
+        """
+        if self._tls_secret_bundle_written and self._tls_secret_bundle_path:
+            return {"tls_midstream_secrets": self._tls_secret_bundle_path}
+        return {}
+
     def stop(self, context: "ScriptContext") -> None:
         """Stop the scan loop and unload the self-session script(s).
 
@@ -1104,6 +1288,7 @@ class MemoryScanEngine:
         self._close_unpaired()
         self._close_rc4()
         self._close_mtproto()
+        self._close_tls_secret_bundle()
         self._unload_scripts(context)
 
     def close(self) -> None:
@@ -1113,6 +1298,7 @@ class MemoryScanEngine:
         self._close_unpaired()
         self._close_rc4()
         self._close_mtproto()
+        self._close_tls_secret_bundle()
         if self._context is not None:
             self._unload_scripts(self._context)
         self._scripts.clear()

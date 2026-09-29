@@ -1698,6 +1698,8 @@ if TEXTUAL_AVAILABLE:
         @classmethod
         def _is_outbound(cls, entry) -> bool:
             """True if a message dict is outbound (sent by this device)."""
+            if entry.get("out") is True:
+                return True
             return (entry.get("direction") or "") in cls._OUTBOUND_DIRECTIONS
 
         def _conversation_participants(self, layer, messages) -> list[dict]:

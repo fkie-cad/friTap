@@ -47,7 +47,8 @@ if TYPE_CHECKING:
 def memory_scan_sidecar_paths(config: "Config") -> dict:
     """Derive the memory-scan sidecar paths from the memory-scan keylog path.
 
-    Returns ``{"unpaired": ..., "rc4": ..., "mtproto": ...}`` co-located with
+    Returns ``{"unpaired": ..., "rc4": ..., "mtproto": ...,
+    "tls_midstream_secrets": ...}`` co-located with
     :func:`~friTap.output.factory.memory_scan_keylog_path` (e.g.
     ``Telegram_memscan.keylog`` -> ``Telegram_memscan.mtproto.keylog``, and
     ``keys.memscan.log`` -> ``keys.memscan.mtproto.keylog``), or ``{}`` when
@@ -73,6 +74,7 @@ def _sidecar_paths_for(ms_path: str) -> dict:
             "unpaired": stem + ".schannel.unpaired",
             "rc4": stem + ".rc4.keylog",
             "mtproto": stem + ".mtproto.keylog",
+            "tls_midstream_secrets": stem + ".tls_midstream.secrets.jsonl",
         }
     except Exception:  # noqa: BLE001 - a bad path must not block the scan
         return {}
@@ -129,6 +131,9 @@ def build_memory_scan_engine(config: "Config") -> MemoryScanEngine:
         unpaired_path=sidecars.get("unpaired"),
         rc4_path=sidecars.get("rc4"),
         mtproto_path=sidecars.get("mtproto"),
+        # Mid-stream TLS 1.3 secret bundles (flows with no captured ClientHello)
+        # co-located with the memory-scan keylog as ``<stem>.tls_midstream.secrets.jsonl``.
+        tls_secret_bundle_path=sidecars.get("tls_midstream_secrets"),
         # E4: --ms-emit-unconfirmed opt-in (default OFF) threaded through config.
         emit_unconfirmed=getattr(
             config.hooking, "memory_scan_emit_unconfirmed", False

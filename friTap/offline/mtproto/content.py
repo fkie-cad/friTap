@@ -281,6 +281,9 @@ class ParsedMtprotoMessage:
     # Secret-Chat only: the sender-chosen ``random_id:long`` (signed TL int64)
     # identifying one E2E message; 0 for cloud messages / unknown.
     random_id: int = 0
+    # TL ``out`` flag: the local user authored the message. Set even when it
+    # arrives in a server->client echo (e.g. ``updateNewMessage``).
+    outgoing: bool = False
 
 
 class _Reader:
@@ -1166,9 +1169,18 @@ def _peer_node_id(peer) -> int:
 
 
 def _message_node_ids(node: TlNode) -> tuple:
-    """Return ``(sender_id, peer_id)`` for a message-bearing constructor."""
+    """Return ``(sender_id, peer_id)`` for a message-bearing constructor.
+
+    ``updateShortMessage`` names only the private peer (``user_id``): an
+    outgoing one (TL ``out``) has no explicit sender, an incoming one was sent
+    by that peer. ``peer_id`` is the peer either way, so conversation keying
+    does not depend on the direction.
+    """
     if node.name == "updateShortMessage":
-        return 0, node.value("user_id", 0)
+        user_id = node.value("user_id", 0)
+        if node.value("out") is True:
+            return 0, user_id
+        return user_id, user_id
     if node.name == "updateShortChatMessage":
         return node.value("from_id", 0), node.value("chat_id", 0)
     return _peer_node_id(node.value("from_id")), _peer_node_id(node.value("peer_id"))
@@ -1189,6 +1201,7 @@ def _node_to_text(node: TlNode) -> Optional[ParsedMtprotoMessage]:
         kind="text", body=text, method=node.name,
         sender_id=sender_id, peer_id=peer_id,
         timestamp=date if isinstance(date, int) else 0, has_media=has_media,
+        outgoing=node.value("out") is True,
     )
 
 

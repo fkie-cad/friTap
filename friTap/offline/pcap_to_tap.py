@@ -1412,11 +1412,15 @@ def _parsed_mtproto_to_dicts(
     generic ``_render_layer_parsed`` understands it). The TL parser yields no
     timestamp/sender for outbound text; a missing TL ``date`` falls back to
     *fallback_ts* (the carrying record's capture time, 0.0 = unknown).
+    Per-message ``direction`` means who authored the message (TL ``out``: a
+    server->client echo of our own message is still "write"), not which way
+    the carrying packet travelled; the row/chunk direction is untouched.
     """
     return [
         {
             "sender": str(p.sender_id) if p.sender_id else "",
-            "direction": direction,
+            "direction": "write" if getattr(p, "outgoing", False) else direction,
+            "out": bool(getattr(p, "outgoing", False)),
             "timestamp": p.timestamp or fallback_ts,
             "kind": p.kind,
             "body": p.body,
@@ -2254,6 +2258,111 @@ def _attach_rc4_in_tls_layers(flows, state) -> set:
     return attach_rc4_in_tls_layers(flows, state)
 
 
+def _run_midstream_tls_stage(
+    pcap_path: str,
+    sidecar_path: str | None,
+    *,
+    bus: EventBus,
+    state: _WriterState,
+    result: ConvertResult,
+    tls_ports: tuple[int, ...],
+) -> set:
+    """Bind mid-stream TLS secret bundles and emit their plaintext; return bound keys.
+
+    No-op (returns an empty set) without a sidecar path or when the file is
+    absent/empty. Delegates to
+    :func:`friTap.offline.tls_midstream.pipeline.run_midstream_tls_stage`, seeding
+    it with the capture's first-packet time so the synthetic events order after
+    the handshake-anchored flows. Never aborts the conversion.
+    """
+    if not sidecar_path or not os.path.isfile(sidecar_path):
+        return set()
+    try:
+        from friTap.offline.tls_midstream.pipeline import run_midstream_tls_stage
+
+        server_ports = tls_ports or (443,)
+        return run_midstream_tls_stage(
+            pcap_path, sidecar_path,
+            bus=bus, state=state, result=result,
+            base_ts=_first_packet_time(pcap_path),
+            server_ports=tuple(server_ports),
+        )
+    except Exception:  # noqa: BLE001 - the mid-stream stage is additive
+        logger.warning("Mid-stream TLS stage failed; continuing without it",
+                       exc_info=True)
+        return set()
+
+
+def _signal_keylog_from_entries(proto_keylogs: dict, present_entries: list) -> str | None:
+    """The validated Signal keylog path among *present_entries*, else ``None``.
+
+    ``present_entries`` are the offline-decryptor entries whose keylog exists on
+    disk, so reading Signal's keylog from here (rather than the raw kwargs) means
+    the bridge is offered only a real, present keylog.
+    """
+    for entry in present_entries:
+        if entry.protocol_name == "signal":
+            return proto_keylogs.get("signal")
+    return None
+
+
+def _emit_signal_from_midstream_spans(
+    state: _WriterState,
+    bound_keys: set,
+    proto_keylogs: dict,
+    present_entries: list,
+    *,
+    bus: EventBus,
+    result: ConvertResult,
+) -> None:
+    """Bridge mid-stream-recovered TLS plaintext into the offline Signal decoder.
+
+    Thin wiring around
+    :func:`friTap.offline.signal.offline_decryptor.emit_signal_from_midstream_spans`:
+    resolves the (present) Signal keylog and hands over the recovered spans for the
+    bound connections. A no-op when nothing bound or no Signal keylog is present;
+    never aborts the surrounding conversion.
+    """
+    if not bound_keys:
+        return
+    signal_keylog = _signal_keylog_from_entries(proto_keylogs, present_entries)
+    if not signal_keylog:
+        return
+    try:
+        from friTap.offline.signal.offline_decryptor import (
+            emit_signal_from_midstream_spans,
+        )
+
+        emit_signal_from_midstream_spans(
+            state.tls_spans, signal_keylog,
+            bus=bus, state=state, result=result,
+            only_connections=bound_keys,
+        )
+    except Exception:  # noqa: BLE001 - the bridge is additive; never break convert
+        logger.warning(
+            "Mid-stream Signal bridge failed; continuing without it", exc_info=True
+        )
+
+
+def _relabel_midstream_flows(flows, bound_keys: set) -> None:
+    """Stamp ``TLS(midstream)`` on flows that bound only via a mid-stream secret.
+
+    Only flows whose 4-tuple is in *bound_keys* and that carry no
+    ``detected_protocol`` yet are relabelled, so a richer inner decoder (e.g.
+    Signal) keeps its own protocol label. Pure mutation of the live flow objects.
+    """
+    if not bound_keys:
+        return
+    from friTap.connection_index import canonical_4tuple
+    from friTap.offline.tls_midstream.pipeline import MIDSTREAM_PROTOCOL_LABEL
+
+    for flow in flows:
+        key = canonical_4tuple(
+            flow.src_addr, flow.src_port, flow.dst_addr, flow.dst_port)
+        if key in bound_keys and not getattr(flow, "detected_protocol", ""):
+            flow.detected_protocol = MIDSTREAM_PROTOCOL_LABEL
+
+
 def _make_metadata_marker(layer_cls, name: str):
     """Build a metadata-only (no-bytes) layer marker named *name*."""
     from friTap.flow.layers import LayerData
@@ -2808,6 +2917,7 @@ def convert_pcap_to_tap(
     mtproto_keylog: str | None = None,
     protocol_keylogs: dict[str, str] | None = None,
     resync_search_depth: int = DEFAULT_OBF_MAX_BLOCKS,
+    tls_midstream_secrets: str | None = None,
     progress: "Callable[[str], None] | None" = None,
     **legacy_protocol_keylogs: str | None,
 ) -> ConvertResult:
@@ -2838,6 +2948,13 @@ def convert_pcap_to_tap(
             blocks behind the live counter) and is forwarded only to emitters that
             declare it (via :func:`_emitter_accepts`). Defaults to
             :data:`~friTap.offline.mtproto.transport.DEFAULT_OBF_MAX_BLOCKS`.
+        tls_midstream_secrets: Path to the memscan engine's JSONL sidecar of TLS
+            1.3 secret bundles for flows captured with no ClientHello. When given
+            (and the file exists), the mid-stream binding stage
+            (:func:`friTap.offline.tls_midstream.pipeline.run_midstream_tls_stage`)
+            trial-binds each bundle to the pcap's raw TLS streams, emits the
+            recovered plaintext exactly like the tshark pass, and relabels the
+            bound flows ``TLS(midstream)``.
         legacy_protocol_keylogs: Back-compat named keylog kwargs of the form
             ``<protocol>_keylog`` (e.g. a TLS-riding protocol's keylog). Each is
             folded into ``protocol_keylogs`` keyed by the leading ``<protocol>``
@@ -2942,6 +3059,31 @@ def convert_pcap_to_tap(
     # produces a valid (empty) file via the fallback below.
     state = _WriterState(writer, tap_path, target, keylog_path)
     try:
+        # Mid-stream TLS 1.3 stage: flows captured with no ClientHello cannot be
+        # followed by tshark (no handshake, no NSS key), so they never surface in
+        # the tshark passes. When the memscan engine wrote a secret-bundle sidecar,
+        # bind each bundle to the raw TLS streams and emit the recovered plaintext
+        # exactly like the tshark pass — spans first, so a span-consuming TLS-riding
+        # decoder below sees them. Gated on the sidecar; a no-op otherwise, and it
+        # runs regardless of has_keys (a mid-stream-only capture has no NSS keys).
+        midstream_bound_keys = _run_midstream_tls_stage(
+            pcap_path, tls_midstream_secrets,
+            bus=bus, state=state, result=result, tls_ports=tls_ports,
+        )
+        # Attach-case Signal bridge: flows bound only via a mid-stream secret have
+        # no ClientHello, so tshark's Follow-TLS-Stream (which the normal Signal
+        # emitter re-runs) cannot decrypt them — but their TLS plaintext is now in
+        # state.tls_spans. When a Signal keylog is present, decode Signal directly
+        # from those recovered spans for exactly the bound connections, folding each
+        # message through the SAME path the tshark Signal emitter uses (so the
+        # SignalLayer is identical). Strictly gated on BOTH mid-stream bindings and
+        # a Signal keylog; a no-op otherwise, and it never touches the handshake
+        # path (the connection filter admits only the ClientHello-less bound flows,
+        # which the tshark Signal path skips anyway — no double decode).
+        _emit_signal_from_midstream_spans(
+            state, midstream_bound_keys, proto_keylogs, present_entries,
+            bus=bus, result=result,
+        )
         if has_keys:
             _emit_progress(progress, "Decrypting TLS/QUIC streams…")
             # Extract TLS handshake metadata ONCE up front (SNI/version/cipher/alpn)
@@ -3061,6 +3203,12 @@ def convert_pcap_to_tap(
         # flush(): flush completes+writes the live flows, so the layers have to be
         # attached to those very objects beforehand to land in the .tap.
         _attach_transport_metadata_layers(collector.live_flows(), state.inner_meta)
+        # Relabel flows that bound only via a mid-stream secret (no captured
+        # handshake) as ``TLS(midstream)`` — but only when no richer inner
+        # protocol was parsed on top of the recovered plaintext, so e.g. a Signal
+        # flow keeps its own label. Runs on LIVE flows before flush(), like the
+        # metadata attach above.
+        _relabel_midstream_flows(collector.live_flows(), midstream_bound_keys)
         # Nested RC4-in-TLS: rebuild each RC4 flow as [TLS (owned), RC4 (chunks)]
         # and learn which TLS flows it fully absorbed (not written below).
         absorbed_flow_ids = _attach_rc4_in_tls_layers(collector.live_flows(), state)
@@ -3202,6 +3350,7 @@ def pcap_to_tap(
     mtproto_keylog: str | None = None,
     protocol_keylogs: dict[str, str] | None = None,
     resync_search_depth: int = DEFAULT_OBF_MAX_BLOCKS,
+    tls_midstream_secrets: str | None = None,
     use_manifest: bool = True,
     progress: "Callable[[str], None] | None" = None,
     **legacy_protocol_keylogs: str | None,
@@ -3227,6 +3376,7 @@ def pcap_to_tap(
     mtproto = mtproto_keylog
     tls = tuple(tls_ports)
     quic = tuple(quic_ports)
+    midstream_secrets = tls_midstream_secrets
     # Back-compat ``<protocol>_keylog`` kwargs (e.g. a TLS-riding extension's
     # keylog) are carried generically: the manifest's matching ``<protocol>_keylog``
     # key fills any the caller did not pass, and they flow through to
@@ -3245,6 +3395,9 @@ def pcap_to_tap(
             mtproto = mtproto or manifest.get("mtproto_keylog") or None
             tls = tls or tuple(manifest.get("tls_ports", []))
             quic = quic or tuple(manifest.get("quic_ports", []))
+            # Mid-stream TLS 1.3 secret-bundle sidecar (flows with no ClientHello).
+            midstream_secrets = midstream_secrets or manifest.get(
+                "tls_midstream_secrets") or None
             # Pull any further ``<protocol>_keylog`` manifest keys the caller did
             # not pass explicitly (excluding the named mtproto/base keylog).
             for man_key, man_value in manifest.items():
@@ -3290,6 +3443,7 @@ def pcap_to_tap(
         mtproto_keylog=mtproto,
         protocol_keylogs=protocol_keylogs,
         resync_search_depth=resync_search_depth,
+        tls_midstream_secrets=midstream_secrets,
         progress=progress,
         **{k: v for k, v in legacy_keylogs.items() if v},
     )

@@ -81,6 +81,17 @@ def test_parsed_dicts_fall_back_to_capture_ts_when_tl_date_missing():
     assert [d["timestamp"] for d in p2t._parsed_mtproto_to_dicts(parsed, "write")] == [0, 111]
 
 
+def test_parsed_dicts_direction_follows_tl_out_flag_not_packet_direction():
+    """A server->client echo of our own message (TL ``out``) is still "write"."""
+    from friTap.offline.mtproto.content import ParsedMtprotoMessage
+
+    parsed = [ParsedMtprotoMessage(kind="text", body="echo", outgoing=True),
+              ParsedMtprotoMessage(kind="text", body="reply")]
+    echo, reply = p2t._parsed_mtproto_to_dicts(parsed, "read")
+    assert (echo["direction"], echo["out"]) == ("write", True)
+    assert (reply["direction"], reply["out"]) == ("read", False)
+
+
 # ------------------------------------------------------------------ emitter
 
 

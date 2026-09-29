@@ -131,6 +131,13 @@ def _build_parser() -> argparse.ArgumentParser:
              f"obfuscated transport; default {DEFAULT_OBF_MAX_BLOCKS}). "
              "Endpoint-matched keys auto-search further; raise this for "
              f"un-attributed keys (range 0..{RESYNC_SEARCH_DEPTH_MAX}).")
+    parser.add_argument(
+        "--tls-midstream-secrets", dest="tls_midstream_secrets", default=None,
+        help="Path to a TLS mid-stream secret-bundle sidecar "
+             "(a *.tls_midstream.secrets.jsonl written by a memory scan). "
+             "Decrypts TLS 1.3 flows captured with no ClientHello — no handshake "
+             "for tshark to follow. Overrides the manifest's "
+             "tls_midstream_secrets value when both are present.")
     parser.add_argument("--tap", dest="tap", default=None,
                         help="Output .tap path (default: <pcap stem>.tap).")
     parser.add_argument("--scan", action="store_true",
@@ -176,6 +183,25 @@ def load_manifest(pcap_path: str) -> dict:
     except (OSError, json.JSONDecodeError):
         logger.warning("Could not read manifest %s", manifest_path, exc_info=True)
         return {}
+
+
+def _resolve_midstream_secrets(args: argparse.Namespace, manifest: dict) -> str | None:
+    """Pick the TLS mid-stream secret-bundle sidecar path for this run.
+
+    Precedence: the explicit ``--tls-midstream-secrets`` flag wins, else the
+    manifest's ``tls_midstream_secrets`` value. A relative path is resolved
+    against the pcap's directory (the sidecar is co-located with the capture),
+    mirroring how memory-scan sidecars are located. Returns ``None`` when
+    neither source supplies a path.
+    """
+    path = getattr(args, "tls_midstream_secrets", None) or manifest.get(
+        "tls_midstream_secrets") or None
+    if path and not os.path.isabs(path):
+        pcap = getattr(args, "from_pcap", "") or ""
+        pcap_dir = os.path.dirname(os.path.abspath(pcap)) if pcap else ""
+        if pcap_dir:
+            path = os.path.join(pcap_dir, path)
+    return path
 
 
 def merge_manifest(args: argparse.Namespace, manifest: dict) -> dict:
@@ -250,6 +276,11 @@ def merge_manifest(args: argparse.Namespace, manifest: dict) -> dict:
         "resync_search_depth": getattr(
             args, "resync_search_depth", DEFAULT_OBF_MAX_BLOCKS
         ),
+        # Mid-stream TLS 1.3 secret-bundle sidecar. Applied by the Python API
+        # (convert_pcap_to_tap) but historically dropped by this CLI merge, so
+        # the headless `fritap --from-pcap` workflow got no mid-stream decrypt.
+        # Precedence (flag > manifest) and path resolution live in the helper.
+        "tls_midstream_secrets": _resolve_midstream_secrets(args, manifest),
     }
     merged.update(named_keylog_kwargs)
     return merged

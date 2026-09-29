@@ -126,10 +126,20 @@ class _FakeRpc:
 
 def _run_poll(interval, emissions, name=MS_SELF_POLL_NAME):
     eng = MemoryScanEngine(interval=interval)
-    fake_stop = _FakeStop()
-    eng._stop = fake_stop  # type: ignore[assignment]
+    eng._stop = _FakeStop()  # type: ignore[assignment] - is_set() stays False
+    # The inter-scan wait is now served in short interruptible slices for Ctrl+C
+    # responsiveness (see _wait_between_scans). Observe the per-cycle backoff at
+    # that seam — the full wait requested each cycle — instead of the sliced
+    # _stop.wait() calls, so this still asserts the backoff schedule.
+    waits: list[float] = []
+
+    def _record_wait(seconds: float) -> bool:
+        waits.append(seconds)
+        return False  # not stopped; the loop ends when scanOnce raises
+
+    eng._wait_between_scans = _record_wait  # type: ignore[method-assign]
     eng._poll_loop(_FakeRpc(emissions), name)
-    return fake_stop.waits
+    return waits
 
 
 def test_backoff_resets_on_emit_and_grows_when_idle():

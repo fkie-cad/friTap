@@ -249,3 +249,77 @@ class TestDynamicTableOrderings:
         assert parser._qpack_ctx is None
         results = parser.feed(frames[8], "write", stream_id=8)
         assert len(results) == 1 and results[0].is_request
+
+
+# ----------------------------------------------------------------------
+# can_parse: HTTP/3 only rides QUIC — plaintext DNS-over-UDP must not match
+# ----------------------------------------------------------------------
+
+from friTap.parsers.hexdump import HexdumpParser  # noqa: E402
+from friTap.parsers.registry import get_default_registry  # noqa: E402
+from tests.unit._h3_helpers import control_stream_bytes  # noqa: E402
+
+# Realistic mDNS payloads captured off UDP/5353. A query opens with a zero
+# transaction id + zero flags ("00 00 00 00 .."); a response uses flags 0x8400
+# ("00 00 84 00 ..").  Both decode as an HTTP/3 DATA frame (type 0x00) of
+# length 0, which is the false positive being guarded against.
+_MDNS_QUERY = bytes.fromhex(
+    "0000000000010000000000000c5f7365727669636573"
+    "075f646e732d7364045f756470056c6f63616c00000c0001")
+_MDNS_RESPONSE = bytes.fromhex(
+    "0000840000000001000000000c5f7365727669636573075f646e732d7364")
+
+
+class TestCanParseRejectsMdns:
+    """mDNS/DNS-over-UDP must not be detected as HTTP/3 (issue: 5353 -> HTTP/3)."""
+
+    def test_mdns_query_all_zero_rejected(self):
+        assert Http3Parser().can_parse(_MDNS_QUERY) is False
+
+    def test_mdns_response_flags_8400_rejected(self):
+        assert Http3Parser().can_parse(_MDNS_RESPONSE) is False
+
+    def test_bare_zero_length_data_frame_rejected(self):
+        # "00 00" == DATA frame, length 0 — never a real stream opener.
+        assert Http3Parser().can_parse(b"\x00\x00") is False
+
+    def test_short_or_empty_rejected(self):
+        assert Http3Parser().can_parse(b"") is False
+        assert Http3Parser().can_parse(b"\x00") is False
+
+
+class TestCanParseAcceptsRealHttp3:
+    """The mDNS guard must not regress genuine HTTP/3-over-QUIC detection."""
+
+    def test_control_stream_still_detected(self):
+        # Control stream opens "00 04 .." (uni type 0x00 + SETTINGS 0x04): the
+        # length byte is non-zero, so it is not the mDNS DATA(0)/len-0 shape.
+        assert Http3Parser().can_parse(control_stream_bytes()) is True
+
+    def test_request_headers_frame_still_detected(self):
+        _enc, frame = headers_frame(
+            qpack_encoder()[0], 0,
+            [(b":method", b"GET"), (b":path", b"/")])
+        assert Http3Parser().can_parse(frame) is True
+
+    def test_data_frame_with_body_still_detected(self):
+        # A DATA frame that actually carries a body ("00 05 hello") is valid.
+        assert Http3Parser().can_parse(b"\x00\x05hello") is True
+
+
+class TestRegistrySelectionForMdns:
+    """End-to-end selection: mDNS UDP must never resolve to the HTTP/3 parser."""
+
+    def test_mdns_query_not_selected_as_http3(self):
+        parser = get_default_registry().detect(_MDNS_QUERY, transport="tls")
+        assert not isinstance(parser, Http3Parser)
+
+    def test_mdns_response_not_selected_as_http3(self):
+        parser = get_default_registry().detect(_MDNS_RESPONSE, transport="tls")
+        assert not isinstance(parser, Http3Parser)
+
+    def test_real_http3_over_quic_still_selects_http3(self):
+        parser = get_default_registry().detect(
+            control_stream_bytes(), transport="quic")
+        assert isinstance(parser, Http3Parser)
+        assert not isinstance(parser, HexdumpParser)

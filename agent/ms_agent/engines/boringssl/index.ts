@@ -217,6 +217,225 @@ function resolveNeedleValue() {
     return mod === null ? null : mod.base.add(ptr(hint.rva));
 }
 
+/* ---------------------------------------------------------------------------
+ * Tier B needle seeding from live SSL_read / SSL_write.
+ *
+ * Tier A is the only path that derives the needle from a REAL object, but it can
+ * only do so by catching a live SSL_HANDSHAKE (the 03 03 04 03 anchor), which is
+ * ephemeral and NEVER appears for a TLS session that was already open before
+ * friTap attached. SSL_read / SSL_write, by contrast, fire on every active
+ * session — pre-existing ones included — and their first argument is the SSL*.
+ * Reading ssl->method there yields the exact same shared SSL_PROTOCOL_METHOD
+ * pointer Tier A would derive (method is field 0), so Tier B can then enumerate
+ * every live SSL with no handshake required. This is an ADDITIONAL needle source;
+ * Tier A and the static profile hint are untouched.
+ * ------------------------------------------------------------------------- */
+
+var needleSeedInstalled = false;     // installNeedleSeedHooks ran (once per process)
+var needleSeedListeners: any[] = []; // Interceptor listeners; detached after first seed
+
+/* Opt-out per profile via tiers.B_ssl_method_ptr.seed_from_ssl_io. Absent or any
+ * non-false value means ON, so a profile has to say `false` explicitly to disable
+ * it; the shipped signal/chrome profiles set it true. */
+function seedFromSslIoEnabled() {
+    var tier = state.profile && state.profile.tiers && state.profile.tiers.B_ssl_method_ptr;
+    return !!tier && tier.seed_from_ssl_io !== false;
+}
+
+/* Read ssl->method from a candidate SSL* and, when it is a plausible pointer into
+ * a mapped region and no live-derived needle exists yet, record it as the Tier B
+ * needle — exactly the shape rememberNeedle() produces, plus a `source` tag for
+ * diagnostics. Returns true when state.needle now holds THIS method value (whether
+ * this call set it or a prior seed/Tier A already did), false otherwise.
+ *
+ * Never throws: a bad SSL* is ignored so a hook on the hot I/O path can never
+ * crash the target. The guard is deliberately keep-first: once any live-derived
+ * needle is set, a different method value does NOT overwrite it. */
+export function seedNeedleFromSsl(ssl, source) {
+    if (ssl === null || ssl.isNull()) return false;
+    var method;
+    try {
+        method = readPointerOrNull(ssl.add(state.profile.struct_offsets.SSL.method));
+    } catch (e: any) { return false; }
+    if (!looksLikeHeapPointer(method)) return false;
+    if (state.needle !== null) return state.needle.value.equals(method);  // keep the needle we have
+    var mod = null;
+    try { mod = Process.findModuleByAddress(untag(method)); } catch (e: any) { mod = null; }
+    state.needle = {
+        value: method,
+        module: mod === null ? null : mod.name,
+        rva: mod === null ? null : '0x' + untag(method).sub(mod.base).toString(16),
+        source: source
+    };
+    log('info', 'Tier B needle derived from SSL_read/SSL_write: ' + method +
+                (mod === null ? '' : ' (' + state.needle.module + '+' + state.needle.rva + ')'));
+    return true;
+}
+
+/* Concrete (wildcard-free) module names from EVERY boringssl profile configure()
+ * was handed. Two boringssl profiles (Chrome + Signal) can coexist in one session
+ * and the seed installs once, so we probe both profiles' modules; a name with a
+ * '*' cannot be passed to findExportByName and is skipped (global lookup covers
+ * it). */
+function candidateModules() {
+    var out: string[] = [];
+    var profiles = state.profiles !== null ? state.profiles : [state.profile];
+    for (var i = 0; i < profiles.length; i++) {
+        var p = profiles[i];
+        var mods = p && p.match && p.match.modules;
+        if (!mods) continue;
+        for (var j = 0; j < mods.length; j++) {
+            if (typeof mods[j] === 'string' && mods[j].indexOf('*') === -1) out.push(mods[j]);
+        }
+    }
+    return out;
+}
+
+/* Resolve an SSL I/O export by name: the profiles' named modules first, then a
+ * global lookup, then a scan of EVERY loaded module. The global lookup only finds
+ * a statically-linked or globally-scoped BoringSSL; Signal (and any app that
+ * dlopen()s libssl.so with RTLD_LOCAL) exports SSL_read/SSL_write from a module
+ * that is neither profile-listed nor in the global scope, so the full enumeration
+ * — the same approach friTap's main hooking pipeline uses — is the reliable path.
+ * Returns null when nothing resolves. */
+function resolveSslExport(name) {
+    var mods = candidateModules();
+    for (var i = 0; i < mods.length; i++) {
+        try {
+            var m = Process.findModuleByName(mods[i]);
+            var a = m === null ? null : m.findExportByName(name);
+            if (a !== null && !a.isNull()) return a;
+        } catch (e: any) { /* module not loaded — try the next */ }
+    }
+    try {
+        var g = Module.findGlobalExportByName(name);
+        if (g !== null && !g.isNull()) return g;
+    } catch (e: any) { /* not globally exported */ }
+    // Last resort: enumerate all loaded modules. This catches a dynamically
+    // loaded libssl.so (RTLD_LOCAL) that neither of the lookups above can reach.
+    try {
+        var all = Process.enumerateModules();
+        for (var k = 0; k < all.length; k++) {
+            try {
+                var e = all[k].findExportByName(name);
+                if (e !== null && !e.isNull()) return e;
+            } catch (err: any) { /* keep scanning */ }
+        }
+    } catch (e2: any) { /* enumeration unavailable — give up */ }
+    return null;
+}
+
+/* Resolve EVERY instance of an SSL I/O export, deduped by address. Multiple
+ * libssl copies can coexist (e.g. a globally-exported cronet/webview libssl AND
+ * the app's own dlopen()'d RTLD_LOCAL libssl.so). A pre-existing socket routes
+ * through exactly one of them, and its SSL_read/SSL_write may be reachable ONLY
+ * via the symbol table (RTLD_LOCAL exports are not global) — the same case
+ * friTap's main pipeline handles with an enumerateSymbols() fallback. So we
+ * collect exports AND symbol-table matches across all modules and hook them all;
+ * onEnter seeds once and detaches, so extra hooks cost nothing. */
+function resolveSslExportsAll(name) {
+    var out: NativePointer[] = [];
+    var seen: { [k: string]: boolean } = {};
+    function add(p) {
+        if (p === null || p.isNull()) return;
+        var key = p.toString();
+        if (seen[key]) return;
+        seen[key] = true;
+        out.push(p);
+    }
+    var single = resolveSslExport(name);
+    if (single !== null) add(single);
+    try {
+        var all = Process.enumerateModules();
+        for (var i = 0; i < all.length; i++) {
+            var m = all[i];
+            // Exported in this module?
+            try {
+                var ex = m.findExportByName(name);
+                if (ex !== null && !ex.isNull()) add(ex);
+            } catch (e: any) { /* next */ }
+            // Symbol-table fallback — only for TLS-bearing modules (bounded cost),
+            // which is what reaches an SSL_read/SSL_write that is present only in a
+            // module's symbol table (RTLD_LOCAL, non-exported). Signal's active TLS
+            // lives in libhttpengine.so (Cronet), whose SSL_read is symbol-only —
+            // so the allowlist must include it (device-confirmed). Kept as a
+            // substring list rather than "all modules" to bound enumerateSymbols()
+            // cost at install time.
+            // Substring allowlist of TLS-bearing module names. Deliberately small
+            // and specific: enumerateSymbols() on a huge module (libmonochrome,
+            // libwebviewchromium — 100+ MB) is expensive and, on a stripped module,
+            // finds nothing anyway, so those are excluded. Note: modern Signal's
+            // APEX Cronet (libhttpengine.so / libcrypto_httpengine.so) is stripped —
+            // SSL_read/SSL_write are in neither the dynamic nor the debug symbol
+            // table, so a symbol-name seed cannot reach them; recovering those needs
+            // a byte-pattern needle seed (tracked separately).
+            var nm = (m.name || '').toLowerCase();
+            var sslBearing = ['libssl', 'boringssl', 'conscrypt',
+                'httpengine', 'signal'];
+            var isSslBearing = false;
+            for (var s = 0; s < sslBearing.length; s++) {
+                if (nm.indexOf(sslBearing[s]) !== -1) { isSslBearing = true; break; }
+            }
+            if (!isSslBearing) continue;
+            try {
+                var syms = m.enumerateSymbols();
+                for (var j = 0; j < syms.length; j++) {
+                    if (syms[j].name === name && syms[j].address !== null &&
+                        !syms[j].address.isNull()) add(syms[j].address);
+                }
+            } catch (e2: any) { /* symbols unavailable — next */ }
+        }
+    } catch (e3: any) { /* enumeration unavailable */ }
+    return out;
+}
+
+function detachNeedleSeedHooks() {
+    for (var i = 0; i < needleSeedListeners.length; i++) {
+        try { needleSeedListeners[i].detach(); } catch (e: any) { /* best effort */ }
+    }
+    needleSeedListeners = [];
+}
+
+/* onEnter for SSL_read/SSL_write: arg0 is SSL*. Seed the needle, then — once ANY
+ * needle exists — detach so there is zero per-call overhead on the hot I/O path.
+ * Wrapped so a hook can never throw into the target. */
+function onSslIoEnter(args) {
+    try { seedNeedleFromSsl(args[0], 'ssl_io'); } catch (e: any) { /* never throw into target */ }
+    if (state.needle !== null) detachNeedleSeedHooks();
+}
+
+function attachSslIoHook(name) {
+    var addrs = resolveSslExportsAll(name);
+    var n = 0;
+    for (var i = 0; i < addrs.length; i++) {
+        try {
+            needleSeedListeners.push(Interceptor.attach(addrs[i], { onEnter: onSslIoEnter }));
+            n++;
+        } catch (e: any) { /* one bad address must not lose the others */ }
+    }
+    return n > 0;
+}
+
+/* Install the SSL_read/SSL_write (and *_ex when present) seed hooks ONCE per
+ * process. Runs from the engine's runTiers regardless of whether Tier A ever
+ * fires. Failing to resolve the exports is a soft failure: Tier A / the profile
+ * hint remain the fallback and the engine behaves exactly as before. */
+export function installNeedleSeedHooks() {
+    if (needleSeedInstalled) return;
+    needleSeedInstalled = true;
+    if (!seedFromSslIoEnabled()) return;
+    if (typeof Interceptor === 'undefined' || Interceptor === null) return;
+    var names = ['SSL_read', 'SSL_write', 'SSL_read_ex', 'SSL_write_ex'];
+    var attached = 0;
+    for (var i = 0; i < names.length; i++) if (attachSslIoHook(names[i])) attached++;
+    if (attached === 0) {
+        log('warn', 'Tier B needle seed: could not resolve SSL_read/SSL_write in this ' +
+                    'process; falling back to Tier A / profile hint');
+    } else {
+        log('info', 'Tier B needle seed hooks installed on ' + attached + ' SSL I/O export(s)');
+    }
+}
+
 /* Once the handshake is gone these three fields hold the CURRENT epoch's
  * application secrets. While a handshake is still in flight they hold the
  * HANDSHAKE epoch — verified on device — so a *_TRAFFIC_SECRET_0 label would be a
@@ -237,6 +456,62 @@ function emitS3TrafficSecrets(ssl, s3, clientRandom, stats) {
         if (!looksLikeSecret(bytes)) continue;
         emitKeylog(entry.label, clientRandom, hexBytes(bytes), 'B', ssl, entry.field, stats);
     }
+}
+
+/* Enriched "secret bundle" for the offline mid-stream decrypter. Runs ONLY on the
+ * HS_COMPLETE path, right after emitS3TrafficSecrets has emitted the ordinary NSS
+ * keylog lines, and emits the same three application-epoch traffic secrets TOGETHER
+ * with BOTH randoms in one leak-safe sidecar record. A flow whose ClientHello never
+ * appears in the pcap has no client_random on the wire to pair the NSS line against;
+ * carrying server_random alongside lets the offline decrypter recover the epoch keys
+ * for exactly those mid-stream flows. The NSS line (emitS3TrafficSecrets/emitKeylog)
+ * is untouched and stays the primary output for handshake-present flows.
+ *
+ * Opt-in per profile via tiers.B_ssl_method_ptr.emit_secret_bundle, so the extra
+ * sidecar is only produced where an offline mid-stream consumer is wired up.
+ *
+ * Every field is re-read and re-validated here through the SAME validators the
+ * keylog path uses (looksLikeSecret's hash-length + entropy + zero gates for the
+ * secrets, looksLikeRandom for server_random). If ANY of the three secrets or the
+ * server_random fails, NOTHING is emitted: a partial bundle cannot decrypt and a
+ * mislabelled pairing is worse than a miss. No cipher_id is included - this build's
+ * profile carries no verified offset for it (SSL3_STATE has no cipher_id field), and
+ * inventing one would be exactly the kind of plausible-but-wrong output the profile's
+ * design notes forbid. */
+function emitSecretBundle(ssl, s3, clientRandom, stats) {
+    var tier = state.profile.tiers.B_ssl_method_ptr;
+    if (!tier.emit_secret_bundle) return false;
+    var off = state.profile.struct_offsets.SSL3_STATE;
+    var c = state.profile.constants;
+
+    var serverRandomBytes = readBytes(s3.add(off.server_random), c.ssl3_random_size);
+    if (!looksLikeRandom(serverRandomBytes)) return false;
+
+    var fields = [
+        { field: 'write_traffic_secret', key: 'client_traffic_secret_0' },
+        { field: 'read_traffic_secret',  key: 'server_traffic_secret_0' },
+        { field: 'exporter_secret',      key: 'exporter_secret' }
+    ];
+    var bundle: any = {};
+    for (var i = 0; i < fields.length; i++) {
+        var len = readU8OrNull(s3.add(off[fields[i].field + '_len']));
+        if (len === null || len === 0) return false;
+        var bytes = readBytes(s3.add(off[fields[i].field]), len);
+        if (!looksLikeSecret(bytes)) return false;      // one bad field => no bundle
+        bundle[fields[i].key] = hexBytes(bytes);
+    }
+
+    send({
+        type: 'tls_secret_bundle',
+        client_random: clientRandom,
+        server_random: hexBytes(serverRandomBytes),
+        client_traffic_secret_0: bundle.client_traffic_secret_0,
+        server_traffic_secret_0: bundle.server_traffic_secret_0,
+        exporter_secret: bundle.exporter_secret,
+        ssl: ssl.toString()
+    });
+    stats.emitted++;
+    return true;
 }
 
 function sessionBaseFor(path, ssl, s3) {
@@ -341,6 +616,9 @@ function processSslCandidate(ssl, stats) {
         }
     } else if (handshakeState === HS_COMPLETE) {
         emitS3TrafficSecrets(ssl, s3, clientRandom, stats);
+        // Enriched sidecar for offline mid-stream decryption (opt-in per profile).
+        // Emitted BESIDE the NSS line above, never in place of it.
+        emitSecretBundle(ssl, s3, clientRandom, stats);
     } else {
         // Neither set can be labelled with certainty, so emit NEITHER. Counted so
         // that a run which hits this often is visible rather than silently lossy.
@@ -407,6 +685,10 @@ function runTierC(ranges, stats, errors) {
 export const BoringsslEngine: MemscanEngine = {
     name: 'boringssl',
     runTiers: function (ranges: any, stats: any, errors: string[]): void {
+        // Seed the Tier B needle from live SSL_read/SSL_write once. This makes
+        // Tier B work on a purely pre-existing TLS session (no handshake for Tier
+        // A to catch); it runs whether or not Tier A ever fires.
+        installNeedleSeedHooks();
         if (shouldRunTierA()) runTierA(ranges, stats, errors);
         else stats.tierA.skipped = true;
         runTierB(ranges, stats, errors);
