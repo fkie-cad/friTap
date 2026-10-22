@@ -22,6 +22,7 @@ import struct
 from friTap.parsers.http2_dataframe import (
     HTTP2_PREFACE,
     group_http2_data_by_stream,
+    group_http2_data_ends_by_stream,
     looks_like_http2,
 )
 
@@ -147,3 +148,62 @@ def test_group_data_empty_buffer():
     streams, degraded = group_http2_data_by_stream(b"")
     assert streams == {}
     assert degraded is False
+
+
+# --------------------------------------------------------------------------- #
+# group_http2_data_ends_by_stream
+# --------------------------------------------------------------------------- #
+def test_data_ends_map_stream_positions_back_to_the_buffer():
+    settings = make_frame(_SETTINGS, 0x00, 0, b"")
+    first = make_frame(_DATA, 0x00, 1, b"abc")
+    other = make_frame(_DATA, 0x00, 3, b"zz")
+    second = make_frame(_DATA, 0x00, 1, b"de")
+    buf = HTTP2_PREFACE + settings + first + other + second
+
+    streams, ends, degraded = group_http2_data_ends_by_stream(buf)
+
+    assert not degraded
+    assert streams == {1: b"abcde", 3: b"zz"}
+    first_end = len(HTTP2_PREFACE + settings + first)
+    assert ends[1] == [(3, first_end), (5, len(buf))]
+    assert ends[3] == [(2, first_end + len(other))]
+
+
+def test_data_ends_agree_with_plain_grouping():
+    buf = make_frame(_DATA, _FLAG_PADDED, 5, b"\x02hi\x00\x00")
+    streams, _ends, degraded = group_http2_data_ends_by_stream(buf)
+    assert (streams, degraded) == group_http2_data_by_stream(buf)
+
+
+# --------------------------------------------------------------------------- #
+# Unknown frame types (RFC 9113 §5.5: MUST be ignored)
+# --------------------------------------------------------------------------- #
+_PRIORITY_UPDATE = 0x10
+_GREASE = 0x0B
+
+
+def test_http2_data_for_stream_skips_priority_update_before_data():
+    from friTap.parsers.http2_dataframe import http2_data_for_stream
+
+    buf = make_frame(_PRIORITY_UPDATE, 0, 0, b"\x00\x00\x00\x01u=1") + make_frame(_DATA, 0, 1, b"hello")
+    assert http2_data_for_stream(buf, 1) == (b"hello", False)
+
+
+def test_http2_data_for_stream_skips_grease_frame():
+    from friTap.parsers.http2_dataframe import http2_data_for_stream
+
+    buf = make_frame(_DATA, 0, 3, b"he") + make_frame(_GREASE, 0xFF, 3, b"junk") + make_frame(_DATA, 0, 3, b"llo")
+    assert http2_data_for_stream(HTTP2_PREFACE + buf, 0) == (b"hello", False)
+
+
+def test_http2_data_for_stream_overflowing_unknown_frame_is_degraded():
+    from friTap.parsers.http2_dataframe import http2_data_for_stream
+
+    garbage = make_frame(_DATA, 0, 1, b"ok") + b"\xff\xff\xff\x81" + b"\x00" * 10
+    assert http2_data_for_stream(garbage, 1) == (b"ok", True)
+
+
+def test_group_by_stream_still_stops_at_unknown_type():
+    """The Signal mid-stream desync heuristic keeps treating type > 0x09 as a stop."""
+    buf = make_frame(_GREASE, 0, 0, b"x") + make_frame(_DATA, 0, 1, b"hello")
+    assert group_http2_data_by_stream(buf) == ({}, True)

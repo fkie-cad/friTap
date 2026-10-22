@@ -20,6 +20,14 @@ export const state: any = {
     validators: null,       // parsed once by configure(), see parseValidators()
     needle: null,           // Tier B needle derived by Tier A: {value, module, rva}
     recorded: {},           // "LABEL|client_random" -> secret hex
+    recordedBundles: {},    // "BUNDLE|client_random" -> concatenated secrets+server_random
+                            // hex; cross-scan dedup for emitSecretBundle (Tier B0/B),
+                            // mirroring `recorded`. A changed value (KeyUpdate) re-emits.
+    b0ProfileScans: {},     // profile id -> Tier B0 eligible-scan count for THAT profile;
+                            // per-profile throttle counter (mirrors the `recorded`/
+                            // `recordedBundles` maps). Keyed per profile because two
+                            // boringssl profiles share the global `scanIndex`, whose
+                            // parity would otherwise starve one profile's Tier B0.
     faults: 0,              // native faults seen by the exception handler
     handlerInstalled: false,// configure() is allowed to be called more than once
     mappedRanges: null,     // per-scan address index, see buildMappedRangeIndex()

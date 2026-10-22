@@ -234,7 +234,8 @@ class Http1Parser(BaseParser):
         """Process unconsumed bytes after a 101 upgrade response."""
         from .trailing import detect_trailing_protocol, try_sub_parse
         self.trailing_data = trailing_bytes
-        protocol, cleaned, parser = detect_trailing_protocol(trailing_bytes)
+        protocol, cleaned, parser = detect_trailing_protocol(
+            trailing_bytes, transport=self.flow_transport)
         self.trailing_protocol = protocol
         self.trailing_sub_parse = try_sub_parse(
             cleaned, parser, direction,

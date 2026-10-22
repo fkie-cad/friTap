@@ -1,0 +1,1951 @@
+{
+ "tap": {
+  "flow_count": 11,
+  "flows": [
+   {
+    "chunks": {
+     "count": 1,
+     "sha256": [
+      "431e0caf1a749af6ef46559000f2a825bacf2a9dd97366f22443fb5c804ce176"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:149.154.167.222:443-192.168.0.66:53610",
+     "detected_protocol": "",
+     "dst_addr": "149.154.167.222",
+     "dst_port": 443,
+     "duration": 0.0,
+     "ended": 1790496297.482089,
+     "findings": [],
+     "flow_id": "net:149.154.167.222:443-192.168.0.66:53610:0",
+     "layers": [
+      "mtproto"
+     ],
+     "notes": "",
+     "package_name": "mt_capture1.pcapng",
+     "process_name": "mt_capture1.pcapng",
+     "protocol": "MTProto",
+     "request": {
+      "body_size": 68,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {
+       "constructor": "upload.getFile#be5335be",
+       "messages": "0"
+      },
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": true,
+      "method": "upload.getFile",
+      "protocol": "MTProto",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": ""
+     },
+     "response": null,
+     "src_addr": "192.168.0.66",
+     "src_port": 53610,
+     "ssl_session_id": "",
+     "started": 1790496297.482089,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 68,
+     "transport": "mtproto"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "auth_key_id": "511d625e5db39ea1",
+       "dc_id": 0,
+       "depth": 0,
+       "envelope": {
+        "auth_key_id": "511d625e5db39ea1",
+        "content_related": true,
+        "dc_addr": "149.154.167.222:443",
+        "frame_len": 216,
+        "msg_id": "0x6ab8ce28722d1000",
+        "msg_id_kind": "client",
+        "msg_len": 68,
+        "msg_time": 1790496296.446,
+        "obfuscated": true,
+        "padding_len": 92,
+        "record_seq": 1,
+        "salt": "0000000000000000",
+        "seq_no": 1,
+        "session_id": "293ad6c26a45a624",
+        "transport": "abridged"
+       },
+       "fake_tls": false,
+       "message_count": 0,
+       "messages": [],
+       "name": "mtproto",
+       "obfuscated": true,
+       "refs": {
+        "acked_by": [
+         {
+          "flow_id": "net:149.154.167.222:443-192.168.0.66:53610:2",
+          "method": "msgs_ack",
+          "msg_id": "0x6ab8ce278ddd7409",
+          "record_seq": 3
+         }
+        ],
+        "answered_by": [
+         {
+          "flow_id": "net:149.154.167.222:443-192.168.0.66:53610:3",
+          "method": "upload.file",
+          "msg_id": "0x6ab8ce27976ac801",
+          "record_seq": 7
+         }
+        ]
+       },
+       "transport": "abridged"
+      },
+      "type": "MtprotoLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": {
+     "body_sha256": "d37e6f4261f49633c5df74faa92bf9324b70550935032978aa107c372fa2e400",
+     "body_size": 68,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {
+      "constructor": "upload.getFile#be5335be",
+      "messages": "0"
+     },
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": true,
+     "method": "upload.getFile",
+     "protocol": "MTProto",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": ""
+    },
+    "response": null,
+    "summary": {
+     "connection_id": "net:149.154.167.222:443-192.168.0.66:53610",
+     "detected_protocol": "",
+     "dst_addr": "149.154.167.222",
+     "dst_port": 443,
+     "duration": 0.0,
+     "ended": 1790496297.482089,
+     "finding_count": 0,
+     "flow_id": "net:149.154.167.222:443-192.168.0.66:53610:0",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "",
+     "inner_e2e_protocol": "MTProto",
+     "inner_summary": "",
+     "method": "upload.getFile",
+     "outer_app_protocol": "",
+     "process_name": "mt_capture1.pcapng",
+     "protocol": "MTProto",
+     "src_addr": "192.168.0.66",
+     "src_port": 53610,
+     "ssl_session_id": "",
+     "started": 1790496297.482089,
+     "state": "complete",
+     "status_code": 0,
+     "tag_count": 0,
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 68,
+     "transport": "mtproto",
+     "url": ""
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   },
+   {
+    "chunks": {
+     "count": 1,
+     "sha256": [
+      "376c30b29bab750cad4427814b851aa4b8a427e8e3bc352951bd20715be541d5"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:149.154.167.222:443-192.168.0.66:53610",
+     "detected_protocol": "",
+     "dst_addr": "192.168.0.66",
+     "dst_port": 53610,
+     "duration": 0.0,
+     "ended": 1790496297.498899,
+     "findings": [],
+     "flow_id": "net:149.154.167.222:443-192.168.0.66:53610:1",
+     "layers": [
+      "mtproto"
+     ],
+     "notes": "",
+     "package_name": "mt_capture1.pcapng",
+     "process_name": "mt_capture1.pcapng",
+     "protocol": "MTProto",
+     "request": null,
+     "response": {
+      "body_size": 28,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {
+       "constructor": "bad_server_salt#edab447b",
+       "messages": "1"
+      },
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": false,
+      "method": "bad_server_salt",
+      "protocol": "MTProto",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": ""
+     },
+     "src_addr": "149.154.167.222",
+     "src_port": 443,
+     "ssl_session_id": "",
+     "started": 1790496297.498899,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 28,
+     "transport": "mtproto"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "auth_key_id": "511d625e5db39ea1",
+       "dc_id": 0,
+       "depth": 0,
+       "envelope": {
+        "auth_key_id": "511d625e5db39ea1",
+        "content_related": false,
+        "dc_addr": "149.154.167.222:443",
+        "frame_len": 104,
+        "msg_id": "0x6ab8ce2786122801",
+        "msg_id_kind": "server_response",
+        "msg_len": 28,
+        "msg_time": 1790496295.5237145,
+        "obfuscated": true,
+        "padding_len": 20,
+        "record_seq": 2,
+        "salt": "8548974e049d66aa",
+        "seq_no": 0,
+        "session_id": "293ad6c26a45a624",
+        "transport": "abridged"
+       },
+       "fake_tls": false,
+       "message_count": 1,
+       "messages": [
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "read",
+         "kind": "service",
+         "method": "bad_server_salt",
+         "peer_id": 0,
+         "quote": false,
+         "reaction": false,
+         "sender": "",
+         "timestamp": 1790496297.498899,
+         "user_id": 0
+        }
+       ],
+       "name": "mtproto",
+       "obfuscated": true,
+       "transport": "abridged"
+      },
+      "type": "MtprotoLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": null,
+    "response": {
+     "body_sha256": "453aee7b85a9b4498d1f83bf8e781b386aac192a407e9f1e268907618c29fdc3",
+     "body_size": 28,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {
+      "constructor": "bad_server_salt#edab447b",
+      "messages": "1"
+     },
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": false,
+     "method": "bad_server_salt",
+     "protocol": "MTProto",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": ""
+    },
+    "summary": {
+     "connection_id": "net:149.154.167.222:443-192.168.0.66:53610",
+     "detected_protocol": "",
+     "dst_addr": "192.168.0.66",
+     "dst_port": 53610,
+     "duration": 0.0,
+     "ended": 1790496297.498899,
+     "finding_count": 0,
+     "flow_id": "net:149.154.167.222:443-192.168.0.66:53610:1",
+     "flow_method": "bad_server_salt",
+     "has_notes": false,
+     "host": "",
+     "inner_e2e_protocol": "MTProto",
+     "inner_summary": "",
+     "method": "",
+     "outer_app_protocol": "",
+     "process_name": "mt_capture1.pcapng",
+     "protocol": "MTProto",
+     "src_addr": "149.154.167.222",
+     "src_port": 443,
+     "ssl_session_id": "",
+     "started": 1790496297.498899,
+     "state": "complete",
+     "status_code": 0,
+     "tag_count": 0,
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 28,
+     "transport": "mtproto",
+     "url": ""
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   },
+   {
+    "chunks": {
+     "count": 1,
+     "sha256": [
+      "0405e983754585150bf884c13cb5db97b95d92f6315f4d0b8c2fa35089cff789"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:149.154.167.222:443-192.168.0.66:53610",
+     "detected_protocol": "",
+     "dst_addr": "192.168.0.66",
+     "dst_port": 53610,
+     "duration": 0.0,
+     "ended": 1790496297.530974,
+     "findings": [],
+     "flow_id": "net:149.154.167.222:443-192.168.0.66:53610:2",
+     "layers": [
+      "mtproto"
+     ],
+     "notes": "",
+     "package_name": "mt_capture1.pcapng",
+     "process_name": "mt_capture1.pcapng",
+     "protocol": "MTProto",
+     "request": null,
+     "response": {
+      "body_size": 88,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {
+       "constructor": "msg_container#73f1f8dc",
+       "messages": "2"
+      },
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": false,
+      "method": "new_session_created",
+      "protocol": "MTProto",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": ""
+     },
+     "src_addr": "149.154.167.222",
+     "src_port": 443,
+     "ssl_session_id": "",
+     "started": 1790496297.530974,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 88,
+     "transport": "mtproto"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "auth_key_id": "511d625e5db39ea1",
+       "dc_id": 0,
+       "depth": 0,
+       "envelope": {
+        "auth_key_id": "511d625e5db39ea1",
+        "content_related": false,
+        "dc_addr": "149.154.167.222:443",
+        "frame_len": 168,
+        "msg_id": "0x6ab8ce278ddd7409",
+        "msg_id_kind": "server_response",
+        "msg_len": 88,
+        "msg_time": 1790496295.5541604,
+        "obfuscated": true,
+        "padding_len": 24,
+        "record_seq": 3,
+        "salt": "8548974e049d66aa",
+        "seq_no": 2,
+        "session_id": "293ad6c26a45a624",
+        "transport": "abridged"
+       },
+       "fake_tls": false,
+       "message_count": 2,
+       "messages": [
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "read",
+         "kind": "service",
+         "method": "new_session_created",
+         "peer_id": 0,
+         "quote": false,
+         "reaction": false,
+         "sender": "",
+         "timestamp": 1790496297.530974,
+         "user_id": 0
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "read",
+         "kind": "ack",
+         "method": "msgs_ack",
+         "peer_id": 0,
+         "quote": false,
+         "reaction": false,
+         "sender": "",
+         "timestamp": 1790496297.530974,
+         "user_id": 0
+        }
+       ],
+       "name": "mtproto",
+       "obfuscated": true,
+       "refs": {
+        "acks": [
+         {
+          "flow_id": "net:149.154.167.222:443-192.168.0.66:53610:0",
+          "method": "upload.getFile",
+          "msg_id": "0x6ab8ce28722d1000",
+          "record_seq": 1
+         }
+        ],
+        "acks_total": 1,
+        "container": [
+         {
+          "method": "new_session_created",
+          "msg_id": "0x6ab8ce278ddd7401",
+          "seqno": 1
+         },
+         {
+          "method": "msgs_ack",
+          "msg_id": "0x6ab8ce278ddd7405",
+          "seqno": 2
+         }
+        ]
+       },
+       "transport": "abridged"
+      },
+      "type": "MtprotoLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": null,
+    "response": {
+     "body_sha256": "b4fbf5edb62ded01c03e56a20d096fd805be455c519573d8d284104927bfc335",
+     "body_size": 88,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {
+      "constructor": "msg_container#73f1f8dc",
+      "messages": "2"
+     },
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": false,
+     "method": "new_session_created",
+     "protocol": "MTProto",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": ""
+    },
+    "summary": {
+     "connection_id": "net:149.154.167.222:443-192.168.0.66:53610",
+     "detected_protocol": "",
+     "dst_addr": "192.168.0.66",
+     "dst_port": 53610,
+     "duration": 0.0,
+     "ended": 1790496297.530974,
+     "finding_count": 0,
+     "flow_id": "net:149.154.167.222:443-192.168.0.66:53610:2",
+     "flow_method": "new_session_created",
+     "has_notes": false,
+     "host": "",
+     "inner_e2e_protocol": "MTProto",
+     "inner_summary": "",
+     "method": "",
+     "outer_app_protocol": "",
+     "process_name": "mt_capture1.pcapng",
+     "protocol": "MTProto",
+     "src_addr": "149.154.167.222",
+     "src_port": 443,
+     "ssl_session_id": "",
+     "started": 1790496297.530974,
+     "state": "complete",
+     "status_code": 0,
+     "tag_count": 0,
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 88,
+     "transport": "mtproto",
+     "url": ""
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   },
+   {
+    "chunks": {
+     "count": 1,
+     "sha256": [
+      "608a39952aead7ba3b4bea827e7cb17f6aff8c37c600a6d1fbebffdd946f21f8"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:149.154.167.222:443-192.168.0.66:53610",
+     "detected_protocol": "",
+     "dst_addr": "192.168.0.66",
+     "dst_port": 53610,
+     "duration": 0.0,
+     "ended": 1790496297.585396,
+     "findings": [],
+     "flow_id": "net:149.154.167.222:443-192.168.0.66:53610:3",
+     "layers": [
+      "mtproto"
+     ],
+     "notes": "",
+     "package_name": "mt_capture1.pcapng",
+     "process_name": "mt_capture1.pcapng",
+     "protocol": "MTProto",
+     "request": null,
+     "response": {
+      "body_size": 21796,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {
+       "constructor": "rpc_result#f35c6d01",
+       "messages": "1"
+      },
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": false,
+      "method": "upload.file",
+      "protocol": "MTProto",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": ""
+     },
+     "src_addr": "149.154.167.222",
+     "src_port": 443,
+     "ssl_session_id": "",
+     "started": 1790496297.585396,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 21796,
+     "transport": "mtproto"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "auth_key_id": "511d625e5db39ea1",
+       "dc_id": 0,
+       "depth": 0,
+       "envelope": {
+        "auth_key_id": "511d625e5db39ea1",
+        "content_related": true,
+        "dc_addr": "149.154.167.222:443",
+        "frame_len": 21864,
+        "msg_id": "0x6ab8ce27976ac801",
+        "msg_id_kind": "server_response",
+        "msg_len": 21796,
+        "msg_time": 1790496295.591473,
+        "obfuscated": true,
+        "padding_len": 12,
+        "record_seq": 7,
+        "salt": "8548974e049d66aa",
+        "seq_no": 3,
+        "session_id": "293ad6c26a45a624",
+        "transport": "abridged"
+       },
+       "fake_tls": false,
+       "message_count": 1,
+       "messages": [
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "read",
+         "kind": "rpc",
+         "method": "rpc_result",
+         "peer_id": 0,
+         "quote": false,
+         "reaction": false,
+         "sender": "",
+         "timestamp": 1790496297.585396,
+         "user_id": 0
+        }
+       ],
+       "name": "mtproto",
+       "obfuscated": true,
+       "refs": {
+        "answers": [
+         {
+          "flow_id": "net:149.154.167.222:443-192.168.0.66:53610:0",
+          "method": "upload.getFile",
+          "msg_id": "0x6ab8ce28722d1000",
+          "record_seq": 1
+         }
+        ],
+        "request_method": "upload.getFile"
+       },
+       "transport": "abridged"
+      },
+      "type": "MtprotoLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": null,
+    "response": {
+     "body_sha256": "4b50e4483da112095508d35e413230a232d7750fe79efdef745f0b640d632418",
+     "body_size": 21796,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {
+      "constructor": "rpc_result#f35c6d01",
+      "messages": "1"
+     },
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": false,
+     "method": "upload.file",
+     "protocol": "MTProto",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": ""
+    },
+    "summary": {
+     "connection_id": "net:149.154.167.222:443-192.168.0.66:53610",
+     "detected_protocol": "",
+     "dst_addr": "192.168.0.66",
+     "dst_port": 53610,
+     "duration": 0.0,
+     "ended": 1790496297.585396,
+     "finding_count": 0,
+     "flow_id": "net:149.154.167.222:443-192.168.0.66:53610:3",
+     "flow_method": "rpc_result",
+     "has_notes": false,
+     "host": "",
+     "inner_e2e_protocol": "MTProto",
+     "inner_summary": "",
+     "method": "",
+     "outer_app_protocol": "",
+     "process_name": "mt_capture1.pcapng",
+     "protocol": "MTProto",
+     "src_addr": "149.154.167.222",
+     "src_port": 443,
+     "ssl_session_id": "",
+     "started": 1790496297.585396,
+     "state": "complete",
+     "status_code": 0,
+     "tag_count": 0,
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 21796,
+     "transport": "mtproto",
+     "url": ""
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   },
+   {
+    "chunks": {
+     "count": 1,
+     "sha256": [
+      "24bef867b6bf8f2f7760f426ba4f05bc8b4894d6ab9014281763d4e252193b5d"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:149.154.167.222:443-192.168.0.66:53618",
+     "detected_protocol": "",
+     "dst_addr": "149.154.167.222",
+     "dst_port": 443,
+     "duration": 0.0,
+     "ended": 1790496297.537653,
+     "findings": [],
+     "flow_id": "net:149.154.167.222:443-192.168.0.66:53618:0",
+     "layers": [
+      "mtproto"
+     ],
+     "notes": "",
+     "package_name": "mt_capture1.pcapng",
+     "process_name": "mt_capture1.pcapng",
+     "protocol": "MTProto",
+     "request": {
+      "body_size": 8,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {
+       "constructor": "get_future_salts#b921bd04",
+       "messages": "0"
+      },
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": true,
+      "method": "get_future_salts",
+      "protocol": "MTProto",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": ""
+     },
+     "response": null,
+     "src_addr": "192.168.0.66",
+     "src_port": 53618,
+     "ssl_session_id": "",
+     "started": 1790496297.537653,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 8,
+     "transport": "mtproto"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "auth_key_id": "511d625e5db39ea1",
+       "dc_id": 0,
+       "depth": 0,
+       "envelope": {
+        "auth_key_id": "511d625e5db39ea1",
+        "content_related": true,
+        "dc_addr": "149.154.167.222:443",
+        "frame_len": 296,
+        "msg_id": "0x6ab8ce2881cac000",
+        "msg_id_kind": "client",
+        "msg_len": 8,
+        "msg_time": 1790496296.507,
+        "obfuscated": true,
+        "padding_len": 232,
+        "record_seq": 4,
+        "salt": "8548974e049d66aa",
+        "seq_no": 1,
+        "session_id": "ee0e5339a1bdc7ec",
+        "transport": "abridged"
+       },
+       "fake_tls": false,
+       "message_count": 0,
+       "messages": [],
+       "name": "mtproto",
+       "obfuscated": true,
+       "transport": "abridged"
+      },
+      "type": "MtprotoLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": {
+     "body_sha256": "064b3835a30bf59330c225170f68a3c3575637440b8db76a31fb8ea04c29c3eb",
+     "body_size": 8,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {
+      "constructor": "get_future_salts#b921bd04",
+      "messages": "0"
+     },
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": true,
+     "method": "get_future_salts",
+     "protocol": "MTProto",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": ""
+    },
+    "response": null,
+    "summary": {
+     "connection_id": "net:149.154.167.222:443-192.168.0.66:53618",
+     "detected_protocol": "",
+     "dst_addr": "149.154.167.222",
+     "dst_port": 443,
+     "duration": 0.0,
+     "ended": 1790496297.537653,
+     "finding_count": 0,
+     "flow_id": "net:149.154.167.222:443-192.168.0.66:53618:0",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "",
+     "inner_e2e_protocol": "MTProto",
+     "inner_summary": "",
+     "method": "get_future_salts",
+     "outer_app_protocol": "",
+     "process_name": "mt_capture1.pcapng",
+     "protocol": "MTProto",
+     "src_addr": "192.168.0.66",
+     "src_port": 53618,
+     "ssl_session_id": "",
+     "started": 1790496297.537653,
+     "state": "complete",
+     "status_code": 0,
+     "tag_count": 0,
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 8,
+     "transport": "mtproto",
+     "url": ""
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   },
+   {
+    "chunks": {
+     "count": 1,
+     "sha256": [
+      "c13fa11a684213dda593f21de45be8a13b9dc2828aa9cbcb718e84970969c78b"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:149.154.167.222:443-192.168.0.66:53618",
+     "detected_protocol": "",
+     "dst_addr": "192.168.0.66",
+     "dst_port": 53618,
+     "duration": 0.0,
+     "ended": 1790496297.554436,
+     "findings": [],
+     "flow_id": "net:149.154.167.222:443-192.168.0.66:53618:1",
+     "layers": [
+      "mtproto"
+     ],
+     "notes": "",
+     "package_name": "mt_capture1.pcapng",
+     "process_name": "mt_capture1.pcapng",
+     "protocol": "MTProto",
+     "request": null,
+     "response": {
+      "body_size": 600,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {
+       "constructor": "msg_container#73f1f8dc",
+       "messages": "2"
+      },
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": false,
+      "method": "new_session_created",
+      "protocol": "MTProto",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": ""
+     },
+     "src_addr": "149.154.167.222",
+     "src_port": 443,
+     "ssl_session_id": "",
+     "started": 1790496297.554436,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 600,
+     "transport": "mtproto"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "auth_key_id": "511d625e5db39ea1",
+       "dc_id": 0,
+       "depth": 0,
+       "envelope": {
+        "auth_key_id": "511d625e5db39ea1",
+        "content_related": false,
+        "dc_addr": "149.154.167.222:443",
+        "frame_len": 680,
+        "msg_id": "0x6ab8ce2794454409",
+        "msg_id_kind": "server_response",
+        "msg_len": 600,
+        "msg_time": 1790496295.579182,
+        "obfuscated": true,
+        "padding_len": 24,
+        "record_seq": 5,
+        "salt": "8548974e049d66aa",
+        "seq_no": 2,
+        "session_id": "ee0e5339a1bdc7ec",
+        "transport": "abridged"
+       },
+       "fake_tls": false,
+       "message_count": 2,
+       "messages": [
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "read",
+         "kind": "service",
+         "method": "new_session_created",
+         "peer_id": 0,
+         "quote": false,
+         "reaction": false,
+         "sender": "",
+         "timestamp": 1790496297.554436,
+         "user_id": 0
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "read",
+         "kind": "service",
+         "method": "future_salts",
+         "peer_id": 0,
+         "quote": false,
+         "reaction": false,
+         "sender": "",
+         "timestamp": 1790496297.554436,
+         "user_id": 0
+        }
+       ],
+       "name": "mtproto",
+       "obfuscated": true,
+       "refs": {
+        "acked_by": [
+         {
+          "flow_id": "net:149.154.167.222:443-192.168.0.66:53618:2",
+          "method": "msgs_ack",
+          "msg_id": "0x6ab8ce288f1aa000",
+          "record_seq": 6
+         }
+        ],
+        "container": [
+         {
+          "method": "new_session_created",
+          "msg_id": "0x6ab8ce2794454401",
+          "seqno": 1
+         },
+         {
+          "method": "future_salts",
+          "msg_id": "0x6ab8ce2794454405",
+          "seqno": 2
+         }
+        ]
+       },
+       "transport": "abridged"
+      },
+      "type": "MtprotoLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": null,
+    "response": {
+     "body_sha256": "c6334477df70fe8854c67aeb4dd5855de44757273ac41d7549c18e251391dcbb",
+     "body_size": 600,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {
+      "constructor": "msg_container#73f1f8dc",
+      "messages": "2"
+     },
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": false,
+     "method": "new_session_created",
+     "protocol": "MTProto",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": ""
+    },
+    "summary": {
+     "connection_id": "net:149.154.167.222:443-192.168.0.66:53618",
+     "detected_protocol": "",
+     "dst_addr": "192.168.0.66",
+     "dst_port": 53618,
+     "duration": 0.0,
+     "ended": 1790496297.554436,
+     "finding_count": 0,
+     "flow_id": "net:149.154.167.222:443-192.168.0.66:53618:1",
+     "flow_method": "new_session_created",
+     "has_notes": false,
+     "host": "",
+     "inner_e2e_protocol": "MTProto",
+     "inner_summary": "",
+     "method": "",
+     "outer_app_protocol": "",
+     "process_name": "mt_capture1.pcapng",
+     "protocol": "MTProto",
+     "src_addr": "149.154.167.222",
+     "src_port": 443,
+     "ssl_session_id": "",
+     "started": 1790496297.554436,
+     "state": "complete",
+     "status_code": 0,
+     "tag_count": 0,
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 600,
+     "transport": "mtproto",
+     "url": ""
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   },
+   {
+    "chunks": {
+     "count": 1,
+     "sha256": [
+      "c85bb9338e2e16644289d5e825500372be4863d468adcd18523c9181e8d78eb0"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:149.154.167.222:443-192.168.0.66:53618",
+     "detected_protocol": "",
+     "dst_addr": "149.154.167.222",
+     "dst_port": 443,
+     "duration": 0.0,
+     "ended": 1790496297.562019,
+     "findings": [],
+     "flow_id": "net:149.154.167.222:443-192.168.0.66:53618:2",
+     "layers": [
+      "mtproto"
+     ],
+     "notes": "",
+     "package_name": "mt_capture1.pcapng",
+     "process_name": "mt_capture1.pcapng",
+     "protocol": "MTProto",
+     "request": {
+      "body_size": 20,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {
+       "constructor": "msgs_ack#62d6b459",
+       "messages": "1"
+      },
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": true,
+      "method": "msgs_ack",
+      "protocol": "MTProto",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": ""
+     },
+     "response": null,
+     "src_addr": "192.168.0.66",
+     "src_port": 53618,
+     "ssl_session_id": "",
+     "started": 1790496297.562019,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 20,
+     "transport": "mtproto"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "auth_key_id": "511d625e5db39ea1",
+       "dc_id": 0,
+       "depth": 0,
+       "envelope": {
+        "auth_key_id": "511d625e5db39ea1",
+        "content_related": false,
+        "dc_addr": "149.154.167.222:443",
+        "frame_len": 136,
+        "msg_id": "0x6ab8ce288f1aa000",
+        "msg_id_kind": "client",
+        "msg_len": 20,
+        "msg_time": 1790496296.559,
+        "obfuscated": true,
+        "padding_len": 60,
+        "record_seq": 6,
+        "salt": "8548974e049d66aa",
+        "seq_no": 2,
+        "session_id": "ee0e5339a1bdc7ec",
+        "transport": "abridged"
+       },
+       "fake_tls": false,
+       "message_count": 1,
+       "messages": [
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "write",
+         "kind": "ack",
+         "method": "msgs_ack",
+         "peer_id": 0,
+         "quote": false,
+         "reaction": false,
+         "sender": "",
+         "timestamp": 1790496297.562019,
+         "user_id": 0
+        }
+       ],
+       "name": "mtproto",
+       "obfuscated": true,
+       "refs": {
+        "acks": [
+         {
+          "flow_id": "net:149.154.167.222:443-192.168.0.66:53618:1",
+          "method": "new_session_created",
+          "msg_id": "0x6ab8ce2794454401",
+          "record_seq": 5
+         }
+        ],
+        "acks_total": 1
+       },
+       "transport": "abridged"
+      },
+      "type": "MtprotoLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": {
+     "body_sha256": "cd258f153b418013b0b1174fac7625754285199a7fe28cb956af8884b29d3d28",
+     "body_size": 20,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {
+      "constructor": "msgs_ack#62d6b459",
+      "messages": "1"
+     },
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": true,
+     "method": "msgs_ack",
+     "protocol": "MTProto",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": ""
+    },
+    "response": null,
+    "summary": {
+     "connection_id": "net:149.154.167.222:443-192.168.0.66:53618",
+     "detected_protocol": "",
+     "dst_addr": "149.154.167.222",
+     "dst_port": 443,
+     "duration": 0.0,
+     "ended": 1790496297.562019,
+     "finding_count": 0,
+     "flow_id": "net:149.154.167.222:443-192.168.0.66:53618:2",
+     "flow_method": "msgs_ack",
+     "has_notes": false,
+     "host": "",
+     "inner_e2e_protocol": "MTProto",
+     "inner_summary": "",
+     "method": "msgs_ack",
+     "outer_app_protocol": "",
+     "process_name": "mt_capture1.pcapng",
+     "protocol": "MTProto",
+     "src_addr": "192.168.0.66",
+     "src_port": 53618,
+     "ssl_session_id": "",
+     "started": 1790496297.562019,
+     "state": "complete",
+     "status_code": 0,
+     "tag_count": 0,
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 20,
+     "transport": "mtproto",
+     "url": ""
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   },
+   {
+    "chunks": {
+     "count": 1,
+     "sha256": [
+      "daf95525672c4d303dab4c7c18189af32684ada92c055414739152939adc9529"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:149.154.167.51:443-192.168.0.66:36526",
+     "detected_protocol": "",
+     "dst_addr": "149.154.167.51",
+     "dst_port": 443,
+     "duration": 0.0,
+     "ended": 1790496300.911295,
+     "findings": [],
+     "flow_id": "net:149.154.167.51:443-192.168.0.66:36526:0",
+     "layers": [
+      "mtproto"
+     ],
+     "notes": "",
+     "package_name": "mt_capture1.pcapng",
+     "process_name": "mt_capture1.pcapng",
+     "protocol": "MTProto",
+     "request": {
+      "body_size": 16,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {
+       "constructor": "ping_delay_disconnect#f3427b8c",
+       "messages": "0"
+      },
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": true,
+      "method": "ping_delay_disconnect",
+      "protocol": "MTProto",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": ""
+     },
+     "response": null,
+     "src_addr": "192.168.0.66",
+     "src_port": 36526,
+     "ssl_session_id": "",
+     "started": 1790496300.911295,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 16,
+     "transport": "mtproto"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "auth_key_id": "247e600d791cc037",
+       "dc_id": 0,
+       "depth": 0,
+       "envelope": {
+        "auth_key_id": "247e600d791cc037",
+        "content_related": false,
+        "dc_addr": "149.154.167.51:443",
+        "frame_len": 120,
+        "msg_id": "0x6ab8ce2bd374bc00",
+        "msg_id_kind": "client",
+        "msg_len": 16,
+        "msg_time": 1790496299.826,
+        "obfuscated": true,
+        "padding_len": 48,
+        "record_seq": 8,
+        "salt": "95642610cde9240e",
+        "seq_no": 0,
+        "session_id": "88bf67d329fbc693",
+        "transport": "abridged"
+       },
+       "fake_tls": false,
+       "message_count": 0,
+       "messages": [],
+       "name": "mtproto",
+       "obfuscated": true,
+       "transport": "abridged"
+      },
+      "type": "MtprotoLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": {
+     "body_sha256": "3b1a465e800f623be87566138dea24a38f232fba715a90089eb094fcc8adce04",
+     "body_size": 16,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {
+      "constructor": "ping_delay_disconnect#f3427b8c",
+      "messages": "0"
+     },
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": true,
+     "method": "ping_delay_disconnect",
+     "protocol": "MTProto",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": ""
+    },
+    "response": null,
+    "summary": {
+     "connection_id": "net:149.154.167.51:443-192.168.0.66:36526",
+     "detected_protocol": "",
+     "dst_addr": "149.154.167.51",
+     "dst_port": 443,
+     "duration": 0.0,
+     "ended": 1790496300.911295,
+     "finding_count": 0,
+     "flow_id": "net:149.154.167.51:443-192.168.0.66:36526:0",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "",
+     "inner_e2e_protocol": "MTProto",
+     "inner_summary": "",
+     "method": "ping_delay_disconnect",
+     "outer_app_protocol": "",
+     "process_name": "mt_capture1.pcapng",
+     "protocol": "MTProto",
+     "src_addr": "192.168.0.66",
+     "src_port": 36526,
+     "ssl_session_id": "",
+     "started": 1790496300.911295,
+     "state": "complete",
+     "status_code": 0,
+     "tag_count": 0,
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 16,
+     "transport": "mtproto",
+     "url": ""
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   },
+   {
+    "chunks": {
+     "count": 1,
+     "sha256": [
+      "2f07a68a5470e476da7855b29a58da3a9063aae6b3f04107ae0dd61f3c965107"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:149.154.167.51:443-192.168.0.66:36526",
+     "detected_protocol": "",
+     "dst_addr": "149.154.167.51",
+     "dst_port": 443,
+     "duration": 0.0,
+     "ended": 1790496300.911295,
+     "findings": [],
+     "flow_id": "net:149.154.167.51:443-192.168.0.66:36526:1",
+     "layers": [
+      "mtproto"
+     ],
+     "notes": "",
+     "package_name": "mt_capture1.pcapng",
+     "process_name": "mt_capture1.pcapng",
+     "protocol": "MTProto",
+     "request": {
+      "body_size": 16,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {
+       "constructor": "ping_delay_disconnect#f3427b8c",
+       "messages": "0"
+      },
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": true,
+      "method": "ping_delay_disconnect",
+      "protocol": "MTProto",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": ""
+     },
+     "response": null,
+     "src_addr": "192.168.0.66",
+     "src_port": 36526,
+     "ssl_session_id": "",
+     "started": 1790496300.911295,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 16,
+     "transport": "mtproto"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "auth_key_id": "247e600d791cc037",
+       "dc_id": 0,
+       "depth": 0,
+       "envelope": {
+        "auth_key_id": "247e600d791cc037",
+        "content_related": false,
+        "dc_addr": "149.154.167.51:443",
+        "frame_len": 136,
+        "msg_id": "0x6ab8ce2be8f5c400",
+        "msg_id_kind": "client",
+        "msg_len": 16,
+        "msg_time": 1790496299.91,
+        "obfuscated": true,
+        "padding_len": 64,
+        "record_seq": 9,
+        "salt": "95642610cde9240e",
+        "seq_no": 0,
+        "session_id": "88bf67d329fbc693",
+        "transport": "abridged"
+       },
+       "fake_tls": false,
+       "message_count": 0,
+       "messages": [],
+       "name": "mtproto",
+       "obfuscated": true,
+       "transport": "abridged"
+      },
+      "type": "MtprotoLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": {
+     "body_sha256": "c7e28031e16028224fc0ae11b143d9496f8d8dd83e404187481b58250ee536ce",
+     "body_size": 16,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {
+      "constructor": "ping_delay_disconnect#f3427b8c",
+      "messages": "0"
+     },
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": true,
+     "method": "ping_delay_disconnect",
+     "protocol": "MTProto",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": ""
+    },
+    "response": null,
+    "summary": {
+     "connection_id": "net:149.154.167.51:443-192.168.0.66:36526",
+     "detected_protocol": "",
+     "dst_addr": "149.154.167.51",
+     "dst_port": 443,
+     "duration": 0.0,
+     "ended": 1790496300.911295,
+     "finding_count": 0,
+     "flow_id": "net:149.154.167.51:443-192.168.0.66:36526:1",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "",
+     "inner_e2e_protocol": "MTProto",
+     "inner_summary": "",
+     "method": "ping_delay_disconnect",
+     "outer_app_protocol": "",
+     "process_name": "mt_capture1.pcapng",
+     "protocol": "MTProto",
+     "src_addr": "192.168.0.66",
+     "src_port": 36526,
+     "ssl_session_id": "",
+     "started": 1790496300.911295,
+     "state": "complete",
+     "status_code": 0,
+     "tag_count": 0,
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 16,
+     "transport": "mtproto",
+     "url": ""
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   },
+   {
+    "chunks": {
+     "count": 1,
+     "sha256": [
+      "1f55bf03a15fe8f32a63c081748c69bd5ecb266cf58e0c274c40ad0c5733b1d8"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:149.154.167.51:443-192.168.0.66:36526",
+     "detected_protocol": "",
+     "dst_addr": "192.168.0.66",
+     "dst_port": 36526,
+     "duration": 0.0,
+     "ended": 1790496300.930028,
+     "findings": [],
+     "flow_id": "net:149.154.167.51:443-192.168.0.66:36526:2",
+     "layers": [
+      "mtproto"
+     ],
+     "notes": "",
+     "package_name": "mt_capture1.pcapng",
+     "process_name": "mt_capture1.pcapng",
+     "protocol": "MTProto",
+     "request": null,
+     "response": {
+      "body_size": 20,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {
+       "constructor": "pong#347773c5",
+       "messages": "1"
+      },
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": false,
+      "method": "pong",
+      "protocol": "MTProto",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": ""
+     },
+     "src_addr": "149.154.167.51",
+     "src_port": 443,
+     "ssl_session_id": "",
+     "started": 1790496300.930028,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 20,
+     "transport": "mtproto"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "auth_key_id": "247e600d791cc037",
+       "dc_id": 0,
+       "depth": 0,
+       "envelope": {
+        "auth_key_id": "247e600d791cc037",
+        "content_related": false,
+        "dc_addr": "149.154.167.51:443",
+        "frame_len": 88,
+        "msg_id": "0x6ab8ce2af3f39801",
+        "msg_id_kind": "server_response",
+        "msg_len": 20,
+        "msg_time": 1790496298.9529357,
+        "obfuscated": true,
+        "padding_len": 12,
+        "record_seq": 10,
+        "salt": "95642610cde9240e",
+        "seq_no": 2,
+        "session_id": "88bf67d329fbc693",
+        "transport": "abridged"
+       },
+       "fake_tls": false,
+       "message_count": 1,
+       "messages": [
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "read",
+         "kind": "service",
+         "method": "pong",
+         "peer_id": 0,
+         "quote": false,
+         "reaction": false,
+         "sender": "",
+         "timestamp": 1790496300.930028,
+         "user_id": 0
+        }
+       ],
+       "name": "mtproto",
+       "obfuscated": true,
+       "transport": "abridged"
+      },
+      "type": "MtprotoLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": null,
+    "response": {
+     "body_sha256": "f237d9dcbca3a28da76c54d0bf409a71074e94d3cf9c1cfc90744965027404c0",
+     "body_size": 20,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {
+      "constructor": "pong#347773c5",
+      "messages": "1"
+     },
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": false,
+     "method": "pong",
+     "protocol": "MTProto",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": ""
+    },
+    "summary": {
+     "connection_id": "net:149.154.167.51:443-192.168.0.66:36526",
+     "detected_protocol": "",
+     "dst_addr": "192.168.0.66",
+     "dst_port": 36526,
+     "duration": 0.0,
+     "ended": 1790496300.930028,
+     "finding_count": 0,
+     "flow_id": "net:149.154.167.51:443-192.168.0.66:36526:2",
+     "flow_method": "pong",
+     "has_notes": false,
+     "host": "",
+     "inner_e2e_protocol": "MTProto",
+     "inner_summary": "",
+     "method": "",
+     "outer_app_protocol": "",
+     "process_name": "mt_capture1.pcapng",
+     "protocol": "MTProto",
+     "src_addr": "149.154.167.51",
+     "src_port": 443,
+     "ssl_session_id": "",
+     "started": 1790496300.930028,
+     "state": "complete",
+     "status_code": 0,
+     "tag_count": 0,
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 20,
+     "transport": "mtproto",
+     "url": ""
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   },
+   {
+    "chunks": {
+     "count": 1,
+     "sha256": [
+      "b6bb201819d10216e9d99b132f2fb0e0c89c1764eccc70b216aa0cff990d6137"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:149.154.167.51:443-192.168.0.66:36526",
+     "detected_protocol": "",
+     "dst_addr": "192.168.0.66",
+     "dst_port": 36526,
+     "duration": 0.0,
+     "ended": 1790496300.930028,
+     "findings": [],
+     "flow_id": "net:149.154.167.51:443-192.168.0.66:36526:3",
+     "layers": [
+      "mtproto"
+     ],
+     "notes": "",
+     "package_name": "mt_capture1.pcapng",
+     "process_name": "mt_capture1.pcapng",
+     "protocol": "MTProto",
+     "request": null,
+     "response": {
+      "body_size": 20,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {
+       "constructor": "pong#347773c5",
+       "messages": "1"
+      },
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": false,
+      "method": "pong",
+      "protocol": "MTProto",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": ""
+     },
+     "src_addr": "149.154.167.51",
+     "src_port": 443,
+     "ssl_session_id": "",
+     "started": 1790496300.930028,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 20,
+     "transport": "mtproto"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "auth_key_id": "247e600d791cc037",
+       "dc_id": 0,
+       "depth": 0,
+       "envelope": {
+        "auth_key_id": "247e600d791cc037",
+        "content_related": false,
+        "dc_addr": "149.154.167.51:443",
+        "frame_len": 88,
+        "msg_id": "0x6ab8ce2af3f42801",
+        "msg_id_kind": "server_response",
+        "msg_len": 20,
+        "msg_time": 1790496298.9529443,
+        "obfuscated": true,
+        "padding_len": 12,
+        "record_seq": 11,
+        "salt": "95642610cde9240e",
+        "seq_no": 2,
+        "session_id": "88bf67d329fbc693",
+        "transport": "abridged"
+       },
+       "fake_tls": false,
+       "message_count": 1,
+       "messages": [
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "read",
+         "kind": "service",
+         "method": "pong",
+         "peer_id": 0,
+         "quote": false,
+         "reaction": false,
+         "sender": "",
+         "timestamp": 1790496300.930028,
+         "user_id": 0
+        }
+       ],
+       "name": "mtproto",
+       "obfuscated": true,
+       "transport": "abridged"
+      },
+      "type": "MtprotoLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": null,
+    "response": {
+     "body_sha256": "37cd3bd19ba864d9475867da85f8915572e171cf05367a0ca4789893171cb638",
+     "body_size": 20,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {
+      "constructor": "pong#347773c5",
+      "messages": "1"
+     },
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": false,
+     "method": "pong",
+     "protocol": "MTProto",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": ""
+    },
+    "summary": {
+     "connection_id": "net:149.154.167.51:443-192.168.0.66:36526",
+     "detected_protocol": "",
+     "dst_addr": "192.168.0.66",
+     "dst_port": 36526,
+     "duration": 0.0,
+     "ended": 1790496300.930028,
+     "finding_count": 0,
+     "flow_id": "net:149.154.167.51:443-192.168.0.66:36526:3",
+     "flow_method": "pong",
+     "has_notes": false,
+     "host": "",
+     "inner_e2e_protocol": "MTProto",
+     "inner_summary": "",
+     "method": "",
+     "outer_app_protocol": "",
+     "process_name": "mt_capture1.pcapng",
+     "protocol": "MTProto",
+     "src_addr": "149.154.167.51",
+     "src_port": 443,
+     "ssl_session_id": "",
+     "started": 1790496300.930028,
+     "state": "complete",
+     "status_code": 0,
+     "tag_count": 0,
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 20,
+     "transport": "mtproto",
+     "url": ""
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   }
+  ],
+  "header": {
+   "capture_start": 1790496272.703299,
+   "capture_target": "mt_capture1.pcapng",
+   "ext_data": null,
+   "ext_header_len": 0,
+   "flags": 1,
+   "flow_count": 11,
+   "format_version": 1
+  },
+  "keylog_records": {
+   "count": 7,
+   "sha256": "af2a13fa85a9ecc5865a38edf256f6ea7b86f5b85f8d7c9d127c0505b45398aa"
+  },
+  "meta": {
+   "flow_fields_version": 3,
+   "parse_result_version": 1,
+   "schema_version": 1
+  },
+  "summary_count": 11
+ }
+}

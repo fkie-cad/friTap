@@ -51,7 +51,9 @@ pytest.importorskip("textual")
 
 from friTap.tui.app import FriTapApp  # noqa: E402
 from friTap.tui.modals.alert_modal import AlertModal  # noqa: E402
-from friTap.tui.modals.extraction_method_modal import ExtractionMethodModal  # noqa: E402
+from friTap.tui.modals.extraction_method_modal import (  # noqa: E402
+    ExtractionMethodModal,
+)
 
 
 def _run(body, size=(80, 24)):

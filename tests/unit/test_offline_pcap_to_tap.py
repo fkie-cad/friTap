@@ -4,8 +4,8 @@
 
 The pure tests need no tshark binary: command building is pure, follow-output
 parsing and QUIC packet translation are fed hand-built strings/dicts, and the
-end-to-end path monkeypatches ``list_tls_streams`` / ``follow_tls_stream`` /
-``stream_packets`` / ``find_tshark``.
+end-to-end path monkeypatches ``stream_packets`` / ``find_tshark`` (the
+combined ``-T ek`` pass).
 
 A single integration test (``test_real_tshark_*``) runs the real tshark binary
 against the hermetic premaster fixture (explicit keylog); it is skipped when
@@ -254,40 +254,6 @@ def test_parse_follow_output_bracketed_ipv6_endpoints_unbracketed():
 
 
 # ---------------------------------------------------------------------------
-# _tls_segments_to_events
-# ---------------------------------------------------------------------------
-
-def test_tls_segments_to_events_directions_and_endpoints():
-    endpoints = ("192.168.0.122", 49283, "157.240.27.35", 443)
-    segments = [("write", b"req"), ("read", b"resp")]
-    events = p2t._tls_segments_to_events(endpoints, segments)
-
-    assert len(events) == 2
-    write_ev, read_ev = events
-    assert write_ev.direction == "write"
-    assert write_ev.transport == "tcp"
-    assert write_ev.ss_family == "AF_INET"
-    assert (write_ev.src_addr, write_ev.src_port) == ("192.168.0.122", 49283)
-    assert (write_ev.dst_addr, write_ev.dst_port) == ("157.240.27.35", 443)
-
-    assert read_ev.direction == "read"
-    assert (read_ev.src_addr, read_ev.src_port) == ("157.240.27.35", 443)
-    assert (read_ev.dst_addr, read_ev.dst_port) == ("192.168.0.122", 49283)
-
-
-def test_tls_segments_to_events_ipv6_family():
-    endpoints = ("2001:db8::1", 49283, "2606:2800:220::1", 443)
-    events = p2t._tls_segments_to_events(endpoints, [("write", b"x")])
-    assert events[0].ss_family == "AF_INET6"
-
-
-def test_tls_segments_to_events_skips_empty():
-    endpoints = ("10.0.0.1", 1, "10.0.0.2", 443)
-    events = p2t._tls_segments_to_events(endpoints, [("write", b"")])
-    assert events == []
-
-
-# ---------------------------------------------------------------------------
 # _StreamDirectionTracker (still used for QUIC)
 # ---------------------------------------------------------------------------
 
@@ -487,7 +453,7 @@ def _hex(b: bytes) -> str:
 def _tls_ek_packets(endpoints, segments, *, stream=0, t0=1700000000.0):
     """Build TLS single-pass ``-T ek`` packet dicts from follow-style segments.
 
-    Mirrors what ``build_tls_command``'s export yields: one ``data.data`` frame
+    Mirrors the TLS app-data rows of the combined export: one ``data.data`` frame
     per direction-tagged segment, addresses oriented by direction (write =
     client->server). Lets the old ``(endpoints, segments)`` fixtures drive the
     new single-pass path with no change to the test's data."""
@@ -504,6 +470,8 @@ def _tls_ek_packets(endpoints, segments, *, stream=0, t0=1700000000.0):
             "tcp_stream": [str(stream)],
             "tcp_srcport": [str(src_p)], "tcp_dstport": [str(dst_p)],
             "data_data": [data.hex()],
+            # The combined pass's app-data marker (tshark >= 4.4).
+            "count(tls_app_data)": ["1"],
         }})
     return packets
 
@@ -611,7 +579,6 @@ def test_convert_pcap_to_tap_quic_path(tmp_path, monkeypatch):
 
     monkeypatch.setattr(p2t, "find_tshark", lambda *a, **k: "/usr/bin/tshark")
     monkeypatch.setattr(p2t, "tshark_version", lambda path: (4, 6, 0))
-    monkeypatch.setattr(p2t, "list_tls_streams", lambda *a, **k: [])
     monkeypatch.setattr(p2t, "stream_packets", fake_stream)
 
     pcap = tmp_path / "q.pcapng"
@@ -642,7 +609,7 @@ def test_malformed_tls_packet_increments_dropped_packet_count(tmp_path, monkeypa
     monkeypatch.setattr(p2t, "_tls_packet_to_events", boom)
     # One TLS frame (triggers boom in the per-packet translator), no QUIC.
     one_tls = [{"layers": {
-        "tcp_stream": ["0"], "data_data": ["41"],
+        "tcp_stream": ["0"], "data_data": ["41"], "count(tls_app_data)": ["1"],
         "ip_src": ["10.0.0.1"], "ip_dst": ["93.184.216.34"],
         "tcp_srcport": ["50000"], "tcp_dstport": ["443"],
     }}]
@@ -676,7 +643,6 @@ def test_quic_zip_mismatch_still_counts_as_dropped_packet(tmp_path, monkeypatch)
 
     monkeypatch.setattr(p2t, "find_tshark", lambda *a, **k: "/usr/bin/tshark")
     monkeypatch.setattr(p2t, "tshark_version", lambda path: (4, 6, 0))
-    monkeypatch.setattr(p2t, "list_tls_streams", lambda *a, **k: [])
     monkeypatch.setattr(p2t, "stream_packets", fake_stream)
 
     pcap = tmp_path / "q.pcapng"
@@ -720,7 +686,6 @@ def test_quic_stream_count_counts_distinct_streams_not_udp_conns(tmp_path, monke
 
     monkeypatch.setattr(p2t, "find_tshark", lambda *a, **k: "/usr/bin/tshark")
     monkeypatch.setattr(p2t, "tshark_version", lambda path: (4, 6, 0))
-    monkeypatch.setattr(p2t, "list_tls_streams", lambda *a, **k: [])
     monkeypatch.setattr(p2t, "stream_packets", fake_stream)
 
     pcap = tmp_path / "q.pcapng"
@@ -737,7 +702,6 @@ def test_quic_stream_count_counts_distinct_streams_not_udp_conns(tmp_path, monke
 def test_convert_pcap_to_tap_no_data_still_writes_tap(tmp_path, monkeypatch):
     monkeypatch.setattr(p2t, "find_tshark", lambda *a, **k: "/usr/bin/tshark")
     monkeypatch.setattr(p2t, "tshark_version", lambda path: (4, 6, 0))
-    monkeypatch.setattr(p2t, "list_tls_streams", lambda *a, **k: [])
     monkeypatch.setattr(p2t, "stream_packets", lambda cmd: iter(()))
 
     pcap = tmp_path / "empty.pcapng"
@@ -884,7 +848,6 @@ def test_pcapng_with_dsb_needs_no_keylog(tmp_path, monkeypatch):
     """A DSB-embedded pcapng satisfies the precondition without a keylog."""
     monkeypatch.setattr(p2t, "find_tshark", lambda *a, **k: "/usr/bin/tshark")
     monkeypatch.setattr(p2t, "tshark_version", lambda path: (4, 6, 0))
-    monkeypatch.setattr(p2t, "list_tls_streams", lambda *a, **k: [])
     monkeypatch.setattr(p2t, "stream_packets", lambda cmd: iter(()))
 
     pcap = tmp_path / "dsb.pcapng"
@@ -1631,9 +1594,9 @@ def test_pcap_to_tap_merges_memscan_keylog_from_manifest(tmp_path, monkeypatch):
 
     merged_path = captured["mtproto_keylog"]
     assert merged_path and os.path.isfile(merged_path)
-    lines = [l.strip() for l in open(merged_path) if not l.startswith("#")]
-    assert any(l.startswith("MTPROTO_OBF_KEY") for l in lines), "OBF key must be merged in"
-    assert any(l.startswith("MTPROTO_AUTH_KEY") for l in lines)
+    lines = [line.strip() for line in open(merged_path) if not line.startswith("#")]
+    assert any(line.startswith("MTPROTO_OBF_KEY") for line in lines), "OBF key must be merged in"
+    assert any(line.startswith("MTPROTO_AUTH_KEY") for line in lines)
 
 
 def test_merge_manifest_unions_memory_scan_keylog(tmp_path):
@@ -1652,6 +1615,6 @@ def test_merge_manifest_unions_memory_scan_keylog(tmp_path):
     merged = offline_cli.merge_manifest(_ns(from_pcap=str(pcap)), manifest)
     mt = merged["mtproto_keylog"]
     assert mt and os.path.isfile(mt)
-    lines = [l.strip() for l in open(mt) if not l.startswith("#")]
-    assert any(l.startswith("MTPROTO_OBF_KEY") for l in lines)   # OBF merged in
-    assert any(l.startswith("MTPROTO_AUTH_KEY") for l in lines)
+    lines = [line.strip() for line in open(mt) if not line.startswith("#")]
+    assert any(line.startswith("MTPROTO_OBF_KEY") for line in lines)   # OBF merged in
+    assert any(line.startswith("MTPROTO_AUTH_KEY") for line in lines)

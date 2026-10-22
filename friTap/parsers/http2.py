@@ -1,7 +1,6 @@
 """HTTP/2 frame-level parser with HPACK decompression via hpack library."""
 
 import logging
-import struct
 
 _log = logging.getLogger(__name__)
 
@@ -25,9 +24,14 @@ except ImportError:
 from friTap.constants import PROTOCOL_HTTP2  # noqa: E402
 
 from .base import BaseParser, ParseResult, apply_http2_headers  # noqa: E402
+from .http2_constants import (  # noqa: E402
+    HTTP2_FRAME_TYPE_NAMES,
+    HTTP2_PREFACE,
+    unpack_frame_header,
+)
 
-# HTTP/2 connection preface
-_CONNECTION_PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+# HTTP/2 connection preface (legacy private alias of the shared constant)
+_CONNECTION_PREFACE = HTTP2_PREFACE
 
 # Frame types
 _FRAME_DATA = 0x00
@@ -69,19 +73,8 @@ _SETTINGS_PARAMS: dict[int, str] = {
     0x6: "MAX_HEADER_LIST_SIZE",
 }
 
-# Frame type display names
-_FRAME_TYPE_NAMES: dict[int, str] = {
-    _FRAME_DATA: "DATA",
-    _FRAME_HEADERS: "HEADERS",
-    _FRAME_PRIORITY: "PRIORITY",
-    _FRAME_RST_STREAM: "RST_STREAM",
-    _FRAME_SETTINGS: "SETTINGS",
-    _FRAME_PUSH_PROMISE: "PUSH_PROMISE",
-    _FRAME_PING: "PING",
-    _FRAME_GOAWAY: "GOAWAY",
-    _FRAME_WINDOW_UPDATE: "WINDOW_UPDATE",
-    _FRAME_CONTINUATION: "CONTINUATION",
-}
+# Frame type display names (shared table; legacy private alias)
+_FRAME_TYPE_NAMES = HTTP2_FRAME_TYPE_NAMES
 
 # GOAWAY error codes (RFC 7540 Section 7)
 _GOAWAY_ERRORS: dict[int, str] = {
@@ -240,6 +233,15 @@ class Http2Parser(BaseParser):
             data[:_FRAME_HEADER_SIZE]
         )
         if frame_type > _MAX_VALID_FRAME_TYPE:
+            return False
+        # A DATA frame (type 0x0) MUST be associated with a non-zero stream
+        # (RFC 7540 Sec 6.1); DATA on stream 0 is a connection error and never
+        # valid HTTP/2. Plaintext mDNS/DNS-over-UDP messages start with a zero
+        # transaction id + flags (e.g. a response "00 00 84 00 ...") which decode
+        # as a zero-stream DATA frame, so without this guard they are mislabelled
+        # HTTP/2. A genuine mid-connection DATA frame rides a non-zero stream and
+        # is unaffected.
+        if frame_type == _FRAME_DATA and stream_id == 0:
             return False
         # Without the preface, apply strict initial-window constraints
         if length > 16384:  # RFC 7540 default SETTINGS_MAX_FRAME_SIZE
@@ -447,19 +449,14 @@ class Http2Parser(BaseParser):
     @staticmethod
     def _parse_frame_header(header: bytes) -> tuple[int, int, int, int]:
         """Parse 9-byte frame header into (length, type, flags, stream_id)."""
-        length = (header[0] << 16) | (header[1] << 8) | header[2]
-        frame_type = header[3]
-        flags = header[4]
-        stream_id = struct.unpack("!I", header[5:9])[0] & 0x7FFFFFFF
-        return length, frame_type, flags, stream_id
+        return unpack_frame_header(header)
 
     @staticmethod
     def _is_valid_frame_header(header: bytes) -> bool:
         """Check if 9 bytes look like a valid HTTP/2 frame header."""
         if len(header) < _FRAME_HEADER_SIZE:
             return False
-        length = (header[0] << 16) | (header[1] << 8) | header[2]
-        frame_type = header[3]
+        length, frame_type, _flags, _stream_id = unpack_frame_header(header)
         if frame_type > _MAX_VALID_FRAME_TYPE:
             return False
         if length > 16777215:

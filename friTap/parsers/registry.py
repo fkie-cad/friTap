@@ -17,6 +17,7 @@ import importlib.util
 import inspect
 import logging
 import os
+import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -28,6 +29,14 @@ logger = logging.getLogger(__name__)
 PARSER_ENTRY_POINT_GROUP = "fritap.parsers"
 _DISABLE_ENV = "FRITAP_DISABLE_PARSER_DISCOVERY"
 _DEFAULT_DISCOVERED_PRIORITY = 50
+
+# Built-in transport pins to parsers outside this package, as
+# ``transport -> "module:Class"``. Each is imported on the first lookup of its
+# transport, so building the registry never loads the offline stack.
+_BUILTIN_LAZY_PINS: dict[str, str] = {
+    "telegram_e2e": "friTap.offline.mtproto.tl_parser:TelegramE2EParser",
+    "mtproto": "friTap.offline.mtproto.tl_parser:MtprotoParser",
+}
 
 
 @dataclass(frozen=True)
@@ -58,10 +67,44 @@ class ParserRegistry:
         self._parsers: list[tuple[int, type[BaseParser]]] = []
         # transport name (Flow.transport) -> its parser-selection rule
         self._rules: dict[str, _TransportRule] = {}
+        # transport name -> "module:Class" pinned on first lookup
+        self._lazy_pins: dict[str, str] = {}
+        # serialises lazy-pin resolution (the default registry is process-global)
+        self._lazy_pin_lock = threading.Lock()
 
     def _rule(self, transport: str | None) -> _TransportRule:
         """The selection rule for *transport* (the no-op rule when none/unset)."""
-        return self._rules.get(transport, _NO_RULE) if transport else _NO_RULE
+        if not transport:
+            return _NO_RULE
+        if transport in self._lazy_pins:
+            self._resolve_lazy_pin(transport)
+        return self._rules.get(transport, _NO_RULE)
+
+    def pin_transport_lazy(self, transport: str, target: str) -> None:
+        """Pin *transport* to the ``"module:Class"`` *target*, imported on first lookup.
+
+        An import failure raises from that first lookup; the transport is then
+        left unpinned (sniffed) on later lookups.
+        """
+        self._lazy_pins[transport] = target
+
+    def _resolve_lazy_pin(self, transport: str) -> None:
+        """Import *transport*'s lazy pin once, even under concurrent first lookups.
+
+        The pinned rule is stored before the lazy entry is dropped, so a thread
+        that sees no lazy entry also sees the resolved pin. The entry is dropped
+        on an import failure too (the transport is then sniffed).
+        """
+        with self._lazy_pin_lock:
+            target = self._lazy_pins.get(transport)
+            if target is None:
+                return  # another thread resolved it while we waited
+            try:
+                module_path, _, cls_name = target.partition(":")
+                parser_cls = getattr(importlib.import_module(module_path), cls_name)
+                self._set_pinned(transport, parser_cls)
+            finally:
+                self._lazy_pins.pop(transport, None)
 
     def register(self, parser_cls: type[BaseParser], priority: int = 50) -> None:
         """Register a parser class for protocol detection.
@@ -82,7 +125,14 @@ class ParserRegistry:
         length prefix like ``00 00 00 1a`` parses as leading CONTINUATION
         frames).
         """
-        self._rules[transport] = replace(self._rule(transport), pinned=parser_cls)
+        self._lazy_pins.pop(transport, None)  # an explicit pin replaces a lazy one
+        self._set_pinned(transport, parser_cls)
+
+    def _set_pinned(self, transport: str, parser_cls: type[BaseParser]) -> None:
+        """Store *parser_cls* as *transport*'s pin, keeping its other rule fields."""
+        self._rules[transport] = replace(
+            self._rules.get(transport, _NO_RULE), pinned=parser_cls,
+        )
 
     def pinned_parser_for(self, transport: str | None) -> type[BaseParser] | None:
         """Return the parser class pinned to *transport*, or None."""
@@ -253,16 +303,20 @@ def get_default_registry() -> ParserRegistry:
             (".websocket", "WebSocketParser", 85),
             (".http3", "Http3Parser", 80),
         ]
+        builtin_classes: list[type[BaseParser]] = []
         for module_path, cls_name, priority in _parser_specs:
             try:
                 mod = importlib.import_module(module_path, package=__package__)
                 parser_cls = getattr(mod, cls_name)
                 _default_registry.register(parser_cls, priority=priority)
+                builtin_classes.append(parser_cls)
             except (ImportError, AttributeError) as exc:
                 logger.warning(
                     "Parser %s unavailable (missing dependency): %s",
                     cls_name, exc,
                 )
+                if cls_name == "Http3Parser":
+                    logger.warning("HTTP/3 parser unavailable; QUIC not restricted: %s", exc)
 
         # External parsers (drop-in dir + fritap.parsers entry points), e.g. a
         # user's Telegram/MTProto TL parser. Registered before the Hexdump
@@ -278,24 +332,21 @@ def get_default_registry() -> ParserRegistry:
 
         # HexdumpParser is always available as the guaranteed fallback
         _default_registry.register(HexdumpParser, priority=0)
-        _pin_telegram_transports(_default_registry)
-        _restrict_quic_transport(_default_registry)
+        for transport, target in _BUILTIN_LAZY_PINS.items():
+            _default_registry.pin_transport_lazy(transport, target)
+        _apply_declared_transport_rules(_default_registry, builtin_classes)
     return _default_registry
 
 
-def _pin_telegram_transports(registry: ParserRegistry) -> None:
-    """Pin the decrypted-TL transports to their Telegram parsers."""
-    from .telegram_tl import MtprotoParser, TelegramE2EParser
+def _apply_declared_transport_rules(registry: ParserRegistry, classes) -> None:
+    """Restrict transports as the built-in parser *classes* declare.
 
-    registry.pin_transport("telegram_e2e", TelegramE2EParser)
-    registry.pin_transport("mtproto", MtprotoParser)
-
-
-def _restrict_quic_transport(registry: ParserRegistry) -> None:
-    """Sniff QUIC stream bytes only with the HTTP/3 parser (Hexdump fallback)."""
-    try:
-        from .http3 import Http3Parser
-    except ImportError as exc:
-        logger.warning("HTTP/3 parser unavailable; QUIC not restricted: %s", exc)
-        return
-    registry.restrict_transport("quic", {Http3Parser})
+    ``EXCLUSIVE_TRANSPORTS`` restricts each named transport to the classes
+    declaring it (see :meth:`ParserRegistry.restrict_transport`).
+    """
+    exclusive: dict[str, set[type[BaseParser]]] = {}
+    for parser_cls in classes:
+        for transport in getattr(parser_cls, "EXCLUSIVE_TRANSPORTS", ()):
+            exclusive.setdefault(transport, set()).add(parser_cls)
+    for transport, allowed in exclusive.items():
+        registry.restrict_transport(transport, allowed)

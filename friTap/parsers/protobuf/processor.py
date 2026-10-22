@@ -35,8 +35,8 @@ class ProtobufProcessor:
     binary types.
 
     Args:
-        schema_path: Optional path to a compiled ``.desc`` file for
-            schema-based decoding.
+        schema_path: Optional ``.proto`` source (compiled with ``protoc``)
+            or compiled ``.desc`` descriptor set for schema-based decoding.
         message_type: Protobuf message type name (required if schema_path is set).
         force: If ``True``, attempt decoding regardless of content type.
     """
@@ -55,8 +55,11 @@ class ProtobufProcessor:
         if schema_path and message_type:
             try:
                 from .schema import SchemaDecoder
-                self._schema_decoder = SchemaDecoder()
-                self._schema_decoder.load_descriptor(schema_path, message_type)
+                decoder = SchemaDecoder()
+                decoder.load_schema(schema_path, message_type)
+                # Only a fully loaded decoder is kept: a half-initialised one
+                # would fail every body instead of falling back to raw decoding.
+                self._schema_decoder = decoder
             except (ImportError, Exception) as exc:
                 _log.warning("Failed to load protobuf schema: %s", exc)
 

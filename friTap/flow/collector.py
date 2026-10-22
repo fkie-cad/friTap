@@ -1,7 +1,6 @@
 """Thread-safe flow collector that groups SSL events into flows."""
 
 import copy
-import dataclasses
 import logging
 import re
 import threading
@@ -59,7 +58,6 @@ _READ_FUNCTIONS = SSL_READ | frozenset({
 # Decrypted-TL transports (Flow.transport values) whose parser is pinned by the
 # registry instead of byte-sniffed; every event on them is exactly one packet.
 _TRANSPORT_TELEGRAM_E2E = "telegram_e2e"
-_TRANSPORT_MTPROTO = "mtproto"
 
 
 class FlowCollector(QuicStreamFlowMixin):
@@ -102,13 +100,6 @@ class FlowCollector(QuicStreamFlowMixin):
         # Merge targets that were already COMPLETE when an orphan response was
         # folded in (refreshed via UPDATED by flush). Reset per merge pass.
         self._stale_merge_targets: list[Flow] = []
-        # Telegram Secret-Chat pairing: conn_id -> flow_id of the newest sent
-        # (write) message still awaiting its received reply. Lives on the
-        # collector, outside the resettable _ConnectionState, so pairing
-        # survives a connection-state rebuild. See _pair_e2e_event.
-        # Retained, currently unused (see T1): message transports now emit one
-        # flow per packet (_emit_packet_flow), so nothing populates this.
-        self._e2e_open_requests: dict[str, str] = {}
         self._event_count = 0
         # Opt-in event clock (offline conversion): when enabled, sweep/idle logic
         # measures "now" as the newest event timestamp seen instead of the wall
@@ -160,8 +151,12 @@ class FlowCollector(QuicStreamFlowMixin):
         a connection state is supplied, the per-connection failure
         callback also resets the active flow's ``detected_protocol`` so
         the UI does not keep claiming HTTP/1.1 (or whatever the dead
-        parser asserted) while raw bytes are now flowing untyped.
+        parser asserted) while raw bytes are now flowing untyped. It also
+        stamps the connection's transport on the parser (``flow_transport``)
+        so its trailing-data detection honours that transport's rules.
         """
+        if parser is not None and conn is not None:
+            parser.flow_transport = conn.transport
         if parser is None or isinstance(parser, SafeParserAdapter):
             return parser
         if conn is None:
@@ -216,7 +211,7 @@ class FlowCollector(QuicStreamFlowMixin):
         """EventBus subscriber for LibraryDetectedEvent.
 
         Records the detected TLS/SSL library so it can be stamped onto each
-        new Flow's ``tls.library``.
+        new Flow's ``tls.library`` (or ``quic.library`` for QUIC flows).
         """
         library = getattr(event, 'library', '') or ''
         with self._lock:
@@ -306,8 +301,10 @@ class FlowCollector(QuicStreamFlowMixin):
     def on_data(self, event) -> None:
         """EventBus subscriber for DatalogEvent."""
         # Build connection ID using tiered key resolution (client_random →
-        # session_token → normalized 4-tuple). The ``protocol`` is passed so the
-        # cr:/sid: prefix reflects the event's real protocol (e.g. "quic"); empty/
+        # session_token → 4-tuple). The ``protocol`` is passed so the cr:/sid:
+        # prefix reflects the event's real protocol (e.g. "quic") and the net:
+        # tier is protocol-scoped for non-TLS protocols (net:<proto>:<4tuple>),
+        # so e.g. an RC4 flow never merges into a TLS flow on the same 4-tuple; empty/
         # None is normalized to "tls" inside resolve_connection_key, the same
         # single source of truth MessageRouter._emit_lifecycle keys through, so
         # lifecycle and data events always resolve to the same key.
@@ -494,7 +491,7 @@ class FlowCollector(QuicStreamFlowMixin):
 
         A reply to a sent Secret-Chat message routinely arrives minutes later;
         an idle reset/sweep would finalize the waiting request-only flow and
-        break the request/response pairing (see _pair_e2e_event).
+        break the request/response pairing.
         """
         return conn.transport == _TRANSPORT_TELEGRAM_E2E
 
@@ -583,8 +580,10 @@ class FlowCollector(QuicStreamFlowMixin):
     def _attach_signal_messages(self, flow, msgs) -> None:
         """Append decrypted Signal messages onto *flow*'s SignalLayer (live).
 
-        Mirrors the offline ``_apply_signal_meta`` per-message dict shape so live
-        and offline ``SignalLayer.messages`` are identical. A typed
+        Mirrors the offline
+        :func:`friTap.offline.signal.offline_decryptor._ingest_signal_message`
+        per-message dict shape so live and offline ``SignalLayer.messages`` are
+        identical. A typed
         :class:`~friTap.flow.layers.SignalLayer` is created on first use (the
         generic ``push_layer`` only makes an untyped ``AppLayer``).
         """
@@ -856,7 +855,6 @@ class FlowCollector(QuicStreamFlowMixin):
             self._h2_stream_flows.clear()
             self._orphan_requests.clear()
             self._session_tls.clear()
-            self._e2e_open_requests.clear()
 
     def add_synthetic_flow(
         self,
@@ -1443,17 +1441,10 @@ class FlowCollector(QuicStreamFlowMixin):
                 flow = self._flows[conn.active_flow_id]
                 if flow.state == FlowState.ACTIVE:
                     is_ghost = flow.request is None and stream_id == 0
-                    # Decrypted cloud MTProto records group like unknown bytes:
-                    # writes accumulate, the first read completes the exchange.
-                    # Retained, currently unused (see T1): mtproto connections
-                    # are routed to _emit_packet_flow before reaching here.
-                    is_unknown_group = (result.protocol == "unknown"
-                                        or conn.transport == _TRANSPORT_MTPROTO)
+                    is_unknown_group = result.protocol == "unknown"
                     if is_ghost or is_unknown_group:
                         if flow.request is None:
                             flow.request = result
-                        elif conn.transport == _TRANSPORT_MTPROTO:
-                            flow.request = _merge_tl_records(flow.request, result)
                         self._append_chunk(flow, chunk)
                         return flow
             # HTTP/2: update existing flow for this stream if headers already emitted
@@ -1543,59 +1534,6 @@ class FlowCollector(QuicStreamFlowMixin):
         self._append_chunk(flow, chunk)
         self._complete_flow(flow, event.timestamp, pending)
         conn.active_flow_id = None
-        return flow
-
-    def _pair_e2e_event(self, conn, chunk, result, event, pending) -> Flow:
-        """Pair Telegram Secret-Chat packets into request/response flows.
-
-        Retained, currently unused (see T1): message transports now emit one
-        flow per packet via :meth:`_emit_packet_flow`.
-
-        A sent message (write) always opens a NEW flow whose request is that
-        packet alone. A received message (read) becomes the response of the
-        newest open request — one without a response and not superseded by a
-        later write — otherwise it opens a response-only flow. Every flow is
-        oriented device -> Telegram DC. Must be called under lock.
-        """
-        if result.is_request:
-            return self._open_e2e_request(conn, chunk, result, event, pending)
-        flow = self._take_open_e2e_request(conn.conn_id)
-        if flow is None:
-            flow = self._make_flow(
-                conn, event, self._oriented_endpoints(event, chunk.direction))
-            pending.append((FlowEventType.CREATED, flow))
-        conn.active_flow_id = flow.flow_id
-        self._attach_response(flow, result, chunk, event.timestamp, pending)
-        return flow
-
-    def _open_e2e_request(self, conn, chunk, result, event, pending) -> Flow:
-        """Start a request-only Secret-Chat flow, closing a superseded one.
-
-        Retained, currently unused (see T1 / :meth:`_emit_packet_flow`).
-        """
-        superseded = self._take_open_e2e_request(conn.conn_id)
-        if superseded is not None:
-            self._complete_flow(
-                superseded, self._last_activity_of(superseded), pending)
-        flow = self._make_flow(
-            conn, event, self._oriented_endpoints(event, chunk.direction))
-        flow.request = result
-        self._append_chunk(flow, chunk)
-        conn.active_flow_id = flow.flow_id
-        self._e2e_open_requests[conn.conn_id] = flow.flow_id
-        pending.append((FlowEventType.CREATED, flow))
-        return flow
-
-    def _take_open_e2e_request(self, conn_id: str) -> Optional[Flow]:
-        """Pop *conn_id*'s open Secret-Chat request flow if it can still pair.
-
-        Retained, currently unused (see T1 / :meth:`_emit_packet_flow`).
-        """
-        flow = self._flows.get(self._e2e_open_requests.pop(conn_id, ""))
-        if flow is None or flow.response is not None:
-            return None
-        if flow.state != FlowState.ACTIVE:
-            return None
         return flow
 
     @staticmethod
@@ -1700,6 +1638,24 @@ class FlowCollector(QuicStreamFlowMixin):
         if not ids:
             del self._flow_index[flow.connection_id]
 
+    # Transports whose layer carries a ``library`` field (TlsLayer/QuicLayer).
+    _LIBRARY_TRANSPORTS = ("tls", "quic")
+
+    def _stamp_detected_library(self, flow: Flow) -> None:
+        """Stamp the detected TLS library onto the flow's transport layer.
+
+        Only TLS and QUIC flows get it, on ``flow.tls`` / ``flow.quic``
+        respectively. Attribute access auto-creates the layer, so stamping any
+        other transport (MTProto, Telegram E2E, ...) would attach a stray
+        layer and make the flow match the "tls"/"quic" filter.
+        """
+        if (not self._detected_library
+                or flow.transport not in self._LIBRARY_TRANSPORTS):
+            return
+        layer = getattr(flow, flow.transport)
+        if not layer.library:
+            layer.library = self._detected_library
+
     def _stamp_metadata(self, flow: Flow, event) -> None:
         """Stamp cheaply-available metadata onto a freshly-created Flow.
 
@@ -1712,8 +1668,7 @@ class FlowCollector(QuicStreamFlowMixin):
         # connection key. Set FIRST so the layer pipeline picks TlsLayer vs
         # QuicLayer and the metadata backfill below targets the right layer.
         flow.transport = getattr(event, 'protocol', 'tls') or 'tls'
-        if self._detected_library and not flow.tls.library:
-            flow.tls.library = self._detected_library
+        self._stamp_detected_library(flow)
         # Backfill handshake metadata cached from an earlier SESSION_STARTED/
         # RESUMED for this connection (handshake arrives before the first data
         # event, so _stamp_tls_metadata found no flow to stamp at that time).
@@ -1767,28 +1722,6 @@ class FlowCollector(QuicStreamFlowMixin):
                 ))
             except Exception:
                 logger.debug("FlowEvent emit error", exc_info=True)
-
-
-def _merge_tl_records(grouped, record):
-    """Fold one more decrypted TL *record* into a flow's *grouped* ParseResult.
-
-    Used for cloud MTProto exchanges, where several write records form one
-    request: raw/body concatenate in arrival order (mirroring the flow's
-    chunks), and the method is the best-ranked of the grouped records.
-
-    Retained, currently unused (see T1): cloud MTProto records now become one
-    flow per packet (``FlowCollector._emit_packet_flow``).
-    """
-    from friTap.flow.display import _classify_method
-
-    method = grouped.method
-    if _classify_method(record.method) > _classify_method(method):
-        method = record.method
-    return dataclasses.replace(
-        grouped, method=method, raw=grouped.raw + record.raw,
-        body=grouped.body + record.body,
-        body_size=grouped.body_size + record.body_size,
-    )
 
 
 class _ConnectionState:

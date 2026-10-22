@@ -188,3 +188,8 @@ def parse_line(line: str) -> Optional[Rc4Key]:
         direction=direction,
         assoc=assoc,
     )
+
+
+def matches_line(line: str) -> bool:
+    """True when *line* is a valid RC4 keylog record (keylog sniffing)."""
+    return parse_line(line) is not None

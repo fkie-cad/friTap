@@ -23,3 +23,19 @@ export function getEngine(name: string): MemscanEngine | null {
 export function engineNames(): string[] {
     return Object.keys(engines);
 }
+
+/**
+ * Run every registered engine's optional stop() teardown. Called from the agent's
+ * `dispose` RPC so an engine can release hooks it installed (e.g. boringssl's
+ * needle-seed hooks on the hot SSL_read/SSL_write path) BEFORE frida's implicit
+ * detach, whose synchronous rewrite of those hot prologues is what stalls unload.
+ * Failures are isolated so one bad teardown cannot block the others or the unload.
+ */
+export function stopEngines(): void {
+    for (const name of Object.keys(engines)) {
+        const engine = engines[name];
+        if (typeof engine.stop === "function") {
+            try { engine.stop(); } catch (_e) { /* best-effort; unload must proceed */ }
+        }
+    }
+}

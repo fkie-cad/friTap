@@ -169,12 +169,30 @@ def _collect_context(device: Any = None, target: Any = None) -> BackendErrorCont
     if pid_int is not None and sys.platform == "darwin" and ctx.target_alive:
         _macos_target_probes(pid_int, ctx)
     if device is not None:
-        try:
-            device.query_system_parameters()
-            ctx.server_reachable = True
-        except Exception:
-            ctx.server_reachable = False
+        _probe_server(device, ctx)
     return ctx
+
+
+def _probe_server(device, ctx: BackendErrorContext) -> None:
+    """Fill ``server_reachable``/``server_access`` from the device.
+
+    frida 17's USB device answers ``query_system_parameters()`` even with no
+    frida-server running (ADB-only fallback, ``access='jailed'``), so a mere
+    successful call does not prove a server is up. Only ``access == 'full'``
+    counts as reachable; when frida reports no ``access`` at all, keep the
+    old "answered == reachable" verdict.
+    """
+    try:
+        params = device.query_system_parameters()
+    except Exception:
+        ctx.server_reachable = False
+        return
+    access = params.get("access") if isinstance(params, dict) else None
+    if isinstance(access, str):
+        ctx.server_access = access
+        ctx.server_reachable = access == "full"
+    else:
+        ctx.server_reachable = True
 
 
 def _wrap_frida_errors(

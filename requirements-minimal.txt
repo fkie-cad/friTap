@@ -1,7 +1,7 @@
 frida>=17.0.0,<17.16.0; python_version < "3.11"
 frida>=17.0.0,<18.0.0; python_version >= "3.11"
 frida-tools>=14.0.0,<15.0.0
-AndroidFridaManager
+AndroidFridaManager>=2.0.6
 hexdump
 scapy
 watchdog

@@ -21,7 +21,8 @@ base fields it unites, and :func:`lookup_attr` resolves it at query time.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field as _dc_field
+from dataclasses import dataclass
+from dataclasses import field as _dc_field
 from typing import Any, Optional
 
 from friTap.filter.protocols import canonical_protocols
@@ -145,6 +146,7 @@ LAYER_FIELD_SPECS: tuple[LayerFieldSpec, ...] = (
     _spec("tls.sni", "tls", "sni", "str", "Server Name Indication"),
     _spec("tls.alpn", "tls", "alpn", "str", "Negotiated ALPN"),
     _spec("tls.cipher", "tls", "cipher", "str", "Cipher suite"),
+    _spec("quic.library", "quic", "library", "str", "TLS/QUIC library that was hooked"),
     _spec("quic.version", "quic", "version", "str", "QUIC version"),
     _spec("quic.sni", "quic", "sni", "str", "Server Name Indication"),
     _spec("quic.alpn", "quic", "alpn", "str", "Negotiated ALPN"),

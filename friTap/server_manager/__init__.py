@@ -17,5 +17,13 @@ Usage::
 
 from .base import BaseFridaServerManager, LocalUnixServerManager
 from .factory import get_server_manager
+from .probe import ServerState, is_attach_capable, probe_frida_server
 
-__all__ = ["BaseFridaServerManager", "LocalUnixServerManager", "get_server_manager"]
+__all__ = [
+    "BaseFridaServerManager",
+    "LocalUnixServerManager",
+    "ServerState",
+    "get_server_manager",
+    "is_attach_capable",
+    "probe_frida_server",
+]

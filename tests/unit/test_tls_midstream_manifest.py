@@ -22,7 +22,6 @@ from types import SimpleNamespace
 from friTap import memory_scanning as ms
 from friTap.pcap import PCAP
 
-
 # --------------------------------------------------------------------------- #
 # _sidecar_paths_for + build_memory_scan_engine
 # --------------------------------------------------------------------------- #

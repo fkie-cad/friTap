@@ -15,11 +15,9 @@ import os
 from typing import Optional, Sequence
 
 from . import keylog_coverage
-from .mtproto.transport import (
-    DEFAULT_OBF_ENDPOINT_MATCH_BLOCKS,
-    DEFAULT_OBF_MAX_BLOCKS,
-)
+from .mtproto.transport import DEFAULT_OBF_ENDPOINT_MATCH_BLOCKS
 from .pcap_to_tap import (
+    DEFAULT_RESYNC_SEARCH_DEPTH,  # noqa: F401 (back-compat re-export; display only)
     MESSAGING_PREFIXES,
     ConvertResult,
     NoDecryptionKeysError,
@@ -59,6 +57,22 @@ def parse_resync_search_depth(raw: str) -> int:
             f"{RESYNC_SEARCH_DEPTH_MAX}, got {value}"
         )
     return value
+
+
+def _resync_defaults_text(entries) -> str:
+    """``"name: depth, ..."`` of each decoder family's own resync default.
+
+    One item per family (the first member declaring a ``resync_default``), so
+    MTProto and Telegram, which share one decoder, are listed once.
+    """
+    from .registry import entry_family
+
+    seen: dict = {}
+    for entry in entries:
+        value = getattr(entry, "resync_default", None)
+        if value is not None:
+            seen.setdefault(entry_family(entry), f"{entry.protocol_name}: {value}")
+    return ", ".join(seen.values())
 
 # Sidecar manifest suffix written by friTap at end-of-capture (see pcap.py).
 MANIFEST_SUFFIX = ".fritap.json"
@@ -121,14 +135,16 @@ def _build_parser() -> argparse.ArgumentParser:
             except Exception:  # noqa: BLE001 - a bad hook must not break the CLI
                 logger.debug("offline CLI extras registration failed for %r",
                              _entry.protocol_name, exc_info=True)
+    resync_defaults = _resync_defaults_text(get_offline_decryptor_registry().list())
     parser.add_argument(
         "--resync-search-depth", dest="resync_search_depth",
         type=parse_resync_search_depth,
-        default=DEFAULT_OBF_MAX_BLOCKS,
+        default=None,
         help="Maximum search depth (in cipher blocks/units) when re-aligning a "
              "mid-stream flow to a memory-recovered key. Applies to offline "
              "decryptors that support mid-stream key recovery (currently MTProto "
-             f"obfuscated transport; default {DEFAULT_OBF_MAX_BLOCKS}). "
+             f"obfuscated transport; default: each decryptor's own "
+             f"({resync_defaults})). "
              "Endpoint-matched keys auto-search further; raise this for "
              f"un-attributed keys (range 0..{RESYNC_SEARCH_DEPTH_MAX}).")
     parser.add_argument(
@@ -185,23 +201,130 @@ def load_manifest(pcap_path: str) -> dict:
         return {}
 
 
+def _resolve_relative_path(path: str, base_dirs: Sequence[str]) -> str:
+    """*path* joined to the first of *base_dirs* where it exists ("" = the CWD).
+
+    Absolute paths are returned unchanged. When the file exists under none of
+    them, the first base wins, so the error a caller later reports names the
+    location that was looked at first.
+    """
+    if os.path.isabs(path):
+        return path
+    candidates = [os.path.join(base, path) if base else path for base in base_dirs]
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+    return candidates[0] if candidates else path
+
+
+def resolve_manifest_path(pcap_path: str, path: str | None) -> str | None:
+    """Resolve a (possibly relative) path read from ``<pcap>.fritap.json``.
+
+    A relative manifest path belongs to the manifest, so the manifest's own
+    directory (the pcap's) is tried first, making the result independent of the
+    reader's CWD. Manifests written by a live capture record the path as friTap
+    was given it (relative to *its* CWD), so the CWD is the fallback.
+    """
+    if not path:
+        return None
+    manifest_dir = os.path.dirname(os.path.abspath(pcap_path)) if pcap_path else ""
+    return _resolve_relative_path(path, [manifest_dir, ""])
+
+
+# Manifest maps whose values are keylog paths (protocol -> path).
+_MANIFEST_KEYLOG_MAPS = ("keylogs", "memory_scan_keylogs")
+
+
+def _manifest_keylog_keys() -> frozenset[str]:
+    """Top-level manifest keys whose values are keylog paths.
+
+    ``keylog`` plus every offline decryptor's ``cli_dest`` (``mtproto_keylog``,
+    ``schannel_unpaired``, ...); any other ``*_keylog`` key is matched by suffix.
+    """
+    from .registry import get_offline_decryptor_registry
+
+    dests = {entry.cli_dest for entry in get_offline_decryptor_registry().list()}
+    return frozenset({"keylog", *dests})
+
+
+def _resolve_manifest_value(pcap_path: str, value):
+    """:func:`resolve_manifest_path` for a string *value*; anything else unchanged."""
+    return resolve_manifest_path(pcap_path, value) if isinstance(value, str) else value
+
+
+def resolve_manifest_keylog_paths(pcap_path: str, manifest: dict) -> dict:
+    """Return a copy of *manifest* with every keylog path resolved.
+
+    A relative path in ``<pcap>.fritap.json`` is relative to the manifest, so
+    each one goes through :func:`resolve_manifest_path`: ``keylog``, every
+    ``<proto>_keylog`` and decryptor ``cli_dest`` key (e.g.
+    ``schannel_unpaired``), and the values of the ``keylogs`` and
+    ``memory_scan_keylogs`` maps. Shared by the CLI (:func:`merge_manifest`) and
+    the API (:func:`friTap.offline.pcap_to_tap.pcap_to_tap`), so a conversion
+    does not depend on the directory it is started from.
+    """
+    keylog_keys = _manifest_keylog_keys()
+    resolved = dict(manifest)
+    for key, value in manifest.items():
+        if key in keylog_keys or key.endswith("_keylog"):
+            resolved[key] = _resolve_manifest_value(pcap_path, value)
+    for map_key in _MANIFEST_KEYLOG_MAPS:
+        mapping = manifest.get(map_key)
+        if isinstance(mapping, dict):
+            resolved[map_key] = {
+                name: _resolve_manifest_value(pcap_path, path)
+                for name, path in mapping.items()
+            }
+    return resolved
+
+
+def manifest_protocol_keylogs(manifest: dict) -> dict[str, str]:
+    """``{protocol_name: keylog}`` the manifest supplies for each offline decryptor.
+
+    The per-protocol ``keylogs`` map is authoritative: a multi-protocol capture
+    records each protocol's split ``<base>.<proto>.log`` there, while the
+    top-level ``cli_dest`` field historically held the base/TLS path. So the map
+    wins and the top-level field is the back-compat fallback.
+    """
+    from .registry import get_offline_decryptor_registry
+
+    keylogs_map = manifest.get("keylogs") or {}
+    found: dict[str, str] = {}
+    for entry in get_offline_decryptor_registry().list():
+        value = keylogs_map.get(entry.protocol_name) or manifest.get(entry.cli_dest)
+        if value:
+            found[entry.protocol_name] = value
+    return found
+
+
+def resolve_cli_path(path: str | None, pcap_path: str) -> str | None:
+    """Resolve a (possibly relative) path the user typed on the command line.
+
+    Typed paths are relative to the CWD, like every other path flag
+    (``--keylog`` etc.). The pcap's directory is kept as a fallback for a bare
+    sidecar name co-located with the capture (the historical behaviour).
+    """
+    if not path:
+        return None
+    pcap_dir = os.path.dirname(os.path.abspath(pcap_path)) if pcap_path else ""
+    return _resolve_relative_path(path, ["", pcap_dir] if pcap_dir else [""])
+
+
 def _resolve_midstream_secrets(args: argparse.Namespace, manifest: dict) -> str | None:
     """Pick the TLS mid-stream secret-bundle sidecar path for this run.
 
     Precedence: the explicit ``--tls-midstream-secrets`` flag wins, else the
-    manifest's ``tls_midstream_secrets`` value. A relative path is resolved
-    against the pcap's directory (the sidecar is co-located with the capture),
-    mirroring how memory-scan sidecars are located. Returns ``None`` when
-    neither source supplies a path.
+    manifest's ``tls_midstream_secrets`` value. A relative flag value resolves
+    against the CWD (then the pcap's directory); a relative manifest value
+    against the manifest's directory (then the CWD) — see
+    :func:`resolve_cli_path` / :func:`resolve_manifest_path`. Returns ``None``
+    when neither source supplies a path.
     """
-    path = getattr(args, "tls_midstream_secrets", None) or manifest.get(
-        "tls_midstream_secrets") or None
-    if path and not os.path.isabs(path):
-        pcap = getattr(args, "from_pcap", "") or ""
-        pcap_dir = os.path.dirname(os.path.abspath(pcap)) if pcap else ""
-        if pcap_dir:
-            path = os.path.join(pcap_dir, path)
-    return path
+    pcap = getattr(args, "from_pcap", "") or ""
+    explicit = getattr(args, "tls_midstream_secrets", None)
+    if explicit:
+        return resolve_cli_path(explicit, pcap)
+    return resolve_manifest_path(pcap, manifest.get("tls_midstream_secrets") or None)
 
 
 def merge_manifest(args: argparse.Namespace, manifest: dict) -> dict:
@@ -212,6 +335,8 @@ def merge_manifest(args: argparse.Namespace, manifest: dict) -> dict:
     """
     from .registry import get_offline_decryptor_registry
 
+    pcap = getattr(args, "from_pcap", "") or ""
+    manifest = resolve_manifest_keylog_paths(pcap, manifest)
     tls_ports = list(args.tls_ports) or list(manifest.get("tls_ports", []))
     quic_ports = list(args.quic_ports) or list(manifest.get("quic_ports", []))
     keylog = args.keylog or manifest.get("keylog") or None
@@ -226,14 +351,13 @@ def merge_manifest(args: argparse.Namespace, manifest: dict) -> dict:
     # Prefer it over the top-level cli_dest field, which historically held the
     # base/TLS path and could point a protocol's keylog at the wrong file.
     # Precedence: explicit CLI > keylogs map > top-level cli_dest (back-compat).
-    manifest_keylogs = manifest.get("keylogs", {}) or {}
+    from_manifest = manifest_protocol_keylogs(manifest)
     protocol_keylogs: dict[str, str] = {}
     named_keylog_kwargs: dict[str, str | None] = {}
     for entry in get_offline_decryptor_registry().list():
         value = (
             getattr(args, entry.cli_dest, None)
-            or manifest_keylogs.get(entry.protocol_name)
-            or manifest.get(entry.cli_dest)
+            or from_manifest.get(entry.protocol_name)
             or None
         )
         # Back-compat named kwarg derived from the registry dest (a runtime
@@ -273,9 +397,8 @@ def merge_manifest(args: argparse.Namespace, manifest: dict) -> dict:
         "heuristic": bool(args.tls_heuristic),
         # Generic mid-stream resync depth: the boundary maps it to each emitter's
         # own unit (MTProto's obf_max_blocks today) via the _emitter_accepts gate.
-        "resync_search_depth": getattr(
-            args, "resync_search_depth", DEFAULT_OBF_MAX_BLOCKS
-        ),
+        # None (flag absent) lets each decryptor apply its own default.
+        "resync_search_depth": getattr(args, "resync_search_depth", None),
         # Mid-stream TLS 1.3 secret-bundle sidecar. Applied by the Python API
         # (convert_pcap_to_tap) but historically dropped by this CLI merge, so
         # the headless `fritap --from-pcap` workflow got no mid-stream decrypt.
@@ -545,13 +668,75 @@ def _print_layer_stacks(tap_path: str) -> None:
                     print(f"      [{ly.depth}] {ly.name}: {detail}")
 
 
+def _report_no_decrypted_data(result: ConvertResult,
+                              coverage: Optional[keylog_coverage.Coverage]) -> int:
+    """Explain a run that decrypted no packets; return the CLI exit code.
+
+    0 when metadata-only flows (e.g. SSH) were still written, else 4.
+    """
+    _print_coverage_explanation(coverage)
+    # Honest messaging-protocol diagnostics, mirrored from the TUI: an E2E-only
+    # keylog (secret-chat key but no transport auth key) and any clear-text
+    # auth_key_ids seen on the wire that we lacked the key for. Both are the
+    # actual, actionable reasons a Telegram capture produced nothing.
+    _print_messaging_zero_flow_explanation(result)
+    if result.flow_count:
+        # Metadata-only flows (e.g. SSH banners/KEXINIT) were still written,
+        # so the run produced a usable .tap: success, with a note.
+        print(
+            f"Note: no application data was decrypted; the {result.flow_count} "
+            "flow(s) written carry connection metadata only (e.g. SSH handshakes)."
+        )
+        return 0
+    if result.encrypted_streams_skipped:
+        print(
+            f"Warning: no plaintext application data was produced; "
+            f"{result.encrypted_streams_skipped} stream(s) look encrypted "
+            "(TLS/QUIC) and were skipped. This capture needs keys — pass "
+            "--keylog <SSLKEYLOGFILE>, or use a pcapng with an embedded "
+            "Decryption Secrets Block (DSB)."
+        )
+    else:
+        print(
+            "Warning: no application data was produced. If this capture is "
+            "encrypted, it needs keys — pass --keylog <SSLKEYLOGFILE> (or use "
+            "a pcapng with an embedded DSB) and check --tls-port / --quic-port "
+            "/ --decode-as. If it is already plaintext, no extractable payload "
+            "was found."
+        )
+    return 4
+
+
+def _missing_explicit_key_inputs(args: argparse.Namespace, kwargs: dict) -> list[str]:
+    """Describe every key file named by a command-line flag that does not exist.
+
+    Covers each registered decryptor's ``--<proto>-keylog`` / sidecar flag and
+    ``--tls-midstream-secrets``. Manifest-supplied paths are not checked here
+    (the conversion warns about those and carries on).
+    """
+    from .registry import get_offline_decryptor_registry
+
+    missing = []
+    for entry in get_offline_decryptor_registry().list():
+        path = getattr(args, entry.cli_dest, None)
+        if path and not os.path.isfile(path):
+            missing.append(f"{entry.protocol_name} keylog not found ({entry.cli_flag}): {path}")
+    if getattr(args, "tls_midstream_secrets", None):
+        sidecar = kwargs.get("tls_midstream_secrets")
+        if not sidecar or not os.path.isfile(sidecar):
+            missing.append("TLS mid-stream secret-bundle sidecar not found "
+                           f"(--tls-midstream-secrets): {sidecar or args.tls_midstream_secrets}")
+    return missing
+
+
 def run_offline_pcap_to_tap(argv: Sequence[str]) -> int:
     """Parse *argv*, run the conversion, print a summary, and return an exit code.
 
     Returns 0 on success; nonzero on error: 2 (pcap not found), 3 (tshark
-    missing), 5 (no decryption keys: no keylog and no embedded DSB), 1 (other
-    conversion failure), 4 (ran but produced no decrypted packets — usually
-    wrong keys/ports).
+    missing), 5 (no decryption keys: no keylog and no embedded DSB, or a
+    protocol keylog / sidecar named by a flag does not exist), 1 (other
+    conversion failure), 4 (ran but produced no decrypted packets and no
+    metadata-only flow — usually wrong keys/ports).
     """
     # Discover plugin offline decryptors BEFORE building the parser so their
     # --<proto>-keylog flags are registry-generated alongside the built-ins.
@@ -588,21 +773,17 @@ def run_offline_pcap_to_tap(argv: Sequence[str]) -> int:
     manifest = load_manifest(args.from_pcap)
     kwargs = merge_manifest(args, manifest)
 
-    # If MTProto decryption was requested but its optional backend is missing,
-    # say so loudly and up front (rather than silently producing a .tap without
-    # the Telegram flows). Non-fatal: any TLS/QUIC passes still run.
-    if kwargs.get("mtproto_keylog"):
-        from friTap.offline.mtproto import (
-            MTPROTO_DEPENDENCY_HINT,
-            mtproto_backend_available,
-        )
-        if not mtproto_backend_available():
-            print(f"Warning: {MTPROTO_DEPENDENCY_HINT}")
-            print("         MTProto streams in this capture will be skipped.")
+    # An explicitly named protocol keylog / sidecar that does not exist fails
+    # like a missing --keylog does: a typo must not silently drop a decryptor.
+    missing_inputs = _missing_explicit_key_inputs(args, kwargs)
+    if missing_inputs:
+        for line in missing_inputs:
+            print(f"Error: {line}")
+        return 5
 
     # Per-decryptor up-front dependency / prerequisite warnings (e.g. a missing
-    # optional crypto backend, or a TLS-riding protocol given without a TLS
-    # keylog). Driven by each decryptor's CLI-module hook so no extension protocol
+    # optional crypto backend such as MTProto's, or a TLS-riding protocol given
+    # without a TLS keylog). Non-fatal: any TLS/QUIC passes still run. Driven by each decryptor's CLI-module hook so no extension protocol
     # is named here. The protocol's keylog value comes from the generic map.
     proto_keylogs = kwargs.get("protocol_keylogs") or {}
     tls_keylog_path = kwargs.get("keylog_path")
@@ -661,29 +842,7 @@ def run_offline_pcap_to_tap(argv: Sequence[str]) -> int:
     coverage = _keylog_coverage(tshark_bin, args.from_pcap, kwargs.get("keylog_path"))
 
     if result.decrypted_packet_count == 0:
-        _print_coverage_explanation(coverage)
-        # Honest messaging-protocol diagnostics, mirrored from the TUI: an E2E-only
-        # keylog (secret-chat key but no transport auth key) and any clear-text
-        # auth_key_ids seen on the wire that we lacked the key for. Both are the
-        # actual, actionable reasons a Telegram capture produced nothing.
-        _print_messaging_zero_flow_explanation(result)
-        if result.encrypted_streams_skipped:
-            print(
-                f"Warning: no plaintext application data was produced; "
-                f"{result.encrypted_streams_skipped} stream(s) look encrypted "
-                "(TLS/QUIC) and were skipped. This capture needs keys — pass "
-                "--keylog <SSLKEYLOGFILE>, or use a pcapng with an embedded "
-                "Decryption Secrets Block (DSB)."
-            )
-        else:
-            print(
-                "Warning: no application data was produced. If this capture is "
-                "encrypted, it needs keys — pass --keylog <SSLKEYLOGFILE> (or use "
-                "a pcapng with an embedded DSB) and check --tls-port / --quic-port "
-                "/ --decode-as. If it is already plaintext, no extractable payload "
-                "was found."
-            )
-        return 4
+        return _report_no_decrypted_data(result, coverage)
 
     _print_partial_coverage_note(coverage)
     return 0

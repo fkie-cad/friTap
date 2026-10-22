@@ -5,9 +5,10 @@ from .decompress import decompress_body
 from .hexdump import HexdumpParser
 from .http1 import Http1Parser
 from .http2 import Http2Parser
+from .http2_constants import HTTP2_PREFACE
 from .http2_dataframe import (
-    HTTP2_PREFACE,
     group_http2_data_by_stream,
+    http2_data_for_stream,
     looks_like_http2,
 )
 from .http3 import Http3Parser
@@ -17,6 +18,7 @@ from .protobuf import (
     ProtobufMessage,
     ProtobufProcessor,
     WireType,
+    decode_protobuf_varint,
     decode_raw,
     extract_grpc_messages,
     format_message,
@@ -26,7 +28,7 @@ from .protobuf import (
     strip_grpc_frame,
 )
 from .registry import ParserRegistry, get_default_registry
-from .varint import decode_varint, encode_varint
+from .varint import decode_quic_varint, decode_varint, encode_varint
 from .websocket_defray import (
     WebSocketFrame,
     iter_websocket_frames,
@@ -46,6 +48,7 @@ __all__ = [
     # HTTP/2 stateless DATA harvesting (HPACK-free)
     "looks_like_http2",
     "group_http2_data_by_stream",
+    "http2_data_for_stream",
     "HTTP2_PREFACE",
     # WebSocket stateless de-framing (RFC 6455)
     "WebSocketFrame",
@@ -54,9 +57,11 @@ __all__ = [
     "unmask",
     "decompress_body",
     "decode_varint",
+    "decode_quic_varint",
     "encode_varint",
     # Protobuf
     "decode_raw",
+    "decode_protobuf_varint",
     "format_message",
     "is_likely_protobuf",
     "ProtobufField",

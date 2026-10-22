@@ -127,3 +127,23 @@ export function pointerToScanPattern(p) {
     buf.writePointer(p);
     return hex(buf.readByteArray(Process.pointerSize)).match(/../g).join(' ');
 }
+
+/* Like pointerToScanPattern, but tolerant of an ARM64 top-byte-ignore / scudo-MTE
+ * tag in the pointer's high byte(s). A pointer STORED in a struct field carries
+ * its allocation tag (e.g. 0xb4..), while the same object's address recovered from
+ * a range scan is UNTAGGED (Process.enumerateRanges reports canonical VAs), so an
+ * exact 8-byte match never fires when reverse-linking a scanned heap object to a
+ * pointer that references it. This wildcards the tag bytes — those ABOVE the
+ * tagMask width — and matches the low canonical-address bytes, so it hits the
+ * stored pointer whatever its tag. `tagMask` is the profile's pointer_tag_mask
+ * (e.g. 0xffffffffffff = 48 significant bits → the top 2 bytes are wildcarded).
+ * On a non-tagged allocator the wildcarded bytes are already 0, so it still
+ * matches; acceptsAsSsl/validation removes the rare extra candidate. */
+export function pointerToTagAgnosticScanPattern(p, tagMask) {
+    var buf = Memory.alloc(Process.pointerSize);
+    buf.writePointer(p.and(tagMask));
+    var bytes = hex(buf.readByteArray(Process.pointerSize)).match(/../g);
+    var sig = Math.ceil(tagMask.toString(16).replace(/^0x/, '').length / 2);
+    for (var i = sig; i < bytes.length; i++) bytes[i] = '??';
+    return bytes.join(' ');
+}

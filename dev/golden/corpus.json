@@ -1,0 +1,358 @@
+{
+ "entries": [
+  {
+   "id": "fx_dump_premaster",
+   "tier": "fixture",
+   "protocol": "tls",
+   "pcap": "tests/fixtures/dump_premaster.pcapng",
+   "args": {
+    "keylog_path": "tests/fixtures/premaster.txt"
+   }
+  },
+  {
+   "id": "fx_weather6_h2_plaintext",
+   "tier": "fixture",
+   "protocol": "plaintext",
+   "pcap": "tests/fixtures/weather6_apiapi_h2_plaintext.pcapng",
+   "args": {}
+  },
+  {
+   "id": "fx_schannel_tls13",
+   "tier": "fixture",
+   "protocol": "schannel",
+   "pcap": "tests/fixtures/schannel_tls13.pcap",
+   "args": {
+    "keylog_path": "tests/fixtures/schannel_tls13.keylog"
+   }
+  },
+  {
+   "id": "fx_signal_grpc_h2",
+   "tier": "fixture",
+   "protocol": "signal",
+   "pcap": "tests/fixtures/signal_grpc_h2.pcapng",
+   "args": {
+    "keylog_path": "tests/fixtures/signal_grpc_h2.tls.log",
+    "protocol_keylogs": {
+     "signal": "tests/fixtures/signal_grpc_h2.signal.log"
+    }
+   }
+  },
+  {
+   "id": "fx_chrome_quic_encrypted",
+   "tier": "fixture",
+   "protocol": "quic",
+   "pcap": "tests/fixtures/chrome_quic_encrypted.pcapng",
+   "args": {}
+  },
+  {
+   "id": "fx_demo_rc4",
+   "tier": "fixture",
+   "protocol": "rc4",
+   "pcap": "demo/demo_rc4.pcap",
+   "args": {
+    "keylog_path": "demo/demo_rc4.keylog",
+    "protocol_keylogs": {
+     "rc4": "demo/demo_rc4.rc4.keylog"
+    }
+   }
+  },
+  {
+   "id": "fx_demo_tst",
+   "tier": "fixture",
+   "protocol": "tls",
+   "pcap": "demo/tst.pcap",
+   "args": {
+    "keylog_path": "demo/keys.log"
+   }
+  },
+  {
+   "id": "fx_demo_windows_powershell",
+   "tier": "fixture",
+   "protocol": "schannel",
+   "pcap": "demo/windows_powershell.pcap",
+   "args": {
+    "keylog_path": "demo/windows_powershell.keylog"
+   }
+  },
+  {
+   "id": "fx_empty_pcap",
+   "tier": "fixture",
+   "protocol": "empty",
+   "pcap": "x.pcap",
+   "args": {}
+  },
+  {
+   "id": "rs_mtproto_finalmtcapture",
+   "tier": "research",
+   "protocol": "mtproto",
+   "pcap": "research/misc/finalmtcapture.pcapng",
+   "args": {
+    "keylog_path": "research/misc/finalmtkeys.log",
+    "mtproto_keylog": "research/misc/finalmtkeys.merged.mtproto.keylog"
+   }
+  },
+  {
+   "id": "rs_mtproto_finalycapture",
+   "tier": "research",
+   "protocol": "mtproto",
+   "pcap": "research/misc/finalycapture.pcapng",
+   "args": {
+    "keylog_path": "research/misc/finalykeys.log",
+    "mtproto_keylog": "research/misc/finalykeys.merged.mtproto.keylog"
+   }
+  },
+  {
+   "id": "rs_mtproto_mt1capture",
+   "tier": "research",
+   "protocol": "mtproto",
+   "pcap": "research/misc/mt1capture.pcapng",
+   "args": {
+    "keylog_path": "research/misc/mt1keys.log",
+    "mtproto_keylog": "research/misc/mt1keys.merged.mtproto.keylog"
+   }
+  },
+  {
+   "id": "rs_mtproto_mt1335capture",
+   "tier": "research",
+   "protocol": "mtproto",
+   "pcap": "research/misc/mt1335capture.pcapng",
+   "args": {
+    "keylog_path": "research/misc/mt1335keys.log",
+    "mtproto_keylog": "research/misc/mt1335keys.merged.mtproto.keylog"
+   }
+  },
+  {
+   "id": "rs_mtproto_telegramcapture",
+   "tier": "research",
+   "protocol": "mtproto",
+   "pcap": "research/misc/telegramcapture.pcapng",
+   "args": {
+    "keylog_path": "research/misc/telegramkeys.log",
+    "mtproto_keylog": "research/misc/telegramkeys.merged.mtproto.keylog"
+   }
+  },
+  {
+   "id": "rs_telegram_222mtcapture",
+   "tier": "research",
+   "protocol": "telegram",
+   "pcap": "research/misc/222mtcapture.pcapng",
+   "args": {
+    "keylog_path": "research/misc/222mtkeys.log",
+    "protocol_keylogs": {
+     "telegram": "research/misc/222mtkeys.log",
+     "mtproto": "research/misc/222mtkeys.memscan.mtproto.merged.mtproto.keylog"
+    }
+   }
+  },
+  {
+   "id": "rs_mtproto_mt_capture1",
+   "tier": "research",
+   "protocol": "mtproto",
+   "pcap": "research/misc/mt_capture1.pcapng",
+   "args": {
+    "keylog_path": "research/misc/mt_keys1.log",
+    "mtproto_keylog": "research/misc/mt_keys1.log"
+   }
+  },
+  {
+   "id": "rs_telegram_e2ecapture",
+   "tier": "research",
+   "protocol": "telegram",
+   "pcap": "research/misc/e2ecapture.pcapng",
+   "args": {
+    "keylog_path": "research/misc/e2ekeys.log",
+    "protocol_keylogs": {
+     "telegram": "research/misc/e2ekeys.log"
+    }
+   }
+  },
+  {
+   "id": "rs_signal_s1capture",
+   "tier": "research",
+   "protocol": "signal",
+   "pcap": "research/misc/s1capture.pcapng",
+   "args": {
+    "keylog_path": "research/misc/s1keys.memscan.merged.tls.keylog",
+    "protocol_keylogs": {
+     "signal": "research/misc/s1keys.signal.log"
+    },
+    "tls_midstream_secrets": "research/misc/s1keys.memscan.tls_midstream.secrets.jsonl"
+   }
+  },
+  {
+   "id": "rs_signal_s22capture",
+   "tier": "research",
+   "protocol": "signal",
+   "pcap": "research/misc/s22capture.pcapng",
+   "args": {
+    "keylog_path": "research/misc/s22keys.memscan.merged.tls.keylog",
+    "protocol_keylogs": {
+     "signal": "research/misc/s22keys.signal.log"
+    },
+    "tls_midstream_secrets": "research/misc/s22keys.memscan.tls_midstream.secrets.jsonl"
+   }
+  },
+  {
+   "id": "rs_signal_s21capture",
+   "tier": "research",
+   "protocol": "signal",
+   "pcap": "research/misc/s21capture.pcapng",
+   "args": {
+    "protocol_keylogs": {
+     "signal": "research/misc/s21keys.signal.log"
+    }
+   }
+  },
+  {
+   "id": "rs_signal_22capture",
+   "tier": "research",
+   "protocol": "signal",
+   "pcap": "research/misc/22capture.pcapng",
+   "args": {
+    "keylog_path": "research/misc/22keys.tls.log",
+    "protocol_keylogs": {
+     "signal": "research/misc/22keys.signal.log"
+    }
+   }
+  },
+  {
+   "id": "rs_signal_captures1",
+   "tier": "research",
+   "protocol": "signal",
+   "pcap": "captures1.pcapng",
+   "args": {
+    "keylog_path": "keyss1.memscan.merged.tls.keylog",
+    "protocol_keylogs": {
+     "signal": "keyss1.signal.log"
+    },
+    "tls_midstream_secrets": "keyss1.memscan.tls_midstream.secrets.jsonl"
+   }
+  },
+  {
+   "id": "rs_rc4_rc4demo_neu4",
+   "tier": "research",
+   "protocol": "rc4",
+   "pcap": "research/misc/rc4demo_neu4.pcap",
+   "args": {
+    "keylog_path": "research/misc/rc4demo_neu4.keylog",
+    "protocol_keylogs": {
+     "rc4": "research/misc/rc4demo_neu4.rc4.keylog"
+    }
+   }
+  },
+  {
+   "id": "rs_rc4_rc4demo_neu5",
+   "tier": "research",
+   "protocol": "rc4",
+   "pcap": "research/misc/rc4demo_neu5.pcap",
+   "args": {
+    "keylog_path": "research/misc/rc4demo_neu5.keylog",
+    "protocol_keylogs": {
+     "rc4": "research/misc/rc4demo_neu5.rc4.keylog"
+    }
+   }
+  },
+  {
+   "id": "rs_rc4_rc4demo_neu17",
+   "tier": "research",
+   "protocol": "rc4",
+   "pcap": "research/misc/rc4demo_neu17.pcap",
+   "args": {
+    "keylog_path": "research/misc/rc4demo_neu17.keylog",
+    "protocol_keylogs": {
+     "rc4": "research/misc/rc4demo_neu17.rc4.keylog"
+    }
+   }
+  },
+  {
+   "id": "rs_rc4_rc4demo_neu27",
+   "tier": "research",
+   "protocol": "rc4",
+   "pcap": "research/misc/rc4demo_neu27.pcap",
+   "args": {
+    "keylog_path": "research/misc/rc4demo_neu27.keylog",
+    "protocol_keylogs": {
+     "rc4": "research/misc/rc4demo_neu27.rc4.keylog"
+    }
+   }
+  },
+  {
+   "id": "rs_rc4_out_lsass_ms2",
+   "tier": "research",
+   "protocol": "rc4",
+   "pcap": "research/misc/out_lsass_ms2.pcap",
+   "args": {
+    "keylog_path": "research/misc/keys_lsass_ms2.log",
+    "protocol_keylogs": {
+     "rc4": "research/misc/keys_lsass_ms2.rc4.log"
+    }
+   }
+  },
+  {
+   "id": "rs_rc4_out_lsass_ms3",
+   "tier": "research",
+   "protocol": "rc4",
+   "pcap": "research/misc/out_lsass_ms3.pcap",
+   "args": {
+    "keylog_path": "research/misc/keys_lsass_ms3.log",
+    "protocol_keylogs": {
+     "rc4": "research/misc/keys_lsass_ms3.rc4.log"
+    }
+   }
+  },
+  {
+   "id": "rs_schannel_powershell",
+   "tier": "research",
+   "protocol": "schannel",
+   "pcap": "research/misc/powershell.pcap",
+   "args": {
+    "keylog_path": "research/misc/powershell.keylog"
+   }
+  },
+  {
+   "id": "rs_schannel_powershell2",
+   "tier": "research",
+   "protocol": "schannel",
+   "pcap": "research/misc/powershell2.pcap",
+   "args": {
+    "keylog_path": "research/misc/powershell2.keylog"
+   }
+  },
+  {
+   "id": "rs_schannel_lsass1",
+   "tier": "research",
+   "protocol": "schannel",
+   "pcap": "research/misc/lsass1.pcap",
+   "args": {
+    "keylog_path": "research/misc/lsass1.keylog"
+   }
+  },
+  {
+   "id": "rs_stress_capture",
+   "tier": "research",
+   "protocol": "tls",
+   "pcap": "research/misc/capture.pcapng",
+   "args": {
+    "keylog_path": "research/misc/keys.log"
+   }
+  },
+  {
+   "id": "rs_stress_capturec",
+   "tier": "research",
+   "protocol": "tls",
+   "pcap": "research/misc/capturec.pcapng",
+   "args": {
+    "keylog_path": "research/misc/keysc.log"
+   }
+  },
+  {
+   "id": "rs_stress_ccccapture",
+   "tier": "research",
+   "protocol": "tls",
+   "pcap": "research/misc/ccccapture.pcapng",
+   "args": {
+    "keylog_path": "research/misc/cckeys.log"
+   }
+  }
+ ]
+}

@@ -1,0 +1,33 @@
+{
+ "case": "chrome_quic_encrypted",
+ "mode": "keyed",
+ "digest_only": false,
+ "result": {
+  "tap_path": "unused.tap",
+  "flow_count": 0,
+  "decrypted_packet_count": 0,
+  "stream_count": 0,
+  "dropped_packet_count": 0,
+  "dropped_stream_count": 0,
+  "findings_count": 0,
+  "encrypted_streams_skipped": 0,
+  "mtproto_messages": 0,
+  "mtproto_streams": 0,
+  "mtproto_records_undecryptable": 0,
+  "mtproto_streams_degraded": 0,
+  "per_protocol": {}
+ },
+ "tls_spans": {
+  "counts": {},
+  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+ },
+ "ssh": [],
+ "events": [
+  {"type":"SessionEvent","protocol":"quic","session_id":"","event_type":"started","cipher_suite":"","protocol_version":"","server_name":"","alpn":"","quic_version":"0xbe50d3ec","client_random":"","connection_id":"net:quic:10.0.0.1:50914-157.240.27.35:443","src_addr":"157.240.27.35","src_port":443,"dst_addr":"10.0.0.1","dst_port":50914},
+  {"type":"SessionEvent","protocol":"quic","session_id":"","event_type":"started","cipher_suite":"","protocol_version":"","server_name":"","alpn":"","quic_version":"0xf0016aab","client_random":"","connection_id":"net:quic:10.0.0.1:50914-216.239.36.223:443","src_addr":"216.239.36.223","src_port":443,"dst_addr":"10.0.0.1","dst_port":50914},
+  {"type":"SessionEvent","protocol":"quic","session_id":"","event_type":"started","cipher_suite":"","protocol_version":"","server_name":"","alpn":"","quic_version":"0x342dcdd9","client_random":"","connection_id":"net:quic:10.0.0.1:50914-157.240.27.37:443","src_addr":"157.240.27.37","src_port":443,"dst_addr":"10.0.0.1","dst_port":50914},
+  {"type":"SessionEvent","protocol":"quic","session_id":"","event_type":"started","cipher_suite":"","protocol_version":"","server_name":"","alpn":"","quic_version":"","client_random":"","connection_id":"net:quic:10.0.0.1:58574-157.240.27.37:443","src_addr":"157.240.27.37","src_port":443,"dst_addr":"10.0.0.1","dst_port":58574},
+  {"type":"SessionEvent","protocol":"quic","session_id":"","event_type":"started","cipher_suite":"","protocol_version":"","server_name":"","alpn":"","quic_version":"","client_random":"","connection_id":"net:quic:10.0.0.1:61396-157.240.27.37:443","src_addr":"157.240.27.37","src_port":443,"dst_addr":"10.0.0.1","dst_port":61396},
+  {"type":"SessionEvent","protocol":"quic","session_id":"","event_type":"started","cipher_suite":"","protocol_version":"","server_name":"","alpn":"","quic_version":"0x77e31179","client_random":"","connection_id":"net:quic:10.0.0.1:61810-142.251.155.119:443","src_addr":"142.251.155.119","src_port":443,"dst_addr":"10.0.0.1","dst_port":61810}
+ ]
+}

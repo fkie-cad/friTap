@@ -152,3 +152,70 @@ def test_absent_midstream_secrets_passes_none_to_convert(tmp_path, convert_calls
 
     assert rc == 0
     assert convert_calls[0]["tls_midstream_secrets"] is None
+
+
+# --------------------------------------------------------------------------- #
+# Relative-path resolution: typed paths vs. manifest paths
+# --------------------------------------------------------------------------- #
+
+def test_explicit_relative_flag_resolves_against_cwd(tmp_path, monkeypatch):
+    caps = tmp_path / "caps"
+    caps.mkdir()
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "s.jsonl").write_text("{}\n")
+    (caps / "s.jsonl").write_text("{}\n")  # same name next to the pcap: CWD wins
+    monkeypatch.chdir(work)
+    merged = cli.merge_manifest(
+        _ns(from_pcap=str(caps / "cap.pcapng"), tls_midstream_secrets="s.jsonl"), {})
+    assert merged["tls_midstream_secrets"] == "s.jsonl"
+
+
+def test_explicit_relative_flag_falls_back_to_pcap_dir(tmp_path, monkeypatch):
+    caps = tmp_path / "caps"
+    caps.mkdir()
+    (caps / "s.jsonl").write_text("{}\n")
+    monkeypatch.chdir(tmp_path)
+    merged = cli.merge_manifest(
+        _ns(from_pcap=str(caps / "cap.pcapng"), tls_midstream_secrets="s.jsonl"), {})
+    assert merged["tls_midstream_secrets"] == str(caps / "s.jsonl")
+
+
+def test_relative_manifest_path_prefers_manifest_dir_then_cwd(tmp_path, monkeypatch):
+    caps = tmp_path / "caps"
+    caps.mkdir()
+    pcap = str(caps / "cap.pcapng")
+    monkeypatch.chdir(tmp_path)
+    # Written relative to the live capture's CWD (e.g. "caps/x.jsonl"): CWD fallback.
+    (caps / "x.jsonl").write_text("{}\n")
+    assert cli.resolve_manifest_path(pcap, "caps/x.jsonl") == "caps/x.jsonl"
+    # A bare name next to the manifest resolves there from any CWD.
+    assert cli.resolve_manifest_path(pcap, "x.jsonl") == str(caps / "x.jsonl")
+    assert cli.resolve_manifest_path(pcap, None) is None
+
+
+def test_pipeline_api_resolves_relative_manifest_midstream_path(tmp_path, monkeypatch):
+    """The TUI/API wrapper resolves the manifest's relative sidecar path against the
+    manifest directory, not the caller's CWD (used to yield 0 mid-stream flows)."""
+    from friTap.offline import pcap_to_tap as p2t
+
+    caps = tmp_path / "caps"
+    caps.mkdir()
+    pcap = caps / "cap.pcapng"
+    pcap.write_bytes(b"\x00")
+    (caps / "cap.tls_midstream.secrets.jsonl").write_text("{}\n")
+    (caps / "cap.pcapng.fritap.json").write_text(
+        json.dumps({"tls_midstream_secrets": "cap.tls_midstream.secrets.jsonl"}))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    seen = {}
+
+    def fake_convert(pcap_path, **kwargs):
+        seen.update(kwargs)
+        return ConvertResult(tap_path="o.tap")
+
+    monkeypatch.setattr(p2t, "convert_pcap_to_tap", fake_convert)
+    p2t.pcap_to_tap(str(pcap))
+    assert seen["tls_midstream_secrets"] == str(caps / "cap.tls_midstream.secrets.jsonl")

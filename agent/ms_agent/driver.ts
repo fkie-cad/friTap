@@ -62,6 +62,9 @@ export function scanProfileOnce(profile: any): any {
         // did not run this scan"; both would otherwise print as A 0/0.
         tierA: { candidates: 0, validated: 0, skipped: false },
         tierB: { candidates: 0, validated: 0 },
+        // Tier B0 (idle-SSL bootstrap): heap-scanned idle SSL3_STATE recovery for a
+        // stripped libssl with no needle. See engines/boringssl/index.ts runTierB0.
+        tierB0: { candidates: 0, validated: 0, emitted: 0 },
         tierC: { candidates: 0, validated: 0 },
         // Tier B candidates whose handshake state could not be determined;
         // see classifyHandshake(). Deliberate misses, not errors.

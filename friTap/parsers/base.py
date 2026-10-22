@@ -108,6 +108,11 @@ class BaseParser(ABC):
     """Abstract base class for protocol parsers."""
 
     PROTOCOL: str = "unknown"
+    # The owning flow's ``Flow.transport`` (``tls``/``quic``/...), stamped by
+    # the FlowCollector when it installs the parser. Parsers that re-enter the
+    # registry for trailing bytes pass it on, so transport pins/restrictions
+    # still apply there. None keeps pure byte-sniffing.
+    flow_transport: Optional[str] = None
 
     @abstractmethod
     def feed(self, data: bytes, direction: str,
@@ -206,6 +211,12 @@ class SafeParserAdapter(BaseParser):
     @property
     def failed(self) -> bool:
         return self._failed
+
+    @property
+    def flow_transport(self) -> Optional[str]:
+        # Explicit forward: BaseParser's class default would shadow __getattr__.
+        # Writes already reach inner through __setattr__.
+        return getattr(self._inner, "flow_transport", None)
 
     def feed(self, data: bytes, direction: str,
              stream_id: int | None = None) -> list[ParseResult]:

@@ -22,6 +22,8 @@ import pytest
 
 from friTap.events import DatalogEvent, EventBus
 from friTap.offline import pcap_to_tap as p2t
+from friTap.offline.mtproto import offline_decryptor as mtproto_emit
+from friTap.offline.mtproto import tap_attach as mtproto_attach
 from friTap.offline.mtproto.content import parse_secret_chat_message
 from friTap.offline.mtproto.e2e.records import SecretChatMessage
 from friTap.offline.mtproto.records import DecryptedMessage
@@ -56,8 +58,8 @@ def _entry(name: str, family: str = ""):
 # --------------------------------------------------------------------------- #
 
 def test_builtin_telegram_entries_share_a_family():
-    assert p2t.build_mtproto_offline_decryptor_entry().decoder_family == "telegram"
-    assert p2t.build_telegram_offline_decryptor_entry().decoder_family == "telegram"
+    assert mtproto_emit.build_mtproto_offline_decryptor_entry().decoder_family == "telegram"
+    assert mtproto_emit.build_telegram_offline_decryptor_entry().decoder_family == "telegram"
 
 
 def test_same_family_same_path_keeps_one_telegram_entry(tmp_path):
@@ -184,8 +186,8 @@ def test_emitting_twice_does_not_duplicate_events_or_meta(patched_backend):
     state = _FakeState()
     result = p2t.ConvertResult(tap_path="out.tap")
 
-    p2t._emit_mtproto_streams("cap.pcap", "k", bus=bus, state=state, result=result)
-    p2t._emit_telegram_streams("cap.pcap", "k", bus=bus, state=state, result=result)
+    mtproto_emit._emit_mtproto_streams("cap.pcap", "k", bus=bus, state=state, result=result)
+    mtproto_emit._emit_telegram_streams("cap.pcap", "k", bus=bus, state=state, result=result)
 
     assert [ev.protocol for ev in events].count("telegram_e2e") == 1
     assert [ev.protocol for ev in events].count("mtproto") == 1
@@ -203,7 +205,7 @@ def test_secret_chat_accumulator_is_idempotent_and_surfaces_random_id():
     meta: dict = {}
     key = f"telegram_e2e:{_FP}"
     for _ in range(2):
-        p2t._accumulate_secret_chat_messages(
+        mtproto_emit._accumulate_secret_chat_messages(
             meta, key, _LAYER_BLOB, "write", 4242, msg_key_hex="ab" * 16)
     messages = meta[key]["messages"]
     assert len(messages) == 1
@@ -219,8 +221,8 @@ def test_mtproto_accumulator_dedups_by_msg_id(monkeypatch):
                         lambda tl: [ParsedMtprotoMessage(kind="text", body="hi")])
     meta: dict = {}
     for msg_id in (5, 5, 6):
-        p2t._accumulate_mtproto_messages(meta, "k", b"x", "write", msg_id=msg_id)
-    p2t._accumulate_mtproto_messages(meta, "k", b"x", "read", msg_id=5)
+        mtproto_emit._accumulate_mtproto_messages(meta, "k", b"x", "write", msg_id=msg_id)
+    mtproto_emit._accumulate_mtproto_messages(meta, "k", b"x", "read", msg_id=5)
     messages = meta["k"]["messages"]
     assert len(messages) == 3
     assert "random_id" not in messages[0]  # cloud dict shape unchanged
@@ -233,8 +235,8 @@ def test_mtproto_accumulator_without_msg_id_never_dedups(monkeypatch):
     monkeypatch.setattr(content, "parse_mtproto_message",
                         lambda tl: [ParsedMtprotoMessage(kind="text", body="hi")])
     meta: dict = {}
-    p2t._accumulate_mtproto_messages(meta, "k", b"x", "write")
-    p2t._accumulate_mtproto_messages(meta, "k", b"x", "write")
+    mtproto_emit._accumulate_mtproto_messages(meta, "k", b"x", "write")
+    mtproto_emit._accumulate_mtproto_messages(meta, "k", b"x", "write")
     assert len(meta["k"]["messages"]) == 2
 
 
@@ -242,9 +244,9 @@ def test_private_seen_keys_do_not_reach_the_layer():
     from friTap.flow.layers import TelegramE2ELayer
 
     meta: dict = {}
-    p2t._accumulate_secret_chat_messages(meta, "k", _LAYER_BLOB, "write", 1)
+    mtproto_emit._accumulate_secret_chat_messages(meta, "k", _LAYER_BLOB, "write", 1)
     layer = TelegramE2ELayer()
-    p2t._apply_mtproto_meta(layer, meta["k"])
+    mtproto_attach._apply_mtproto_meta(layer, meta["k"])
     assert layer.message_count == 1
     assert all(not key.startswith("_") for msg in layer.messages for key in msg)
 
@@ -278,7 +280,7 @@ def test_secret_chat_identity_prefers_msg_key_over_random_id():
     meta: dict = {}
     key = f"telegram_e2e:{_FP}"
     for msg_key in ("ab" * 16, "cd" * 16):
-        added = p2t._accumulate_secret_chat_messages(
+        added = mtproto_emit._accumulate_secret_chat_messages(
             meta, key, _LAYER_BLOB, "write", 4242, msg_key_hex=msg_key)
         assert len(added) == 1
     assert [m["random_id"] & 0xFFFFFFFFFFFFFFFF for m in meta[key]["messages"]] == [
@@ -288,5 +290,5 @@ def test_secret_chat_identity_prefers_msg_key_over_random_id():
 def test_secret_chat_identity_falls_back_to_random_id_without_msg_key():
     meta: dict = {}
     for _ in range(2):
-        p2t._accumulate_secret_chat_messages(meta, "k", _LAYER_BLOB, "write", 1)
+        mtproto_emit._accumulate_secret_chat_messages(meta, "k", _LAYER_BLOB, "write", 1)
     assert len(meta["k"]["messages"]) == 1

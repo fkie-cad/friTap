@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 
 from .engine import MemoryScanEngine
 from .formatter import MemoryScanKeylogFormatter
+
 # The resolver API is re-exported as intentional PUBLIC surface: a third-party
 # plugin driving the engine (see MemoryScanScriptPlugin) resolves/validates its
 # own profiles through these, so they are importable from the package root even

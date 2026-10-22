@@ -23,7 +23,6 @@ from friTap.legacy.ssl_logger_core import SSL_Logger
 from friTap.pcap import PCAP, _existing_keylog_files
 from friTap.protocols.registry import create_default_registry
 
-
 # --------------------------------------------------------------------------- C4
 
 def _relabel_logger(keylog, protocols, rc4_split_path):

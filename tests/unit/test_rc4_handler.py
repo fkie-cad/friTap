@@ -12,13 +12,13 @@ import logging
 
 import pytest
 
+from friTap.protocols.rc4_handler import RC4Handler, Rc4KeylogFormatter
 from friTap.protocols.registry import (
     available_protocol_names,
     create_default_registry,
     expand_protocols,
     implied_protocols,
 )
-from friTap.protocols.rc4_handler import RC4Handler, Rc4KeylogFormatter
 
 
 def _parser():

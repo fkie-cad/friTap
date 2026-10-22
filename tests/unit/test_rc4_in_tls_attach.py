@@ -16,6 +16,7 @@ import friTap.offline.pcap_to_tap as p2t
 from friTap.connection_index import canonical_4tuple, resolve_connection_key
 from friTap.events import DatalogEvent, EventBus
 from friTap.flow.collector import FlowCollector
+from friTap.offline.pipeline_api import _tls_meta_lookup, chunk_key
 from friTap.offline.rc4 import decrypt as rc4d
 from friTap.offline.rc4 import offline_decryptor as od
 from friTap.offline.rc4 import tls_attach as ta
@@ -66,10 +67,10 @@ def _record(direction, length, offset=4, header=4):
 
 # ------------------------------ step 3: events ------------------------------ #
 
-def test_rc4_event_carries_pcap_timestamp_and_session_id():
+def test_rc4_event_carries_pcap_timestamp_and_no_session_token():
     ev = od._rc4_datalog_event(_msg("write", REQUEST, ts=1790603138.5))
     assert ev.timestamp == 1790603138.5
-    assert ev.ssl_session_id == f"rc4:{KEY}"
+    assert ev.ssl_session_id == ""  # net:rc4: scoping needs no token
     assert ev.protocol == "rc4"
 
 
@@ -78,12 +79,14 @@ def test_rc4_event_without_timestamp_keeps_default_clock():
     assert ev.timestamp > 0  # DatalogEvent's own default, as before
 
 
-def test_rc4_session_id_separates_rc4_from_tls_connection_key():
+def test_rc4_event_key_is_protocol_scoped_apart_from_tls_connection_key():
     ev = od._rc4_datalog_event(_msg("write", REQUEST))
     rc4_key = resolve_connection_key(*CLIENT, *SERVER,
-                                     session_token=ev.ssl_session_id, protocol="rc4")
+                                     session_token=ev.ssl_session_id,
+                                     protocol=ev.protocol)
     tls_key = resolve_connection_key(*CLIENT, *SERVER, protocol="tls")
-    assert rc4_key.startswith("sid:rc4:") and tls_key.startswith("net:")
+    assert rc4_key == f"net:rc4:{KEY}"
+    assert tls_key.startswith("net:") and not tls_key.startswith("net:rc4:")
     assert rc4_key != tls_key
 
 
@@ -94,7 +97,7 @@ def test_record_rc4_provenance_tags_records():
     (rec,) = state.rc4_provenance[KEY]
     assert rec["tls_frames"] == [22, 26] and rec["length"] == 26
     assert rec["framing"] == "u32be-length" and rec["key_len"] == 19
-    assert rec["_chunk_key"] == p2t._chunk_key("write", REQUEST)
+    assert rec["_chunk_key"] == chunk_key("write", REQUEST)
 
 
 def test_record_rc4_provenance_tolerates_minimal_state():
@@ -209,7 +212,7 @@ def _demo_state_and_flows():
 
 def test_attach_builds_tls_owned_then_rc4_chunks_stack():
     state, flows, by_transport = _demo_state_and_flows()
-    absorbed = p2t._attach_rc4_in_tls_layers(flows, state)
+    absorbed = ta.attach_rc4_post_collection(flows, state)
     rc4_flow = by_transport["rc4"]
     tls_layer, rc4_layer = rc4_flow.layers
     assert (tls_layer.name, tls_layer.depth, tls_layer.data.data_source) == ("tls", 0, "owned")
@@ -223,7 +226,7 @@ def test_attach_builds_tls_owned_then_rc4_chunks_stack():
 
 def test_attach_fills_rc4_metadata():
     state, flows, by_transport = _demo_state_and_flows()
-    p2t._attach_rc4_in_tls_layers(flows, state)
+    ta.attach_rc4_post_collection(flows, state)
     layer = by_transport["rc4"].layer("rc4")
     assert (layer.source, layer.key_len, layer.direction) == ("rc4-keylog", 19, "both")
     assert layer.message_count == 2 and layer.framing == "u32be-length"
@@ -234,24 +237,25 @@ def test_attach_fills_rc4_metadata():
 def test_partially_consumed_tls_flow_is_kept():
     state, flows, _ = _demo_state_and_flows()
     state.rc4_provenance[KEY] = state.rc4_provenance[KEY][:1]  # response undecrypted
-    assert p2t._attach_rc4_in_tls_layers(flows, state) == set()
+    assert ta.attach_rc4_post_collection(flows, state) == set()
 
 
 def test_attach_is_noop_without_rc4_provenance():
     flows = [SimpleNamespace(transport="tls", layers=[])]
-    assert p2t._attach_rc4_in_tls_layers(flows, SimpleNamespace(rc4_provenance={})) == set()
-    assert p2t._attach_rc4_in_tls_layers(flows, object()) == set()
+    assert ta.attach_rc4_post_collection(flows, SimpleNamespace(rc4_provenance={})) == set()
+    assert ta.attach_rc4_post_collection(flows, object()) == set()
 
 
 # ------------------------- TLS metadata stream key -------------------------- #
 
-@pytest.mark.parametrize("layers, expected", [
-    ({"tls_stream": ["0"], "tcp_stream": ["2"]}, "by-tls"),
-    ({"tcp_stream": ["2"]}, "by-tcp"),
+@pytest.mark.parametrize("tls_stream, expected", [
+    (0, "by-tls"),
+    (None, "by-tcp"),
+    (7, "by-tcp"),  # no metadata under that tls.stream: fall back to tcp.stream
 ])
-def test_tls_meta_for_packet_prefers_tls_stream(layers, expected):
+def test_tls_meta_lookup_prefers_tls_stream(tls_stream, expected):
     meta = {0: "by-tls", 2: "by-tcp"}
-    assert p2t._tls_meta_for_packet(meta, {"layers": layers}, 2) == expected
+    assert _tls_meta_lookup(meta, tls_stream, 2) == expected
 
 
 def test_single_pass_exports_tls_stream():
@@ -268,6 +272,7 @@ _PCAP = _REPO / "rc4demo_neu4.pcap"
 
 def _convert_demo(tmp_path, with_rc4: bool):
     import shutil
+
     from friTap.flow.tap_reader import TapReader
     from friTap.offline.tshark import find_tshark
 

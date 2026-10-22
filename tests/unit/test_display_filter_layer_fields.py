@@ -38,7 +38,6 @@ from friTap.flow.tap_format import encode_flow
 from tests.unit._display_filter_helpers import tg_message as _tg_message
 from tests.unit.test_layers_serialization import _meta_and_blob
 
-
 # ---------------------------------------------------------------------------
 # Builders
 # ---------------------------------------------------------------------------

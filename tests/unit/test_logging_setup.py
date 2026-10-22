@@ -64,6 +64,10 @@ class TestAttachFileHandlers:
 
 
 class TestWarningCapture:
+    # This test asserts friTap's own warning capture receives a DeprecationWarning,
+    # so it must opt out of the project-wide ``ignore::DeprecationWarning`` filter
+    # (now active via pyproject.toml) that would otherwise suppress it first.
+    @pytest.mark.filterwarnings("default::DeprecationWarning")
     def test_warnings_warn_lands_in_file_once(self, tmp_path):
         path = str(tmp_path / "warn.log")
         fu.open_debug_log(path)

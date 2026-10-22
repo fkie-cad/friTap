@@ -55,12 +55,18 @@ class UnpairedRecord:
         secret: lower-cased hex secret (master or TLS 1.3 secret).
         session_id: lower-cased hex session id, or ``None`` when the field was ``-``.
         ssl_version: 771 (TLS 1.2) or 772 (TLS 1.3), or ``None`` when unparseable.
+        group: optional connection-group id (5th column ``group=<id>`` or a bare
+            token), tying sibling secrets of one connection together so an
+            unlabeled EXPORTER_SECRET can be placed by elimination. Emitted by the
+            memscan agent for TLS 1.3 secrets when enabled; ``None`` when the column
+            is absent.
     """
 
     kind: str
     secret: str
     session_id: str | None
     ssl_version: int | None
+    group: str | None = None
 
     @property
     def is_tls13(self) -> bool:
@@ -79,6 +85,16 @@ def _parse_session_id(token: str) -> str | None:
     if not token or token == "-":
         return None
     return token.lower() if _HEX.match(token) else None
+
+
+def _parse_group(token: str) -> str | None:
+    """Return the group id from a ``group=<id>`` or bare token, or ``None``."""
+    token = token.strip()
+    if token.startswith("group="):
+        token = token[len("group="):]
+    if not token or token == "-":
+        return None
+    return token
 
 
 def _parse_ssl_version(token: str) -> int | None:
@@ -120,11 +136,12 @@ def parse_unpaired(text: str) -> List[UnpairedRecord]:
             continue
         session_id = _parse_session_id(parts[2]) if len(parts) >= 3 else None
         ssl_version = _parse_ssl_version(parts[3]) if len(parts) >= 4 else None
+        group = _parse_group(parts[4]) if len(parts) >= 5 else None
         key = (kind, secret)
         if key in seen:
             continue
         seen.add(key)
-        records.append(UnpairedRecord(kind, secret, session_id, ssl_version))
+        records.append(UnpairedRecord(kind, secret, session_id, ssl_version, group))
     return records
 
 
@@ -185,6 +202,20 @@ def tls13_secrets(records: List[UnpairedRecord]) -> List[str]:
     return out
 
 
+def tls13_groups(records: List[UnpairedRecord]) -> dict[str, str]:
+    """secret(hex) -> group id for TLS 1.3 records that carry a 5th-column group.
+
+    Lets the correlator place an unlabeled EXPORTER_SECRET by elimination once its
+    sibling secrets pin the connection down. Records with no group contribute
+    nothing (the current agent build emits none).
+    """
+    mapping: dict[str, str] = {}
+    for r in records:
+        if r.is_tls13 and r.group and secret_len_ok(r.secret, tls13=True):
+            mapping.setdefault(r.secret, r.group)
+    return mapping
+
+
 def session_map(records: List[UnpairedRecord]) -> dict[str, str]:
     """session_id(hex) -> master(hex) for TLS 1.2 records that carry a real id.
 
@@ -206,6 +237,7 @@ __all__ = [
     "secret_len_ok",
     "tls12_masters",
     "tls13_secrets",
+    "tls13_groups",
     "session_map",
     "KIND_TLS12_MASTER",
     "KIND_TLS13_SECRET",

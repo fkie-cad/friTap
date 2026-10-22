@@ -20,6 +20,7 @@ from typing import Optional
 from friTap.constants import PROTOCOL_WEBSOCKET
 
 from .base import BaseParser, ParseResult
+from .protobuf.grpc import is_grpc_frame
 
 # RFC 6455 § 11.8 — opcode names
 _OPCODE_NAMES: dict[int, str] = {
@@ -266,15 +267,7 @@ def _detect_json(payload: bytes) -> str:
 
 def _detect_grpc(payload: bytes) -> str:
     """Return ``"application/grpc"`` if *payload* starts with a valid gRPC frame header."""
-    if len(payload) < 5:
-        return ""
-    comp_flag = payload[0]
-    if comp_flag not in (0, 1):
-        return ""
-    msg_len = int.from_bytes(payload[1:5], "big")
-    if 5 + msg_len <= len(payload):
-        return "application/grpc"
-    return ""
+    return "application/grpc" if is_grpc_frame(payload) else ""
 
 
 # Trailing data detection — shared with Http1Parser via trailing.py
@@ -455,7 +448,8 @@ class WebSocketParser(BaseParser):
         # Detect unconsumed trailing data (also when parser has history from prior feed() calls)
         if offset < len(data) and (results or self._has_parsed):
             unconsumed = data[offset:]
-            protocol, cleaned, detected_parser = detect_trailing_protocol(unconsumed)
+            protocol, cleaned, detected_parser = detect_trailing_protocol(
+                unconsumed, transport=self.flow_transport)
             sub = try_sub_parse(cleaned, detected_parser, direction) if protocol else None
             self.trailing_data = unconsumed
             self.trailing_protocol = protocol

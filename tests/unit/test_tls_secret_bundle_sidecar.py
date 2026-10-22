@@ -180,18 +180,41 @@ class TestBundleLeakSafety:
         assert seen == []
 
     @pytest.mark.parametrize("overrides", [
-        {"exporter_secret": ""},                 # missing field
-        {"client_random": "aa" * 16},            # random too short (32 hex)
-        {"server_random": "zz" * 32},            # non-hex
-        {"client_traffic_secret_0": "cc" * 10},  # secret too short
-        {"exporter_secret": "abc"},              # odd-length hex
+        {"client_random": ""},                      # required: missing
+        {"client_random": "aa" * 16},               # required: too short (32 hex)
+        {"client_random": "zz" * 32},               # required: non-hex
+        {"client_random": "abc"},                   # required: odd-length hex
+        {"client_traffic_secret_0": "",
+         "server_traffic_secret_0": ""},            # required: no traffic secret at all
     ])
     def test_malformed_bundles_are_dropped(self, tmp_path, overrides):
+        # A bundle lacking its required material — a valid client_random plus at
+        # least one valid traffic secret — is dropped: no sidecar is advertised and
+        # the file is never created. (The validator was relaxed to tolerate missing
+        # OPTIONAL fields; see test_optional_field_corruption_is_tolerated.)
         out = tmp_path / "cap.tls_midstream.secrets.jsonl"
         engine = self._engine(out)
         engine.on_script_message(_message(_bundle_payload(**overrides)), None)
         engine._close_tls_secret_bundle()
-        # Nothing valid was written, so the manifest advertises no sidecar and the
-        # file was never even created.
         assert engine.tls_midstream_manifest_entry() == {}
         assert not out.exists()
+
+    @pytest.mark.parametrize("overrides", [
+        {"exporter_secret": ""},                 # optional: exporter absent
+        {"exporter_secret": "abc"},              # optional: exporter malformed
+        {"server_random": "zz" * 32},            # optional: some agent builds scrub it
+        {"client_traffic_secret_0": "cc" * 10},  # one traffic secret bad, the other valid
+    ])
+    def test_optional_field_corruption_is_tolerated(self, tmp_path, overrides):
+        # The validator requires a valid client_random plus at least one valid
+        # traffic secret; other fields are optional and scrubbed to '' when
+        # absent/invalid, so the bundle is still written — never with garbage.
+        out = tmp_path / "cap.tls_midstream.secrets.jsonl"
+        engine = self._engine(out)
+        engine.on_script_message(_message(_bundle_payload(**overrides)), None)
+        engine._close_tls_secret_bundle()
+        assert engine.tls_midstream_manifest_entry() != {}
+        record = json.loads(out.read_text(encoding="utf-8").splitlines()[0])
+        assert record["client_random"] == "aa" * 32        # required field intact
+        for field in overrides:
+            assert record.get(field, "") == ""             # bad field scrubbed, not garbage

@@ -13,7 +13,7 @@ provenance. Duplicate keys are preserved here (de-duplication happens once in
 from __future__ import annotations
 
 import logging
-from typing import List, Tuple
+from typing import List
 
 from ...protocols.rc4_keylog_spec import parse_line
 from .decrypt import Rc4Candidate

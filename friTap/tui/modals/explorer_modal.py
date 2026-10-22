@@ -20,6 +20,7 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+from rich.markup import escape
 from rich.segment import Segment
 from rich.style import Style
 
@@ -760,6 +761,7 @@ if TEXTUAL_AVAILABLE:
                 BodyProcessingModal(
                     body_preview=selection.data,
                     segment_count=1,
+                    content_type=self._content_type(),
                 ),
                 callback=self._on_parse_result,
             )
@@ -784,7 +786,7 @@ if TEXTUAL_AVAILABLE:
                     preview_parts.append(result.decompression)
                     if err:
                         self._show_preview(
-                            f"Decompression error: {err}",
+                            f"Decompression error: {escape(str(err))}",
                             " \u2192 ".join(preview_parts),
                             len(selection.data),
                             is_error=True,
@@ -817,16 +819,27 @@ if TEXTUAL_AVAILABLE:
         def _apply_decoder(
             self, data: bytes, decoder: str, result
         ) -> str:
-            """Decode bytes using the selected decoder, return display string."""
+            """Decode bytes using the selected decoder, return display markup.
+
+            The preview log has ``markup=True``: every string derived from the
+            body is escaped so ``[/x]`` renders literally instead of raising
+            ``MarkupError``. The hex and protobuf renderers escape themselves.
+            """
+            if decoder == "hex":
+                return "\n".join(format_hexdump_lines(data, markup=True))
+            if decoder == "protobuf":
+                return self._decode_protobuf(data, result)
+            return escape(self._decode_plain(data, decoder))
+
+        @staticmethod
+        def _decode_plain(data: bytes, decoder: str) -> str:
+            """Plain-text (unescaped) decode for the non-markup decoders."""
             if decoder == "json":
                 try:
                     parsed = json.loads(data)
                     return json.dumps(parsed, indent=2)
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     return f"JSON decode failed \u2014 showing raw:\n{data!r}"
-
-            if decoder == "hex":
-                return "\n".join(format_hexdump_lines(data, markup=True))
 
             if decoder == "base64":
                 import base64
@@ -840,44 +853,32 @@ if TEXTUAL_AVAILABLE:
                 except Exception as exc:
                     return f"Base64 decode failed: {exc}"
 
-            if decoder == "raw_utf8":
-                return data.decode("utf-8", errors="replace")
-
-            if decoder == "protobuf":
-                return self._decode_protobuf(data, result)
-
-            if _is_text(data):
+            if decoder == "raw_utf8" or _is_text(data):
                 return data.decode("utf-8", errors="replace")
             return repr(data)
 
         def _decode_protobuf(self, data: bytes, result) -> str:
-            """Attempt protobuf decode of selected data."""
-            cfg = result.protobuf_config
-            if cfg and cfg.grpc_mode and len(data) >= 5:
-                data = data[5:]
+            """Protobuf decode of selected data via the shared decoder, as escaped markup.
 
-            try:
-                import blackboxprotobuf  # type: ignore
+            Honours the configured gRPC mode, backend and (unless schema-less)
+            schema path / message type.
+            """
+            from friTap.parsers.protobuf import decode_protobuf_view
+            from friTap.tui.modals.body_processing_modal import ProtobufConfig
+            from friTap.tui.widgets.protobuf_render import protobuf_view_lines
 
-                message, typedef = blackboxprotobuf.decode_message(data)
-                return json.dumps(message, indent=2, default=str)
-            except Exception:
-                pass
+            cfg = getattr(result, "protobuf_config", None) or ProtobufConfig()
+            view = decode_protobuf_view(
+                data, content_type=self._content_type(), **cfg.view_options(),
+            )
+            return "\n".join(protobuf_view_lines(view))
 
-            # Use the project's own protobuf wire decoder
-            try:
-                from friTap.parsers.protobuf.wire import (
-                    decode_raw,
-                    format_message,
-                )
-
-                msg = decode_raw(data)
-                if msg.fields:
-                    return format_message(msg)
-            except (ValueError, ImportError):
-                pass
-
-            return f"Could not decode protobuf ({len(data)} bytes)"
+        def _content_type(self) -> str:
+            """The body's Content-Type, for gRPC auto-detection (``""`` if unknown)."""
+            for name, value in (getattr(self, "_headers", None) or {}).items():
+                if str(name).lower() == "content-type":
+                    return str(value).lower()
+            return ""
 
         def _show_preview(
             self, content: str, label: str, size: int = 0,

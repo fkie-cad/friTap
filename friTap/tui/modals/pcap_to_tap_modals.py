@@ -40,6 +40,31 @@ try:
 except ImportError:
     TEXTUAL_AVAILABLE = False
 
+
+def parse_resync_depth_field(raw: str) -> tuple:
+    """``(depth, error)`` for the advanced resync-depth field text *raw*.
+
+    An empty field is ``(None, None)``: each offline decryptor applies its own
+    default. Otherwise the value is validated with the CLI's bounds; a
+    non-integer or out-of-range value (negative disables recovery, huge
+    allocates GBs) yields ``(None, message)``.
+    """
+    from friTap.offline.cli import parse_resync_search_depth
+
+    raw = (raw or "").strip()
+    if not raw:
+        return None, None
+    try:
+        return parse_resync_search_depth(raw), None
+    except Exception as exc:  # argparse.ArgumentTypeError
+        return None, str(exc)
+
+
+def resync_depth_field_text(depth: Optional[int]) -> str:
+    """Field text for *depth*: empty for ``None`` (the decryptors' own defaults)."""
+    return "" if depth is None else str(depth)
+
+
 if TEXTUAL_AVAILABLE:
     from friTap.offline.mtproto.transport import DEFAULT_OBF_MAX_BLOCKS
     from friTap.tui.themes import c
@@ -527,7 +552,7 @@ if TEXTUAL_AVAILABLE:
             self,
             summary: dict,
             on_repair: Optional[Callable[[], None]] = None,
-            resync_search_depth: int = DEFAULT_OBF_MAX_BLOCKS,
+            resync_search_depth: Optional[int] = None,
             **kwargs,
         ) -> None:
             super().__init__(**kwargs)
@@ -535,7 +560,8 @@ if TEXTUAL_AVAILABLE:
             # Called when "Re-pair keys" is pressed; the wizard runs the worker.
             self._on_repair = on_repair
             self._repair_attempted = False
-            # Advanced override for the mid-stream resync search depth.
+            # Advanced override for the mid-stream resync search depth; None
+            # (empty field) lets each decryptor apply its own default.
             self._resync_search_depth = resync_search_depth
 
         def compose(self) -> ComposeResult:
@@ -552,7 +578,8 @@ if TEXTUAL_AVAILABLE:
                     id="resync-depth-label",
                 )
                 yield Input(
-                    value=str(self._resync_search_depth),
+                    value=resync_depth_field_text(self._resync_search_depth),
+                    # MTProto's default: what an empty field amounts to.
                     placeholder=str(DEFAULT_OBF_MAX_BLOCKS),
                     id="resync-depth-input",
                 )
@@ -778,33 +805,24 @@ if TEXTUAL_AVAILABLE:
             elif event.button.id == "btn-repair" and self._on_repair is not None:
                 self._on_repair()
 
-        def _resync_depth_value(self) -> int:
-            """The advanced resync-depth input as a valid int.
+        def _resync_depth_value(self) -> Optional[int]:
+            """The advanced resync-depth input as a valid int, or ``None``.
 
-            Falls back to :data:`DEFAULT_OBF_MAX_BLOCKS` when the field is
-            empty or invalid (Convert itself refuses invalid input).
+            ``None`` (each decryptor's own default) when the field is empty or
+            invalid (Convert itself refuses invalid input).
             """
-            depth, error = self._parse_resync_depth()
-            return DEFAULT_OBF_MAX_BLOCKS if error is not None else depth
+            return self._parse_resync_depth()[0]
 
         def _parse_resync_depth(self) -> tuple:
-            """``(depth, error)``: the field validated with the CLI's bounds.
+            """``(depth, error)``: see :func:`parse_resync_depth_field`.
 
-            An empty field means the default; a non-integer or out-of-range
-            value (negative disables recovery, huge allocates GBs) yields an
-            error message and ``depth`` is ``None``.
+            An empty (or unreadable) field is ``(None, None)``.
             """
-            from friTap.offline.cli import parse_resync_search_depth
             try:
-                raw = self.query_one("#resync-depth-input", Input).value.strip()
+                raw = self.query_one("#resync-depth-input", Input).value
             except Exception:
-                return DEFAULT_OBF_MAX_BLOCKS, None
-            if not raw:
-                return DEFAULT_OBF_MAX_BLOCKS, None
-            try:
-                return parse_resync_search_depth(raw), None
-            except Exception as exc:  # argparse.ArgumentTypeError
-                return None, str(exc)
+                return None, None
+            return parse_resync_depth_field(raw)
 
         def _show_resync_depth_error(self, error: Optional[str]) -> None:
             """Show (or clear) the inline error under the depth field."""

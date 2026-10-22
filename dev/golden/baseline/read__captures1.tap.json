@@ -1,0 +1,515 @@
+{
+ "tap": {
+  "flow_count": 2,
+  "flows": [
+   {
+    "chunks": {
+     "count": 4,
+     "sha256": [
+      "0429a16324e6b07c55ffcbe554c554fb5c5574e8d3a059250db981345142da2e",
+      "0429a16324e6b07c55ffcbe554c554fb5c5574e8d3a059250db981345142da2e",
+      "0f42c28aa60b2329a2aa76064cae136e0642ffb727ce68bdbd0605a2231e90d2",
+      "0f42c28aa60b2329a2aa76064cae136e0642ffb727ce68bdbd0605a2231e90d2"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:15.197.251.99:443-172.20.0.105:49280",
+     "detected_protocol": "HTTP/2",
+     "dst_addr": "15.197.251.99",
+     "dst_port": 443,
+     "duration": 0.0,
+     "ended": 1790833694.849337,
+     "findings": [],
+     "flow_id": "net:15.197.251.99:443-172.20.0.105:49280:0",
+     "layers": [
+      "http2"
+     ],
+     "notes": "",
+     "package_name": "captures1.pcapng",
+     "process_name": "captures1.pcapng",
+     "protocol": "HTTP/2",
+     "request": {
+      "body_size": 480,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "hpack-desync",
+      "headers": {},
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": true,
+      "method": "",
+      "protocol": "HTTP/2",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 3,
+      "url": ""
+     },
+     "response": {
+      "body_size": 7,
+      "content_encoding": "",
+      "content_type": "application/grpc",
+      "error": "",
+      "headers": {
+       ":status": "200",
+       "content-type": "application/grpc",
+       "grpc-accept-encoding": "gzip",
+       "grpc-encoding": "identity",
+       "grpc-status": "0"
+      },
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": false,
+      "method": "",
+      "protocol": "HTTP/2",
+      "status_code": 200,
+      "status_text": "",
+      "stream_id": 3,
+      "url": ""
+     },
+     "src_addr": "172.20.0.105",
+     "src_port": 49280,
+     "ssl_session_id": "",
+     "started": 1790833694.849337,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 7794,
+     "transport": "tls"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "depth": 0,
+       "name": "http2"
+      },
+      "type": "AppLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 480,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "hpack-desync",
+     "headers": {},
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": true,
+     "method": "",
+     "protocol": "HTTP/2",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 3,
+     "url": ""
+    },
+    "response": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 7,
+     "content_encoding": "",
+     "content_type": "application/grpc",
+     "error": "",
+     "headers": {
+      ":status": "200",
+      "content-type": "application/grpc",
+      "grpc-accept-encoding": "gzip",
+      "grpc-encoding": "identity",
+      "grpc-status": "0"
+     },
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": false,
+     "method": "",
+     "protocol": "HTTP/2",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 200,
+     "status_text": "",
+     "stream_id": 3,
+     "url": ""
+    },
+    "summary": {
+     "connection_id": "net:15.197.251.99:443-172.20.0.105:49280",
+     "detected_protocol": "HTTP/2",
+     "dst_addr": "15.197.251.99",
+     "dst_port": 443,
+     "duration": 0.0,
+     "ended": 1790833694.849337,
+     "finding_count": 0,
+     "flow_id": "net:15.197.251.99:443-172.20.0.105:49280:0",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "",
+     "inner_e2e_protocol": "",
+     "inner_summary": "",
+     "method": "",
+     "outer_app_protocol": "HTTP/2",
+     "process_name": "captures1.pcapng",
+     "protocol": "HTTP/2",
+     "src_addr": "172.20.0.105",
+     "src_port": 49280,
+     "ssl_session_id": "",
+     "started": 1790833694.849337,
+     "state": "complete",
+     "status_code": 200,
+     "tag_count": 0,
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 7794,
+     "transport": "tls",
+     "url": ""
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   },
+   {
+    "chunks": {
+     "count": 4,
+     "sha256": [
+      "d488c02a5f786a69dcdf359277c682068d97501c31f0672b2a370eaccb058bb4",
+      "041bd7a88b6069b8e070058ed6d2d102188e1be5d218108b766a204ccdfba4c7",
+      "6ea938a8faa9d547795fc1e10f6cc241fda089e9901b6b3f681756d1795223bc",
+      "b3cc305c181c357a1327c4c2ac5acec4ae1ed36d369e7b2f206c4fdbfc4333af"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:15.197.251.99:443-172.20.0.105:49280",
+     "detected_protocol": "TLS(midstream)",
+     "dst_addr": "15.197.251.99",
+     "dst_port": 443,
+     "duration": 0.0008959770202636719,
+     "ended": 1790833779.233391,
+     "findings": [],
+     "flow_id": "net:15.197.251.99:443-172.20.0.105:49280:1",
+     "layers": [
+      "tls",
+      "websocket",
+      "signal"
+     ],
+     "notes": "",
+     "package_name": "captures1.pcapng",
+     "process_name": "captures1.pcapng",
+     "protocol": "unknown",
+     "request": {
+      "body_size": 11,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {},
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": true,
+      "method": "",
+      "protocol": "unknown",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": ""
+     },
+     "response": null,
+     "src_addr": "172.20.0.105",
+     "src_port": 49280,
+     "ssl_session_id": "",
+     "started": 1790833779.232495,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 95,
+     "transport": "signal"
+    },
+    "layers": [
+     {
+      "data_source": "none",
+      "metadata_only": true,
+      "to_dict": {
+       "alpn": "",
+       "cipher": "",
+       "depth": 0,
+       "library": "",
+       "name": "tls",
+       "sni": "",
+       "version": ""
+      },
+      "type": "TlsLayer"
+     },
+     {
+      "data_source": "none",
+      "metadata_only": true,
+      "to_dict": {
+       "depth": 1,
+       "name": "websocket"
+      },
+      "type": "AppLayer"
+     },
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "chat_type": "one_to_one",
+       "depth": 2,
+       "identifier": "05f8442d1729b3b2b48f9dad16b55f8d1cbb98e07c81214c5c57ce1600533ecb20",
+       "message_count": 10,
+       "messages": [
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "write",
+         "kind": "typing",
+         "quote": false,
+         "reaction": false,
+         "sender": "",
+         "timestamp": 0
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "write",
+         "kind": "rest",
+         "meta": {
+          "destination": "9b599ba9-b5c5-4ceb-8f78-3e71a1a09e9b",
+          "message_count": 1,
+          "online": true,
+          "timestamp": 1790833711989,
+          "type": "rest-message",
+          "urgent": false
+         },
+         "path": "/v1/messages/9b599ba9-b5c5-4ceb-8f78-3e71a1a09e9b?story=false",
+         "quote": false,
+         "reaction": false,
+         "sender": "",
+         "timestamp": 1790833711989,
+         "verb": "PUT"
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "write",
+         "kind": "receipt",
+         "quote": false,
+         "reaction": false,
+         "sender": "",
+         "timestamp": 0
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "write",
+         "kind": "rest",
+         "meta": {
+          "destination": "9b599ba9-b5c5-4ceb-8f78-3e71a1a09e9b",
+          "message_count": 1,
+          "online": false,
+          "timestamp": 1790833756036,
+          "type": "rest-message",
+          "urgent": false
+         },
+         "path": "/v1/messages/9b599ba9-b5c5-4ceb-8f78-3e71a1a09e9b?story=false",
+         "quote": false,
+         "reaction": false,
+         "request_id": 1,
+         "sender": "",
+         "timestamp": 1790833756036,
+         "verb": "PUT"
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "write",
+         "kind": "receipt",
+         "quote": false,
+         "reaction": false,
+         "sender": "",
+         "timestamp": 0
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "write",
+         "kind": "rest",
+         "meta": {
+          "destination": "9b599ba9-b5c5-4ceb-8f78-3e71a1a09e9b",
+          "message_count": 1,
+          "online": false,
+          "timestamp": 1790833756191,
+          "type": "rest-message",
+          "urgent": false
+         },
+         "path": "/v1/messages/9b599ba9-b5c5-4ceb-8f78-3e71a1a09e9b?story=false",
+         "quote": false,
+         "reaction": false,
+         "request_id": 2,
+         "sender": "",
+         "timestamp": 1790833756191,
+         "verb": "PUT"
+        },
+        {
+         "attachments": false,
+         "body": "Hello 👋",
+         "direction": "write",
+         "kind": "data",
+         "quote": false,
+         "reaction": false,
+         "sender": "",
+         "timestamp": 1790833715083
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "read",
+         "kind": "rest",
+         "meta": {
+          "keys": [
+           "needsSync"
+          ],
+          "type": "rest"
+         },
+         "quote": false,
+         "reaction": false,
+         "sender": "",
+         "status": 200,
+         "timestamp": 1790833710817
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "read",
+         "kind": "rest",
+         "meta": {
+          "keys": [
+           "needsSync"
+          ],
+          "type": "rest"
+         },
+         "quote": false,
+         "reaction": false,
+         "request_id": 1,
+         "sender": "",
+         "status": 200,
+         "timestamp": 1790833754852
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "read",
+         "kind": "rest",
+         "meta": {
+          "keys": [
+           "needsSync"
+          ],
+          "type": "rest"
+         },
+         "quote": false,
+         "reaction": false,
+         "request_id": 2,
+         "sender": "",
+         "status": 200,
+         "timestamp": 1790833755018
+        }
+       ],
+       "name": "signal"
+      },
+      "type": "SignalLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": {
+     "body_sha256": "52c26be0cb596eeda5c5772132c696fb02dda3512fcb9a696e9a95631ae6be79",
+     "body_size": 11,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {},
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": true,
+     "method": "",
+     "protocol": "unknown",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": ""
+    },
+    "response": null,
+    "summary": {
+     "connection_id": "net:15.197.251.99:443-172.20.0.105:49280",
+     "detected_protocol": "TLS(midstream)",
+     "dst_addr": "15.197.251.99",
+     "dst_port": 443,
+     "duration": 0.0008959770202636719,
+     "ended": 1790833779.233391,
+     "finding_count": 0,
+     "flow_id": "net:15.197.251.99:443-172.20.0.105:49280:1",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "",
+     "inner_e2e_protocol": "Signal",
+     "inner_summary": "1:1 · 10 msgs",
+     "method": "",
+     "outer_app_protocol": "WebSocket",
+     "process_name": "captures1.pcapng",
+     "protocol": "TLS(midstream)",
+     "src_addr": "172.20.0.105",
+     "src_port": 49280,
+     "ssl_session_id": "",
+     "started": 1790833779.232495,
+     "state": "complete",
+     "status_code": 0,
+     "tag_count": 0,
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 95,
+     "transport": "signal",
+     "url": ""
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   }
+  ],
+  "header": {
+   "capture_start": 1790833694.849337,
+   "capture_target": "captures1.pcapng",
+   "ext_data": null,
+   "ext_header_len": 0,
+   "flags": 1,
+   "flow_count": 2,
+   "format_version": 1
+  },
+  "keylog_records": {
+   "count": 6,
+   "sha256": "65ab0682fe9688b2cedf9d65047059a42e7db50952b278b0819cc432982b51de"
+  },
+  "meta": {
+   "flow_fields_version": 3,
+   "parse_result_version": 1,
+   "schema_version": 1
+  },
+  "summary_count": 2
+ }
+}

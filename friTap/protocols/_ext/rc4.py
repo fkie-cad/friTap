@@ -8,7 +8,7 @@ protocol that neither implies nor is implied by TLS. ``--protocol tls,rc4``
 activates both only because both were explicitly selected.
 """
 
-from ..registry import register_protocol_handler
 from ..rc4_handler import RC4Handler
+from ..registry import register_protocol_handler
 
 register_protocol_handler("rc4", RC4Handler)

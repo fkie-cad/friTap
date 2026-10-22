@@ -45,6 +45,21 @@ class ProtobufConfig:
     schema_path: str = ""
     message_type: str = ""
     grpc_mode: bool = False
+    backend: str = "wire"  # "wire" (built in) or "blackbox" (pip install fritap[proto])
+
+    def view_options(self) -> dict:
+        """Keyword arguments for ``decode_protobuf_view`` honouring this config.
+
+        gRPC mode *forces* framing; when off, framing is still detected from
+        the Content-Type. The schema is used only in schema mode.
+        """
+        use_schema = not self.schema_less
+        return {
+            "grpc_mode": True if self.grpc_mode else None,
+            "schema_path": self.schema_path if use_schema else "",
+            "message_type": self.message_type if use_schema else "",
+            "backend": self.backend,
+        }
 
 
 @dataclass
@@ -85,9 +100,24 @@ def _escape_markup(text: object) -> str:
 # ── Modals (only when Textual is available) ──────────────────────
 
 if TEXTUAL_AVAILABLE:
+    from friTap.parsers.protobuf.view import (
+        BACKEND_BLACKBOX,
+        BACKEND_WIRE,
+        PROTO_EXTRA_HINT,
+        ProtobufView,
+        blackbox_available,
+        decode_protobuf_view,
+    )
+    from friTap.parsers.protobuf.wire import decode_varint
     from friTap.tui.themes import c
+    from friTap.tui.widgets.protobuf_render import protobuf_view_lines
 
     from .base import FriTapModal
+
+    #: The preview decodes at most this many leading body bytes.
+    _PREVIEW_MAX_BYTES = 4096
+    #: ...and shows at most this many lines of the result.
+    _PREVIEW_MAX_LINES = 200
 
     # -- Protobuf sub-modal -----------------------------------------------
 
@@ -111,12 +141,14 @@ if TEXTUAL_AVAILABLE:
         ProtobufModal #proto-message-input.dimmed {
             opacity: 0.35;
         }
-        ProtobufModal #proto-grpc-row {
+        ProtobufModal #proto-grpc-row,
+        ProtobufModal #proto-backend-row {
             height: 3;
             align: left middle;
             margin: 0 0 1 0;
         }
-        ProtobufModal #proto-grpc-label {
+        ProtobufModal #proto-grpc-label,
+        ProtobufModal #proto-backend-label {
             width: 1fr;
         }
         ProtobufModal #proto-preview-label {
@@ -143,11 +175,15 @@ if TEXTUAL_AVAILABLE:
             self,
             current: ProtobufConfig | None = None,
             body_preview: bytes = b"",
+            content_type: str = "",
             **kwargs,
         ) -> None:
             super().__init__(**kwargs)
             self._config = current or ProtobufConfig()
             self._body_preview = body_preview
+            # gRPC framing is auto-detected from it when the gRPC switch is off,
+            # exactly as the applied decode in the flow detail does.
+            self._content_type = content_type
 
         def compose(self) -> ComposeResult:
             with Vertical(id="modal-container"):
@@ -186,15 +222,18 @@ if TEXTUAL_AVAILABLE:
                 )
                 with Horizontal(id="proto-grpc-row"):
                     yield Static(
-                        f"[{c('text-secondary')}]gRPC mode (strip 5-byte framing)[/]",
+                        f"[{c('text-secondary')}]Force gRPC framing "
+                        f"(auto-detected from Content-Type when off)[/]",
                         id="proto-grpc-label",
                     )
                     yield Switch(value=self._config.grpc_mode, id="proto-grpc-switch")
+                yield from self._compose_backend_row()
                 yield Static(
                     f"[bold {c('text-muted')}]--- Preview ---[/]",
                     id="proto-preview-label",
                 )
-                yield RichLog(id="proto-preview", wrap=True, markup=True)
+                # No auto-scroll: notes and headers at the top must stay visible.
+                yield RichLog(id="proto-preview", wrap=True, markup=True, auto_scroll=False)
                 yield Static(
                     f"[{c('text-muted')}]Esc: Cancel  |  Enter: Apply[/]",
                     classes="key-hints",
@@ -202,6 +241,21 @@ if TEXTUAL_AVAILABLE:
                 with Horizontal(classes="button-row"):
                     yield Button("Apply", id="btn-apply", variant="primary")
                     yield Button("Cancel", id="btn-cancel", variant="default")
+
+        def _compose_backend_row(self) -> ComposeResult:
+            """Opt-in blackboxprotobuf backend switch; disabled when not installed."""
+            available = blackbox_available()
+            hint = "" if available else _escape_markup(f" (not installed: {PROTO_EXTRA_HINT})")
+            with Horizontal(id="proto-backend-row"):
+                yield Static(
+                    f"[{c('text-secondary')}]blackboxprotobuf backend{hint}[/]",
+                    id="proto-backend-label",
+                )
+                yield Switch(
+                    value=available and self._config.backend == BACKEND_BLACKBOX,
+                    disabled=not available,
+                    id="proto-backend-switch",
+                )
 
         def on_mount(self) -> None:
             """Set initial input dimming state and render preview."""
@@ -228,9 +282,12 @@ if TEXTUAL_AVAILABLE:
             self._render_preview()
 
         def on_switch_changed(self, event: Switch.Changed) -> None:
-            """Toggle gRPC mode."""
+            """Toggle gRPC mode or the decoder backend."""
             if event.switch.id == "proto-grpc-switch":
                 self._config.grpc_mode = event.value
+                self._render_preview()
+            elif event.switch.id == "proto-backend-switch":
+                self._config.backend = BACKEND_BLACKBOX if event.value else BACKEND_WIRE
                 self._render_preview()
 
         def _update_input_state(self) -> None:
@@ -257,117 +314,47 @@ if TEXTUAL_AVAILABLE:
                 preview.write(f"[{c('text-muted')}](no body data to preview)[/]")
                 return
 
+            # gRPC framing is validated by the shared decoder, never stripped blindly.
             data = self._body_preview
-            # Strip gRPC 5-byte framing if enabled
-            if self._config.grpc_mode and len(data) > 5:
-                data = data[5:]
-
             if self._config.schema_less:
                 self._preview_schema_less(preview, data)
             else:
                 self._preview_with_schema(preview, data)
 
-        def _preview_schema_less(self, preview: RichLog, data: bytes) -> None:
-            """Schema-less protobuf decode using blackboxprotobuf or manual parse."""
-            try:
-                import blackboxprotobuf
+        def _decode_preview(self, data: bytes, **overrides) -> "ProtobufView":
+            """Shared decode of the (capped) preview bytes with this modal's settings."""
+            options = {**self._config.view_options(), **overrides}
+            return decode_protobuf_view(
+                data, content_type=self._content_type,
+                max_input_bytes=_PREVIEW_MAX_BYTES, **options,
+            )
 
-                message, _ = blackboxprotobuf.decode_message(data)
-                for field_num, value in message.items():
-                    preview.write(f"field {field_num}: {_escape_markup(repr(value))}")
-            except ImportError:
-                # Fallback: basic varint field display
-                self._preview_raw_fields(preview, data)
-            except Exception as exc:
-                preview.write(
-                    f"[{c('error')}]Decode error: {_escape_markup(exc)}[/]"
-                )
+        @staticmethod
+        def _write_view(preview: RichLog, view: "ProtobufView") -> None:
+            """Write the decoded view as escaped markup lines."""
+            for line in protobuf_view_lines(view, _PREVIEW_MAX_LINES):
+                preview.write(line)
+
+        def _preview_schema_less(self, preview: RichLog, data: bytes) -> None:
+            """Schema-less decode with the selected backend (wire or blackbox)."""
+            self._write_view(preview, self._decode_preview(data, schema_path="", message_type=""))
 
         def _preview_raw_fields(self, preview: RichLog, data: bytes) -> None:
-            """Minimal protobuf field parser for preview when no library is available."""
-            try:
-                offset = 0
-                field_count = 0
-                while offset < len(data) and field_count < 20:
-                    if offset >= len(data):
-                        break
-                    # Read varint (tag)
-                    tag, offset = self._read_varint(data, offset)
-                    if tag is None:
-                        break
-                    field_number = tag >> 3
-                    wire_type = tag & 0x07
-
-                    if wire_type == 0:  # Varint
-                        value, offset = self._read_varint(data, offset)
-                        if value is None:
-                            break
-                        preview.write(f"field {field_number}: {value}")
-                    elif wire_type == 1:  # 64-bit
-                        if offset + 8 > len(data):
-                            break
-                        preview.write(
-                            f"field {field_number}: (64-bit) 0x{data[offset:offset+8].hex()}"
-                        )
-                        offset += 8
-                    elif wire_type == 2:  # Length-delimited
-                        length, offset = self._read_varint(data, offset)
-                        if length is None or offset + length > len(data):
-                            break
-                        chunk = data[offset : offset + length]
-                        offset += length
-                        # Try as UTF-8 string first
-                        try:
-                            text = chunk.decode("utf-8")
-                            if text.isprintable():
-                                preview.write(f'field {field_number}: "{_escape_markup(text)}"')
-                            else:
-                                preview.write(
-                                    f"field {field_number}: ({length} bytes) {chunk[:32].hex()}..."
-                                )
-                        except UnicodeDecodeError:
-                            preview.write(
-                                f"field {field_number}: ({length} bytes) {chunk[:32].hex()}..."
-                            )
-                    elif wire_type == 5:  # 32-bit
-                        if offset + 4 > len(data):
-                            break
-                        preview.write(
-                            f"field {field_number}: (32-bit) 0x{data[offset:offset+4].hex()}"
-                        )
-                        offset += 4
-                    else:
-                        preview.write(
-                            f"[{c('text-muted')}]field {field_number}: (wire type {wire_type}, skipped)[/]"
-                        )
-                        break
-                    field_count += 1
-
-                if field_count == 0:
-                    preview.write(
-                        f"[{c('text-muted')}](no protobuf fields detected)[/]"
-                    )
-            except Exception as exc:
-                preview.write(f"[{c('error')}]Parse error: {_escape_markup(exc)}[/]")
+            """Schema-less decode with the built-in wire decoder only."""
+            self._write_view(preview, self._decode_preview(
+                data, schema_path="", message_type="", backend=BACKEND_WIRE,
+            ))
 
         @staticmethod
         def _read_varint(data: bytes, offset: int) -> tuple[int | None, int]:
-            """Read a protobuf varint from data at offset."""
-            result = 0
-            shift = 0
-            while offset < len(data):
-                byte = data[offset]
-                offset += 1
-                result |= (byte & 0x7F) << shift
-                if (byte & 0x80) == 0:
-                    return result, offset
-                shift += 7
-                if shift > 63:
-                    return None, offset
-            return None, offset
+            """Read a protobuf varint from data at offset; ``(None, offset)`` if malformed."""
+            try:
+                return decode_varint(data, offset)
+            except ValueError:
+                return None, offset
 
         def _preview_with_schema(self, preview: RichLog, data: bytes) -> None:
-            """Decode protobuf using a .proto schema file."""
+            """Decode protobuf using a .proto/.desc schema file."""
             if not self._config.schema_path:
                 preview.write(
                     f"[{c('text-muted')}](enter a .proto schema path above)[/]"
@@ -378,84 +365,7 @@ if TEXTUAL_AVAILABLE:
                     f"[{c('text-muted')}](enter a message type above)[/]"
                 )
                 return
-
-            try:
-                import os
-                import subprocess
-                import tempfile
-
-                from google.protobuf import (  # noqa: F401
-                    descriptor_pb2,
-                    descriptor_pool,
-                    text_format,
-                )
-                from google.protobuf.compiler import plugin_pb2  # noqa: F401
-
-                # Use protoc to compile .proto to descriptor set
-                schema_path = self._config.schema_path
-                if not os.path.isfile(schema_path):
-                    preview.write(
-                        f"[{c('error')}]Schema file not found: {_escape_markup(schema_path)}[/]"
-                    )
-                    return
-
-                with tempfile.NamedTemporaryFile(suffix=".desc", delete=False) as tmp:
-                    tmp_path = tmp.name
-
-                try:
-                    proto_dir = os.path.dirname(schema_path) or "."
-                    result = subprocess.run(
-                        [
-                            "protoc",
-                            f"--proto_path={proto_dir}",
-                            f"--descriptor_set_out={tmp_path}",
-                            schema_path,
-                        ],
-                        capture_output=True,
-                        text=True,
-                        timeout=5,
-                    )
-                    if result.returncode != 0:
-                        preview.write(
-                            f"[{c('error')}]protoc error: {_escape_markup(result.stderr.strip())}[/]"
-                        )
-                        return
-
-                    from google.protobuf import descriptor_pb2 as dp2
-                    from google.protobuf import descriptor_pool as pool_mod
-                    from google.protobuf import (
-                        message_factory,
-                        symbol_database,  # noqa: F401
-                    )
-
-                    with open(tmp_path, "rb") as f:
-                        fds = dp2.FileDescriptorSet.FromString(f.read())
-
-                    p = pool_mod.DescriptorPool()
-                    for fd_proto in fds.file:
-                        p.Add(fd_proto)
-
-                    msg_desc = p.FindMessageTypeByName(self._config.message_type)
-                    factory = message_factory.MessageFactory(pool=p)
-                    msg_class = factory.GetPrototype(msg_desc)
-                    msg = msg_class()
-                    msg.ParseFromString(data)
-                    formatted = text_format.MessageToString(msg, indent=2)
-                    for line in formatted.splitlines()[:20]:
-                        preview.write(_escape_markup(line))
-                finally:
-                    try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        pass
-
-            except ImportError:
-                preview.write(
-                    f"[{c('error')}]protobuf library not installed "
-                    f"(pip install protobuf)[/]"
-                )
-            except Exception as exc:
-                preview.write(f"[{c('error')}]Schema decode error: {_escape_markup(exc)}[/]")
+            self._write_view(preview, self._decode_preview(data))
 
         def on_button_pressed(self, event: Button.Pressed) -> None:
             if event.button.id == "btn-apply":
@@ -464,6 +374,7 @@ if TEXTUAL_AVAILABLE:
                     schema_path=self._config.schema_path,
                     message_type=self._config.message_type,
                     grpc_mode=self._config.grpc_mode,
+                    backend=self._config.backend,
                 ))
             elif event.button.id == "btn-cancel":
                 self.dismiss(None)
@@ -571,10 +482,12 @@ if TEXTUAL_AVAILABLE:
             body_preview: bytes = b"",
             on_change: Callable[[BodyProcessingResult], None] | None = None,
             segment_count: int = 1,
+            content_type: str = "",
             **kwargs,
         ) -> None:
             super().__init__(**kwargs)
             self._body_preview = body_preview
+            self._content_type = content_type
             self._on_change = on_change
             self._segment_count = segment_count
             # Restore state from previous result
@@ -862,6 +775,7 @@ if TEXTUAL_AVAILABLE:
                 ProtobufModal(
                     current=self._protobuf_config,
                     body_preview=self._body_preview,
+                    content_type=self._content_type,
                 ),
                 callback=self._on_protobuf_result,
             )

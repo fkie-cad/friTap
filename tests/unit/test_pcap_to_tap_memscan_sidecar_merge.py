@@ -100,12 +100,40 @@ def test_helper_writes_generic_protocol_back_and_keeps_tls_on_base(tmp_path):
     protocol_keylogs = {"xproto": hook_x}
     legacy = {}
 
-    keylog, mtproto = p2t._merge_memory_scan_sidecars_into(
-        {"tls": scan_tls, "xproto": scan_x}, pcap, hook_tls, None,
+    keylog = p2t._merge_memory_scan_sidecars_into(
+        {"tls": scan_tls, "xproto": scan_x}, pcap, hook_tls,
         protocol_keylogs, legacy)
 
-    assert mtproto is None
     assert "tls" not in protocol_keylogs
     assert _read_lines(keylog) == ["CLIENT_RANDOM aa bb", "CLIENT_RANDOM cc dd"]
     assert protocol_keylogs["xproto"] == legacy["xproto_keylog"]
     assert _read_lines(protocol_keylogs["xproto"]) == ["X_KEY 1", "X_KEY 2"]
+
+
+def test_helper_merges_into_legacy_keylog_when_protocol_map_lacks_it(tmp_path):
+    pcap = str(tmp_path / "cap.pcap")
+    hook = _write(tmp_path / "hook.log", _HOOK_LINE)
+    scan = _write(tmp_path / "ms.log", _SCAN_LINE)
+    protocol_keylogs = {}
+    legacy = {"mtproto_keylog": hook}
+
+    keylog = p2t._merge_memory_scan_sidecars_into(
+        {"mtproto": scan}, pcap, None, protocol_keylogs, legacy)
+
+    assert keylog is None
+    merged = legacy["mtproto_keylog"]
+    assert merged != hook and protocol_keylogs["mtproto"] == merged
+    assert _read_lines(merged) == [_HOOK_LINE, _SCAN_LINE]
+
+
+def test_manifest_mtproto_keylog_reaches_the_mtproto_pass(monkeypatch, tmp_path):
+    pcap = str(tmp_path / "cap.pcap")
+    (tmp_path / "cap.pcap").write_bytes(b"")
+    hook = _write(tmp_path / "hook.log", _HOOK_LINE)
+    with open(f"{pcap}.fritap.json", "w", encoding="utf-8") as fh:
+        json.dump({"mtproto_keylog": hook}, fh)
+    passes = _stub_conversion(monkeypatch)
+
+    p2t.pcap_to_tap(pcap, tap_path=str(tmp_path / "out.tap"), use_manifest=True)
+
+    assert [keylogs for proto, keylogs in passes if proto == "mtproto"] == [[hook]]

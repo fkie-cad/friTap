@@ -65,7 +65,8 @@ class TargetOS(NamedTuple):
     ``"jailed"`` for a **Gadget-injected app**, NOT for "the device is not
     jailbroken". A jailed target means friTap is talking to one app that embeds
     frida-gadget instead of a device-wide frida-server, so it cannot spawn
-    arbitrary apps — while ``"full"`` means a device-wide frida-server (the
+    arbitrary apps. frida 17 ALSO reports ``"jailed"`` for a USB device with
+    no frida-server running at all (ADB-only fallback) — while ``"full"`` means a device-wide frida-server (the
     usual jailbroken setup). Crash-report retrieval is unaffected either way:
     ``idevicecrashreport`` talks to usbmuxd, not to frida.
     """
@@ -727,6 +728,17 @@ class SSL_Logger():
         if mapping:
             self.pcap_obj.capture_protocol = self.protocol
             self.pcap_obj.set_memory_scan_keylogs(mapping)
+        # Advertise the engine's intended mid-stream secret-bundle path so the
+        # manifest reader uses the writer's actual path (incl. the CWD-literal
+        # fallback) rather than recomputing it from the keylog stem. Best-effort.
+        engine = getattr(self, "_memory_scan_engine", None)
+        if engine is not None and hasattr(self.pcap_obj, "set_tls_midstream_secrets_path"):
+            try:
+                self.pcap_obj.set_tls_midstream_secrets_path(
+                    engine.intended_tls_secret_bundle_path())
+            except Exception as e:
+                self.logger.debug(
+                    f"mid-stream secrets path advertisement skipped: {e}")
 
     def _seed_known_server_ports(self):
         """Seed explicit capture-time TLS/QUIC server ports into the manifest.
@@ -1211,11 +1223,13 @@ class SSL_Logger():
         )
         if access == "jailed":
             lines.append(
-                "  Note: frida reports a jailed target, i.e. friTap is talking to "
-                "a frida-gadget-injected app rather than a device-wide "
-                "frida-server. Spawning other apps is not possible in this setup — "
-                "relaunch the Gadget-patched app manually to retry, and re-check "
-                "that the app was re-signed with the Gadget correctly embedded."
+                "  Note: frida reports jailed access. Either no frida-server is "
+                "running on the device (frida-core fell back to its ADB/USB-only "
+                "mode) — start it, e.g. via the TUI's Server Check -> Install "
+                "or `afrim` — or the target is a "
+                "frida-gadget-injected app: then spawning other apps is not "
+                "possible, so relaunch the Gadget-patched app manually and "
+                "re-check that it was re-signed with the Gadget embedded."
             )
         elif access == "full":
             lines.append(
@@ -2574,7 +2588,7 @@ class SSL_Logger():
             self._event_bus.subscribe(
                 SessionEvent, self._flow_collector.on_session_event
             )
-            # Feed Signal key material to the live decryptor (no-op unless the
+            # Feed protocol key material to the live decryptor (no-op unless the
             # collector was built with signal_messages=True).
             self._event_bus.subscribe(KeylogEvent, self._flow_collector.on_keylog)
             self._flow_collector.set_capture_target(self._config.target)

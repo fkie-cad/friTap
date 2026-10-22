@@ -1,0 +1,453 @@
+{
+ "tap": {
+  "flow_count": 2,
+  "flows": [
+   {
+    "chunks": {
+     "count": 2,
+     "sha256": [
+      "6cb88e154d410afaf4a244514a7c176c7a69ebaf45f4b46dbd4ae4cf53859a86",
+      "f431d4f5397bd2f69df0af0b7c3fd19f5cb55876683c7dee15cde0b20be33026"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:10.211.55.4:55235-34.71.45.200:443",
+     "detected_protocol": "HTTP/1.x",
+     "dst_addr": "34.71.45.200",
+     "dst_port": 443,
+     "duration": 0.13596701622009277,
+     "ended": 1790531233.391538,
+     "findings": [],
+     "flow_id": "net:10.211.55.4:55235-34.71.45.200:443:0",
+     "layers": [
+      "tls",
+      "http1"
+     ],
+     "notes": "",
+     "package_name": "lsass1.pcap",
+     "process_name": "lsass1.pcap",
+     "protocol": "HTTP/1.1",
+     "request": {
+      "body_size": 0,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {
+       "Connection": "Keep-Alive",
+       "Host": "www.howsmyssl.com",
+       "User-Agent": "Mozilla/5.0 (Windows NT; Windows NT 10.0; de-DE) WindowsPowerShell/5.1.26100.9457"
+      },
+      "host": "www.howsmyssl.com",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": true,
+      "method": "GET",
+      "protocol": "HTTP/1.1",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": "/a/check"
+     },
+     "response": {
+      "body_size": 736,
+      "content_encoding": "",
+      "content_type": "application/json",
+      "error": "",
+      "headers": {
+       "Access-Control-Allow-Origin": "*",
+       "Connection": "close",
+       "Content-Length": "736",
+       "Content-Type": "application/json",
+       "Date": "Sun, 27 Sep 2026 17:47:13 GMT",
+       "Strict-Transport-Security": "max-age=631138519; includeSubdomains; preload",
+       "Vary": "Accept-Encoding"
+      },
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": false,
+      "method": "",
+      "protocol": "HTTP/1.1",
+      "status_code": 200,
+      "status_text": "OK",
+      "stream_id": 0,
+      "url": ""
+     },
+     "src_addr": "10.211.55.4",
+     "src_port": 55235,
+     "ssl_session_id": "",
+     "started": 1790531233.255571,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "",
+     "tls_sni": "www.howsmyssl.com",
+     "total_bytes": 1162,
+     "transport": "tls"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "alpn": "",
+       "cipher": "TLS_AES_128_GCM_SHA256",
+       "depth": 0,
+       "library": "",
+       "name": "tls",
+       "sni": "www.howsmyssl.com",
+       "version": "TLS 1.3"
+      },
+      "type": "TlsLayer"
+     },
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "depth": 1,
+       "name": "http1"
+      },
+      "type": "AppLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 0,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {
+      "Connection": "Keep-Alive",
+      "Host": "www.howsmyssl.com",
+      "User-Agent": "Mozilla/5.0 (Windows NT; Windows NT 10.0; de-DE) WindowsPowerShell/5.1.26100.9457"
+     },
+     "host": "www.howsmyssl.com",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": true,
+     "method": "GET",
+     "protocol": "HTTP/1.1",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": "/a/check"
+    },
+    "response": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 736,
+     "content_encoding": "",
+     "content_type": "application/json",
+     "error": "",
+     "headers": {
+      "Access-Control-Allow-Origin": "*",
+      "Connection": "close",
+      "Content-Length": "736",
+      "Content-Type": "application/json",
+      "Date": "Sun, 27 Sep 2026 17:47:13 GMT",
+      "Strict-Transport-Security": "max-age=631138519; includeSubdomains; preload",
+      "Vary": "Accept-Encoding"
+     },
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": false,
+     "method": "",
+     "protocol": "HTTP/1.1",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 200,
+     "status_text": "OK",
+     "stream_id": 0,
+     "url": ""
+    },
+    "summary": {
+     "connection_id": "net:10.211.55.4:55235-34.71.45.200:443",
+     "detected_protocol": "HTTP/1.x",
+     "dst_addr": "34.71.45.200",
+     "dst_port": 443,
+     "duration": 0.13596701622009277,
+     "ended": 1790531233.391538,
+     "finding_count": 0,
+     "flow_id": "net:10.211.55.4:55235-34.71.45.200:443:0",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "www.howsmyssl.com",
+     "inner_e2e_protocol": "",
+     "inner_summary": "",
+     "method": "GET",
+     "outer_app_protocol": "HTTP/1.x",
+     "process_name": "lsass1.pcap",
+     "protocol": "HTTP/1.x",
+     "src_addr": "10.211.55.4",
+     "src_port": 55235,
+     "ssl_session_id": "",
+     "started": 1790531233.255571,
+     "state": "complete",
+     "status_code": 200,
+     "tag_count": 0,
+     "tls_alpn": "",
+     "tls_sni": "www.howsmyssl.com",
+     "total_bytes": 1162,
+     "transport": "tls",
+     "url": "/a/check"
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   },
+   {
+    "chunks": {
+     "count": 3,
+     "sha256": [
+      "dccec74902a61a402fdd57d9cd8801f19dfde76daeb71c04a2c8188dfb0a5e6c",
+      "7b555f860d4e207bd3f3c7bdd1ab2adf86b577658c577031105e83be8353e351",
+      "bd1360bd7c143c2e322256b39a1abc85ef31235e63cdb40c33f5e09a4e51715b"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:10.211.55.4:55236-80.245.152.130:443",
+     "detected_protocol": "HTTP/1.x",
+     "dst_addr": "80.245.152.130",
+     "dst_port": 443,
+     "duration": 0.03128695487976074,
+     "ended": 1790531233.575101,
+     "findings": [],
+     "flow_id": "net:10.211.55.4:55236-80.245.152.130:443:0",
+     "layers": [
+      "tls",
+      "http1"
+     ],
+     "notes": "",
+     "package_name": "lsass1.pcap",
+     "process_name": "lsass1.pcap",
+     "protocol": "HTTP/1.1",
+     "request": {
+      "body_size": 0,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {
+       "Connection": "Keep-Alive",
+       "Host": "www.bka.de",
+       "User-Agent": "Mozilla/5.0 (Windows NT; Windows NT 10.0; de-DE) WindowsPowerShell/5.1.26100.9457"
+      },
+      "host": "www.bka.de",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": true,
+      "method": "GET",
+      "protocol": "HTTP/1.1",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": "/_config/AdditionalLogo.svg?__blob=value&v=10"
+     },
+     "response": {
+      "body_size": 1350,
+      "content_encoding": "",
+      "content_type": "image/svg+xml;charset=UTF-8",
+      "error": "",
+      "headers": {
+       "Cache-Control": "max-age=604800",
+       "Connection": "Keep-Alive",
+       "Content-Language": "en-US",
+       "Content-Security-Policy": "default-src 'self' *.bka.de bka.preview.prod.gsb.bka.zivb.net *.videodelivery.net; base-uri 'self'; style-src 'self' 'unsafe-inline' *.googleapis.com *.gstatic.com piwik.itzbund.de; script-src 'self' 'unsafe-inline' 'unsafe-eval' *.googleapis.com piwik.itzbund.de *.youtube.com;object-src 'self' piwik.itzbund.de; media-src 'self' www.bka.de *.youtube.com www.quirksmode.org *.googleapis.com piwik.itzbund.de bka.preview.prod.gsb.bka.zivb.net medien.bka.de https://www.flens.de; child-src *.facebook.com *.twitter.com *.google.com *.gstatic.com *.youtube.com *.googleapis.com piwik.itzbund.de *.videodelivery.net; img-src 'self' data: *.bka.de *.google.com *.gstatic.com *.youtube.com *.googleapis.com piwik.itzbund.de *.geodatenzentrum.de; font-src 'self' data: *.googleapis.com *.gstatic.com piwik.itzbund.de; connect-src 'self' *.itzbund.de *.openstreetmap.org; frame-ancestors bka.preview.prod.gsb.bka.zivb.net piwik.itzbund.de *.facebook.com",
+       "Content-Type": "image/svg+xml;charset=UTF-8",
+       "Date": "Sun, 27 Sep 2026 17:47:13 GMT",
+       "Keep-Alive": "timeout=10, max=500",
+       "Referrer-Policy": "origin-when-cross-origin",
+       "Server": "Apache",
+       "Set-Cookie": "AL_LB-S=$xc/6vuXo2XsPxc4v!ehP2BpDQDoZpA_x4IEFPjADKF_RT!ALmAo; Path=/; Secure; HttpOnly; SameSite=None",
+       "Strict-Transport-Security": "max-age=31536000",
+       "Transfer-Encoding": "chunked",
+       "Vary": "Accept-Encoding",
+       "X-Content-Security-Policy": "default-src 'self' *.bka.de bka.preview.prod.gsb.bka.zivb.net *.videodelivery.net; base-uri 'self'; style-src 'self' 'unsafe-inline' *.googleapis.com *.gstatic.com piwik.itzbund.de; script-src 'self' 'unsafe-inline' 'unsafe-eval' *.googleapis.com piwik.itzbund.de *.youtube.com;object-src 'self' piwik.itzbund.de; media-src 'self' www.bka.de *.youtube.com www.quirksmode.org *.googleapis.com piwik.itzbund.de bka.preview.prod.gsb.bka.zivb.net medien.bka.de https://www.flens.de; child-src *.facebook.com *.twitter.com *.google.com *.gstatic.com *.youtube.com *.googleapis.com piwik.itzbund.de *.videodelivery.net; img-src 'self' data: *.bka.de *.google.com *.gstatic.com *.youtube.com *.googleapis.com piwik.itzbund.de *.geodatenzentrum.de; font-src 'self' data: *.googleapis.com *.gstatic.com piwik.itzbund.de; connect-src 'self' *.itzbund.de *.openstreetmap.org; frame-ancestors bka.preview.prod.gsb.bka.zivb.net piwik.itzbund.de *.facebook.com;",
+       "X-Content-Type-Options": "nosniff",
+       "X-Frame-Options": "SAMEORIGIN",
+       "X-Permitted-Cross-Domain-Policies": "master-only",
+       "X-Ua-Compatible": "IE=edge",
+       "X-Webkit-Csp": "default-src 'self' *.bka.de bka.preview.prod.gsb.bka.zivb.net *.videodelivery.net; base-uri 'self'; style-src 'self' 'unsafe-inline' *.googleapis.com *.gstatic.com piwik.itzbund.de; script-src 'self' 'unsafe-inline' 'unsafe-eval' *.googleapis.com piwik.itzbund.de *.youtube.com;object-src 'self' piwik.itzbund.de; media-src 'self' www.bka.de *.youtube.com www.quirksmode.org *.googleapis.com piwik.itzbund.de bka.preview.prod.gsb.bka.zivb.net medien.bka.de https://www.flens.de; child-src *.facebook.com *.twitter.com *.google.com *.gstatic.com *.youtube.com *.googleapis.com piwik.itzbund.de *.videodelivery.net; img-src 'self' data: *.bka.de *.google.com *.gstatic.com *.youtube.com *.googleapis.com piwik.itzbund.de *.geodatenzentrum.de; font-src 'self' data: *.googleapis.com *.gstatic.com piwik.itzbund.de; connect-src 'self' *.itzbund.de *.openstreetmap.org; frame-ancestors bka.preview.prod.gsb.bka.zivb.net piwik.itzbund.de *.facebook.com;",
+       "X-Xss-Protection": "1;mode=block"
+      },
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": false,
+      "method": "",
+      "protocol": "HTTP/1.1",
+      "status_code": 200,
+      "status_text": "OK",
+      "stream_id": 0,
+      "url": ""
+     },
+     "src_addr": "10.211.55.4",
+     "src_port": 55236,
+     "ssl_session_id": "",
+     "started": 1790531233.543814,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "",
+     "tls_sni": "www.bka.de",
+     "total_bytes": 5123,
+     "transport": "tls"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "alpn": "",
+       "cipher": "TLS_AES_256_GCM_SHA384",
+       "depth": 0,
+       "library": "",
+       "name": "tls",
+       "sni": "www.bka.de",
+       "version": "TLS 1.3"
+      },
+      "type": "TlsLayer"
+     },
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "depth": 1,
+       "name": "http1"
+      },
+      "type": "AppLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 0,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {
+      "Connection": "Keep-Alive",
+      "Host": "www.bka.de",
+      "User-Agent": "Mozilla/5.0 (Windows NT; Windows NT 10.0; de-DE) WindowsPowerShell/5.1.26100.9457"
+     },
+     "host": "www.bka.de",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": true,
+     "method": "GET",
+     "protocol": "HTTP/1.1",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": "/_config/AdditionalLogo.svg?__blob=value&v=10"
+    },
+    "response": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 1350,
+     "content_encoding": "",
+     "content_type": "image/svg+xml;charset=UTF-8",
+     "error": "",
+     "headers": {
+      "Cache-Control": "max-age=604800",
+      "Connection": "Keep-Alive",
+      "Content-Language": "en-US",
+      "Content-Security-Policy": "default-src 'self' *.bka.de bka.preview.prod.gsb.bka.zivb.net *.videodelivery.net; base-uri 'self'; style-src 'self' 'unsafe-inline' *.googleapis.com *.gstatic.com piwik.itzbund.de; script-src 'self' 'unsafe-inline' 'unsafe-eval' *.googleapis.com piwik.itzbund.de *.youtube.com;object-src 'self' piwik.itzbund.de; media-src 'self' www.bka.de *.youtube.com www.quirksmode.org *.googleapis.com piwik.itzbund.de bka.preview.prod.gsb.bka.zivb.net medien.bka.de https://www.flens.de; child-src *.facebook.com *.twitter.com *.google.com *.gstatic.com *.youtube.com *.googleapis.com piwik.itzbund.de *.videodelivery.net; img-src 'self' data: *.bka.de *.google.com *.gstatic.com *.youtube.com *.googleapis.com piwik.itzbund.de *.geodatenzentrum.de; font-src 'self' data: *.googleapis.com *.gstatic.com piwik.itzbund.de; connect-src 'self' *.itzbund.de *.openstreetmap.org; frame-ancestors bka.preview.prod.gsb.bka.zivb.net piwik.itzbund.de *.facebook.com",
+      "Content-Type": "image/svg+xml;charset=UTF-8",
+      "Date": "Sun, 27 Sep 2026 17:47:13 GMT",
+      "Keep-Alive": "timeout=10, max=500",
+      "Referrer-Policy": "origin-when-cross-origin",
+      "Server": "Apache",
+      "Set-Cookie": "AL_LB-S=$xc/6vuXo2XsPxc4v!ehP2BpDQDoZpA_x4IEFPjADKF_RT!ALmAo; Path=/; Secure; HttpOnly; SameSite=None",
+      "Strict-Transport-Security": "max-age=31536000",
+      "Transfer-Encoding": "chunked",
+      "Vary": "Accept-Encoding",
+      "X-Content-Security-Policy": "default-src 'self' *.bka.de bka.preview.prod.gsb.bka.zivb.net *.videodelivery.net; base-uri 'self'; style-src 'self' 'unsafe-inline' *.googleapis.com *.gstatic.com piwik.itzbund.de; script-src 'self' 'unsafe-inline' 'unsafe-eval' *.googleapis.com piwik.itzbund.de *.youtube.com;object-src 'self' piwik.itzbund.de; media-src 'self' www.bka.de *.youtube.com www.quirksmode.org *.googleapis.com piwik.itzbund.de bka.preview.prod.gsb.bka.zivb.net medien.bka.de https://www.flens.de; child-src *.facebook.com *.twitter.com *.google.com *.gstatic.com *.youtube.com *.googleapis.com piwik.itzbund.de *.videodelivery.net; img-src 'self' data: *.bka.de *.google.com *.gstatic.com *.youtube.com *.googleapis.com piwik.itzbund.de *.geodatenzentrum.de; font-src 'self' data: *.googleapis.com *.gstatic.com piwik.itzbund.de; connect-src 'self' *.itzbund.de *.openstreetmap.org; frame-ancestors bka.preview.prod.gsb.bka.zivb.net piwik.itzbund.de *.facebook.com;",
+      "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "SAMEORIGIN",
+      "X-Permitted-Cross-Domain-Policies": "master-only",
+      "X-Ua-Compatible": "IE=edge",
+      "X-Webkit-Csp": "default-src 'self' *.bka.de bka.preview.prod.gsb.bka.zivb.net *.videodelivery.net; base-uri 'self'; style-src 'self' 'unsafe-inline' *.googleapis.com *.gstatic.com piwik.itzbund.de; script-src 'self' 'unsafe-inline' 'unsafe-eval' *.googleapis.com piwik.itzbund.de *.youtube.com;object-src 'self' piwik.itzbund.de; media-src 'self' www.bka.de *.youtube.com www.quirksmode.org *.googleapis.com piwik.itzbund.de bka.preview.prod.gsb.bka.zivb.net medien.bka.de https://www.flens.de; child-src *.facebook.com *.twitter.com *.google.com *.gstatic.com *.youtube.com *.googleapis.com piwik.itzbund.de *.videodelivery.net; img-src 'self' data: *.bka.de *.google.com *.gstatic.com *.youtube.com *.googleapis.com piwik.itzbund.de *.geodatenzentrum.de; font-src 'self' data: *.googleapis.com *.gstatic.com piwik.itzbund.de; connect-src 'self' *.itzbund.de *.openstreetmap.org; frame-ancestors bka.preview.prod.gsb.bka.zivb.net piwik.itzbund.de *.facebook.com;",
+      "X-Xss-Protection": "1;mode=block"
+     },
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": false,
+     "method": "",
+     "protocol": "HTTP/1.1",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 200,
+     "status_text": "OK",
+     "stream_id": 0,
+     "url": ""
+    },
+    "summary": {
+     "connection_id": "net:10.211.55.4:55236-80.245.152.130:443",
+     "detected_protocol": "HTTP/1.x",
+     "dst_addr": "80.245.152.130",
+     "dst_port": 443,
+     "duration": 0.03128695487976074,
+     "ended": 1790531233.575101,
+     "finding_count": 0,
+     "flow_id": "net:10.211.55.4:55236-80.245.152.130:443:0",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "www.bka.de",
+     "inner_e2e_protocol": "",
+     "inner_summary": "",
+     "method": "GET",
+     "outer_app_protocol": "HTTP/1.x",
+     "process_name": "lsass1.pcap",
+     "protocol": "HTTP/1.x",
+     "src_addr": "10.211.55.4",
+     "src_port": 55236,
+     "ssl_session_id": "",
+     "started": 1790531233.543814,
+     "state": "complete",
+     "status_code": 200,
+     "tag_count": 0,
+     "tls_alpn": "",
+     "tls_sni": "www.bka.de",
+     "total_bytes": 5123,
+     "transport": "tls",
+     "url": "/_config/AdditionalLogo.svg?__blob=value&v=10"
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   }
+  ],
+  "header": {
+   "capture_start": 1790531227.514385,
+   "capture_target": "lsass1.pcap",
+   "ext_data": null,
+   "ext_header_len": 0,
+   "flags": 1,
+   "flow_count": 2,
+   "format_version": 1
+  },
+  "keylog_records": {
+   "count": 9,
+   "sha256": "e53022e64b5157447e060a5154a4b8b05434905bd9b338ecd5e025589b4b690a"
+  },
+  "meta": {
+   "flow_fields_version": 3,
+   "parse_result_version": 1,
+   "schema_version": 1
+  },
+  "summary_count": 2
+ }
+}

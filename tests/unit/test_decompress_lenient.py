@@ -5,10 +5,13 @@
 from __future__ import annotations
 
 import gzip
+import zlib
 
 import pytest
 
 from friTap.parsers.decompress import (
+    DECOMPRESS_LIMIT_ERROR,
+    MAX_DECOMPRESSED_BODY,
     decompress_body,
     decompress_lenient,
     find_embedded_gzip,
@@ -83,3 +86,81 @@ def test_http_content_encoding_path_stays_strict():
     body = PREFIX + gzip.compress(PAYLOAD)
     data, err = decompress_body(body, "gzip")
     assert data == body and err.startswith("decompress failed")
+
+
+# ── bounded decompress_body ──────────────────────────────────────
+
+LIMIT = 64 * 1024
+BIG = b"\0" * (LIMIT + 1)
+
+
+def _raw_deflate(data: bytes) -> bytes:
+    packer = zlib.compressobj(6, zlib.DEFLATED, -zlib.MAX_WBITS)
+    return packer.compress(data) + packer.flush()
+
+
+def _compressors():
+    yield "gzip", gzip.compress
+    yield "deflate", _raw_deflate
+    yield "deflate", zlib.compress
+    try:
+        import brotli
+        yield "br", brotli.compress
+    except ImportError:
+        pass
+    try:
+        import zstandard
+        yield "zstd", zstandard.ZstdCompressor().compress
+    except ImportError:
+        pass
+
+
+@pytest.mark.parametrize("encoding,compress", list(_compressors()))
+def test_decompress_body_rejects_output_over_limit(encoding, compress):
+    packed = compress(BIG)
+    data, err = decompress_body(packed, encoding, max_out=LIMIT)
+    assert data == packed and err.startswith(DECOMPRESS_LIMIT_ERROR)
+
+
+@pytest.mark.parametrize("encoding,compress", list(_compressors()))
+def test_decompress_body_accepts_output_at_limit(encoding, compress):
+    assert decompress_body(compress(BIG[:LIMIT]), encoding, max_out=LIMIT) == (BIG[:LIMIT], "")
+
+
+def test_decompress_body_permessage_deflate_sync_flush_is_bounded():
+    packer = zlib.compressobj(6, zlib.DEFLATED, -zlib.MAX_WBITS)
+    flushed = (packer.compress(BIG) + packer.flush(zlib.Z_SYNC_FLUSH))[:-4]
+    assert decompress_body(flushed, "permessage-deflate") == (BIG, "")
+    _data, err = decompress_body(flushed, "permessage-deflate", max_out=LIMIT)
+    assert err.startswith(DECOMPRESS_LIMIT_ERROR)
+
+
+def test_decompress_body_default_limit_is_generous():
+    assert MAX_DECOMPRESSED_BODY >= 64 * 1024 * 1024
+    assert decompress_body(gzip.compress(BIG), "gzip") == (BIG, "")
+
+
+def test_decompress_body_truncated_streams_still_fail():
+    packed = gzip.compress(PAYLOAD)[:-6]
+    data, err = decompress_body(packed, "gzip")
+    assert data == packed and err.startswith("decompress failed")
+
+
+def test_decompress_body_zstd_bomb_is_bounded():
+    zstandard = pytest.importorskip("zstandard")
+    # level=1 + 64 MiB keeps the test fast; 64 MiB still exceeds the 16 MiB max_out.
+    bomb = zstandard.ZstdCompressor(level=1).compress(b"\0" * (64 * 1024 * 1024))
+    assert len(bomb) < 64 * 1024
+    data, err = decompress_body(bomb, "zstd", max_out=16 * 1024 * 1024)
+    assert data == bomb and err.startswith(DECOMPRESS_LIMIT_ERROR)
+
+
+def test_decompress_body_zstd_without_content_size():
+    zstandard = pytest.importorskip("zstandard")
+    packed = zstandard.ZstdCompressor(write_content_size=False).compress(PAYLOAD)
+    assert decompress_body(packed + b"trailing", "zstd") == (PAYLOAD, "")
+
+
+def test_lenient_gzip_limit_error_is_not_masked_by_embedded_search():
+    _data, notes, err = decompress_lenient(gzip.compress(BIG), "gzip", max_out=LIMIT)
+    assert notes == [] and err.startswith(DECOMPRESS_LIMIT_ERROR)

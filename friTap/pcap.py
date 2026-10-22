@@ -303,6 +303,11 @@ class PCAP:
         # Memory-scan (-ms) keylog paths, {protocol: path}; see
         # set_memory_scan_keylogs(). Populated externally.
         self.memory_scan_keylogs = {}
+        # The mid-stream TLS secret-bundle sidecar path the memory-scan engine
+        # intends to write, advertised via set_tls_midstream_secrets_path(). Used
+        # as the authoritative source when building the manifest so the reader
+        # cannot diverge from the writer's CWD-literal fallback. None until set.
+        self._tls_midstream_secrets_path = None
 
         if doFullCapture:
             if isMobile:
@@ -1207,6 +1212,17 @@ class PCAP:
         """
         self.memory_scan_keylogs = dict(mapping or {})
 
+    def set_tls_midstream_secrets_path(self, path) -> None:
+        """Record the mid-stream TLS secret-bundle sidecar path the engine intends.
+
+        The memory-scan engine is the source of truth for this path (including its
+        current-directory literal fallback). Advertising the engine's intended path
+        here — rather than recomputing it from the keylog stem — keeps the manifest
+        reader from diverging from the writer. Best-effort: a falsy path is ignored.
+        """
+        if path:
+            self._tls_midstream_secrets_path = str(path)
+
     def _add_known_server_ports(self, transport_key, ports) -> None:
         """Seed explicit server ports into ``_observed_server_ports[transport_key]``.
 
@@ -1310,22 +1326,29 @@ class PCAP:
             # record its path when it exists with content so the offline pipeline
             # runs the mid-stream binding stage. Best-effort: never break finalize.
             try:
-                from friTap.memory_scanning import _sidecar_paths_for
-                # All memscan sidecars share one base stem, so any memscan keylog
-                # entry resolves to the same tls_midstream path. Prefer the "tls"
-                # entry, but fall back to any available one — under --protocol
-                # signal there is no "tls" keylog even though the BoringSSL engine
-                # still writes the mid-stream bundle sidecar.
-                _ms_keylogs = getattr(self, "memory_scan_keylogs", None) or {}
-                ms_stem_source = _ms_keylogs.get("tls")
-                if not ms_stem_source and _ms_keylogs:
-                    ms_stem_source = next(iter(_ms_keylogs.values()), None)
-                if ms_stem_source:
-                    midstream_secrets = _sidecar_paths_for(
-                        str(ms_stem_source)).get("tls_midstream_secrets")
-                    if (midstream_secrets and os.path.isfile(midstream_secrets)
-                            and os.path.getsize(midstream_secrets) > 0):
-                        manifest["tls_midstream_secrets"] = str(midstream_secrets)
+                # Source of truth: the memory-scan engine's own intended path,
+                # advertised via set_tls_midstream_secrets_path(). Preferred so the
+                # reader cannot diverge from the writer's CWD-literal fallback. Only
+                # recompute from the keylog stem when that path was never set.
+                midstream_secrets = getattr(self, "_tls_midstream_secrets_path", None)
+                if not (midstream_secrets and os.path.isfile(midstream_secrets)
+                        and os.path.getsize(midstream_secrets) > 0):
+                    from friTap.memory_scanning import _sidecar_paths_for
+                    # All memscan sidecars share one base stem, so any memscan
+                    # keylog entry resolves to the same tls_midstream path. Prefer
+                    # the "tls" entry, but fall back to any available one — under
+                    # --protocol signal there is no "tls" keylog even though the
+                    # BoringSSL engine still writes the mid-stream bundle sidecar.
+                    _ms_keylogs = getattr(self, "memory_scan_keylogs", None) or {}
+                    ms_stem_source = _ms_keylogs.get("tls")
+                    if not ms_stem_source and _ms_keylogs:
+                        ms_stem_source = next(iter(_ms_keylogs.values()), None)
+                    if ms_stem_source:
+                        midstream_secrets = _sidecar_paths_for(
+                            str(ms_stem_source)).get("tls_midstream_secrets")
+                if (midstream_secrets and os.path.isfile(midstream_secrets)
+                        and os.path.getsize(midstream_secrets) > 0):
+                    manifest["tls_midstream_secrets"] = str(midstream_secrets)
             except Exception as e:
                 self.logger.debug(
                     f"manifest tls_midstream secrets mapping skipped: {e}")

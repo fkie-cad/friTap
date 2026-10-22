@@ -434,7 +434,25 @@ print(result.to_dict())
 
 `pcap_to_tap()` reads a manifest sidecar `<pcap>.fritap.json` (keys
 `keylog`/`tls_ports`/`quic_ports`) when `use_manifest=True`; explicit arguments
-win over the manifest, which wins over defaults. It returns a `ConvertResult`:
+win over the manifest, which wins over defaults.
+
+Keylogs for friTap's own offline decryptors go in `protocol_keylogs`, a
+`{protocol_name: keylog_path}` map. It covers the built-in decryptors
+(`mtproto`, `telegram`, `signal`, `rc4`, `schannel`) and registered plugins:
+
+```python
+result = pcap_to_tap("tg.pcapng", protocol_keylogs={"mtproto": "tg.keys"})
+```
+
+The older `<protocol>_keylog=` keywords (e.g. `mtproto_keylog=`) still work and
+are folded into `protocol_keylogs`; an explicit `protocol_keylogs` entry wins.
+`resync_search_depth=` is forwarded only to decryptors whose
+`OfflineDecryptorEntry` names the receiving keyword in `resync_param` (MTProto
+and Telegram: `obf_max_blocks`). An offline-decryptor plugin whose emitter
+takes `**kwargs` therefore no longer receives `obf_max_blocks` unless its entry
+sets `resync_param`.
+
+It returns a `ConvertResult`:
 
 ::: friTap.offline.pcap_to_tap.ConvertResult
     options:
@@ -446,6 +464,28 @@ Key fields: `tap_path`, `flow_count`, `decrypted_packet_count`, `stream_count`,
 `dropped_packet_count`, `dropped_stream_count`, `findings_count`, and
 `encrypted_streams_skipped` (streams that could not be decrypted and were
 tallied rather than emitted).
+
+`per_protocol` holds the per-protocol counters, keyed by protocol prefix
+(`"mtproto"`, `"telegram"`, `"signal"`, `"rc4"`, or a plugin's prefix). Each
+bucket has the same keys (`messages`, `streams`, `undecryptable`, `degraded`,
+`partial`, `short`, `unknown_key_ids`, …):
+
+```python
+mt = result.per_protocol.get("mtproto", {})
+print(mt.get("messages", 0), mt.get("undecryptable", 0))
+```
+
+The flat `mtproto_messages`, `mtproto_streams`, `mtproto_records_undecryptable`
+and `mtproto_streams_degraded` keys are **deprecated**. They are read-only
+aliases of `per_protocol["mtproto"]` and stay in `to_dict()` for compatibility.
+
+Flow ids are `<connection id>:<sequence>`. A connection id is
+`cr:<protocol>:<client_random>` or `sid:<protocol>:<token>` when either is known.
+Otherwise it is the endpoint pair: `net:<4-tuple>` for TLS, and
+`net:<protocol>:<canonical 4-tuple>` for every other protocol (e.g.
+`net:mtproto:…`, `net:quic:…`, `net:rc4:…`, `net:signal:…`). See
+[offline pcap → tap](../advanced/offline-pcap-to-tap.md#flow-and-connection-ids)
+for details.
 
 !!! note "Caveats"
     Keyless 1-RTT-only QUIC captures are undetectable without keys. Encrypted
@@ -687,6 +727,85 @@ print(format_message(msg))
 `ProtobufField` objects); `format_message(msg, indent=0)` renders it as
 human-readable text. `ProtobufProcessor` provides higher-level, schema-aware
 processing.
+
+### Decoding a captured body (gRPC, schema, backends)
+
+`decode_protobuf_view` is the decoder the TUI uses for every protobuf view
+(flow detail, body-processing preview, explorer). It validates gRPC framing
+instead of dropping five bytes blindly, decompresses compressed gRPC messages
+(`grpc-encoding` gzip/deflate/zstd), applies a schema when given one, and never
+raises on malformed input: problems become `notes` / `error` strings, and a
+truncated tail still yields the fields decoded before it.
+
+```python
+from friTap.parsers.protobuf import decode_protobuf_view
+
+body = b"\x00\x00\x00\x00\x03\x08\x96\x01"   # one gRPC frame
+view = decode_protobuf_view(body, content_type="application/grpc")
+print(view.framing)   # grpc
+print(view.text())
+# --- gRPC message 1 (3 bytes) ---
+# 1: 150
+```
+
+| Argument | Meaning |
+|---|---|
+| `grpc_mode` | `True` forces gRPC framing, `False` disables it, `None` (default) decides from `content_type`. |
+| `grpc_encoding` | The `grpc-encoding` header, used for compressed gRPC messages. |
+| `schema_path`, `message_type` | A `.proto` (compiled with `protoc --include_imports`, which must be on `PATH`) or `.desc` schema plus the fully qualified message type. Falls back to the raw wire decode with a note. |
+| `backend` | `"wire"` (built in, default) or `"blackbox"` (opt-in; falls back to `"wire"` with a note when not installed). |
+| `max_input_bytes` | Decode only a leading prefix (a preview cap). |
+
+The result's `text()` is plain text. Escape it before writing it into Rich
+markup.
+
+### Decoding a flow's body
+
+`Flow.decode_request_protobuf()` and `Flow.decode_response_protobuf()` run the
+same decoder on a flow's (decompressed) request or response body. They pass on
+the flow's content type and `grpc-encoding` header:
+
+```python
+view = flow.decode_response_protobuf(
+    schema_path="api.proto",          # optional .proto or compiled .desc
+    message_type="pkg.Reply",         # needed together with schema_path
+    force=False,                      # True: decode whatever the content type
+)
+if view is not None and view.ok:
+    print(view.text())
+```
+
+They return `None` when the body is empty, or when it neither has a protobuf/gRPC
+content type nor looks like protobuf (unless `force=True`). Otherwise they return
+a `ProtobufView` (`from friTap.parsers.protobuf import ProtobufView`):
+
+| Member | Meaning |
+|---|---|
+| `mode` | Decoder actually used: `wire`, `blackbox` or `schema`. |
+| `framing` | `none`, `grpc`, or `grpc-invalid` (gRPC was expected but the bytes are not gRPC framed, so they were decoded as bare protobuf). |
+| `messages` | One `DecodedProtobufMessage` per gRPC frame (or one for a bare body), with `index`, `size`, `compressed`, `truncated`, `text`, `error`, `notes` and `ok`. |
+| `notes`, `error` | Why something was not decoded, or why a schema was not applied. |
+| `ok` | `True` when at least one message decoded. A returned view can still have `ok == False`. |
+| `lines()`, `text()` | The rendered output, tagged by line kind or as plain text. |
+
+!!! warning "Breaking change in friTap 2.3.0"
+    Before 2.3.0 these methods returned a `list` of `ProtobufMessage` trees (one
+    per gRPC frame) or `None`, and ignored `schema_path`. They now return a
+    `ProtobufView` and apply `schema_path` together with the new
+    `message_type` argument. There is no compatibility shim. To get the old raw
+    field tree, call `decode_raw()` on the body yourself.
+
+!!! note "Optional protobuf extras"
+    The wire decoder has no dependencies. Schema decoding needs
+    `google.protobuf`, and the alternative `blackboxprotobuf` backend needs
+    the `bbpb` package. Install both with:
+
+    ```bash
+    pip install "fritap[proto]"
+    ```
+
+    In the TUI the "blackboxprotobuf backend" switch of the protobuf decoder
+    dialog becomes available once `bbpb` is installed.
 
 ---
 

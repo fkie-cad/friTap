@@ -11,10 +11,7 @@ Hermetic (no device / Frida). Covers:
 
 from __future__ import annotations
 
-import pytest
-
 from friTap.memory_scanning import MemoryScanEngine
-
 
 # --------------------------------------------------------------------------- #
 # Profile stamp (E4a)

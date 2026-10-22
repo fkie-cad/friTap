@@ -32,6 +32,8 @@ import zlib
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+from friTap.parsers.decompress import InflateLimitError, inflate_bounded
+
 from .tl.decoder import (
     BOOL_FALSE_ID,
     BOOL_TRUE_ID,
@@ -40,9 +42,7 @@ from .tl.decoder import (
     MSG_CONTAINER_ID,
     RPC_RESULT_ID,
     VECTOR_ID,
-    InflateLimitError,
     decode_tl_cached,
-    inflate_bounded,
 )
 from .tl.nodes import TlNode, iter_nodes
 

@@ -113,7 +113,7 @@ class MTProtoHandler(ProtocolHandler):
         # Live capture only needs to extract keys/plaintext (no Python-side crypto),
         # but offline decryption of the resulting pcap does. Nudge the user early so
         # a later `--mtproto-keylog` run does not surprise them.
-        from ..offline.mtproto import MTPROTO_DEPENDENCY_HINT, mtproto_backend_available
+        from .mtproto_backend import MTPROTO_DEPENDENCY_HINT, mtproto_backend_available
         if not mtproto_backend_available():
             logger.warning(
                 "[mtproto] %s  (live key capture works without it; that backend is "

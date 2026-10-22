@@ -14,6 +14,7 @@ import friTap.offline.pcap_to_tap as p2t
 from friTap.connection_index import canonical_4tuple
 from friTap.events import EventBus
 from friTap.offline import tshark
+from friTap.offline.pipeline_api import run_tls_combined_pass
 from friTap.offline.rc4 import crypto
 from friTap.offline.rc4 import decrypt as rc4d
 from friTap.offline.rc4.transport import rc4_streams_from_spans
@@ -202,23 +203,23 @@ class _NullWriter:
         pass
 
 
-def test_tls_singlepass_records_spans(monkeypatch):
+def test_tls_singlepass_records_spans():
     def pkt(frame, ts, sender, receiver, hexdata):
         return {"layers": {
             "frame_number": [str(frame)], "frame_time_epoch": [str(ts)],
             "ip_src": [sender[0]], "ip_dst": [receiver[0]], "tcp_stream": ["0"],
             "tcp_srcport": [str(sender[1])], "tcp_dstport": [str(receiver[1])],
-            "data_data": [hexdata]}}
+            "tls_app_data": ["17"], "data_data": [hexdata]}}
 
     packets = [pkt(22, 1.5, CLIENT, SERVER, "0000001a"),
                pkt(28, 3.6, SERVER, CLIENT, "00000001ff")]
-    monkeypatch.setattr(p2t, "stream_packets", lambda cmd: iter(packets))
     state = p2t._WriterState(_NullWriter(), "unused.tap", "t", None)
-    p2t._emit_tls_streams_singlepass(
+    run_tls_combined_pass(
         "tshark", "x.pcap", None, tls_ports=(8443,), extra_decode_as=(),
         heuristic=False, bus=EventBus(), state=state,
         result=p2t.ConvertResult(tap_path="unused.tap"),
-        tracker=p2t._StreamDirectionTracker(server_ports=(8443,)))
+        tracker=p2t._StreamDirectionTracker(server_ports=(8443,)),
+        packet_source=lambda cmd: iter(packets), app_data_marker="tls.app_data")
     conn = state.tls_spans[canonical_4tuple(*CLIENT, *SERVER)]
     assert [(s.frame_no, s.ts, s.data) for s in conn["write"]] == [
         (22, 1.5, b"\x00\x00\x00\x1a")]

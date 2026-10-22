@@ -18,7 +18,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from friTap.connection_index import canonical_4tuple
+from friTap.connection_index import canonical_4tuple, resolve_connection_key
+from friTap.events import SESSION_STARTED, DatalogEvent, SessionEvent
 from friTap.offline.pcap_to_tap import ConvertResult, _relabel_midstream_flows
 from friTap.offline.rc4 import crypto as rc4_crypto
 from friTap.offline.tls_midstream import pipeline as pl
@@ -179,7 +180,7 @@ def test_run_stage_decrypts_and_emits_spans(tmp_path, monkeypatch):
     assert result.decrypted_packet_count == 2  # one event per non-empty direction
 
     # DatalogEvents: joined app content per direction, protocol tls, correct dirs.
-    by_dir = {ev.direction: ev for ev in bus.events}
+    by_dir = {ev.direction: ev for ev in bus.events if isinstance(ev, DatalogEvent)}
     assert by_dir[WRITE].data == b"GET / HTTP/1.1host: x"
     assert by_dir[WRITE].protocol == "tls"
     assert (by_dir[WRITE].src_addr, by_dir[WRITE].src_port) == CLIENT_ADDR
@@ -257,3 +258,154 @@ def test_relabel_ignores_unbound_flow():
     other = _flow("1.1.1.1", 100, "2.2.2.2", 200)
     _relabel_midstream_flows([other], {key})
     assert other.detected_protocol == ""
+
+
+# --------------------------------------------------------------------------- #
+# Session metadata: one SessionEvent per bound stream, ahead of its data
+# --------------------------------------------------------------------------- #
+
+def _seal_non_app_record(secret_hex: str, seq: int, inner: bytes) -> tuple:
+    """AEAD-seal an inner plaintext of type handshake (no application_data)."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    key, iv = rc4_crypto.derive_key_iv(bytes.fromhex(secret_hex), SUITE)
+    plaintext = inner + b"\x16"  # inner content-type = handshake
+    hdr = b"\x17\x03\x03" + struct.pack(">H", len(plaintext) + 16)
+    fragment = AESGCM(key).encrypt(rc4_crypto.record_nonce(iv, seq), plaintext, hdr)
+    return (0x17, hdr, fragment)
+
+
+def _run_stage_on(monkeypatch, streams, bundles, tmp_path):
+    monkeypatch.setattr(
+        pl, "midstream_tls_streams",
+        lambda pcap_path, server_ports=(443,): iter(streams),
+    )
+    sidecar = tmp_path / "m.tls_midstream.secrets.jsonl"
+    sidecar.write_text("".join(json.dumps(b) + "\n" for b in bundles))
+    bus, state, result = _FakeBus(), _FakeState(), ConvertResult(tap_path="x.tap")
+    keys = pl.run_midstream_tls_stage(
+        "dummy.pcap", str(sidecar), bus=bus, state=state, result=result)
+    return keys, bus
+
+
+def _data_event_key(event: DatalogEvent) -> str:
+    """The connection key the collector's on_data derives for *event*."""
+    return resolve_connection_key(
+        event.src_addr, event.src_port, event.dst_addr, event.dst_port,
+        session_token=event.ssl_session_id, protocol=event.protocol)
+
+
+def test_run_stage_emits_session_event_before_data(tmp_path, monkeypatch):
+    pytest.importorskip("cryptography")
+    stream = _stream({
+        WRITE: [_seal_record(CLIENT_SECRET, 3, b"client bytes")],
+        READ: [_seal_record(SERVER_SECRET, 7, b"server bytes")],
+    })
+    _keys, bus = _run_stage_on(monkeypatch, [stream], [_bundle()], tmp_path)
+
+    session, *data = bus.events
+    assert isinstance(session, SessionEvent)
+    assert session.event_type == SESSION_STARTED
+    assert session.protocol_version == "TLS 1.3"
+    assert session.cipher_suite == SUITE
+    # Only facts the AEAD binding proves: no ALPN / SNI without a handshake.
+    assert session.alpn == ""
+    assert session.server_name == ""
+    assert session.protocol == "tls"
+    assert (session.src_addr, session.src_port) == CLIENT_ADDR
+    assert (session.dst_addr, session.dst_port) == SERVER_ADDR
+    assert session.connection_id == resolve_connection_key(
+        *CLIENT_ADDR, *SERVER_ADDR, protocol="tls")
+    # The data events (both directions) key to the same connection.
+    assert [type(ev) for ev in data] == [DatalogEvent, DatalogEvent]
+    assert {_data_event_key(ev) for ev in data} == {session.connection_id}
+
+
+def test_run_stage_one_session_event_per_bound_stream(tmp_path, monkeypatch):
+    pytest.importorskip("cryptography")
+    other_client, other_server = "12" * 32, "34" * 32
+    first = _stream({
+        WRITE: [_seal_record(CLIENT_SECRET, 0, b"a1"), _seal_record(CLIENT_SECRET, 1, b"a2")],
+        READ: [_seal_record(SERVER_SECRET, 0, b"b1")],
+    })
+    second = MidstreamTlsStream(
+        client_addr=("10.0.0.3", 52000), server_addr=SERVER_ADDR,
+        ss_family="AF_INET",
+        records={WRITE: [_seal_record(other_client, 4, b"c1")]},
+    )
+    bundles = [_bundle(),
+               _bundle(client_traffic_secret_0=other_client,
+                       server_traffic_secret_0=other_server)]
+    keys, bus = _run_stage_on(monkeypatch, [first, second], bundles, tmp_path)
+
+    assert len(keys) == 2
+    sessions = [ev for ev in bus.events if isinstance(ev, SessionEvent)]
+    assert len(sessions) == 2
+    assert len({ev.connection_id for ev in sessions}) == 2
+    # Every data event follows its own stream's session event.
+    seen: set = set()
+    for event in bus.events:
+        if isinstance(event, SessionEvent):
+            seen.add(event.connection_id)
+        else:
+            assert _data_event_key(event) in seen
+
+
+def test_run_stage_no_session_event_without_plaintext(tmp_path, monkeypatch):
+    """A stream that binds but yields no application data emits nothing at all."""
+    pytest.importorskip("cryptography")
+    stream = _stream({WRITE: [_seal_non_app_record(CLIENT_SECRET, 2, b"ticket")]})
+    keys, bus = _run_stage_on(monkeypatch, [stream], [_bundle()], tmp_path)
+    assert keys == set()
+    assert bus.events == []
+
+
+def test_run_stage_no_session_event_when_nothing_binds(tmp_path, monkeypatch):
+    pytest.importorskip("cryptography")
+    stream = _stream({WRITE: [_seal_record(CLIENT_SECRET, 3, b"secret data")]})
+    wrong = _bundle(client_traffic_secret_0="ee" * 32,
+                    server_traffic_secret_0="ff" * 32)
+    _keys, bus = _run_stage_on(monkeypatch, [stream], [wrong], tmp_path)
+    assert not any(isinstance(ev, SessionEvent) for ev in bus.events)
+
+
+def _h2_frame(frame_type: int, flags: int, stream_id: int, payload: bytes) -> bytes:
+    return (struct.pack(">I", len(payload))[1:] + bytes([frame_type, flags])
+            + struct.pack(">I", stream_id) + payload)
+
+
+def test_collector_builds_tls_then_http2_layers_for_midstream_h2(tmp_path, monkeypatch):
+    """Integration: preface-less HTTP/2 through the real FlowCollector."""
+    pytest.importorskip("cryptography")
+    from friTap.events import EventBus
+    from friTap.flow.collector import FlowCollector
+
+    window_update = _h2_frame(0x8, 0, 0, b"\x00\x00\x10\x00")
+    client_h2 = _h2_frame(0x0, 0, 1, b"hello") + window_update
+    server_h2 = _h2_frame(0x6, 0x1, 0, b"\x00" * 8) + window_update
+    stream = _stream({
+        WRITE: [_seal_record(CLIENT_SECRET, 3, client_h2)],
+        READ: [_seal_record(SERVER_SECRET, 5, server_h2)],
+    })
+    monkeypatch.setattr(
+        pl, "midstream_tls_streams",
+        lambda pcap_path, server_ports=(443,): iter([stream]),
+    )
+    sidecar = tmp_path / "m.tls_midstream.secrets.jsonl"
+    sidecar.write_text(json.dumps(_bundle()) + "\n")
+    bus = EventBus()
+    collector = FlowCollector(event_bus=bus)
+    bus.subscribe(DatalogEvent, collector.on_data)
+    bus.subscribe(SessionEvent, collector.on_session_event)
+
+    pl.run_midstream_tls_stage("dummy.pcap", str(sidecar), bus=bus,
+                               state=_FakeState(), result=ConvertResult(tap_path="x"))
+    collector.flush()
+
+    [flow] = collector.get_flows()
+    assert [ly.name for ly in flow.layers] == ["tls", "http2"]
+    assert flow.detected_protocol == "HTTP/2"
+    tls = flow.layer("tls")
+    assert (tls.version, tls.cipher) == ("TLS 1.3", SUITE)
+    assert tls.alpn == ""
+    assert tls.sni == ""

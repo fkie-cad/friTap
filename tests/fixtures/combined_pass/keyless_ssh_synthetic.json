@@ -1,0 +1,58 @@
+{
+ "case": "ssh_synthetic",
+ "mode": "keyless",
+ "digest_only": false,
+ "result": {
+  "tap_path": "unused.tap",
+  "flow_count": 0,
+  "decrypted_packet_count": 8,
+  "stream_count": 2,
+  "dropped_packet_count": 0,
+  "dropped_stream_count": 0,
+  "findings_count": 0,
+  "encrypted_streams_skipped": 0,
+  "mtproto_messages": 0,
+  "mtproto_streams": 0,
+  "mtproto_records_undecryptable": 0,
+  "mtproto_streams_degraded": 0,
+  "per_protocol": {}
+ },
+ "tls_spans": {
+  "counts": {},
+  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+ },
+ "ssh": [
+  {
+   "src_addr": "10.0.0.1",
+   "src_port": 51000,
+   "dst_addr": "2.2.2.2",
+   "dst_port": 22,
+   "client_version": "SSH-2.0-OpenSSH_9.6",
+   "server_version": "SSH-2.0-OpenSSH_8.9",
+   "kex": "curve25519-sha256",
+   "cipher": "aes256-gcm@openssh.com",
+   "mac": "hmac-sha2-256"
+  },
+  {
+   "src_addr": "10.0.0.3",
+   "src_port": 51001,
+   "dst_addr": "2.2.2.4",
+   "dst_port": 22,
+   "client_version": "SSH-2.0-OpenSSH_8.4",
+   "server_version": "SSH-2.0-OpenSSH_8.9",
+   "kex": "curve25519-sha256",
+   "cipher": "aes256-gcm@openssh.com",
+   "mac": "hmac-sha2-256"
+  }
+ ],
+ "events": [
+  {"type":"DatalogEvent","conn":"10.0.0.1:51000>2.2.2.2:22","dir":"write","ts":1700000000.0,"len":21,"sha256":"7bfce07c2ab775ed","fields":"1035c4b21f198209"},
+  {"type":"DatalogEvent","conn":"2.2.2.2:22>10.0.0.1:51000","dir":"read","ts":1700000001.0,"len":21,"sha256":"1c72a6bc9b7f32b1","fields":"1035c4b21f198209"},
+  {"type":"DatalogEvent","conn":"10.0.0.1:51000>2.2.2.2:22","dir":"write","ts":1700000002.0,"len":184,"sha256":"e42d8f296f5ff4fe","fields":"1035c4b21f198209"},
+  {"type":"DatalogEvent","conn":"2.2.2.2:22>10.0.0.1:51000","dir":"read","ts":1700000003.0,"len":200,"sha256":"8ded311e2448ae6a","fields":"1035c4b21f198209"},
+  {"type":"DatalogEvent","conn":"10.0.0.3:51001>2.2.2.4:22","dir":"write","ts":1700000004.0,"len":21,"sha256":"0e965fd1c9e4af99","fields":"1035c4b21f198209"},
+  {"type":"DatalogEvent","conn":"2.2.2.4:22>10.0.0.3:51001","dir":"read","ts":1700000005.0,"len":21,"sha256":"1c72a6bc9b7f32b1","fields":"1035c4b21f198209"},
+  {"type":"DatalogEvent","conn":"10.0.0.3:51001>2.2.2.4:22","dir":"write","ts":1700000006.0,"len":184,"sha256":"e42d8f296f5ff4fe","fields":"1035c4b21f198209"},
+  {"type":"DatalogEvent","conn":"2.2.2.4:22>10.0.0.3:51001","dir":"read","ts":1700000007.0,"len":200,"sha256":"8ded311e2448ae6a","fields":"1035c4b21f198209"}
+ ]
+}

@@ -10,6 +10,7 @@ session-scoped tracker.
 
 from __future__ import annotations
 
+import functools
 import threading
 from dataclasses import dataclass
 from typing import Dict, Optional, Set, Tuple
@@ -48,7 +49,17 @@ def normalize_addr(addr: str) -> str:
     This exists so that endpoint keys derived from different tshark passes
     (``follow,tls`` vs ``-T ek``) — which spell IPv6 literals differently — collapse
     to one key and message metadata reliably correlates to its flow.
+
+    Pure over its argument, so string inputs are memoized (it runs for every
+    event's 4-tuple; an ``ipaddress`` parse dominates the cost of keying).
     """
+    if isinstance(addr, str):
+        return _normalize_addr_cached(addr)
+    return _normalize_addr_uncached(addr)
+
+
+def _normalize_addr_uncached(addr: str) -> str:
+    """The canonicalization behind :func:`normalize_addr` (no memoization)."""
     if not addr:
         return addr
     a = addr.strip()
@@ -63,6 +74,9 @@ def normalize_addr(addr: str) -> str:
         return a
 
 
+_normalize_addr_cached = functools.lru_cache(maxsize=4096)(_normalize_addr_uncached)
+
+
 def canonical_4tuple(src_addr: str, src_port: int,
                      dst_addr: str, dst_port: int) -> str:
     """:func:`normalize_4tuple` over :func:`normalize_addr`-canonicalized addresses.
@@ -72,6 +86,11 @@ def canonical_4tuple(src_addr: str, src_port: int,
     """
     return normalize_4tuple(normalize_addr(src_addr), src_port,
                             normalize_addr(dst_addr), dst_port)
+
+
+# The one protocol whose endpoint-tier key keeps the historical, unscoped
+# ``net:<4tuple>`` spelling (see resolve_connection_key).
+_LEGACY_NET_PROTOCOL = "tls"
 
 
 def resolve_connection_key(
@@ -87,21 +106,32 @@ def resolve_connection_key(
 
     Tier 1: client_random — unique per TLS connection (not reused across resumption)
     Tier 2: protocol-specific session token (ssl_session_id, SSH session_id, etc.)
-    Tier 3: normalized 4-tuple (perspective-independent, works for any protocol)
+    Tier 3: endpoint pair, protocol-scoped:
+
+      * TLS (``"tls"``, and the coerced ``""`` / None) -> ``net:<normalize_4tuple>``,
+        byte-identical to the historical format so existing ``.tap`` flow ids and
+        the live default capture are unchanged;
+      * every other protocol -> ``net:<protocol>:<canonical_4tuple>``, so e.g. an
+        RC4/Signal/MTProto/QUIC/SSH connection never folds into a TLS (or other
+        protocol's) flow that shares its 4-tuple within the collector's idle gap.
+        :func:`canonical_4tuple` additionally collapses IPv6 spellings.
 
     The ``cr:`` / ``sid:`` / ``net:`` prefixes prevent cross-tier key collisions.
 
     A present-but-empty/None ``protocol`` is coerced to ``"tls"`` HERE, in the one
     function that owns the key format, so every caller (lifecycle + data paths)
     keys a connection identically and cannot drift into a ``cr::`` vs ``cr:tls:``
-    mismatch.
+    (or ``net:`` vs ``net:tls:``) mismatch. Callers only have to stamp the SAME
+    protocol on a connection's lifecycle and data events.
     """
     protocol = str(protocol or "tls")
     if client_random:
         return f"cr:{protocol}:{client_random}"
     if session_token and not session_token.startswith(DUMMY_SESSION_ID_BASE) and session_token != NSS_DUMMY_SESSION_ID:
         return f"sid:{protocol}:{session_token}"
-    return f"net:{normalize_4tuple(src_addr, src_port, dst_addr, dst_port)}"
+    if protocol == _LEGACY_NET_PROTOCOL:
+        return f"net:{normalize_4tuple(src_addr, src_port, dst_addr, dst_port)}"
+    return f"net:{protocol}:{canonical_4tuple(src_addr, src_port, dst_addr, dst_port)}"
 
 
 @dataclass

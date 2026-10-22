@@ -14,12 +14,17 @@ import lzma
 import shutil
 import subprocess
 import tempfile
+import time
 import urllib.request
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from friTap.fritap_utility import sha256_file
+
+from .probe import ServerState, is_attach_capable, probe_frida_server
+
+READINESS_POLL_INTERVAL = 0.5
 
 
 class BaseFridaServerManager(ABC):
@@ -77,6 +82,52 @@ class BaseFridaServerManager(ABC):
         mobile/USB platforms (Android, iOS) do.
         """
         ...
+
+    # ------------------------------------------------------------------
+    # Shared logic — readiness
+    # ------------------------------------------------------------------
+
+    # Injectable for tests (patch on the instance).
+    _sleep = staticmethod(time.sleep)
+    _clock = staticmethod(time.monotonic)
+
+    def ensure_running(
+        self,
+        device: Any,
+        callback: Optional[Callable[[str], None]] = None,
+        timeout: float = 15.0,
+    ) -> ServerState:
+        """Make *device* attach-capable and return the final probe state.
+
+        Generic default: probe; if not attach-capable, ``start()`` and poll
+        the probe until it is. Raises ``RuntimeError`` on timeout.
+        """
+        state = probe_frida_server(device)
+        if is_attach_capable(state):
+            return state
+        if callback:
+            callback("Starting frida-server ...")
+        self.start(device)
+        state = self._wait_until_attach_capable(lambda: probe_frida_server(device), timeout)
+        if not is_attach_capable(state):
+            raise RuntimeError(
+                f"frida-server did not become reachable within {timeout:.0f}s "
+                f"(last state: {state.value})"
+            )
+        return state
+
+    def _wait_until_attach_capable(
+        self,
+        probe: Callable[[], ServerState],
+        timeout: float,
+    ) -> ServerState:
+        """Poll *probe* until attach-capable or *timeout*; return the last state."""
+        deadline = self._clock() + timeout
+        state = probe()
+        while not is_attach_capable(state) and self._clock() < deadline:
+            self._sleep(READINESS_POLL_INTERVAL)
+            state = probe()
+        return state
 
     # ------------------------------------------------------------------
     # Shared logic — download & decompress

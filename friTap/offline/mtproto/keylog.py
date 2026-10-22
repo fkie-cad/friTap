@@ -7,8 +7,7 @@ writer. Tolerant by design: comments, blanks, and malformed lines are skipped.
 
 from __future__ import annotations
 
-import ipaddress
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 
 from ...protocols.mtproto_keylog_spec import (
     MtprotoAuthKey,
@@ -16,6 +15,10 @@ from ...protocols.mtproto_keylog_spec import (
     parse_line,
     parse_obf_line,
 )
+from ..keylog_io import load_keylog_lines
+
+# Re-exported: the endpoint helpers moved to the protocol-neutral net package.
+from ..net.endpoints import normalize_endpoint, stream_endpoint  # noqa: F401
 
 
 def load_mtproto_keylog(path: str) -> Dict[bytes, MtprotoAuthKey]:
@@ -25,13 +28,7 @@ def load_mtproto_keylog(path: str) -> Dict[bytes, MtprotoAuthKey]:
     ``None`` for comments/blank/malformed lines (those are simply ignored). When
     duplicate auth_key_ids appear, the last entry wins.
     """
-    keymap: Dict[bytes, MtprotoAuthKey] = {}
-    with open(path, "r", encoding="utf-8", errors="replace") as fh:
-        for line in fh:
-            entry = parse_line(line)
-            if entry is not None:
-                keymap[entry.auth_key_id] = entry
-    return keymap
+    return load_keylog_lines(path, parse_line, key=lambda entry: entry.auth_key_id)
 
 
 def load_mtproto_obf_keylog(path: str) -> List[MtprotoObfKey]:
@@ -42,43 +39,4 @@ def load_mtproto_obf_keylog(path: str) -> List[MtprotoObfKey]:
     them to captured streams by trial de-obfuscation. Comments/blank/foreign lines
     are skipped via :func:`mtproto_keylog_spec.parse_obf_line`; order is preserved.
     """
-    keys: List[MtprotoObfKey] = []
-    with open(path, "r", encoding="utf-8", errors="replace") as fh:
-        for line in fh:
-            entry = parse_obf_line(line)
-            if entry is not None:
-                keys.append(entry)
-    return keys
-
-
-def normalize_endpoint(text: Optional[str]) -> Optional[str]:
-    """Canonical ``ip:port`` form of a keylog endpoint hint, or ``None`` if unknown.
-
-    The agent writes IPv6 peers bracketed with all eight groups uncompressed
-    (``[2001:67c:4e8:f004:0:0:0:a]:443``) while scapy reports stream addresses
-    compressed and unbracketed, so both sides go through this one helper before
-    being compared. IPv4 stays ``a.b.c.d:port``; IPv6 becomes ``[compressed]:port``;
-    a v4-mapped IPv6 address (``::ffff:a.b.c.d``) collapses to its IPv4 form. The
-    unknown marker ``-``, blanks, and text without a numeric port yield ``None``
-    (never matched). A host that is not an IP literal is kept verbatim.
-    """
-    host, sep, port = (text or "").strip().rpartition(":")
-    if not sep or not host or not port.isdigit():
-        return None
-    if host.startswith("[") and host.endswith("]"):
-        host = host[1:-1]
-    try:
-        ip = ipaddress.ip_address(host.split("%", 1)[0])
-    except ValueError:
-        return f"{host}:{int(port)}"
-    if ip.version == 6 and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
-    if ip.version == 6:
-        return f"[{ip.compressed}]:{int(port)}"
-    return f"{ip}:{int(port)}"
-
-
-def stream_endpoint(addr: Tuple[str, int]) -> Optional[str]:
-    """Canonical ``ip:port`` (see :func:`normalize_endpoint`) of a stream address."""
-    host, port = addr
-    return normalize_endpoint(f"[{host}]:{port}" if ":" in str(host) else f"{host}:{port}")
+    return load_keylog_lines(path, parse_obf_line)

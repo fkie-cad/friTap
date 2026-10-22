@@ -15,8 +15,12 @@ site/
 *.js
 *.keylog
 *.json
+*.jsonl
 *.ps1
 dev/changelog_backfill.py
+dev/bench/
+dev/gen_tls12_fixture.py
+dev/windows_re/
 research/
 demo/
 
@@ -137,6 +141,12 @@ ExampleLinux/wolfssl/*
 !tests/fixtures/*.tls.log
 !tests/fixtures/*.signal.log
 !tests/fixtures/*.keylog
+# Golden regression harness (dev/golden/run_golden.py): corpus + recorded
+# baselines, which the broad *.json rule above would otherwise exclude.
+!dev/golden/corpus.json
+!dev/golden/baseline/*.json
+!tests/fixtures/golden/*.json
+!tests/fixtures/combined_pass/*.json
 
 # Generated files
 *.apk

@@ -288,7 +288,6 @@ def test_convert_lowers_capture_start_to_first_packet(tmp_path, monkeypatch):
 
     monkeypatch.setattr(p2t, "find_tshark", lambda *a, **k: "/usr/bin/tshark")
     monkeypatch.setattr(p2t, "tshark_version", lambda path: (4, 6, 0))
-    monkeypatch.setattr(p2t, "list_tls_streams", lambda *a, **k: [])
     monkeypatch.setattr(p2t, "stream_packets", lambda cmd: iter(()))
     monkeypatch.setattr(p2t, "_first_packet_time", lambda path: 1234.5)
 

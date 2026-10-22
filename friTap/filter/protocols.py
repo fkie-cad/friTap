@@ -166,8 +166,6 @@ def _collect_protocols(obj: Any, extra_labels: Iterable[Any]) -> set[str]:
     result |= normalize_labels(_scalar_labels(obj))
     if flow_has_ohttp(obj):
         result.add("ohttp")
-    if getattr(obj, "ssl_session_id", ""):
-        result.add("tls")
     for present, implied in _IMPLIED_PROTOCOLS.items():
         if present in result:
             result.add(implied)

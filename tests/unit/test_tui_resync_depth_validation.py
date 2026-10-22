@@ -20,10 +20,7 @@ from friTap.offline.cli import (
     _build_parser,
     parse_resync_search_depth,
 )
-from friTap.offline.mtproto.transport import (
-    DEFAULT_OBF_ENDPOINT_MATCH_BLOCKS,
-    DEFAULT_OBF_MAX_BLOCKS,
-)
+from friTap.offline.mtproto.transport import DEFAULT_OBF_ENDPOINT_MATCH_BLOCKS
 
 
 class TestParseResyncSearchDepth:
@@ -48,7 +45,7 @@ class TestParseResyncSearchDepth:
     def test_cli_accepts_valid_and_defaults(self):
         parser = _build_parser()
         args = parser.parse_args(["--from-pcap", "x.pcap"])
-        assert args.resync_search_depth == DEFAULT_OBF_MAX_BLOCKS
+        assert args.resync_search_depth is None  # each decryptor's own default
         args = parser.parse_args(
             ["--from-pcap", "x.pcap", "--resync-search-depth", "5000"]
         )
@@ -123,4 +120,4 @@ class TestConfirmModalDepthValidation:
 
     def test_empty_depth_uses_default(self):
         result, *_ = _convert_with_depth("")
-        assert result["resync_search_depth"] == DEFAULT_OBF_MAX_BLOCKS
+        assert result["resync_search_depth"] is None  # each decryptor's own default

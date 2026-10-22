@@ -1,0 +1,233 @@
+{
+ "tap": {
+  "flow_count": 1,
+  "flows": [
+   {
+    "chunks": {
+     "count": 2,
+     "sha256": [
+      "3ec508954ee82e76b335d80ee552e7e1f18d70299f889d6c02a6bf8ebc808d6b",
+      "2759619dce72994b600d26d5b28fbb2895a240e44693010adf8780b94b5a829d"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "sid:rc4:rc4:127.0.0.1:63665-127.0.0.1:8443",
+     "detected_protocol": "",
+     "dst_addr": "127.0.0.1",
+     "dst_port": 8443,
+     "duration": 0.0003769397735595703,
+     "ended": 1790674248.568466,
+     "findings": [],
+     "flow_id": "sid:rc4:rc4:127.0.0.1:63665-127.0.0.1:8443:0",
+     "layers": [
+      "tls",
+      "rc4"
+     ],
+     "notes": "",
+     "package_name": "rc4demo_neu17.pcap",
+     "process_name": "rc4demo_neu17.pcap",
+     "protocol": "unknown",
+     "request": {
+      "body_size": 10,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {},
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": true,
+      "method": "",
+      "protocol": "unknown",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": ""
+     },
+     "response": {
+      "body_size": 48,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {},
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": false,
+      "method": "",
+      "protocol": "unknown",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": ""
+     },
+     "src_addr": "127.0.0.1",
+     "src_port": 63665,
+     "ssl_session_id": "rc4:127.0.0.1:63665-127.0.0.1:8443",
+     "started": 1790674248.568089,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 58,
+     "transport": "rc4"
+    },
+    "layers": [
+     {
+      "data_source": "owned",
+      "metadata_only": false,
+      "owned_read_sha256": "bdee42c980d74e01c65ab1efdfb25a18eabaca28a6e01efe2f4a1356214deaad",
+      "owned_write_sha256": "358b9c23f4766bc4d2fa586bc41408cdb591c2519a87bca2dcbabb02497b0d4b",
+      "to_dict": {
+       "alpn": "",
+       "cipher": "TLS_AES_256_GCM_SHA384",
+       "depth": 0,
+       "library": "",
+       "name": "tls",
+       "sni": "",
+       "version": "TLS 1.3"
+      },
+      "type": "TlsLayer"
+     },
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "assoc": "",
+       "depth": 1,
+       "direction": "both",
+       "framing": "u32be-length",
+       "key_len": 19,
+       "message_count": 2,
+       "name": "rc4",
+       "records": [
+        {
+         "cipher_offset": 4,
+         "direction": "write",
+         "frame_header_len": 4,
+         "length": 10,
+         "timestamp": 1790674248.568089,
+         "tls_frames": [
+          22,
+          24
+         ]
+        },
+        {
+         "cipher_offset": 4,
+         "direction": "read",
+         "frame_header_len": 4,
+         "length": 48,
+         "timestamp": 1790674248.568466,
+         "tls_frames": [
+          26
+         ]
+        }
+       ],
+       "source": "rc4-keylog:trial-key(mem)/in"
+      },
+      "type": "Rc4Layer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": {
+     "body_sha256": "028fb9cd289c106642177d7bd4b6c5e107265b90f17f6b52a1cb0d7584264455",
+     "body_size": 10,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {},
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": true,
+     "method": "",
+     "protocol": "unknown",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": ""
+    },
+    "response": {
+     "body_sha256": "04ab6573494b857729f9da7b2a9403b4c5193bee5edd9140a1ddf26c45a9ad07",
+     "body_size": 48,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {},
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": false,
+     "method": "",
+     "protocol": "unknown",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": ""
+    },
+    "summary": {
+     "connection_id": "sid:rc4:rc4:127.0.0.1:63665-127.0.0.1:8443",
+     "detected_protocol": "",
+     "dst_addr": "127.0.0.1",
+     "dst_port": 8443,
+     "duration": 0.0003769397735595703,
+     "ended": 1790674248.568466,
+     "finding_count": 0,
+     "flow_id": "sid:rc4:rc4:127.0.0.1:63665-127.0.0.1:8443:0",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "",
+     "inner_e2e_protocol": "RC4",
+     "inner_summary": "",
+     "method": "",
+     "outer_app_protocol": "TLS",
+     "process_name": "rc4demo_neu17.pcap",
+     "protocol": "unknown",
+     "src_addr": "127.0.0.1",
+     "src_port": 63665,
+     "ssl_session_id": "rc4:127.0.0.1:63665-127.0.0.1:8443",
+     "started": 1790674248.568089,
+     "state": "complete",
+     "status_code": 0,
+     "tag_count": 0,
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 58,
+     "transport": "rc4",
+     "url": ""
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   }
+  ],
+  "header": {
+   "capture_start": 1790674237.246857,
+   "capture_target": "rc4demo_neu17.pcap",
+   "ext_data": null,
+   "ext_header_len": 0,
+   "flags": 1,
+   "flow_count": 1,
+   "format_version": 1
+  },
+  "keylog_records": {
+   "count": 20,
+   "sha256": "3a841da4967cd83e22bd60482524daee201dc42bc539787853af759ff9cfe275"
+  },
+  "meta": {
+   "flow_fields_version": 3,
+   "parse_result_version": 1,
+   "schema_version": 1
+  },
+  "summary_count": 1
+ }
+}

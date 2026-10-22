@@ -14,9 +14,9 @@ from types import SimpleNamespace
 import pytest
 
 from friTap.filter import FilterEngine, UnknownFieldError
+from friTap.filter.fields import CANONICAL_FIELDS
 from friTap.filter.layer_fields import extract_filter_attrs, lookup_attr
 from friTap.filter.lexer import TokenType, tokenize
-from friTap.filter.fields import CANONICAL_FIELDS
 from friTap.filter.pipeline_filter import (
     FilteredSink,
     build_headless_filter,

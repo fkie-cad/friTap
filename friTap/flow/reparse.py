@@ -102,7 +102,7 @@ def reparse_flow(flow: "Flow") -> bool:
 
     try:
         registry = get_default_registry()
-        raw_parser = registry.detect(detect_data)
+        raw_parser = registry.detect(detect_data, transport=transport)
     except Exception:
         return False
 
@@ -111,11 +111,14 @@ def reparse_flow(flow: "Flow") -> bool:
         alt_data = read_bytes if detect_data is write_bytes else write_bytes
         if alt_data:
             try:
-                raw_parser = registry.detect(alt_data)
+                raw_parser = registry.detect(alt_data, transport=transport)
             except Exception:
                 return False
         if isinstance(raw_parser, HexdumpParser):
             return False
+
+    # Trailing-data detection inside the parser honours the flow's transport.
+    raw_parser.flow_transport = transport
 
     # Wrap in SafeParserAdapter so a single malformed chunk can no longer
     # raise out of feed/flush; on first failure, subsequent feeds are

@@ -33,7 +33,6 @@ Two harnessing styles are used, mirroring the established repo patterns:
 from __future__ import annotations
 
 import asyncio
-import os
 import types
 from unittest.mock import MagicMock
 
@@ -752,10 +751,10 @@ class TestOpenPcapModal:
 class TestTsharkMissingModal:
     def test_preflight_shows_modal_and_skips_worker(self, monkeypatch):
         """find_tshark failing in _launch_decrypt_worker -> AlertModal, no worker."""
-        from friTap.tui.screens.main_screen import MainScreen
-        from friTap.tui.modals.alert_modal import AlertModal
         from friTap.offline import tshark as tshark_mod
         from friTap.offline.tshark import TSHARK_INSTALL_MESSAGE, TsharkNotFoundError
+        from friTap.tui.modals.alert_modal import AlertModal
+        from friTap.tui.screens.main_screen import MainScreen
 
         screen, pushed, _ = _make_screen_stub()
         screen.app.notify = MagicMock()
@@ -784,9 +783,9 @@ class TestTsharkMissingModal:
 
     def test_preflight_launches_worker_when_tshark_present(self, monkeypatch):
         """When tshark resolves, the worker runs behind a progress spinner modal."""
-        from friTap.tui.screens.main_screen import MainScreen
-        from friTap.tui.modals.decrypt_progress_modal import DecryptProgressModal
         from friTap.offline import tshark as tshark_mod
+        from friTap.tui.modals.decrypt_progress_modal import DecryptProgressModal
+        from friTap.tui.screens.main_screen import MainScreen
 
         screen, pushed, _ = _make_screen_stub()
         screen.app.notify = MagicMock()
@@ -804,9 +803,9 @@ class TestTsharkMissingModal:
 
     def test_presenter_pushes_error_modal_and_logs(self):
         """The shared presenter both front-ends/paths funnel into."""
-        from friTap.tui.screens.main_screen import MainScreen
-        from friTap.tui.modals.alert_modal import AlertModal
         from friTap.offline.tshark import TSHARK_INSTALL_MESSAGE
+        from friTap.tui.modals.alert_modal import AlertModal
+        from friTap.tui.screens.main_screen import MainScreen
 
         screen, pushed, _ = _make_screen_stub()
         logged: list = []
@@ -828,6 +827,18 @@ class TestTsharkMissingModal:
 # ===========================================================================
 # 0-flow keylog-coverage explanation + per_protocol Signal counters
 # ===========================================================================
+
+def _signal_messaging_registered() -> bool:
+    """True when this build ships the Signal offline decryptor (full build only)."""
+    from friTap.offline.pcap_to_tap import MESSAGING_PREFIXES
+    return "signal" in MESSAGING_PREFIXES
+
+
+_needs_signal_decryptor = pytest.mark.skipif(
+    not _signal_messaging_registered(),
+    reason="Signal offline decryptor not in this build",
+)
+
 
 class TestZeroFlowExplanation:
     """_decrypt_worker computes keylog coverage for a 0-flow TLS conversion."""
@@ -889,6 +900,7 @@ class TestZeroFlowExplanation:
         assert "None of the keylog's 2 sessions" in msg
         assert "Decryption produced no flows" not in msg
 
+    @_needs_signal_decryptor
     def test_signal_counters_read_from_per_protocol(self):
         from friTap.offline.pcap_to_tap import ConvertResult
         from friTap.tui.screens.main_screen import MainScreen
@@ -898,6 +910,7 @@ class TestZeroFlowExplanation:
         assert MainScreen._degraded_stream_count(result) == 3
         assert MainScreen._undecryptable_record_count(result) == 3
 
+    @_needs_signal_decryptor
     def test_signal_undecryptable_explains_zero_flows(self, tmp_path):
         from friTap.offline.pcap_to_tap import ConvertResult
         result = ConvertResult(tap_path="x.tap")

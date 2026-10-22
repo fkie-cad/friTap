@@ -32,29 +32,80 @@ class MtprotoCryptoError(MtprotoError):
     """Raised when a record fails to decrypt or its msg_key does not verify."""
 
 
-# Single canonical, user-facing hint shown wherever MTProto is requested but the
-# optional crypto backend is absent (live CLI, offline CLI, and the TUI).
-MTPROTO_DEPENDENCY_HINT = (
-    "Telegram/MTProto decryption needs the 'cryptography' backend, which is not "
-    "installed. Install it with:  pip install cryptography  "
-    "(it ships with friTap's default install; you only see this on a --no-deps / "
-    "minimal install). Note: the optional 'tgcrypto' accelerator alone is NOT "
-    "enough — cryptography is required for the transport AES-CTR de-obfuscation."
+# The dependency hint and backend probe live in the side-effect-free leaf
+# :mod:`friTap.protocols.mtproto_backend` (so the live protocol handlers can
+# use them without importing this self-registering package); re-exported here
+# as the same objects so every existing import path keeps working.
+from friTap.protocols.mtproto_backend import (  # noqa: E402
+    MTPROTO_DEPENDENCY_HINT,
+    mtproto_backend_available,
 )
 
 
-def mtproto_backend_available() -> bool:
-    """Return True if the optional AES backend for MTProto decryption is importable.
+def offline_cli_dependency_warnings(keylog_value, tls_keylog_path) -> list:
+    """Offline-CLI hook: warning lines for a requested MTProto decryption run.
 
-    Never raises: used by CLI/TUI entry points to decide whether to show
-    :data:`MTPROTO_DEPENDENCY_HINT`. Lazy so importing this package costs nothing.
+    Discovered by convention by :mod:`friTap.offline.cli` (like Signal's hook).
+    *keylog_value* is the ``mtproto`` keylog (truthy when MTProto was requested);
+    *tls_keylog_path* is unused (MTProto rides raw TCP). Loud and up front when
+    the optional backend is missing, rather than silently producing a .tap
+    without the Telegram flows; non-fatal. Never raises.
+    """
+    if not keylog_value or mtproto_backend_available():
+        return []
+    return [
+        f"Warning: {MTPROTO_DEPENDENCY_HINT}",
+        "         MTProto streams in this capture will be skipped.",
+    ]
+
+
+# Module-level discovery marker: tells the offline-decryptor discovery scan
+# (:func:`friTap.offline.pcap_to_tap._discover_offline_decryptor_extensions`,
+# mirroring ``is_fritap_parser``/``is_fritap_analyzer``) that importing this
+# package self-registers offline decryptors, exactly like the Signal package.
+# ``pcap_to_tap`` imports this package before its discovery scan runs, so the
+# ``mtproto`` and ``telegram`` entries stay first in registration order.
+is_fritap_offline_decryptor = True
+
+
+def _register_mtproto_offline_decryptors() -> None:
+    """Register the MTProto and Telegram offline decryptors (in that order).
+
+    Lazy + fully guarded so importing this package can never raise: a missing
+    dependency or an import cycle during registration is logged at debug and
+    skipped. Re-registration of an identical entry is idempotent.
+    """
+    from friTap.offline.registry import register_offline_decryptors_safely
+
+    register_offline_decryptors_safely(
+        __name__,
+        ("build_mtproto_offline_decryptor_entry",
+         "build_telegram_offline_decryptor_entry"),
+        "MTProto offline decryptor self-registration skipped",
+    )
+
+
+
+def _register_telegram_pipeline_state() -> None:
+    """Register the Telegram per-conversion state namespace on the writer state.
+
+    Guarded like the decryptor self-registration below: importing this package
+    can never raise; a failure is logged at debug and skipped.
     """
     try:
-        from .crypto import backend_available
+        from .state import register_telegram_pipeline_state
 
-        return backend_available()
-    except Exception:  # noqa: BLE001 - any import/probe failure means "unavailable"
-        return False
+        register_telegram_pipeline_state()
+    except Exception:  # noqa: BLE001 - registration must never break the import
+        import logging
+
+        logging.getLogger(__name__).debug(
+            "Telegram pipeline-state registration skipped", exc_info=True)
+
+
+_register_telegram_pipeline_state()
+
+_register_mtproto_offline_decryptors()
 
 
 __all__ = [
@@ -63,4 +114,5 @@ __all__ = [
     "MtprotoCryptoError",
     "MTPROTO_DEPENDENCY_HINT",
     "mtproto_backend_available",
+    "offline_cli_dependency_warnings",
 ]

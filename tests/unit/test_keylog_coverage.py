@@ -100,7 +100,7 @@ def test_read_capture_handshakes_single_pass(monkeypatch):
         calls.append((display_filter, tuple(fields)))
         return _ROWS_OUTPUT
 
-    monkeypatch.setattr("friTap.offline.schannel.correlate._run_fields", fake_run_fields)
+    monkeypatch.setattr("friTap.offline.schannel.correlate.run_fields_pass", fake_run_fields)
     capture = kc.read_capture_handshakes("tshark", "x.pcap")
     assert len(calls) == 1
     assert capture.handshakes == (
@@ -116,7 +116,7 @@ def test_read_capture_handshakes_tshark_failure_is_empty(monkeypatch):
     def boom(*_args, **_kwargs):
         raise RuntimeError("tshark exploded")
 
-    monkeypatch.setattr("friTap.offline.schannel.correlate._run_fields", boom)
+    monkeypatch.setattr("friTap.offline.schannel.correlate.run_fields_pass", boom)
     assert kc.read_capture_handshakes("tshark", "x.pcap") == kc.CaptureTls()
 
 
@@ -318,9 +318,11 @@ def test_relabel_inputs_keeps_qqq_and_in_capture(tmp_path):
     masters, records = kc._relabel_inputs(keylog, kc.DEFAULT_MAX_KEYLOG_BYTES)
     assert masters == [SECRET_48]
     by_secret = {r["secret"]: r for r in records}
-    # ??? line is kept, ungrouped (group=None) so trial decryption can place it
-    assert by_secret[_S_C]["group"] is None
-    assert by_secret[_S_C]["label"] == "CLIENT_HANDSHAKE_TRAFFIC_SECRET"
+    # ??? line is kept so trial decryption can place it: no label hint (the
+    # label of an uncorrelated line is not trusted for ride-along), and a
+    # synthetic run group so an EXPORTER sibling could be placed by elimination
+    assert by_secret[_S_C]["group"] == "???#0"
+    assert by_secret[_S_C]["label"] is None
     # in-capture secrets ride along on their (correct) client_random group
     assert by_secret[_S_A]["group"] == CR_A and by_secret[_S_B]["group"] == CR_A
 
@@ -375,3 +377,36 @@ def test_relabel_counts_only_sessions_whose_lines_changed(tmp_path, monkeypatch)
     assert result.repaired_path is not None
     assert result.matched_sessions == 1
     assert "Relabeled 1 session " in result.message
+
+
+def test_relabel_inputs_offers_garbled_client_random_as_unknown(tmp_path):
+    keylog = _keylog(tmp_path, (
+        f"CLIENT_TRAFFIC_SECRET_0 - {_S_C}\n"
+        f"SERVER_TRAFFIC_SECRET_0 {CR_A[:-2]} {_S_B}\n"   # truncated client_random
+        f"CLIENT_TRAFFIC_SECRET_0 - zz\n"                  # bad secret stays rejected
+    ))
+    _masters, records = kc._relabel_inputs(keylog, kc.DEFAULT_MAX_KEYLOG_BYTES)
+    assert records == [
+        {"secret": _S_C, "label": None, "group": "???#0"},
+        {"secret": _S_B, "label": None, "group": "???#0"},
+    ]
+
+
+def test_relabel_inputs_groups_runs_of_unknown_client_random_lines(tmp_path):
+    # Consecutive ??? lines form one run (one connection) until a label repeats
+    # or another line intervenes; each run gets its own synthetic group.
+    s_d, s_e = "d" * 64, "e" * 64
+    keylog = _keylog(tmp_path, (
+        f"SERVER_HANDSHAKE_TRAFFIC_SECRET ??? {_S_A}\n"
+        f"EXPORTER_SECRET ??? {_S_B}\n"
+        f"SERVER_HANDSHAKE_TRAFFIC_SECRET ??? {_S_C}\n"   # label repeats: new run
+        f"CLIENT_RANDOM {CR_C} {SECRET_48}\n"             # breaks the run
+        f"EXPORTER_SECRET ??? {s_d}\n"
+        f"# comment\n"                                     # breaks the run
+        f"EXPORTER_SECRET ??? {s_e}\n"
+    ))
+    _masters, records = kc._relabel_inputs(keylog, kc.DEFAULT_MAX_KEYLOG_BYTES)
+    assert [(r["secret"], r["label"], r["group"]) for r in records] == [
+        (_S_A, None, "???#0"), (_S_B, None, "???#0"), (_S_C, None, "???#1"),
+        (s_d, None, "???#2"), (s_e, None, "???#3"),
+    ]

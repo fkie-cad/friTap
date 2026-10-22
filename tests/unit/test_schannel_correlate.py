@@ -482,3 +482,74 @@ def test_place_tls13_secret_ignores_streams_outside_the_probe(monkeypatch):
     monkeypatch.setattr(sc, "read_tls13_client_randoms", lambda *_a, **_k: {"0": CR1})
     records = sc.parse_tls13_records(f"{_S1_SC}\n")
     assert sc.correlate_tls13("tshark", "cap.pcapng", records) == []
+
+
+# --------------------------------------------------------------------------- #
+# Emitter: unplaced counting and de-duplication against the primary keylog
+# --------------------------------------------------------------------------- #
+
+def _run_emitter(monkeypatch, tmp_path, correlation, main_keylog_text=None):
+    from friTap.offline.pipeline_api import ConvertResult
+    from friTap.offline.schannel import offline_decryptor as od
+
+    sidecar = tmp_path / "keys.schannel.unpaired"
+    sidecar.write_text(f"schannel_tls13_secret {'cd' * 32} - 772 -\n")
+    main = None
+    if main_keylog_text is not None:
+        main = tmp_path / "main.keylog"
+        main.write_text(main_keylog_text)
+    monkeypatch.setattr(sc, "correlate_unpaired_detailed", lambda *_a, **_k: correlation)
+    passes = []
+
+    def fake_pass(pcap, keylog_path, *_a, **_k):
+        with open(keylog_path, encoding="utf-8") as fh:
+            passes.append(fh.read().splitlines())
+
+    monkeypatch.setattr(od, "_decrypt_with_derived_keylog", fake_pass)
+    result = ConvertResult(tap_path=str(tmp_path / "x.tap"))
+    od._schannel_offline_emitter(
+        pcap_path="cap.pcap", proto_keylog=str(sidecar),
+        tls_keylog_path=str(main) if main else None, tshark_bin="tshark",
+        tls_ports=(443,), bus=None, state=None, result=result)
+    return passes, result
+
+
+_L1 = f"SERVER_TRAFFIC_SECRET_0 {'11' * 32} {'cd' * 32}\n"
+_L2 = f"CLIENT_TRAFFIC_SECRET_0 {'11' * 32} {'ef' * 32}\n"
+
+
+def test_emitter_counts_and_warns_about_unplaced_secrets(monkeypatch, tmp_path, caplog):
+    import logging
+
+    from friTap.offline.schannel import offline_decryptor as od
+
+    od.logger.addHandler(caplog.handler)
+    try:
+        with caplog.at_level(logging.WARNING, logger=od.logger.name):
+            passes, result = _run_emitter(
+                monkeypatch, tmp_path, sc.UnpairedCorrelation([_L1], 2, 3))
+    finally:
+        od.logger.removeHandler(caplog.handler)
+    assert passes == [[_L1.strip()]]
+    assert result.per_protocol["schannel"]["undecryptable"] == 5
+    assert any("5 secret(s) could not be paired" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_emitter_skips_lines_the_primary_keylog_already_holds(monkeypatch, tmp_path):
+    correlation = sc.UnpairedCorrelation([_L1, _L2], 0, 0)
+    # Fully covered (different case): no second pass, no duplicated flows.
+    passes, result = _run_emitter(monkeypatch, tmp_path, correlation,
+                                  main_keylog_text=(_L1 + _L2).upper())
+    assert passes == []
+    assert result.per_protocol["schannel"]["messages"] == 2
+    # Partly covered: the pass runs over the uncovered line only, while the
+    # derived keylog artifact keeps every line.
+    passes, _ = _run_emitter(monkeypatch, tmp_path, correlation,
+                             main_keylog_text="# c\n" + _L1)
+    assert passes == [[_L2.strip()]]
+    derived = (tmp_path / "keys.schannel.nss.keylog").read_text().splitlines()
+    assert derived == [_L1.strip(), _L2.strip()]
+    # No primary keylog: the derived keylog drives the pass unchanged.
+    passes, _ = _run_emitter(monkeypatch, tmp_path, correlation)
+    assert passes == [[_L1.strip(), _L2.strip()]]

@@ -48,6 +48,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     enrichment. Crash reporting is now also registered in **attach** mode.
   - **`dev/macos_verify/`** — device-free end-to-end verification of the Apple
     capture path on macOS, usable as a stand-in for a jailbroken iOS device.
+  - **Schannel sidecar `group` column.** `.schannel.unpaired` takes an optional
+    5th column `group=<id>`; `--schannel-unpaired` uses it to place a group's
+    leftover TLS 1.3 secret as `EXPORTER_SECRET` by elimination. The memscan agent
+    emits it (per-connection id) for TLS 1.3 secrets when the `tls13_secret.group`
+    tier is enabled; sidecars without the column parse as before.
+  - **Static RE corroboration of the Schannel TLS 1.3 `group` rule.**
+    `ncryptsslp.dll` (Win11 **arm64**, build 26200) was reverse-engineered,
+    proving a connection's three app-secret containers are **separate heap
+    allocations** from distinct `TlsDeriveSecret` calls with no enclosing struct —
+    so the positional offsets are deterministic heap layout, not structural,
+    corroborating the earlier "no parent pointer" finding. Write-up in
+    `dev/windows_re/verify_kit/STATIC_RE_FINDINGS.md`.
+  - **Schannel memory-scan: fail-safe per-cipher-suite group offset.**
+    `tls13_secret.group.by_cipher` + `cipher_at` in `patterns.json`; the agent
+    reads the suite id at `anchor+0x08` and falls back to the SHA384-measured
+    default, emitting **no group** rather than a wrong one for unknown suites.
+    `tls13_secret.size_at` stays `-1`: the RE confirms there is no clean
+    scanner-usable length field in the `ncryptsslp` descriptor.
+  - **`quic.library` display-filter field / `QuicLayer.library`** for live QUIC flows.
+  - **New environment variables:** `FRITAP_PCAP_PARSER=scapy` (old pcap parser),
+    `FRITAP_SCHANNEL_ORACLE=0` (all Schannel trials via tshark),
+    `FRITAP_NO_TSHARK_VERSION_CACHE=1` (no on-disk `tshark --version` cache) and
+    `FRITAP_PCAP_CACHE_MAX_MB` (shared-parse limit, default 256, `0` disables).
 
 ### Changed
   - **Agent ABI 1 → 2** (`probe` config field + the `platform_report` content
@@ -56,8 +79,91 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     An ABI-mismatched agent bundle contributed via the `fritap.agent_bundle`
     entry point is now reported with a **warning** instead of being skipped
     silently.
+  - **Offline conversion reads the capture fewer times.** Keyed `--from-pcap` reads
+    TLS, QUIC and SSH from one `tshark -T ek` pass instead of five, Signal reuses the
+    TLS pass's plaintext (and now honours its heuristic/decode-as settings), and the
+    raw-TCP decryptors share one parse. `.tap` output is unchanged.
+  - **Fast pcap parser** for MTProto, standalone RC4 and mid-stream TLS (~14–23×
+    faster); rare packets still fall back to scapy, and `FRITAP_PCAP_PARSER=scapy`
+    restores the old parser.
+  - **Connection ids are protocol-scoped for non-TLS protocols**
+    (`net:<protocol>:<4-tuple>`), so flow ids of MTProto, QUIC, RC4 and Signal
+    captures re-converted with `--from-pcap` change, and offline RC4/Signal flows no
+    longer carry a synthetic `ssl_session_id`. Existing `.tap` files are unaffected.
+  - **`ConvertResult.per_protocol`** is the canonical home for per-protocol counters;
+    the flat `mtproto_*` keys are deprecated aliases (still in `to_dict()`).
+  - **Offline-decryptor plugins get `resync_search_depth` only via the new
+    `OfflineDecryptorEntry.resync_param`**; `**kwargs` emitters no longer receive
+    `obf_max_blocks`. `mtproto_keylog=` still works as a `<protocol>_keylog` keyword.
+  - **BREAKING: `Flow.decode_request_protobuf()` / `decode_response_protobuf()`
+    return a `ProtobufView`** (or `None`) instead of a list of `ProtobufMessage`
+    trees, and honour `schema_path`, a new `message_type`, `grpc-encoding` and gRPC
+    framing. Call `decode_raw()` on the body for the old tree; no shim.
+    `ProtobufProcessor` also loads `.proto` sources.
+  - **The `tls` display filter no longer matches Telegram Secret-Chat flows**;
+    `tls.session_id` is empty for non-TLS flows, and live non-TLS flows no longer
+    get a stray TLS layer.
+  - **Smaller offline speedups:** mid-stream TLS binding tries small sequence numbers
+    first (~2.1 s → 0.02 s on Signal), non-TCP packets skip scapy, MTProto OBF
+    recovery reuses its probe index (~−27% CPU), keyless conversion skips the QUIC
+    pass on UDP-free captures, and `tshark --version` is cached per binary.
+  - **`--from-pcap` progress names the protocol** being decrypted, and the "no TLS
+    keylog needed" note no longer dismisses QUIC.
+  - **Schannel correlation decides most trials in Python** (TLS 1.2 AES-GCM,
+    ChaCha20-Poly1305, AES-CBC; TLS 1.3 incl. KeyUpdates), cutting tshark spawns of
+    `--schannel-unpaired` / `--repair-keylog` from 15–29 to ~1.
+  - **pytest configuration moved to `pyproject.toml`.** `tests/pytest.ini` was
+    silently ignored; markers (`--strict-markers`), the timeout and warning filters
+    now actually apply.
+
+### Removed
+  - **Private back-compat aliases on `friTap.offline.pcap_to_tap`:** 28 unused
+    MTProto helper re-exports, `_TELEGRAM_TRANSPORTS`, and the remaining aliases
+    (pipeline_api helpers, `canonical_keylog_path`, `record_tls_span`, 20 MTProto
+    helpers, `_attach_rc4_in_tls_layers`, `DEFAULT_OBF_MAX_BLOCKS`) together with
+    the lazy `__getattr__` shim. Import them from their real modules.
+  - **The legacy multi-pass tshark path:** the separate-pass helpers in
+    `pcap_to_tap`, `pipeline_api` and `offline.tshark` (e.g. `extract_tls_metadata`,
+    `emit_tls_streams_singlepass`). Use `run_tls_combined_pass` / `TlsSinglePass`;
+    `build_tls_command` and `build_quic_command` remain.
+  - **Dead TLS internals** `cipher_suite_from_serverhello` and `confirm_secret`.
 
 ### Fixed
+  - **Offline pcap parsing:** Ethernet padding no longer becomes phantom stream bytes,
+    and BSD loopback (DLT_NULL) IPv6 is decoded on every platform.
+  - **Offline tshark handling:** a non-UTF-8 byte on stderr no longer hangs the
+    conversion, tshark is terminated when the consumer stops early, and a capture
+    truncated in its last packet converts its readable part with a warning.
+  - **Offline: SSH client/server banners are no longer swapped** when the server
+    sends first.
+  - **Offline: manifest keylog paths resolve against the manifest's directory**, and
+    the Python API honours the manifest's per-protocol `keylogs` map.
+  - **Offline exit codes:** metadata-only conversions (e.g. SSH) exit 0 instead of 4;
+    a missing `--<proto>-keylog`, `--schannel-unpaired` or `--tls-midstream-secrets`
+    file exits 5 instead of being skipped (the Python API warns).
+  - **Schannel: `EXPORTER_SECRET` placement by elimination works on real captures**
+    and is group-scoped; unplaced secrets are logged with a count.
+  - **Schannel oracle:** TLS 1.3 secrets roll once per KeyUpdate; oracle errors and
+    authenticated non-`Finished` TLS 1.2 records defer to tshark instead of
+    rejecting a valid master.
+  - **Schannel: `--repair-keylog` offers `???` lines for relabelling**, and
+    `--keylog` + `--schannel-unpaired` no longer emits duplicate flows.
+  - **TUI: Telegram Secret-Chat flows show a "Secret chat:" line** instead of
+    "SSL Session: telegram_e2e:<fingerprint>".
+  - **Agent build:** a signature mismatch in `agent/ms_agent/engines/schannel/index.ts`
+    is fixed (`emitSchannelUnpaired`'s `group` param is now optional) so the committed
+    `friTap/fritap_memscan.js` bundle rebuilds cleanly under CI `agent-build-check`.
+  - **CI:** `agent-build-check` fetches the frida native binding (`npm rebuild frida`
+    after `npm ci --ignore-scripts`), the DLT_NULL loopback IPv6 test is
+    host-independent (failed on Linux), and the tree is ruff-clean again.
+  - **TUI no longer reports a dead frida-server as "running"** — frida 17
+    answers `enumerate_processes()`/`query_system_parameters()` over ADB even
+    with no frida-server (`access: 'jailed'`), so every check passed while
+    `attach()` failed with "unable to connect to remote frida-server: closed".
+    The status bar, wizard and error context now require `access == 'full'`,
+    and the wizard and capture pre-flight start frida-server automatically via
+    AndroidFridaManager. Requires **AndroidFridaManager >= 2.0.6** (readiness
+    probe, detached server launch that survives `adb kill-server`).
   - **Cap frida below 17.16.0 on Python 3.10** — it imports `typing.NotRequired`
     (3.11+) while still declaring `Requires-Python: >=3.7`.
   - **Pinned ruff and declared the lint rule set in `pyproject.toml`** — ruff 0.16
@@ -127,6 +233,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     symbol-table `isReadable` guard would have passed even if deleted.
   - Docs guard test against reintroducing the `EPIPE` claim or an unredirected pipe.
   - One shared log-capture helper replaces three copies.
+  - Architecture layering guard: new rule **R12** (no private imports from inside an
+    offline protocol package), R8 allowlists for the new offline modules,
+    `friTap.filter` in the generic core, and an R8c guard for the cycle edges.
+  - New `slow` pytest marker: slow tests run only with `FRITAP_SLOW_TESTS=1` or `-m slow`.
 
 ## [2.2.4]
 

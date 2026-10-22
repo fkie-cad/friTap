@@ -52,6 +52,12 @@ setup(
             "pytest-timeout>=2.1",
             "ruff>=0.1.0",
         ],
+        # Optional protobuf decoding backends: schema decoding (.proto/.desc via
+        # google.protobuf) and the opt-in blackboxprotobuf TUI backend (PyPI: bbpb).
+        "proto": [
+            "protobuf>=4.21",
+            "bbpb>=1.0",
+        ],
     },
 
     # Include non-Python assets inside the package

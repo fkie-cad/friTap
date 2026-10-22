@@ -23,7 +23,10 @@ from __future__ import annotations
 from typing import Dict, Iterable, List, Set
 
 from friTap.connection_index import canonical_4tuple
+from friTap.offline.pipeline_api import protocol_state_of
 from friTap.offline.tls_spans import spans_covering
+
+from .state import RC4_STATE
 
 # Metadata of each RC4 record exposed on ``Rc4Layer.records``; the provenance
 # additionally carries key identity/framing, which lands on the layer itself.
@@ -46,9 +49,9 @@ def _record_range(record: dict) -> tuple:
 def _scoped_rc4_records(flow, prov: dict) -> List[dict]:
     """The provenance records of *flow*'s connection whose chunk landed in *flow*
     (``_chunk_key`` stripped), reusing the Telegram message scoping."""
-    from friTap.offline.pcap_to_tap import _scope_messages_to_flow
+    from friTap.offline.pipeline_api import scope_messages_to_flow
 
-    return _scope_messages_to_flow(flow, prov.get(_flow_key(flow)) or [])
+    return scope_messages_to_flow(flow, prov.get(_flow_key(flow)) or [])
 
 
 def _covered_spans(spans: list, records: Iterable[dict]) -> list:
@@ -156,8 +159,13 @@ def _tls_layers_by_key(flows) -> dict:
     return found
 
 
+def _rc4_provenance(state) -> dict:
+    """The writer *state*'s RC4 provenance store (a stand-in carries it directly)."""
+    return protocol_state_of(state, RC4_STATE).rc4_provenance
+
+
 def _attach_one(flow, state, tls_meta) -> None:
-    records = _scoped_rc4_records(flow, state.rc4_provenance)
+    records = _scoped_rc4_records(flow, _rc4_provenance(state))
     spans_by_dir = state.tls_spans.get(_flow_key(flow)) or {}
     if spans_by_dir:
         owned = _tls_owned_for(records, spans_by_dir)
@@ -172,10 +180,19 @@ def _absorbed_tls_flow_ids(flows, state) -> Set[str]:
         if getattr(flow, "transport", "") != "tls":
             continue
         key = _flow_key(flow)
-        records = state.rc4_provenance.get(key) or []
+        records = _rc4_provenance(state).get(key) or []
         if records and _tls_fully_consumed(state.tls_spans.get(key) or {}, records):
             absorbed.add(flow.flow_id)
     return absorbed
+
+
+def attach_rc4_post_collection(flows, state) -> Set[str]:
+    """Registry attach hook: fold nested RC4 flows into [TLS (owned), RC4 (chunks)]
+    and return the ids of the TLS flows they fully absorbed. No-op without RC4
+    provenance."""
+    if not getattr(protocol_state_of(state, RC4_STATE), "rc4_provenance", None):
+        return set()
+    return attach_rc4_in_tls_layers(flows, state)
 
 
 def attach_rc4_in_tls_layers(flows, state) -> Set[str]:

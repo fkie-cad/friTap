@@ -100,16 +100,25 @@ function ensureSchannelResolved() {
 
 /* Unpaired only: without a client_random these cannot be keyed into an NSS line
  * here, so they go to the driver's unpaired report to be joined to the pcap
- * offline (WS5). Deduped across scans on kind + address + secret bytes. */
-function emitSchannelUnpaired(kind, ssl5, secret, sslVersion, stats) {
+ * offline (WS5). Deduped across scans on kind + address + secret bytes.
+ *
+ * `group` (optional) is the per-connection id the offline correlator uses to
+ * place EXPORTER_SECRET by elimination (5th sidecar column; parsed in
+ * friTap/offline/schannel/unpaired.py, forwarded by engine.py:_write_unpaired).
+ * It is sent ONLY when set — the dedupe key and the Python side both handle its
+ * absence, so an un-grouped secret degrades to the old safe behavior. The group
+ * is derived by runSchannelTls13Secret (see the proven rule there). */
+function emitSchannelUnpaired(kind, ssl5, secret, sslVersion, stats, group?) {
     var key = kind + '|' + ssl5.toString() + '|' + secret;
     if (state.recorded[key] !== undefined) return;
     state.recorded[key] = secret;
-    send({
+    var msg: any = {
         type: 'unpaired', kind: kind,
         secret: secret, session_id: '',
         ssl_version: sslVersion, addr: ssl5.toString()
-    });
+    };
+    if (group) msg.group = group;      // omit entirely when not derived (safe)
+    send(msg);
     stats.emitted++;
 }
 
@@ -302,10 +311,76 @@ function chainOffset(value, fallback) {
     return fallback;
 }
 
+/* Per-connection grouping (RE-confirmed on Win11 arm64 26200, 2026-10-18, via
+ * read-only lsass ground truth with concurrent SChannel TLS 1.3 connections).
+ *
+ * There is NO pointer-reachable parent above '3lss' on this build: across the
+ * whole writable image, nothing points INTO a connection's secret containers,
+ * the siblings share no heap pointer, and no needle-validated 'ssl5' references
+ * them (all three measured zero). The '3lss' header carries only cipher/version
+ * fields and the UTF-16 hash name — no connection id. What IS stable is layout:
+ * a connection's three resident app secrets occupy one block at FIXED relative
+ * offsets — SERVER_TRAFFIC_SECRET_0 @ base, CLIENT_TRAFFIC_SECRET_0 @ base+0xb0,
+ * EXPORTER_SECRET @ base+0x4b8 (TLS_AES_256_GCM_SHA384). So the group id is the
+ * base B of a structural TRIPLE: B is a '3lss' secret and B+clientOff AND
+ * B+exporterOff are also '3lss' secrets. Keying on the exact geometry (not mere
+ * proximity) isolates one connection even on a busy heap where a foreign
+ * connection's secrets sit a few hundred bytes away — a nearby stray secret will
+ * not fall at BOTH offsets. Each connection keeps several copies of its triple;
+ * every copy is the same connection, and emitting in address order lets the
+ * lowest-address copy stamp its three siblings first (the offline side dedupes on
+ * (kind,secret) and keeps that first group). An anchor that is part of no triple
+ * gets NO group — it cannot help elimination and must not invent an id. A 2nd
+ * safety net backs this: the offline correlator discards any group whose placed
+ * app secrets decrypt different streams, so a mis-grouped triple can only FAIL to
+ * place the exporter, never place it on the wrong stream.
+ *
+ * Per-suite: static RE (dev/windows_re/verify_kit/STATIC_RE_FINDINGS.md) shows the
+ * triple is NOT one struct but three separate heap allocations, so the offsets are
+ * cipher-size dependent. Each base's offsets come from group.by_cipher[cipherId]
+ * (cipher read at anchor+cipher_at) and fall back to client_off/exporter_off (the
+ * SHA384-measured default) when the suite is unlisted — a wrong fallback offset
+ * simply fails the geometry test and yields no group, never a wrong one. */
+function pickGroupOffsets(cipher, g) {
+    if (cipher !== null && g.by_cipher) {
+        var e = g.by_cipher['0x' + cipher.toString(16)];
+        if (e && typeof e.client_off === 'number' && typeof e.exporter_off === 'number')
+            return { c: e.client_off, x: e.exporter_off };
+    }
+    return { c: g.client_off, x: g.exporter_off };          // default (TLS_AES_256_GCM_SHA384)
+}
+
+/* Reject a pairing only when BOTH cipher ids are known and differ (blocks a
+ * cross-suite false triple on a busy heap); an unknown cipher never blocks a
+ * pairing, so the verified single-suite grouping is preserved unchanged. */
+function sameCipher(a, b) {
+    return a.cipher === null || b.cipher === null || a.cipher === b.cipher;
+}
+
+function assignSchannelGroups(found, g) {
+    found.sort(function (a, b) { return a.addr.compare(b.addr); });
+    var byAddr: any = {};
+    for (var i = 0; i < found.length; i++) byAddr[found[i].addr.toString()] = found[i];
+    for (var i = 0; i < found.length; i++) {
+        var base = found[i];
+        var off = pickGroupOffsets(base.cipher, g);        // per-suite offsets (default = SHA384)
+        var cli = byAddr[base.addr.add(off.c).toString()];
+        var exp = byAddr[base.addr.add(off.x).toString()];
+        if (cli !== undefined && exp !== undefined          // a full SRV/CLI/EXP triple ...
+            && sameCipher(base, cli) && sameCipher(base, exp)) {   // ... of one cipher suite
+            var gid = base.addr.toString();                // group = SERVER (lowest) anchor
+            base.group = gid; cli.group = gid; exp.group = gid;
+        }
+    }
+}
+
 /* TLS 1.3 secret tier — anchor on the '3lss' container tag (either byte order),
  * read secret_lens bytes at 3lss+secret_at, keep it if it passes the validators.
- * Emitted UNPAIRED and unlabelled: TLS 1.3 has no memory-resident correlator, so
- * tools/schannel_correlate.py assigns label+client_random offline (WS5). */
+ * Collect every validated secret first, derive each one's connection group from
+ * the fixed secret-block geometry (see assignSchannelGroups), then emit UNPAIRED in address
+ * order so a connection's lowest (primary) cluster stamps its three siblings with
+ * one group before any duplicate copy — the offline side dedupes on (kind,secret)
+ * and keeps that first group, keeping all three siblings consistent. */
 function runSchannelTls13Secret(ranges, stats, errors) {
     var tier = (schannelResolved().tiers || {}).tls13_secret;
     if (!tier || !tier.enabled) return;
@@ -314,8 +389,19 @@ function runSchannelTls13Secret(ranges, stats, errors) {
     var sizeAt = (typeof tier.size_at === 'number') ? tier.size_at : -1;
     var secretAt = chainOffset(tier.secret_at !== undefined ? tier.secret_at : hyp.secret_at, 0x6a);
     var lens = tier.secret_lens || [48, 32];
+    var g = tier.group || {};
+    var doGroup = g.enabled === true && typeof g.client_off === 'number' && typeof g.exporter_off === 'number';
+    var cipherAt = (typeof g.cipher_at === 'number') ? g.cipher_at : 8;   // suite id offset from anchor
+    // Per-suite secret length: the secret is 48 bytes for SHA384 suites (0x1302)
+    // but 32 for SHA256 suites (0x1301/0x1303). The old fixed-order [48,32] trial
+    // emitted a WRONG 48-byte secret for a 32-byte suite (32 real bytes + 16 trailing
+    // heap bytes passes the entropy/zero-fraction gate, shadowing the correct 32-byte
+    // read), so the length must be chosen by the cipher id at anchor+cipher_at. An
+    // unlisted cipher falls back to the [48,32] trial (the verified SHA384 behavior).
+    var lenByCipher = tier.secret_len_by_cipher || {};
     var sslVersion = 772;   // TLS 1.3, for the report
     var patterns = [asciiToScanPattern(anchor), asciiToScanPattern(reverseStr(anchor))];
+    var found: any[] = [];
     for (var p = 0; p < patterns.length; p++) {
         for (var r = 0; r < ranges.length; r++) {
             var hits = scanRange(ranges[r], patterns[p], errors);
@@ -323,13 +409,16 @@ function runSchannelTls13Secret(ranges, stats, errors) {
                 stats.schannel.tls13Candidates++;
                 try {
                     var anchorAddr = hits[h].address;
+                    var cipherId = readU32OrNull(anchorAddr.add(cipherAt));
+                    var lenForCipher = (cipherId !== null) ? lenByCipher['0x' + cipherId.toString(16)] : undefined;
                     var declared = (sizeAt >= 0) ? readU32OrNull(anchorAddr.add(sizeAt)) : null;
-                    var tryLens = (declared === 32 || declared === 48) ? [declared] : lens;
+                    var tryLens = (typeof lenForCipher === 'number') ? [lenForCipher]
+                                : (declared === 32 || declared === 48) ? [declared] : lens;
                     for (var li = 0; li < tryLens.length; li++) {
                         var secret = readBytes(anchorAddr.add(secretAt), tryLens[li]);
                         if (!schannelLooksLikeSecret(secret)) continue;
-                        emitSchannelUnpaired('schannel_tls13_secret', anchorAddr, hexBytes(secret),
-                                             sslVersion, stats);
+                        found.push({ addr: anchorAddr, secret: hexBytes(secret),
+                                     cipher: (typeof cipherId === 'number' ? cipherId : null), group: null });
                         break;
                     }
                 } catch (e: any) {
@@ -337,6 +426,15 @@ function runSchannelTls13Secret(ranges, stats, errors) {
                 }
             }
         }
+    }
+    // Derive per-connection groups by the fixed secret-block geometry (no reverse
+    // scan needed — a per-suite address-set membership test at two offsets).
+    if (doGroup) {
+        assignSchannelGroups(found, g);
+    }
+    for (var f = 0; f < found.length; f++) {
+        emitSchannelUnpaired('schannel_tls13_secret', found[f].addr, found[f].secret,
+                             sslVersion, stats, found[f].group);
     }
 }
 

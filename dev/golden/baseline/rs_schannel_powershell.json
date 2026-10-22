@@ -1,0 +1,40 @@
+{
+ "result": {
+  "decrypted_packet_count": 0,
+  "dropped_packet_count": 0,
+  "dropped_stream_count": 0,
+  "encrypted_streams_skipped": 0,
+  "findings_count": 0,
+  "flow_count": 0,
+  "mtproto_messages": 0,
+  "mtproto_records_undecryptable": 0,
+  "mtproto_streams": 0,
+  "mtproto_streams_degraded": 0,
+  "per_protocol": {},
+  "stream_count": 0,
+  "tap_path": "<WORK>/powershell.tap"
+ },
+ "tap": {
+  "flow_count": 0,
+  "flows": [],
+  "header": {
+   "capture_start": "<wallclock>",
+   "capture_target": "powershell.pcap",
+   "ext_data": null,
+   "ext_header_len": 0,
+   "flags": 1,
+   "flow_count": 0,
+   "format_version": 1
+  },
+  "keylog_records": {
+   "count": 10,
+   "sha256": "5bce1bab1e05f7854d3251a9a9c3b2dba033a7b093c793bd7e82af636a222e7d"
+  },
+  "meta": {
+   "flow_fields_version": 3,
+   "parse_result_version": 1,
+   "schema_version": 1
+  },
+  "summary_count": 0
+ }
+}

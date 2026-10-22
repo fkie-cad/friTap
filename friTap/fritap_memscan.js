@@ -1,5 +1,5 @@
 📦
-108663 /agent/memory_scan_agent.js
+119007 /agent/memory_scan_agent.js
 ✄
 // agent/ms_agent/state.ts
 var state = {
@@ -15,6 +15,16 @@ var state = {
   // Tier B needle derived by Tier A: {value, module, rva}
   recorded: {},
   // "LABEL|client_random" -> secret hex
+  recordedBundles: {},
+  // "BUNDLE|client_random" -> concatenated secrets+server_random
+  // hex; cross-scan dedup for emitSecretBundle (Tier B0/B),
+  // mirroring `recorded`. A changed value (KeyUpdate) re-emits.
+  b0ProfileScans: {},
+  // profile id -> Tier B0 eligible-scan count for THAT profile;
+  // per-profile throttle counter (mirrors the `recorded`/
+  // `recordedBundles` maps). Keyed per profile because two
+  // boringssl profiles share the global `scanIndex`, whose
+  // parity would otherwise starve one profile's Tier B0.
   faults: 0,
   // native faults seen by the exception handler
   handlerInstalled: false,
@@ -54,6 +64,17 @@ function registerEngine(engine) {
 }
 function getEngine(name) {
   return Object.prototype.hasOwnProperty.call(engines, name) ? engines[name] : null;
+}
+function stopEngines() {
+  for (const name of Object.keys(engines)) {
+    const engine = engines[name];
+    if (typeof engine.stop === "function") {
+      try {
+        engine.stop();
+      } catch (_e) {
+      }
+    }
+  }
 }
 
 // agent/ms_agent/core/log.ts
@@ -166,6 +187,15 @@ function pointerToScanPattern(p) {
   var buf = Memory.alloc(Process.pointerSize);
   buf.writePointer(p);
   return hex(buf.readByteArray(Process.pointerSize)).match(/../g).join(" ");
+}
+function pointerToTagAgnosticScanPattern(p, tagMask) {
+  var buf = Memory.alloc(Process.pointerSize);
+  buf.writePointer(p.and(tagMask));
+  var bytes = hex(buf.readByteArray(Process.pointerSize)).match(/../g);
+  var sig = Math.ceil(tagMask.toString(16).replace(/^0x/, "").length / 2);
+  for (var i = sig; i < bytes.length; i++)
+    bytes[i] = "??";
+  return bytes.join(" ");
 }
 
 // agent/ms_agent/core/pointers.ts
@@ -450,7 +480,7 @@ function seedNeedleFromSsl(ssl, source) {
     rva: mod === null ? null : "0x" + untag(method).sub(mod.base).toString(16),
     source
   };
-  log("info", "Tier B needle derived from SSL_read/SSL_write: " + method + (mod === null ? "" : " (" + state.needle.module + "+" + state.needle.rva + ")"));
+  log("info", "Tier B needle derived (" + source + "): " + method + (mod === null ? "" : " (" + state.needle.module + "+" + state.needle.rva + ")"));
   return true;
 }
 function candidateModules() {
@@ -623,8 +653,7 @@ function emitSecretBundle(ssl, s3, clientRandom, stats) {
   var off = state.profile.struct_offsets.SSL3_STATE;
   var c = state.profile.constants;
   var serverRandomBytes = readBytes(s3.add(off.server_random), c.ssl3_random_size);
-  if (!looksLikeRandom(serverRandomBytes))
-    return false;
+  var serverRandomHex = looksLikeRandom(serverRandomBytes) ? hexBytes(serverRandomBytes) : "";
   var fields = [
     { field: "write_traffic_secret", key: "client_traffic_secret_0" },
     { field: "read_traffic_secret", key: "server_traffic_secret_0" },
@@ -640,14 +669,22 @@ function emitSecretBundle(ssl, s3, clientRandom, stats) {
       return false;
     bundle[fields[i].key] = hexBytes(bytes);
   }
+  var bundleKey = "BUNDLE|" + clientRandom;
+  var bundleValue = bundle.client_traffic_secret_0 + "|" + bundle.server_traffic_secret_0 + "|" + bundle.exporter_secret + "|" + serverRandomHex;
+  if (state.recordedBundles[bundleKey] === bundleValue)
+    return false;
+  state.recordedBundles[bundleKey] = bundleValue;
   send({
     type: "tls_secret_bundle",
     client_random: clientRandom,
-    server_random: hexBytes(serverRandomBytes),
+    server_random: serverRandomHex,
     client_traffic_secret_0: bundle.client_traffic_secret_0,
     server_traffic_secret_0: bundle.server_traffic_secret_0,
     exporter_secret: bundle.exporter_secret,
-    ssl: ssl.toString()
+    // ssl is provenance only. Tier B0 emits a bundle straight from an idle
+    // SSL3_STATE with no reachable SSL*, so a null ssl is expected there and
+    // must not throw — an empty provenance string then stands for "no SSL*".
+    ssl: ssl === null ? "" : ssl.toString()
   });
   stats.emitted++;
   return true;
@@ -775,10 +812,159 @@ function runTierC(ranges, stats, errors) {
     }
   }
 }
+function buildIdleS3Anchors() {
+  var off = state.profile.struct_offsets.SSL3_STATE;
+  var lens = state.profile.constants.valid_hash_lens;
+  var base = off.write_traffic_secret_len;
+  var p0 = off.write_traffic_secret_len - base;
+  var p1 = off.read_traffic_secret_len - base;
+  var p2 = off.exporter_secret_len - base;
+  var span = p2 + 1;
+  var anchors = [];
+  for (var i = 0; i < lens.length; i++) {
+    var L = lens[i];
+    var hexL = (L < 16 ? "0" : "") + L.toString(16);
+    var tokens = new Array(span);
+    for (var j = 0; j < span; j++)
+      tokens[j] = "??";
+    tokens[p0] = hexL;
+    tokens[p1] = hexL;
+    tokens[p2] = hexL;
+    anchors.push({ pattern: tokens.join(" "), hashLen: L, anchorOffset: base });
+  }
+  return anchors;
+}
+function validateIdleS3(s3) {
+  var off = state.profile.struct_offsets.SSL3_STATE;
+  var c = state.profile.constants;
+  var hs = readPointerOrNull(s3.add(off.hs));
+  if (hs === null || !hs.isNull())
+    return false;
+  var cr = readBytes(s3.add(off.client_random), c.ssl3_random_size);
+  if (!looksLikeRandom(cr))
+    return false;
+  var fields = ["write_traffic_secret", "read_traffic_secret", "exporter_secret"];
+  for (var i = 0; i < fields.length; i++) {
+    var len = readU8OrNull(s3.add(off[fields[i] + "_len"]));
+    if (len === null || len === 0)
+      return false;
+    var bytes = readBytes(s3.add(off[fields[i]]), len);
+    if (!looksLikeSecret(bytes))
+      return false;
+  }
+  return true;
+}
+function acceptsAsSsl(ssl, s3) {
+  var off = state.profile.struct_offsets;
+  var back = readPointerOrNull(ssl.add(off.SSL.s3));
+  if (back === null || !untag(back).equals(untag(s3)))
+    return false;
+  var method = readPointerOrNull(ssl.add(off.SSL.method));
+  if (!looksLikeHeapPointer(method))
+    return false;
+  var mod = null;
+  try {
+    mod = Process.findModuleByAddress(untag(method));
+  } catch (e) {
+    mod = null;
+  }
+  if (mod === null)
+    return false;
+  var extra = state.profile.tiers.B_ssl_method_ptr.reverse_link_require_heap_fields;
+  if (extra === void 0)
+    extra = ["session", "ctx"];
+  for (var i = 0; i < extra.length; i++) {
+    if (!looksLikeHeapPointer(readPointerOrNull(ssl.add(off.SSL[extra[i]]))))
+      return false;
+  }
+  return true;
+}
+function sslFromS3(s3, ranges, errors) {
+  var off = state.profile.struct_offsets;
+  var pattern = pointerToTagAgnosticScanPattern(s3, state.validators.tagMask);
+  for (var r = 0; r < ranges.length; r++) {
+    var hits = scanRange(ranges[r], pattern, errors);
+    for (var h = 0; h < hits.length; h++) {
+      var ssl = hits[h].address.sub(off.SSL.s3);
+      if (acceptsAsSsl(ssl, s3))
+        return ssl;
+    }
+  }
+  return null;
+}
+function ensureTierB0Stats(stats) {
+  if (!stats.tierB0)
+    stats.tierB0 = { candidates: 0, validated: 0, emitted: 0 };
+  return stats.tierB0;
+}
+function tierB0Enabled() {
+  var t = state.profile.tiers.B0_idle_ssl;
+  return !t || t.enabled !== false;
+}
+function tierB0RescanEvery() {
+  var t = state.profile.tiers.B0_idle_ssl;
+  var configured = t && t.rescan_every;
+  if (typeof configured !== "number" || !isFinite(configured) || configured < 1)
+    return 8;
+  return Math.floor(configured);
+}
+function tierB0ProfileKey() {
+  var p = state.profile;
+  return p && p.id ? p.id : "default";
+}
+function nextTierB0ProfileScan() {
+  var key = tierB0ProfileKey();
+  var count = state.b0ProfileScans[key] || 0;
+  state.b0ProfileScans[key] = count + 1;
+  return count;
+}
+function shouldRunTierB0(profileScanCount) {
+  return profileScanCount % tierB0RescanEvery() === 0;
+}
+function processIdleS3(s3, ranges, b0, stats, errors) {
+  if (!validateIdleS3(s3))
+    return;
+  b0.validated++;
+  var clientRandom = readClientRandom(s3);
+  if (clientRandom === null)
+    return;
+  var ssl = state.needle === null ? sslFromS3(s3, ranges, errors) : null;
+  if (emitSecretBundle(ssl, s3, clientRandom, stats))
+    b0.emitted++;
+  if (ssl !== null)
+    seedNeedleFromSsl(ssl, "heap_idle_s3");
+}
+function runTierB0(ranges, stats, errors) {
+  if (!tierB0Enabled())
+    return;
+  var b0 = ensureTierB0Stats(stats);
+  var anchors = buildIdleS3Anchors();
+  var seen = {};
+  for (var a = 0; a < anchors.length; a++) {
+    for (var r = 0; r < ranges.length; r++) {
+      var hits = scanRange(ranges[r], anchors[a].pattern, errors);
+      for (var h = 0; h < hits.length; h++) {
+        var s3 = hits[h].address.sub(anchors[a].anchorOffset);
+        var key = s3.toString();
+        if (seen[key])
+          continue;
+        seen[key] = true;
+        b0.candidates++;
+        try {
+          processIdleS3(s3, ranges, b0, stats, errors);
+        } catch (e) {
+          errors.push("tierB0 " + s3 + ": " + e.message);
+        }
+      }
+    }
+  }
+}
 var BoringsslEngine = {
   name: "boringssl",
   runTiers: function(ranges, stats, errors) {
     installNeedleSeedHooks();
+    if (resolveNeedleValue() === null && shouldRunTierB0(nextTierB0ProfileScan()))
+      runTierB0(ranges, stats, errors);
     if (shouldRunTierA())
       runTierA(ranges, stats, errors);
     else
@@ -786,6 +972,16 @@ var BoringsslEngine = {
     runTierB(ranges, stats, errors);
     runTierC(ranges, stats, errors);
     state.lastTierBValidated = stats.tierB.validated;
+  },
+  // Teardown, run from the agent's `dispose` RPC before the script is unloaded.
+  // The needle-seed hooks on SSL_read/SSL_write self-detach in onSslIoEnter once
+  // a needle is found (the happy path), but on a target where none ever seeds —
+  // stripped Cronet, the device case — they would otherwise stay attached to the
+  // hot I/O path until frida's implicit detach, whose synchronous prologue
+  // rewrite there stalls unload for minutes. Detaching them here is unconditional
+  // (needle found or not) and idempotent: detachNeedleSeedHooks empties the list.
+  stop: function() {
+    detachNeedleSeedHooks();
   }
 };
 registerEngine(BoringsslEngine);
@@ -870,19 +1066,22 @@ function ensureSchannelResolved() {
   state.schannelModule = schan === null ? null : { base: schan.base, size: schan.size };
   state.schannelReady = true;
 }
-function emitSchannelUnpaired(kind, ssl5, secret, sslVersion, stats) {
+function emitSchannelUnpaired(kind, ssl5, secret, sslVersion, stats, group) {
   var key = kind + "|" + ssl5.toString() + "|" + secret;
   if (state.recorded[key] !== void 0)
     return;
   state.recorded[key] = secret;
-  send({
+  var msg = {
     type: "unpaired",
     kind,
     secret,
     session_id: "",
     ssl_version: sslVersion,
     addr: ssl5.toString()
-  });
+  };
+  if (group)
+    msg.group = group;
+  send(msg);
   stats.emitted++;
 }
 function runSchannelTls12Master(ranges, stats, errors, ssl5s) {
@@ -1076,6 +1275,37 @@ function chainOffset(value, fallback) {
   }
   return fallback;
 }
+function pickGroupOffsets(cipher, g) {
+  if (cipher !== null && g.by_cipher) {
+    var e = g.by_cipher["0x" + cipher.toString(16)];
+    if (e && typeof e.client_off === "number" && typeof e.exporter_off === "number")
+      return { c: e.client_off, x: e.exporter_off };
+  }
+  return { c: g.client_off, x: g.exporter_off };
+}
+function sameCipher(a, b) {
+  return a.cipher === null || b.cipher === null || a.cipher === b.cipher;
+}
+function assignSchannelGroups(found, g) {
+  found.sort(function(a, b) {
+    return a.addr.compare(b.addr);
+  });
+  var byAddr = {};
+  for (var i = 0; i < found.length; i++)
+    byAddr[found[i].addr.toString()] = found[i];
+  for (var i = 0; i < found.length; i++) {
+    var base = found[i];
+    var off = pickGroupOffsets(base.cipher, g);
+    var cli = byAddr[base.addr.add(off.c).toString()];
+    var exp = byAddr[base.addr.add(off.x).toString()];
+    if (cli !== void 0 && exp !== void 0 && sameCipher(base, cli) && sameCipher(base, exp)) {
+      var gid = base.addr.toString();
+      base.group = gid;
+      cli.group = gid;
+      exp.group = gid;
+    }
+  }
+}
 function runSchannelTls13Secret(ranges, stats, errors) {
   var tier = (schannelResolved().tiers || {}).tls13_secret;
   if (!tier || !tier.enabled)
@@ -1085,8 +1315,12 @@ function runSchannelTls13Secret(ranges, stats, errors) {
   var sizeAt = typeof tier.size_at === "number" ? tier.size_at : -1;
   var secretAt = chainOffset(tier.secret_at !== void 0 ? tier.secret_at : hyp.secret_at, 106);
   var lens = tier.secret_lens || [48, 32];
+  var g = tier.group || {};
+  var doGroup = g.enabled === true && typeof g.client_off === "number" && typeof g.exporter_off === "number";
+  var cipherAt = typeof g.cipher_at === "number" ? g.cipher_at : 8;
   var sslVersion = 772;
   var patterns = [asciiToScanPattern(anchor), asciiToScanPattern(reverseStr(anchor))];
+  var found = [];
   for (var p = 0; p < patterns.length; p++) {
     for (var r = 0; r < ranges.length; r++) {
       var hits = scanRange(ranges[r], patterns[p], errors);
@@ -1096,11 +1330,17 @@ function runSchannelTls13Secret(ranges, stats, errors) {
           var anchorAddr = hits[h].address;
           var declared = sizeAt >= 0 ? readU32OrNull(anchorAddr.add(sizeAt)) : null;
           var tryLens = declared === 32 || declared === 48 ? [declared] : lens;
+          var cipherId = doGroup ? readU32OrNull(anchorAddr.add(cipherAt)) : null;
           for (var li = 0; li < tryLens.length; li++) {
             var secret = readBytes(anchorAddr.add(secretAt), tryLens[li]);
             if (!schannelLooksLikeSecret(secret))
               continue;
-            emitSchannelUnpaired("schannel_tls13_secret", anchorAddr, hexBytes(secret), sslVersion, stats);
+            found.push({
+              addr: anchorAddr,
+              secret: hexBytes(secret),
+              cipher: typeof cipherId === "number" ? cipherId : null,
+              group: null
+            });
             break;
           }
         } catch (e) {
@@ -1108,6 +1348,12 @@ function runSchannelTls13Secret(ranges, stats, errors) {
         }
       }
     }
+  }
+  if (doGroup) {
+    assignSchannelGroups(found, g);
+  }
+  for (var f = 0; f < found.length; f++) {
+    emitSchannelUnpaired("schannel_tls13_secret", found[f].addr, found[f].secret, sslVersion, stats, found[f].group);
   }
 }
 var SchannelEngine = {
@@ -3258,6 +3504,9 @@ function scanProfileOnce(profile) {
     // did not run this scan"; both would otherwise print as A 0/0.
     tierA: { candidates: 0, validated: 0, skipped: false },
     tierB: { candidates: 0, validated: 0 },
+    // Tier B0 (idle-SSL bootstrap): heap-scanned idle SSL3_STATE recovery for a
+    // stripped libssl with no needle. See engines/boringssl/index.ts runTierB0.
+    tierB0: { candidates: 0, validated: 0, emitted: 0 },
     tierC: { candidates: 0, validated: 0 },
     // Tier B candidates whose handshake state could not be determined;
     // see classifyHandshake(). Deliberate misses, not errors.
@@ -3337,6 +3586,27 @@ function buildRpcExports() {
         module: state.needle.module,
         rva: state.needle.rva
       };
+    },
+    // frida-core calls the `dispose` RPC export on EVERY script unload
+    // (ensure_dispose_called -> rpc_client.call("dispose", …)), including the
+    // unclean paths where the Python host never issues an explicit teardown.
+    // The memscan host (friTap/memory_scanning/engine.py) unloads this script
+    // via backend.unload_script() with no teardown RPC, so this is the ONLY
+    // agent-side hook that fires before the script is torn down.
+    //
+    // Engines that leave Interceptor hooks on hot functions with an unbounded
+    // lifetime — boringssl's needle-seed hooks on SSL_read/SSL_write, which
+    // self-detach only after a needle is found and so stay attached for the
+    // whole session on a target where none ever seeds (e.g. stripped Cronet) —
+    // must release them here. Detaching them explicitly now, while the app is
+    // alive and responsive, avoids frida's implicit detach having to quiesce
+    // those hot prologues at unload, which was observed to hang the host thread
+    // for minutes and require a second SIGINT. Best-effort: never block unload.
+    dispose: function() {
+      try {
+        stopEngines();
+      } catch (_e) {
+      }
     }
   };
 }

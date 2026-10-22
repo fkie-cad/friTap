@@ -352,3 +352,59 @@ def test_sniff_respects_max_lines(tmp_path):
 
 def test_sniff_missing_file_is_none(tmp_path):
     assert ks.sniff_keylog_protocol(str(tmp_path / "nope.log")) is None
+
+
+# --- data-driven line classification ----------------------------------------
+
+def _mtproto_e2e_line() -> str:
+    from friTap.protocols.mtproto_keylog_spec import format_e2e_line
+    return format_e2e_line(key_fingerprint="11" * 8, shared_key="22" * 256, chat_id=-1)
+
+
+def _mtproto_obf_line() -> str:
+    from friTap.protocols.mtproto_keylog_spec import format_obf_line
+    return format_obf_line(
+        key_out="aa" * 32, iv_out="bb" * 16, key_in="cc" * 32, iv_in="dd" * 16,
+        num_out=0, num_in=0, endpoint="-",
+    )
+
+
+@pytest.mark.parametrize(
+    "make_line, expected",
+    [
+        (lambda: f"CLIENT_RANDOM {'00' * 32} {'ab' * 48}", "tls"),
+        (lambda: f"schannel_tls13_secret {'ab' * 32} - 772", "tls"),
+        (lambda: "RC4_KEY 6672697461702d7263342d64656d6f2d6b6579 19 RC4_set_key unknown 4711",
+         "custom"),
+        (_mtproto_line, "mtproto"),
+        (_mtproto_e2e_line, "mtproto"),
+        (_mtproto_obf_line, "mtproto"),
+        (lambda: "unknown junk", None),
+    ],
+)
+def test_protocol_for_line_table(make_line, expected):
+    assert ks._protocol_for_line(make_line()) == expected
+
+
+def test_line_matcher_table_order_and_names():
+    """TLS first, then RC4 (custom), then MTProto; optional protocols follow."""
+    assert [name for name, _ in ks.KEYLOG_LINE_MATCHERS][:3] == [
+        "tls", "custom", "mtproto",
+    ]
+
+
+def test_spec_matches_line_is_exclusive():
+    """Each spec's matches_line accepts its own records and none of the others'."""
+    from friTap.protocols import mtproto_keylog_spec, rc4_keylog_spec
+
+    samples = {
+        "rc4": ["RC4_KEY 6672697461702d7263342d64656d6f2d6b6579 19 RC4_set_key unknown 4711"],
+        "mtproto": [_mtproto_line(), _mtproto_e2e_line(), _mtproto_obf_line()],
+    }
+    specs = {"rc4": rc4_keylog_spec, "mtproto": mtproto_keylog_spec}
+    for spec_name, spec in specs.items():
+        for sample_name, lines in samples.items():
+            for line in lines:
+                assert spec.matches_line(line) is (spec_name == sample_name)
+        assert spec.matches_line("# comment") is False
+        assert spec.matches_line(f"CLIENT_RANDOM {'00' * 32} {'ab' * 48}") is False

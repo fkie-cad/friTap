@@ -13,7 +13,6 @@ import pytest
 from friTap.offline.rc4 import crypto as rc4_crypto
 from friTap.offline.tls_midstream import crypto as mid
 
-
 # RFC 8448 sec 3, TLS_AES_128_GCM_SHA256 client handshake traffic secret and the
 # key/iv it must expand to (a HKDF-Expand-Label known-answer vector).
 CHTS = "b3eddb126e067f35a780b3abf45e2d8f3b1a950738f52e9600746a0e27a55a21"

@@ -10,6 +10,8 @@ from __future__ import annotations
 from friTap.events import DatalogEvent, EventBus
 from friTap.flow.collector import FlowCollector
 from friTap.offline import pcap_to_tap as p2t
+from friTap.offline.mtproto import offline_decryptor as mtproto_emit
+from friTap.offline.mtproto import tap_attach as mtproto_attach
 from tests.unit._offline_helpers import FakeWriterState as _FakeState
 from tests.unit._offline_helpers import cloud_msg as _cloud_msg
 from tests.unit._offline_helpers import e2e_msg as _e2e_msg
@@ -53,12 +55,12 @@ def _convert(monkeypatch):
     collector.use_event_clock(True)
     bus.subscribe(DatalogEvent, collector.on_data)
     state = _FakeState()
-    p2t._emit_mtproto_streams("cap.pcap", "k", bus=bus, state=state,
+    mtproto_emit._emit_mtproto_streams("cap.pcap", "k", bus=bus, state=state,
                               result=p2t.ConvertResult(tap_path="out.tap"))
     flows = collector.live_flows()
-    p2t._attach_telegram_meta(flows, state.mtproto_meta, state.telegram_e2e_meta,
+    mtproto_attach._attach_telegram_meta(flows, state.mtproto_meta, state.telegram_e2e_meta,
                               ledger=state.telegram_ledger)
-    p2t._finalize_telegram_refs(flows, state.telegram_refs)
+    mtproto_attach._finalize_telegram_refs(flows, state.telegram_refs)
     return {f.layer(f.transport).envelope["record_seq"]: f for f in flows
             if f.transport in ("mtproto", "telegram_e2e")}
 
@@ -125,14 +127,14 @@ def test_apply_e2e_peer_prefers_keylog_peer_id():
                                      + extract_users(decode_tl(contact_user())))
     refs_state = SimpleNamespace(e2e_chats={7: ("", 4242, PEER_ID)}, chat_nodes=[])
     layer = SimpleNamespace(peer=None, users=None)
-    p2t._apply_e2e_peer(layer, refs_state, 7, directory)
+    mtproto_attach._apply_e2e_peer(layer, refs_state, 7, directory)
     assert layer.peer["user_id"] == PEER_ID
     assert layer.peer["matched_by"] == "keylog"
     assert layer.peer["label"] == "Bob"
 
 
 def test_finalize_without_refs_state_is_a_no_op():
-    p2t._finalize_telegram_refs([object()], None)
+    mtproto_attach._finalize_telegram_refs([object()], None)
 
 
 def test_cloud_flow_users_add_self_and_referenced_message_users():
@@ -141,5 +143,5 @@ def test_cloud_flow_users_add_self_and_referenced_message_users():
 
     directory = {123456789: {"id": 123456789, "flags": ["self"]},
                  987654321: {"id": 987654321, "flags": []}}
-    users = p2t._cloud_flow_users(_Layer(), [], directory)
+    users = mtproto_attach._cloud_flow_users(_Layer(), [], directory)
     assert [u["id"] for u in users] == [123456789, 987654321]

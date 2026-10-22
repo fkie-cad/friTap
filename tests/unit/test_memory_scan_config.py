@@ -24,7 +24,6 @@ from friTap.config import (
 )
 from friTap.output.factory import memory_scan_keylog_path
 
-
 # ---------------------------------------------------------------------------
 # from_legacy_params round-trip
 # ---------------------------------------------------------------------------

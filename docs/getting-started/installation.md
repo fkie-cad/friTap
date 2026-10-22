@@ -58,8 +58,16 @@ pip install -e .[dev]
 friTap's crypto backend now ships in the base install, so offline protocol
 decryption works out of the box with `pip install friTap` (no extra needed). On
 platforms with a wheel, the optional `tgcrypto` accelerator is pulled in
-automatically too; the only remaining extra is `dev`. See
-[Telegram (MTProto)](../protocols/telegram.md) for details.
+automatically too. See [Telegram (MTProto)](../protocols/telegram.md) for
+details.
+
+The remaining extras are `dev` (test and lint tools) and `proto`, which adds
+schema-based protobuf decoding (`protobuf`) and the opt-in blackboxprotobuf
+decoder backend (`bbpb`) used by the TUI's protobuf views:
+
+```bash
+pip install "fritap[proto]"
+```
 
 If you want a lean install that skips the crypto backend, install without
 dependencies and use the minimal requirements:

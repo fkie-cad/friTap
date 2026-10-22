@@ -14,6 +14,14 @@ binary. It locates tshark and exposes two decryption strategies:
   dissector, so a single ``-T ek`` export recovers the plaintext directly.
 
 Both paths feed friTap's existing parsers; no protocol parsing is duplicated.
+
+The keyed conversion runs ONE combined ``-T ek`` pass
+(:func:`build_combined_command`): TLS handshake metadata, decrypted TLS
+application data, QUIC metadata and stream data and SSH metadata all arrive as
+rows of the same export. The row predicates (:func:`is_tls_handshake_row`, ...)
+tell the consumers which rows are theirs, and the metadata accumulators
+(:class:`TlsMetadataAccumulator`, ...) fold those rows exactly like the
+``-T fields`` parsers fold their lines.
 """
 
 from __future__ import annotations
@@ -25,10 +33,57 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 from collections import deque
-from typing import Iterator, Sequence
+from dataclasses import dataclass
+from typing import Callable, Iterator, Sequence
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# tshark `-T ek` field helpers
+# ---------------------------------------------------------------------------
+
+# tshark `-T ek` flattens field names by replacing '.' with '_' under the
+# "layers" object. We look up both spellings so the code is robust to either.
+def ek_field(layers: dict, dotted_name: str):
+    """Return the raw value for *dotted_name* from a `-T ek` layers dict.
+
+    Handles both ``"tls.app_data"`` and the flattened ``"tls_app_data"``
+    spellings, and unwraps single-element lists to scalars.
+    """
+    value = layers.get(dotted_name)
+    if value is None:
+        value = layers.get(dotted_name.replace(".", "_"))
+    return value
+
+
+def ek_as_list(value) -> list:
+    """Normalize a `-T ek` field value to a list (scalars become 1-element)."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def ek_first(value):
+    """Return the first element of a list-or-scalar field, or None."""
+    items = ek_as_list(value)
+    return items[0] if items else None
+
+
+def ek_columns(layers: dict, fields: Sequence[str]) -> list[str]:
+    """Render *fields* of one `-T ek` row as ``-T fields`` columns.
+
+    `-T ek` renders every ``-e`` value as a list of strings; joining each list
+    with ``","`` reproduces the ``-T fields -E occurrence=a`` column exactly
+    (an absent field becomes ``""``), so the column parsers below serve both
+    exports.
+    """
+    return [",".join(str(v) for v in ek_as_list(ek_field(layers, name)))
+            for name in fields]
 
 # Cached per-process empty Wireshark config dir (see _hermetic_env).
 _EMPTY_CONFIG_DIR: str | None = None
@@ -234,9 +289,9 @@ TLS_VERSION_NAMES: dict[str, str] = {
     "0x0301": "TLS 1.0",
 }
 
-# Fields requested for the TLS-handshake metadata pass, IN ORDER. The parser
-# (:func:`parse_tls_metadata_fields`) consumes the tab-separated columns by
-# this exact position, so the order here and there MUST stay in lockstep.
+# Fields of one TLS-handshake row, IN ORDER. :class:`TlsMetadataAccumulator`
+# consumes the columns by this exact position, so the order here and there
+# MUST stay in lockstep.
 # NOTE the dotted ``tls.handshake.extensions.supported_version`` (the TLS 1.3
 # negotiated version) vs. the underscored extension fields around it.
 _TLS_META_FIELDS = (
@@ -295,108 +350,87 @@ def _first_token(value: str) -> str:
     return ""
 
 
-def parse_tls_metadata_fields(output: str) -> dict[int, dict]:
-    """Parse a TLS-handshake ``-T fields`` dump into per-stream metadata.
+def _padded(cols: Sequence[str], width: int) -> list[str]:
+    """*cols* as a list padded with ``""`` to *width* (positional access never fails)."""
+    cols = list(cols)
+    cols.extend([""] * (width - len(cols)))
+    return cols
 
-    The dump has one row per matching packet, tab-separated, with columns in
-    the order of :data:`_TLS_META_FIELDS`. A ClientHello (handshake type ``1``)
-    carries the SNI; a ServerHello (handshake type ``2``) carries the SELECTED
-    ciphersuite, version and ALPN. We merge per ``tls.stream`` across rows,
-    never overwriting an already-set value with an empty one.
 
-    Returns ``{tls_stream_index: {"sni", "cipher", "version", "alpn"}}``.
+def _stream_index(column: str) -> int | None:
+    """The stream index in a stream column, or ``None`` when it has none."""
+    try:
+        return int(_first_token(column))
+    except (ValueError, TypeError):
+        return None
 
-    This is the PURE, unit-tested core. It is defensive: malformed rows are
-    skipped, never raised.
 
-    Calibrated against tshark 4.6.5: the field names (incl. the dotted
-    ``tls.handshake.extensions.supported_version``) and the ``0xNNNN`` hex
-    rendering of ciphersuite/version are VERIFIED end-to-end by
-    ``tests/unit/test_offline_tshark_calibration.py`` (which crafts a real TLS
-    handshake pcap and runs the extractor through tshark when it is installed).
+class TlsMetadataAccumulator:
+    """Fold TLS-handshake rows into per-``tls.stream`` metadata.
+
+    One row is the columns of :data:`_TLS_META_FIELDS` (a ``-T fields`` line, or
+    a `-T ek` row via :meth:`feed_ek`). A ClientHello (handshake type ``1``)
+    carries the SNI; a ServerHello (type ``2``) the SELECTED ciphersuite,
+    version and ALPN. Values merge per stream, never overwriting a set value.
+    Defensive: a row without a usable ``tls.stream`` is skipped.
     """
-    result: dict[int, dict] = {}
-    for line in output.splitlines():
-        if not line.strip():
-            continue
-        cols = line.split("\t")
-        # Pad to the expected width so positional access never IndexErrors.
-        while len(cols) < len(_TLS_META_FIELDS):
-            cols.append("")
-        try:
-            stream = int(_first_token(cols[0]))
-        except (ValueError, TypeError):
-            continue  # no usable tls.stream -> skip the row
 
-        hs_type = cols[1]
-        sni = cols[2].strip()
-        ciphersuite = cols[3].strip()
-        version = cols[4].strip()
-        supported_version = cols[5].strip()
-        alpn = cols[6].strip()
+    def __init__(self) -> None:
+        self._by_stream: dict[int, dict] = {}
 
-        entry = result.setdefault(
+    @property
+    def by_stream(self) -> dict[int, dict]:
+        """The live per-stream metadata (read-only use; see :meth:`result`)."""
+        return self._by_stream
+
+    def feed_ek(self, layers: dict) -> int | None:
+        """Fold one `-T ek` row; return the ``tls.stream`` it touched, if any."""
+        return self.feed_columns(ek_columns(layers, _TLS_META_FIELDS))
+
+    def feed_columns(self, cols: Sequence[str]) -> int | None:
+        """Fold one row of columns; return the ``tls.stream`` it touched, if any."""
+        cols = _padded(cols, len(_TLS_META_FIELDS))
+        stream = _stream_index(cols[0])
+        if stream is None:
+            return None
+        entry = self._by_stream.setdefault(
             stream, {"sni": "", "cipher": "", "version": "", "alpn": ""})
-
+        types = _split_types(cols[1])
+        sni = cols[2].strip()
         # ClientHello (type 1) carries the SNI.
-        if "1" in _split_types(hs_type) and sni and not entry["sni"]:
+        if "1" in types and sni and not entry["sni"]:
             entry["sni"] = sni
-
         # ServerHello (type 2) carries the negotiated suite/version/alpn.
-        if "2" in _split_types(hs_type):
-            if ciphersuite and not entry["cipher"]:
-                entry["cipher"] = _map_cipher(ciphersuite)
-            # Prefer the TLS 1.3 supported_version extension over the legacy
-            # handshake.version (which is frozen at 0x0303 for TLS 1.3).
-            mapped_version = ""
-            if supported_version:
-                mapped_version = _map_version(_first_token(supported_version))
-            elif version:
-                mapped_version = _map_version(_first_token(version))
-            if mapped_version and not entry["version"]:
-                entry["version"] = mapped_version
-            if alpn and not entry["alpn"]:
-                entry["alpn"] = _first_token(alpn)
+        if "2" in types:
+            _merge_server_hello(entry, *(c.strip() for c in cols[3:7]))
+        return stream
 
-    return result
+    def result(self) -> dict[int, dict]:
+        """``{tls_stream: {"sni", "cipher", "version", "alpn"}}`` (fresh copies)."""
+        return {stream: dict(entry) for stream, entry in self._by_stream.items()}
+
+
+def _merge_server_hello(entry: dict, ciphersuite: str, version: str,
+                        supported_version: str, alpn: str) -> None:
+    """Fill *entry*'s empty cipher/version/alpn from one ServerHello row."""
+    if ciphersuite and not entry["cipher"]:
+        entry["cipher"] = _map_cipher(ciphersuite)
+    # Prefer the TLS 1.3 supported_version extension over the legacy
+    # handshake.version (which is frozen at 0x0303 for TLS 1.3).
+    mapped_version = ""
+    if supported_version:
+        mapped_version = _map_version(_first_token(supported_version))
+    elif version:
+        mapped_version = _map_version(_first_token(version))
+    if mapped_version and not entry["version"]:
+        entry["version"] = mapped_version
+    if alpn and not entry["alpn"]:
+        entry["alpn"] = _first_token(alpn)
 
 
 def _split_types(hs_type: str) -> list[str]:
     """Split a comma/space-joined ``tls.handshake.type`` field into tokens."""
     return [t.strip() for t in hs_type.replace(",", " ").split() if t.strip()]
-
-
-def extract_tls_metadata(
-    tshark_bin: str,
-    pcap: str,
-    keylog: str | None,
-    *,
-    tls_ports: Sequence[int] = (),
-    extra_decode_as: Sequence[str] = (),
-    heuristic: bool = False,
-) -> dict[int, dict]:
-    """Extract per-stream TLS handshake metadata from *pcap* via tshark.
-
-    Runs a single ``-T fields`` pass over the TLS handshake records and hands
-    the raw text to the pure :func:`parse_tls_metadata_fields`. The handshake
-    is PLAINTEXT, so no keylog is strictly required for SNI/ALPN/version, but
-    we pass it through (and honor decode-as/heuristic flags) for parity with
-    the follow path.
-
-    Returns ``{tls_stream_index: {"sni", "cipher", "version", "alpn"}}``.
-    """
-    cmd = [tshark_bin, "-r", pcap]
-    cmd += _heuristic_flags(heuristic)
-    if keylog:
-        cmd += ["-o", f"tls.keylog_file:{keylog}"]
-    cmd += _decode_as_flags("tcp.port", "tls", tls_ports, extra_decode_as)
-    cmd += ["-Y", "tls.handshake", "-T", "fields",
-            "-E", "separator=\t", "-E", "occurrence=a"]
-    for field_name in _TLS_META_FIELDS:
-        cmd += ["-e", field_name]
-
-    out = _run_capture(cmd)
-    return parse_tls_metadata_fields(out)
 
 
 # ---------------------------------------------------------------------------
@@ -411,7 +445,8 @@ QUIC_VERSION_NAMES: dict[str, str] = {
     "0xff00001d": "draft-29",   # common pre-RFC draft still seen in the wild
 }
 
-# Fields for the QUIC metadata pass, IN ORDER (parser consumes positionally).
+# Fields of one QUIC metadata row, IN ORDER (:class:`QuicMetadataAccumulator`
+# consumes them positionally).
 # quic.version is plaintext (long header); the cipher/ALPN come from the TLS
 # handshake carried inside QUIC (SNI/ClientHello is decryptable from the Initial
 # secret without a keylog; the negotiated cipher/ALPN need the keylog).
@@ -439,103 +474,67 @@ def _map_quic_version(raw: str) -> str:
     return QUIC_VERSION_NAMES.get(token, token)
 
 
-def parse_quic_metadata_fields(output: str) -> dict[int, dict]:
-    """Parse a QUIC ``-T fields`` dump into per-(udp.stream) metadata.
+def _anchor_endpoints(entry: dict, cols: list[str]) -> None:
+    """Set *entry*'s endpoints from the first row that carries them.
 
-    One row per matching packet, tab-separated, columns in the order of
-    :data:`_QUIC_META_FIELDS`. Merged per ``udp.stream``: the transport version
-    (first seen), the negotiated cipher (from the ServerHello, handshake type
-    ``2``) and the ALPN (first token), plus the connection endpoints (anchored
-    from the first row that carries them).
-
-    Returns ``{udp_stream_index: {"src_addr","src_port","dst_addr","dst_port",
-    "version","sni","alpn","cipher"}}``.
-
-    Calibrated against tshark 4.6.5: the field names and the ``quic.version``
-    ``0xNNNNNNNN`` rendering are VERIFIED by the gated calibration test (which
-    crafts a QUIC Initial long header). The SNI comes from the ClientHello in the
-    Initial packet (decryptable from the Initial secret without a keylog); the
-    negotiated cipher/ALPN come from the QUIC-embedded TLS Handshake and require
-    the keylog. The grouping is unit-tested with synthetic rows. PURE/defensive.
+    *cols* starts with the stream column, then ``ip.src``, ``ipv6.src``,
+    ``ip.dst``, ``ipv6.dst``, the source port and the destination port (the
+    shared prefix of :data:`_QUIC_META_FIELDS` and :data:`_SSH_FIELDS`).
     """
-    result: dict[int, dict] = {}
-    for line in output.splitlines():
-        if not line.strip():
-            continue
-        cols = line.split("\t")
-        while len(cols) < len(_QUIC_META_FIELDS):
-            cols.append("")
-        try:
-            stream = int(_first_token(cols[0]))
-        except (ValueError, TypeError):
-            continue
+    src_addr = cols[1].strip() or cols[2].strip()
+    if entry["src_addr"] or not src_addr:
+        return
+    entry["src_addr"] = src_addr
+    entry["src_port"] = _safe_int(cols[5])
+    entry["dst_addr"] = cols[3].strip() or cols[4].strip()
+    entry["dst_port"] = _safe_int(cols[6])
 
-        src_addr = cols[1].strip() or cols[2].strip()
-        dst_addr = cols[3].strip() or cols[4].strip()
-        src_port = _safe_int(cols[5])
-        dst_port = _safe_int(cols[6])
-        version = cols[7].strip()
-        hs_type = cols[8]
-        cipher = cols[9].strip()
-        alpn = cols[10].strip()
-        sni = cols[11].strip()
 
-        entry = result.setdefault(stream, {
+class QuicMetadataAccumulator:
+    """Fold QUIC rows into per-``udp.stream`` metadata.
+
+    One row is the columns of :data:`_QUIC_META_FIELDS`. Merged per stream:
+    the endpoints (first row carrying them), the transport version (first
+    seen), the SNI (ClientHello, type ``1``), the negotiated cipher
+    (ServerHello, type ``2``) and the ALPN (first token). Defensive: a row
+    without a usable ``udp.stream`` is skipped.
+    """
+
+    def __init__(self) -> None:
+        self._by_stream: dict[int, dict] = {}
+
+    def feed_ek(self, layers: dict) -> int | None:
+        """Fold one `-T ek` row; return the ``udp.stream`` it touched, if any."""
+        return self.feed_columns(ek_columns(layers, _QUIC_META_FIELDS))
+
+    def feed_columns(self, cols: Sequence[str]) -> int | None:
+        """Fold one row of columns; return the ``udp.stream`` it touched, if any."""
+        cols = _padded(cols, len(_QUIC_META_FIELDS))
+        stream = _stream_index(cols[0])
+        if stream is None:
+            return None
+        entry = self._by_stream.setdefault(stream, {
             "src_addr": "", "src_port": 0, "dst_addr": "", "dst_port": 0,
             "version": "", "sni": "", "alpn": "", "cipher": "",
         })
-
-        if not entry["src_addr"] and src_addr:
-            entry["src_addr"] = src_addr
-            entry["src_port"] = src_port
-            entry["dst_addr"] = dst_addr
-            entry["dst_port"] = dst_port
-
+        _anchor_endpoints(entry, cols)
+        version, types = cols[7].strip(), _split_types(cols[8])
+        cipher, alpn, sni = (c.strip() for c in cols[9:12])
         if version and not entry["version"]:
             entry["version"] = _map_quic_version(_first_token(version))
         # SNI comes from the ClientHello (handshake type 1) in the Initial.
-        if "1" in _split_types(hs_type) and sni and not entry["sni"]:
+        if "1" in types and sni and not entry["sni"]:
             entry["sni"] = sni
         # Negotiated cipher comes from the ServerHello (handshake type 2).
-        if "2" in _split_types(hs_type) and cipher and not entry["cipher"]:
+        if "2" in types and cipher and not entry["cipher"]:
             entry["cipher"] = _map_cipher(cipher)
         if alpn and not entry["alpn"]:
             entry["alpn"] = _first_token(alpn)
+        return stream
 
-    return result
-
-
-def extract_quic_metadata(
-    tshark_bin: str,
-    pcap: str,
-    keylog: str | None,
-    *,
-    quic_ports: Sequence[int] = (),
-    extra_decode_as: Sequence[str] = (),
-    heuristic: bool = False,
-) -> dict[int, dict]:
-    """Extract per-(udp.stream) QUIC metadata from *pcap* via tshark.
-
-    Runs a single ``-T fields`` pass over QUIC packets and hands the raw text to
-    the pure :func:`parse_quic_metadata_fields`. ``quic.version`` is plaintext;
-    the negotiated cipher/ALPN are recovered from the QUIC-embedded TLS handshake
-    when *keylog* decrypts the Handshake packets.
-
-    Returns ``{udp_stream_index: {... ,"version","alpn","cipher"}}``.
-    """
-    cmd = [tshark_bin, "-r", pcap]
-    cmd += _heuristic_flags(heuristic)
-    if keylog:
-        cmd += ["-o", f"tls.keylog_file:{keylog}"]
-    cmd += _decode_as_flags("udp.port", "quic", quic_ports, extra_decode_as,
-                            default_port=DEFAULT_QUIC_PORT)
-    cmd += ["-Y", "quic", "-T", "fields",
-            "-E", "separator=\t", "-E", "occurrence=a"]
-    for field_name in _QUIC_META_FIELDS:
-        cmd += ["-e", field_name]
-
-    out = _run_capture(cmd)
-    return parse_quic_metadata_fields(out)
+    def result(self) -> dict[int, dict]:
+        """``{udp_stream: {endpoints, "version", "sni", "alpn", "cipher"}}`` (copies)."""
+        return {stream: dict(entry) for stream, entry in self._by_stream.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -566,10 +565,13 @@ def parse_ssh_fields(output: str) -> list[dict]:
     The dump has one row per matching SSH packet, tab-separated, with columns
     in the order of :data:`_SSH_FIELDS`. We merge per ``tcp.stream``:
 
-      * the SSH banner (``ssh.protocol``) appears once from each side — the two
-        DISTINCT banner values are the client and server versions. We attribute
-        the first banner seen to the client and the next distinct one to the
-        server (the SSH client sends its banner first).
+      * the SSH banner (``ssh.protocol``) appears once from each side. Each
+        banner is attributed by the port that sent it (see
+        :func:`_ssh_server_port`): the server's port is 22 when one side uses
+        22, else the lower of the two. Banner order is NOT used when the ports
+        tell the sides apart — servers usually send their banner first.
+      * ``src_*`` is the client and ``dst_*`` the server whenever the ports
+        tell them apart (else the first row's sender is ``src``).
       * ``kex`` / ``cipher`` / ``mac`` are the FIRST token of the respective
         comma-joined algorithm lists (the negotiation preference order).
 
@@ -579,67 +581,114 @@ def parse_ssh_fields(output: str) -> list[dict]:
 
     PURE and defensive: malformed rows are skipped, never raised.
 
-    Calibrated against tshark 4.6.5: the SSH field names and the
-    client-banner-first attribution are VERIFIED end-to-end by
+    Calibrated against tshark 4.6.5: the SSH field names and the banner
+    attribution (client-first and server-first) are VERIFIED end-to-end by
     ``tests/unit/test_offline_tshark_calibration.py`` (which crafts a real SSH
     banner + KEXINIT pcap and runs the extractor through tshark when present).
     """
-    by_stream: dict[int, dict] = {}
+    accumulator = SshConnectionAccumulator()
     for line in output.splitlines():
-        if not line.strip():
-            continue
-        cols = line.split("\t")
-        while len(cols) < len(_SSH_FIELDS):
-            cols.append("")
-        try:
-            stream = int(_first_token(cols[0]))
-        except (ValueError, TypeError):
-            continue
+        if line.strip():
+            accumulator.feed_columns(line.split("\t"))
+    return accumulator.result()
 
-        src_addr = cols[1].strip() or cols[2].strip()
-        dst_addr = cols[3].strip() or cols[4].strip()
-        src_port = _safe_int(cols[5])
-        dst_port = _safe_int(cols[6])
-        banner = cols[7].strip()
-        kex = _first_token(cols[8])
-        cipher = _first_token(cols[9])
-        mac = _first_token(cols[10])
 
-        entry = by_stream.setdefault(stream, {
+class SshConnectionAccumulator:
+    """Fold SSH rows into one connection dict per ``tcp.stream``.
+
+    One row is the columns of :data:`_SSH_FIELDS`. Banners are attributed to
+    client or server by the port that sent them (:func:`_ssh_server_port`);
+    ``kex`` / ``cipher`` / ``mac`` are the first token of the first non-empty
+    algorithm list.
+    Defensive: a row without a usable ``tcp.stream`` is skipped.
+    """
+
+    def __init__(self) -> None:
+        self._by_stream: dict[int, dict] = {}
+
+    def feed_ek(self, layers: dict) -> int | None:
+        """Fold one `-T ek` row; return the ``tcp.stream`` it touched, if any."""
+        return self.feed_columns(ek_columns(layers, _SSH_FIELDS))
+
+    def feed_columns(self, cols: Sequence[str]) -> int | None:
+        """Fold one row of columns; return the ``tcp.stream`` it touched, if any."""
+        cols = _padded(cols, len(_SSH_FIELDS))
+        stream = _stream_index(cols[0])
+        if stream is None:
+            return None
+        entry = self._by_stream.setdefault(stream, {
             "src_addr": "", "src_port": 0, "dst_addr": "", "dst_port": 0,
             "client_version": "", "server_version": "",
             "kex": "", "cipher": "", "mac": "",
             "_banners": [],
         })
+        _anchor_endpoints(entry, cols)
+        banner = cols[7].strip()
+        sent = (_safe_int(cols[5]), banner)  # (sender port, banner)
+        if banner and sent not in entry["_banners"]:
+            entry["_banners"].append(sent)
+        for key, column in (("kex", cols[8]), ("cipher", cols[9]), ("mac", cols[10])):
+            value = _first_token(column)
+            if value and not entry[key]:
+                entry[key] = value
+        return stream
 
-        # Anchor the connection endpoints from the first row that has them.
-        if not entry["src_addr"] and src_addr:
-            entry["src_addr"] = src_addr
-            entry["src_port"] = src_port
-            entry["dst_addr"] = dst_addr
-            entry["dst_port"] = dst_port
+    def result(self) -> list[dict]:
+        """One finalized connection dict per stream (fresh dicts, no ``_banners``)."""
+        return [_finalized_ssh_connection(entry) for entry in self._by_stream.values()]
 
-        if banner and banner not in entry["_banners"]:
-            entry["_banners"].append(banner)
 
-        if kex and not entry["kex"]:
-            entry["kex"] = kex
-        if cipher and not entry["cipher"]:
-            entry["cipher"] = cipher
-        if mac and not entry["mac"]:
-            entry["mac"] = mac
+_SSH_WELL_KNOWN_PORT = 22
 
-    connections: list[dict] = []
-    for entry in by_stream.values():
-        banners = entry.pop("_banners")
-        # First banner = client (client sends its banner first); second
-        # distinct banner = server.
-        if banners:
-            entry["client_version"] = banners[0]
-        if len(banners) > 1:
-            entry["server_version"] = banners[1]
-        connections.append(entry)
-    return connections
+
+def _finalized_ssh_connection(entry: dict) -> dict:
+    """*entry* without its private banner list, client -> server oriented, with versions."""
+    connection = {key: value for key, value in entry.items() if key != "_banners"}
+    server_port = _ssh_server_port(connection["src_port"], connection["dst_port"])
+    if server_port is None:
+        client, server = _banners_by_order(entry["_banners"])
+    else:
+        client, server = _banners_by_sender(entry["_banners"], server_port)
+        if connection["src_port"] == server_port:
+            _swap_endpoints(connection)
+    connection["client_version"] = client
+    connection["server_version"] = server
+    return connection
+
+
+def _ssh_server_port(port_a: int, port_b: int) -> int | None:
+    """The SSH server's port of a connection, or ``None`` when the ports cannot tell.
+
+    The side on the well-known port 22 is the server; otherwise the lower port
+    is (servers listen on fixed low ports, clients use ephemeral high ones).
+    Equal or missing ports cannot tell the sides apart. ``ssh.direction`` is
+    not used: under heuristic dissection tshark derives it from which side
+    sent first, which is exactly the assumption this replaces.
+    """
+    if not port_a or not port_b or port_a == port_b:
+        return None
+    if _SSH_WELL_KNOWN_PORT in (port_a, port_b):
+        return _SSH_WELL_KNOWN_PORT
+    return min(port_a, port_b)
+
+
+def _banners_by_sender(banners: list[tuple[int, str]], server_port: int) -> tuple[str, str]:
+    """(client, server) banner: the first one each side sent."""
+    client = next((text for port, text in banners if port != server_port), "")
+    server = next((text for port, text in banners if port == server_port), "")
+    return client, server
+
+
+def _banners_by_order(banners: list[tuple[int, str]]) -> tuple[str, str]:
+    """(client, server) banner when the ports cannot tell: first seen, next distinct."""
+    texts = list(dict.fromkeys(text for _port, text in banners))
+    return (texts[0] if texts else ""), (texts[1] if len(texts) > 1 else "")
+
+
+def _swap_endpoints(connection: dict) -> None:
+    """Swap *connection*'s ``src_*`` and ``dst_*`` endpoints in place."""
+    connection["src_addr"], connection["dst_addr"] = connection["dst_addr"], connection["src_addr"]
+    connection["src_port"], connection["dst_port"] = connection["dst_port"], connection["src_port"]
 
 
 def _safe_int(value: str, default: int = 0) -> int:
@@ -672,23 +721,6 @@ def extract_ssh_connections(
 
     out = _run_capture(cmd)
     return parse_ssh_fields(out)
-
-
-def extract_ipsec_connections(
-    tshark_bin: str,
-    pcap: str,
-    *,
-    heuristic: bool = False,
-) -> list[dict]:
-    """STUB: extract IPsec (IKE/ESP) connection metadata from *pcap*.
-
-    Returns an empty list for now. Real IKE/ESP metadata extraction (IKE
-    version, negotiated encryption/integrity/DH transforms) is future work and
-    is intentionally not wired into the offline conversion yet.
-
-    TODO(real-tshark): implement using ``isakmp.*`` / ``esp.*`` fields.
-    """
-    return []
 
 
 def _resolve_executable(candidate: str) -> str | None:
@@ -751,19 +783,155 @@ def find_tshark(explicit_path: str | None = None) -> str:
     raise TsharkNotFoundError(TSHARK_INSTALL_MESSAGE)
 
 
+# tshark's stdout (``-T ek`` JSON, follow dumps, ``--version``) and stderr are
+# decoded as UTF-8 with ``errors="replace"``: a stray non-UTF-8 byte (a pcap
+# comment, an interface name, a Lua plugin's message) must never raise mid-read.
+# On stderr that would kill the drain thread and, once the pipe filled, hang
+# tshark.
+_TSHARK_TEXT_IO = {"encoding": "utf-8", "errors": "replace"}
+
+# Parsed ``tshark --version`` results keyed by the binary's identity
+# ``(real path, st_mtime_ns, st_size)``: an upgraded binary in place gets a new
+# identity and so a fresh lookup. Only successful (non-empty) results are
+# cached, in memory and in a small JSON file in the user cache dir (so a new
+# process skips the ~0.2 s ``tshark --version`` spawn too).
+_BinaryIdentity = tuple[str, int, int]
+_TSHARK_VERSION_CACHE: dict[_BinaryIdentity, tuple[int, ...]] = {}
+
+# Set to ``1`` to disable the on-disk ``tshark --version`` cache.
+TSHARK_VERSION_CACHE_DISABLE_ENV = "FRITAP_NO_TSHARK_VERSION_CACHE"
+_TSHARK_VERSION_CACHE_FILE = "tshark_version.json"
+
+
+def _clear_tshark_version_cache() -> None:
+    """Forget every in-memory ``tshark --version`` result (tests, binary swaps)."""
+    _TSHARK_VERSION_CACHE.clear()
+
+
+def _tshark_version_cache_key(path: str) -> _BinaryIdentity | None:
+    """``(realpath, st_mtime_ns, st_size)`` of *path*, or ``None`` when it cannot be stat'ed."""
+    try:
+        real = os.path.realpath(path)
+        stat = os.stat(real)
+        return real, stat.st_mtime_ns, stat.st_size
+    except (OSError, TypeError, ValueError):
+        return None
+
+
 def tshark_version(path: str) -> tuple[int, ...]:
-    """Parse the version tuple from ``tshark --version``.
+    """Parse the version tuple from ``tshark --version`` (cached per binary).
 
     Returns an empty tuple when the version cannot be parsed (the caller
-    treats that as "unknown" and skips the warning).
+    treats that as "unknown" and skips the warning). A successful result is
+    cached by the binary's real path, modification time and size, in memory
+    and on disk (:func:`_tshark_version_cache_path`), so conversions spawn
+    ``tshark --version`` once per tshark binary, not once per conversion.
     """
+    key = _tshark_version_cache_key(path)
+    if key is None:
+        return _query_tshark_version(path)
+    cached = _TSHARK_VERSION_CACHE.get(key) or _read_disk_tshark_version(key)
+    if cached:
+        _TSHARK_VERSION_CACHE[key] = cached
+        return cached
+    version = _query_tshark_version(path)
+    if version:
+        _TSHARK_VERSION_CACHE[key] = version
+        _write_disk_tshark_version(key, version)
+    return version
+
+
+def _tshark_version_cache_path() -> str | None:
+    """The on-disk version cache file, or ``None`` when the cache is disabled.
+
+    ``$XDG_CACHE_HOME/fritap`` when that is set, else the platform's user
+    cache dir (``platformdirs``), else ``~/.cache/fritap``.
+    """
+    if os.environ.get(TSHARK_VERSION_CACHE_DISABLE_ENV, "").strip() not in ("", "0"):
+        return None
+    xdg = os.environ.get("XDG_CACHE_HOME", "").strip()
+    if xdg:
+        base = os.path.join(xdg, "fritap")
+    else:
+        try:
+            import platformdirs
+            base = platformdirs.user_cache_dir("fritap")
+        except Exception:  # noqa: BLE001 - any failure falls back to ~/.cache
+            base = os.path.join(os.path.expanduser("~"), ".cache", "fritap")
+    return os.path.join(base, _TSHARK_VERSION_CACHE_FILE)
+
+
+def _load_disk_tshark_versions(cache_path: str) -> dict:
+    """The cache file's ``{real path: entry}`` map; ``{}`` when missing or unreadable."""
+    try:
+        with open(cache_path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _read_disk_tshark_version(key: _BinaryIdentity) -> tuple[int, ...]:
+    """The on-disk cached version for binary *key*; ``()`` on a miss or any failure."""
+    cache_path = _tshark_version_cache_path()
+    if cache_path is None:
+        return ()
+    entry = _load_disk_tshark_versions(cache_path).get(key[0])
+    if not isinstance(entry, dict):
+        return ()
+    if entry.get("mtime_ns") != key[1] or entry.get("size") != key[2]:
+        return ()
+    version = entry.get("version")
+    if not isinstance(version, list) or not version:
+        return ()
+    if not all(isinstance(part, int) and not isinstance(part, bool) for part in version):
+        return ()
+    return tuple(version)
+
+
+def _write_disk_tshark_version(key: _BinaryIdentity, version: tuple[int, ...]) -> None:
+    """Store *version* for binary *key* in the cache file; failures are silent.
+
+    One entry per real path (a newer identity replaces the old one), written
+    to a temp file and renamed into place so a reader never sees a torn file.
+    """
+    cache_path = _tshark_version_cache_path()
+    if cache_path is None:
+        return
+    try:
+        entries = _load_disk_tshark_versions(cache_path)
+        entries[key[0]] = {"mtime_ns": key[1], "size": key[2], "version": list(version)}
+        directory = os.path.dirname(cache_path)
+        os.makedirs(directory, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(prefix=".tshark_version.", dir=directory)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(entries, handle)
+            os.replace(tmp_path, cache_path)
+        except BaseException:
+            _remove_quietly(tmp_path)
+            raise
+    except Exception:  # noqa: BLE001 - the cache is an optimisation only
+        logger.debug("Could not write the tshark version cache", exc_info=True)
+
+
+def _remove_quietly(path: str) -> None:
+    """Delete *path*, ignoring every error."""
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def _query_tshark_version(path: str) -> tuple[int, ...]:
+    """Run ``tshark --version`` and parse it; ``()`` on any failure."""
     try:
         out = subprocess.run(
             [path, "--version"],
             capture_output=True,
-            text=True,
             timeout=15,
             env=_hermetic_env(),
+            **_TSHARK_TEXT_IO,
         ).stdout
     except Exception:
         logger.debug("Could not run 'tshark --version'", exc_info=True)
@@ -801,40 +969,16 @@ def build_quic_command(
     extra_decode_as: Sequence[str] = (),
     heuristic: bool = False,
 ) -> list[str]:
-    """Build the ``tshark`` argv for exporting decrypted QUIC stream data.
+    """Build the ``tshark`` argv exporting only the decrypted QUIC stream data.
 
-    QUIC's ``quic.stream_data`` field is already plaintext (the dissector
-    decrypts it), so a single ``-T ek`` export recovers HTTP/3 payloads. TLS
-    decryption is handled separately via :func:`follow_tls_stream`.
-
-    Args:
-        pcap: Path to the encrypted capture (pcap or pcapng).
-        keylog: Path to an NSS SSLKEYLOGFILE. ``None`` for a DSB-embedded
-            pcapng that already carries its own keys.
-        quic_ports: Extra UDP ports to Decode-As QUIC. 443 is always included
-            when this is empty.
-        extra_decode_as: Raw ``-d`` rule strings passed through verbatim.
-        heuristic: Enable tshark's TCP heuristic-first dissection (see
-            :func:`_heuristic_flags`).
-
-    Returns:
-        The full argv list (the first element is the literal ``"tshark"``;
-        callers resolve the real path via :func:`find_tshark`).
+    The ``quic_data`` section of :data:`_EK_SECTIONS` on its own: QUIC's
+    ``quic.stream_data`` field is already plaintext (the dissector decrypts it).
+    The conversion itself reads QUIC through :func:`build_combined_command`.
+    *quic_ports* defaults to 443; the argv's first element is the literal
+    ``"tshark"`` (callers resolve the real path via :func:`find_tshark`).
     """
-    cmd: list[str] = ["tshark", "-r", pcap, "-2", "-T", "ek"]
-
-    cmd += _heuristic_flags(heuristic)
-
-    if keylog:
-        cmd += ["-o", f"tls.keylog_file:{keylog}"]
-
-    for field in _QUIC_FIELDS:
-        cmd += ["-e", field]
-
-    cmd += _decode_as_flags("udp.port", "quic", quic_ports, extra_decode_as,
-                            default_port=DEFAULT_QUIC_PORT)
-    cmd += ["-Y", _QUIC_DISPLAY_FILTER]
-    return cmd
+    return _build_ek_pass(pcap, keylog, ("quic_data",), quic_ports=quic_ports,
+                          extra_decode_as=extra_decode_as, heuristic=heuristic)
 
 
 # QUIC versions whose long-header Initial tshark recognizes — the FALLBACK half of
@@ -897,7 +1041,7 @@ def build_quic_detection_command(
 
 # TLS-over-TCP fields for the single-pass decrypted-data export. There is NO
 # decrypted-TLS display field (``tls.app_data`` is the ENCRYPTED record), so the
-# decrypted bytes are recovered indirectly: build_tls_command disables the HTTP
+# decrypted bytes are recovered indirectly: the TLS sections disable the HTTP
 # subdissectors, which makes tshark hand the decrypted application data to the
 # generic Data dissector — surfaced here as ``data.data`` on every app-data
 # frame. ``data.data`` may be a PARALLEL list when one frame carries several
@@ -978,43 +1122,17 @@ def build_tls_command(
     extra_decode_as: Sequence[str] = (),
     heuristic: bool = False,
 ) -> list[str]:
-    """Build the ``tshark`` argv for a SINGLE-pass decrypted TLS export.
+    """Build the ``tshark`` argv exporting only the decrypted TLS application data.
 
-    Replaces the per-stream ``-z follow,tls,raw`` model (one full-pcap pass per
-    TLS stream, O(streams x pcap)) with one ``-T ek`` pass demuxed in Python,
-    mirroring :func:`build_quic_command`. Because TLS exposes no decrypted
-    display field, the HTTP subdissectors are disabled so the decrypted
-    application data falls through to ``data.data`` (validated byte-for-byte
-    against ``follow,tls,raw`` — see ``TASK_offline_tls_singlepass.md``).
-
-    Args:
-        pcap: Path to the encrypted capture (pcap or pcapng).
-        keylog: Path to an NSS SSLKEYLOGFILE, or ``None`` for a DSB-embedded
-            pcapng that carries its own keys.
-        tls_ports: Extra TCP ports to Decode-As TLS.
-        extra_decode_as: Raw ``-d`` rule strings passed through verbatim.
-        heuristic: Enable tshark's TCP heuristic-first dissection.
-
-    Returns:
-        The full argv list (first element is the literal ``"tshark"``; callers
-        resolve the real path via :func:`find_tshark`).
+    The ``tls_data`` section of :data:`_EK_SECTIONS` on its own. TLS exposes no
+    decrypted display field, so the HTTP subdissectors are disabled and the
+    decrypted application data falls through to ``data.data``. The conversion
+    itself reads TLS through :func:`build_combined_command`. The argv's first
+    element is the literal ``"tshark"`` (callers resolve the real path via
+    :func:`find_tshark`).
     """
-    cmd: list[str] = ["tshark", "-r", pcap, "-2", "-T", "ek"]
-
-    cmd += _heuristic_flags(heuristic)
-
-    if keylog:
-        cmd += ["-o", f"tls.keylog_file:{keylog}"]
-
-    for proto in _TLS_DISABLED_SUBDISSECTORS:
-        cmd += ["--disable-protocol", proto]
-
-    for field in _TLS_DATA_FIELDS:
-        cmd += ["-e", field]
-
-    cmd += _decode_as_flags("tcp.port", "tls", tls_ports, extra_decode_as)
-    cmd += ["-Y", _TLS_DATA_DISPLAY_FILTER]
-    return cmd
+    return _build_ek_pass(pcap, keylog, ("tls_data",), tls_ports=tls_ports,
+                          extra_decode_as=extra_decode_as, heuristic=heuristic)
 
 
 def build_plaintext_command(
@@ -1022,6 +1140,7 @@ def build_plaintext_command(
     *,
     extra_decode_as: Sequence[str] = (),
     heuristic: bool = False,
+    include_ssh: bool = False,
 ) -> list[str]:
     """Build the ``tshark`` argv for a SINGLE-pass raw-payload export (no keys).
 
@@ -1035,21 +1154,227 @@ def build_plaintext_command(
         pcap: Path to the capture (pcap or pcapng).
         extra_decode_as: Raw ``-d`` rule strings passed through verbatim.
         heuristic: Enable tshark's TCP heuristic-first dissection.
+        include_ssh: Also export the SSH metadata rows (``ssh`` marker plus
+            :data:`_SSH_FIELDS`), so the keyless conversion reads SSH from the
+            same pass. ``False`` (the default) keeps the argv unchanged.
 
     Returns:
         The full argv list (first element is the literal ``"tshark"``; callers
         resolve the real path via :func:`find_tshark`).
     """
+    sections = ("plaintext", "ssh") if include_ssh else ("plaintext",)
+    return _build_ek_pass(pcap, None, sections,
+                          extra_decode_as=extra_decode_as, heuristic=heuristic)
+
+
+# ---------------------------------------------------------------------------
+# The combined `-T ek` pass: row markers, predicates and the argv builder
+# ---------------------------------------------------------------------------
+
+# The app-data row marker. ``count(tls.app_data)`` (tshark >= 4.4) is present on
+# EVERY row and > 0 exactly on the frames the ``tls.app_data`` filter matches;
+# older tshark falls back to exporting ``tls.app_data`` itself (present only on
+# those frames). The record content types are NOT a substitute: an undecryptable
+# TLS 1.3 record only carries opaque type 23, and a decrypted TLS 1.3 handshake
+# record has opaque type 23 with content type 22.
+TLS_APP_DATA_COUNT_FIELD = "count(tls.app_data)"
+TLS_APP_DATA_FIELD = "tls.app_data"
+_APP_DATA_COUNT_MIN_VERSION = (4, 4)
+
+# Presence markers: requesting a protocol as a field makes `-T ek` render it on
+# every row that carries it (``tls.handshake`` -> ["1"], ``quic`` -> ["quic"],
+# ``ssh`` -> ["ssh"]).
+TLS_HANDSHAKE_MARKER = "tls.handshake"
+QUIC_MARKER = "quic"
+SSH_MARKER = "ssh"
+
+# Placeholder in a section's field list for the version-dependent app-data marker.
+_APP_DATA_MARKER_SLOT = "<tls-app-data-marker>"
+
+
+def tls_app_data_marker(version: Sequence[int] | None) -> str:
+    """The app-data marker field for a tshark *version* (``()``/None = unknown)."""
+    if version and tuple(version) >= _APP_DATA_COUNT_MIN_VERSION:
+        return TLS_APP_DATA_COUNT_FIELD
+    return TLS_APP_DATA_FIELD
+
+
+def is_tls_handshake_row(layers: dict) -> bool:
+    """True for a row the ``tls.handshake`` filter matches.
+
+    QUIC CRYPTO frames match too but carry no ``tls.stream``, so the TLS
+    metadata accumulator skips them (as the ``-T fields`` pass always did).
+    """
+    return ek_field(layers, TLS_HANDSHAKE_MARKER) is not None
+
+
+def is_tls_app_data_row(layers: dict, marker: str = TLS_APP_DATA_COUNT_FIELD) -> bool:
+    """True for a row the ``tls.app_data`` filter matches (see :func:`tls_app_data_marker`)."""
+    value = ek_field(layers, marker)
+    if marker != TLS_APP_DATA_COUNT_FIELD:
+        return value is not None
+    try:
+        return int(str(ek_first(value))) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def is_quic_row(layers: dict) -> bool:
+    """True for a row the ``quic`` filter matches (QUIC metadata rows)."""
+    return ek_field(layers, QUIC_MARKER) is not None
+
+
+def is_quic_stream_row(layers: dict) -> bool:
+    """True for a row the ``quic.stream_data`` filter matches (QUIC data rows)."""
+    return ek_field(layers, "quic.stream_data") is not None
+
+
+def is_ssh_row(layers: dict) -> bool:
+    """True for a row the ``ssh`` filter matches (SSH metadata rows)."""
+    return ek_field(layers, SSH_MARKER) is not None
+
+
+def has_plaintext_payload(layers: dict) -> bool:
+    """True for a row the ``tcp.payload or udp.payload`` filter matches."""
+    return (ek_field(layers, "tcp.payload") is not None
+            or ek_field(layers, "udp.payload") is not None)
+
+
+@dataclass(frozen=True)
+class _EkSection:
+    """One consumer's share of a combined `-T ek` pass.
+
+    *display_filters* are OR-ed into the pass's ``-Y``; *decode_as* is the
+    ``(dissector table, protocol, default port)`` its ports are decoded as.
+    """
+
+    fields: tuple[str, ...]
+    display_filters: tuple[str, ...]
+    decode_as: tuple[str, str, int | None] | None = None
+    disabled_protocols: tuple[str, ...] = ()
+
+
+_EK_SECTIONS: dict[str, _EkSection] = {
+    # Handshake metadata + decrypted application data (data.data, with the
+    # HTTP subdissectors disabled; see _TLS_DATA_FIELDS).
+    "tls": _EkSection(
+        fields=(TLS_HANDSHAKE_MARKER, *_TLS_META_FIELDS, _APP_DATA_MARKER_SLOT,
+                *_TLS_DATA_FIELDS),
+        display_filters=("tls.handshake", "tls.app_data"),
+        decode_as=("tcp.port", "tls", None),
+        disabled_protocols=_TLS_DISABLED_SUBDISSECTORS,
+    ),
+    # QUIC metadata (every QUIC row) + decrypted stream data. The clause must
+    # be ``quic`` (not quic.stream_data) so the metadata rows are exported.
+    "quic": _EkSection(
+        fields=(QUIC_MARKER, *_QUIC_META_FIELDS, *_QUIC_FIELDS),
+        display_filters=("quic",),
+        decode_as=("udp.port", "quic", DEFAULT_QUIC_PORT),
+    ),
+    "ssh": _EkSection(fields=(SSH_MARKER, *_SSH_FIELDS), display_filters=("ssh",)),
+    # The data-only exports (build_tls_command / build_quic_command).
+    "tls_data": _EkSection(
+        fields=_TLS_DATA_FIELDS,
+        display_filters=(_TLS_DATA_DISPLAY_FILTER,),
+        decode_as=("tcp.port", "tls", None),
+        disabled_protocols=_TLS_DISABLED_SUBDISSECTORS,
+    ),
+    "quic_data": _EkSection(
+        fields=_QUIC_FIELDS,
+        display_filters=(_QUIC_DISPLAY_FILTER,),
+        decode_as=("udp.port", "quic", DEFAULT_QUIC_PORT),
+    ),
+    "plaintext": _EkSection(fields=_PLAINTEXT_FIELDS,
+                            display_filters=(_PLAINTEXT_DISPLAY_FILTER,)),
+}
+
+
+def _unique(items) -> list:
+    """*items* without duplicates, first occurrence kept."""
+    return list(dict.fromkeys(items))
+
+
+def _combined_display_filter(clauses: list[str]) -> str:
+    """OR *clauses* together, parenthesizing compound ones when there are several."""
+    if len(clauses) == 1:
+        return clauses[0]
+    return " || ".join(f"({c})" if " " in c else c for c in clauses)
+
+
+def _build_ek_pass(
+    pcap: str,
+    keylog: str | None,
+    sections: Sequence[str],
+    *,
+    tls_ports: Sequence[int] = (),
+    quic_ports: Sequence[int] = (),
+    extra_decode_as: Sequence[str] = (),
+    heuristic: bool = False,
+    app_data_marker: str = TLS_APP_DATA_COUNT_FIELD,
+) -> list[str]:
+    """Build one `-T ek` argv serving every named section of :data:`_EK_SECTIONS`.
+
+    Layout (shared with the single-purpose builders): ``tshark -r PCAP -2 -T ek``,
+    the heuristic flags, the keylog, the disabled subdissectors, the ``-e``
+    union (deduplicated, in section order), each section's port Decode-As,
+    the raw *extra_decode_as* rules once, then the OR of the sections' filters.
+    """
+    specs = [_EK_SECTIONS[name] for name in sections]
     cmd: list[str] = ["tshark", "-r", pcap, "-2", "-T", "ek"]
     cmd += _heuristic_flags(heuristic)
-    for field in _PLAINTEXT_FIELDS:
-        cmd += ["-e", field]
-    # No port-based Decode-As (plaintext has no protocol to map a port to); reuse
-    # the shared helper purely to append the raw `-d` rules, as every other
-    # command builder does, so extra_decode_as handling stays consistent.
+    if keylog:
+        cmd += ["-o", f"tls.keylog_file:{keylog}"]
+    for proto in _unique(p for spec in specs for p in spec.disabled_protocols):
+        cmd += ["--disable-protocol", proto]
+    fields = (app_data_marker if f == _APP_DATA_MARKER_SLOT else f
+              for spec in specs for f in spec.fields)
+    for field_name in _unique(fields):
+        cmd += ["-e", field_name]
+    ports_by_table = {"tcp.port": tls_ports, "udp.port": quic_ports}
+    for spec in specs:
+        if spec.decode_as is not None:
+            table, proto, default_port = spec.decode_as
+            cmd += _decode_as_flags(table, proto, ports_by_table[table], (),
+                                    default_port=default_port)
     cmd += _decode_as_flags("tcp.port", "tls", (), extra_decode_as)
-    cmd += ["-Y", _PLAINTEXT_DISPLAY_FILTER]
+    clauses = _unique(c for spec in specs for c in spec.display_filters)
+    cmd += ["-Y", _combined_display_filter(clauses)]
     return cmd
+
+
+def build_combined_command(
+    pcap: str,
+    keylog: str | None,
+    *,
+    tls_ports: Sequence[int] = (),
+    quic_ports: Sequence[int] = (),
+    extra_decode_as: Sequence[str] = (),
+    heuristic: bool = False,
+    include_quic: bool = True,
+    include_ssh: bool = True,
+    app_data_marker: str = TLS_APP_DATA_COUNT_FIELD,
+) -> list[str]:
+    """Build the ONE keyed `-T ek` argv replacing the separate metadata/data passes.
+
+    Exports the TLS handshake metadata and decrypted application data, and
+    (unless excluded) the QUIC metadata and stream data and the SSH metadata,
+    filtered to ``tls.handshake || tls.app_data || quic || ssh``. Consumers tell
+    their rows apart with the row predicates (:func:`is_tls_handshake_row`, ...);
+    *app_data_marker* comes from :func:`tls_app_data_marker`.
+
+    Returns:
+        The full argv list (first element is the literal ``"tshark"``; callers
+        resolve the real path via :func:`find_tshark`).
+    """
+    sections = ["tls"]
+    if include_quic:
+        sections.append("quic")
+    if include_ssh:
+        sections.append("ssh")
+    return _build_ek_pass(
+        pcap, keylog, sections, tls_ports=tls_ports, quic_ports=quic_ports,
+        extra_decode_as=extra_decode_as, heuristic=heuristic,
+        app_data_marker=app_data_marker)
 
 
 def _heuristic_flags(heuristic: bool) -> list[str]:
@@ -1287,6 +1612,65 @@ def _server_node_index(
     return 0 if node0[1] <= node1[1] else 1
 
 
+# How many stderr lines a tshark failure message keeps: the last lines, plus
+# every ``tshark:``-prefixed line (the actual error) that scrolled out of them.
+_STDERR_TAIL_LINES = 20
+_STDERR_TSHARK_LINES = 20
+_TSHARK_MESSAGE_PREFIX = "tshark:"
+
+# tshark's message for a capture whose last record is incomplete (exit 14 on
+# 4.x): "The file ... appears to have been cut short in the middle of a packet."
+# Every complete record before the cut was dissected normally.
+_TRUNCATED_CAPTURE_MARKER = "cut short in the middle of a packet"
+
+
+class _StderrSummary:
+    """The part of tshark's stderr worth showing: the tail plus its ``tshark:`` lines.
+
+    tshark prints the real error as a ``tshark:`` line and may follow it with a
+    long listing (``-d`` with an unknown protocol lists every valid one), so a
+    bare tail would lose the line that explains the failure.
+    """
+
+    def __init__(self) -> None:
+        self.tail: deque[str] = deque(maxlen=_STDERR_TAIL_LINES)
+        self.tshark_lines: deque[str] = deque(maxlen=_STDERR_TSHARK_LINES)
+
+    def add(self, line: str) -> None:
+        """Record one stderr line (trailing newline stripped)."""
+        line = line.rstrip("\r\n")
+        self.tail.append(line)
+        if line.startswith(_TSHARK_MESSAGE_PREFIX):
+            self.tshark_lines.append(line)
+
+    def text(self) -> str:
+        """The ``tshark:`` lines missing from the tail, then the tail itself."""
+        tail = list(self.tail)
+        scrolled_out = [line for line in self.tshark_lines if line not in tail]
+        return "\n".join(scrolled_out + tail)
+
+    def reports_truncated_capture(self) -> bool:
+        """True when tshark said the capture was cut short in a packet."""
+        return any(_TRUNCATED_CAPTURE_MARKER in line
+                   for line in (*self.tshark_lines, *self.tail))
+
+
+def _summarize_stderr(stderr_text: str) -> _StderrSummary:
+    """A :class:`_StderrSummary` of a complete stderr text."""
+    summary = _StderrSummary()
+    for line in stderr_text.splitlines():
+        summary.add(line)
+    return summary
+
+
+def _tshark_failure(returncode: int, stderr: _StderrSummary) -> RuntimeError:
+    """The ``RuntimeError`` raised for a tshark run that exited *returncode*."""
+    return RuntimeError(
+        f"tshark exited with code {returncode}.\n"
+        f"--- tshark stderr (tail) ---\n{stderr.text()}"
+    )
+
+
 def _run_capture(cmd: Sequence[str]) -> str:
     """Run *cmd* and return its stdout, raising on a non-zero exit.
 
@@ -1296,15 +1680,11 @@ def _run_capture(cmd: Sequence[str]) -> str:
     proc = subprocess.run(
         list(cmd),
         capture_output=True,
-        text=True,
         env=_hermetic_env(),
+        **_TSHARK_TEXT_IO,
     )
     if proc.returncode != 0:
-        tail = "\n".join(proc.stderr.splitlines()[-20:])
-        raise RuntimeError(
-            f"tshark exited with code {proc.returncode}.\n"
-            f"--- tshark stderr (tail) ---\n{tail}"
-        )
+        raise _tshark_failure(proc.returncode, _summarize_stderr(proc.stderr or ""))
     return proc.stdout
 
 
@@ -1317,44 +1697,147 @@ def stream_packets(cmd: Sequence[str]) -> Iterator[dict]:
     lines and yield only the source dicts. Output is consumed line-by-line so
     arbitrarily large captures never load fully into memory.
 
+    stderr is drained concurrently (a thread keeps its tail and its ``tshark:``
+    lines), so a chatty tshark can never fill the stderr pipe and stall; both
+    pipes decode with ``errors="replace"`` so a non-UTF-8 byte cannot stop the
+    drain. When the consumer stops early (closes the generator — iterate it
+    under ``contextlib.closing`` so that also happens when the consumer
+    raises), tshark's stdout is closed and the process terminated (killed
+    after 5 s), so it is always reaped.
+
+    A capture cut short in the middle of its last packet makes tshark exit
+    non-zero after dissecting every complete packet; when packets were yielded
+    that is logged as a warning instead of raised, so the readable part still
+    converts.
+
     Raises:
-        RuntimeError: When tshark exits non-zero, with a tail of stderr.
+        RuntimeError: When tshark completes with a non-zero exit, with its
+            ``tshark:`` error lines and a tail of stderr. Not raised when the
+            consumer stopped early, nor for a truncated capture that yielded
+            packets.
     """
     proc = subprocess.Popen(
         list(cmd),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
         env=_hermetic_env(),
+        **_TSHARK_TEXT_IO,
     )
 
-    stderr_tail: deque[str] = deque(maxlen=20)
+    stderr = _StderrSummary()
+    drain = _start_stderr_drain(proc, stderr.add)
     assert proc.stdout is not None
+    completed = False
+    yielded = 0
     try:
         for line in proc.stdout:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                logger.debug("Skipping non-JSON tshark line: %.120r", line)
-                continue
-            # Skip ek index control lines; yield only source objects (those
-            # carrying a "layers" payload).
-            if "index" in obj and "layers" not in obj:
-                continue
-            if "layers" in obj:
+            obj = _ek_source_object(line)
+            if obj is not None:
+                yielded += 1
                 yield obj
+        completed = True
     finally:
-        # Drain any remaining stderr for diagnostics.
-        if proc.stderr is not None:
-            for err_line in proc.stderr:
-                stderr_tail.append(err_line.rstrip("\n"))
+        if not completed:
+            _stop_process(proc)
         returncode = proc.wait()
+        if drain is not None:
+            drain.join(timeout=5)
 
-    if returncode != 0:
-        tail = "\n".join(stderr_tail)
-        raise RuntimeError(
-            f"tshark exited with code {returncode}.\n--- tshark stderr (tail) ---\n{tail}"
-        )
+    if completed and returncode != 0:
+        _raise_unless_truncated_capture(returncode, stderr, yielded)
+
+
+def _raise_unless_truncated_capture(returncode: int, stderr: _StderrSummary,
+                                    yielded: int) -> None:
+    """Raise the tshark failure, or only warn for a truncated capture that yielded rows."""
+    if yielded and stderr.reports_truncated_capture():
+        logger.warning(
+            "The capture is truncated (tshark exit %d after %d rows): its last "
+            "packet is incomplete; converting the readable part.",
+            returncode, yielded)
+        logger.debug("tshark stderr (tail):\n%s", stderr.text())
+        return
+    raise _tshark_failure(returncode, stderr)
+
+
+def _ek_source_object(line: str) -> dict | None:
+    """The packet-source dict on one ``-T ek`` line, or ``None`` for any other line.
+
+    Skips blank lines, non-JSON lines and the ``{"index": ...}`` control lines;
+    only objects carrying a ``"layers"`` payload are packets.
+    """
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        obj = json.loads(line)
+    except json.JSONDecodeError:
+        logger.debug("Skipping non-JSON tshark line: %.120r", line)
+        return None
+    if isinstance(obj, dict) and "layers" in obj:
+        return obj
+    return None
+
+
+def _start_stderr_drain(proc, sink: Callable[[str], None]) -> threading.Thread | None:
+    """Feed *proc*'s stderr lines to *sink* on a daemon thread (``None`` without stderr).
+
+    The thread reads until EOF, whatever the lines contain: a line that fails
+    to decode or that *sink* rejects is skipped, never a reason to stop reading
+    (a stopped drain lets the pipe fill and blocks tshark forever). Only a pipe
+    closed under it (the process was stopped early) ends it before EOF.
+    """
+    stream = getattr(proc, "stderr", None)
+    if stream is None:
+        return None
+
+    def drain() -> None:
+        lines = iter(stream)
+        while True:
+            try:
+                line = next(lines)
+            except StopIteration:
+                return
+            except UnicodeError:
+                continue  # defensive: errors="replace" decoding never raises
+            except (OSError, ValueError):
+                return  # the pipe was closed under us (process stopped early)
+            _feed_stderr_line(sink, line)
+
+    thread = threading.Thread(target=drain, name="tshark-stderr", daemon=True)
+    thread.start()
+    return thread
+
+
+def _feed_stderr_line(sink: Callable[[str], None], line) -> None:
+    """Hand one stderr *line* (``str`` or ``bytes``) to *sink*, swallowing its errors."""
+    if isinstance(line, bytes):
+        line = line.decode("utf-8", errors="replace")
+    try:
+        sink(line)
+    except Exception:  # noqa: BLE001 - the drain must outlive any bad line
+        logger.debug("Dropping a tshark stderr line", exc_info=True)
+
+
+def _stop_process(proc) -> None:
+    """Close *proc*'s stdout and terminate it (kill after 5 s) when still running."""
+    stdout = getattr(proc, "stdout", None)
+    close = getattr(stdout, "close", None)
+    if close is not None:
+        try:
+            close()
+        except OSError:
+            pass
+    poll = getattr(proc, "poll", None)
+    if poll is not None and poll() is not None:
+        return  # already exited
+    terminate = getattr(proc, "terminate", None)
+    if terminate is None:
+        return
+    try:
+        terminate()
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    except OSError:
+        pass

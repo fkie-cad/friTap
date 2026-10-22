@@ -19,6 +19,9 @@ from friTap.flow.collector import FlowCollector
 from friTap.flow.display import method_from_messages
 from friTap.flow.models import FlowChunk
 from friTap.offline import pcap_to_tap as p2t
+from friTap.offline import pipeline_api
+from friTap.offline.mtproto import offline_decryptor as mtproto_emit
+from friTap.offline.mtproto import tap_attach as mtproto_attach
 from friTap.offline.mtproto.content import ParsedMtprotoMessage
 from tests.unit._offline_helpers import TG_BASE_TS as _BASE_TS
 from tests.unit._offline_helpers import TG_FINGERPRINT as _FP
@@ -38,21 +41,21 @@ class _FakeFlow:
 # --------------------------------------------------------------------------- #
 
 def test_chunk_key_is_deterministic_and_direction_sensitive():
-    assert p2t._chunk_key("write", b"abc") == p2t._chunk_key("write", b"abc")
-    assert p2t._chunk_key("write", b"abc").startswith("write:")
-    assert len(p2t._chunk_key("write", b"abc").split(":")[1]) == 16
-    assert p2t._chunk_key("write", b"abc") != p2t._chunk_key("read", b"abc")
-    assert p2t._chunk_key("write", b"abc") != p2t._chunk_key("write", b"abd")
+    assert pipeline_api.chunk_key("write", b"abc") == pipeline_api.chunk_key("write", b"abc")
+    assert pipeline_api.chunk_key("write", b"abc").startswith("write:")
+    assert len(pipeline_api.chunk_key("write", b"abc").split(":")[1]) == 16
+    assert pipeline_api.chunk_key("write", b"abc") != pipeline_api.chunk_key("read", b"abc")
+    assert pipeline_api.chunk_key("write", b"abc") != pipeline_api.chunk_key("write", b"abd")
 
 
 def test_scope_keeps_only_the_flows_own_messages_and_strips_key():
     flow = _FakeFlow([FlowChunk(data=b"A", direction="write", timestamp=1.0)])
     messages = [
-        {"body": "mine", "_chunk_key": p2t._chunk_key("write", b"A")},
-        {"body": "other", "_chunk_key": p2t._chunk_key("write", b"B")},
-        {"body": "wrong-dir", "_chunk_key": p2t._chunk_key("read", b"A")},
+        {"body": "mine", "_chunk_key": pipeline_api.chunk_key("write", b"A")},
+        {"body": "other", "_chunk_key": pipeline_api.chunk_key("write", b"B")},
+        {"body": "wrong-dir", "_chunk_key": pipeline_api.chunk_key("read", b"A")},
     ]
-    scoped = p2t._scope_messages_to_flow(flow, messages)
+    scoped = pipeline_api.scope_messages_to_flow(flow, messages)
     assert scoped == [{"body": "mine"}]
     assert "_chunk_key" in messages[0]  # originals untouched (copies returned)
 
@@ -60,7 +63,7 @@ def test_scope_keeps_only_the_flows_own_messages_and_strips_key():
 def test_scope_passes_untagged_messages_through():
     flow = _FakeFlow([FlowChunk(data=b"A", direction="write", timestamp=1.0)])
     messages = [{"body": "legacy-1"}, {"body": "legacy-2"}]
-    assert p2t._scope_messages_to_flow(flow, messages) == messages
+    assert pipeline_api.scope_messages_to_flow(flow, messages) == messages
 
 
 def test_accumulators_tag_every_message_of_a_record(monkeypatch):
@@ -71,8 +74,8 @@ def test_accumulators_tag_every_message_of_a_record(monkeypatch):
         ParsedMtprotoMessage(kind="text", body="b"),
     ])
     meta: dict = {}
-    key = p2t._chunk_key("write", b"x")
-    p2t._accumulate_mtproto_messages(meta, "k", b"x", "write", chunk_key=key)
+    key = pipeline_api.chunk_key("write", b"x")
+    mtproto_emit._accumulate_mtproto_messages(meta, "k", b"x", "write", chunk_key=key)
     assert [m["_chunk_key"] for m in meta["k"]["messages"]] == [key, key]
 
 
@@ -103,10 +106,10 @@ def _run(monkeypatch, cloud_msgs, e2e_by_data, parse_cloud, parse_e2e,
     collector.use_event_clock(True)
     bus.subscribe(DatalogEvent, collector.on_data)
     state = _FakeState()
-    p2t._emit_mtproto_streams("cap.pcap", "k", bus=bus, state=state,
+    mtproto_emit._emit_mtproto_streams("cap.pcap", "k", bus=bus, state=state,
                               result=p2t.ConvertResult(tap_path="out.tap"))
     ledger = getattr(state, "telegram_ledger", None) if use_ledger else None
-    p2t._attach_telegram_meta(collector.live_flows(), state.mtproto_meta,
+    mtproto_attach._attach_telegram_meta(collector.live_flows(), state.mtproto_meta,
                               state.telegram_e2e_meta, ledger=ledger)
     return collector.live_flows()
 
@@ -239,4 +242,4 @@ def test_ledger_attaches_e2e_envelope_and_messages(monkeypatch):
 def test_ledger_miss_falls_back_to_scoping():
     flow = _FakeFlow([FlowChunk(data=b"A", direction="write", timestamp=1.0)])
     flow.transport = "mtproto"
-    assert p2t._meta_from_ledger(flow, p2t._telegram_ledger(_FakeState())) is False
+    assert mtproto_attach._meta_from_ledger(flow, mtproto_emit._telegram_ledger(_FakeState())) is False

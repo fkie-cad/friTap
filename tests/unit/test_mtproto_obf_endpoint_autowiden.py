@@ -25,8 +25,7 @@ import pytest
 
 pytest.importorskip("cryptography")  # CTR + IGE backend
 
-from friTap.offline.mtproto import crypto
-from friTap.offline.mtproto import decrypt
+from friTap.offline.mtproto import crypto, decrypt
 from friTap.offline.mtproto.decrypt import _process_recovered_stream
 from friTap.offline.mtproto.records import MtprotoStats
 from friTap.offline.mtproto.transport import (
@@ -257,7 +256,7 @@ def test_merge_manifest_emits_resync_search_depth():
 
 
 def test_merge_manifest_defaults_resync_search_depth(monkeypatch):
-    """Missing arg falls back to the default depth, so behaviour is unchanged."""
+    """Missing arg is None: each decryptor applies its own default depth."""
     from friTap.offline import cli
 
     args = SimpleNamespace(
@@ -265,7 +264,7 @@ def test_merge_manifest_defaults_resync_search_depth(monkeypatch):
         tls_heuristic=False,
     )
     merged = cli.merge_manifest(args, {})
-    assert merged["resync_search_depth"] == DEFAULT_OBF_MAX_BLOCKS
+    assert merged["resync_search_depth"] is None
 
 
 def test_pcap_to_tap_forwards_resync_search_depth(monkeypatch):

@@ -24,6 +24,8 @@ import struct
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
+from ..tls.keylog import parse_strict_nss_line
+
 # The friTap Schannel profile (arm64 is the calibrated arch with real needle RVAs).
 _PATTERNS = Path(__file__).resolve().parents[2] / "memory_scanning" / "patterns.json"
 
@@ -66,9 +68,9 @@ def keylog_secret_map(text: str) -> Dict[str, Tuple[str, str]]:
     """secret(hex) -> (label, client_random) from an NSS keylog."""
     out: Dict[str, Tuple[str, str]] = {}
     for line in text.splitlines():
-        p = line.split()
-        if len(p) == 3 and not line.startswith("#"):
-            out[p[2].lower()] = (p[0], p[1].lower())
+        entry = parse_strict_nss_line(line, allow_unknown_client_random=True)
+        if entry is not None:
+            out[entry.secret] = (entry.label, entry.client_random)
     return out
 
 

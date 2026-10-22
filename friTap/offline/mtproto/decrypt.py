@@ -17,13 +17,13 @@ import logging
 from typing import Callable, Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
 from ...protocols.mtproto_keylog_spec import MtprotoAuthKey, MtprotoObfKey
+from ..net.endpoints import normalize_endpoint, stream_endpoint
+from ..net.tcp_reassembly import TcpStreamReassembler
 from . import MtprotoCryptoError, MtprotoDependencyError
-from .keylog import normalize_endpoint, stream_endpoint
 from .packet_meta import PLAUSIBLE_MSG_EPOCH_RANGE, msg_id_seconds
 from .reassembly import (
     INIT_BLOCK_LEN,
     StreamPair,
-    TcpStreamReassembler,
     reassemble_pcap,
 )
 from .records import DecryptedMessage, MtprotoStats
@@ -32,9 +32,9 @@ from .transport import (
     CLIENT_TO_SERVER,
     DEFAULT_OBF_ENDPOINT_MATCH_BLOCKS,
     DEFAULT_OBF_MAX_BLOCKS,
+    SERVER_TO_CLIENT,
     ObfAlignment,
     ObfuscationCipher,
-    SERVER_TO_CLIENT,
     detect_transport,
     iter_frames_with_offsets,
     recover_obf_alignment,

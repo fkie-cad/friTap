@@ -27,4 +27,14 @@ export interface MemscanEngine {
     name: string;
     /** Run this engine's tier group for the active profile, emitting via send(). */
     runTiers(ranges: any, stats: Stats, errors: string[]): void;
+    /**
+     * Optional teardown, run once before the script is unloaded (via the agent's
+     * `dispose` RPC, which frida-core invokes on EVERY unload). An engine that
+     * installs Interceptor hooks with an unbounded lifetime — e.g. boringssl's
+     * needle-seed hooks on the hot SSL_read/SSL_write path, which self-detach only
+     * after a needle is found and so stay attached forever on a target where none
+     * ever seeds — MUST detach them here so frida's implicit detach cannot stall.
+     * Best-effort: it must never throw, since it runs on the unload path.
+     */
+    stop?(): void;
 }

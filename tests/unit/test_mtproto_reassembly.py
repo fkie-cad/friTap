@@ -152,3 +152,57 @@ def test_timestamp_at_refreshes_after_new_feed():
     assert r.timestamp_at(4) == 0.0
     r.feed(1004, b"BBBB", ts=2.0)
     assert r.timestamp_at(4) == 2.0
+
+
+# ---------------------------------------------------------------------------
+# Client/server role orientation (shared by the Signal / RC4 / MTProto
+# mid-stream TLS paths via tls_midstream.transport.reassemble_pcap).
+#
+# Regression: on a mid-stream (attach, no-handshake) capture of a RECEIVING
+# connection, the server sends the first captured byte, so orienting by
+# "first payload sender" mislabels the server as the client. That inverts the
+# per-direction TLS traffic secrets and silently drops the stream -- which lost
+# the inbound Signal message on the receive connection. Orientation must prefer
+# the endpoint that dialed a server port.
+# ---------------------------------------------------------------------------
+
+from friTap.offline.mtproto.reassembly import _ConvBuilder  # noqa: E402
+
+_SERVER = ("15.197.251.99", 443)
+
+
+def _feed(b, src, dst, payload, *, syn=False):
+    b.add(src[0], src[1], dst[0], dst[1], 1000, payload, syn, False, ts=1.0)
+
+
+def test_choose_client_server_first_midstream_oriented_by_port():
+    """Server-first mid-stream receive connection: dialer of :443 is the client."""
+    client = ("172.20.0.105", 49268)
+    b = _ConvBuilder("AF_INET", (443,))
+    _feed(b, _SERVER, client, b"inbound-delivery")   # server speaks first
+    _feed(b, client, _SERVER, b"client-reply")
+    pair = b.finalize()
+    assert pair.client_addr == client
+    assert pair.server_addr == _SERVER
+
+
+def test_choose_client_client_first_unchanged():
+    """Client-first capture is still oriented the same way (no behavior change)."""
+    client = ("172.20.0.105", 49280)
+    b = _ConvBuilder("AF_INET", (443,))
+    _feed(b, client, _SERVER, b"client-hello-ish")   # client speaks first
+    _feed(b, _SERVER, client, b"server-reply")
+    pair = b.finalize()
+    assert pair.client_addr == client
+    assert pair.server_addr == _SERVER
+
+
+def test_choose_client_non_server_port_falls_back_to_first_payload():
+    """With no server port involved, fall back to the first-payload sender."""
+    a = ("10.0.0.1", 41000)
+    c = ("10.0.0.2", 42000)
+    b = _ConvBuilder("AF_INET", (443,))
+    _feed(b, a, c, b"first")                          # neither dials :443
+    _feed(b, c, a, b"second")
+    pair = b.finalize()
+    assert pair.client_addr == a

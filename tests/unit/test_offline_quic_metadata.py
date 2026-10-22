@@ -2,12 +2,11 @@
 
 """Unit tests for the offline QUIC metadata producer.
 
-Mirrors the style of ``test_offline_metadata.py``: the pure parser
-(:func:`parse_quic_metadata_fields`) and the version mapper
+Mirrors the style of ``test_offline_metadata.py``: the pure metadata fold
+(:class:`QuicMetadataAccumulator`) and the version mapper
 (:func:`_map_quic_version`) are fed hand-built tab-separated tshark rows, so
-they need no tshark binary. The wiring test monkeypatches the tshark boundary
-(``extract_quic_metadata``) and runs the QUIC SessionEvent path through a real
-FlowCollector + EventBus, asserting the resulting flow carries the stamped
+they need no tshark binary. The wiring test runs the QUIC SessionEvent path
+through a real FlowCollector + EventBus, asserting the resulting flow carries the stamped
 ``flow.quic`` metadata.
 """
 
@@ -20,8 +19,17 @@ from friTap.offline import pcap_to_tap as p2t
 from friTap.offline import tshark as tshark_mod
 
 # ---------------------------------------------------------------------------
-# parse_quic_metadata_fields (pure)
+# QuicMetadataAccumulator (pure)
 # ---------------------------------------------------------------------------
+
+def _fold_quic_rows(output: str) -> dict:
+    """Fold tab-separated QUIC-metadata rows (blank lines skipped) into metadata."""
+    accumulator = tshark_mod.QuicMetadataAccumulator()
+    for line in output.splitlines():
+        if line.strip():
+            accumulator.feed_columns(line.split("\t"))
+    return accumulator.result()
+
 
 def _quic_row(stream, ip_src="", ipv6_src="", ip_dst="", ipv6_dst="",
               srcport="", dstport="", version="", hs_type="",
@@ -39,12 +47,12 @@ def _quic_row(stream, ip_src="", ipv6_src="", ip_dst="", ipv6_dst="",
     ])
 
 
-def test_parse_quic_metadata_serverhello_row():
+def test_quic_metadata_accumulator_serverhello_row():
     output = _quic_row(
         0, ip_src="10.0.0.1", ip_dst="2.2.2.2",
         srcport=50000, dstport=443,
         version="0x00000001", hs_type="2", cipher="0x1301", alpn="h3")
-    meta = tshark_mod.parse_quic_metadata_fields(output)
+    meta = _fold_quic_rows(output)
     assert meta == {0: {
         "src_addr": "10.0.0.1",
         "src_port": 50000,
@@ -57,7 +65,7 @@ def test_parse_quic_metadata_serverhello_row():
     }}
 
 
-def test_parse_quic_metadata_sni_from_clienthello():
+def test_quic_metadata_accumulator_sni_from_clienthello():
     """SNI is taken from the ClientHello (handshake type 1) in the Initial and
     merged with the ServerHello's cipher/alpn for the same udp.stream."""
     output = "\n".join([
@@ -69,7 +77,7 @@ def test_parse_quic_metadata_sni_from_clienthello():
         _quic_row(0, version="0x00000001", hs_type="2",
                   cipher="0x1301", alpn="h3"),
     ])
-    meta = tshark_mod.parse_quic_metadata_fields(output)
+    meta = _fold_quic_rows(output)
     assert meta[0]["sni"] == "example.com"
     assert meta[0]["version"] == "1"
     assert meta[0]["alpn"] == "h3"
@@ -98,7 +106,7 @@ def test_map_quic_version_empty():
 # Merge across rows
 # ---------------------------------------------------------------------------
 
-def test_parse_quic_metadata_merges_initial_and_serverhello():
+def test_quic_metadata_accumulator_merges_initial_and_serverhello():
     output = "\n".join([
         # Initial packet (no/empty handshake type): carries version + endpoints
         # only.
@@ -111,7 +119,7 @@ def test_parse_quic_metadata_merges_initial_and_serverhello():
                   version="0x00000001", hs_type="2",
                   cipher="0x1301", alpn="h3"),
     ])
-    meta = tshark_mod.parse_quic_metadata_fields(output)
+    meta = _fold_quic_rows(output)
     assert meta[0]["version"] == "1"
     assert meta[0]["alpn"] == "h3"
     assert meta[0]["cipher"] == "TLS_AES_128_GCM_SHA256"
@@ -120,7 +128,7 @@ def test_parse_quic_metadata_merges_initial_and_serverhello():
     assert (meta[0]["dst_addr"], meta[0]["dst_port"]) == ("2.2.2.2", 443)
 
 
-def test_parse_quic_metadata_cipher_only_from_serverhello():
+def test_quic_metadata_accumulator_cipher_only_from_serverhello():
     # A ClientHello (type 1) carrying a ciphersuite LIST must NOT set cipher;
     # only the ServerHello's SELECTED suite (type 2) does.
     output = "\n".join([
@@ -129,7 +137,7 @@ def test_parse_quic_metadata_cipher_only_from_serverhello():
                   version="0x00000001", hs_type="1",
                   cipher="0x1301,0x1302,0x1303"),
     ])
-    meta = tshark_mod.parse_quic_metadata_fields(output)
+    meta = _fold_quic_rows(output)
     assert meta[0]["cipher"] == ""
     assert meta[0]["version"] == "1"
 
@@ -138,20 +146,20 @@ def test_parse_quic_metadata_cipher_only_from_serverhello():
 # Defensive parsing
 # ---------------------------------------------------------------------------
 
-def test_parse_quic_metadata_skips_malformed_rows():
+def test_quic_metadata_accumulator_skips_malformed_rows():
     output = "\n".join([
         "garbage-without-tabs-or-stream",
         "\t\t\t",  # empty stream column
         _quic_row(5, ip_src="10.0.0.1", ip_dst="2.2.2.2",
                   srcport=50000, dstport=443, version="0x00000001"),
     ])
-    meta = tshark_mod.parse_quic_metadata_fields(output)
+    meta = _fold_quic_rows(output)
     assert set(meta) == {5}
     assert meta[5]["version"] == "1"
 
 
-def test_parse_quic_metadata_empty_output():
-    assert tshark_mod.parse_quic_metadata_fields("") == {}
+def test_quic_metadata_accumulator_empty_output():
+    assert _fold_quic_rows("") == {}
 
 
 # ---------------------------------------------------------------------------
@@ -194,7 +202,7 @@ def test_quic_session_event_stamps_flow_quic_layer():
         meta["src_addr"], meta["src_port"],
         meta["dst_addr"], meta["dst_port"], protocol="quic")
     assert session_key == data_key
-    assert session_key.startswith("net:")
+    assert session_key.startswith("net:quic:")
 
     # Emit the SessionEvent first (handshake-before-data ordering).
     p2t._emit_quic_session_event(bus, meta)

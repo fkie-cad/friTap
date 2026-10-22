@@ -1,0 +1,229 @@
+{
+ "result": {
+  "decrypted_packet_count": 2,
+  "dropped_packet_count": 0,
+  "dropped_stream_count": 0,
+  "encrypted_streams_skipped": 0,
+  "findings_count": 0,
+  "flow_count": 1,
+  "mtproto_messages": 0,
+  "mtproto_records_undecryptable": 0,
+  "mtproto_streams": 0,
+  "mtproto_streams_degraded": 0,
+  "per_protocol": {},
+  "stream_count": 1,
+  "tap_path": "<WORK>/schannel_tls13.tap"
+ },
+ "tap": {
+  "flow_count": 1,
+  "flows": [
+   {
+    "chunks": {
+     "count": 2,
+     "sha256": [
+      "3fa3e7165addb57f1e58ae9698330ae856473a38075a4d12a8728cc990f7d0e1",
+      "e01e4fe3e5efa1f921cf70673a2c099bde0875c4f52862f013bccefd03c524d0"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:10.13.0.1:54321-10.13.0.2:443",
+     "detected_protocol": "HTTP/1.x",
+     "dst_addr": "10.13.0.2",
+     "dst_port": 443,
+     "duration": 0.002000093460083008,
+     "ended": 1790010263.160731,
+     "findings": [],
+     "flow_id": "net:10.13.0.1:54321-10.13.0.2:443:0",
+     "layers": [
+      "tls",
+      "http1"
+     ],
+     "notes": "",
+     "package_name": "schannel_tls13.pcap",
+     "process_name": "schannel_tls13.pcap",
+     "protocol": "HTTP/1.1",
+     "request": {
+      "body_size": 0,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {
+       "Host": "localhost"
+      },
+      "host": "localhost",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": true,
+      "method": "GET",
+      "protocol": "HTTP/1.1",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": "/"
+     },
+     "response": {
+      "body_size": 22,
+      "content_encoding": "",
+      "content_type": "text/plain",
+      "error": "",
+      "headers": {
+       "Connection": "close",
+       "Content-Length": "22",
+       "Content-Type": "text/plain"
+      },
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": false,
+      "method": "",
+      "protocol": "HTTP/1.1",
+      "status_code": 200,
+      "status_text": "OK",
+      "stream_id": 0,
+      "url": ""
+     },
+     "src_addr": "10.13.0.1",
+     "src_port": 54321,
+     "ssl_session_id": "",
+     "started": 1790010263.158731,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "",
+     "tls_sni": "localhost",
+     "total_bytes": 141,
+     "transport": "tls"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "alpn": "",
+       "cipher": "TLS_AES_256_GCM_SHA384",
+       "depth": 0,
+       "library": "",
+       "name": "tls",
+       "sni": "localhost",
+       "version": "TLS 1.3"
+      },
+      "type": "TlsLayer"
+     },
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "depth": 1,
+       "name": "http1"
+      },
+      "type": "AppLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 0,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {
+      "Host": "localhost"
+     },
+     "host": "localhost",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": true,
+     "method": "GET",
+     "protocol": "HTTP/1.1",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": "/"
+    },
+    "response": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 22,
+     "content_encoding": "",
+     "content_type": "text/plain",
+     "error": "",
+     "headers": {
+      "Connection": "close",
+      "Content-Length": "22",
+      "Content-Type": "text/plain"
+     },
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": false,
+     "method": "",
+     "protocol": "HTTP/1.1",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 200,
+     "status_text": "OK",
+     "stream_id": 0,
+     "url": ""
+    },
+    "summary": {
+     "connection_id": "net:10.13.0.1:54321-10.13.0.2:443",
+     "detected_protocol": "HTTP/1.x",
+     "dst_addr": "10.13.0.2",
+     "dst_port": 443,
+     "duration": 0.002000093460083008,
+     "ended": 1790010263.160731,
+     "finding_count": 0,
+     "flow_id": "net:10.13.0.1:54321-10.13.0.2:443:0",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "localhost",
+     "inner_e2e_protocol": "",
+     "inner_summary": "",
+     "method": "GET",
+     "outer_app_protocol": "HTTP/1.x",
+     "process_name": "schannel_tls13.pcap",
+     "protocol": "HTTP/1.x",
+     "src_addr": "10.13.0.1",
+     "src_port": 54321,
+     "ssl_session_id": "",
+     "started": 1790010263.158731,
+     "state": "complete",
+     "status_code": 200,
+     "tag_count": 0,
+     "tls_alpn": "",
+     "tls_sni": "localhost",
+     "total_bytes": 141,
+     "transport": "tls",
+     "url": "/"
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   }
+  ],
+  "header": {
+   "capture_start": 1790010263.152732,
+   "capture_target": "schannel_tls13.pcap",
+   "ext_data": null,
+   "ext_header_len": 0,
+   "flags": 1,
+   "flow_count": 1,
+   "format_version": 1
+  },
+  "keylog_records": {
+   "count": 5,
+   "sha256": "d587c7ed526e1f0554a8ab597d4784521b598be376be958bf818c2d967b75972"
+  },
+  "meta": {
+   "flow_fields_version": 3,
+   "parse_result_version": 1,
+   "schema_version": 1
+  },
+  "summary_count": 1
+ }
+}

@@ -22,6 +22,8 @@ import json
 import re
 from typing import Dict, Iterable, List, Tuple
 
+from ..tls.keylog import parse_strict_nss_line
+
 _HEX = re.compile(r"^[0-9a-fA-F]+$")
 
 
@@ -82,15 +84,9 @@ def parse_keylog_by_cr(text: str) -> Dict[str, Dict[str, str]]:
     """client_random -> {LABEL: secret} from an NSS keylog."""
     out: Dict[str, Dict[str, str]] = {}
     for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        parts = line.split()
-        if len(parts) != 3:
-            continue
-        label, cr, secret = parts[0], parts[1].lower(), parts[2].lower()
-        if len(cr) == 64 and _HEX.match(cr) and _HEX.match(secret):
-            out.setdefault(cr, {})[label] = secret
+        entry = parse_strict_nss_line(raw)
+        if entry is not None:
+            out.setdefault(entry.client_random, {})[entry.label] = entry.secret
     return out
 
 

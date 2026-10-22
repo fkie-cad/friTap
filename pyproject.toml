@@ -8,3 +8,39 @@ target-version = "py310"
 [tool.ruff.lint]
 # Pre-0.16 default set plus the mechanical modernisation rules; pinned, not inherited.
 select = ["E4", "E7", "E9", "F", "I", "UP009", "UP032"]
+
+[tool.pytest.ini_options]
+# Plugin-free subset: works in CI (with pytest-cov/mock/timeout) and the local
+# env/ venv (which has ONLY pytest). Coverage/plugin options are passed
+# explicitly by dev/run_tests.py where they are wanted.
+minversion = "3.10"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "linux: Linux-specific tests",
+    "windows: Windows-specific tests",
+    "macos: macOS-specific tests",
+    "android: Android-specific tests (requires device)",
+    "ios: iOS-specific tests (requires jailbroken device)",
+    "slow: Slow tests requiring real SSL connections",
+    "ground_truth: Tests against ground truth applications",
+    "requires_root: Tests requiring root/admin privileges",
+    "agent_compilation: Tests for TypeScript agent compilation",
+    "mock_integration: Mock-based integration tests",
+    "unit: Unit tests for isolated components",
+    "integration: Integration tests with real components",
+]
+addopts = ["--strict-markers", "--tb=short", "-ra"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+    "ignore::UserWarning:frida.*",
+]
+console_output_style = "progress"
+junit_family = "xunit2"
+# Active in CI where pytest-timeout exists; locally it is an ignorable
+# "unknown config option" notice (do NOT add --strict-config).
+timeout = 300
+timeout_method = "thread"

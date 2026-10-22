@@ -1,0 +1,233 @@
+{
+ "tap": {
+  "flow_count": 1,
+  "flows": [
+   {
+    "chunks": {
+     "count": 2,
+     "sha256": [
+      "86f308de3a8bbb1c056a5e6b6bf0045f84390a36aa0c99d262ead2c65ccd4017",
+      "68dfd26156401396973a98d22e21643c0224ea8a96c9c7decffb26e43ffd417a"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "sid:rc4:rc4:127.0.0.1:61139-127.0.0.1:8443",
+     "detected_protocol": "",
+     "dst_addr": "127.0.0.1",
+     "dst_port": 8443,
+     "duration": 0.00030994415283203125,
+     "ended": 1790785094.900424,
+     "findings": [],
+     "flow_id": "sid:rc4:rc4:127.0.0.1:61139-127.0.0.1:8443:0",
+     "layers": [
+      "tls",
+      "rc4"
+     ],
+     "notes": "",
+     "package_name": "demo_rc4.pcap",
+     "process_name": "demo_rc4.pcap",
+     "protocol": "unknown",
+     "request": {
+      "body_size": 14,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {},
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": true,
+      "method": "",
+      "protocol": "unknown",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": ""
+     },
+     "response": {
+      "body_size": 52,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {},
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": false,
+      "method": "",
+      "protocol": "unknown",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": ""
+     },
+     "src_addr": "127.0.0.1",
+     "src_port": 61139,
+     "ssl_session_id": "rc4:127.0.0.1:61139-127.0.0.1:8443",
+     "started": 1790785094.900114,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 66,
+     "transport": "rc4"
+    },
+    "layers": [
+     {
+      "data_source": "owned",
+      "metadata_only": false,
+      "owned_read_sha256": "d0e61c1515a7597281e40a1d04914ccbf92bcb19a70fc61fdedcb4306751de5b",
+      "owned_write_sha256": "f9ce66e0c002cdd0449cc015d569044f7595d3dc1c21fa9bc3c8c3d29b76cc9b",
+      "to_dict": {
+       "alpn": "",
+       "cipher": "TLS_AES_256_GCM_SHA384",
+       "depth": 0,
+       "library": "",
+       "name": "tls",
+       "sni": "",
+       "version": "TLS 1.3"
+      },
+      "type": "TlsLayer"
+     },
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "assoc": "",
+       "depth": 1,
+       "direction": "both",
+       "framing": "u32be-length",
+       "key_len": 19,
+       "message_count": 2,
+       "name": "rc4",
+       "records": [
+        {
+         "cipher_offset": 4,
+         "direction": "write",
+         "frame_header_len": 4,
+         "length": 14,
+         "timestamp": 1790785094.900114,
+         "tls_frames": [
+          24,
+          26
+         ]
+        },
+        {
+         "cipher_offset": 4,
+         "direction": "read",
+         "frame_header_len": 4,
+         "length": 52,
+         "timestamp": 1790785094.900424,
+         "tls_frames": [
+          28
+         ]
+        }
+       ],
+       "source": "rc4-keylog:trial-key(mem)/in"
+      },
+      "type": "Rc4Layer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": {
+     "body_sha256": "ecc4eb60996ae17a11bbe9964d0357e9978fe0ddda309d1c4e6240d63832334e",
+     "body_size": 14,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {},
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": true,
+     "method": "",
+     "protocol": "unknown",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": ""
+    },
+    "response": {
+     "body_sha256": "c9a30ab639fc69c91e2bf9fb349596c32e0f1aa486cc53367e08f65e0431472c",
+     "body_size": 52,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {},
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": false,
+     "method": "",
+     "protocol": "unknown",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": ""
+    },
+    "summary": {
+     "connection_id": "sid:rc4:rc4:127.0.0.1:61139-127.0.0.1:8443",
+     "detected_protocol": "",
+     "dst_addr": "127.0.0.1",
+     "dst_port": 8443,
+     "duration": 0.00030994415283203125,
+     "ended": 1790785094.900424,
+     "finding_count": 0,
+     "flow_id": "sid:rc4:rc4:127.0.0.1:61139-127.0.0.1:8443:0",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "",
+     "inner_e2e_protocol": "RC4",
+     "inner_summary": "",
+     "method": "",
+     "outer_app_protocol": "TLS",
+     "process_name": "demo_rc4.pcap",
+     "protocol": "unknown",
+     "src_addr": "127.0.0.1",
+     "src_port": 61139,
+     "ssl_session_id": "rc4:127.0.0.1:61139-127.0.0.1:8443",
+     "started": 1790785094.900114,
+     "state": "complete",
+     "status_code": 0,
+     "tag_count": 0,
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 66,
+     "transport": "rc4",
+     "url": ""
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   }
+  ],
+  "header": {
+   "capture_start": 1790785081.828368,
+   "capture_target": "demo_rc4.pcap",
+   "ext_data": null,
+   "ext_header_len": 0,
+   "flags": 1,
+   "flow_count": 1,
+   "format_version": 1
+  },
+  "keylog_records": {
+   "count": 5,
+   "sha256": "e27250eaa66fd0e505b326a077b209db237a088d16b1d89194be3ba2129b7a38"
+  },
+  "meta": {
+   "flow_fields_version": 3,
+   "parse_result_version": 1,
+   "schema_version": 1
+  },
+  "summary_count": 1
+ }
+}

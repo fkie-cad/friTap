@@ -15,17 +15,21 @@ blocks. A new protocol (and any plugin discovered via
 ``--<proto>-keylog`` flag, and the layered flow view for free.
 
 An entry is pure metadata plus an *emitter* callable with a normalized
-signature (see :data:`OfflineEmitter`); the built-in Signal/MTProto entries are
-registered by :mod:`friTap.offline.pcap_to_tap` where their emitter functions
-live (avoiding an import cycle).
+signature (see :data:`OfflineEmitter`); the built-in entries (Signal, MTProto /
+Telegram, RC4, Schannel, ...) are self-registered by their own in-tree
+subpackages (e.g. :mod:`friTap.offline.mtproto`, :mod:`friTap.offline.signal`),
+which register their entries when imported. The offline driver
+(:mod:`friTap.offline.pcap_to_tap`) imports every in-tree subpackage at load
+time without naming any protocol.
 """
 
 from __future__ import annotations
 
+import importlib
 import logging
 import threading
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Sequence, Set
 
 logger = logging.getLogger(__name__)
 
@@ -44,9 +48,23 @@ OFFLINE_DECRYPTOR_DISCOVERY_DISABLE_ENV = "FRITAP_DISABLE_OFFLINE_DECRYPTOR_DISC
 # each implementation uses the subset it cares about. It must emit DatalogEvents
 # (and SessionEvents if it wants metadata layers) on *bus*, open the writer via
 # ``state.ensure_open(...)``, and record its counters via
-# ``result.record_protocol(...)``. It must never raise for a recoverable issue
-# (missing dependency / unusable keylog) — log and return instead.
+# ``result.record_protocol(prefix, **counters)`` (generic per-type merge into
+# ``per_protocol[prefix]``). Per-conversion protocol bookkeeping belongs in a
+# namespace registered with ``pipeline_api.register_protocol_state`` and reached
+# via ``protocol_state_of(state, name)``. It must never raise for a recoverable
+# issue (missing dependency / unusable keylog) — log and return instead.
 OfflineEmitter = Callable[..., None]
+
+# A post-collection attach hook receives the collector's LIVE flows and the
+# conversion's writer state, runs after every emitter and before the final
+# flush, and returns the ids of flows it fully absorbed (not written), or None.
+OfflineAttach = Callable[[list, object], Optional[Set[str]]]
+
+# A mid-stream span hook receives ``(state, bound_keys, proto_keylogs,
+# present_entries, *, bus, result)`` once the mid-stream TLS stage bound at least
+# one connection, and decodes the protocol directly from the recovered TLS
+# plaintext in ``state.tls_spans``. It must guard its own decode (never raise).
+OfflineMidstreamSpans = Callable[..., None]
 
 
 @dataclass(frozen=True)
@@ -87,6 +105,26 @@ class OfflineDecryptorEntry:
             INSIDE the decrypted TLS plaintext (RC4-in-TLS). Its flows and the
             TLS flows of the capture are held back until the post-collection
             nested attach, which may absorb a TLS flow it fully consumed.
+        attach: Optional post-collection :data:`OfflineAttach` hook folding the
+            protocol's accumulated metadata onto the LIVE flows before the final
+            flush. Runs on every conversion, whether or not the protocol was
+            selected (the hook itself is a no-op when its protocol recorded
+            nothing); entries sharing a decoder family declare it on ONE member.
+        attach_order: Sort key of *attach* among all entries' hooks (ties keep
+            registration order).
+        messaging: True for a messaging protocol whose counters the CLI/TUI
+            summarize via ``messaging_buckets`` (MTProto, Telegram, Signal).
+        resync_default: Default mid-stream resync search depth this decryptor
+            supports (in its own unit), or ``None`` when it has no mid-stream
+            recovery. The first non-``None`` value is the public default.
+        resync_param: Name of the emitter keyword that receives the generic
+            ``resync_search_depth`` (e.g. ``"obf_max_blocks"``), or ``None`` when
+            the emitter takes no resync depth. The conversion forwards an explicit
+            depth only under this name and only when the emitter declares it (or
+            a ``**kwargs`` catch-all); an entry without it is never handed one.
+        midstream_spans: Optional :data:`OfflineMidstreamSpans` hook decoding the
+            protocol from TLS plaintext recovered by the mid-stream TLS stage
+            (flows captured with no ClientHello). ``None`` for most entries.
     """
 
     protocol_name: str
@@ -101,6 +139,12 @@ class OfflineDecryptorEntry:
     accepts_keylog: Optional[Callable[[str], bool]] = None
     decoder_family: str = ""
     nests_in_tls: bool = False
+    attach: Optional[OfflineAttach] = None
+    attach_order: int = 0
+    messaging: bool = False
+    resync_default: Optional[int] = None
+    resync_param: Optional[str] = None
+    midstream_spans: Optional[OfflineMidstreamSpans] = None
 
 
 class OfflineDecryptorRegistry:
@@ -147,6 +191,34 @@ class OfflineDecryptorRegistry:
 _REGISTRY = OfflineDecryptorRegistry()
 
 
+def entry_family(entry: OfflineDecryptorEntry) -> str:
+    """Decoder family of *entry* (its own protocol name if unset)."""
+    return getattr(entry, "decoder_family", "") or entry.protocol_name
+
+
+def attach_hooks(entries: List[OfflineDecryptorEntry]) -> List[OfflineAttach]:
+    """Return the entries' attach hooks in run order.
+
+    Sorted by ``attach_order`` (a stable sort, so ties keep *entries* order).
+    """
+    ordered = sorted(entries, key=lambda e: e.attach_order)
+    return [entry.attach for entry in ordered if entry.attach is not None]
+
+
+def messaging_protocol_names(entries: List[OfflineDecryptorEntry]) -> tuple:
+    """Names of the ``messaging`` entries, in *entries* (registration) order."""
+    return tuple(e.protocol_name for e in entries if getattr(e, "messaging", False))
+
+
+def default_resync_search_depth(entries: List[OfflineDecryptorEntry], fallback: int = 0) -> int:
+    """The first entry's non-``None`` ``resync_default``, else *fallback*."""
+    for entry in entries:
+        value = getattr(entry, "resync_default", None)
+        if value is not None:
+            return value
+    return fallback
+
+
 def get_offline_decryptor_registry() -> OfflineDecryptorRegistry:
     """Return the process-global offline-decryptor registry."""
     return _REGISTRY
@@ -157,12 +229,37 @@ def register_offline_decryptor(entry: OfflineDecryptorEntry, *, replace: bool = 
     _REGISTRY.register(entry, replace=replace)
 
 
+def register_offline_decryptors_safely(
+    package: str, builder_names: Sequence[str], skip_message: str,
+) -> None:
+    """Self-register a protocol package's entries, never raising.
+
+    Imports ``<package>.offline_decryptor`` lazily and registers the entry built
+    by each of its *builder_names*, in order. Any failure (a missing dependency,
+    an import cycle) is logged at debug on *package*'s logger as *skip_message*
+    and skips the rest. Re-registration of an identical entry is idempotent.
+    """
+    try:
+        module = importlib.import_module(f"{package}.offline_decryptor")
+        for builder_name in builder_names:
+            register_offline_decryptor(getattr(module, builder_name)())
+    except Exception:  # noqa: BLE001 - registration must never break import
+        logging.getLogger(package).debug(skip_message, exc_info=True)
+
+
 __all__ = [
     "OfflineDecryptorEntry",
     "OfflineDecryptorRegistry",
+    "attach_hooks",
+    "default_resync_search_depth",
+    "entry_family",
+    "messaging_protocol_names",
     "OfflineEmitter",
+    "OfflineAttach",
+    "OfflineMidstreamSpans",
     "get_offline_decryptor_registry",
     "register_offline_decryptor",
+    "register_offline_decryptors_safely",
     "OFFLINE_DECRYPTOR_MARKER_ATTR",
     "OFFLINE_DECRYPTOR_ENTRYPOINT_GROUP",
     "OFFLINE_DECRYPTOR_DISCOVERY_DISABLE_ENV",

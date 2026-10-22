@@ -28,6 +28,7 @@ import pytest
 
 from friTap.offline import tshark as tshark_mod
 from friTap.offline.schannel import correlate as sc
+from friTap.offline.schannel import oracle as oc
 
 _FIXTURE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "fixtures"))
 _PCAP = os.path.join(_FIXTURE_DIR, "schannel_tls13.pcap")
@@ -111,3 +112,31 @@ def test_produced_keylog_decrypts_both_directions(tmp_path):
     methods = {c.strip() for row in out.splitlines() for c in row.split("\t") if c.strip()}
     assert "GET" in methods       # client -> server app data decrypted
     assert "200" in methods       # server -> client app data decrypted
+
+
+def test_oracle_produces_identical_result_to_tshark_only():
+    # The in-Python oracle must not change the correlation: with it on (default,
+    # built from the pcap) and off, correlate_tls13 produces the same keylog.
+    tshark = tshark_mod.find_tshark()
+    truth = _ground_truth()
+    records = sc.parse_tls13_records("\n".join(truth) + "\n")
+    with_oracle = sc.correlate_tls13(tshark, _PCAP, records)
+    tshark_only = sc.correlate_tls13(tshark, _PCAP, records, oracle=None)
+    assert sorted(with_oracle) == sorted(tshark_only)
+
+
+def test_oracle_decides_every_decryptable_label_in_python():
+    # On a clean TLS 1.3 stream the oracle answers True/False for all four
+    # decryptable labels without tshark; only EXPORTER_SECRET is left to tshark
+    # (which also cannot place it).
+    oracle = oc.TrialOracle.from_pcap(_PCAP)
+    assert oracle is not None
+    truth = _ground_truth()
+    cr = next(line.split()[1] for line in open(_KEYLOG, encoding="utf-8")
+              if line.strip() and not line.startswith("#"))
+    for secret, label in truth.items():
+        verdict = oracle.tls13_probe(cr, label, secret)
+        if label in _DECRYPTABLE:
+            assert verdict is True, f"{label} not confirmed by the oracle"
+        else:
+            assert verdict is None    # EXPORTER_SECRET: oracle defers

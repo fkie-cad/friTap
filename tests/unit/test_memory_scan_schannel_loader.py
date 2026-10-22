@@ -23,6 +23,7 @@ from types import SimpleNamespace
 import pytest
 
 from friTap.events import EventBus, KeylogEvent
+from friTap.memory_scanning import MemoryScanEngine
 from friTap.memory_scanning.loader import (
     MemoryScanPatternError,
     load_database,
@@ -31,7 +32,6 @@ from friTap.memory_scanning.loader import (
     select_schannel_offsets,
     validate_profile,
 )
-from friTap.memory_scanning import MemoryScanEngine
 
 _SCHANNEL_ID = "schannel-win11-ncryptsslp"
 
@@ -147,7 +147,7 @@ class TestSchannelPluginMessages:
         assert path.exists()
         rows = [ln for ln in path.read_text().splitlines() if not ln.startswith("#")]
         # Documented format: <kind> <secret_hex> <session_id|-> <ssl_version>
-        assert rows == [f"schannel_tls12_master {secret} - 771"]
+        assert rows == [f"schannel_tls12_master {secret} - 771 -"]
         # Unpaired secrets never become keylog events.
         assert findings == []
 
@@ -165,7 +165,44 @@ class TestSchannelPluginMessages:
         plugin._close_unpaired()
         rows = [ln for ln in (tmp_path / "keys.schannel.unpaired").read_text().splitlines()
                 if not ln.startswith("#")]
-        assert rows == [f"schannel_tls13_secret {secret} - 772"]
+        assert rows == [f"schannel_tls13_secret {secret} - 772 -"]
+
+    def test_unpaired_group_column_written_when_supplied(self, bus_and_memscan_findings, tmp_path):
+        # When the agent supplies a connection-group id, it rides along in the
+        # optional 5th column so the offline correlator can place an EXPORTER by
+        # elimination. (The current agent build sends none; this locks the plumbing.)
+        bus, findings = bus_and_memscan_findings
+        plugin = self._plugin(bus, tmp_path)
+        secret = "ab" * 32
+        plugin.on_script_message(
+            {"type": "send", "payload": {
+                "type": "unpaired", "kind": "schannel_tls13_secret",
+                "secret": secret, "session_id": "", "ssl_version": 772,
+                "group": "conn7", "addr": "0x9999"}},
+            None,
+        )
+        plugin._close_unpaired()
+        rows = [ln for ln in (tmp_path / "keys.schannel.unpaired").read_text().splitlines()
+                if not ln.startswith("#")]
+        assert rows == [f"schannel_tls13_secret {secret} - 772 conn7"]
+
+    def test_null_group_and_session_id_written_as_dash(self, bus_and_memscan_findings, tmp_path):
+        # A JSON null must become "-", never the literal "None" (which the
+        # offline parser would treat as a real group id shared by every secret).
+        bus, _findings = bus_and_memscan_findings
+        plugin = self._plugin(bus, tmp_path)
+        secret = "ef" * 32
+        plugin.on_script_message(
+            {"type": "send", "payload": {
+                "type": "unpaired", "kind": "schannel_tls13_secret",
+                "secret": secret, "session_id": None, "ssl_version": 772,
+                "group": None, "addr": "0x9999"}},
+            None,
+        )
+        plugin._close_unpaired()
+        rows = [ln for ln in (tmp_path / "keys.schannel.unpaired").read_text().splitlines()
+                if not ln.startswith("#")]
+        assert rows == [f"schannel_tls13_secret {secret} - 772 -"]
 
     def test_orphan_session_not_written_to_schannel_sidecar(self, bus_and_memscan_findings, tmp_path):
         # BoringSSL Tier C orphan_session has no offline correlator: it is only

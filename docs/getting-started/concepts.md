@@ -267,7 +267,7 @@ for. The relevant types live in `friTap.flow.layers`:
 # Transport handshake metadata via the never-None attribute accessors:
 flow.tls.sni          # -> str   (TlsLayer.sni; "" until populated)
 flow.tls.version      # TlsLayer: library / version / sni / alpn / cipher
-flow.quic.alpn        # QuicLayer: version / sni / alpn / cipher / scid / dcid
+flow.quic.alpn        # QuicLayer: library / version / sni / alpn / cipher / scid / dcid
 flow.ssh.kex          # SshLayer: client_version / server_version / kex / cipher / mac
 
 # Non-mutating lookup (returns the layer or None — does NOT grow the stack):

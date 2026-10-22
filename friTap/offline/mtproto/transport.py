@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
-from typing import Dict, Iterator, List, Optional, Tuple
+from functools import lru_cache
+from types import MappingProxyType
+from typing import Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 # Transport tags found at decrypted init[56:60].
 ABRIDGED = "abridged"
@@ -32,6 +34,7 @@ _TAG_ABRIDGED = b"\xef\xef\xef\xef"
 _TAG_INTERMEDIATE = b"\xee\xee\xee\xee"
 _TAG_PADDED_INTERMEDIATE = b"\xdd\xdd\xdd\xdd"
 
+# 64-byte obfuscation init block (re-exported as ``reassembly.INIT_BLOCK_LEN``).
 _INIT_LEN = 64
 
 _QUICK_ACK_BIT = 0x80  # high bit of the abridged length byte; masked off
@@ -551,7 +554,7 @@ def _keystream_targets(
     when the keystream there is ``window[j:j+8] ^ kid``; so every (offset, id) pair
     reduces to ONE 8-byte keystream pattern, independent of the unknown lag ``o``.
     """
-    kids = [k for k in auth_keymap if isinstance(k, bytes) and len(k) == _AUTH_KEY_ID_LEN]
+    kids = _known_key_ids(auth_keymap)
     targets: Dict[bytes, List[int]] = {}
     for j in positions:
         chunk = window[j : j + _AUTH_KEY_ID_LEN]
@@ -560,15 +563,69 @@ def _keystream_targets(
     return targets
 
 
-def _keystream_hits(keystream: bytes, targets: Dict[bytes, List[int]]) -> set:
+def _known_key_ids(auth_keymap: Mapping[bytes, object]) -> Tuple[bytes, ...]:
+    """The well-formed 8-byte auth_key_ids of *auth_keymap*, in map order."""
+    return tuple(
+        k for k in auth_keymap if isinstance(k, bytes) and len(k) == _AUTH_KEY_ID_LEN
+    )
+
+
+# One stream pair tries EVERY candidate obfuscation key against the same two
+# direction windows, so the (key-independent) target table repeats per key. The
+# memo is keyed purely by immutable CONTENT (window bytes, transports, id tuple):
+# a hit can never be stale, and a few slots cover the per-stream locality.
+_TARGETS_MEMO_SIZE = 4
+
+
+@lru_cache(maxsize=_TARGETS_MEMO_SIZE)
+def _anchor_targets(
+    window: bytes, transports: Tuple[str, ...], key_ids: Tuple[bytes, ...]
+) -> Mapping[bytes, Sequence[int]]:
+    """Read-only, memoized :func:`_keystream_targets` for one recovery window."""
+    positions = _anchor_id_positions(window, transports)
+    targets = _keystream_targets(window, positions, dict.fromkeys(key_ids))
+    return MappingProxyType({p: tuple(js) for p, js in targets.items()})
+
+
+# ``(word -> pattern, frozenset of words)``: the native-uint64 probe index of a
+# target table, in the form :func:`_keystream_hits` intersects against.
+TargetWordIndex = Tuple[Mapping[int, bytes], frozenset]
+
+
+def _target_word_index(targets: Mapping[bytes, Sequence[int]]) -> TargetWordIndex:
+    """Native-endian uint64 view of the 8-byte target patterns of *targets*."""
+    wanted = {int.from_bytes(t, sys.byteorder): t for t in targets}
+    return MappingProxyType(wanted), frozenset(wanted)
+
+
+@lru_cache(maxsize=_TARGETS_MEMO_SIZE)
+def _anchor_target_words(
+    window: bytes, transports: Tuple[str, ...], key_ids: Tuple[bytes, ...]
+) -> TargetWordIndex:
+    """Memoized :func:`_target_word_index` of :func:`_anchor_targets` (same key).
+
+    The probe index is as key-independent as the table itself, so the candidate
+    keys tried against one window share it instead of rebuilding it per key.
+    """
+    return _target_word_index(_anchor_targets(window, transports, key_ids))
+
+
+def _keystream_hits(
+    keystream: bytes,
+    targets: Mapping[bytes, Sequence[int]],
+    word_index: Optional[TargetWordIndex] = None,
+) -> set:
     """Target patterns occurring ANYWHERE (any byte offset) in *keystream*.
 
     One C-level pass per 8-byte residue class: the keystream is viewed as native
     uint64 words starting at byte ``r`` and intersected with the target set, so
     every byte offset is covered without a Python-level loop over the offsets.
+    ``word_index`` is *targets*' precomputed :func:`_target_word_index` (built
+    here when omitted).
     """
-    wanted = {int.from_bytes(t, sys.byteorder): t for t in targets}
-    wanted_words = set(wanted)
+    if word_index is None:
+        word_index = _target_word_index(targets)
+    wanted, wanted_words = word_index
     view = memoryview(keystream)
     found: set = set()
     # The auth_key_id is 8 bytes: scan it as one native uint64 word per offset.
@@ -585,12 +642,13 @@ def _keystream_hits(keystream: bytes, targets: Dict[bytes, List[int]]) -> set:
 
 def _lag_offsets(
     keystream: bytes,
-    targets: Dict[bytes, List[int]],
+    targets: Mapping[bytes, Sequence[int]],
     max_offset: int,
+    word_index: Optional[TargetWordIndex] = None,
 ) -> set:
     """Keystream start offsets ``o`` in ``0..max_offset`` where some target lands."""
     offsets = set()
-    for pattern in _keystream_hits(keystream, targets):
+    for pattern in _keystream_hits(keystream, targets, word_index):
         idx = keystream.find(pattern)
         while idx != -1:
             offsets.update(
@@ -644,9 +702,8 @@ def recover_obf_alignment(
         transports = (ABRIDGED, INTERMEDIATE)
 
     window = bytes(run_bytes[:_ANCHOR_TEST_WINDOW])
-    targets = _keystream_targets(
-        window, _anchor_id_positions(window, transports), auth_keymap
-    )
+    key_ids = _known_key_ids(auth_keymap)
+    targets = _anchor_targets(window, transports, key_ids)
     if not targets:
         return None
     max_lag = max_blocks * _COUNTER_LEN
@@ -659,7 +716,8 @@ def recover_obf_alignment(
     span = -(-(max_offset + len(window)) // _COUNTER_LEN) * _COUNTER_LEN
     keystream = deobfuscate_at(key, counter_add(live_counter, first_block), bytes(span))
 
-    offsets = _lag_offsets(keystream, targets, max_offset)
+    word_index = _anchor_target_words(window, transports, key_ids)
+    offsets = _lag_offsets(keystream, targets, max_offset, word_index)
     for offset in sorted(offsets, key=lambda o: (abs(rel0 - ks_origin - o), o)):
         plain = _xor_bytes(window, keystream[offset : offset + len(window)])
         for transport_type in transports:

@@ -99,6 +99,10 @@ jobs:
         # frida-compile). The explicit `./dev/compile_agent.sh` step below
         # is the one we diff against, so building twice is pure waste.
         run: npm ci --ignore-scripts
+      - name: Fetch frida native binding
+        # --ignore-scripts also skips frida's own install script, which
+        # downloads build/frida_binding.node that frida-compile imports.
+        run: npm rebuild frida
 
       - name: Install frida-tools (provides frida-pm)
         run: |
@@ -130,7 +134,7 @@ jobs:
         run: |
           {
             echo "## Agent build manifest"
-            echo "frida-compile: $(npx --no -- frida-compile --version 2>&1 | head -1)"
+            echo "frida-compile: $(node -p "require('frida-compile/package.json').version")"
             echo "node: $(node --version)"
             echo "agent SHA-256: $(sha256sum friTap/fritap_agent.js | awk '{print $1}')"
             echo "agent size: $(wc -c < friTap/fritap_agent.js) bytes"

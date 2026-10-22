@@ -16,6 +16,7 @@ scapy_all = pytest.importorskip("scapy.all")
 from scapy.layers.inet import IP, TCP  # noqa: E402
 from scapy.layers.inet6 import IPv6  # noqa: E402
 from scapy.layers.l2 import ARP, Ether, Loopback  # noqa: E402
+from scapy.packet import bind_bottom_up  # noqa: E402
 from scapy.utils import rdpcap, wrpcap  # noqa: E402
 
 from friTap.pcap import (  # noqa: E402
@@ -26,6 +27,12 @@ from friTap.pcap import (  # noqa: E402
 
 BSD_AF_INET = 2
 DARWIN_AF_INET6 = 30
+
+# DLT_NULL carries the capturing host's AF_INET6 (24 Windows/NetBSD, 28 FreeBSD,
+# 30 Darwin), but scapy only binds Loopback->IPv6 for *this* host's value
+# (10 on Linux). Decode all real-world values so the test is host-independent.
+for _af_inet6 in (24, 28, 30):
+    bind_bottom_up(Loopback, IPv6, type=_af_inet6)
 
 
 def _make_capture_thread(tmp_path):

@@ -80,7 +80,11 @@ def test_ipv6_endpoint_hint_auto_widens_recovery():
     from friTap.offline.mtproto.records import MtprotoStats
     from friTap.offline.mtproto.transport import DEFAULT_OBF_MAX_BLOCKS
     from tests.unit.test_mtproto_obf_recovery_directions import (
-        _authkey, _obf_tail_dir, _pair as _stream_pair,
+        _authkey,
+        _obf_tail_dir,
+    )
+    from tests.unit.test_mtproto_obf_recovery_directions import (
+        _pair as _stream_pair,
     )
 
     rng = random.Random(101)

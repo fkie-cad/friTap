@@ -23,6 +23,11 @@ on any recoverable problem. Schannel is PUBLIC — not listed in ``private.txt``
 
 from __future__ import annotations
 
+# True if the optional AEAD backend (for the pure-Python TLS 1.3 peel, used by the
+# pidmap/sspi trial-decrypt helpers) is importable. Never raises; the primary
+# tshark-driven correlation path does not depend on it.
+from ..tls.backend import backend_available as schannel_backend_available  # noqa: F401
+
 
 class SchannelError(Exception):
     """Base class for offline Schannel correlation errors."""
@@ -42,33 +47,15 @@ def _register_schannel_offline_decryptor() -> None:
     dependency or an import cycle during registration is logged at debug and
     skipped. Re-registration of an identical entry is idempotent.
     """
-    try:
-        from friTap.offline.registry import register_offline_decryptor
+    from friTap.offline.registry import register_offline_decryptors_safely
 
-        from .offline_decryptor import build_schannel_offline_decryptor_entry
-
-        register_offline_decryptor(build_schannel_offline_decryptor_entry())
-    except Exception:  # noqa: BLE001 - registration must never break import
-        import logging
-
-        logging.getLogger(__name__).debug(
-            "Schannel offline decryptor self-registration skipped", exc_info=True
-        )
+    register_offline_decryptors_safely(
+        __name__, ("build_schannel_offline_decryptor_entry",),
+        "Schannel offline decryptor self-registration skipped",
+    )
 
 
 _register_schannel_offline_decryptor()
-
-
-def schannel_backend_available() -> bool:
-    """Return True if the optional AEAD backend (for the pure-Python TLS 1.3 peel,
-    used by the pidmap/sspi trial-decrypt helpers) is importable. Never raises; the
-    primary tshark-driven correlation path does not depend on it."""
-    try:
-        from friTap.offline.rc4.crypto import backend_available
-
-        return backend_available()
-    except Exception:  # noqa: BLE001 - any import/probe failure means "unavailable"
-        return False
 
 
 __all__ = [

@@ -36,7 +36,7 @@ def pytest_configure(config):
         "markers", "ios: iOS-specific tests (requires jailbroken device)"
     )
     config.addinivalue_line(
-        "markers", "slow: Slow tests requiring real SSL connections"
+        "markers", "slow: Slow tests (skipped unless FRITAP_SLOW_TESTS=1 or -m slow)"
     )
     config.addinivalue_line(
         "markers", "ground_truth: Tests against ground truth applications"
@@ -50,6 +50,25 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "mock_integration: Mock-based integration tests"
     )
+
+
+def _slow_tests_enabled(config):
+    """Slow tests run with FRITAP_SLOW_TESTS=1 or a `-m` expression naming slow."""
+    if os.environ.get("FRITAP_SLOW_TESTS") == "1":
+        return True
+    return "slow" in (config.getoption("-m", default="") or "")
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip `slow`-marked tests unless explicitly enabled."""
+    if _slow_tests_enabled(config):
+        return
+    skip_slow = pytest.mark.skip(
+        reason="slow test: set FRITAP_SLOW_TESTS=1 or pass -m slow")
+    for item in items:
+        if item.get_closest_marker("slow") is not None:
+            item.add_marker(skip_slow)
+
 
 def has_android_device():
     """Check if Android device is connected."""
@@ -320,6 +339,15 @@ def mock_subprocess():
         mock_result.stderr = ""
         mock_run.return_value = mock_result
         yield mock_run
+
+@pytest.fixture(autouse=True)
+def disable_tshark_version_disk_cache(monkeypatch):
+    """Keep tests from writing the real user cache (tshark_version.json).
+
+    Tests that exercise the disk cache delete this variable themselves.
+    """
+    monkeypatch.setenv("FRITAP_NO_TSHARK_VERSION_CACHE", "1")
+
 
 @pytest.fixture(autouse=True)
 def cleanup_test_files():

@@ -24,9 +24,12 @@ from types import SimpleNamespace
 import pytest
 
 from friTap.events import EventBus, KeylogEvent
+from friTap.memory_scanning import (
+    MemoryScanEngine,
+    MemoryScanKeylogFormatter,
+    MemoryScanScriptPlugin,
+)
 from friTap.output.keylog_handler import KeylogOutputHandler
-from friTap.memory_scanning import MemoryScanEngine, MemoryScanKeylogFormatter
-from friTap.memory_scanning import MemoryScanScriptPlugin
 
 
 def _memscan_event(line: str) -> KeylogEvent:

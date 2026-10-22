@@ -20,6 +20,12 @@ def decode_varint(data: bytes, offset: int = 0) -> tuple[int, int]:
     return value, length
 
 
+#: Unambiguous name for :func:`decode_varint` (QUIC RFC 9000; returns
+#: ``(value, bytes_consumed)``) -- not to be confused with the protobuf
+#: base-128 :func:`friTap.parsers.protobuf.wire.decode_protobuf_varint`.
+decode_quic_varint = decode_varint
+
+
 def encode_varint(value: int) -> bytes:
     """Encode an integer as a QUIC variable-length integer.
 

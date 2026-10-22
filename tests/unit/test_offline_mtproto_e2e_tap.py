@@ -23,6 +23,7 @@ import pytest
 
 from friTap.events import DatalogEvent, EventBus
 from friTap.offline import pcap_to_tap as p2t
+from friTap.offline.mtproto import offline_decryptor as mtproto_emit
 from friTap.offline.mtproto.e2e.records import SecretChatMessage
 from friTap.offline.mtproto.records import DecryptedMessage
 
@@ -124,7 +125,7 @@ def _run(emitter, keylog):
 
 def test_mtproto_keylog_surfaces_e2e_flows(patched_backend):
     _cloud, e2e = patched_backend
-    events, _result, _state = _run(p2t._emit_mtproto_streams, "x.mtproto.keylog")
+    events, _result, _state = _run(mtproto_emit._emit_mtproto_streams, "x.mtproto.keylog")
 
     protocols = [ev.protocol for ev in events]
     assert "telegram_e2e" in protocols, (
@@ -142,7 +143,7 @@ def test_mtproto_keylog_surfaces_e2e_flows(patched_backend):
 
 
 def test_mtproto_keylog_counts_cloud_and_e2e_under_mtproto_bucket(patched_backend):
-    _events, result, _state = _run(p2t._emit_mtproto_streams, "x.mtproto.keylog")
+    _events, result, _state = _run(mtproto_emit._emit_mtproto_streams, "x.mtproto.keylog")
 
     # Both messages are counted, and under the mtproto bucket (NOT telegram).
     assert "mtproto" in result.per_protocol
@@ -153,7 +154,7 @@ def test_mtproto_keylog_counts_cloud_and_e2e_under_mtproto_bucket(patched_backen
 
 def test_telegram_keylog_still_counts_under_telegram_bucket(patched_backend):
     _cloud, e2e = patched_backend
-    events, result, _state = _run(p2t._emit_telegram_streams, "x.telegram.keylog")
+    events, result, _state = _run(mtproto_emit._emit_telegram_streams, "x.telegram.keylog")
 
     # --telegram-keylog is unchanged: same cloud + E2E output, telegram bucket.
     protocols = [ev.protocol for ev in events]
@@ -196,7 +197,7 @@ def test_e2e_only_keylog_flags_no_transport_auth_key(monkeypatch):
         lambda transport_messages, keymap, stats=None: iter(()),
     )
 
-    events, result, _state = _run(p2t._emit_mtproto_streams, "e2e_only.mtproto.keylog")
+    events, result, _state = _run(mtproto_emit._emit_mtproto_streams, "e2e_only.mtproto.keylog")
     assert events == []
     bucket = result.per_protocol["mtproto"]
     assert bucket["e2e_only"] is True
@@ -206,7 +207,7 @@ def test_e2e_only_keylog_flags_no_transport_auth_key(monkeypatch):
 
 def test_full_keylog_does_not_flag_e2e_only(patched_backend):
     """When a transport auth key IS present, e2e_only stays False."""
-    _events, result, _state = _run(p2t._emit_mtproto_streams, "x.mtproto.keylog")
+    _events, result, _state = _run(mtproto_emit._emit_mtproto_streams, "x.mtproto.keylog")
     assert result.per_protocol["mtproto"]["e2e_only"] is False
 
 
@@ -218,6 +219,6 @@ def test_empty_keylog_emits_nothing(monkeypatch):
         "friTap.offline.mtproto.keylog.load_mtproto_obf_keylog", lambda path: [])
     monkeypatch.setattr(
         "friTap.offline.mtproto.e2e.keylog.load_secret_chat_keylog", lambda path: {})
-    events, result, _state = _run(p2t._emit_mtproto_streams, "empty.mtproto.keylog")
+    events, result, _state = _run(mtproto_emit._emit_mtproto_streams, "empty.mtproto.keylog")
     assert events == []
     assert result.per_protocol == {}

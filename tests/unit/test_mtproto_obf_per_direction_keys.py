@@ -21,8 +21,7 @@ import pytest
 
 pytest.importorskip("cryptography")  # CTR + IGE backend
 
-from friTap.offline.mtproto import crypto
-from friTap.offline.mtproto import decrypt
+from friTap.offline.mtproto import crypto, decrypt
 from friTap.offline.mtproto.decrypt import _process_recovered_stream, _process_stream
 from friTap.offline.mtproto.records import MtprotoStats
 from friTap.offline.mtproto.transport import (

@@ -16,7 +16,7 @@ streaming primitive (no per-direction deflate context, no flow attachment).
 
 from __future__ import annotations
 
-from typing import Iterator, NamedTuple
+from typing import Iterator, NamedTuple, Tuple
 
 
 class WebSocketFrame(NamedTuple):
@@ -90,7 +90,20 @@ def iter_websocket_frames(stream: bytes) -> Iterator[WebSocketFrame]:
     partial trailing frame stops iteration. Masking is honored (client->server
     frames are masked).
     """
-    stream = _skip_http_handshake(stream)
+    for frame, _end in iter_websocket_frames_with_end(stream):
+        yield frame
+
+
+def iter_websocket_frames_with_end(stream: bytes) -> Iterator[Tuple[WebSocketFrame, int]]:
+    """Like :func:`iter_websocket_frames`, also yielding each frame's end offset.
+
+    The offset is exclusive and relative to *stream* as passed in (a skipped
+    HTTP upgrade handshake is counted), so a caller can map a frame back to the
+    capture bytes that completed it.
+    """
+    stripped = _skip_http_handshake(stream)
+    skipped = len(stream) - len(stripped)
+    stream = stripped
     pos = 0
     n = len(stream)
     while pos + 2 <= n:
@@ -119,5 +132,5 @@ def iter_websocket_frames(stream: bytes) -> Iterator[WebSocketFrame]:
         if header + length > n:
             return  # partial trailing frame
         payload = unmask(stream[header:header + length], mask_key)
-        yield WebSocketFrame(opcode, payload)
         pos = header + length
+        yield WebSocketFrame(opcode, payload), skipped + pos

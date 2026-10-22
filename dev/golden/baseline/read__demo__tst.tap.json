@@ -1,0 +1,169 @@
+{
+ "tap": {
+  "flow_count": 1,
+  "flows": [
+   {
+    "chunks": {
+     "count": 3,
+     "sha256": [
+      "7d474e9f678c55afe2256d94ddf1978dff157c9bb44c9b4d43d5fc834523fa22",
+      "0824f7eda99378b1747891efc3b4d7e017b82cebc85fdbdca9a49bd39fd43e30",
+      "bf1e93013a0af7a4ae4d351a1c7630cff1d6ef15eaafd246ac8447402a6e54f6"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:127.0.0.1:63404-127.0.0.1:8443",
+     "detected_protocol": "HTTP/3",
+     "dst_addr": "127.0.0.1",
+     "dst_port": 8443,
+     "duration": 0.004457950592041016,
+     "ended": 1790849593.606514,
+     "findings": [],
+     "flow_id": "net:127.0.0.1:63404-127.0.0.1:8443:0",
+     "layers": [
+      "tls",
+      "http3"
+     ],
+     "notes": "",
+     "package_name": "tst.pcap",
+     "process_name": "tst.pcap",
+     "protocol": "HTTP/3",
+     "request": {
+      "body_size": 14,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {},
+      "host": "",
+      "is_complete": false,
+      "is_control_frame": false,
+      "is_request": true,
+      "method": "",
+      "protocol": "HTTP/3",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 1,
+      "url": ""
+     },
+     "response": null,
+     "src_addr": "127.0.0.1",
+     "src_port": 63404,
+     "ssl_session_id": "",
+     "started": 1790849593.602056,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 74,
+     "transport": "tls"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "alpn": "",
+       "cipher": "TLS_AES_256_GCM_SHA384",
+       "depth": 0,
+       "library": "",
+       "name": "tls",
+       "sni": "",
+       "version": "TLS 1.3"
+      },
+      "type": "TlsLayer"
+     },
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "depth": 1,
+       "name": "http3"
+      },
+      "type": "AppLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 14,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {},
+     "host": "",
+     "is_complete": false,
+     "is_control_frame": false,
+     "is_request": true,
+     "method": "",
+     "protocol": "HTTP/3",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 1,
+     "url": ""
+    },
+    "response": null,
+    "summary": {
+     "connection_id": "net:127.0.0.1:63404-127.0.0.1:8443",
+     "detected_protocol": "HTTP/3",
+     "dst_addr": "127.0.0.1",
+     "dst_port": 8443,
+     "duration": 0.004457950592041016,
+     "ended": 1790849593.606514,
+     "finding_count": 0,
+     "flow_id": "net:127.0.0.1:63404-127.0.0.1:8443:0",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "",
+     "inner_e2e_protocol": "",
+     "inner_summary": "",
+     "method": "",
+     "outer_app_protocol": "HTTP/3",
+     "process_name": "tst.pcap",
+     "protocol": "HTTP/3",
+     "src_addr": "127.0.0.1",
+     "src_port": 63404,
+     "ssl_session_id": "",
+     "started": 1790849593.602056,
+     "state": "complete",
+     "status_code": 0,
+     "tag_count": 0,
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 74,
+     "transport": "tls",
+     "url": ""
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   }
+  ],
+  "header": {
+   "capture_start": 1790849559.51441,
+   "capture_target": "tst.pcap",
+   "ext_data": null,
+   "ext_header_len": 0,
+   "flags": 1,
+   "flow_count": 1,
+   "format_version": 1
+  },
+  "keylog_records": {
+   "count": 5,
+   "sha256": "62417d30f8ee212cbd711a8b9a45570122e20d514eb6ef949da67a3082579441"
+  },
+  "meta": {
+   "flow_fields_version": 3,
+   "parse_result_version": 1,
+   "schema_version": 1
+  },
+  "summary_count": 1
+ }
+}

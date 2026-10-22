@@ -26,6 +26,7 @@ from types import SimpleNamespace
 import pytest
 
 from friTap.events import EventBus, KeylogEvent
+from friTap.memory_scanning import MemoryScanEngine
 from friTap.memory_scanning.loader import (
     MemoryScanPatternError,
     load_database,
@@ -33,7 +34,6 @@ from friTap.memory_scanning.loader import (
     select_profiles,
     validate_profile,
 )
-from friTap.memory_scanning import MemoryScanEngine
 from friTap.protocols import mtproto_keylog_spec as spec
 
 _MTPROTO_ID = "tgnet-android-arm64-2026"

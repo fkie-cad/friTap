@@ -78,6 +78,11 @@ def decode_varint(data: bytes, offset: int) -> tuple[int, int]:
             raise ValueError(f"varint exceeds 10-byte limit at offset {start}")
     return result, offset
 
+#: Unambiguous name for :func:`decode_varint` (protobuf base-128; returns
+#: ``(value, new_offset)``) -- not to be confused with the QUIC
+#: :func:`friTap.parsers.varint.decode_quic_varint`.
+decode_protobuf_varint = decode_varint
+
 
 def _zigzag_decode(value: int) -> int:
     """Decode a ZigZag-encoded signed integer."""
@@ -152,99 +157,112 @@ def _decode_raw_impl(data: bytes, max_depth: int) -> ProtobufMessage:
 
     fields: list[ProtobufField] = []
     offset = 0
-    length = len(data)
-
-    while offset < length:
-        tag, offset = decode_varint(data, offset)
-        wire_type_val = tag & 0x07
-        field_number = tag >> 3
-
-        if field_number == 0:
-            raise ValueError(f"invalid field number 0 at offset {offset}")
-
-        try:
-            wire_type = WireType(wire_type_val)
-        except ValueError:
-            raise ValueError(
-                f"unknown wire type {wire_type_val} at offset {offset}"
-            )
-
-        pf = ProtobufField(
-            field_number=field_number,
-            wire_type=wire_type,
-            raw_value=b"",
-        )
-
-        if wire_type == WireType.VARINT:
-            value_start = offset
-            value, offset = decode_varint(data, offset)
-            pf.varint = value
-            pf.raw_value = data[value_start:offset]
-
-        elif wire_type == WireType.FIXED64:
-            if offset + 8 > length:
-                raise ValueError(f"truncated fixed64 at offset {offset}")
-            pf.fixed64 = data[offset:offset + 8]
-            pf.raw_value = pf.fixed64
-            offset += 8
-
-        elif wire_type == WireType.FIXED32:
-            if offset + 4 > length:
-                raise ValueError(f"truncated fixed32 at offset {offset}")
-            pf.fixed32 = data[offset:offset + 4]
-            pf.raw_value = pf.fixed32
-            offset += 4
-
-        elif wire_type == WireType.LENGTH_DELIMITED:
-            payload_len, offset = decode_varint(data, offset)
-            if offset + payload_len > length:
-                raise ValueError(
-                    f"truncated length-delimited field at offset {offset}, "
-                    f"need {payload_len} bytes but only {length - offset} remain"
-                )
-            payload = data[offset:offset + payload_len]
-            pf.length_delimited = payload
-            pf.raw_value = payload
-            offset += payload_len
-
-            sub = _try_decode_submessage(payload, max_depth - 1)
-            if sub is not None:
-                pf.sub_message = sub
-            else:
-                packed = _try_decode_packed_varints(payload)
-                if packed is not None:
-                    pf.packed_varints = packed
-
-        elif wire_type == WireType.START_GROUP:
-            # Deprecated: skip until matching END_GROUP
-            depth = 1
-            group_start = offset
-            while depth > 0 and offset < length:
-                inner_tag, offset = decode_varint(data, offset)
-                inner_wt = inner_tag & 0x07
-                if inner_wt == WireType.START_GROUP:
-                    depth += 1
-                elif inner_wt == WireType.END_GROUP:
-                    depth -= 1
-                elif inner_wt == WireType.VARINT:
-                    _, offset = decode_varint(data, offset)
-                elif inner_wt == WireType.FIXED64:
-                    offset += 8
-                elif inner_wt == WireType.FIXED32:
-                    offset += 4
-                elif inner_wt == WireType.LENGTH_DELIMITED:
-                    plen, offset = decode_varint(data, offset)
-                    offset += plen
-            pf.raw_value = data[group_start:offset]
-            continue  # skip adding to fields
-
-        elif wire_type == WireType.END_GROUP:
-            # Should only appear inside group processing
-            continue
-
-        fields.append(pf)
+    while offset < len(data):
+        pf, offset = _decode_field_at(data, offset, max_depth)
+        if pf is not None:
+            fields.append(pf)
 
     return ProtobufMessage(fields=fields)
+
+
+def _decode_field_at(
+    data: bytes, offset: int, max_depth: int,
+) -> tuple[Optional[ProtobufField], int]:
+    """Decode the one field whose tag starts at *offset*.
+
+    Returns ``(field, new_offset)``; *field* is ``None`` for a skipped group
+    (``START_GROUP`` .. ``END_GROUP``) or a stray ``END_GROUP``.
+    Raises :class:`ValueError` on malformed or truncated input.
+    """
+    length = len(data)
+    tag, offset = decode_varint(data, offset)
+    wire_type_val = tag & 0x07
+    field_number = tag >> 3
+
+    if field_number == 0:
+        raise ValueError(f"invalid field number 0 at offset {offset}")
+
+    try:
+        wire_type = WireType(wire_type_val)
+    except ValueError:
+        raise ValueError(
+            f"unknown wire type {wire_type_val} at offset {offset}"
+        )
+
+    pf = ProtobufField(
+        field_number=field_number,
+        wire_type=wire_type,
+        raw_value=b"",
+    )
+
+    if wire_type == WireType.VARINT:
+        value_start = offset
+        value, offset = decode_varint(data, offset)
+        pf.varint = value
+        pf.raw_value = data[value_start:offset]
+
+    elif wire_type == WireType.FIXED64:
+        if offset + 8 > length:
+            raise ValueError(f"truncated fixed64 at offset {offset}")
+        pf.fixed64 = data[offset:offset + 8]
+        pf.raw_value = pf.fixed64
+        offset += 8
+
+    elif wire_type == WireType.FIXED32:
+        if offset + 4 > length:
+            raise ValueError(f"truncated fixed32 at offset {offset}")
+        pf.fixed32 = data[offset:offset + 4]
+        pf.raw_value = pf.fixed32
+        offset += 4
+
+    elif wire_type == WireType.LENGTH_DELIMITED:
+        payload_len, offset = decode_varint(data, offset)
+        if offset + payload_len > length:
+            raise ValueError(
+                f"truncated length-delimited field at offset {offset}, "
+                f"need {payload_len} bytes but only {length - offset} remain"
+            )
+        payload = data[offset:offset + payload_len]
+        pf.length_delimited = payload
+        pf.raw_value = payload
+        offset += payload_len
+
+        sub = _try_decode_submessage(payload, max_depth - 1)
+        if sub is not None:
+            pf.sub_message = sub
+        else:
+            packed = _try_decode_packed_varints(payload)
+            if packed is not None:
+                pf.packed_varints = packed
+
+    elif wire_type == WireType.START_GROUP:
+        # Deprecated: skip until matching END_GROUP
+        depth = 1
+        group_start = offset
+        while depth > 0 and offset < length:
+            inner_tag, offset = decode_varint(data, offset)
+            inner_wt = inner_tag & 0x07
+            if inner_wt == WireType.START_GROUP:
+                depth += 1
+            elif inner_wt == WireType.END_GROUP:
+                depth -= 1
+            elif inner_wt == WireType.VARINT:
+                _, offset = decode_varint(data, offset)
+            elif inner_wt == WireType.FIXED64:
+                offset += 8
+            elif inner_wt == WireType.FIXED32:
+                offset += 4
+            elif inner_wt == WireType.LENGTH_DELIMITED:
+                plen, offset = decode_varint(data, offset)
+                offset += plen
+        pf.raw_value = data[group_start:offset]
+        return None, offset  # skip adding to fields
+
+    elif wire_type == WireType.END_GROUP:
+        # Should only appear inside group processing
+        return None, offset
+
+    return pf, offset
 
 
 def _varint_byte_len(value: int) -> int:
@@ -276,6 +294,33 @@ def decode_raw(data: bytes, max_depth: int = 16) -> ProtobufMessage:
     if not data:
         return ProtobufMessage()
     return _decode_raw_impl(data, max_depth)
+
+
+def decode_raw_lenient(
+    data: bytes, max_depth: int = 16,
+) -> tuple[ProtobufMessage, str]:
+    """Decode as much of *data* as parses; never raises on malformed input.
+
+    Unlike :func:`decode_raw`, a malformed or truncated tail (e.g. a body cut
+    off by a preview cap) does not discard the fields decoded before it.
+
+    Returns:
+        ``(message, error)``: the top-level fields decoded up to the first
+        problem, and an empty string or a description of where decoding
+        stopped.
+    """
+    fields: list[ProtobufField] = []
+    offset = 0
+    if data and max_depth <= 0:
+        return ProtobufMessage(), "maximum nesting depth exceeded"
+    while offset < len(data):
+        try:
+            pf, offset = _decode_field_at(data, offset, max_depth)
+        except (ValueError, IndexError) as exc:
+            return ProtobufMessage(fields=fields), f"decoding stopped at offset {offset}: {exc}"
+        if pf is not None:
+            fields.append(pf)
+    return ProtobufMessage(fields=fields), ""
 
 
 def _format_bytes_as_string_or_hex(data: bytes) -> str:

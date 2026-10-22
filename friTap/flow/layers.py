@@ -220,10 +220,17 @@ class TlsLayer(ProtocolLayer):
 
 @dataclass
 class QuicLayer(ProtocolLayer):
-    """QUIC protocol layer."""
+    """QUIC protocol layer.
+
+    ``library`` mirrors :attr:`TlsLayer.library` (the hooked TLS/QUIC library,
+    stamped on live flows only). Unlike TlsLayer it is serialized only when
+    non-empty, so offline QUIC flows (which never carry a library) keep their
+    pre-existing ``to_dict`` shape.
+    """
 
     NAME: ClassVar[str] = "quic"
 
+    library: str = ""
     version: str = ""
     sni: str = ""
     alpn: str = ""
@@ -232,11 +239,13 @@ class QuicLayer(ProtocolLayer):
     dcid: str = ""
 
     def is_empty(self) -> bool:
-        return not (self.version or self.sni or self.alpn or self.cipher
-                    or self.scid or self.dcid)
+        return not (self.library or self.version or self.sni or self.alpn
+                    or self.cipher or self.scid or self.dcid)
 
     def to_dict(self) -> dict:
         d = super().to_dict()
+        if self.library:
+            d["library"] = self.library
         d.update({
             "version": self.version,
             "sni": self.sni,
@@ -251,6 +260,7 @@ class QuicLayer(ProtocolLayer):
     def from_dict(cls, d: dict) -> "QuicLayer":
         layer = cls()
         layer.depth = d.get("depth", 0)
+        layer.library = d.get("library", "")
         layer.version = d.get("version", "")
         layer.sni = d.get("sni", "")
         layer.alpn = d.get("alpn", "")

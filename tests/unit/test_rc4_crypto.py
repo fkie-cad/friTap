@@ -131,8 +131,6 @@ def test_parse_records_and_hello_parsers():
     assert [(c, f.hex()) for c, _, f in recs] == [(0x16, "aabbcc"), (0x17, "dead")]
     ch = bytes([0x01, 0, 0, 40, 0x03, 0x03]) + bytes(range(32)) + b"\x00\x00"
     assert crypto.client_random_from_clienthello(ch) == bytes(range(32)).hex()
-    sh = bytes([0x02, 0, 0, 40, 0x03, 0x03]) + bytes(32) + b"\x00" + b"\x13\x02"
-    assert crypto.cipher_suite_from_serverhello(sh) == 0x1302
 
 
 def test_trial_decrypt_rejects_low_printable_output_with_token():

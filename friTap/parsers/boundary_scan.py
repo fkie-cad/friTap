@@ -17,6 +17,8 @@ from dataclasses import dataclass
 
 from friTap.constants import PROTOCOL_HTTP1, PROTOCOL_HTTP2
 
+from .http2_constants import HTTP2_PREFACE
+
 
 @dataclass
 class BoundaryScanResult:
@@ -44,8 +46,8 @@ _HTTP_REQUEST_SIGS: tuple[bytes, ...] = (
 
 _HTTP_RESPONSE_PREFIX = b"HTTP/1."
 
-# HTTP/2 connection preface (24 bytes)
-_H2_PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+# HTTP/2 connection preface (24 bytes; legacy private alias of the shared constant)
+_H2_PREFACE = HTTP2_PREFACE
 
 # First bytes that could start an HTTP/1.x request or response
 _HTTP_ANCHOR_BYTES = frozenset(b"CDGHOPT")

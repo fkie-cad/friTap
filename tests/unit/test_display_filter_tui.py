@@ -203,9 +203,9 @@ def test_is_incomplete_holds_the_lenient_typing_rule():
 
 from friTap.filter.fields import FIELD_REGISTRY, get_field  # noqa: E402
 from friTap.tui.modals.filter_help_modal import (  # noqa: E402
-    _Para,
     _build_filter_help_blocks,
     _build_filter_help_text,
+    _Para,
     _static_field_groups,
 )
 from tests.unit._display_filter_helpers import http_flow  # noqa: E402
@@ -220,10 +220,13 @@ def test_help_text_is_plain_rendered_text():
 
 def test_help_lists_every_protocol_alias_and_layer_field():
     text = _build_filter_help_text()
+    # Column padding is Rich's dynamic Table.grid layout, not a stable contract;
+    # assert on whitespace-collapsed text so a widened column cannot break this.
+    collapsed = " ".join(text.split())
     for name in known_protocol_names():
         assert name in text, name
     for alias, members in PROTOCOL_ALIASES.items():
-        assert f"{alias:<12} -> {', '.join(sorted(members))}" in text
+        assert f"{alias} -> {', '.join(sorted(members))}" in collapsed
     for spec in LAYER_FIELD_SPECS:
         assert spec.field in text, spec.field
     for field in ("mtproto.dc_id", "telegram.sender", "telegram.e2e"):
@@ -249,9 +252,12 @@ def test_help_ungrouped_static_fields_land_in_other():
 
 def test_help_documents_generic_fields_presets_and_fixed_example():
     text = _build_filter_help_text()
+    # Column padding is Rich's dynamic Table.grid layout; collapse whitespace so
+    # the row content is asserted independently of the (variable) column width.
+    collapsed = " ".join(text.split())
     for field in ("protocol", "method", "transport", "frame", "info", "process"):
-        assert f"  {field:<24} " in text
-    assert "  protocol                 str* " in text
+        assert field in collapsed, field
+    assert "protocol str*" in collapsed
     for preset in FILTER_PRESETS:
         assert preset.expression in text
     assert '"HTTP/1.1"' not in text
@@ -272,7 +278,7 @@ def test_help_lists_http1_as_a_static_field():
     engine = FilterEngine("http1")
     assert engine.matches(http_flow("HTTP/1.1"))
     assert not engine.matches(http_flow("HTTP/2"))
-    assert "  http1                    bool     HTTP/1.x flow" in _build_filter_help_text()
+    assert "http1 bool HTTP/1.x flow" in " ".join(_build_filter_help_text().split())
 
 
 def test_help_markup_is_valid():

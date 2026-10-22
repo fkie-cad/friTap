@@ -25,7 +25,7 @@ from __future__ import annotations
 import struct
 from bisect import bisect_right
 from pathlib import Path
-from typing import Iterable, Iterator, NamedTuple
+from typing import Iterator, NamedTuple
 
 MINIDUMP_SIGNATURE = 0x504D444D  # 'MDMP'
 # MINIDUMP_STREAM_TYPE values (dbghelp): MemoryListStream=5, Memory64ListStream=9.

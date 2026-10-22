@@ -228,6 +228,12 @@ class CaptureController:
         # the capture "completed". See _run_session / _on_session_ended.
         self._session_crashed: bool = False
         self._session_crash_message: str = ""
+        # frida-server pre-flight (see _ensure_frida_server). The target is
+        # snapshotted by start_capture as (device_id, device_name) for
+        # USB/remote devices; None (local / not via start_capture) skips it.
+        # Tests flip server_preflight_enabled to drive or bypass the check.
+        self.server_preflight_enabled: bool = True
+        self._preflight_target: tuple[str, str] | None = None
         # UI update batching to prevent call_from_thread() storm
         import threading
         self._ui_lock = threading.Lock()
@@ -731,6 +737,7 @@ class CaptureController:
 
         self._pending_config = self.build_config(state)
         self._tui_handler = TuiOutputHandler(self._screen.app)
+        self._preflight_target = self._preflight_target_for(state)
 
         # Create FlowCollector for data-producing modes
         data_modes = {"full", "plaintext", "wireshark", "live_pcapng"}
@@ -834,6 +841,10 @@ class CaptureController:
                     cfg.install_lsass_hook = False
             except Exception:
                 logger.debug("TUI lsass pre-check failed", exc_info=True)
+            # Make sure frida-server is attach-capable BEFORE building the
+            # session; raises a clear RuntimeError (-> Capture Error modal)
+            # instead of letting attach fail with a cryptic "closed".
+            self._ensure_frida_server()
             # Open the debug log + attach the file handler BEFORE SSL_Logger
             # is constructed so the protocol-registry / pattern-loader /
             # device-acquisition records emitted during init also land in
@@ -876,7 +887,7 @@ class CaptureController:
                 self._ssl_logger._event_bus.subscribe(
                     DatalogEvent, self._flow_collector.on_data
                 )
-                # Feed Signal key material to the live decryptor. A no-op unless
+                # Feed protocol key material to the live decryptor. A no-op unless
                 # the collector was built with signal_messages=True.
                 self._ssl_logger._event_bus.subscribe(
                     KeylogEvent, self._flow_collector.on_keylog
@@ -942,6 +953,7 @@ class CaptureController:
                     lsass_started = True
                     if not getattr(self, "_lsass_atexit_registered", False):
                         import atexit
+
                         from friTap.friTap import cleanup_lsass_hook as _cleanup_lsass
                         atexit.register(_cleanup_lsass)
                         self._lsass_atexit_registered = True
@@ -1028,6 +1040,78 @@ class CaptureController:
             def _finalize(stats=result_stats, gen=generation):
                 self._on_session_ended(stats, generation=gen)
             self._screen.app.call_from_thread(_finalize)
+
+    # ----------------------------------------------------------
+    # frida-server pre-flight
+    # ----------------------------------------------------------
+
+    @staticmethod
+    def _preflight_target_for(state) -> tuple[str, str] | None:
+        """(device_id, device_name) for a USB/remote device, else None."""
+        device_id = getattr(state, "device_id", "")
+        if getattr(state, "device_type", "local") == "local" or not device_id:
+            return None
+        return device_id, getattr(state, "device_name", "") or device_id
+
+    def _ensure_frida_server(self) -> None:
+        """Probe the mobile device's frida-server; auto-start it on Android.
+
+        Frida 17 trap: a USB device with NO frida-server still enumerates via
+        the ADB fallback, so only a probe tells us attach would fail. Runs on
+        the session worker thread. Raises RuntimeError if it cannot be started.
+        """
+        target = self._preflight_target
+        if not self.server_preflight_enabled or target is None:
+            return
+        device_id, device_name = target
+        from friTap.server_manager.probe import is_attach_capable, probe_frida_server
+        device = self._lookup_frida_device(device_id)
+        state = probe_frida_server(device)
+        if not is_attach_capable(state):
+            state = self._start_frida_server(device, device_name, state)
+        self._screen.app.call_from_thread(self._screen._show_server_state, state)
+
+    @staticmethod
+    def _lookup_frida_device(device_id: str):
+        """Same lookup the backend uses for a pre-enumerated device id."""
+        import frida
+        return frida.get_device(device_id)
+
+    def _start_frida_server(self, device, device_name: str, state):
+        """Start frida-server via ensure_running (Android only); return the state.
+
+        Non-Android devices keep the old behaviour: warn and let attach try.
+        """
+        from friTap.server_manager.factory import get_server_manager
+        try:
+            mgr = get_server_manager(device)
+        except Exception:
+            mgr = None
+        if mgr is None or mgr.platform_name != "android":
+            self._console_log(
+                "log_warning",
+                f"frida-server is {state.value} on {device_name} — attach will likely fail.",
+            )
+            return state
+        self._console_log(
+            "log_info",
+            f"frida-server not running on {device_name} — starting it via AndroidFridaManager…",
+        )
+        try:
+            return mgr.ensure_running(
+                device, callback=lambda msg: self._console_log("log_info", msg),
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"frida-server is not running on {device_name} and could not be "
+                f"started: {exc}"
+            ) from exc
+
+    def _console_log(self, level: str, message: str) -> None:
+        """Write *message* to the activity log from a worker thread."""
+        self._screen.app.call_from_thread(
+            lambda: getattr(self._screen._get_activity_log(), level)(message)
+        )
 
     def _on_session_error_event(self, event) -> None:
         """Record a fatal target-process error reported on the EventBus.
@@ -1278,7 +1362,7 @@ class CaptureController:
 
         Best-effort: fully guarded and never raises, so a failed reprocess never
         breaks the normal capture-end flow. No-op unless 'signal' was captured
-        and a Signal keylog + a pcap are present on disk.
+        and the per-protocol keylog + a pcap are present on disk.
         """
         if "signal" not in (protocols or []):
             return

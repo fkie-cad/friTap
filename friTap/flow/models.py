@@ -18,6 +18,7 @@ from friTap.flow.layers import (
 
 if TYPE_CHECKING:
     from friTap.parsers.base import ParseResult
+    from friTap.parsers.protobuf.view import ProtobufView
 
 
 def format_byte_size(size_bytes: int) -> str:
@@ -778,70 +779,23 @@ class Flow:
     def _extract_h2_body(self, direction: str) -> bytes:
         """Extract HTTP/2 DATA frame payloads from raw chunks.
 
-        Stateless scan — no HPACK needed for body-only extraction.
+        Stateless scan — no HPACK needed for body-only extraction. Stream id 0
+        (no parsed message) keeps the DATA of every stream.
         """
-        import struct
-        stream_id = 0
+        from friTap.parsers.http2_dataframe import http2_data_for_stream
+
         msg = self.request if direction == "write" else self.response
-        if msg is not None:
-            stream_id = msg.stream_id
-
-        body_parts: list[bytes] = []
-        buf = bytearray()
-        for chunk in self.chunks:
-            if chunk.direction != direction:
-                continue
-            buf.extend(chunk.data)
-
-        offset = 0
-        while offset + 9 <= len(buf):
-            length = (buf[offset] << 16) | (buf[offset + 1] << 8) | buf[offset + 2]
-            frame_type = buf[offset + 3]
-            flags = buf[offset + 4]
-            sid = struct.unpack_from("!I", buf, offset + 5)[0] & 0x7FFFFFFF
-            offset += 9
-            if offset + length > len(buf):
-                break
-            if frame_type == 0x00 and (stream_id == 0 or sid == stream_id):
-                payload = buf[offset:offset + length]
-                # Strip padding if PADDED flag (0x08) is set
-                if flags & 0x08 and len(payload) >= 1:
-                    pad_len = payload[0]
-                    end = len(payload) - pad_len
-                    payload = payload[1:end] if end > 1 else b""
-                body_parts.append(bytes(payload))
-            offset += length
-
-        return b"".join(body_parts)
+        stream_id = msg.stream_id if msg is not None else 0
+        body, _degraded = http2_data_for_stream(
+            self.get_direction_bytes(direction), stream_id
+        )
+        return body
 
     def _extract_h3_body(self, direction: str) -> bytes:
         """Extract HTTP/3 DATA frame payloads using varint framing."""
-        from friTap.parsers.varint import decode_varint
+        from friTap.parsers.http3 import iter_h3_data_frames
 
-        body_parts: list[bytes] = []
-        buf = bytearray()
-        for chunk in self.chunks:
-            if chunk.direction != direction:
-                continue
-            buf.extend(chunk.data)
-
-        offset = 0
-        while offset < len(buf):
-            try:
-                frame_type, type_len = decode_varint(buf, offset)
-                frame_length, len_len = decode_varint(buf, offset + type_len)
-            except (ValueError, IndexError):
-                break
-            header_size = type_len + len_len
-            payload_start = offset + header_size
-            payload_end = payload_start + frame_length
-            if payload_end > len(buf):
-                break
-            if frame_type == 0x00:  # DATA frame
-                body_parts.append(bytes(buf[payload_start:payload_end]))
-            offset = payload_end
-
-        return b"".join(body_parts)
+        return b"".join(iter_h3_data_frames(self.get_direction_bytes(direction)))
 
     def _extract_ws_body(self, direction: str) -> bytes:
         """Extract WebSocket payload — body is already in ParseResult for WS."""
@@ -928,75 +882,81 @@ class Flow:
         return self.get_request_header("content-type")
 
     def decode_request_protobuf(
-        self, schema_path: Optional[str] = None, force: bool = False
-    ) -> Optional[list]:
-        """Decode the request body as protobuf.
+        self,
+        schema_path: Optional[str] = None,
+        force: bool = False,
+        message_type: Optional[str] = None,
+    ) -> Optional["ProtobufView"]:
+        """Decode the request body as protobuf (gRPC framing auto-detected).
 
-        Returns a dict of ``{field_number: [ProtoField, ...]}`` or ``None``
-        if the body is not protobuf or decoding fails.
+        Returns a :class:`~friTap.parsers.protobuf.view.ProtobufView`, or
+        ``None`` when the body is empty or does not look like protobuf.
+        A returned view may still hold no decoded message: check
+        ``view.ok`` and read ``view.notes`` / ``view.error`` for why.
 
         Args:
-            schema_path: Optional path to a compiled ``.desc`` file.
+            schema_path: Optional ``.proto`` source or compiled ``.desc``
+                descriptor set; used together with *message_type*. Without
+                both, the wire decoder runs and a note says why.
             force: If ``True``, attempt decoding regardless of content type.
+            message_type: Fully qualified message type for *schema_path*.
         """
         return self._decode_protobuf(
             self.get_decompressed_request_body(),
             self.request_content_type,
+            self.get_request_header("grpc-encoding"),
             schema_path=schema_path,
             force=force,
+            message_type=message_type,
         )
 
     def decode_response_protobuf(
-        self, schema_path: Optional[str] = None, force: bool = False
-    ) -> Optional[list]:
-        """Decode the response body as protobuf.
+        self,
+        schema_path: Optional[str] = None,
+        force: bool = False,
+        message_type: Optional[str] = None,
+    ) -> Optional["ProtobufView"]:
+        """Decode the response body as protobuf (gRPC framing auto-detected).
 
-        Returns a dict of ``{field_number: [ProtoField, ...]}`` or ``None``
-        if the body is not protobuf or decoding fails.
-
-        Args:
-            schema_path: Optional path to a compiled ``.desc`` file.
-            force: If ``True``, attempt decoding regardless of content type.
+        Same contract as :meth:`decode_request_protobuf`, for the response.
         """
         return self._decode_protobuf(
             self.get_decompressed_response_body(),
             self.response_content_type,
+            self.get_response_header("grpc-encoding"),
             schema_path=schema_path,
             force=force,
+            message_type=message_type,
         )
 
+    @staticmethod
     def _decode_protobuf(
-        self,
         body: bytes,
         content_type: str,
+        grpc_encoding: str,
         schema_path: Optional[str] = None,
         force: bool = False,
-    ) -> Optional[list]:
-        """Internal: decode protobuf body with auto gRPC framing detection."""
+        message_type: Optional[str] = None,
+    ) -> Optional["ProtobufView"]:
+        """Internal: gate on content type, then delegate to the shared view decoder."""
         if not body:
             return None
 
         from friTap.parsers.protobuf import (
-            decode_raw,
-            extract_grpc_messages,
+            decode_protobuf_view,
             is_grpc_content_type,
             is_likely_protobuf,
             is_protobuf_content_type,
         )
 
-        # Check if we should attempt decoding
         is_proto_ct = is_grpc_content_type(content_type) or is_protobuf_content_type(content_type)
         if not force and not is_proto_ct and not is_likely_protobuf(body):
             return None
 
-        try:
-            payloads = extract_grpc_messages(body, content_type)
-            results = []
-            for payload in payloads:
-                if not payload:
-                    continue
-                msg = decode_raw(payload)
-                results.append(msg)
-            return results if results else None
-        except Exception:
-            return None
+        return decode_protobuf_view(
+            body,
+            content_type=content_type,
+            grpc_encoding=grpc_encoding,
+            schema_path=schema_path or "",
+            message_type=message_type or "",
+        )

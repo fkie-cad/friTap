@@ -14,7 +14,7 @@ reserved "grease" type that must be ignored).
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .varint import decode_varint
+from .varint import decode_quic_varint
 
 # Stream id bits (RFC 9000 Section 2.1)
 _SERVER_INITIATED_BIT = 0x1
@@ -101,8 +101,8 @@ def parse_settings(payload: bytes) -> dict[int, int]:
     offset = 0
     while offset < len(payload):
         try:
-            identifier, id_len = decode_varint(payload, offset)
-            value, value_len = decode_varint(payload, offset + id_len)
+            identifier, id_len = decode_quic_varint(payload, offset)
+            value, value_len = decode_quic_varint(payload, offset + id_len)
         except (ValueError, IndexError):
             break
         settings[identifier] = value

@@ -442,8 +442,10 @@ class MessageRouter:
         # this function — there is no duplicated construction left to "keep in
         # sync". We MUST pass the same ``protocol`` both sites derive for a
         # connection (here from the payload, there from the event) so that, e.g.
-        # a QUIC connection produces a ``cr:quic:...`` / ``sid:quic:...`` prefix
-        # on BOTH paths instead of a mismatched ``tls`` prefix on one side.
+        # a QUIC connection produces a ``cr:quic:...`` / ``sid:quic:...`` /
+        # ``net:quic:...`` key on BOTH paths instead of a mismatched ``tls`` key
+        # on one side. (The agent stamps both lifecycle and datalog messages via
+        # sendWithProtocol, i.e. with the same selected protocol.)
         # The same coerced value also rides the emitted SessionEvent below; the
         # empty/None -> "tls" coercion is ALSO enforced inside
         # resolve_connection_key, so the two paths can never key differently.

@@ -33,7 +33,6 @@ from tests.unit._display_filter_helpers import match as _match
 from tests.unit._display_filter_helpers import summary_row as _row
 from tests.unit._display_filter_helpers import tg_message as _tg_message
 
-
 # ---------------------------------------------------------------------------
 # Builders
 # ---------------------------------------------------------------------------
@@ -299,7 +298,8 @@ def test_old_expressions_unchanged():
 def test_bool_predicates_work_on_replay_rows():
     assert _match("ssh", _row(protocols={"ssh"}))
     assert _match("ipsec", _row(protocols={"ipsec"}))
-    assert _match("tls", _row(ssl_session_id="abcd"))
+    assert _match("tls", _row(transport="tls"))
+    assert not _match("tls", _row(ssl_session_id="abcd", transport="tcp"))
     assert _match("http", _row(protocols={"http2"}))
     assert not _match("http", _row(protocols={"ssh"}))
 
@@ -345,8 +345,14 @@ def test_protocol_and_frame_protocol_share_one_definition():
     assert protocol.multi and frame.multi
 
 
-def test_tls_predicate_true_for_session_id_on_live_flow_and_summary():
+def test_session_id_alone_is_not_tls():
     flow = Flow(ssl_session_id="abcd", transport="tcp")
+    assert not _match("tls", flow)
+    assert not _match("tls", FlowSummary.from_flow(flow))
+    assert not _match("tls", Flow(transport="tcp"))
+
+
+def test_tls_transport_matches_on_live_flow_and_summary():
+    flow = Flow(ssl_session_id="abcd", transport="tls")
     assert _match("tls", flow)
     assert _match("tls", FlowSummary.from_flow(flow))
-    assert not _match("tls", Flow(transport="tcp"))

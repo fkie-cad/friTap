@@ -1,0 +1,1851 @@
+{
+ "tap": {
+  "flow_count": 10,
+  "flows": [
+   {
+    "chunks": {
+     "count": 1,
+     "sha256": [
+      "d32a43a7e2b6948f4cee797f65313f3fbbae87d6cecf69e7fe03240297975023"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:15.197.251.99:443-192.168.0.66:57416",
+     "detected_protocol": "HTTP/2",
+     "dst_addr": "15.197.251.99",
+     "dst_port": 443,
+     "duration": 0.0,
+     "ended": 1790674967.958791,
+     "findings": [],
+     "flow_id": "net:15.197.251.99:443-192.168.0.66:57416:0",
+     "layers": [
+      "tls",
+      "http2"
+     ],
+     "notes": "",
+     "package_name": "s4capture.pcapng",
+     "process_name": "s4capture.pcapng",
+     "protocol": "HTTP/2",
+     "request": null,
+     "response": null,
+     "src_addr": "192.168.0.66",
+     "src_port": 57416,
+     "ssl_session_id": "",
+     "started": 1790674967.958791,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "h2",
+     "tls_sni": "grpc.chat.signal.org",
+     "total_bytes": 24,
+     "transport": "tls"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "alpn": "h2",
+       "cipher": "TLS_AES_128_GCM_SHA256",
+       "depth": 0,
+       "library": "",
+       "name": "tls",
+       "sni": "grpc.chat.signal.org",
+       "version": "TLS 1.3"
+      },
+      "type": "TlsLayer"
+     },
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "depth": 1,
+       "name": "http2"
+      },
+      "type": "AppLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": null,
+    "response": null,
+    "summary": {
+     "connection_id": "net:15.197.251.99:443-192.168.0.66:57416",
+     "detected_protocol": "HTTP/2",
+     "dst_addr": "15.197.251.99",
+     "dst_port": 443,
+     "duration": 0.0,
+     "ended": 1790674967.958791,
+     "finding_count": 0,
+     "flow_id": "net:15.197.251.99:443-192.168.0.66:57416:0",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "",
+     "inner_e2e_protocol": "",
+     "inner_summary": "",
+     "method": "",
+     "outer_app_protocol": "HTTP/2",
+     "process_name": "s4capture.pcapng",
+     "protocol": "HTTP/2",
+     "src_addr": "192.168.0.66",
+     "src_port": 57416,
+     "ssl_session_id": "",
+     "started": 1790674967.958791,
+     "state": "complete",
+     "status_code": 0,
+     "tag_count": 0,
+     "tls_alpn": "h2",
+     "tls_sni": "grpc.chat.signal.org",
+     "total_bytes": 24,
+     "transport": "tls",
+     "url": ""
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   },
+   {
+    "chunks": {
+     "count": 2,
+     "sha256": [
+      "823f680af333b5b11a5e09fa50b9e92c202ad0e755640c83a94ba9a5b672f629",
+      "4a7ca10f674d01b5ab8c61f761599cb312a133ea328e40945a65aaddd1566218"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:15.197.251.99:443-192.168.0.66:57416",
+     "detected_protocol": "",
+     "dst_addr": "15.197.251.99",
+     "dst_port": 443,
+     "duration": 0.10696601867675781,
+     "ended": 1790674968.066099,
+     "findings": [],
+     "flow_id": "net:15.197.251.99:443-192.168.0.66:57416:1",
+     "layers": [
+      "tls",
+      "http2"
+     ],
+     "notes": "",
+     "package_name": "s4capture.pcapng",
+     "process_name": "s4capture.pcapng",
+     "protocol": "HTTP/2",
+     "request": {
+      "body_size": 0,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {
+       ":authority": "grpc.chat.signal.org",
+       ":method": "CONNECT",
+       ":path": "/v1/websocket/",
+       ":protocol": "websocket",
+       ":scheme": "https",
+       "sec-websocket-version": "13",
+       "user-agent": "Signal-Android/8.27.1 Android/37 libsignal/0.102.1"
+      },
+      "host": "grpc.chat.signal.org",
+      "is_complete": false,
+      "is_control_frame": false,
+      "is_request": true,
+      "method": "CONNECT",
+      "protocol": "HTTP/2",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 1,
+      "url": "/v1/websocket/"
+     },
+     "response": {
+      "body_size": 0,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {
+       "0x8": "1",
+       "MAX_CONCURRENT_STREAMS": "100",
+       "MAX_HEADER_LIST_SIZE": "8192"
+      },
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": true,
+      "is_request": false,
+      "method": "SETTINGS",
+      "protocol": "HTTP/2",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": "connection-control"
+     },
+     "src_addr": "192.168.0.66",
+     "src_port": 57416,
+     "ssl_session_id": "",
+     "started": 1790674967.959133,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "h2",
+     "tls_sni": "grpc.chat.signal.org",
+     "total_bytes": 195,
+     "transport": "tls"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "alpn": "h2",
+       "cipher": "TLS_AES_128_GCM_SHA256",
+       "depth": 0,
+       "library": "",
+       "name": "tls",
+       "sni": "grpc.chat.signal.org",
+       "version": "TLS 1.3"
+      },
+      "type": "TlsLayer"
+     },
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "depth": 1,
+       "name": "http2"
+      },
+      "type": "AppLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 0,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {
+      ":authority": "grpc.chat.signal.org",
+      ":method": "CONNECT",
+      ":path": "/v1/websocket/",
+      ":protocol": "websocket",
+      ":scheme": "https",
+      "sec-websocket-version": "13",
+      "user-agent": "Signal-Android/8.27.1 Android/37 libsignal/0.102.1"
+     },
+     "host": "grpc.chat.signal.org",
+     "is_complete": false,
+     "is_control_frame": false,
+     "is_request": true,
+     "method": "CONNECT",
+     "protocol": "HTTP/2",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 1,
+     "url": "/v1/websocket/"
+    },
+    "response": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 0,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {
+      "0x8": "1",
+      "MAX_CONCURRENT_STREAMS": "100",
+      "MAX_HEADER_LIST_SIZE": "8192"
+     },
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": true,
+     "is_request": false,
+     "method": "SETTINGS",
+     "protocol": "HTTP/2",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": "connection-control"
+    },
+    "summary": {
+     "connection_id": "net:15.197.251.99:443-192.168.0.66:57416",
+     "detected_protocol": "",
+     "dst_addr": "15.197.251.99",
+     "dst_port": 443,
+     "duration": 0.10696601867675781,
+     "ended": 1790674968.066099,
+     "finding_count": 0,
+     "flow_id": "net:15.197.251.99:443-192.168.0.66:57416:1",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "grpc.chat.signal.org",
+     "inner_e2e_protocol": "",
+     "inner_summary": "",
+     "method": "CONNECT",
+     "outer_app_protocol": "HTTP/2",
+     "process_name": "s4capture.pcapng",
+     "protocol": "HTTP/2",
+     "src_addr": "192.168.0.66",
+     "src_port": 57416,
+     "ssl_session_id": "",
+     "started": 1790674967.959133,
+     "state": "complete",
+     "status_code": 0,
+     "tag_count": 0,
+     "tls_alpn": "h2",
+     "tls_sni": "grpc.chat.signal.org",
+     "total_bytes": 195,
+     "transport": "tls",
+     "url": "/v1/websocket/"
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   },
+   {
+    "chunks": {
+     "count": 6,
+     "sha256": [
+      "7d9c4142cf25f5f0289a3c99196f15d61b36cacbed7c16686f1213a4774283ff",
+      "79c6d85684308c12b4a96ee9d4f8006a55ce6d84a4f1ef7366f7f66ed6a04ee5",
+      "1899851d8763b84c908909a108f721361bf3fdb40cbee40b6f3f661e66f61d95",
+      "2c69d897253d1e13f06e0097af416f13eef3a3de87a88dc692281d5e34206f7a",
+      "3a3db33071834e00f24245f4a9c059bb82a1162f6c40e11b1fed47183eeb49c4",
+      "48b32a3f2511e8663208108caaf608739e935fabba8a0f3d2177323d27a454a6"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:15.197.251.99:443-192.168.0.66:57416",
+     "detected_protocol": "",
+     "dst_addr": "15.197.251.99",
+     "dst_port": 443,
+     "duration": 17.378082990646362,
+     "ended": 1790674985.444555,
+     "findings": [],
+     "flow_id": "net:15.197.251.99:443-192.168.0.66:57416:3",
+     "layers": [
+      "tls",
+      "http2"
+     ],
+     "notes": "",
+     "package_name": "s4capture.pcapng",
+     "process_name": "s4capture.pcapng",
+     "protocol": "HTTP/2",
+     "request": {
+      "body_size": 0,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {
+       "SETTINGS": "ACK"
+      },
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": true,
+      "is_request": true,
+      "method": "SETTINGS",
+      "protocol": "HTTP/2",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": "connection-setup"
+     },
+     "response": {
+      "body_size": 0,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {
+       "SETTINGS": "ACK"
+      },
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": true,
+      "is_request": false,
+      "method": "SETTINGS",
+      "protocol": "HTTP/2",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": "connection-control"
+     },
+     "src_addr": "192.168.0.66",
+     "src_port": 57416,
+     "ssl_session_id": "",
+     "started": 1790674968.066472,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "h2",
+     "tls_sni": "grpc.chat.signal.org",
+     "total_bytes": 2252,
+     "transport": "tls"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "alpn": "h2",
+       "cipher": "TLS_AES_128_GCM_SHA256",
+       "depth": 0,
+       "library": "",
+       "name": "tls",
+       "sni": "grpc.chat.signal.org",
+       "version": "TLS 1.3"
+      },
+      "type": "TlsLayer"
+     },
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "depth": 1,
+       "name": "http2"
+      },
+      "type": "AppLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 0,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {
+      "SETTINGS": "ACK"
+     },
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": true,
+     "is_request": true,
+     "method": "SETTINGS",
+     "protocol": "HTTP/2",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": "connection-setup"
+    },
+    "response": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 0,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {
+      "SETTINGS": "ACK"
+     },
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": true,
+     "is_request": false,
+     "method": "SETTINGS",
+     "protocol": "HTTP/2",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": "connection-control"
+    },
+    "summary": {
+     "connection_id": "net:15.197.251.99:443-192.168.0.66:57416",
+     "detected_protocol": "",
+     "dst_addr": "15.197.251.99",
+     "dst_port": 443,
+     "duration": 17.378082990646362,
+     "ended": 1790674985.444555,
+     "finding_count": 0,
+     "flow_id": "net:15.197.251.99:443-192.168.0.66:57416:3",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "",
+     "inner_e2e_protocol": "",
+     "inner_summary": "",
+     "method": "SETTINGS",
+     "outer_app_protocol": "HTTP/2",
+     "process_name": "s4capture.pcapng",
+     "protocol": "HTTP/2",
+     "src_addr": "192.168.0.66",
+     "src_port": 57416,
+     "ssl_session_id": "",
+     "started": 1790674968.066472,
+     "state": "complete",
+     "status_code": 0,
+     "tag_count": 0,
+     "tls_alpn": "h2",
+     "tls_sni": "grpc.chat.signal.org",
+     "total_bytes": 2252,
+     "transport": "tls",
+     "url": "connection-setup"
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   },
+   {
+    "chunks": {
+     "count": 5,
+     "sha256": [
+      "3c14a67027d301e33429d1207f920df7791ce3d817762c4905e87eef3b79573d",
+      "fae19d4670d65ded420aefcf8f61f86f9cc26d323c3c7c579f70e43c6b57ab93",
+      "3c36a09cfc0ca3f56ca867e1bc882ad24a0b4e0f672a9b040bddfcb2a97aadfa",
+      "4e005ee0e900332791a85d1ff1c71158eae54f858ff00f5a793b4aff9ba26168",
+      "fc453fad51b4bff04dec575d5f2024fca3b5a22f8becdeaf217f71d854ad2ec9"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:15.197.251.99:443-192.168.0.66:57416",
+     "detected_protocol": "",
+     "dst_addr": "15.197.251.99",
+     "dst_port": 443,
+     "duration": 0.23442602157592773,
+     "ended": 1790674988.517159,
+     "findings": [],
+     "flow_id": "net:15.197.251.99:443-192.168.0.66:57416:4",
+     "layers": [
+      "tls",
+      "http2"
+     ],
+     "notes": "",
+     "package_name": "s4capture.pcapng",
+     "process_name": "s4capture.pcapng",
+     "protocol": "HTTP/2",
+     "request": {
+      "body_size": 480,
+      "content_encoding": "",
+      "content_type": "application/grpc",
+      "error": "",
+      "headers": {
+       ":authority": "grpc.chat.signal.org",
+       ":method": "POST",
+       ":path": "/org.signal.chat.messages.MessagesAnonymous/SendSingleRecipientMessage",
+       ":scheme": "https",
+       "content-type": "application/grpc",
+       "te": "trailers",
+       "user-agent": "Signal-Android/8.27.1 Android/37 libsignal/0.102.1"
+      },
+      "host": "grpc.chat.signal.org",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": true,
+      "method": "POST",
+      "protocol": "HTTP/2",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 3,
+      "url": "/org.signal.chat.messages.MessagesAnonymous/SendSingleRecipientMessage"
+     },
+     "response": {
+      "body_size": 7,
+      "content_encoding": "",
+      "content_type": "application/grpc",
+      "error": "",
+      "headers": {
+       ":status": "200",
+       "content-type": "application/grpc",
+       "grpc-accept-encoding": "gzip",
+       "grpc-encoding": "identity",
+       "grpc-status": "0"
+      },
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": false,
+      "method": "",
+      "protocol": "HTTP/2",
+      "status_code": 200,
+      "status_text": "",
+      "stream_id": 3,
+      "url": ""
+     },
+     "src_addr": "192.168.0.66",
+     "src_port": 57416,
+     "ssl_session_id": "",
+     "started": 1790674988.282733,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "h2",
+     "tls_sni": "grpc.chat.signal.org",
+     "total_bytes": 705,
+     "transport": "tls"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "alpn": "h2",
+       "cipher": "TLS_AES_128_GCM_SHA256",
+       "depth": 0,
+       "library": "",
+       "name": "tls",
+       "sni": "grpc.chat.signal.org",
+       "version": "TLS 1.3"
+      },
+      "type": "TlsLayer"
+     },
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "depth": 1,
+       "name": "http2"
+      },
+      "type": "AppLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 480,
+     "content_encoding": "",
+     "content_type": "application/grpc",
+     "error": "",
+     "headers": {
+      ":authority": "grpc.chat.signal.org",
+      ":method": "POST",
+      ":path": "/org.signal.chat.messages.MessagesAnonymous/SendSingleRecipientMessage",
+      ":scheme": "https",
+      "content-type": "application/grpc",
+      "te": "trailers",
+      "user-agent": "Signal-Android/8.27.1 Android/37 libsignal/0.102.1"
+     },
+     "host": "grpc.chat.signal.org",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": true,
+     "method": "POST",
+     "protocol": "HTTP/2",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 3,
+     "url": "/org.signal.chat.messages.MessagesAnonymous/SendSingleRecipientMessage"
+    },
+    "response": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 7,
+     "content_encoding": "",
+     "content_type": "application/grpc",
+     "error": "",
+     "headers": {
+      ":status": "200",
+      "content-type": "application/grpc",
+      "grpc-accept-encoding": "gzip",
+      "grpc-encoding": "identity",
+      "grpc-status": "0"
+     },
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": false,
+     "method": "",
+     "protocol": "HTTP/2",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 200,
+     "status_text": "",
+     "stream_id": 3,
+     "url": ""
+    },
+    "summary": {
+     "connection_id": "net:15.197.251.99:443-192.168.0.66:57416",
+     "detected_protocol": "",
+     "dst_addr": "15.197.251.99",
+     "dst_port": 443,
+     "duration": 0.23442602157592773,
+     "ended": 1790674988.517159,
+     "finding_count": 0,
+     "flow_id": "net:15.197.251.99:443-192.168.0.66:57416:4",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "grpc.chat.signal.org",
+     "inner_e2e_protocol": "",
+     "inner_summary": "",
+     "method": "POST",
+     "outer_app_protocol": "HTTP/2",
+     "process_name": "s4capture.pcapng",
+     "protocol": "HTTP/2",
+     "src_addr": "192.168.0.66",
+     "src_port": 57416,
+     "ssl_session_id": "",
+     "started": 1790674988.282733,
+     "state": "complete",
+     "status_code": 200,
+     "tag_count": 0,
+     "tls_alpn": "h2",
+     "tls_sni": "grpc.chat.signal.org",
+     "total_bytes": 705,
+     "transport": "tls",
+     "url": "/org.signal.chat.messages.MessagesAnonymous/SendSingleRecipientMessage"
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   },
+   {
+    "chunks": {
+     "count": 7,
+     "sha256": [
+      "3a54717f551d147d823010460a13a3b2662397e266ca8bd8bd7737159539c68b",
+      "bceee57b48fd7c3ecbc4e8c00461f1c43e5c51f0e2a03c6a6d4f4721823ee8b4",
+      "835767f2a5f73daf25414dcae035a79613c809db53fe995a987896a2a8b4ee6a",
+      "dee3222f85176f259b7bcfa6f6ad45c563cf943acbcb46398f999012e99b0927",
+      "da501ff20f18228a8a4b2a5f8f2ab7e6daa080f24091fcda1d6e48f1b73917c8",
+      "a667630cadea3c91b2de7e9d7b8be43b7bbb06558b063b3396590149d9b68e08",
+      "18352593a4820adf68d1dd17a4fbf6df1411cc83baa9723f8142cc045869e895"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:15.197.251.99:443-192.168.0.66:57416",
+     "detected_protocol": "",
+     "dst_addr": "15.197.251.99",
+     "dst_port": 443,
+     "duration": 17.876519918441772,
+     "ended": 1790675016.394832,
+     "findings": [],
+     "flow_id": "net:15.197.251.99:443-192.168.0.66:57416:5",
+     "layers": [
+      "tls",
+      "http2"
+     ],
+     "notes": "",
+     "package_name": "s4capture.pcapng",
+     "process_name": "s4capture.pcapng",
+     "protocol": "HTTP/2",
+     "request": {
+      "body_size": 2938,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {
+       ":authority": "grpc.chat.signal.org",
+       ":method": "CONNECT",
+       ":path": "/v1/websocket/",
+       ":protocol": "websocket",
+       ":scheme": "https",
+       "sec-websocket-version": "13",
+       "user-agent": "Signal-Android/8.27.1 Android/37 libsignal/0.102.1"
+      },
+      "host": "grpc.chat.signal.org",
+      "is_complete": false,
+      "is_control_frame": false,
+      "is_request": true,
+      "method": "CONNECT",
+      "protocol": "HTTP/2",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 1,
+      "url": "/v1/websocket/"
+     },
+     "response": {
+      "body_size": 1334,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {
+       ":status": "200",
+       "date": "Tue, 29 Sep 2026 09:42:46 GMT",
+       "x-signal-timestamp": "1790674966260"
+      },
+      "host": "",
+      "is_complete": false,
+      "is_control_frame": false,
+      "is_request": false,
+      "method": "",
+      "protocol": "HTTP/2",
+      "status_code": 200,
+      "status_text": "",
+      "stream_id": 1,
+      "url": ""
+     },
+     "src_addr": "192.168.0.66",
+     "src_port": 57416,
+     "ssl_session_id": "",
+     "started": 1790674998.518312,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "h2",
+     "tls_sni": "grpc.chat.signal.org",
+     "total_bytes": 2143,
+     "transport": "tls"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "alpn": "h2",
+       "cipher": "TLS_AES_128_GCM_SHA256",
+       "depth": 0,
+       "library": "",
+       "name": "tls",
+       "sni": "grpc.chat.signal.org",
+       "version": "TLS 1.3"
+      },
+      "type": "TlsLayer"
+     },
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "depth": 1,
+       "name": "http2"
+      },
+      "type": "AppLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 2938,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {
+      ":authority": "grpc.chat.signal.org",
+      ":method": "CONNECT",
+      ":path": "/v1/websocket/",
+      ":protocol": "websocket",
+      ":scheme": "https",
+      "sec-websocket-version": "13",
+      "user-agent": "Signal-Android/8.27.1 Android/37 libsignal/0.102.1"
+     },
+     "host": "grpc.chat.signal.org",
+     "is_complete": false,
+     "is_control_frame": false,
+     "is_request": true,
+     "method": "CONNECT",
+     "protocol": "HTTP/2",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 1,
+     "url": "/v1/websocket/"
+    },
+    "response": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 1334,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {
+      ":status": "200",
+      "date": "Tue, 29 Sep 2026 09:42:46 GMT",
+      "x-signal-timestamp": "1790674966260"
+     },
+     "host": "",
+     "is_complete": false,
+     "is_control_frame": false,
+     "is_request": false,
+     "method": "",
+     "protocol": "HTTP/2",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 200,
+     "status_text": "",
+     "stream_id": 1,
+     "url": ""
+    },
+    "summary": {
+     "connection_id": "net:15.197.251.99:443-192.168.0.66:57416",
+     "detected_protocol": "",
+     "dst_addr": "15.197.251.99",
+     "dst_port": 443,
+     "duration": 17.876519918441772,
+     "ended": 1790675016.394832,
+     "finding_count": 0,
+     "flow_id": "net:15.197.251.99:443-192.168.0.66:57416:5",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "grpc.chat.signal.org",
+     "inner_e2e_protocol": "",
+     "inner_summary": "",
+     "method": "CONNECT",
+     "outer_app_protocol": "HTTP/2",
+     "process_name": "s4capture.pcapng",
+     "protocol": "HTTP/2",
+     "src_addr": "192.168.0.66",
+     "src_port": 57416,
+     "ssl_session_id": "",
+     "started": 1790674998.518312,
+     "state": "complete",
+     "status_code": 200,
+     "tag_count": 0,
+     "tls_alpn": "h2",
+     "tls_sni": "grpc.chat.signal.org",
+     "total_bytes": 2143,
+     "transport": "tls",
+     "url": "/v1/websocket/"
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   },
+   {
+    "chunks": {
+     "count": 1,
+     "sha256": [
+      "5911c239beb516df09a45ceebdca93da2891e965508b737fd96004306adb8f70"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:15.197.251.99:443-192.168.0.66:57426",
+     "detected_protocol": "HTTP/2",
+     "dst_addr": "15.197.251.99",
+     "dst_port": 443,
+     "duration": 0.0,
+     "ended": 1790674967.96536,
+     "findings": [],
+     "flow_id": "net:15.197.251.99:443-192.168.0.66:57426:0",
+     "layers": [
+      "tls",
+      "http2"
+     ],
+     "notes": "",
+     "package_name": "s4capture.pcapng",
+     "process_name": "s4capture.pcapng",
+     "protocol": "HTTP/2",
+     "request": null,
+     "response": null,
+     "src_addr": "192.168.0.66",
+     "src_port": 57426,
+     "ssl_session_id": "",
+     "started": 1790674967.96536,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "h2",
+     "tls_sni": "grpc.chat.signal.org",
+     "total_bytes": 24,
+     "transport": "tls"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "alpn": "h2",
+       "cipher": "TLS_AES_128_GCM_SHA256",
+       "depth": 0,
+       "library": "",
+       "name": "tls",
+       "sni": "grpc.chat.signal.org",
+       "version": "TLS 1.3"
+      },
+      "type": "TlsLayer"
+     },
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "depth": 1,
+       "name": "http2"
+      },
+      "type": "AppLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": null,
+    "response": null,
+    "summary": {
+     "connection_id": "net:15.197.251.99:443-192.168.0.66:57426",
+     "detected_protocol": "HTTP/2",
+     "dst_addr": "15.197.251.99",
+     "dst_port": 443,
+     "duration": 0.0,
+     "ended": 1790674967.96536,
+     "finding_count": 0,
+     "flow_id": "net:15.197.251.99:443-192.168.0.66:57426:0",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "",
+     "inner_e2e_protocol": "",
+     "inner_summary": "",
+     "method": "",
+     "outer_app_protocol": "HTTP/2",
+     "process_name": "s4capture.pcapng",
+     "protocol": "HTTP/2",
+     "src_addr": "192.168.0.66",
+     "src_port": 57426,
+     "ssl_session_id": "",
+     "started": 1790674967.96536,
+     "state": "complete",
+     "status_code": 0,
+     "tag_count": 0,
+     "tls_alpn": "h2",
+     "tls_sni": "grpc.chat.signal.org",
+     "total_bytes": 24,
+     "transport": "tls",
+     "url": ""
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   },
+   {
+    "chunks": {
+     "count": 2,
+     "sha256": [
+      "bd5788acfb90814f6e8bc129d64b2b0b77a6a9bd4d14618a355b3ceea0522e32",
+      "59e4f39b0111f3ee362179b2a30fbb37cd8aba0a2980b0ef735692f91fac0d88"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:15.197.251.99:443-192.168.0.66:57426",
+     "detected_protocol": "",
+     "dst_addr": "15.197.251.99",
+     "dst_port": 443,
+     "duration": 0.10752606391906738,
+     "ended": 1790674968.073215,
+     "findings": [],
+     "flow_id": "net:15.197.251.99:443-192.168.0.66:57426:1",
+     "layers": [
+      "tls",
+      "http2"
+     ],
+     "notes": "",
+     "package_name": "s4capture.pcapng",
+     "process_name": "s4capture.pcapng",
+     "protocol": "HTTP/2",
+     "request": {
+      "body_size": 0,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {
+       ":authority": "grpc.chat.signal.org",
+       ":method": "CONNECT",
+       ":path": "/v1/websocket/",
+       ":protocol": "websocket",
+       ":scheme": "https",
+       "authorization": "Basic ZWE2OTdiZmQtNTRkNy00ZjYxLTg2ZjAtNDhlODFhZmQxMTc4LjE6dTJjc1JYTHhyMzFZY3pJcFUzYVk1b01j",
+       "sec-websocket-version": "13",
+       "user-agent": "Signal-Android/8.27.1 Android/37 libsignal/0.102.1",
+       "x-signal-receive-stories": "true"
+      },
+      "host": "grpc.chat.signal.org",
+      "is_complete": false,
+      "is_control_frame": false,
+      "is_request": true,
+      "method": "CONNECT",
+      "protocol": "HTTP/2",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 1,
+      "url": "/v1/websocket/"
+     },
+     "response": {
+      "body_size": 0,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {
+       "0x8": "1",
+       "MAX_CONCURRENT_STREAMS": "100",
+       "MAX_HEADER_LIST_SIZE": "8192"
+      },
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": true,
+      "is_request": false,
+      "method": "SETTINGS",
+      "protocol": "HTTP/2",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": "connection-control"
+     },
+     "src_addr": "192.168.0.66",
+     "src_port": 57426,
+     "ssl_session_id": "",
+     "started": 1790674967.965689,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "h2",
+     "tls_sni": "grpc.chat.signal.org",
+     "total_bytes": 294,
+     "transport": "tls"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "alpn": "h2",
+       "cipher": "TLS_AES_128_GCM_SHA256",
+       "depth": 0,
+       "library": "",
+       "name": "tls",
+       "sni": "grpc.chat.signal.org",
+       "version": "TLS 1.3"
+      },
+      "type": "TlsLayer"
+     },
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "depth": 1,
+       "name": "http2"
+      },
+      "type": "AppLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 0,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {
+      ":authority": "grpc.chat.signal.org",
+      ":method": "CONNECT",
+      ":path": "/v1/websocket/",
+      ":protocol": "websocket",
+      ":scheme": "https",
+      "authorization": "Basic ZWE2OTdiZmQtNTRkNy00ZjYxLTg2ZjAtNDhlODFhZmQxMTc4LjE6dTJjc1JYTHhyMzFZY3pJcFUzYVk1b01j",
+      "sec-websocket-version": "13",
+      "user-agent": "Signal-Android/8.27.1 Android/37 libsignal/0.102.1",
+      "x-signal-receive-stories": "true"
+     },
+     "host": "grpc.chat.signal.org",
+     "is_complete": false,
+     "is_control_frame": false,
+     "is_request": true,
+     "method": "CONNECT",
+     "protocol": "HTTP/2",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 1,
+     "url": "/v1/websocket/"
+    },
+    "response": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 0,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {
+      "0x8": "1",
+      "MAX_CONCURRENT_STREAMS": "100",
+      "MAX_HEADER_LIST_SIZE": "8192"
+     },
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": true,
+     "is_request": false,
+     "method": "SETTINGS",
+     "protocol": "HTTP/2",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": "connection-control"
+    },
+    "summary": {
+     "connection_id": "net:15.197.251.99:443-192.168.0.66:57426",
+     "detected_protocol": "",
+     "dst_addr": "15.197.251.99",
+     "dst_port": 443,
+     "duration": 0.10752606391906738,
+     "ended": 1790674968.073215,
+     "finding_count": 0,
+     "flow_id": "net:15.197.251.99:443-192.168.0.66:57426:1",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "grpc.chat.signal.org",
+     "inner_e2e_protocol": "",
+     "inner_summary": "",
+     "method": "CONNECT",
+     "outer_app_protocol": "HTTP/2",
+     "process_name": "s4capture.pcapng",
+     "protocol": "HTTP/2",
+     "src_addr": "192.168.0.66",
+     "src_port": 57426,
+     "ssl_session_id": "",
+     "started": 1790674967.965689,
+     "state": "complete",
+     "status_code": 0,
+     "tag_count": 0,
+     "tls_alpn": "h2",
+     "tls_sni": "grpc.chat.signal.org",
+     "total_bytes": 294,
+     "transport": "tls",
+     "url": "/v1/websocket/"
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   },
+   {
+    "chunks": {
+     "count": 2,
+     "sha256": [
+      "a01629598595e394feb6df6a6effb2a03dee7db307c91cd5b1a4e53618df374c",
+      "96c18b58eb932603ea68b51410f21680666aeff142abc7fa3bb08d643e13a395"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:15.197.251.99:443-192.168.0.66:57426",
+     "detected_protocol": "",
+     "dst_addr": "15.197.251.99",
+     "dst_port": 443,
+     "duration": 0.0,
+     "ended": 1790674968.073705,
+     "findings": [],
+     "flow_id": "net:15.197.251.99:443-192.168.0.66:57426:3",
+     "layers": [
+      "tls",
+      "http2"
+     ],
+     "notes": "",
+     "package_name": "s4capture.pcapng",
+     "process_name": "s4capture.pcapng",
+     "protocol": "HTTP/2",
+     "request": {
+      "body_size": 0,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {
+       "SETTINGS": "ACK"
+      },
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": true,
+      "is_request": true,
+      "method": "SETTINGS",
+      "protocol": "HTTP/2",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": "connection-setup"
+     },
+     "response": {
+      "body_size": 0,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {
+       "SETTINGS": "ACK"
+      },
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": true,
+      "is_request": false,
+      "method": "SETTINGS",
+      "protocol": "HTTP/2",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": "connection-control"
+     },
+     "src_addr": "192.168.0.66",
+     "src_port": 57426,
+     "ssl_session_id": "",
+     "started": 1790674968.073705,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "h2",
+     "tls_sni": "grpc.chat.signal.org",
+     "total_bytes": 18,
+     "transport": "tls"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "alpn": "h2",
+       "cipher": "TLS_AES_128_GCM_SHA256",
+       "depth": 0,
+       "library": "",
+       "name": "tls",
+       "sni": "grpc.chat.signal.org",
+       "version": "TLS 1.3"
+      },
+      "type": "TlsLayer"
+     },
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "depth": 1,
+       "name": "http2"
+      },
+      "type": "AppLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 0,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {
+      "SETTINGS": "ACK"
+     },
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": true,
+     "is_request": true,
+     "method": "SETTINGS",
+     "protocol": "HTTP/2",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": "connection-setup"
+    },
+    "response": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 0,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {
+      "SETTINGS": "ACK"
+     },
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": true,
+     "is_request": false,
+     "method": "SETTINGS",
+     "protocol": "HTTP/2",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": "connection-control"
+    },
+    "summary": {
+     "connection_id": "net:15.197.251.99:443-192.168.0.66:57426",
+     "detected_protocol": "",
+     "dst_addr": "15.197.251.99",
+     "dst_port": 443,
+     "duration": 0.0,
+     "ended": 1790674968.073705,
+     "finding_count": 0,
+     "flow_id": "net:15.197.251.99:443-192.168.0.66:57426:3",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "",
+     "inner_e2e_protocol": "",
+     "inner_summary": "",
+     "method": "SETTINGS",
+     "outer_app_protocol": "HTTP/2",
+     "process_name": "s4capture.pcapng",
+     "protocol": "HTTP/2",
+     "src_addr": "192.168.0.66",
+     "src_port": 57426,
+     "ssl_session_id": "",
+     "started": 1790674968.073705,
+     "state": "complete",
+     "status_code": 0,
+     "tag_count": 0,
+     "tls_alpn": "h2",
+     "tls_sni": "grpc.chat.signal.org",
+     "total_bytes": 18,
+     "transport": "tls",
+     "url": "connection-setup"
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   },
+   {
+    "chunks": {
+     "count": 6,
+     "sha256": [
+      "706e63ddcbf0ef3d1a5c5707431b17edf32bea88a78bce0e8b18daa1c0342991",
+      "1f1045f37b656542967e5ff36829170521cfe651bc3e3a79c02769841eda6592",
+      "009a1e034adf21980c1e92b74acfa28deb6ba62c39ca6f531cd3d30c9355a30e",
+      "73581a895d31b63b55f85e1dfc471c02935ff362ce3bb5d8ee6ae45b32e1062b",
+      "2f6f4060e69516ee8683282329d2e44d7e2989113fb578275e7794fe108ba582",
+      "7dc8f89bbdb23f297105c3f7fb6bdd0130f8d3ee648b4c7d5512ae7be3ff9963"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:15.197.251.99:443-192.168.0.66:57426",
+     "detected_protocol": "",
+     "dst_addr": "15.197.251.99",
+     "dst_port": 443,
+     "duration": 0.166733980178833,
+     "ended": 1790674968.243099,
+     "findings": [],
+     "flow_id": "net:15.197.251.99:443-192.168.0.66:57426:4",
+     "layers": [
+      "tls",
+      "http2"
+     ],
+     "notes": "",
+     "package_name": "s4capture.pcapng",
+     "process_name": "s4capture.pcapng",
+     "protocol": "HTTP/2",
+     "request": {
+      "body_size": 153,
+      "content_encoding": "",
+      "content_type": "application/grpc",
+      "error": "",
+      "headers": {
+       ":authority": "grpc.chat.signal.org",
+       ":method": "POST",
+       ":path": "/org.signal.chat.device.Devices/SetPushToken",
+       ":scheme": "https",
+       "authorization": "Basic ZWE2OTdiZmQtNTRkNy00ZjYxLTg2ZjAtNDhlODFhZmQxMTc4LjE6dTJjc1JYTHhyMzFZY3pJcFUzYVk1b01j",
+       "content-type": "application/grpc",
+       "te": "trailers",
+       "user-agent": "Signal-Android/8.27.1 Android/37 libsignal/0.102.1"
+      },
+      "host": "grpc.chat.signal.org",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": true,
+      "method": "POST",
+      "protocol": "HTTP/2",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 3,
+      "url": "/org.signal.chat.device.Devices/SetPushToken"
+     },
+     "response": {
+      "body_size": 5,
+      "content_encoding": "",
+      "content_type": "application/grpc",
+      "error": "",
+      "headers": {
+       ":status": "200",
+       "content-type": "application/grpc",
+       "grpc-accept-encoding": "gzip",
+       "grpc-encoding": "identity",
+       "grpc-status": "0"
+      },
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": false,
+      "method": "",
+      "protocol": "HTTP/2",
+      "status_code": 200,
+      "status_text": "",
+      "stream_id": 3,
+      "url": ""
+     },
+     "src_addr": "192.168.0.66",
+     "src_port": 57426,
+     "ssl_session_id": "",
+     "started": 1790674968.076365,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "h2",
+     "tls_sni": "grpc.chat.signal.org",
+     "total_bytes": 520,
+     "transport": "tls"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "alpn": "h2",
+       "cipher": "TLS_AES_128_GCM_SHA256",
+       "depth": 0,
+       "library": "",
+       "name": "tls",
+       "sni": "grpc.chat.signal.org",
+       "version": "TLS 1.3"
+      },
+      "type": "TlsLayer"
+     },
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "depth": 1,
+       "name": "http2"
+      },
+      "type": "AppLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 153,
+     "content_encoding": "",
+     "content_type": "application/grpc",
+     "error": "",
+     "headers": {
+      ":authority": "grpc.chat.signal.org",
+      ":method": "POST",
+      ":path": "/org.signal.chat.device.Devices/SetPushToken",
+      ":scheme": "https",
+      "authorization": "Basic ZWE2OTdiZmQtNTRkNy00ZjYxLTg2ZjAtNDhlODFhZmQxMTc4LjE6dTJjc1JYTHhyMzFZY3pJcFUzYVk1b01j",
+      "content-type": "application/grpc",
+      "te": "trailers",
+      "user-agent": "Signal-Android/8.27.1 Android/37 libsignal/0.102.1"
+     },
+     "host": "grpc.chat.signal.org",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": true,
+     "method": "POST",
+     "protocol": "HTTP/2",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 3,
+     "url": "/org.signal.chat.device.Devices/SetPushToken"
+    },
+    "response": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 5,
+     "content_encoding": "",
+     "content_type": "application/grpc",
+     "error": "",
+     "headers": {
+      ":status": "200",
+      "content-type": "application/grpc",
+      "grpc-accept-encoding": "gzip",
+      "grpc-encoding": "identity",
+      "grpc-status": "0"
+     },
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": false,
+     "method": "",
+     "protocol": "HTTP/2",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 200,
+     "status_text": "",
+     "stream_id": 3,
+     "url": ""
+    },
+    "summary": {
+     "connection_id": "net:15.197.251.99:443-192.168.0.66:57426",
+     "detected_protocol": "",
+     "dst_addr": "15.197.251.99",
+     "dst_port": 443,
+     "duration": 0.166733980178833,
+     "ended": 1790674968.243099,
+     "finding_count": 0,
+     "flow_id": "net:15.197.251.99:443-192.168.0.66:57426:4",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "grpc.chat.signal.org",
+     "inner_e2e_protocol": "",
+     "inner_summary": "",
+     "method": "POST",
+     "outer_app_protocol": "HTTP/2",
+     "process_name": "s4capture.pcapng",
+     "protocol": "HTTP/2",
+     "src_addr": "192.168.0.66",
+     "src_port": 57426,
+     "ssl_session_id": "",
+     "started": 1790674968.076365,
+     "state": "complete",
+     "status_code": 200,
+     "tag_count": 0,
+     "tls_alpn": "h2",
+     "tls_sni": "grpc.chat.signal.org",
+     "total_bytes": 520,
+     "transport": "tls",
+     "url": "/org.signal.chat.device.Devices/SetPushToken"
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   },
+   {
+    "chunks": {
+     "count": 11,
+     "sha256": [
+      "1395fb4bd0748f8094d46ba538d3f85994f900784702b9aac9b5bfba589f7166",
+      "44bbf5f41750435e0f0b944e1f1248955cb3885be604047de0203043046b9203",
+      "24c7d0ce59479488fe083a358073b9d3ec659139557b949cff9bb25eeb87254f",
+      "3da4fe001fe475ebb31e7b71c882d02c376c794a637bab9c4bdde128e4f5b56c",
+      "53f39a0cf030d608d21d419ce03a577a97f8e66a8d3bdd2bad00e4a391ec983f",
+      "40b1a70feabde4cb63a3a609ced564be4f87d7408c8cb8cea9ace914711f374a",
+      "925d8668175bcd93f14f6700102c449131da6116f6b4eefcab44a961b0ce107d",
+      "42d982313f7522a716fb4afaa3d6907d97173143899a3ec4de65d46363dad32c",
+      "b147a08be61f07e33b8eaa23134e55b2b6ffc4a3c9d174b0a52315e4a98c8290",
+      "67f89600457d744eba05eda6a8ce44e7906d45368df9ef464dc5cfe67792c3f5",
+      "2bc4b14753abcd1bbca8da33b2cefe2b4bcc25ab18e61fc66ff2baa597ee63ed"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:15.197.251.99:443-192.168.0.66:57426",
+     "detected_protocol": "",
+     "dst_addr": "192.168.0.66",
+     "dst_port": 57426,
+     "duration": 27.78238010406494,
+     "ended": 1790675016.505716,
+     "findings": [],
+     "flow_id": "net:15.197.251.99:443-192.168.0.66:57426:5",
+     "layers": [
+      "tls",
+      "http2"
+     ],
+     "notes": "",
+     "package_name": "s4capture.pcapng",
+     "process_name": "s4capture.pcapng",
+     "protocol": "HTTP/2",
+     "request": {
+      "body_size": 115,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {
+       ":authority": "grpc.chat.signal.org",
+       ":method": "CONNECT",
+       ":path": "/v1/websocket/",
+       ":protocol": "websocket",
+       ":scheme": "https",
+       "authorization": "Basic ZWE2OTdiZmQtNTRkNy00ZjYxLTg2ZjAtNDhlODFhZmQxMTc4LjE6dTJjc1JYTHhyMzFZY3pJcFUzYVk1b01j",
+       "sec-websocket-version": "13",
+       "user-agent": "Signal-Android/8.27.1 Android/37 libsignal/0.102.1",
+       "x-signal-receive-stories": "true"
+      },
+      "host": "grpc.chat.signal.org",
+      "is_complete": false,
+      "is_control_frame": false,
+      "is_request": true,
+      "method": "CONNECT",
+      "protocol": "HTTP/2",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 1,
+      "url": "/v1/websocket/"
+     },
+     "response": {
+      "body_size": 1775,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {
+       ":status": "200",
+       "date": "Tue, 29 Sep 2026 09:42:46 GMT",
+       "x-signal-timestamp": "1790674966268"
+      },
+      "host": "",
+      "is_complete": false,
+      "is_control_frame": false,
+      "is_request": false,
+      "method": "",
+      "protocol": "HTTP/2",
+      "status_code": 200,
+      "status_text": "",
+      "stream_id": 1,
+      "url": ""
+     },
+     "src_addr": "15.197.251.99",
+     "src_port": 443,
+     "ssl_session_id": "",
+     "started": 1790674988.723336,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "h2",
+     "tls_sni": "grpc.chat.signal.org",
+     "total_bytes": 1974,
+     "transport": "tls"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "alpn": "h2",
+       "cipher": "TLS_AES_128_GCM_SHA256",
+       "depth": 0,
+       "library": "",
+       "name": "tls",
+       "sni": "grpc.chat.signal.org",
+       "version": "TLS 1.3"
+      },
+      "type": "TlsLayer"
+     },
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "depth": 1,
+       "name": "http2"
+      },
+      "type": "AppLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 115,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {
+      ":authority": "grpc.chat.signal.org",
+      ":method": "CONNECT",
+      ":path": "/v1/websocket/",
+      ":protocol": "websocket",
+      ":scheme": "https",
+      "authorization": "Basic ZWE2OTdiZmQtNTRkNy00ZjYxLTg2ZjAtNDhlODFhZmQxMTc4LjE6dTJjc1JYTHhyMzFZY3pJcFUzYVk1b01j",
+      "sec-websocket-version": "13",
+      "user-agent": "Signal-Android/8.27.1 Android/37 libsignal/0.102.1",
+      "x-signal-receive-stories": "true"
+     },
+     "host": "grpc.chat.signal.org",
+     "is_complete": false,
+     "is_control_frame": false,
+     "is_request": true,
+     "method": "CONNECT",
+     "protocol": "HTTP/2",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 1,
+     "url": "/v1/websocket/"
+    },
+    "response": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 1775,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {
+      ":status": "200",
+      "date": "Tue, 29 Sep 2026 09:42:46 GMT",
+      "x-signal-timestamp": "1790674966268"
+     },
+     "host": "",
+     "is_complete": false,
+     "is_control_frame": false,
+     "is_request": false,
+     "method": "",
+     "protocol": "HTTP/2",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 200,
+     "status_text": "",
+     "stream_id": 1,
+     "url": ""
+    },
+    "summary": {
+     "connection_id": "net:15.197.251.99:443-192.168.0.66:57426",
+     "detected_protocol": "",
+     "dst_addr": "192.168.0.66",
+     "dst_port": 57426,
+     "duration": 27.78238010406494,
+     "ended": 1790675016.505716,
+     "finding_count": 0,
+     "flow_id": "net:15.197.251.99:443-192.168.0.66:57426:5",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "grpc.chat.signal.org",
+     "inner_e2e_protocol": "",
+     "inner_summary": "",
+     "method": "CONNECT",
+     "outer_app_protocol": "HTTP/2",
+     "process_name": "s4capture.pcapng",
+     "protocol": "HTTP/2",
+     "src_addr": "15.197.251.99",
+     "src_port": 443,
+     "ssl_session_id": "",
+     "started": 1790674988.723336,
+     "state": "complete",
+     "status_code": 200,
+     "tag_count": 0,
+     "tls_alpn": "h2",
+     "tls_sni": "grpc.chat.signal.org",
+     "total_bytes": 1974,
+     "transport": "tls",
+     "url": "/v1/websocket/"
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   }
+  ],
+  "header": {
+   "capture_start": 1790674962.813614,
+   "capture_target": "s4capture.pcapng",
+   "ext_data": null,
+   "ext_header_len": 0,
+   "flags": 1,
+   "flow_count": 10,
+   "format_version": 1
+  },
+  "keylog_records": {
+   "count": 10,
+   "sha256": "604574743a69518af9301808fa0b330288361d3647e9485d28ed212bcf257cba"
+  },
+  "meta": {
+   "flow_fields_version": 3,
+   "parse_result_version": 1,
+   "schema_version": 1
+  },
+  "summary_count": 10
+ }
+}

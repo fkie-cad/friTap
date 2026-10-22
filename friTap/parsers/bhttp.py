@@ -10,7 +10,7 @@ Indeterminate-length framing (0x02, 0x03) returns None.
 from typing import Optional
 
 from .base import ParseResult
-from .varint import decode_varint
+from .varint import decode_quic_varint
 
 _STATUS_TEXT = {
     100: "Continue", 101: "Switching Protocols", 103: "Early Hints",
@@ -63,7 +63,7 @@ def parse_bhttp(data: bytes) -> Optional[ParseResult]:
 
 def _read_varint(data: bytes, offset: int) -> tuple[int, int]:
     """Read a QUIC-style varint, returning (value, new_offset)."""
-    value, consumed = decode_varint(data, offset)
+    value, consumed = decode_quic_varint(data, offset)
     return value, offset + consumed
 
 

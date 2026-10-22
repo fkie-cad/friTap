@@ -35,6 +35,8 @@ from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from friTap.pipeline import TLS_KEYLOG_LABELS
 
+from .tls.keylog import UNKNOWN_CLIENT_RANDOM, parse_strict_nss_line
+
 logger = logging.getLogger(__name__)
 
 # NSS labels the pipeline's set does not list; *_TRAFFIC_SECRET_N via the marker.
@@ -100,16 +102,10 @@ def _keylog_triples(path: str, max_bytes: int) -> List[Tuple[str, str, str]]:
 
 def _parse_keylog_line(line: str) -> Optional[Tuple[str, str, str]]:
     """Parse one keylog line into ``(label, client_random, secret)`` or ``None``."""
-    stripped = line.strip()
-    if not stripped or stripped.startswith("#"):
+    entry = parse_strict_nss_line(line, label_ok=is_nss_tls_label)
+    if entry is None:
         return None
-    parts = stripped.split()
-    if len(parts) != 3 or not is_nss_tls_label(parts[0]):
-        return None
-    client_random, secret = parts[1].lower(), parts[2].lower()
-    if not _CLIENT_RANDOM_HEX.match(client_random) or not _SECRET_HEX.match(secret):
-        return None
-    return parts[0], client_random, secret
+    return entry.label, entry.client_random, entry.secret
 
 
 def keylog_client_randoms(
@@ -246,10 +242,10 @@ def read_capture_handshakes(tshark_bin: str, pcap: str) -> CaptureTls:
     a bare ``tls`` filter also matches 1-byte TCP keep-alives). Never raises: a
     tshark failure yields an empty :class:`CaptureTls`.
     """
-    from friTap.offline.schannel.correlate import _run_fields, parse_tshark_fields
+    from friTap.offline.schannel.correlate import parse_tshark_fields, run_fields_pass
 
     try:
-        output = _run_fields(tshark_bin, pcap, "tls.record", _CAPTURE_FIELDS)
+        output = run_fields_pass(tshark_bin, pcap, "tls.record", _CAPTURE_FIELDS)
         return capture_tls_from_rows(parse_tshark_fields(output, len(_CAPTURE_FIELDS)))
     except Exception:  # noqa: BLE001 - coverage is advisory; never break the caller
         logger.debug("Reading TLS handshakes failed for %r", pcap, exc_info=True)
@@ -377,7 +373,12 @@ def _no_handshake_lines(coverage: Coverage) -> Tuple[str, List[str]]:
             "The capture contains no TLS handshakes to match the keylog against.",
             _midstream_line(coverage.midstream),
         ]
-    return "info", ["The capture contains no TLS traffic — the TLS keylog is not needed."]
+    # Only TLS-over-TCP records are read (``tls.record``): a QUIC capture's
+    # handshakes are invisible here, so "not needed" must not be claimed for it.
+    return "info", [
+        "The capture contains no TLS traffic over TCP (QUIC handshakes are not "
+        "checked) — unless it carries QUIC, the TLS keylog is not needed.",
+    ]
 
 
 def describe(coverage: Coverage) -> Tuple[str, List[str]]:
@@ -471,7 +472,11 @@ def _orphan_secrets(
     client_random, so a secret with no decryptable signal (EXPORTER_SECRET) rides
     along on the connection a sibling secret was placed on.
     """
-    from friTap.offline.schannel.correlate import TLS12_MASTER_HEXLEN, TLS13_LABELS, TLS13_SECRET_HEXLENS
+    from friTap.offline.schannel.correlate import (
+        TLS12_MASTER_HEXLEN,
+        TLS13_LABELS,
+        TLS13_SECRET_HEXLENS,
+    )
 
     masters: List[str] = []
     records: List[dict] = []
@@ -565,14 +570,23 @@ def _relabel_inputs(keylog: str, max_bytes: int) -> Tuple[List[str], List[dict]]
     the secret. Each TLS 1.3 record carries its original label only as a *hint*
     (confirmed or overridden by decryption in :mod:`.correlate`) and its original
     client_random as a ride-along group when it is valid hex. De-duplicated.
+
+    An unknown-client_random line gets no label hint (decryption alone labels
+    it) and a synthetic group shared with the consecutive unknown lines around
+    it (see :class:`_UnknownClientRandomRuns`), so an ``EXPORTER_SECRET ???``
+    line, which decrypts nothing, can still be placed by elimination once its
+    siblings pinned the connection down.
     """
     from friTap.offline.schannel.correlate import (
-        TLS12_MASTER_HEXLEN, TLS13_LABELS, TLS13_SECRET_HEXLENS,
+        TLS12_MASTER_HEXLEN,
+        TLS13_LABELS,
+        TLS13_SECRET_HEXLENS,
     )
     masters: List[str] = []
     records: List[dict] = []
     seen_master: Set[str] = set()
     seen_record: Set[Tuple[Optional[str], str, Optional[str]]] = set()
+    unknown_runs = _UnknownClientRandomRuns()
     try:
         with open(keylog, "rb") as fh:
             data = fh.read(max_bytes + 1)
@@ -581,17 +595,24 @@ def _relabel_inputs(keylog: str, max_bytes: int) -> Tuple[List[str], List[dict]]
     for line in data.decode("utf-8", errors="replace").splitlines():
         triple = _line_nss_triple(line)
         if triple is None:
+            unknown_runs.end_run()
             continue
         label, cr_raw, secret = triple
         if not _SECRET_HEX.match(secret):
+            unknown_runs.end_run()
             continue
-        group = cr_raw if _CLIENT_RANDOM_HEX.match(cr_raw) else None
+        known_cr = bool(_CLIENT_RANDOM_HEX.match(cr_raw))
+        if known_cr or label == _TLS12_MASTER_LABEL:
+            unknown_runs.end_run()
+            group = cr_raw if known_cr else None
+        else:
+            group = unknown_runs.group_for(label)
         if label == _TLS12_MASTER_LABEL:
             if len(secret) == TLS12_MASTER_HEXLEN and secret not in seen_master:
                 seen_master.add(secret)
                 masters.append(secret)
         elif len(secret) in TLS13_SECRET_HEXLENS:
-            hint = label if label in TLS13_LABELS else None
+            hint = label if known_cr and label in TLS13_LABELS else None
             key = (hint, secret, group)
             if key not in seen_record:
                 seen_record.add(key)
@@ -599,12 +620,53 @@ def _relabel_inputs(keylog: str, max_bytes: int) -> Tuple[List[str], List[dict]]
     return masters, records
 
 
+class _UnknownClientRandomRuns:
+    """Synthetic groups for runs of consecutive unknown-client_random lines.
+
+    The live ncrypt/lsass hook writes one connection's secrets together, so a
+    run of ``???`` lines is taken as one connection until a label repeats (the
+    next connection began) or any other line intervenes. The group only lets
+    :mod:`.correlate` place a run's EXPORTER_SECRET by elimination, which also
+    requires the run's own secrets to have decrypted all four labels on a
+    single connection (and to be the run's one leftover secret), so a run that
+    mixes two connections' decryptable secrets places nothing.
+    """
+
+    def __init__(self) -> None:
+        self._run = 0
+        self._labels: Set[str] = set()
+
+    def group_for(self, label: str) -> str:
+        """The synthetic group of the current run, starting a new run on a repeat."""
+        if label in self._labels:
+            self.end_run()
+        self._labels.add(label)
+        return f"{UNKNOWN_CLIENT_RANDOM}#{self._run}"
+
+    def end_run(self) -> None:
+        """Close the current run (no-op when it is empty)."""
+        if self._labels:
+            self._run += 1
+            self._labels = set()
+
+
 def _line_nss_triple(line: str) -> Optional[Tuple[str, str, str]]:
-    """``(label, client_random, secret)`` if *line* is an NSS TLS triple, else None."""
-    parts = line.strip().split()
-    if len(parts) == 3 and is_nss_tls_label(parts[0]):
-        return parts[0], parts[1].lower(), parts[2].lower()
-    return None
+    """``(label, client_random, secret)`` if *line* is an NSS TLS triple, else None.
+
+    Any client_random token that is not 64 hex chars (``???``, ``-``, a garbled
+    or truncated value) is accepted as unknown and returned lowercased as-is, so
+    callers see it fail ``_CLIENT_RANDOM_HEX``: relabelling places such secrets
+    by trial decryption. The label and secret stay strictly validated.
+    """
+    parts = line.split()
+    if len(parts) == 3 and not _CLIENT_RANDOM_HEX.match(parts[1].lower()):
+        line = " ".join((parts[0], UNKNOWN_CLIENT_RANDOM, parts[2]))
+    entry = parse_strict_nss_line(
+        line, label_ok=is_nss_tls_label, allow_unknown_client_random=True,
+    )
+    if entry is None:
+        return None
+    return entry.label, parts[1].lower(), entry.secret
 
 
 def _write_relabeled(keylog: str, corrected: List[str], out_path: str) -> None:

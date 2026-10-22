@@ -1,0 +1,263 @@
+{
+ "result": {
+  "decrypted_packet_count": 5,
+  "dropped_packet_count": 0,
+  "dropped_stream_count": 0,
+  "encrypted_streams_skipped": 0,
+  "findings_count": 0,
+  "flow_count": 1,
+  "mtproto_messages": 0,
+  "mtproto_records_undecryptable": 0,
+  "mtproto_streams": 0,
+  "mtproto_streams_degraded": 0,
+  "per_protocol": {
+   "rc4": {
+    "degraded": 0,
+    "degraded_non_mtproto": 0,
+    "degraded_unrecovered": 0,
+    "e2e_only": false,
+    "messages": 2,
+    "partial": 0,
+    "recovered_via_obf": 0,
+    "short": 0,
+    "streams": 1,
+    "undecryptable": 0,
+    "unknown_key_ids": {},
+    "unsupported_framing": 0
+   }
+  },
+  "stream_count": 1,
+  "tap_path": "<WORK>/rc4demo_neu27.tap"
+ },
+ "tap": {
+  "flow_count": 1,
+  "flows": [
+   {
+    "chunks": {
+     "count": 2,
+     "sha256": [
+      "47625951dd0206f4d2ec2800188310e7e27b7b8497978b2e07bc6997c2757977",
+      "adf65f52e7a602acaa5c70c47dff2cb50b3c3321f73616fe420f07fd4e777a97"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:rc4:127.0.0.1:53300-127.0.0.1:8443",
+     "detected_protocol": "",
+     "dst_addr": "127.0.0.1",
+     "dst_port": 8443,
+     "duration": 0.003905057907104492,
+     "ended": 1790679556.873415,
+     "findings": [],
+     "flow_id": "net:rc4:127.0.0.1:53300-127.0.0.1:8443:0",
+     "layers": [
+      "tls",
+      "rc4"
+     ],
+     "notes": "",
+     "package_name": "rc4demo_neu27.pcap",
+     "process_name": "rc4demo_neu27.pcap",
+     "protocol": "unknown",
+     "request": {
+      "body_size": 34,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {},
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": true,
+      "method": "",
+      "protocol": "unknown",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": ""
+     },
+     "response": {
+      "body_size": 72,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {},
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": false,
+      "method": "",
+      "protocol": "unknown",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": ""
+     },
+     "src_addr": "127.0.0.1",
+     "src_port": 53300,
+     "ssl_session_id": "",
+     "started": 1790679556.86951,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 106,
+     "transport": "rc4"
+    },
+    "layers": [
+     {
+      "data_source": "owned",
+      "metadata_only": false,
+      "owned_read_sha256": "98fc132b6e017c80f20f9ee964599cca8c0ed747534b86c790ccf7336ec069f7",
+      "owned_write_sha256": "be327216366d751cb4f491ecb179c72f3b8371f6fef15eee205c01ecfe426704",
+      "to_dict": {
+       "alpn": "",
+       "cipher": "TLS_AES_256_GCM_SHA384",
+       "depth": 0,
+       "library": "",
+       "name": "tls",
+       "sni": "",
+       "version": "TLS 1.3"
+      },
+      "type": "TlsLayer"
+     },
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "assoc": "",
+       "depth": 1,
+       "direction": "both",
+       "framing": "u32be-length",
+       "key_len": 19,
+       "message_count": 2,
+       "name": "rc4",
+       "records": [
+        {
+         "cipher_offset": 4,
+         "direction": "write",
+         "frame_header_len": 4,
+         "length": 34,
+         "timestamp": 1790679556.86951,
+         "tls_frames": [
+          20,
+          22
+         ]
+        },
+        {
+         "cipher_offset": 4,
+         "direction": "read",
+         "frame_header_len": 4,
+         "length": 72,
+         "timestamp": 1790679556.873415,
+         "tls_frames": [
+          24
+         ]
+        }
+       ],
+       "source": "rc4-keylog:trial-key(mem)/out"
+      },
+      "type": "Rc4Layer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": {
+     "body_sha256": "18b1886a418d528d84f467a66e4fd146d3cae68979e023f1c8e183ed54b4c5b0",
+     "body_size": 34,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {},
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": true,
+     "method": "",
+     "protocol": "unknown",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": ""
+    },
+    "response": {
+     "body_sha256": "f3ec2874cdd100b95b01b28fc61c1a8ecb2e228f033672f4f838308d7d14459b",
+     "body_size": 72,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {},
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": false,
+     "method": "",
+     "protocol": "unknown",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": ""
+    },
+    "summary": {
+     "connection_id": "net:rc4:127.0.0.1:53300-127.0.0.1:8443",
+     "detected_protocol": "",
+     "dst_addr": "127.0.0.1",
+     "dst_port": 8443,
+     "duration": 0.003905057907104492,
+     "ended": 1790679556.873415,
+     "finding_count": 0,
+     "flow_id": "net:rc4:127.0.0.1:53300-127.0.0.1:8443:0",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "",
+     "inner_e2e_protocol": "RC4",
+     "inner_summary": "",
+     "method": "",
+     "outer_app_protocol": "TLS",
+     "process_name": "rc4demo_neu27.pcap",
+     "protocol": "unknown",
+     "src_addr": "127.0.0.1",
+     "src_port": 53300,
+     "ssl_session_id": "",
+     "started": 1790679556.86951,
+     "state": "complete",
+     "status_code": 0,
+     "tag_count": 0,
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 106,
+     "transport": "rc4",
+     "url": ""
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   }
+  ],
+  "header": {
+   "capture_start": 1790679530.132199,
+   "capture_target": "rc4demo_neu27.pcap",
+   "ext_data": null,
+   "ext_header_len": 0,
+   "flags": 1,
+   "flow_count": 1,
+   "format_version": 1
+  },
+  "keylog_records": {
+   "count": 5,
+   "sha256": "85148f758c9e5e479d3d7079210f1e92af9c4c6a360cddba0cae6540baa64406"
+  },
+  "meta": {
+   "flow_fields_version": 3,
+   "parse_result_version": 1,
+   "schema_version": 1
+  },
+  "summary_count": 1
+ }
+}

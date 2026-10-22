@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Dict
 
 from ....protocols.mtproto_keylog_spec import MtprotoSecretChatKey, parse_e2e_line
+from ...keylog_io import load_keylog_lines
 
 
 def load_secret_chat_keylog(path: str) -> Dict[bytes, MtprotoSecretChatKey]:
@@ -20,10 +21,4 @@ def load_secret_chat_keylog(path: str) -> Dict[bytes, MtprotoSecretChatKey]:
     returns ``None`` for comments/blank/cloud-chat/malformed lines (those are
     simply ignored). When duplicate fingerprints appear, the last entry wins.
     """
-    keymap: Dict[bytes, MtprotoSecretChatKey] = {}
-    with open(path, "r", encoding="utf-8", errors="replace") as fh:
-        for line in fh:
-            entry = parse_e2e_line(line)
-            if entry is not None:
-                keymap[entry.key_fingerprint] = entry
-    return keymap
+    return load_keylog_lines(path, parse_e2e_line, key=lambda entry: entry.key_fingerprint)

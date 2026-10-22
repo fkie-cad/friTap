@@ -88,7 +88,6 @@ class TestDispatchPcapWizard:
 pytest.importorskip("textual")
 
 from friTap.tui.app import FriTapApp  # noqa: E402
-from friTap.offline.mtproto.transport import DEFAULT_OBF_MAX_BLOCKS  # noqa: E402
 
 
 def _find_main_screen(app):
@@ -417,10 +416,11 @@ class TestPcapToTapModals:
 
         asyncio.run(_run())
         # Convert returns the still-checked keylogs (all by default) plus the
-        # mid-stream resync search depth (default when left untouched).
+        # mid-stream resync search depth (None, i.e. each decryptor's own
+        # default, when left untouched).
         assert result["value"] == {
             "enabled_keylogs": ["tls", "signal"],
-            "resync_search_depth": DEFAULT_OBF_MAX_BLOCKS,
+            "resync_search_depth": None,
         }
 
     def test_confirm_modal_convert_returns_user_entered_resync_depth(self):
@@ -694,6 +694,7 @@ class TestStep2PickerWizard:
         wizard shows a phantom TLS entry and a misleading "no TLS sessions"
         coverage warning (the friTap#… report)."""
         import json
+
         from friTap.protocols.mtproto_keylog_spec import format_e2e_line
 
         pcap = tmp_path / "cap.pcapng"
@@ -1123,7 +1124,9 @@ class TestSuggestionEvidence:
         suggestion it is meaningless, so it must be dropped (the modal then shows
         the neutral timestamp hint instead of 'matches 0/4 TLS sessions')."""
         from friTap.offline.keylog_suggest import Suggestion
-        from friTap.protocols.mtproto_keylog_spec import format_line as mtproto_format_line
+        from friTap.protocols.mtproto_keylog_spec import (
+            format_line as mtproto_format_line,
+        )
         mk = tmp_path / "keys.mtproto.log"
         mk.write_text(
             mtproto_format_line(dc_id=2, auth_key_id="ab" * 8, auth_key="cd" * 256) + "\n"
@@ -1258,7 +1261,7 @@ class TestConfirmModalCoverageUi:
         # Convert now returns the still-checked keylogs rather than a bare True.
         assert result["value"] == {
             "enabled_keylogs": ["tls"],
-            "resync_search_depth": DEFAULT_OBF_MAX_BLOCKS,
+            "resync_search_depth": None,
         }
 
     def test_no_repair_callback_never_shows_button(self):

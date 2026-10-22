@@ -29,7 +29,7 @@ from .h3_streams import (
 )
 from .http2 import H2_URL_CONNECTION_CONTROL
 from .qpack_context import QpackDecoderContext
-from .varint import decode_varint
+from .varint import decode_quic_varint
 
 # Try to import pylsqpack for QPACK header decompression
 _qpack_available = False
@@ -57,6 +57,41 @@ _KNOWN_FRAME_TYPES = frozenset({
 
 # Maximum reasonable frame length for detection (16MB)
 _MAX_FRAME_LENGTH = 16 * 1024 * 1024
+
+
+def _read_frame(buf, offset: int):
+    """Decode the frame header at *offset* in *buf*.
+
+    Returns ``(frame_type, payload_start, payload_end)`` for a complete frame,
+    or ``None`` when the header or payload is incomplete.
+    """
+    try:
+        frame_type, type_len = decode_quic_varint(buf, offset)
+        frame_length, len_len = decode_quic_varint(buf, offset + type_len)
+    except (ValueError, IndexError):
+        return None
+    payload_start = offset + type_len + len_len
+    payload_end = payload_start + frame_length
+    if len(buf) < payload_end:
+        return None
+    return frame_type, payload_start, payload_end
+
+
+def iter_h3_data_frames(buf):
+    """Yield the payload of every complete DATA frame in *buf*, in order.
+
+    Non-destructive (``buf`` is not modified); non-DATA frames are skipped and
+    the walk stops at the first incomplete frame.
+    """
+    offset = 0
+    while offset < len(buf):
+        frame = _read_frame(buf, offset)
+        if frame is None:
+            return
+        frame_type, payload_start, offset = frame
+        if frame_type == _FRAME_DATA:
+            yield bytes(buf[payload_start:offset])
+
 
 # Direction labels and their opposite (client-direction inference)
 _OPPOSITE_DIRECTION = {"write": "read", "read": "write"}
@@ -112,6 +147,9 @@ class Http3Parser(BaseParser):
     # the registry treat this parser as the QUIC opt-in candidate; it must never
     # be chosen for a raw TCP/UDP payload that is not QUIC.
     TRANSPORTS = ("quic",)
+    # ...and the only built-in parser sniffed for QUIC (the registry restricts the
+    # transport to the built-ins declaring it here; Hexdump stays the fallback).
+    EXCLUSIVE_TRANSPORTS = TRANSPORTS
 
     def __init__(self) -> None:
         self._buffers: dict[str, bytearray] = {}  # per-direction buffers
@@ -151,10 +189,10 @@ class Http3Parser(BaseParser):
         if not data or len(data) < 2:
             return False
         try:
-            frame_type, type_len = decode_varint(data, 0)
+            frame_type, type_len = decode_quic_varint(data, 0)
             if type_len + 1 > len(data):
                 return False
-            frame_length, _ = decode_varint(data, type_len)
+            frame_length, _ = decode_quic_varint(data, type_len)
             # Must be a known HTTP/3 frame type with reasonable length.
             if frame_type not in _KNOWN_FRAME_TYPES or frame_length > _MAX_FRAME_LENGTH:
                 return False
@@ -261,15 +299,11 @@ class Http3Parser(BaseParser):
         """Yield ``(frame_type, payload)`` for every complete frame in *buf*,
         removing it; a trailing partial frame stays buffered."""
         while buf:
-            try:
-                frame_type, type_len = decode_varint(buf, 0)
-                frame_length, len_len = decode_varint(buf, type_len)
-            except (ValueError, IndexError):
+            frame = _read_frame(buf, 0)
+            if frame is None:
                 return
-            total = type_len + len_len + frame_length
-            if len(buf) < total:
-                return
-            payload = bytes(buf[type_len + len_len:total])
+            frame_type, payload_start, total = frame
+            payload = bytes(buf[payload_start:total])
             del buf[:total]
             yield frame_type, payload
 
@@ -302,10 +336,10 @@ class Http3Parser(BaseParser):
         """
         try:
             if state.stype is None:
-                state.stype, used = decode_varint(state.buf, 0)
+                state.stype, used = decode_quic_varint(state.buf, 0)
                 del state.buf[:used]
             if state.stype == UNI_STREAM_PUSH and state.push_id is None:
-                state.push_id, used = decode_varint(state.buf, 0)
+                state.push_id, used = decode_quic_varint(state.buf, 0)
                 del state.buf[:used]
         except (ValueError, IndexError):
             return False

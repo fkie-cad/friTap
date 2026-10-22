@@ -118,6 +118,13 @@
         }
       },
       "tiers": {
+        "B0_idle_ssl": {
+          "enabled": true,
+          "rescan_every": 8,
+          "_rescan_every_doc": "How often Tier B0 runs while no needle has been seeded (state.scanIndex % rescan_every === 0, so scan 0 always runs). Tier B0 is a heavy full-heap masked scan (one masked Memory.scanSync pass per valid hash length). On a stripped-libssl target (Signal APEX Cronet) the needle NEVER seeds, so the gate `resolveNeedleValue() === null` stays true forever and, unthrottled, this ran on every poll cycle — pinning CPU and starving Signal's UI thread into a device-confirmed ANR. Scan 0 emits the idle bundle once; cross-scan dedup (emitSecretBundle -> state.recordedBundles) then keeps the steady state quiet so the poll loop's exponential backoff can grow to its 60s ceiling instead of resetting every cycle, and this heavy scan only re-runs every 8th scan to re-check for newly-idle sockets. Missing, non-numeric or < 1 fall back to 8; the tier can never be switched OFF here (use enabled:false for that).",
+          "_doc": "Tier B0 (idle-SSL bootstrap). Recovers a PRE-EXISTING, post-handshake (idle) TLS socket whose libssl is STRIPPED (e.g. Signal APEX Cronet libhttpengine.so: SSL_read/SSL_write have no symbols, so the needle seed cannot fire and no handshake exists for Tier A to catch). The engine scans the heap directly for a live SSL3_STATE by its three stride-49 traffic-secret length bytes (write/read/exporter_traffic_secret_len), validates it (hs==NULL, three hash-length secrets, CSPRNG client_random) and emits the tls_secret_bundle straight from SSL3_STATE - no function hook, no needle. It optionally reverse-links to the SSL* to seed the Tier B needle. Runs ONLY when no needle is known yet, so it is zero-cost once seeded. Anchor geometry and validation come entirely from struct_offsets.SSL3_STATE + constants (inplace_vector_stride, valid_hash_lens); nothing is hardcoded in the engine. Set enabled:false to disable.",
+          "_note": "Emitting the bundle requires tiers.B_ssl_method_ptr.emit_secret_bundle to be on (it reuses emitSecretBundle)."
+        },
         "A_ssl_handshake": {
           "enabled": true,
           "rescan_every": 4,
@@ -367,6 +374,13 @@
         }
       },
       "tiers": {
+        "B0_idle_ssl": {
+          "enabled": true,
+          "rescan_every": 8,
+          "_rescan_every_doc": "How often Tier B0 runs while no needle has been seeded (state.scanIndex % rescan_every === 0, so scan 0 always runs). Tier B0 is a heavy full-heap masked scan (one masked Memory.scanSync pass per valid hash length). On a stripped-libssl target (Signal APEX Cronet) the needle NEVER seeds, so the gate `resolveNeedleValue() === null` stays true forever and, unthrottled, this ran on every poll cycle — pinning CPU and starving Signal's UI thread into a device-confirmed ANR. Scan 0 emits the idle bundle once; cross-scan dedup (emitSecretBundle -> state.recordedBundles) then keeps the steady state quiet so the poll loop's exponential backoff can grow to its 60s ceiling instead of resetting every cycle, and this heavy scan only re-runs every 8th scan to re-check for newly-idle sockets. Missing, non-numeric or < 1 fall back to 8; the tier can never be switched OFF here (use enabled:false for that).",
+          "_doc": "Tier B0 (idle-SSL bootstrap). Recovers a PRE-EXISTING, post-handshake (idle) TLS socket whose libssl is STRIPPED (e.g. Signal APEX Cronet libhttpengine.so: SSL_read/SSL_write have no symbols, so the needle seed cannot fire and no handshake exists for Tier A to catch). The engine scans the heap directly for a live SSL3_STATE by its three stride-49 traffic-secret length bytes (write/read/exporter_traffic_secret_len), validates it (hs==NULL, three hash-length secrets, CSPRNG client_random) and emits the tls_secret_bundle straight from SSL3_STATE - no function hook, no needle. It optionally reverse-links to the SSL* to seed the Tier B needle. Runs ONLY when no needle is known yet, so it is zero-cost once seeded. Anchor geometry and validation come entirely from struct_offsets.SSL3_STATE + constants (inplace_vector_stride, valid_hash_lens); nothing is hardcoded in the engine. Set enabled:false to disable.",
+          "_note": "Emitting the bundle requires tiers.B_ssl_method_ptr.emit_secret_bundle to be on (it reuses emitSecretBundle)."
+        },
         "A_ssl_handshake": {
           "enabled": true,
           "rescan_every": 4,
@@ -445,6 +459,8 @@
           "seed_from_ssl_io": true,
           "_seed_from_ssl_io_doc": "Additional Tier B needle source: the agent Interceptor.attaches SSL_read/SSL_write (arg0 = SSL*) once per process and reads ssl->method (field 0) to derive the needle. SSL_read/SSL_write fire on ANY active session, including one already open before friTap attached, so Tier B recovers a purely pre-existing TLS session even though no SSL_HANDSHAKE (03 03 04 03) ever appears for Tier A to anchor on. The hooks detach after the first successful seed (zero hot-path overhead), never overwrite a needle Tier A already derived, and fall back silently to Tier A / the RVA hint if the exports do not resolve. Opt-out with false.",
           "_doc": "The workhorse. ssl->method points at one static SSL_PROTOCOL_METHOD shared by every TLS SSL object and sits at offset 0, so a single exact 8-byte needle enumerates every LIVE SSL in the heap - pointer walking instead of byte-pattern archaeology. From each SSL we read client_random, the three live SSL3_STATE traffic secrets (which survive the handshake for as long as the socket is pooled), the TLS 1.2 master secret via established_session/session, and the full Tier A slot set whenever s3->hs is non-NULL.",
+          "reverse_link_require_heap_fields": [],
+          "_reverse_link_require_heap_fields_doc": "Tier B0's reverse-link (sslFromS3 -> acceptsAsSsl) confirms a candidate SSL by the two-way close (ssl->s3==s3) plus ssl->method resolving to a loaded module (the shared SSL_PROTOCOL_METHOD, i.e. the Tier B needle). By DEFAULT it ALSO requires these SSL fields to be plausible heap pointers ['session','ctx'] as an extra false-positive guard - the historical behavior kept for Chrome/Cronet and every profile that omits this key. Set to [] here because on libsignal's in-tree BoringSSL ssl->session at the Chrome-derived offset is null/unset for a mid-stream (post-handshake) TLS 1.3 socket, so requiring it silently rejected the REAL SSL and left the Tier B needle unseeded (falling back to the fragile Tier B0 anchor). On-device the round-trip + method-in-module pair alone uniquely identifies the owning SSL among the coincidental scan hits, and Tier B re-validates every SSL it then enumerates.",
           "needle": {
             "_note": "No static RVA for libsignal's in-tree BoringSSL: rva=null so resolveNeedleValue() returns null until Tier A anchors a live SSL_HANDSHAKE and derives ssl->method. A capture must be running while a Signal chat connection handshakes (force one with `adb shell svc wifi disable && svc wifi enable` — airplane mode does NOT drop WiFi on Pixel 7).",
             "module": "libsignal_jni.so",
@@ -653,7 +669,32 @@
               "secret_lens": [
                 48,
                 32
-              ]
+              ],
+              "secret_len_by_cipher": {
+                "_note": "Secret byte-length by cipher id (read at group.cipher_at): SHA384 suite 0x1302 -> 48, SHA256 suites 0x1301/0x1303 -> 32. Needed because the fixed-order secret_lens [48,32] trial reads 48 first and a 48-byte read of a 32-byte secret passes the entropy/zero-fraction gate (32 real bytes + 16 trailing heap), emitting a WRONG secret and shadowing the correct 32-byte read. An unlisted cipher falls back to the secret_lens trial. Device-measured 2026-10-19.",
+                "0x1302": 48,
+                "0x1301": 32,
+                "0x1303": 32
+              },
+              "group": {
+                "enabled": true,
+                "mode": "layout_triple",
+                "client_off": 176,
+                "exporter_off": 1208,
+                "cipher_at": 8,
+                "by_cipher": {
+                  "0x1302": { "client_off": 176, "exporter_off": 1208, "_note": "TLS_AES_256_GCM_SHA384 (48-byte secrets) — dynamically measured + statically corroborated 2026-10-18" },
+                  "0x1301": { "client_off": 160, "exporter_off": 1176, "_note": "TLS_AES_128_GCM_SHA256 (32-byte secrets) — device-measured 2026-10-19, agreed across 4 copies over 2 connections; end-to-end placement verified (EXPORTER_SECRET placed, ground-truth matched). Deltas vs 0x1302 (-0x10 client, -0x20 exporter) match the 16-byte secret-size shrink per allocation." }
+                },
+                "_static_re": "Corroborated by static RE of ncryptsslp.dll (dev/windows_re/verify_kit/STATIC_RE_FINDINGS.md): a connection's three app-secret containers are SEPARATE RtlAllocateHeap allocations from distinct TlsDeriveSecret calls (no enclosing struct), so these offsets are deterministic heap-ORDER/LFH-bucket artifacts, not a struct layout — stable per build, cipher-size dependent. The agent reads the cipher id at anchor+cipher_at (0x08) and looks it up in by_cipher; a suite absent from by_cipher falls back to client_off/exporter_off (fail-safe: a wrong offset simply fails the geometric triple test and emits no group, never a wrong one). SHA256/ChaCha20 (0x1301/0x1303, 32-byte secrets) offsets are NOT statically derivable (the secret lives in a bcryptprimitives key object, a different DLL) and may equal 0x1302's (same LFH bucket) or differ by one bucket — measure on device (dev/windows_re/verify_kit/VERIFY_WINDOWS.md) and add the entries here before relying on them.",
+                "_status": "RE-CONFIRMED on 26200 arm64 (2026-10-18) via read-only lsass ground truth with concurrent SChannel TLS 1.3 connections. No pointer-reachable parent exists above '3lss' on this build (0 pointers into the secret block, 0 shared sibling pointers, 0 needle-validated ssl5 references — all measured). The per-connection id is POSITIONAL: a connection's three resident app secrets occupy one block at FIXED relative offsets — SERVER_TRAFFIC_SECRET_0 @ base, CLIENT_TRAFFIC_SECRET_0 @ base+0xb0 (176), EXPORTER_SECRET @ base+0x4b8 (1208) for TLS_AES_256_GCM_SHA384. group = base B of a structural triple: B, B+client_off and B+exporter_off are ALL validated '3lss' secrets. Keying on the exact geometry (not proximity) isolates one connection even on a busy heap where a foreign connection's secrets sit only ~0x290 away (proximity clustering merged them; the geometry test does not, verified end-to-end 2026-10-18 — EXPORTER_SECRET placed for both of two concurrent connections, ground-truth matched). A non-triple anchor gets no group. Safety net: the offline correlator discards any group whose app secrets decrypt different streams, so a mis-grouped triple can only fail to place the exporter, never misplace it. client_off/exporter_off are cipher-specific (measured for SHA384); recalibrate for other suites before enabling them.",
+                "_layout": {
+                  "SERVER_TRAFFIC_SECRET_0": "base+0x0",
+                  "CLIENT_TRAFFIC_SECRET_0": "base+0xb0",
+                  "EXPORTER_SECRET": "base+0x4b8",
+                  "cipher": "TLS_AES_256_GCM_SHA384"
+                }
+              }
             },
             "session_cache": {
               "enabled": false,

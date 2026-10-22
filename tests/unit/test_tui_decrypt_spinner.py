@@ -140,6 +140,7 @@ class TestCancelledWorkerClosesSpinner:
 
     def _run_worker(self, monkeypatch, screen, progress, pcap_to_tap):
         import textual.worker as worker_mod
+
         import friTap.offline.pcap_to_tap as p2t
 
         monkeypatch.setattr(

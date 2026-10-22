@@ -10,7 +10,8 @@ Pure helpers (no TUI code) used by the pcap-to-tap wizard:
     (:func:`rank_keylogs_by_coverage`); :func:`suggest_keylog_with_evidence`
     also reports that count for the hint.
   * :func:`sniff_keylog_protocol` reads the first lines of a keylog and returns
-    the keylog-picker entry (``tls`` / ``custom`` / ``mtproto``) it belongs to.
+    the keylog-picker entry (``tls`` / ``custom`` / ``mtproto`` / ``signal``) it
+    belongs to.
 
 Both are total: any I/O or parse failure yields ``None``, never an exception.
 """
@@ -31,6 +32,12 @@ from friTap.offline.keylog_coverage import (
 from friTap.offline.keylog_paths import canonical_keylog_path
 from friTap.offline.keylog_picker import CUSTOM_PICKER_NAME, TLS_PICKER_NAME
 from friTap.offline.schannel.unpaired import SIDECAR_KINDS
+from friTap.protocols import mtproto_keylog_spec, rc4_keylog_spec
+
+try:  # optional: absent from builds that ship without this protocol
+    from friTap.protocols import signal_keylog_spec
+except ImportError:  # pragma: no cover - depends on the build variant
+    signal_keylog_spec = None
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +46,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_DELTA_S = 600
 KEYLOG_EXTENSIONS = (".log", ".keylog")
 MTPROTO_PICKER_NAME = "mtproto"
+SIGNAL_PICKER_NAME = "signal"
 
 _COMPACT_TOKEN = re.compile(
     r"(?<!\d)(\d{4})(\d{2})(\d{2})[_\-T](\d{2})(\d{2})(\d{2})?(?!\d)"
@@ -341,28 +349,12 @@ def _is_mtproto_line(line: str) -> bool:
     memory-scan obf-key sidecar), so all three parsers are consulted — otherwise
     such a keylog sniffs as ``None`` and gets mis-filed under TLS.
     """
-    try:
-        from friTap.protocols.mtproto_keylog_spec import (
-            parse_e2e_line,
-            parse_line,
-            parse_obf_line,
-        )
-    except ImportError:  # pragma: no cover - defensive
-        return False
-    return (
-        parse_line(line) is not None
-        or parse_e2e_line(line) is not None
-        or parse_obf_line(line) is not None
-    )
+    return mtproto_keylog_spec.matches_line(line)
 
 
 def _is_rc4_line(line: str) -> bool:
     """True when the canonical RC4 keylog parser accepts *line*."""
-    try:
-        from friTap.protocols.rc4_keylog_spec import parse_line
-    except ImportError:  # pragma: no cover - defensive
-        return False
-    return parse_line(line) is not None
+    return rc4_keylog_spec.matches_line(line)
 
 
 def _is_tls_label(label: str) -> bool:
@@ -370,15 +362,29 @@ def _is_tls_label(label: str) -> bool:
     return is_nss_tls_label(label) or label.startswith(SIDECAR_KINDS)
 
 
+def _is_tls_line(line: str) -> bool:
+    """True when the first token of *line* is a TLS / Schannel label."""
+    return _is_tls_label(line.split(None, 1)[0])
+
+
+# Ordered (picker protocol, line matcher) table; the first match wins. TLS and
+# the label-prefixed formats come first; Signal records are bare hex with no
+# label, so they go last and can never claim a labelled line.
+KEYLOG_LINE_MATCHERS: Tuple[Tuple[str, Callable[[str], bool]], ...] = (
+    (TLS_PICKER_NAME, _is_tls_line),
+    (CUSTOM_PICKER_NAME, rc4_keylog_spec.matches_line),
+    (MTPROTO_PICKER_NAME, mtproto_keylog_spec.matches_line),
+) + (
+    ((SIGNAL_PICKER_NAME, signal_keylog_spec.matches_line),)
+    if signal_keylog_spec is not None else ()
+)
+
+
 def _protocol_for_line(line: str) -> Optional[str]:
     """Picker protocol a single (non-blank, non-comment) keylog *line* implies."""
-    label = line.split(None, 1)[0]
-    if _is_tls_label(label):
-        return TLS_PICKER_NAME
-    if _is_rc4_line(line):
-        return CUSTOM_PICKER_NAME
-    if _is_mtproto_line(line):
-        return MTPROTO_PICKER_NAME
+    for protocol, matches in KEYLOG_LINE_MATCHERS:
+        if matches(line):
+            return protocol
     return None
 
 
@@ -400,7 +406,7 @@ def _record_lines(path: str, max_lines: int) -> List[str]:
 
 
 def sniff_keylog_protocol(path: str, max_lines: int = 50) -> Optional[str]:
-    """Return the picker protocol (``tls``/``custom``/``mtproto``) of keylog *path*.
+    """Return the picker protocol (``tls``/``custom``/``mtproto``/``signal``) of *path*.
 
     Inspects up to *max_lines* record lines; the first recognized line decides.
     Returns ``None`` for unknown content or any read error.

@@ -8,7 +8,7 @@
 // free number math.
 //
 // They were first written inline in agent/signal/libs/signal_libsignal.ts to
-// anchor libsignal's HKDF discovery on the "WhisperMessageKeys" string. They are
+// anchor libsignal's HKDF discovery on the HKDF info string. They are
 // lifted here UNCHANGED in behaviour so a second consumer — the BoringSSL
 // last-resort anchor locator (agent/shared/boringssl_anchor_locator.ts), which
 // anchors on the NSS keylog label strings — can reuse them instead of copying.

@@ -35,7 +35,11 @@ from friTap.flow.decryptors import (
     DecryptorRegistry,
     get_default_decryptor_registry,
 )
-from friTap.flow.layer_registry import ProtocolRegistry, get_registry
+from friTap.flow.layer_registry import (
+    ProtocolRegistry,
+    get_registry,
+    message_transport_names,
+)
 from friTap.flow.layers import AppLayer, ProtocolLayer
 from friTap.parsers.registry import get_default_registry
 
@@ -69,7 +73,8 @@ _APP_NAME_BY_PROTOCOL: dict[str, str] = {
 # payload is parsed by the protocol's own offline decryptor, not the app parsers.
 # (Signal is unaffected: it rides inside real HTTP/2, so its transport is ``tls``
 # and ``signal`` is an inner owned layer — not a transport in this set.)
-_NON_HTTP_E2E_TRANSPORTS = frozenset({"mtproto", "telegram_e2e"})
+# Derived from the ``is_message_transport`` descriptors of the layer registry.
+_NON_HTTP_E2E_TRANSPORTS = frozenset(message_transport_names())
 # Public alias: the transports whose flows are message streams, not HTTP
 # exchanges (used by the display layer for status / pane rendering).
 MESSAGE_TRANSPORTS = _NON_HTTP_E2E_TRANSPORTS
@@ -337,6 +342,9 @@ class LayerPipeline:
         if not (write or read):
             return None
         try:
+            # Deliberately no ``transport=``: these are a decryptor's INNER
+            # bytes, whose protocol is not the flow's outer transport, so the
+            # outer transport's pins/restrictions must not apply here.
             parser = get_default_registry().detect(write or read)
             results: list = []
             if write:

@@ -1477,7 +1477,7 @@ Offline (read / analyze .tap):
 
 
         if "unable to connect to remote frida-server: closed" in str(ar):
-            logger.error("Backend server is not running on remote device. Please start it and rerun.")
+            logger.error("Backend server is not running on remote device. Please start frida-server (e.g. via `afrim` or the TUI's Server Check -> Install) and rerun.")
             
         if "NotSupportedError" in ex_type.__name__:
             logger.error(f"Backend error: {ex_value}")

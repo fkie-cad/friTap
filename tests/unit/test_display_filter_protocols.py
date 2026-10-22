@@ -31,7 +31,6 @@ from friTap.flow.layers import (
 from friTap.flow.models import Flow, FlowSummary
 from friTap.parsers.base import ParseResult
 
-
 # -- normalize_protocol -------------------------------------------------------
 
 @pytest.mark.parametrize("label, expected", [

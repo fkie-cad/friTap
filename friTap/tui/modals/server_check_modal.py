@@ -55,6 +55,7 @@ if TEXTUAL_AVAILABLE:
             super().__init__(**kwargs)
             self._device_id = device_id
             self._device_name = device_name
+            self._error_message: Optional[str] = None
 
         def compose(self) -> ComposeResult:
             with Vertical(id="modal-container"):
@@ -84,7 +85,7 @@ if TEXTUAL_AVAILABLE:
                 prompt.update("")
                 buttons.display = False
             elif self.phase == "prompt":
-                status.update("")
+                status.update(self._error_text())
                 prompt.update(
                     f"[bold {c('warning')}]frida-server not detected on this device.[/]"
                 )
@@ -93,6 +94,13 @@ if TEXTUAL_AVAILABLE:
                     self.query_one("#btn-install", Button).focus()
                 except Exception:
                     pass
+            elif self.phase == "starting":
+                status.update(
+                    f"frida-server not running on [bold]{self._device_name}[/] "
+                    "— starting it via AndroidFridaManager..."
+                )
+                prompt.update("")
+                buttons.display = False
             elif self.phase == "installing":
                 status.update("Installing frida-server...")
                 prompt.update("")
@@ -101,6 +109,11 @@ if TEXTUAL_AVAILABLE:
                 status.update(f"[bold {c('success')}]frida-server is running![/]")
                 prompt.update("")
                 buttons.display = False
+
+        def _error_text(self) -> str:
+            if not self._error_message:
+                return ""
+            return f"[bold {c('error-strong')}]Error:[/] {self._error_message}"
 
         def watch_phase(self, new_phase: str) -> None:
             """React to phase changes by updating the UI."""
@@ -115,25 +128,76 @@ if TEXTUAL_AVAILABLE:
             handler, which would try to await it and raise ScreenError)."""
             self.dismiss("ok")
 
+        # ----------------------------------------------------------
+        # Workers
+        # ----------------------------------------------------------
+
+        def _lookup_device(self):
+            from friTap.backends import get_backend
+            return get_backend().get_device(mobile=self._device_id)
+
         def _check_server(self) -> None:
-            """Background worker to check whether frida-server is reachable."""
+            """Background worker: probe, and auto-start on Android if needed.
+
+            Uses probe_frida_server, not check_connectivity: on frida 17 a
+            server-less USB device still enumerates via the ADB fallback.
+            """
+            from friTap.server_manager.probe import (
+                ServerState,
+                is_attach_capable,
+                probe_frida_server,
+            )
             try:
-                from friTap.backends import get_backend
-                backend = get_backend()
-                device = backend.get_device(mobile=self._device_id)
-                if not backend.check_connectivity(device):
-                    raise ConnectionError("Server not reachable")
-
-                # Server is running
-                def _success():
-                    self.phase = "done"
-                    self.set_timer(0.5, self._dismiss_ok)
-
-                self.app.call_from_thread(_success)
+                device = self._lookup_device()
+                state = probe_frida_server(device)
             except Exception:
-                self.app.call_from_thread(
-                    lambda: setattr(self, "phase", "prompt")
-                )
+                device, state = None, ServerState.UNREACHABLE
+            if is_attach_capable(state):
+                self.app.call_from_thread(self._finish_ok)
+                return
+            mgr = self._android_manager(device) if state is ServerState.NOT_RUNNING else None
+            if mgr is None:
+                self.app.call_from_thread(self._show_prompt, None)
+                return
+            self.app.call_from_thread(setattr, self, "phase", "starting")
+            self._bring_up(mgr, device)
+
+        @staticmethod
+        def _android_manager(device):
+            """Return the Android server manager for *device*, else None."""
+            try:
+                from friTap.server_manager.factory import get_server_manager
+                mgr = get_server_manager(device)
+            except Exception:
+                return None
+            return mgr if mgr.platform_name == "android" else None
+
+        def _bring_up(self, mgr, device) -> None:
+            """Run ensure_running; dismiss "ok" on success, else show the error."""
+            try:
+                mgr.ensure_running(device, callback=self._progress)
+            except Exception as exc:
+                self.app.call_from_thread(self._show_prompt, str(exc))
+                return
+            self.app.call_from_thread(self._finish_ok)
+
+        def _progress(self, msg: str) -> None:
+            """Thread-safe progress line in the status area."""
+            self.app.call_from_thread(
+                lambda: self.query_one("#status-message", Static).update(msg)
+            )
+
+        def _finish_ok(self) -> None:
+            self.phase = "done"
+            self.set_timer(0.5, self._dismiss_ok)
+
+        def _show_prompt(self, error: Optional[str]) -> None:
+            """Return to the Install/Skip/Back prompt, optionally with an error."""
+            self._error_message = error
+            if self.phase == "prompt":
+                self._update_phase_ui()
+            else:
+                self.phase = "prompt"
 
         def on_button_pressed(self, event: Button.Pressed) -> None:
             if event.button.id == "btn-install":
@@ -145,37 +209,17 @@ if TEXTUAL_AVAILABLE:
                 self.dismiss(None)
 
         def _do_install(self) -> None:
-            """Background worker to install and start frida-server."""
+            """Background worker: install (non-Android) then ensure_running."""
             try:
-                from friTap.backends import get_backend
-                device = get_backend().get_device(mobile=self._device_id)
-
+                device = self._lookup_device()
                 from friTap.server_manager.factory import get_server_manager
                 mgr = get_server_manager(device)
-
-                def _progress(msg: str) -> None:
-                    self.app.call_from_thread(
-                        lambda: self.query_one("#status-message", Static).update(msg)
-                    )
-
-                _progress(
-                    f"Installing frida-server for {self._device_name}..."
-                )
-                mgr.install(device, callback=_progress)
-
-                _progress("Starting frida-server...")
-                mgr.start(device)
-
-                def _done():
-                    self.phase = "done"
-                    self.set_timer(0.5, self._dismiss_ok)
-
-                self.app.call_from_thread(_done)
-            except Exception as e:
-                def _fail(err=e):
-                    self.query_one("#status-message", Static).update(
-                        f"[bold {c('error-strong')}]Install failed:[/] {err}"
-                    )
-                    self.phase = "prompt"
-
-                self.app.call_from_thread(_fail)
+                # Android's ensure_running installs the version-matched
+                # server itself; other platforms need an explicit install.
+                if mgr.platform_name != "android":
+                    self._progress(f"Installing frida-server for {self._device_name}...")
+                    mgr.install(device, callback=self._progress)
+            except Exception as exc:
+                self.app.call_from_thread(self._show_prompt, f"Install failed: {exc}")
+                return
+            self._bring_up(mgr, device)

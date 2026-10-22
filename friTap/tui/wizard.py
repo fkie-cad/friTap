@@ -13,7 +13,6 @@ import logging
 from typing import Optional
 
 from friTap.offline.keylog_paths import same_keylog_path
-from friTap.offline.mtproto.transport import DEFAULT_OBF_MAX_BLOCKS
 
 logger = logging.getLogger(__name__)
 
@@ -120,8 +119,8 @@ class CaptureWizard:
                 return
             # Update status bar and menu panel with server status
             if result == "ok":
-                self._screen._get_status_bar().server_status = "running"
-                self._screen._get_menu_panel().server_running = True
+                # Fresh probe: "ok" may mean a frida-gadget, not a server.
+                self._screen.run_worker(self._screen._check_server_status, thread=True)
             else:
                 self._screen._get_status_bar().server_status = "not running"
             # Proceed to next step
@@ -521,8 +520,9 @@ class PcapToTapWizard:
         # protocol_name -> keylog path (one entry per added layered keylog)
         self._protocol_keylogs: dict[str, str] = {}
         # Advanced: max search depth when re-aligning a mid-stream (obfuscated)
-        # transport. Overridable in the confirm modal; defaults to the constant.
-        self._resync_search_depth: int = DEFAULT_OBF_MAX_BLOCKS
+        # transport. Overridable in the confirm modal; None (the default, an
+        # empty field) lets each offline decryptor apply its own default.
+        self._resync_search_depth: Optional[int] = None
         # Protocols the user de-selected in the confirm modal. Consulted by
         # ``_prepopulate_from_manifest`` so a deselection sticks even when
         # backing out to step 1 re-runs the manifest pre-fill (whose
@@ -868,7 +868,7 @@ class PcapToTapWizard:
         """Prefer the protocol *keylog*'s content identifies over *picker_name*.
 
         Reuses :func:`sniff_keylog_protocol`, which returns ``tls``/``custom``/
-        ``mtproto`` for a recognizable keylog (else ``None``). A definite match
+        ``mtproto``/``signal`` for a recognizable keylog (else ``None``). A definite match
         overrides the highlighted row; an inconclusive sniff (unknown content or
         an unreadable/typed-but-missing file) keeps the user's explicit choice.
         """
@@ -970,6 +970,7 @@ class PcapToTapWizard:
             keylog_protocol_label,
             offline_custom_ciphers,
         )
+
         from .modals.custom_cipher_modal import (
             CustomCipherModal,
             available_custom_ciphers,

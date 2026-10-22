@@ -32,7 +32,6 @@ if TEXTUAL_AVAILABLE:
     from friTap.analysis.registry import available_analyzers, resolve_analyzers
     from friTap.constants import PROTOCOL_MTPROTO, PROTOCOL_TELEGRAM_E2E
     from friTap.flow.display import is_message_transport
-    from friTap.offline.mtproto.transport import DEFAULT_OBF_MAX_BLOCKS
     from friTap.flow.layer_pipeline import MESSAGE_TRANSPORTS
 
     from ..capture_controller import CaptureController
@@ -445,13 +444,15 @@ if TEXTUAL_AVAILABLE:
             proto_keylog: str,
             protocol: str,
             tap: str,
-            resync_search_depth: int = DEFAULT_OBF_MAX_BLOCKS,
+            resync_search_depth: Optional[int] = None,
         ) -> dict | None:
             """Assemble keyword args for ``convert_pcap_to_tap``.
 
-            ``resync_search_depth`` bounds mid-stream re-alignment search and
-            defaults to :data:`DEFAULT_OBF_MAX_BLOCKS` (behaviour unchanged unless
-            the caller supplies an advanced override).
+            ``resync_search_depth`` bounds mid-stream re-alignment search;
+            ``None`` (the default) lets each offline decryptor apply its own
+            default (MTProto:
+            :data:`~friTap.offline.mtproto.transport.DEFAULT_OBF_MAX_BLOCKS`)
+            unless the caller supplies an advanced override.
 
             Returns ``None`` (after showing an alert modal) when the pcap is missing.
             """
@@ -532,7 +533,7 @@ if TEXTUAL_AVAILABLE:
             tls_keylog: str,
             protocol_keylogs: dict[str, str],
             tap: str,
-            resync_search_depth: int = DEFAULT_OBF_MAX_BLOCKS,
+            resync_search_depth: Optional[int] = None,
         ) -> dict | None:
             """Assemble ``convert_pcap_to_tap`` kwargs from a pcap plus an explicit
             TLS keylog and a map of per-protocol (layered) keylogs.
@@ -744,18 +745,22 @@ if TEXTUAL_AVAILABLE:
             return (per_protocol.get(prefix) or {}).get(key, 0)
 
         @staticmethod
-        def _messaging_counter(result, key: str, legacy_attr: str) -> int:
+        def _messaging_counter(result, key: str) -> int:
             """Sum ``per_protocol[<messaging prefix>][key]`` across all prefixes.
 
-            Falls back to the legacy ``mtproto_*`` attr ONLY when no ``per_protocol``
-            bucket exists for ``mtproto`` (e.g. a ``SimpleNamespace`` result in tests
-            that sets just the legacy field), so the mtproto count is never counted
-            twice — ``record_protocol`` mirrors mtproto into BOTH places.
+            Also adds a frozen v1 flat counter (``V1_FLAT_COUNTERS``) mapped to
+            *key*, but ONLY when its ``per_protocol`` bucket is absent (e.g. a
+            ``SimpleNamespace`` result in tests that sets just the flat field). On a
+            real ``ConvertResult`` the flat counter is a view of that bucket, so it
+            is never counted twice.
             """
             from friTap.offline.pcap_to_tap import messaging_buckets
+            from friTap.offline.result_schema import V1_FLAT_COUNTERS
             total = sum(counts.get(key, 0) for _prefix, counts in messaging_buckets(result))
-            if "mtproto" not in (getattr(result, "per_protocol", None) or {}):
-                total += getattr(result, legacy_attr, 0)
+            per_protocol = getattr(result, "per_protocol", None) or {}
+            for flat_name, prefix, bucket_key in V1_FLAT_COUNTERS:
+                if bucket_key == key and prefix not in per_protocol:
+                    total += getattr(result, flat_name, 0)
             return total
 
         @classmethod
@@ -766,7 +771,7 @@ if TEXTUAL_AVAILABLE:
             Signal are all counted; short/unsupported-framing streams are deliberately
             NOT included here (they are not "started mid-connection").
             """
-            return cls._messaging_counter(result, "degraded", "mtproto_streams_degraded")
+            return cls._messaging_counter(result, "degraded")
 
         @classmethod
         def _recovered_via_obf_count(cls, result) -> int:
@@ -776,9 +781,7 @@ if TEXTUAL_AVAILABLE:
             was still opened because its obfuscation key was recovered from memory.
             Counted generically across all messaging protocols.
             """
-            return cls._messaging_counter(
-                result, "recovered_via_obf", "mtproto_streams_recovered_via_obf"
-            )
+            return cls._messaging_counter(result, "recovered_via_obf")
 
         @classmethod
         def _degraded_unrecovered_count(cls, result) -> int:
@@ -788,9 +791,7 @@ if TEXTUAL_AVAILABLE:
             up a key, so the honest fix is to capture the keys concurrently or widen
             the search rather than simply re-capturing in spawn mode.
             """
-            return cls._messaging_counter(
-                result, "degraded_unrecovered", "mtproto_streams_degraded_unrecovered"
-            )
+            return cls._messaging_counter(result, "degraded_unrecovered")
 
         @classmethod
         def _short_stream_count(cls, result) -> int:
@@ -799,14 +800,12 @@ if TEXTUAL_AVAILABLE:
             NOT counted as ``degraded`` (they are not "started mid-connection"), so
             they are surfaced on their own line.
             """
-            return cls._messaging_counter(result, "short", "mtproto_streams_short")
+            return cls._messaging_counter(result, "short")
 
         @classmethod
         def _undecryptable_record_count(cls, result) -> int:
             """Records with no matching key in the keylog (all messaging protos)."""
-            return cls._messaging_counter(
-                result, "undecryptable", "mtproto_records_undecryptable"
-            )
+            return cls._messaging_counter(result, "undecryptable")
 
         @staticmethod
         def _e2e_only_no_transport(result) -> bool:
@@ -1322,19 +1321,25 @@ if TEXTUAL_AVAILABLE:
             state = self._get_state()
             if state.device_type == "local" or not state.device_id:
                 return
+            # probe_frida_server, not check_connectivity: on frida 17 a
+            # server-less USB device still enumerates via the ADB fallback.
+            from friTap.server_manager.probe import ServerState, probe_frida_server
             try:
                 from friTap.backends import get_backend
-                backend = get_backend()
-                device = backend.get_device(mobile=state.device_id)
-                is_running = backend.check_connectivity(device)
+                device = get_backend().get_device(mobile=state.device_id)
+                server_state = probe_frida_server(device)
             except Exception:
-                is_running = False
-            server_status = "running" if is_running else "not running"
-            def _update_ui():
-                status = self._get_status_bar()
-                status.update_device(status.device_name, status.device_type, server_status)
-                self._get_menu_panel().server_running = is_running
-            self.app.call_from_thread(_update_ui)
+                server_state = ServerState.UNREACHABLE
+            self.app.call_from_thread(self._show_server_state, server_state)
+
+        def _show_server_state(self, server_state) -> None:
+            """Reflect a probed ServerState in the status bar and menu."""
+            from friTap.server_manager.probe import is_attach_capable
+            status = self._get_status_bar()
+            status.update_device(
+                status.device_name, status.device_type, server_state.value,
+            )
+            self._get_menu_panel().server_running = is_attach_capable(server_state)
 
         # ----------------------------------------------------------
         # Wizard delegation
@@ -1725,17 +1730,15 @@ if TEXTUAL_AVAILABLE:
                         lambda: self._get_activity_log().log_info(msg)
                     )
 
-                mgr.install(device, callback=_progress)
-
-                self.app.call_from_thread(
-                    lambda: self._get_activity_log().log_info("Starting frida-server...")
-                )
-                mgr.start(device)
+                # ensure_running installs/starts as needed and only returns
+                # once the server is attach-capable (raises otherwise).
+                server_state = mgr.ensure_running(device, callback=_progress)
 
                 def _on_install_success():
-                    self._get_activity_log().log_success("frida-server installed and started!")
-                    self._get_menu_panel().server_running = True
-                    self._get_status_bar().server_status = "running"
+                    self._get_activity_log().log_success(
+                        f"frida-server is {server_state.value}!"
+                    )
+                    self._show_server_state(server_state)
                 self.app.call_from_thread(_on_install_success)
             except Exception as e:
                 def _log_install_error(err=e):

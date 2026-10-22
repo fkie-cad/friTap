@@ -360,3 +360,17 @@ def parse_obf_line(line: str) -> Optional[MtprotoObfKey]:
         num_in=num_in,
         endpoint=endpoint,
     )
+
+
+def matches_line(line: str) -> bool:
+    """True when any MTProto keylog parser (auth / E2E / obf) accepts *line*.
+
+    One MTProto keylog file may carry only one of the three labels (e.g. a
+    Secret-Chat E2E keylog or an obf-key memory-scan sidecar), so all three
+    are consulted.
+    """
+    return (
+        parse_line(line) is not None
+        or parse_e2e_line(line) is not None
+        or parse_obf_line(line) is not None
+    )

@@ -41,6 +41,9 @@ for arg in "$@"; do
   esac
 done
 
+# A caller-supplied TREE_DIR is checked as-is (e.g. the post-scrub publish tree).
+TARGET_SUPPLIED="$TREE"
+
 CLEANUP_TMP=""
 cleanup() { [ -n "$CLEANUP_TMP" ] && rm -rf "$CLEANUP_TMP" || true; }
 trap cleanup EXIT
@@ -100,17 +103,30 @@ fi
 # Only enforceable when private.txt is available (full tree / publish worktree);
 # in public CI the smoke-import job catches a dangling import instead.
 if [ -f "$PRIVATE_TXT" ]; then
+  # FILE entries (friTap/x/y.py) → module friTap.x.y: any import line is a hit.
+  # DIRECTORY entries (friTap/x/pkg/) → package prefix friTap.x.pkg: only an
+  # UNINDENTED (module-level) import is a hit. Indented imports of a stripped
+  # package are the sanctioned graceful-degradation pattern (function-level,
+  # guarded by try/except ImportError) and must keep passing.
   mods=()
+  pkgs=()
   while IFS= read -r raw || [ -n "$raw" ]; do
     line="${raw%%#*}"; line="${line#"${line%%[![:space:]]*}"}"; line="${line%"${line##*[![:space:]]}"}"
     case "$line" in
       friTap/*.py) mods+=( "$(echo "${line%.py}" | tr '/' '.')" ) ;;
+      *'*'*|*'?'*|*'['*) ;;  # a globbed directory has no single package name
+      friTap/*/) pkgs+=( "$(echo "${line%/}" | tr '/' '.')" ) ;;
     esac
   done < "$PRIVATE_TXT"
   import_hit=0
-  for m in "${mods[@]}"; do
+  for m in ${mods[@]+"${mods[@]}"}; do
     if grep -rIn --include='*.py' -E "(^|[^.[:alnum:]_])(import|from)[[:space:]]+${m//./\\.}([[:space:]]|\$|\.)" "$TREE" 2>/dev/null; then
       echo "      public file imports stripped private module: $m"; import_hit=1
+    fi
+  done
+  for p in ${pkgs[@]+"${pkgs[@]}"}; do
+    if grep -rIn --include='*.py' -E "^(import|from)[[:space:]]+${p//./\\.}([[:space:]]|\$|\.)" "$TREE" 2>/dev/null; then
+      echo "      public file imports stripped private package: $p"; import_hit=1
     fi
   done
   if [ "$import_hit" -eq 0 ]; then echo "PASS  structural: no public import of a stripped private module"
@@ -141,7 +157,12 @@ set -e
 if [ "$rc" -eq 0 ]; then
   echo "PASS  denylist: no private reveal-tokens"
 elif [ "$rc" -eq 2 ]; then
-  echo "NOTE  denylist: reveal-token residuals present (cleared by the §E scrubber)"; note=1
+  if [ -n "$TARGET_SUPPLIED" ]; then
+    # Supplied tree = the already-scrubbed publish tree: no later scrub pass runs.
+    echo "NOTE  denylist: accepted reveal-token residuals present in the scrubbed tree (these WILL be published)"; note=1
+  else
+    echo "NOTE  denylist: reveal-token residuals present (cleared by the §E scrubber)"; note=1
+  fi
 else
   echo "FAIL  denylist: scanner error (rc=$rc)"; fail=1
 fi

@@ -2,12 +2,12 @@
 
 """Unit tests for the offline metadata producer (Phase 2).
 
-The pure parsers (``parse_tls_metadata_fields`` / ``parse_ssh_fields``) are fed
-hand-built tab-separated tshark output, so they need no tshark binary. The
-wiring tests monkeypatch the tshark boundary (``extract_tls_metadata`` /
-``extract_ssh_connections`` / ``list_tls_streams`` / ``follow_tls_stream`` /
-``find_tshark``) and run a minimal conversion through a real FlowCollector +
-EventBus, asserting the resulting flow carries the stamped metadata.
+The pure metadata folds (:class:`TlsMetadataAccumulator` / ``parse_ssh_fields``)
+are fed hand-built tab-separated tshark rows, so they need no tshark binary. The
+wiring tests replace the tshark boundary with the fake combined ``-T ek`` pass
+of ``tests/unit/_fake_tshark.py`` and run a minimal conversion through a real
+FlowCollector + EventBus, asserting the resulting flow carries the stamped
+metadata.
 
 A single gated integration test runs the real tshark binary; it is skipped
 when tshark is unavailable (as it is in this environment).
@@ -22,10 +22,20 @@ import pytest
 from friTap.flow.tap_reader import TapReader
 from friTap.offline import pcap_to_tap as p2t
 from friTap.offline import tshark as tshark_mod
+from tests.unit import _fake_tshark as ft
 
 # ---------------------------------------------------------------------------
-# parse_tls_metadata_fields (pure)
+# TlsMetadataAccumulator (pure)
 # ---------------------------------------------------------------------------
+
+def _fold_tls_rows(output: str) -> dict:
+    """Fold tab-separated TLS-metadata rows (blank lines skipped) into metadata."""
+    accumulator = tshark_mod.TlsMetadataAccumulator()
+    for line in output.splitlines():
+        if line.strip():
+            accumulator.feed_columns(line.split("\t"))
+    return accumulator.result()
+
 
 def _tls_row(stream, hs_type, sni="", cipher="", version="",
              supported_version="", alpn=""):
@@ -34,7 +44,7 @@ def _tls_row(stream, hs_type, sni="", cipher="", version="",
                       supported_version, alpn])
 
 
-def test_parse_tls_metadata_merges_client_and_server_hello():
+def test_tls_metadata_accumulator_merges_client_and_server_hello():
     output = "\n".join([
         # ClientHello carries SNI.
         _tls_row(0, "1", sni="example.com"),
@@ -44,7 +54,7 @@ def test_parse_tls_metadata_merges_client_and_server_hello():
         _tls_row(0, "2", cipher="0x1301", version="0x0303",
                  supported_version="0x0304", alpn="h2"),
     ])
-    meta = tshark_mod.parse_tls_metadata_fields(output)
+    meta = _fold_tls_rows(output)
     assert meta[0] == {
         "sni": "example.com",
         "cipher": "TLS_AES_128_GCM_SHA256",
@@ -53,56 +63,56 @@ def test_parse_tls_metadata_merges_client_and_server_hello():
     }
 
 
-def test_parse_tls_metadata_supported_version_preferred_over_handshake_version():
+def test_tls_metadata_accumulator_supported_version_preferred_over_handshake_version():
     output = _tls_row(3, "2", cipher="0x1302", version="0x0303",
                       supported_version="0x0304")
-    meta = tshark_mod.parse_tls_metadata_fields(output)
+    meta = _fold_tls_rows(output)
     assert meta[3]["version"] == "TLS 1.3"  # 0x0304, not 0x0303
 
 
-def test_parse_tls_metadata_falls_back_to_handshake_version():
+def test_tls_metadata_accumulator_falls_back_to_handshake_version():
     # No supported_version extension -> use handshake.version (TLS 1.2 path).
     output = _tls_row(1, "2", cipher="0xc02f", version="0x0303")
-    meta = tshark_mod.parse_tls_metadata_fields(output)
+    meta = _fold_tls_rows(output)
     assert meta[1]["version"] == "TLS 1.2"
     assert meta[1]["cipher"] == "ECDHE-RSA-AES128-GCM-SHA256"
 
 
-def test_parse_tls_metadata_unknown_ciphersuite_hex_passthrough():
+def test_tls_metadata_accumulator_unknown_ciphersuite_hex_passthrough():
     output = _tls_row(2, "2", cipher="0xdead", version="0x0303")
-    meta = tshark_mod.parse_tls_metadata_fields(output)
+    meta = _fold_tls_rows(output)
     # Unknown codepoint -> raw hex passthrough (canonicalized).
     assert meta[2]["cipher"] == "0xdead"
 
 
-def test_parse_tls_metadata_alpn_takes_first_token():
+def test_tls_metadata_accumulator_alpn_takes_first_token():
     output = _tls_row(0, "2", alpn="h2,http/1.1")
-    meta = tshark_mod.parse_tls_metadata_fields(output)
+    meta = _fold_tls_rows(output)
     assert meta[0]["alpn"] == "h2"
 
 
-def test_parse_tls_metadata_does_not_overwrite_set_value():
+def test_tls_metadata_accumulator_does_not_overwrite_set_value():
     output = "\n".join([
         _tls_row(0, "1", sni="first.example.com"),
         _tls_row(0, "1", sni="second.example.com"),  # later row must not win
     ])
-    meta = tshark_mod.parse_tls_metadata_fields(output)
+    meta = _fold_tls_rows(output)
     assert meta[0]["sni"] == "first.example.com"
 
 
-def test_parse_tls_metadata_skips_malformed_rows():
+def test_tls_metadata_accumulator_skips_malformed_rows():
     output = "\n".join([
         "garbage-without-tabs-or-stream",
         "\t\t\t",            # empty stream column
         _tls_row(5, "1", sni="ok.example.com"),
     ])
-    meta = tshark_mod.parse_tls_metadata_fields(output)
+    meta = _fold_tls_rows(output)
     assert set(meta) == {5}
     assert meta[5]["sni"] == "ok.example.com"
 
 
-def test_parse_tls_metadata_empty_output():
-    assert tshark_mod.parse_tls_metadata_fields("") == {}
+def test_tls_metadata_accumulator_empty_output():
+    assert _fold_tls_rows("") == {}
 
 
 # ---------------------------------------------------------------------------
@@ -177,46 +187,81 @@ def test_parse_ssh_fields_empty_output():
     assert tshark_mod.parse_ssh_fields("") == []
 
 
-# ---------------------------------------------------------------------------
-# extract_ipsec_connections is a stub
-# ---------------------------------------------------------------------------
+def _banner_exchange(first, second, *, client_port=51000, server_port=22,
+                     client_banner="SSH-2.0-CLIENT", server_banner="SSH-2.0-SERVER"):
+    """Two banner rows of one connection; *first*/*second* are "client"/"server"."""
+    client = ("10.0.0.1", client_port, client_banner)
+    server = ("10.0.0.2", server_port, server_banner)
+    sides = {"client": (client, server), "server": (server, client)}
+    rows = []
+    for who in (first, second):
+        (src, sport, banner), (dst, dport, _) = sides[who]
+        rows.append(_ssh_row(0, ip_src=src, ip_dst=dst, srcport=sport,
+                             dstport=dport, banner=banner))
+    return "\n".join(rows)
 
-def test_extract_ipsec_connections_is_stub():
-    assert tshark_mod.extract_ipsec_connections("/usr/bin/tshark", "cap.pcap") == []
+
+@pytest.mark.parametrize("order", [("server", "client"), ("client", "server")])
+@pytest.mark.parametrize("client_port, server_port", [(51000, 22), (51000, 2222),
+                                                      (1022, 22)])
+def test_parse_ssh_fields_attributes_banners_by_port_not_order(
+        order, client_port, server_port):
+    conns = tshark_mod.parse_ssh_fields(_banner_exchange(
+        *order, client_port=client_port, server_port=server_port))
+    c = conns[0]
+    assert (c["client_version"], c["server_version"]) == (
+        "SSH-2.0-CLIENT", "SSH-2.0-SERVER")
+    # Endpoints are oriented client -> server whoever spoke first.
+    assert (c["src_addr"], c["src_port"]) == ("10.0.0.1", client_port)
+    assert (c["dst_addr"], c["dst_port"]) == ("10.0.0.2", server_port)
+
+
+def test_parse_ssh_fields_identical_banners_fill_both_versions():
+    conns = tshark_mod.parse_ssh_fields(_banner_exchange(
+        "server", "client", client_banner="SSH-2.0-OpenSSH_9.6",
+        server_banner="SSH-2.0-OpenSSH_9.6"))
+    assert conns[0]["client_version"] == "SSH-2.0-OpenSSH_9.6"
+    assert conns[0]["server_version"] == "SSH-2.0-OpenSSH_9.6"
+
+
+def test_parse_ssh_fields_server_banner_only():
+    output = _banner_exchange("server", "server")
+    c = tshark_mod.parse_ssh_fields(output)[0]
+    assert (c["client_version"], c["server_version"]) == ("", "SSH-2.0-SERVER")
+    assert (c["src_port"], c["dst_port"]) == (51000, 22)
+
+
+def test_parse_ssh_fields_equal_ports_fall_back_to_banner_order():
+    conns = tshark_mod.parse_ssh_fields(_banner_exchange(
+        "server", "client", client_port=2222, server_port=2222))
+    c = conns[0]
+    assert (c["client_version"], c["server_version"]) == (
+        "SSH-2.0-SERVER", "SSH-2.0-CLIENT")
+    assert c["src_addr"] == "10.0.0.2"  # first row's sender, unchanged
+
+
+def test_ssh_accumulator_server_first_ek_rows():
+    accumulator = tshark_mod.SshConnectionAccumulator()
+    accumulator.feed_ek(ft.ssh_row(src=_SSH_SERVER, dst=_SSH_CLIENT,
+                                   banner="SSH-2.0-OpenSSH_8.9")["layers"])
+    accumulator.feed_ek(ft.ssh_row(src=_SSH_CLIENT, dst=_SSH_SERVER,
+                                   banner="SSH-2.0-OpenSSH_9.6")["layers"])
+    c = accumulator.result()[0]
+    assert c["client_version"] == "SSH-2.0-OpenSSH_9.6"
+    assert c["server_version"] == "SSH-2.0-OpenSSH_8.9"
+    assert (c["src_addr"], c["src_port"]) == _SSH_CLIENT
 
 
 # ---------------------------------------------------------------------------
 # Wiring: TLS handshake metadata is stamped onto the flow
 # ---------------------------------------------------------------------------
+#
+# The keyed conversion reads the handshake metadata, the decrypted data and the
+# SSH metadata from ONE combined `-T ek` pass, so these tests feed that pass's
+# rows (tests/unit/_fake_tshark.py) instead of patching per-pass extractors.
 
-def _tls_ek_packets(endpoints, segments, *, stream=0, t0=1700000000.0):
-    """Build TLS single-pass ``-T ek`` packet dicts from follow-style segments
-    (one ``data.data`` frame per direction-tagged segment, oriented by
-    direction). Lets the old ``(endpoints, segments)`` fixtures drive the new
-    single-pass path unchanged."""
-    c_addr, c_port, s_addr, s_port = endpoints
-    packets = []
-    for i, (direction, data) in enumerate(segments):
-        if direction == "write":
-            src_a, src_p, dst_a, dst_p = c_addr, c_port, s_addr, s_port
-        else:
-            src_a, src_p, dst_a, dst_p = s_addr, s_port, c_addr, c_port
-        packets.append({"layers": {
-            "frame_time_epoch": [f"{t0 + i}"],
-            "ip_src": [src_a], "ip_dst": [dst_a],
-            "tcp_stream": [str(stream)],
-            "tcp_srcport": [str(src_p)], "tcp_dstport": [str(dst_p)],
-            "data_data": [data.hex()],
-        }})
-    return packets
-
-
-def _tls_stream_dispatch(packets):
-    """A ``stream_packets`` fake returning *packets* for the TLS export command
-    (identified by the ``data.data`` field) and nothing for the QUIC command."""
-    def fake(cmd):
-        return iter(packets) if "data.data" in cmd else iter(())
-    return fake
+_REQUEST = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"
+_RESPONSE = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi"
 
 
 def _write_pcap_inputs(tmp_path, *, pcap_name="cap.pcapng"):
@@ -232,33 +277,35 @@ def _write_pcap_inputs(tmp_path, *, pcap_name="cap.pcapng"):
     return str(pcap), str(keylog)
 
 
-def test_convert_stamps_tls_metadata_onto_flow(tmp_path, monkeypatch):
-    request = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"
-    response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi"
-    endpoints = ("10.0.0.1", 50000, "93.184.216.34", 443)
-    segments = [("write", request), ("read", response)]
+def _http_exchange_rows():
+    """The request (client) and response (server) app-data rows of tcp.stream 0."""
+    return [
+        ft.tls_app_data_row(_REQUEST, ts=1700000001.0),
+        ft.tls_app_data_row(_RESPONSE, src=ft.SERVER, dst=ft.CLIENT, ts=1700000002.0),
+    ]
 
-    fixed_meta = {0: {
-        "sni": "example.com",
-        "cipher": "TLS_AES_128_GCM_SHA256",
-        "version": "TLS 1.3",
-        "alpn": "h2",
-    }}
 
-    monkeypatch.setattr(p2t, "find_tshark", lambda *a, **k: "/usr/bin/tshark")
-    monkeypatch.setattr(p2t, "tshark_version", lambda path: (4, 6, 0))
-    monkeypatch.setattr(p2t, "extract_tls_metadata", lambda *a, **k: fixed_meta)
-    monkeypatch.setattr(p2t, "extract_ssh_connections", lambda *a, **k: [])
-    monkeypatch.setattr(p2t, "stream_packets",
-                        _tls_stream_dispatch(_tls_ek_packets(endpoints, segments)))
-
+def _convert(tmp_path, monkeypatch, rows) -> tuple:
+    """Run a keyed conversion over *rows*; return ``(result, flows, fake)``."""
+    fake = ft.FakeTshark(rows).install(monkeypatch)
     pcap, keylog = _write_pcap_inputs(tmp_path)
     tap = tmp_path / "cap.tap"
-
-    p2t.convert_pcap_to_tap(pcap, keylog_path=keylog, tap_path=str(tap))
-
+    result = p2t.convert_pcap_to_tap(pcap, keylog_path=keylog, tap_path=str(tap))
     with TapReader(str(tap)) as reader:
         flows = reader.read_all_flows()
+    return result, flows, fake
+
+
+def test_convert_stamps_tls_metadata_onto_flow(tmp_path, monkeypatch):
+    rows = [
+        ft.tls_handshake_row(hs_types=("1",), sni="example.com",
+                             ciphersuites=("0x1301", "0xc02f"), ts=1699999999.0),
+        ft.server_hello_row(cipher="0x1301", supported_version="0x0304", alpn="h2",
+                            ts=1700000000.0),
+        *_http_exchange_rows(),
+    ]
+
+    result, flows, fake = _convert(tmp_path, monkeypatch, rows)
 
     tls_flows = [f for f in flows if f.tls.sni]
     assert tls_flows, "no flow carried stamped TLS metadata"
@@ -267,62 +314,43 @@ def test_convert_stamps_tls_metadata_onto_flow(tmp_path, monkeypatch):
     assert flow.tls.version == "TLS 1.3"
     assert flow.tls.alpn == "h2"
     assert flow.tls.cipher == "TLS_AES_128_GCM_SHA256"
+    # The handshake rows never become data: only the two app-data rows do.
+    assert result.decrypted_packet_count == 2
+    # One tshark run served the metadata AND the data.
+    assert len(fake.calls) == 1 and fake.run_capture_calls == []
 
 
 def test_convert_without_tls_metadata_still_produces_flow(tmp_path, monkeypatch):
-    """No metadata for the stream -> no SessionEvent, but the flow still exists
-    (additive behavior — the decrypted-bytes path is unaffected)."""
-    request = b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"
-    endpoints = ("10.0.0.1", 50000, "93.184.216.34", 443)
-
-    monkeypatch.setattr(p2t, "find_tshark", lambda *a, **k: "/usr/bin/tshark")
-    monkeypatch.setattr(p2t, "tshark_version", lambda path: (4, 6, 0))
-    monkeypatch.setattr(p2t, "extract_tls_metadata", lambda *a, **k: {})
-    monkeypatch.setattr(p2t, "extract_ssh_connections", lambda *a, **k: [])
-    monkeypatch.setattr(p2t, "stream_packets",
-                        _tls_stream_dispatch(_tls_ek_packets(
-                            endpoints, [("write", request)])))
-
-    pcap, keylog = _write_pcap_inputs(tmp_path)
-    tap = tmp_path / "cap.tap"
-
-    result = p2t.convert_pcap_to_tap(
-        pcap, keylog_path=keylog, tap_path=str(tap))
+    """No handshake rows for the stream -> no SessionEvent, but the flow still
+    exists (additive behavior — the decrypted-bytes path is unaffected)."""
+    result, flows, _fake = _convert(
+        tmp_path, monkeypatch, [ft.tls_app_data_row(_REQUEST)])
     assert result.flow_count >= 1
-    with TapReader(str(tap)) as reader:
-        flows = reader.read_all_flows()
     assert len(flows) >= 1
+    assert not any(f.tls.sni for f in flows)
 
 
 # ---------------------------------------------------------------------------
 # Wiring: SSH synthetic flow
 # ---------------------------------------------------------------------------
 
+_SSH_CLIENT = ("10.0.0.1", 51000)
+_SSH_SERVER = ("10.0.0.2", 22)
+
+
+def _ssh_rows():
+    """Banner from each side, then the client's KEXINIT, on tcp.stream 5."""
+    return [
+        ft.ssh_row(src=_SSH_CLIENT, dst=_SSH_SERVER, banner="SSH-2.0-OpenSSH_9.6"),
+        ft.ssh_row(src=_SSH_SERVER, dst=_SSH_CLIENT, banner="SSH-2.0-OpenSSH_8.9"),
+        ft.ssh_row(src=_SSH_CLIENT, dst=_SSH_SERVER, kex="curve25519-sha256,ext-info-c",
+                   cipher="chacha20-poly1305@openssh.com,aes128-ctr",
+                   mac="umac-64-etm@openssh.com,hmac-sha2-256"),
+    ]
+
+
 def test_convert_creates_ssh_synthetic_flow(tmp_path, monkeypatch):
-    ssh_conn = {
-        "src_addr": "10.0.0.1", "src_port": 51000,
-        "dst_addr": "10.0.0.2", "dst_port": 22,
-        "client_version": "SSH-2.0-OpenSSH_9.6",
-        "server_version": "SSH-2.0-OpenSSH_8.9",
-        "kex": "curve25519-sha256",
-        "cipher": "chacha20-poly1305@openssh.com",
-        "mac": "umac-64-etm@openssh.com",
-    }
-
-    monkeypatch.setattr(p2t, "find_tshark", lambda *a, **k: "/usr/bin/tshark")
-    monkeypatch.setattr(p2t, "tshark_version", lambda path: (4, 6, 0))
-    monkeypatch.setattr(p2t, "list_tls_streams", lambda *a, **k: [])
-    monkeypatch.setattr(p2t, "extract_tls_metadata", lambda *a, **k: {})
-    monkeypatch.setattr(p2t, "extract_ssh_connections", lambda *a, **k: [ssh_conn])
-    monkeypatch.setattr(p2t, "stream_packets", lambda cmd: iter(()))
-
-    pcap, keylog = _write_pcap_inputs(tmp_path)
-    tap = tmp_path / "cap.tap"
-
-    p2t.convert_pcap_to_tap(pcap, keylog_path=keylog, tap_path=str(tap))
-
-    with TapReader(str(tap)) as reader:
-        flows = reader.read_all_flows()
+    _result, flows, fake = _convert(tmp_path, monkeypatch, _ssh_rows())
 
     ssh_flows = [f for f in flows if f.detected_protocol == "SSH"]
     assert ssh_flows, "no SSH synthetic flow was written"
@@ -332,48 +360,53 @@ def test_convert_creates_ssh_synthetic_flow(tmp_path, monkeypatch):
     assert flow.ssh.kex == "curve25519-sha256"
     assert flow.ssh.cipher == "chacha20-poly1305@openssh.com"
     assert flow.ssh.mac == "umac-64-etm@openssh.com"
-    assert (flow.src_addr, flow.src_port) == ("10.0.0.1", 51000)
-    assert (flow.dst_addr, flow.dst_port) == ("10.0.0.2", 22)
+    assert (flow.src_addr, flow.src_port) == _SSH_CLIENT
+    assert (flow.dst_addr, flow.dst_port) == _SSH_SERVER
+    # SSH rode the combined pass: no separate SSH tshark run.
+    assert len(fake.calls) == 1 and fake.run_capture_calls == []
 
 
-def test_ssh_extraction_failure_does_not_abort_conversion(tmp_path, monkeypatch):
+def test_ssh_row_failure_does_not_abort_conversion(tmp_path, monkeypatch):
+    def boom(self, layers):
+        raise RuntimeError("cannot fold this SSH row")
+
+    monkeypatch.setattr(tshark_mod.SshConnectionAccumulator, "feed_ek", boom)
+    result, flows, _fake = _convert(tmp_path, monkeypatch, _ssh_rows())
+    # Must not raise — the bad rows are skipped, so no SSH flow is built.
+    assert result.flow_count == 0
+    assert not [f for f in flows if f.detected_protocol == "SSH"]
+
+
+def test_ssh_extraction_failure_in_its_own_pass_is_swallowed(monkeypatch):
+    """With an independent decryptor and no keys, SSH keeps its own pass; a
+    failing extraction there is still swallowed."""
     def boom(*a, **k):
         raise RuntimeError("tshark blew up on the SSH pass")
 
-    monkeypatch.setattr(p2t, "find_tshark", lambda *a, **k: "/usr/bin/tshark")
-    monkeypatch.setattr(p2t, "tshark_version", lambda path: (4, 6, 0))
-    monkeypatch.setattr(p2t, "list_tls_streams", lambda *a, **k: [])
-    monkeypatch.setattr(p2t, "extract_tls_metadata", lambda *a, **k: {})
     monkeypatch.setattr(p2t, "extract_ssh_connections", boom)
-    monkeypatch.setattr(p2t, "stream_packets", lambda cmd: iter(()))
-
-    pcap, keylog = _write_pcap_inputs(tmp_path)
-    # Must not raise — SSH failure is swallowed.
-    result = p2t.convert_pcap_to_tap(
-        pcap, keylog_path=keylog, tap_path=str(tmp_path / "out.tap"))
-    assert result.flow_count == 0
+    added = []
+    monkeypatch.setattr(p2t, "_add_ssh_synthetic_flows",
+                        lambda *a, **k: added.append(a))
+    ctx = p2t._ConversionContext(
+        pcap_path="cap.pcap", keylog_path=None, tap_path="cap.tap", tls_ports=(),
+        quic_ports=(), extra_decode_as=(), heuristic=False, capture_target="",
+        resync_search_depth=None, tls_midstream_secrets=None, progress=None,
+        has_keys=False, independent_entries=[object()], tshark_bin="tshark",
+    )
+    p2t._run_tshark_stage(ctx)  # must not raise
+    assert added == []
 
 
 def test_tls_metadata_failure_does_not_abort_conversion(tmp_path, monkeypatch):
-    request = b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"
-    endpoints = ("10.0.0.1", 50000, "93.184.216.34", 443)
+    def boom(self, layers):
+        raise RuntimeError("cannot fold this TLS handshake row")
 
-    def boom(*a, **k):
-        raise RuntimeError("tshark blew up on the TLS metadata pass")
-
-    monkeypatch.setattr(p2t, "find_tshark", lambda *a, **k: "/usr/bin/tshark")
-    monkeypatch.setattr(p2t, "tshark_version", lambda path: (4, 6, 0))
-    monkeypatch.setattr(p2t, "extract_tls_metadata", boom)
-    monkeypatch.setattr(p2t, "extract_ssh_connections", lambda *a, **k: [])
-    monkeypatch.setattr(p2t, "stream_packets",
-                        _tls_stream_dispatch(_tls_ek_packets(
-                            endpoints, [("write", request)])))
-
-    pcap, keylog = _write_pcap_inputs(tmp_path)
-    result = p2t.convert_pcap_to_tap(
-        pcap, keylog_path=keylog, tap_path=str(tmp_path / "out.tap"))
-    # Decrypted-bytes path unaffected: the flow still exists.
+    monkeypatch.setattr(tshark_mod.TlsMetadataAccumulator, "feed_ek", boom)
+    rows = [ft.tls_handshake_row(sni="example.com"), ft.tls_app_data_row(_REQUEST)]
+    result, flows, _fake = _convert(tmp_path, monkeypatch, rows)
+    # Decrypted-bytes path unaffected: the flow still exists, just unstamped.
     assert result.flow_count >= 1
+    assert not any(f.tls.sni for f in flows)
 
 
 # ---------------------------------------------------------------------------
@@ -382,8 +415,8 @@ def test_tls_metadata_failure_does_not_abort_conversion(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(shutil.which("tshark") is None,
                     reason="real tshark binary unavailable")
-def test_extract_tls_metadata_returns_dict_with_real_tshark(tmp_path):
-    """Smoke test: against a real tshark, extract_tls_metadata returns a dict.
+def test_combined_pass_tls_metadata_with_real_tshark(tmp_path):
+    """Smoke test: against a real tshark, the combined pass folds TLS metadata.
 
     Uses an empty/synthetic pcap (no TLS handshakes), so the dict is expected
     to be empty — we only assert the return TYPE and that no exception escapes.
@@ -393,5 +426,9 @@ def test_extract_tls_metadata_returns_dict_with_real_tshark(tmp_path):
     # Minimal classic pcap global header (us-resolution, little-endian).
     pcap.write_bytes(struct.pack("<IHHiIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 1))
     tshark_bin = tshark_mod.find_tshark()
-    meta = tshark_mod.extract_tls_metadata(tshark_bin, str(pcap), None)
-    assert isinstance(meta, dict)
+    cmd = tshark_mod.build_combined_command(str(pcap), None)
+    cmd[0] = tshark_bin
+    accumulator = tshark_mod.TlsMetadataAccumulator()
+    for pkt in tshark_mod.stream_packets(cmd):
+        accumulator.feed_ek(pkt.get("layers") or {})
+    assert accumulator.result() == {}

@@ -7,7 +7,7 @@
 * TapWriter index: keyed by flow_id, first-write order, last record wins,
   ``forget_flow`` drops the entry.
 * encode_flow: identical blobs within one flow are stored once.
-* pcap_to_tap ``_state_attr`` / ``_already_emitted`` / ``_mark_seen``.
+* the MTProto emitter's ``_state_attr`` / ``_already_emitted`` / ``_mark_seen``.
 * keylog path identity (``friTap.offline.keylog_paths``).
 """
 
@@ -16,12 +16,14 @@ from __future__ import annotations
 import os
 
 from friTap.flow.models import Flow, FlowChunk
-from friTap.parsers.base import ParseResult
 from friTap.flow.tap_format import decode_flow, encode_flow
 from friTap.flow.tap_reader import TapReader
 from friTap.flow.tap_writer import TapWriter
 from friTap.offline import pcap_to_tap as p2t
+from friTap.offline import pipeline_api
 from friTap.offline.keylog_paths import canonical_keylog_path, same_keylog_path
+from friTap.offline.mtproto import offline_decryptor as mtproto_emit
+from friTap.parsers.base import ParseResult
 
 
 def _flow(flow_id: str, transport: str = "tls") -> Flow:
@@ -108,30 +110,30 @@ class _Frozen:
 
 def test_state_attr_creates_attaches_and_reuses():
     state = _Bare()
-    value = p2t._state_attr(state, "thing", list)
+    value = mtproto_emit._state_attr(state, "thing", list)
     assert state.thing is value
-    assert p2t._state_attr(state, "thing", list) is value
+    assert mtproto_emit._state_attr(state, "thing", list) is value
 
 
 def test_state_attr_call_local_when_state_refuses_attributes():
-    assert p2t._state_attr(_Frozen(), "thing", set) == set()
+    assert mtproto_emit._state_attr(_Frozen(), "thing", set) == set()
 
 
 def test_writer_state_declares_telegram_fields():
     state = p2t._WriterState(TapWriter(), "x.tap", "t", None)
     assert state.telegram_ledger is None and state.telegram_refs is None
-    assert p2t._next_record_seq(state) == 1
-    assert p2t._next_record_seq(state) == 2
+    assert mtproto_emit._next_record_seq(state) == 1
+    assert mtproto_emit._next_record_seq(state) == 2
 
 
 def test_already_emitted_and_mark_seen_share_semantics():
     seen: set = set()
-    assert p2t._already_emitted(seen, "k") is False
-    assert p2t._already_emitted(seen, "k") is True
-    assert p2t._already_emitted(seen, None) is False  # unknown never dedupes
+    assert mtproto_emit._already_emitted(seen, "k") is False
+    assert mtproto_emit._already_emitted(seen, "k") is True
+    assert mtproto_emit._already_emitted(seen, None) is False  # unknown never dedupes
     entry: dict = {}
-    assert p2t._mark_seen(entry, ("msg", 1)) is False
-    assert p2t._mark_seen(entry, ("msg", 1)) is True
+    assert mtproto_emit._mark_seen(entry, ("msg", 1)) is False
+    assert mtproto_emit._mark_seen(entry, ("msg", 1)) is True
     assert entry["_seen"] == {("msg", 1)}
 
 
@@ -152,4 +154,4 @@ def test_unique_keylog_paths_dedupes_by_canonical_path(tmp_path, monkeypatch):
     target = tmp_path / "k.log"
     target.write_text("x\n")
     monkeypatch.chdir(tmp_path)
-    assert p2t._unique_keylog_paths("k.log", [str(target), "", "k.log"]) == ["k.log"]
+    assert pipeline_api.unique_keylog_paths("k.log", [str(target), "", "k.log"]) == ["k.log"]

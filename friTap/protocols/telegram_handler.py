@@ -26,8 +26,8 @@ from ..backends.base import BackendName
 from ..output.keylog_format import KeylogFormatter
 from . import mtproto_keylog_spec as spec
 from .base import BackendSupport, ProtocolHandler
-from .mtproto_hints import attach_mode_hint
 from .mtproto_handler import MTPROTO_LIBRARY_PATTERNS
+from .mtproto_hints import attach_mode_hint
 
 if TYPE_CHECKING:
     from ..events import KeylogEvent
@@ -161,7 +161,7 @@ class TelegramHandler(ProtocolHandler):
         # Live capture only extracts keys/plaintext (no Python-side crypto), but
         # offline decryption of the resulting pcap does. Nudge the user early so
         # a later `--telegram-keylog` run does not surprise them.
-        from ..offline.mtproto import MTPROTO_DEPENDENCY_HINT, mtproto_backend_available
+        from .mtproto_backend import MTPROTO_DEPENDENCY_HINT, mtproto_backend_available
         if not mtproto_backend_available():
             logger.warning(
                 "[telegram] %s  (live key capture works without it; the extra is "

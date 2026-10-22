@@ -166,6 +166,14 @@ def _flow_has_response(flow: "Flow") -> bool:
 
 
 def _flow_tls_session_id(flow: "Flow") -> str | None:
+    """TLS session id, only for TLS flows.
+
+    ``ssl_session_id`` is reused by non-TLS transports (Telegram Secret Chats
+    store ``"telegram_e2e:<fingerprint>"`` there), so it is reported only when
+    the flow is TLS: ``transport == "tls"`` or a tls layer.
+    """
+    if not _flow_is_tls(flow):
+        return None
     return flow.ssl_session_id or None
 
 
@@ -237,7 +245,8 @@ _flow_is_http = _protocol_predicate("http")
 _flow_is_http1 = _protocol_predicate("http1")
 _flow_is_http2 = _protocol_predicate("http2")
 _flow_is_http3 = _protocol_predicate("http3")
-# canonical_protocols() adds "tls" for any flow with an ssl_session_id.
+# "tls" comes from transport == "tls" or a tls layer; an ssl_session_id alone
+# is not enough (Telegram Secret Chats reuse it as "telegram_e2e:<chat id>").
 _flow_is_tls = _protocol_predicate("tls")
 _flow_is_ssh = _protocol_predicate("ssh")
 _flow_is_ipsec = _protocol_predicate("ipsec")
@@ -453,9 +462,9 @@ _FIELD_DEFS: list[FieldDef] = [
              description="Has response data"),
     # TLS
     FieldDef(name="tls", value_type="bool", accessor=_flow_is_tls,
-             description="TLS flow (TLS transport or session ID present)"),
+             description="TLS flow (TLS transport or a TLS layer)"),
     FieldDef(name="tls.session_id", value_type="str", accessor=_flow_tls_session_id,
-             description="TLS session identifier"),
+             description="TLS session identifier (empty for non-TLS flows)"),
     # OHTTP
     FieldDef(name="ohttp.present", value_type="bool", accessor=_flow_ohttp_present,
              description="OHTTP inner request/response present"),

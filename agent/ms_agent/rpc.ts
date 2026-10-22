@@ -7,6 +7,7 @@ import { state } from "./state.js";
 import { installExceptionHandler } from "./core/memory.js";
 import { selectRanges, totalBytes } from "./core/ranges.js";
 import { activateProfile, scanProfileOnce } from "./driver.js";
+import { stopEngines } from "./registry.js";
 
 /** Build the object assigned to `rpc.exports` by the entry module. */
 export function buildRpcExports(): any {
@@ -79,6 +80,25 @@ export function buildRpcExports(): any {
                 module: state.needle.module,
                 rva: state.needle.rva
             };
+        },
+
+        // frida-core calls the `dispose` RPC export on EVERY script unload
+        // (ensure_dispose_called -> rpc_client.call("dispose", …)), including the
+        // unclean paths where the Python host never issues an explicit teardown.
+        // The memscan host (friTap/memory_scanning/engine.py) unloads this script
+        // via backend.unload_script() with no teardown RPC, so this is the ONLY
+        // agent-side hook that fires before the script is torn down.
+        //
+        // Engines that leave Interceptor hooks on hot functions with an unbounded
+        // lifetime — boringssl's needle-seed hooks on SSL_read/SSL_write, which
+        // self-detach only after a needle is found and so stay attached for the
+        // whole session on a target where none ever seeds (e.g. stripped Cronet) —
+        // must release them here. Detaching them explicitly now, while the app is
+        // alive and responsive, avoids frida's implicit detach having to quiesce
+        // those hot prologues at unload, which was observed to hang the host thread
+        // for minutes and require a second SIGINT. Best-effort: never block unload.
+        dispose: function () {
+            try { stopEngines(); } catch (_e) { /* never block unload */ }
         }
     };
 }

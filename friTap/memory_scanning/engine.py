@@ -83,6 +83,17 @@ _here = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
 _MEMSCAN_BUNDLE = os.path.join(_here, "fritap_memscan.js")
 
 
+def _sidecar_column(value) -> str:
+    """One whitespace-free sidecar column for *value*; ``-`` when absent.
+
+    A JSON ``null`` (``None``) or an empty value becomes ``-`` rather than the
+    literal string ``"None"``, which the offline parser would take as a real id.
+    """
+    if value is None:
+        return "-"
+    return "".join(str(value).split()) or "-"
+
+
 def _kv_after(line: str, key: str) -> str:
     """Return the token starting with ``key`` minus that prefix ('' if absent)."""
     for tok in line.split():
@@ -323,12 +334,12 @@ class MemoryScanEngine:
         # backend and event bus (the ScriptPlugin base used to set this).
         self._context = context
         try:
+            from ..protocols.registry import expand_protocols
             from .loader import (
                 group_profiles_by_scan_target,
                 load_database,
                 select_profiles,
             )
-            from ..protocols.registry import expand_protocols
             os_name = self._detect_target_os(context)
             database = load_database(None)
             # Expand protocol implications (e.g. signal -> tls) so a memory-scan
@@ -710,6 +721,17 @@ class MemoryScanEngine:
                     # uncalibrated build) is diagnosable for ANY engine, with no
                     # per-engine branch.
                     logger.debug("memory-scan: full stats %s", stats)
+                    # Concise Tier B0 funnel (BoringSSL anchor-locator) surfaced at
+                    # normal DEBUG so a run that finds candidates but emits nothing
+                    # is diagnosable without reading the full stats dump. Defensive:
+                    # stats may lack tierB0, or it may not be a dict.
+                    tier_b0 = stats.get("tierB0") if isinstance(stats, dict) else None
+                    if isinstance(tier_b0, dict):
+                        logger.debug(
+                            "memory-scan: tierB0 candidates=%s validated=%s emitted=%s",
+                            tier_b0.get("candidates"), tier_b0.get("validated"),
+                            tier_b0.get("emitted"),
+                        )
             except Exception as exc:  # noqa: BLE001 - target may have detached
                 # A method-not-found RPCException is not a detach: it means the loaded
                 # memory-scan bundle does not export scanOnce under a name the host can
@@ -962,24 +984,30 @@ class MemoryScanEngine:
 
         Format (single-space-separated, one record per line)::
 
-            <kind> <secret_hex> <session_id_or_dash> <ssl_version>
+            <kind> <secret_hex> <session_id_or_dash> <ssl_version> <group_or_dash>
 
-        e.g. ``schannel_tls12_master aabb…(96 hex) - 771``. ``session_id`` is
+        e.g. ``schannel_tls12_master aabb…(96 hex) - 771 -``. ``session_id`` is
         always ``-`` for these (Schannel does not store the client_random near the
-        key struct); the four columns are fixed so Workstream 5's offline
-        correlator can split each line without ambiguity.
+        key struct). The optional 5th ``group`` column ties sibling secrets of one
+        connection together so the offline correlator can place an unlabeled
+        EXPORTER_SECRET by elimination; the agent emits a per-connection ``group``
+        id for TLS 1.3 secrets when the ``tls13_secret.group`` tier is enabled, and
+        it is ``-`` when absent (older bundles or a disabled tier), which the Python
+        side handles. The columns are fixed so the offline correlator can split each
+        line without ambiguity.
         """
         secret = str(payload.get("secret", "")).strip().lower()
         if not secret:
             return
         kind = str(payload.get("kind", "schannel")) or "schannel"
-        session_id = str(payload.get("session_id", "")).strip() or "-"
+        session_id = _sidecar_column(payload.get("session_id"))
         ssl_version = payload.get("ssl_version", 0)
         try:
             ssl_version = int(ssl_version)
         except (TypeError, ValueError):
             ssl_version = 0
-        line = f"{kind} {secret} {session_id} {ssl_version}"
+        group = _sidecar_column(payload.get("group"))
+        line = f"{kind} {secret} {session_id} {ssl_version} {group}"
         path = self._resolve_unpaired_path()
         with self._unpaired_lock:
             try:
@@ -987,7 +1015,7 @@ class MemoryScanEngine:
                     self._unpaired_file = open(path, "w", encoding="utf-8", newline="\n")
                     self._unpaired_file.write(
                         "# friTap Schannel memory-scan UNPAIRED secrets\n"
-                        "#   <kind> <secret_hex> <session_id|-> <ssl_version>\n"
+                        "#   <kind> <secret_hex> <session_id|-> <ssl_version> <group|->\n"
                     )
                     logger.info("memory-scan: schannel unpaired secrets → %s", path)
                 self._unpaired_file.write(line + "\n")
@@ -1032,10 +1060,8 @@ class MemoryScanEngine:
             try:
                 if self._rc4_file is None:
                     self._rc4_file = open(path, "w", encoding="utf-8", newline="\n")
-                    self._rc4_file.write(
-                        "# friTap RC4 memory-scan recovered keys\n"
-                        "#   RC4_KEY <key_hex> <key_len> <source> <direction> <assoc>\n"
-                    )
+                    from ..protocols.rc4_keylog_spec import HEADER_COMMENT
+                    self._rc4_file.write(HEADER_COMMENT + "\n")
                     logger.info("memory-scan: rc4 keys → %s", path)
                 self._rc4_file.write(line + "\n")
                 self._rc4_file.flush()
@@ -1204,19 +1230,40 @@ class MemoryScanEngine:
     def _bundle_record(self, payload: dict) -> Optional[dict]:
         """Validate a ``tls_secret_bundle`` payload into a leak-safe record, or None.
 
-        Every field must be present as lowercase hex of the expected length. A
-        partial or malformed bundle is dropped rather than written: it cannot
-        decrypt anything and a half-written record would only confuse the offline
-        consumer. This mirrors the agent's own all-or-nothing emission.
+        REQUIRED: ``client_random`` plus at least one traffic secret
+        (``client_traffic_secret_0`` and/or ``server_traffic_secret_0``), each as
+        lowercase hex of the expected length. The offline mid-stream decrypter
+        binds a direction from a single traffic secret, so one is enough — and the
+        agent already scrubs ``server_random`` to ``''`` in some builds, which the
+        old all-or-nothing gate wrongly dropped.
+
+        OPTIONAL: ``server_random``, ``exporter_secret`` and whichever traffic
+        secret is absent are identification/exporter-only. They are included when
+        present and valid, otherwise stored as ``''`` — which the offline
+        ``load_secret_bundles``/``_valid_bundle`` consumer tolerates (it only
+        requires one traffic secret). A bundle missing the required fields is
+        dropped: it cannot decrypt anything and a half-written record would only
+        confuse the consumer.
         """
-        record = {}
-        for field in self._TLS_BUNDLE_FIELDS:
+        def _valid_field(field: str) -> str:
             value = str(payload.get(field, "")).strip().lower()
             expected = (64,) if field.endswith("random") else (64, 96)
-            if not self._is_lower_hex(value, expected):
-                return None
-            record[field] = value
-        return record
+            return value if self._is_lower_hex(value, expected) else ""
+
+        client_random = _valid_field("client_random")
+        client_secret = _valid_field("client_traffic_secret_0")
+        server_secret = _valid_field("server_traffic_secret_0")
+        if not client_random or not (client_secret or server_secret):
+            return None
+        # Keep the stable field order (see _TLS_BUNDLE_FIELDS); optional fields
+        # that were absent/invalid are recorded as '' rather than omitted.
+        return {
+            "client_random": client_random,
+            "server_random": _valid_field("server_random"),
+            "client_traffic_secret_0": client_secret,
+            "server_traffic_secret_0": server_secret,
+            "exporter_secret": _valid_field("exporter_secret"),
+        }
 
     def _write_tls_secret_bundle(self, payload: dict) -> None:
         """Append one validated, de-duplicated secret bundle to the JSONL sidecar.
@@ -1231,10 +1278,10 @@ class MemoryScanEngine:
                          {k: v for k, v in payload.items() if k != "ssl"})
             return
         dedup_key = (
-            record["client_random"],
-            record["client_traffic_secret_0"],
-            record["server_traffic_secret_0"],
-            record["exporter_secret"],
+            record.get("client_random", ""),
+            record.get("client_traffic_secret_0", ""),
+            record.get("server_traffic_secret_0", ""),
+            record.get("exporter_secret", ""),
         )
         path = self._resolve_tls_secret_bundle_path()
         with self._tls_secret_bundle_lock:
@@ -1276,6 +1323,17 @@ class MemoryScanEngine:
         if self._tls_secret_bundle_written and self._tls_secret_bundle_path:
             return {"tls_midstream_secrets": self._tls_secret_bundle_path}
         return {}
+
+    def intended_tls_secret_bundle_path(self) -> str:
+        """The deterministic path this engine will write mid-stream bundles to.
+
+        Unlike :meth:`tls_midstream_manifest_entry` (which only reports a sidecar
+        that already exists), this returns the intended path — including the
+        current-directory literal fallback :meth:`_resolve_tls_secret_bundle_path`
+        caches when no memscan keylog stem was supplied. The reader advertises this
+        so writer path == reader path even before the first bundle is written.
+        """
+        return self._resolve_tls_secret_bundle_path()
 
     def stop(self, context: "ScriptContext") -> None:
         """Stop the scan loop and unload the self-session script(s).

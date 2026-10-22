@@ -22,14 +22,13 @@ from types import SimpleNamespace
 import pytest
 
 from friTap.events import EventBus, KeylogEvent
+from friTap.memory_scanning import MemoryScanEngine
 from friTap.memory_scanning.loader import (
     MemoryScanPatternError,
     load_database,
     select_profile,
     validate_profile,
 )
-from friTap.memory_scanning import MemoryScanEngine
-from friTap.protocols import rc4_keylog_spec as spec
 from friTap.protocols.rc4_handler import Rc4KeylogFormatter
 
 _RC4_ID = "rc4-memscan-generic"
@@ -165,7 +164,32 @@ class TestRc4KeyMessageTranslation:
         plugin._close_rc4()
         contents = rc4_file.read_text()
         assert "RC4_KEY 6b6579 3 memscan-trial unknown -" in contents
-        assert contents.startswith("# friTap RC4 memory-scan recovered keys")
+        from friTap.protocols.rc4_keylog_spec import HEADER_COMMENT
+        assert contents.startswith(HEADER_COMMENT + "\n")
+
+    def test_rc4_sidecar_header_is_spec_and_reader_parses_it(
+            self, bus_and_rc4_findings, tmp_path):
+        """The sidecar header is the canonical spec HEADER_COMMENT (no drift),
+        and the offline RC4 reader still loads the engine-written file."""
+        from friTap.offline.rc4.keylog import load_rc4_keylog
+        from friTap.protocols.rc4_keylog_spec import HEADER_COMMENT
+        bus, _ = bus_and_rc4_findings
+        rc4_file = tmp_path / "hdr_memscan.rc4.keylog"
+        plugin = MemoryScanEngine(rc4_path=str(rc4_file))
+        plugin._context = SimpleNamespace(event_bus=bus)
+        plugin.on_script_message(
+            {"type": "send", "payload": {
+                "type": "rc4_key", "key": "6b6579", "key_len": 3,
+                "source": "memscan-trial", "direction": "unknown", "assoc": "-",
+            }},
+            None,
+        )
+        plugin._close_rc4()
+        header_lines = HEADER_COMMENT.count("\n") + 1
+        written = rc4_file.read_text(encoding="utf-8").splitlines()
+        assert written[:header_lines] == HEADER_COMMENT.splitlines()
+        candidates = load_rc4_keylog(str(rc4_file))
+        assert len(candidates) == 1
 
     def test_rc4_key_renders_through_formatter(self, bus_and_rc4_findings):
         bus, findings = bus_and_rc4_findings

@@ -3,7 +3,7 @@ import { registerEngine } from "../../registry.js";
 import { MemscanEngine } from "../../types.js";
 
 import { log } from "../../core/log.js";
-import { hexBytes, hex, readHex, readBytes, readPointerOrNull, readU8OrNull, readU16OrNull, scanRange, pointerToScanPattern } from "../../core/memory.js";
+import { hexBytes, hex, readHex, readBytes, readPointerOrNull, readU8OrNull, readU16OrNull, scanRange, pointerToScanPattern, pointerToTagAgnosticScanPattern } from "../../core/memory.js";
 import { untag, looksLikeHeapPointer } from "../../core/pointers.js";
 import { isValidHashLen, looksLikeSecret, looksLikeRandom } from "../../core/heuristics.js";
 
@@ -267,7 +267,7 @@ export function seedNeedleFromSsl(ssl, source) {
         rva: mod === null ? null : '0x' + untag(method).sub(mod.base).toString(16),
         source: source
     };
-    log('info', 'Tier B needle derived from SSL_read/SSL_write: ' + method +
+    log('info', 'Tier B needle derived (' + source + '): ' + method +
                 (mod === null ? '' : ' (' + state.needle.module + '+' + state.needle.rva + ')'));
     return true;
 }
@@ -396,6 +396,13 @@ function detachNeedleSeedHooks() {
     needleSeedListeners = [];
 }
 
+/* How many needle-seed Interceptor listeners are still attached. Diagnostic +
+ * test surface: proves the seed hooks are gone after engine stop even on a target
+ * where a needle was never seeded (so onSslIoEnter never self-detached). */
+export function needleSeedListenerCount(): number {
+    return needleSeedListeners.length;
+}
+
 /* onEnter for SSL_read/SSL_write: arg0 is SSL*. Seed the needle, then — once ANY
  * needle exists — detach so there is zero per-call overhead on the hot I/O path.
  * Wrapped so a hook can never throw into the target. */
@@ -470,22 +477,31 @@ function emitS3TrafficSecrets(ssl, s3, clientRandom, stats) {
  * Opt-in per profile via tiers.B_ssl_method_ptr.emit_secret_bundle, so the extra
  * sidecar is only produced where an offline mid-stream consumer is wired up.
  *
- * Every field is re-read and re-validated here through the SAME validators the
- * keylog path uses (looksLikeSecret's hash-length + entropy + zero gates for the
- * secrets, looksLikeRandom for server_random). If ANY of the three secrets or the
- * server_random fails, NOTHING is emitted: a partial bundle cannot decrypt and a
- * mislabelled pairing is worse than a miss. No cipher_id is included - this build's
- * profile carries no verified offset for it (SSL3_STATE has no cipher_id field), and
- * inventing one would be exactly the kind of plausible-but-wrong output the profile's
- * design notes forbid. */
-function emitSecretBundle(ssl, s3, clientRandom, stats) {
+ * Also reused by Tier B0 (idle-SSL bootstrap), which finds a post-handshake
+ * SSL3_STATE directly on the heap and may have NO SSL* to go with it; hence `ssl`
+ * is tolerated as null (its only use is the provenance field, emitted as '').
+ *
+ * The three traffic secrets are re-read and re-validated here through the SAME
+ * looksLikeSecret gate the keylog path uses; if ANY of them fails, NOTHING is
+ * emitted (a partial bundle cannot decrypt). server_random is DIFFERENT: it is
+ * carried for provenance only — the offline TLS 1.3 decrypter recovers the epoch
+ * keys from the traffic secrets and never reads server_random — so a scrubbed or
+ * reused server_random (common on a long-idle post-handshake SSL3_STATE, exactly
+ * Tier B0's target) must NOT drop the whole bundle. It is included when it looks
+ * like a CSPRNG value and emitted as '' otherwise. No cipher_id is included - this
+ * build's profile carries no verified offset for it (SSL3_STATE has no cipher_id
+ * field), and inventing one would be exactly the plausible-but-wrong output the
+ * profile's design notes forbid. */
+export function emitSecretBundle(ssl, s3, clientRandom, stats) {
     var tier = state.profile.tiers.B_ssl_method_ptr;
     if (!tier.emit_secret_bundle) return false;
     var off = state.profile.struct_offsets.SSL3_STATE;
     var c = state.profile.constants;
 
+    // Provenance only, never required for decryption: include it when valid, else
+    // emit ''. Do NOT drop the bundle when server_random is scrubbed/reused.
     var serverRandomBytes = readBytes(s3.add(off.server_random), c.ssl3_random_size);
-    if (!looksLikeRandom(serverRandomBytes)) return false;
+    var serverRandomHex = looksLikeRandom(serverRandomBytes) ? hexBytes(serverRandomBytes) : '';
 
     var fields = [
         { field: 'write_traffic_secret', key: 'client_traffic_secret_0' },
@@ -501,14 +517,30 @@ function emitSecretBundle(ssl, s3, clientRandom, stats) {
         bundle[fields[i].key] = hexBytes(bytes);
     }
 
+    /* Cross-scan dedup — mirrors emitKeylog's state.recorded guard. Without it
+     * Tier B0 re-emits the SAME idle bundle every scan, so the poll loop's
+     * emitted>0 backoff never grows and the heavy full-heap scan runs continuously
+     * (device-confirmed ANR). Key on client_random; VALUE is every secret that
+     * makes the bundle decrypt, so a KeyUpdate (same client_random, rotated
+     * secrets) is a different value and still re-emits, while a re-scan of the
+     * unchanged idle SSL returns quietly without send() or stats.emitted++. */
+    var bundleKey = 'BUNDLE|' + clientRandom;
+    var bundleValue = bundle.client_traffic_secret_0 + '|' + bundle.server_traffic_secret_0 +
+                      '|' + bundle.exporter_secret + '|' + serverRandomHex;
+    if (state.recordedBundles[bundleKey] === bundleValue) return false;  // already emitted, unchanged
+    state.recordedBundles[bundleKey] = bundleValue;
+
     send({
         type: 'tls_secret_bundle',
         client_random: clientRandom,
-        server_random: hexBytes(serverRandomBytes),
+        server_random: serverRandomHex,
         client_traffic_secret_0: bundle.client_traffic_secret_0,
         server_traffic_secret_0: bundle.server_traffic_secret_0,
         exporter_secret: bundle.exporter_secret,
-        ssl: ssl.toString()
+        // ssl is provenance only. Tier B0 emits a bundle straight from an idle
+        // SSL3_STATE with no reachable SSL*, so a null ssl is expected there and
+        // must not throw — an empty provenance string then stands for "no SSL*".
+        ssl: ssl === null ? '' : ssl.toString()
     });
     stats.emitted++;
     return true;
@@ -682,6 +714,233 @@ function runTierC(ranges, stats, errors) {
     }
 }
 
+/* ---------------------------------------------------------------------------
+ * Tier B0 — idle-SSL bootstrap. Recovers a PRE-EXISTING, post-handshake ("idle")
+ * TLS socket whose libssl is STRIPPED (modern Signal APEX Cronet
+ * libhttpengine.so: SSL_read/SSL_write have NO symbols, so the symbol-based
+ * needle seed can never fire and Tier A never catches a handshake for it).
+ *
+ * Instead of hooking a function, scan the heap DIRECTLY for a live SSL3_STATE by
+ * its three stride-49 traffic-secret length bytes, validate it, and emit the
+ * secret bundle STRAIGHT FROM SSL3_STATE — no needle required. Optionally reverse
+ * -link back to the SSL* to seed the Tier B needle for full enumeration.
+ *
+ * Runs ONLY when no needle is known yet (see runTiers): once anything has seeded a
+ * needle, Tier B already enumerates every live SSL, so Tier B0 costs nothing.
+ * ------------------------------------------------------------------------- */
+
+/* One masked Memory.scanSync pattern per valid hash length. The three traffic
+ * secrets are InplaceVectors at a fixed stride, so their length bytes sit at
+ * write_traffic_secret_len, read_traffic_secret_len and exporter_secret_len — a
+ * span from the first to the last length byte with the SAME length value L at
+ * exactly those three positions and every other byte a wildcard. A hit's address
+ * IS write_traffic_secret_len, so s3 = hit - write_traffic_secret_len.
+ *
+ * Every position is derived from struct_offsets (the gaps encode the stride-49
+ * constants.inplace_vector_stride), so nothing is hardcoded here. */
+export function buildIdleS3Anchors() {
+    var off = state.profile.struct_offsets.SSL3_STATE;
+    var lens = state.profile.constants.valid_hash_lens;
+    var base = off.write_traffic_secret_len;
+    var p0 = off.write_traffic_secret_len - base;   // 0
+    var p1 = off.read_traffic_secret_len - base;    // one stride on
+    var p2 = off.exporter_secret_len - base;        // two strides on
+    var span = p2 + 1;
+    var anchors: any[] = [];
+    for (var i = 0; i < lens.length; i++) {
+        var L = lens[i];
+        var hexL = (L < 16 ? '0' : '') + L.toString(16);
+        var tokens = new Array(span);
+        for (var j = 0; j < span; j++) tokens[j] = '??';
+        tokens[p0] = hexL; tokens[p1] = hexL; tokens[p2] = hexL;
+        anchors.push({ pattern: tokens.join(' '), hashLen: L, anchorOffset: base });
+    }
+    return anchors;
+}
+
+/* A byte pattern of three fixed length bytes has real random-hit odds over a big
+ * heap, so a hit is only a fact once the fields it implies check out. Idle means
+ * the handshake object is GONE (s3->hs == NULL): that is precisely the case Tier A
+ * cannot reach and the case where s3's three traffic secrets hold the current
+ * application epoch. A faulting hs read or a live hs pointer is NOT idle. Then all
+ * three traffic secrets must be real hash-length secrets and client_random must be
+ * CSPRNG-shaped — which rejects a coincidental three-byte collision. */
+export function validateIdleS3(s3) {
+    var off = state.profile.struct_offsets.SSL3_STATE;
+    var c = state.profile.constants;
+    var hs = readPointerOrNull(s3.add(off.hs));
+    if (hs === null || !hs.isNull()) return false;              // faulted or live => not idle
+    var cr = readBytes(s3.add(off.client_random), c.ssl3_random_size);
+    if (!looksLikeRandom(cr)) return false;
+    var fields = ['write_traffic_secret', 'read_traffic_secret', 'exporter_secret'];
+    for (var i = 0; i < fields.length; i++) {
+        var len = readU8OrNull(s3.add(off[fields[i] + '_len']));
+        if (len === null || len === 0) return false;
+        var bytes = readBytes(s3.add(off[fields[i]]), len);
+        if (!looksLikeSecret(bytes)) return false;             // one bad field => reject
+    }
+    return true;
+}
+
+/* Accept `ssl` as the real SSL that owns `s3`. Two structural checks, keyed on
+ * offsets fixed in BoringSSL and verified for every profiled build:
+ *   1. ssl->s3 (offset SSL.s3) points back at s3 — the two-way close.
+ *   2. ssl->method (field 0, the Tier B needle) is a plausible pointer that
+ *      resolves to a LOADED MODULE — the shared static SSL_PROTOCOL_METHOD lives in
+ *      a module's rodata, never on the heap, so this both proves method is a usable
+ *      needle AND rejects the coincidental pointer-to-s3 slots the tag-agnostic scan
+ *      also turns up (their "method" is 0x0/0x2/a heap address, not a module).
+ * Then an OPTIONAL, PROFILE-DRIVEN extra confirmation: each SSL field named in
+ * tiers.B_ssl_method_ptr.reverse_link_require_heap_fields must itself be a plausible
+ * heap pointer. The default is ['session','ctx'] — the historical behavior, so
+ * Chrome/Cronet and every profile that does not override it are UNCHANGED. The
+ * signal profile sets it to [] because those field offsets are only verified for
+ * the Chrome layout and on libsignal's in-tree BoringSSL ssl->session at that offset
+ * is null/unset for a mid-stream TLS 1.3 socket — requiring it silently rejected the
+ * real SSL and left the Tier B needle unseeded, forcing the fragile Tier B0 anchor.
+ * Round-trip + method-in-module alone uniquely identifies the owning SSL (measured
+ * on-device), and Tier B re-validates every candidate it then enumerates, so nothing
+ * downstream trusts a needle blindly. */
+function acceptsAsSsl(ssl, s3) {
+    var off = state.profile.struct_offsets;
+    var back = readPointerOrNull(ssl.add(off.SSL.s3));
+    if (back === null || !untag(back).equals(untag(s3))) return false;
+    var method = readPointerOrNull(ssl.add(off.SSL.method));
+    if (!looksLikeHeapPointer(method)) return false;
+    var mod = null;
+    try { mod = Process.findModuleByAddress(untag(method)); } catch (e: any) { mod = null; }
+    if (mod === null) return false;
+    var extra = state.profile.tiers.B_ssl_method_ptr.reverse_link_require_heap_fields;
+    if (extra === undefined) extra = ['session', 'ctx'];
+    for (var i = 0; i < extra.length; i++) {
+        if (!looksLikeHeapPointer(readPointerOrNull(ssl.add(off.SSL[extra[i]])))) return false;
+    }
+    return true;
+}
+
+/* Reverse-link an idle SSL3_STATE to its SSL* by scanning the heap for a pointer
+ * whose value is s3, then treating that slot as ssl->s3 (candidate ssl = slot -
+ * SSL.s3). Bounded: returns the FIRST candidate that acceptsAsSsl, else null. The
+ * SSL* is optional — the bundle is emitted from s3 either way — so a null result
+ * simply means Tier B cannot be seeded from this object. */
+export function sslFromS3(s3, ranges, errors) {
+    var off = state.profile.struct_offsets;
+    // The stored ssl->s3 carries its scudo/MTE allocation tag while `s3` (from a
+    // range scan) is untagged, so match tag-agnostically or the reverse-link never
+    // fires on an MTE target (libsignal on Android) — the exact bug that left the
+    // Tier B needle unseeded mid-stream and forced the fragile Tier B0 anchor.
+    var pattern = pointerToTagAgnosticScanPattern(s3, state.validators.tagMask);
+    for (var r = 0; r < ranges.length; r++) {
+        var hits = scanRange(ranges[r], pattern, errors);
+        for (var h = 0; h < hits.length; h++) {
+            var ssl = hits[h].address.sub(off.SSL.s3);
+            if (acceptsAsSsl(ssl, s3)) return ssl;
+        }
+    }
+    return null;
+}
+
+/* Present when the driver pre-initialised stats (the normal path); created here so
+ * the engine's own tests can call runTierB0 with a bare stats object. */
+function ensureTierB0Stats(stats) {
+    if (!stats.tierB0) stats.tierB0 = { candidates: 0, validated: 0, emitted: 0 };
+    return stats.tierB0;
+}
+
+/* Absent or any non-false value means ON, so a profile disables Tier B0 only by
+ * saying enabled:false explicitly; the shipped boringssl profiles ship it on. */
+function tierB0Enabled() {
+    var t = state.profile.tiers.B0_idle_ssl;
+    return !t || t.enabled !== false;
+}
+
+/* How often Tier B0 runs while no needle exists — mirrors tierARescanEvery().
+ * Missing, non-numeric or < 1 fall back to a sane default (8), so a bad profile
+ * value can only change the cadence, never switch the tier off. Tier B0 is a heavy
+ * full-heap masked scan; running it every cycle on stripped Cronet (where the
+ * needle never seeds) pins CPU and starved Signal's UI thread into an ANR. */
+function tierB0RescanEvery() {
+    var t = state.profile.tiers.B0_idle_ssl;
+    var configured = t && t.rescan_every;
+    if (typeof configured !== 'number' || !isFinite(configured) || configured < 1) return 8;
+    return Math.floor(configured);
+}
+
+/* The stable per-profile key for the Tier B0 throttle counter. Profiles carry an
+ * `id` (see driver.ts / patterns.json); '?' guards a scaffold profile that has none
+ * so the counter never keys on `undefined`. */
+function tierB0ProfileKey(): string {
+    var p = state.profile;
+    return (p && p.id) ? p.id : 'default';
+}
+
+/* PER-PROFILE Tier B0 scan counter: reads the active profile's eligible-scan count,
+ * increments it, and returns the PRE-increment value (0 on that profile's FIRST
+ * eligible scan). It must NOT use the global state.scanIndex: under the default
+ * `--protocol signal` command two boringssl profiles run each scan and share
+ * state.scanIndex (incremented once per profile-scan in driver.ts), so one profile
+ * only ever sees ODD indices and a `scanIndex % N === 0` gate never fires for it —
+ * starving its Tier B0 (device-confirmed). Counting per profile makes each profile's
+ * Tier B0 run on ITS OWN scans 0, N, 2N, … regardless of ordering or parity.
+ *
+ * The caller gates this behind `resolveNeedleValue() === null`, so the counter only
+ * advances on scans where Tier B0 is actually eligible — intended. */
+export function nextTierB0ProfileScan(): number {
+    var key = tierB0ProfileKey();
+    var count = state.b0ProfileScans[key] || 0;
+    state.b0ProfileScans[key] = count + 1;
+    return count;
+}
+
+/* WHETHER Tier B0 runs given THIS profile's eligible-scan count (its caller in
+ * runTiers still also gates on resolveNeedleValue() === null). The count is 0 on the
+ * profile's FIRST eligible scan, so that scan always runs — it emits the idle bundle
+ * once — and then only every Nth of that profile's scans, so the emitted bundle can
+ * go quiet (via emitSecretBundle's dedup) and the poll loop's backoff can grow
+ * instead of the heap scan running on every cycle. Pure: the counter advances in
+ * nextTierB0ProfileScan(), keeping this predicate side-effect-free and testable. */
+export function shouldRunTierB0(profileScanCount: number): boolean {
+    return profileScanCount % tierB0RescanEvery() === 0;
+}
+
+/* One validated idle SSL3_STATE: emit its secret bundle DIRECTLY (no SSL* / needle
+ * required), then — only if the SSL* was recovered — seed the Tier B needle so the
+ * rest of the scan can enumerate every other live SSL. */
+function processIdleS3(s3, ranges, b0, stats, errors) {
+    if (!validateIdleS3(s3)) return;
+    b0.validated++;
+    var clientRandom = readClientRandom(s3);
+    if (clientRandom === null) return;                         // re-checked; defensive
+    // Reverse-link to the owning SSL* only while the needle is still unseeded: the
+    // first success seeds it and Tier B takes over, so later idle-S3 hits in the
+    // same scan skip the (full-heap) reverse-link. The bundle is emitted from s3
+    // either way, so a null ssl costs nothing.
+    var ssl = state.needle === null ? sslFromS3(s3, ranges, errors) : null;
+    if (emitSecretBundle(ssl, s3, clientRandom, stats)) b0.emitted++;
+    if (ssl !== null) seedNeedleFromSsl(ssl, 'heap_idle_s3');
+}
+
+export function runTierB0(ranges, stats, errors) {
+    if (!tierB0Enabled()) return;
+    var b0 = ensureTierB0Stats(stats);
+    var anchors = buildIdleS3Anchors();
+    var seen: { [k: string]: boolean } = {};                  // dedup s3 within this scan
+    for (var a = 0; a < anchors.length; a++) {
+        for (var r = 0; r < ranges.length; r++) {
+            var hits = scanRange(ranges[r], anchors[a].pattern, errors);
+            for (var h = 0; h < hits.length; h++) {
+                var s3 = hits[h].address.sub(anchors[a].anchorOffset);
+                var key = s3.toString();
+                if (seen[key]) continue;
+                seen[key] = true;
+                b0.candidates++;
+                try { processIdleS3(s3, ranges, b0, stats, errors); }
+                catch (e: any) { errors.push('tierB0 ' + s3 + ': ' + e.message); }
+            }
+        }
+    }
+}
+
 export const BoringsslEngine: MemscanEngine = {
     name: 'boringssl',
     runTiers: function (ranges: any, stats: any, errors: string[]): void {
@@ -689,11 +948,35 @@ export const BoringsslEngine: MemscanEngine = {
         // Tier B work on a purely pre-existing TLS session (no handshake for Tier
         // A to catch); it runs whether or not Tier A ever fires.
         installNeedleSeedHooks();
+        // Tier B0 (idle-SSL bootstrap): only when NOTHING has seeded a needle yet.
+        // It recovers a stripped-libssl idle socket by scanning the heap for a live
+        // SSL3_STATE and emits the bundle straight from it, and — if it can reverse
+        // -link the SSL* — seeds the needle so the Tier B pass below enumerates the
+        // rest. Once any needle exists this is skipped, so it is zero-cost thereafter.
+        // shouldRunTierB0() throttles it to every Nth of THIS profile's scans: without
+        // a needle (stripped Cronet) the gate below would otherwise run this heavy
+        // full-heap masked scan on EVERY cycle, pinning CPU into an ANR. The profile's
+        // scan 0 still runs (emits the idle bundle once), then dedup keeps steady-state
+        // quiet so the backoff can grow. The counter is PER PROFILE (not the global
+        // state.scanIndex) so that with two boringssl profiles sharing the scan loop,
+        // neither is starved by the other's parity — short-circuit means the counter
+        // only advances on scans where Tier B0 is eligible (needle still null).
+        if (resolveNeedleValue() === null && shouldRunTierB0(nextTierB0ProfileScan())) runTierB0(ranges, stats, errors);
         if (shouldRunTierA()) runTierA(ranges, stats, errors);
         else stats.tierA.skipped = true;
         runTierB(ranges, stats, errors);
         runTierC(ranges, stats, errors);
         state.lastTierBValidated = stats.tierB.validated;
+    },
+    // Teardown, run from the agent's `dispose` RPC before the script is unloaded.
+    // The needle-seed hooks on SSL_read/SSL_write self-detach in onSslIoEnter once
+    // a needle is found (the happy path), but on a target where none ever seeds —
+    // stripped Cronet, the device case — they would otherwise stay attached to the
+    // hot I/O path until frida's implicit detach, whose synchronous prologue
+    // rewrite there stalls unload for minutes. Detaching them here is unconditional
+    // (needle found or not) and idempotent: detachNeedleSeedHooks empties the list.
+    stop: function (): void {
+        detachNeedleSeedHooks();
     }
 };
 registerEngine(BoringsslEngine);

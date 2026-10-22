@@ -204,6 +204,33 @@ def test_detail_tab_secret_chat_section():
     assert "sent 20" in text and "sent 57" in text
 
 
+def test_detail_tab_labels_secret_chat_fingerprint_not_ssl_session():
+    w = _widget()
+    w._update_detail(_e2e_flow())
+    text = _blob(w._detail_log)
+    assert "SSL Session:" not in text
+    assert "telegram_e2e:" not in text
+    assert f"Secret chat:    {_FP}" in text
+
+
+def test_detail_tab_secret_chat_fingerprint_falls_back_to_session_id():
+    flow = _e2e_flow()
+    flow.layer("telegram_e2e").key_fingerprint = ""
+    w = _widget()
+    w._update_detail(flow)
+    assert f"Secret chat:    {_FP}" in _blob(w._detail_log)
+
+
+def test_detail_tab_tls_flow_keeps_ssl_session_line():
+    flow = _http_flow()
+    flow.ssl_session_id = "abcd1234"
+    w = _widget()
+    w._update_detail(flow)
+    text = _blob(w._detail_log)
+    assert "SSL Session:    abcd1234" in text
+    assert "Secret chat:" not in text
+
+
 # ---------------------------------------------------------------------------
 # Message dedupe + Message tab
 # ---------------------------------------------------------------------------

@@ -1,0 +1,25 @@
+{
+ "tap": {
+  "flow_count": 0,
+  "flows": [],
+  "header": {
+   "capture_start": "<wallclock>",
+   "capture_target": "mt2capture.pcapng",
+   "ext_data": null,
+   "ext_header_len": 0,
+   "flags": 1,
+   "flow_count": 0,
+   "format_version": 1
+  },
+  "keylog_records": {
+   "count": 7,
+   "sha256": "cd0c2fc89549b0a5a33757071af983ed8c42c9d41b2ab4381919081c9d0fe98b"
+  },
+  "meta": {
+   "flow_fields_version": 3,
+   "parse_result_version": 1,
+   "schema_version": 1
+  },
+  "summary_count": 0
+ }
+}

@@ -267,8 +267,8 @@ def test_config_legacy_multiselect_threads_both():
 # ---------------------------------------------------------------------------
 
 def test_formatter_union_includes_both_selected():
-    from friTap.protocols.registry import create_default_registry
     from friTap.output.factory import _active_keylog_formatters
+    from friTap.protocols.registry import create_default_registry
     companion = _combinable_companion()
     if companion is None:
         pytest.skip("build ships no combinable companion protocol")
@@ -280,8 +280,8 @@ def test_formatter_union_includes_both_selected():
 
 
 def test_formatter_single_tls_path_unchanged():
-    from friTap.protocols.registry import create_default_registry
     from friTap.output.factory import _active_keylog_formatters
+    from friTap.protocols.registry import create_default_registry
     registry = create_default_registry(["tls"])
     # A plain string and a one-element list must both resolve to exactly the TLS
     # formatter — the single-protocol path is unchanged.

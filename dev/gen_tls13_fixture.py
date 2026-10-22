@@ -19,7 +19,7 @@ import threading
 import time
 from pathlib import Path
 
-from scapy.all import Ether, IP, TCP, wrpcap
+from scapy.all import IP, TCP, Ether, wrpcap
 
 REPO = Path(os.environ.get("FRITAP_REPO", Path(__file__).resolve().parents[1]))
 SERVER = REPO / "research/memory_scan_lsass/tools/tls13_server.py"
@@ -52,8 +52,12 @@ def _proxy_once(listen_sock, server_addr, log, lock):
     upstream = socket.create_connection(server_addr)
     t1 = threading.Thread(target=_pump, args=(client, upstream, "c2s", log, lock))
     t2 = threading.Thread(target=_pump, args=(upstream, client, "s2c", log, lock))
-    t1.start(); t2.start(); t1.join(); t2.join()
-    client.close(); upstream.close()
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+    client.close()
+    upstream.close()
 
 
 def _frame_pcap(log, out_pcap):
@@ -76,7 +80,8 @@ def _frame_pcap(log, out_pcap):
     # Handshake: SYN, SYN-ACK, ACK.
     add(CLIENT_PORT, SERVER_PORT, CLIENT_IP, SERVER_IP, cseq, 0, "S")
     add(SERVER_PORT, CLIENT_PORT, SERVER_IP, CLIENT_IP, sseq, cseq + 1, "SA")
-    cseq += 1; sseq += 1
+    cseq += 1
+    sseq += 1
     add(CLIENT_PORT, SERVER_PORT, CLIENT_IP, SERVER_IP, cseq, sseq, "A")
 
     for direction, data in log:

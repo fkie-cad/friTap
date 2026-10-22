@@ -1,0 +1,1154 @@
+{
+ "tap": {
+  "flow_count": 4,
+  "flows": [
+   {
+    "chunks": {
+     "count": 2,
+     "sha256": [
+      "27fa410cbc613fa3b65b50b8c8d66a54c50e3c741c5ea160cddec6e3a955a4c6",
+      "51fe7758aaf501edfd3bba36c90db97599b9fd024e6ae0b4e7b1bbbe99f4a485"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:2600:9000:a507:ab6d:575d:9d9f:64af:7a5a:443-2a01:599:11c:6467:c69c:dbdc:8aa2:ad62:34046",
+     "detected_protocol": "HTTP/2",
+     "dst_addr": "2600:9000:a507:ab6d:575d:9d9f:64af:7a5a",
+     "dst_port": 443,
+     "duration": 0.0,
+     "ended": 1790761872.896484,
+     "findings": [],
+     "flow_id": "net:2600:9000:a507:ab6d:575d:9d9f:64af:7a5a:443-2a01:599:11c:6467:c69c:dbdc:8aa2:ad62:34046:0",
+     "layers": [
+      "http2"
+     ],
+     "notes": "",
+     "package_name": "s1capture.pcapng",
+     "process_name": "s1capture.pcapng",
+     "protocol": "HTTP/2",
+     "request": {
+      "body_size": 251,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {},
+      "host": "",
+      "is_complete": false,
+      "is_control_frame": false,
+      "is_request": true,
+      "method": "",
+      "protocol": "HTTP/2",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 1,
+      "url": ""
+     },
+     "response": {
+      "body_size": 1967,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {},
+      "host": "",
+      "is_complete": false,
+      "is_control_frame": false,
+      "is_request": false,
+      "method": "",
+      "protocol": "HTTP/2",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 1,
+      "url": ""
+     },
+     "src_addr": "2a01:599:11c:6467:c69c:dbdc:8aa2:ad62",
+     "src_port": 34046,
+     "ssl_session_id": "",
+     "started": 1790761872.896484,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 2362,
+     "transport": "tls"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "depth": 0,
+       "name": "http2"
+      },
+      "type": "AppLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 251,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {},
+     "host": "",
+     "is_complete": false,
+     "is_control_frame": false,
+     "is_request": true,
+     "method": "",
+     "protocol": "HTTP/2",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 1,
+     "url": ""
+    },
+    "response": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 1967,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {},
+     "host": "",
+     "is_complete": false,
+     "is_control_frame": false,
+     "is_request": false,
+     "method": "",
+     "protocol": "HTTP/2",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 1,
+     "url": ""
+    },
+    "summary": {
+     "connection_id": "net:2600:9000:a507:ab6d:575d:9d9f:64af:7a5a:443-2a01:599:11c:6467:c69c:dbdc:8aa2:ad62:34046",
+     "detected_protocol": "HTTP/2",
+     "dst_addr": "2600:9000:a507:ab6d:575d:9d9f:64af:7a5a",
+     "dst_port": 443,
+     "duration": 0.0,
+     "ended": 1790761872.896484,
+     "finding_count": 0,
+     "flow_id": "net:2600:9000:a507:ab6d:575d:9d9f:64af:7a5a:443-2a01:599:11c:6467:c69c:dbdc:8aa2:ad62:34046:0",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "",
+     "inner_e2e_protocol": "",
+     "inner_summary": "",
+     "method": "",
+     "outer_app_protocol": "HTTP/2",
+     "process_name": "s1capture.pcapng",
+     "protocol": "HTTP/2",
+     "src_addr": "2a01:599:11c:6467:c69c:dbdc:8aa2:ad62",
+     "src_port": 34046,
+     "ssl_session_id": "",
+     "started": 1790761872.896484,
+     "state": "complete",
+     "status_code": 0,
+     "tag_count": 0,
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 2362,
+     "transport": "tls",
+     "url": ""
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   },
+   {
+    "chunks": {
+     "count": 3,
+     "sha256": [
+      "76ca4f61811030a1c801962a56bfe0356189987d4966afa575812cc27f5e8223",
+      "1f671947a7912fe661acbec350e232d5ac5f38047c1819503101031e0dbd941d",
+      "39e8569cc1c87de9bf303d3db468bf21cd8999dbb985bfc4fb0e892a8831235f"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:2600:9000:a507:ab6d:575d:9d9f:64af:7a5a:443-2a01:599:11c:6467:c69c:dbdc:8aa2:ad62:34046",
+     "detected_protocol": "TLS(midstream)",
+     "dst_addr": "2a01:599:11c:6467:c69c:dbdc:8aa2:ad62",
+     "dst_port": 34046,
+     "duration": 0.0005650520324707031,
+     "ended": 1790770862.745733,
+     "findings": [],
+     "flow_id": "net:2600:9000:a507:ab6d:575d:9d9f:64af:7a5a:443-2a01:599:11c:6467:c69c:dbdc:8aa2:ad62:34046:1",
+     "layers": [
+      "tls",
+      "websocket",
+      "signal"
+     ],
+     "notes": "",
+     "package_name": "s1capture.pcapng",
+     "process_name": "s1capture.pcapng",
+     "protocol": "unknown",
+     "request": null,
+     "response": {
+      "body_size": 11,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {},
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": false,
+      "method": "",
+      "protocol": "unknown",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": ""
+     },
+     "src_addr": "2600:9000:a507:ab6d:575d:9d9f:64af:7a5a",
+     "src_port": 443,
+     "ssl_session_id": "",
+     "started": 1790770862.745168,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 158,
+     "transport": "signal"
+    },
+    "layers": [
+     {
+      "data_source": "none",
+      "metadata_only": true,
+      "to_dict": {
+       "alpn": "",
+       "cipher": "",
+       "depth": 0,
+       "library": "",
+       "name": "tls",
+       "sni": "",
+       "version": ""
+      },
+      "type": "TlsLayer"
+     },
+     {
+      "data_source": "none",
+      "metadata_only": true,
+      "to_dict": {
+       "depth": 1,
+       "name": "websocket"
+      },
+      "type": "AppLayer"
+     },
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "chat_type": "one_to_one",
+       "depth": 2,
+       "identifier": "05f13ac1d8f4947a88f7805a2e4795fd139c386b256b37b22071a89d47827d4e47",
+       "message_count": 19,
+       "messages": [
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "write",
+         "kind": "ws-request",
+         "path": "/v1/keepalive",
+         "quote": false,
+         "reaction": false,
+         "request_id": 5,
+         "sender": "",
+         "timestamp": 0,
+         "verb": "GET"
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "write",
+         "kind": "ws-request",
+         "path": "/v1/keepalive",
+         "quote": false,
+         "reaction": false,
+         "request_id": 6,
+         "sender": "",
+         "timestamp": 0,
+         "verb": "GET"
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "write",
+         "kind": "ws-request",
+         "path": "/v1/keepalive",
+         "quote": false,
+         "reaction": false,
+         "request_id": 7,
+         "sender": "",
+         "timestamp": 0,
+         "verb": "GET"
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "write",
+         "kind": "ws-response",
+         "quote": false,
+         "reaction": false,
+         "request_id": 5619671796716548692,
+         "sender": "",
+         "status": 200,
+         "timestamp": 0
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "write",
+         "kind": "ws-request",
+         "path": "/v1/keepalive",
+         "quote": false,
+         "reaction": false,
+         "request_id": 8,
+         "sender": "",
+         "timestamp": 0,
+         "verb": "GET"
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "write",
+         "kind": "ws-response",
+         "quote": false,
+         "reaction": false,
+         "request_id": 603142986066536759,
+         "sender": "",
+         "status": 200,
+         "timestamp": 0
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "write",
+         "kind": "ws-response",
+         "quote": false,
+         "reaction": false,
+         "request_id": 8144126655734398021,
+         "sender": "",
+         "status": 200,
+         "timestamp": 0
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "write",
+         "kind": "ws-request",
+         "path": "/v1/keepalive",
+         "quote": false,
+         "reaction": false,
+         "request_id": 9,
+         "sender": "",
+         "timestamp": 0,
+         "verb": "GET"
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "read",
+         "kind": "ws-response",
+         "quote": false,
+         "reaction": false,
+         "request_id": 5,
+         "sender": "",
+         "status": 200,
+         "timestamp": 1790761872962
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "read",
+         "kind": "ws-response",
+         "quote": false,
+         "reaction": false,
+         "request_id": 6,
+         "sender": "",
+         "status": 200,
+         "timestamp": 1790761902851
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "read",
+         "kind": "ws-response",
+         "quote": false,
+         "reaction": false,
+         "request_id": 7,
+         "sender": "",
+         "status": 200,
+         "timestamp": 1790761932797
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "read",
+         "kind": "receipt",
+         "quote": false,
+         "reaction": false,
+         "sender": "",
+         "timestamp": 0
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "read",
+         "kind": "ws-request",
+         "path": "/api/v1/message",
+         "quote": false,
+         "reaction": false,
+         "request_id": 5619671796716548692,
+         "sender": "",
+         "timestamp": 1790761956713,
+         "verb": "PUT"
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "read",
+         "kind": "ws-response",
+         "quote": false,
+         "reaction": false,
+         "request_id": 8,
+         "sender": "",
+         "status": 200,
+         "timestamp": 1790761963039
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "read",
+         "kind": "receipt",
+         "quote": false,
+         "reaction": false,
+         "sender": "",
+         "timestamp": 0
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "read",
+         "kind": "ws-request",
+         "path": "/api/v1/message",
+         "quote": false,
+         "reaction": false,
+         "request_id": 603142986066536759,
+         "sender": "",
+         "timestamp": 1790761972476,
+         "verb": "PUT"
+        },
+        {
+         "attachments": false,
+         "body": "hi was gibt es neues?",
+         "direction": "read",
+         "kind": "data",
+         "quote": false,
+         "reaction": false,
+         "sender": "",
+         "timestamp": 1790761984981
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "read",
+         "kind": "ws-request",
+         "path": "/api/v1/message",
+         "quote": false,
+         "reaction": false,
+         "request_id": 8144126655734398021,
+         "sender": "",
+         "timestamp": 1790761983080,
+         "verb": "PUT"
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "read",
+         "kind": "ws-response",
+         "quote": false,
+         "reaction": false,
+         "request_id": 9,
+         "sender": "",
+         "status": 200,
+         "timestamp": 1790761992981
+        }
+       ],
+       "name": "signal"
+      },
+      "type": "SignalLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": null,
+    "response": {
+     "body_sha256": "9ebb0cf7043fe4d447c39ae146653f55b65097268a22d3a433240b32c1c5b376",
+     "body_size": 11,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {},
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": false,
+     "method": "",
+     "protocol": "unknown",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": ""
+    },
+    "summary": {
+     "connection_id": "net:2600:9000:a507:ab6d:575d:9d9f:64af:7a5a:443-2a01:599:11c:6467:c69c:dbdc:8aa2:ad62:34046",
+     "detected_protocol": "TLS(midstream)",
+     "dst_addr": "2a01:599:11c:6467:c69c:dbdc:8aa2:ad62",
+     "dst_port": 34046,
+     "duration": 0.0005650520324707031,
+     "ended": 1790770862.745733,
+     "finding_count": 0,
+     "flow_id": "net:2600:9000:a507:ab6d:575d:9d9f:64af:7a5a:443-2a01:599:11c:6467:c69c:dbdc:8aa2:ad62:34046:1",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "",
+     "inner_e2e_protocol": "Signal",
+     "inner_summary": "1:1 · 19 msgs",
+     "method": "",
+     "outer_app_protocol": "WebSocket",
+     "process_name": "s1capture.pcapng",
+     "protocol": "TLS(midstream)",
+     "src_addr": "2600:9000:a507:ab6d:575d:9d9f:64af:7a5a",
+     "src_port": 443,
+     "ssl_session_id": "",
+     "started": 1790770862.745168,
+     "state": "complete",
+     "status_code": 0,
+     "tag_count": 0,
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 158,
+     "transport": "signal",
+     "url": ""
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   },
+   {
+    "chunks": {
+     "count": 4,
+     "sha256": [
+      "a058e5a4c455d0278d54f02302aa4331cb3099edaaa785f1f4f0be373dd2349e",
+      "a058e5a4c455d0278d54f02302aa4331cb3099edaaa785f1f4f0be373dd2349e",
+      "7789becd85ba9ecc7d7f5426ccab1de339c4004ff21941ede783ce4103a433dd",
+      "7789becd85ba9ecc7d7f5426ccab1de339c4004ff21941ede783ce4103a433dd"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:2600:9000:a507:ab6d:575d:9d9f:64af:7a5a:443-2a01:599:11c:6467:c69c:dbdc:8aa2:ad62:34056",
+     "detected_protocol": "HTTP/2",
+     "dst_addr": "2600:9000:a507:ab6d:575d:9d9f:64af:7a5a",
+     "dst_port": 443,
+     "duration": 0.0,
+     "ended": 1790761872.896484,
+     "findings": [],
+     "flow_id": "net:2600:9000:a507:ab6d:575d:9d9f:64af:7a5a:443-2a01:599:11c:6467:c69c:dbdc:8aa2:ad62:34056:0",
+     "layers": [
+      "http2"
+     ],
+     "notes": "",
+     "package_name": "s1capture.pcapng",
+     "process_name": "s1capture.pcapng",
+     "protocol": "HTTP/2",
+     "request": {
+      "body_size": 447,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "hpack-desync",
+      "headers": {},
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": true,
+      "method": "",
+      "protocol": "HTTP/2",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 5,
+      "url": ""
+     },
+     "response": {
+      "body_size": 7,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "hpack-desync",
+      "headers": {},
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": false,
+      "method": "",
+      "protocol": "HTTP/2",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 5,
+      "url": ""
+     },
+     "src_addr": "2a01:599:11c:6467:c69c:dbdc:8aa2:ad62",
+     "src_port": 34056,
+     "ssl_session_id": "",
+     "started": 1790761872.896484,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 11356,
+     "transport": "tls"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "depth": 0,
+       "name": "http2"
+      },
+      "type": "AppLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 447,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "hpack-desync",
+     "headers": {},
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": true,
+     "method": "",
+     "protocol": "HTTP/2",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 5,
+     "url": ""
+    },
+    "response": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 7,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "hpack-desync",
+     "headers": {},
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": false,
+     "method": "",
+     "protocol": "HTTP/2",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 5,
+     "url": ""
+    },
+    "summary": {
+     "connection_id": "net:2600:9000:a507:ab6d:575d:9d9f:64af:7a5a:443-2a01:599:11c:6467:c69c:dbdc:8aa2:ad62:34056",
+     "detected_protocol": "HTTP/2",
+     "dst_addr": "2600:9000:a507:ab6d:575d:9d9f:64af:7a5a",
+     "dst_port": 443,
+     "duration": 0.0,
+     "ended": 1790761872.896484,
+     "finding_count": 0,
+     "flow_id": "net:2600:9000:a507:ab6d:575d:9d9f:64af:7a5a:443-2a01:599:11c:6467:c69c:dbdc:8aa2:ad62:34056:0",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "",
+     "inner_e2e_protocol": "",
+     "inner_summary": "",
+     "method": "",
+     "outer_app_protocol": "HTTP/2",
+     "process_name": "s1capture.pcapng",
+     "protocol": "HTTP/2",
+     "src_addr": "2a01:599:11c:6467:c69c:dbdc:8aa2:ad62",
+     "src_port": 34056,
+     "ssl_session_id": "",
+     "started": 1790761872.896484,
+     "state": "complete",
+     "status_code": 0,
+     "tag_count": 0,
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 11356,
+     "transport": "tls",
+     "url": ""
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   },
+   {
+    "chunks": {
+     "count": 6,
+     "sha256": [
+      "6d06ab99427e1f3878a75e37ad802a29e28eacd5d6385a476fd87e2fe265091d",
+      "20f2141c07622ea41f153e89125e4eca2dcae99acf3e44068f027f159d80e3c9",
+      "65f49fea266f4231bab2ce300e38b72c4a13c7fb6694844c2c90a9e17468c028",
+      "26cd0ab95a21a918f08d0fd578867ad321b2dd154b12a6933f89bf195c9fc151",
+      "f1c5dfdab8d9077c01cd9bd1309474a3e9d0236db85adff445548c804dcbec65",
+      "281ec28c7078728a7b678d1bee37dad2b6b231d3d589c76f7cbc401f692c9fb9"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:2600:9000:a507:ab6d:575d:9d9f:64af:7a5a:443-2a01:599:11c:6467:c69c:dbdc:8aa2:ad62:34056",
+     "detected_protocol": "TLS(midstream)",
+     "dst_addr": "2600:9000:a507:ab6d:575d:9d9f:64af:7a5a",
+     "dst_port": 443,
+     "duration": 0.0009949207305908203,
+     "ended": 1790770862.747066,
+     "findings": [],
+     "flow_id": "net:2600:9000:a507:ab6d:575d:9d9f:64af:7a5a:443-2a01:599:11c:6467:c69c:dbdc:8aa2:ad62:34056:1",
+     "layers": [
+      "tls",
+      "websocket",
+      "signal"
+     ],
+     "notes": "",
+     "package_name": "s1capture.pcapng",
+     "process_name": "s1capture.pcapng",
+     "protocol": "unknown",
+     "request": {
+      "body_size": 11,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {},
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": true,
+      "method": "",
+      "protocol": "unknown",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": ""
+     },
+     "response": null,
+     "src_addr": "2a01:599:11c:6467:c69c:dbdc:8aa2:ad62",
+     "src_port": 34056,
+     "ssl_session_id": "",
+     "started": 1790770862.746071,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 125,
+     "transport": "signal"
+    },
+    "layers": [
+     {
+      "data_source": "none",
+      "metadata_only": true,
+      "to_dict": {
+       "alpn": "",
+       "cipher": "",
+       "depth": 0,
+       "library": "",
+       "name": "tls",
+       "sni": "",
+       "version": ""
+      },
+      "type": "TlsLayer"
+     },
+     {
+      "data_source": "none",
+      "metadata_only": true,
+      "to_dict": {
+       "depth": 1,
+       "name": "websocket"
+      },
+      "type": "AppLayer"
+     },
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "chat_type": "one_to_one",
+       "depth": 2,
+       "identifier": "051cc8e7f44190418eb4f69e3d95a3a8720731802fab7c0222aaefefbec7f11406",
+       "message_count": 16,
+       "messages": [
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "write",
+         "kind": "typing",
+         "quote": false,
+         "reaction": false,
+         "sender": "",
+         "timestamp": 0
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "write",
+         "kind": "rest",
+         "meta": {
+          "destination": "9b599ba9-b5c5-4ceb-8f78-3e71a1a09e9b",
+          "message_count": 1,
+          "online": true,
+          "timestamp": 1790761945710,
+          "type": "rest-message",
+          "urgent": false
+         },
+         "path": "/v1/messages/9b599ba9-b5c5-4ceb-8f78-3e71a1a09e9b?story=false",
+         "quote": false,
+         "reaction": false,
+         "request_id": 1,
+         "sender": "",
+         "timestamp": 1790761945710,
+         "verb": "PUT"
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "write",
+         "kind": "typing",
+         "quote": false,
+         "reaction": false,
+         "sender": "",
+         "timestamp": 0
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "write",
+         "kind": "rest",
+         "meta": {
+          "destination": "9b599ba9-b5c5-4ceb-8f78-3e71a1a09e9b",
+          "message_count": 1,
+          "online": true,
+          "timestamp": 1790761952344,
+          "type": "rest-message",
+          "urgent": false
+         },
+         "path": "/v1/messages/9b599ba9-b5c5-4ceb-8f78-3e71a1a09e9b?story=false",
+         "quote": false,
+         "reaction": false,
+         "request_id": 2,
+         "sender": "",
+         "timestamp": 1790761952344,
+         "verb": "PUT"
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "write",
+         "kind": "typing",
+         "quote": false,
+         "reaction": false,
+         "sender": "",
+         "timestamp": 0
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "write",
+         "kind": "rest",
+         "meta": {
+          "destination": "9b599ba9-b5c5-4ceb-8f78-3e71a1a09e9b",
+          "message_count": 1,
+          "online": true,
+          "timestamp": 1790761952707,
+          "type": "rest-message",
+          "urgent": false
+         },
+         "path": "/v1/messages/9b599ba9-b5c5-4ceb-8f78-3e71a1a09e9b?story=false",
+         "quote": false,
+         "reaction": false,
+         "request_id": 3,
+         "sender": "",
+         "timestamp": 1790761952707,
+         "verb": "PUT"
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "write",
+         "kind": "receipt",
+         "quote": false,
+         "reaction": false,
+         "sender": "",
+         "timestamp": 0
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "write",
+         "kind": "rest",
+         "meta": {
+          "destination": "9b599ba9-b5c5-4ceb-8f78-3e71a1a09e9b",
+          "message_count": 1,
+          "online": false,
+          "timestamp": 1790761983529,
+          "type": "rest-message",
+          "urgent": false
+         },
+         "path": "/v1/messages/9b599ba9-b5c5-4ceb-8f78-3e71a1a09e9b?story=false",
+         "quote": false,
+         "reaction": false,
+         "request_id": 4,
+         "sender": "",
+         "timestamp": 1790761983529,
+         "verb": "PUT"
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "write",
+         "kind": "receipt",
+         "quote": false,
+         "reaction": false,
+         "sender": "",
+         "timestamp": 0
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "write",
+         "kind": "rest",
+         "meta": {
+          "destination": "9b599ba9-b5c5-4ceb-8f78-3e71a1a09e9b",
+          "message_count": 1,
+          "online": false,
+          "timestamp": 1790761983970,
+          "type": "rest-message",
+          "urgent": false
+         },
+         "path": "/v1/messages/9b599ba9-b5c5-4ceb-8f78-3e71a1a09e9b?story=false",
+         "quote": false,
+         "reaction": false,
+         "request_id": 5,
+         "sender": "",
+         "timestamp": 1790761983970,
+         "verb": "PUT"
+        },
+        {
+         "attachments": false,
+         "body": "Hello 👋👋👋",
+         "direction": "write",
+         "kind": "data",
+         "quote": false,
+         "reaction": false,
+         "sender": "",
+         "timestamp": 1790761954233
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "read",
+         "kind": "rest",
+         "meta": {
+          "keys": [
+           "needsSync"
+          ],
+          "type": "rest"
+         },
+         "quote": false,
+         "reaction": false,
+         "request_id": 1,
+         "sender": "",
+         "status": 200,
+         "timestamp": 1790761945915
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "read",
+         "kind": "rest",
+         "meta": {
+          "keys": [
+           "needsSync"
+          ],
+          "type": "rest"
+         },
+         "quote": false,
+         "reaction": false,
+         "request_id": 2,
+         "sender": "",
+         "status": 200,
+         "timestamp": 1790761952380
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "read",
+         "kind": "rest",
+         "meta": {
+          "keys": [
+           "needsSync"
+          ],
+          "type": "rest"
+         },
+         "quote": false,
+         "reaction": false,
+         "request_id": 3,
+         "sender": "",
+         "status": 200,
+         "timestamp": 1790761952619
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "read",
+         "kind": "rest",
+         "meta": {
+          "keys": [
+           "needsSync"
+          ],
+          "type": "rest"
+         },
+         "quote": false,
+         "reaction": false,
+         "request_id": 4,
+         "sender": "",
+         "status": 200,
+         "timestamp": 1790761983468
+        },
+        {
+         "attachments": false,
+         "body": "",
+         "direction": "read",
+         "kind": "rest",
+         "meta": {
+          "keys": [
+           "needsSync"
+          ],
+          "type": "rest"
+         },
+         "quote": false,
+         "reaction": false,
+         "request_id": 5,
+         "sender": "",
+         "status": 200,
+         "timestamp": 1790761983952
+        }
+       ],
+       "name": "signal"
+      },
+      "type": "SignalLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": {
+     "body_sha256": "e1f7e2442880479b4b3adb979c6ea4e775107b73ab822b7f180dfda30f5aef1a",
+     "body_size": 11,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {},
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": true,
+     "method": "",
+     "protocol": "unknown",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": ""
+    },
+    "response": null,
+    "summary": {
+     "connection_id": "net:2600:9000:a507:ab6d:575d:9d9f:64af:7a5a:443-2a01:599:11c:6467:c69c:dbdc:8aa2:ad62:34056",
+     "detected_protocol": "TLS(midstream)",
+     "dst_addr": "2600:9000:a507:ab6d:575d:9d9f:64af:7a5a",
+     "dst_port": 443,
+     "duration": 0.0009949207305908203,
+     "ended": 1790770862.747066,
+     "finding_count": 0,
+     "flow_id": "net:2600:9000:a507:ab6d:575d:9d9f:64af:7a5a:443-2a01:599:11c:6467:c69c:dbdc:8aa2:ad62:34056:1",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "",
+     "inner_e2e_protocol": "Signal",
+     "inner_summary": "1:1 · 16 msgs",
+     "method": "",
+     "outer_app_protocol": "WebSocket",
+     "process_name": "s1capture.pcapng",
+     "protocol": "TLS(midstream)",
+     "src_addr": "2a01:599:11c:6467:c69c:dbdc:8aa2:ad62",
+     "src_port": 34056,
+     "ssl_session_id": "",
+     "started": 1790770862.746071,
+     "state": "complete",
+     "status_code": 0,
+     "tag_count": 0,
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 125,
+     "transport": "signal",
+     "url": ""
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   }
+  ],
+  "header": {
+   "capture_start": 1790761872.896484,
+   "capture_target": "s1capture.pcapng",
+   "ext_data": null,
+   "ext_header_len": 0,
+   "flags": 1,
+   "flow_count": 4,
+   "format_version": 1
+  },
+  "keylog_records": {
+   "count": 6,
+   "sha256": "0949a8127e174ed5a9a87223a32b331f139b700cc2a2c1346924d7039f57cd9c"
+  },
+  "meta": {
+   "flow_fields_version": 3,
+   "parse_result_version": 1,
+   "schema_version": 1
+  },
+  "summary_count": 4
+ }
+}

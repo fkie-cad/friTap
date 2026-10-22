@@ -11,13 +11,19 @@ from typing import Optional
 from .base import BaseParser, ParseResult
 
 
-def detect_trailing_protocol(data: bytes) -> tuple[str, bytes, BaseParser | None]:
+def detect_trailing_protocol(
+    data: bytes, transport: Optional[str] = None,
+) -> tuple[str, bytes, BaseParser | None]:
     """Detect protocol in trailing bytes.
 
     Two-phase detection:
     1. **Fast path** — strip leading nulls, try ``registry.detect()`` at offset 0.
     2. **Boundary scan** — if fast path fails, scan forward through garbage bytes
        looking for a protocol signature (e.g. HTTP method token).
+
+    *transport* is the owning flow's ``Flow.transport``; it is passed to
+    ``registry.detect()`` so the transport's pins/restrictions apply here
+    too (e.g. ``quic`` only sniffs HTTP/3). None keeps pure byte-sniffing.
 
     Returns ``(protocol_name, cleaned_data, parser_instance)``
     or ``("", data, None)`` if nothing matched.
@@ -32,7 +38,7 @@ def detect_trailing_protocol(data: bytes) -> tuple[str, bytes, BaseParser | None
     stripped = data.lstrip(b"\x00") if data[:1] == b"\x00" else data
     if len(stripped) >= 4:
         try:
-            parser = registry.detect(stripped)
+            parser = registry.detect(stripped, transport=transport)
         except Exception:
             parser = None
 
@@ -44,7 +50,7 @@ def detect_trailing_protocol(data: bytes) -> tuple[str, bytes, BaseParser | None
     if result is not None:
         cleaned = data[result.skip_bytes:]
         try:
-            parser = registry.detect(cleaned)
+            parser = registry.detect(cleaned, transport=transport)
             if not isinstance(parser, HexdumpParser):
                 return result.protocol, cleaned, parser
         except Exception:

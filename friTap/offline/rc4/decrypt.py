@@ -20,9 +20,10 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Iterable, Iterator, List, Optional, Tuple
 
-from .crypto import INNER_APPLICATION_DATA, rc4, rc4_prga
+from ..tls.tls13 import inner_app_content
+from .crypto import INNER_APPLICATION_DATA, rc4, rc4_prga  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -446,14 +447,7 @@ def rc4_cts_from_inners(inners: Iterable[bytes]) -> List[bytes]:
     Each inner plaintext is content || content_type || zeros; strip the zeros,
     then the 1-byte type, and keep only application_data (0x17) bodies.
     """
-    out: List[bytes] = []
-    for inner in inners:
-        stripped = inner.rstrip(b"\x00")
-        if not stripped:
-            continue
-        if stripped[-1] == INNER_APPLICATION_DATA and len(stripped) > 1:
-            out.append(stripped[:-1])
-    return out
+    return [body for body in map(inner_app_content, inners) if body]
 
 
 def decrypt_records_with_candidates(records, suite: str, secret_hex: str,
@@ -462,9 +456,9 @@ def decrypt_records_with_candidates(records, suite: str, secret_hex: str,
                                     known_plaintext: Optional[bytes] = None):
     """Peel TLS 1.3 off one direction's ``records`` with the traffic ``secret_hex``,
     then RC4 trial-decrypt each application_data body. Returns [(ct, result), ...]."""
-    from . import crypto
+    from friTap.offline.tls.stream import decrypt_stream
 
-    inners = crypto.decrypt_stream(secret_hex, records, suite)
+    inners = decrypt_stream(secret_hex, records, suite)
     results = []
     for ct in rc4_cts_from_inners(inners):
         r = trial_decrypt(ct, candidates, prefix, accept,

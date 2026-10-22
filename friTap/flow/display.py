@@ -11,6 +11,12 @@ from __future__ import annotations
 
 from typing import Optional, Protocol, runtime_checkable
 
+from friTap.flow.layer_registry import (
+    carrier_for_inner,
+    inner_e2e_layer_names,
+    message_transport_names,
+)
+
 _LOOPBACK_ADDRS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 
@@ -67,14 +73,15 @@ def display_protocol(flow: FlowLike) -> str:
 # below lets ``display_protocol_layered`` recognise that genuine nesting so it
 # renders ``MTProto[Telegram-E2E]`` while a bare cloud flow stays ``MTProto``.
 OUTER_APP_LAYER_NAMES = ("http1", "http2", "http3", "websocket")
-INNER_E2E_LAYER_NAMES = ("signal", "mtproto", "telegram_e2e", "rc4")
+# Derived from the layer-registry descriptors that set an ``inner_e2e_rank``,
+# ordered by it: ("signal", "mtproto", "telegram_e2e", "rc4").
+INNER_E2E_LAYER_NAMES = inner_e2e_layer_names()
 
 # Carriers that can wrap a distinct inner E2E layer (outer[inner] nesting).
 # ``mtproto`` carries ``telegram_e2e``; the app layers above carry signal/mtproto.
-_CARRIER_FOR_INNER = {
-    "telegram_e2e": "mtproto",
-    "rc4": "tls",  # RC4-in-TLS: TLS plaintext carries an RC4 stream -> TLS[RC4]
-}
+# RC4-in-TLS: TLS plaintext carries an RC4 stream -> TLS[RC4]. Derived from the
+# descriptors' ``carrier`` field.
+_CARRIER_FOR_INNER = carrier_for_inner()
 
 
 def _carrier_display_names() -> dict:
@@ -196,9 +203,9 @@ def display_method(request: Optional[ParseLike]) -> str:
 
 
 # Telegram layer names (cloud MTProto, then Secret-Chat E2E) in iteration order.
-# The same names as ``layer_pipeline.MESSAGE_TRANSPORTS`` (a set, unordered, and
-# importable here only lazily); every ordered scan of Telegram layers uses this.
-TELEGRAM_LAYER_NAMES = ("mtproto", "telegram_e2e")
+# The same names as ``layer_pipeline.MESSAGE_TRANSPORTS`` (a set, unordered),
+# here in registry order; every ordered scan of Telegram layers uses this.
+TELEGRAM_LAYER_NAMES = message_transport_names()
 # Layer names whose ``messages`` carry a per-item ``method`` (TL operation name)
 # that can stand in for the HTTP-style Method column. Innermost (E2E) last so a
 # secret-chat method wins over the carrier transport when both exist.
@@ -220,7 +227,7 @@ _SERVICE_METHOD_HINTS = (
 )
 
 
-def _classify_method(method: str) -> int:
+def classify_method(method: str) -> int:
     """Rank a TL method name for Method-column priority (higher == preferred).
 
     4 chat operation · 3 meaningful RPC · 2 updates push · 1 service · 0 unknown.
@@ -235,6 +242,10 @@ def _classify_method(method: str) -> int:
     if any(h in low for h in _SERVICE_METHOD_HINTS):
         return 1
     return 3  # a named, non-service RPC (e.g. users.getUsers, getHistory)
+
+
+# Back-compat alias: the private name predates the public one.
+_classify_method = classify_method
 
 
 def method_from_messages(flow) -> str:
@@ -268,7 +279,7 @@ def method_from_messages(flow) -> str:
                 continue
             if not method:
                 continue
-            rank = _classify_method(method)
+            rank = classify_method(method)
             if rank > best_rank:
                 best_rank = rank
                 best_method = method
@@ -323,12 +334,11 @@ def is_message_transport(flow) -> bool:
     """True when *flow* rides a message-stream transport (MTProto / Secret Chat).
 
     Such flows are sequences of messages, not HTTP request/response exchanges,
-    so an HTTP status is meaningless for them. Imported lazily to avoid a
-    module import cycle (layer_pipeline -> ... -> models -> display).
+    so an HTTP status is meaningless for them. :data:`TELEGRAM_LAYER_NAMES`
+    holds the same names as ``layer_pipeline.MESSAGE_TRANSPORTS`` (both derive
+    from the layer registry), so no import of ``layer_pipeline`` is needed.
     """
-    from friTap.flow.layer_pipeline import MESSAGE_TRANSPORTS
-
-    return (getattr(flow, "transport", "") or "") in MESSAGE_TRANSPORTS
+    return (getattr(flow, "transport", "") or "") in TELEGRAM_LAYER_NAMES
 
 
 def display_status_for(flow) -> str:

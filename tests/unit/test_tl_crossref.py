@@ -197,7 +197,7 @@ def test_e2e_without_decrypted_carrier_keeps_msg_id_only():
 )
 def test_sample_every_rpc_result_resolves_to_a_record():
     from friTap.offline.mtproto.decrypt import iter_decrypted_messages
-    from friTap.offline.pcap_to_tap import _load_telegram_keys
+    from friTap.offline.mtproto.offline_decryptor import _load_telegram_keys
 
     auth_keymap, obf_keys, _secret = _load_telegram_keys(["tg.keys.log"])
     records = list(iter_decrypted_messages("e2e.pcapng", auth_keymap, obf_keys=obf_keys))

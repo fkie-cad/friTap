@@ -1,0 +1,49 @@
+{
+ "case": "ssh_synthetic",
+ "mode": "keyed",
+ "digest_only": false,
+ "result": {
+  "tap_path": "unused.tap",
+  "flow_count": 0,
+  "decrypted_packet_count": 0,
+  "stream_count": 0,
+  "dropped_packet_count": 0,
+  "dropped_stream_count": 0,
+  "findings_count": 0,
+  "encrypted_streams_skipped": 0,
+  "mtproto_messages": 0,
+  "mtproto_streams": 0,
+  "mtproto_records_undecryptable": 0,
+  "mtproto_streams_degraded": 0,
+  "per_protocol": {}
+ },
+ "tls_spans": {
+  "counts": {},
+  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+ },
+ "ssh": [
+  {
+   "src_addr": "10.0.0.1",
+   "src_port": 51000,
+   "dst_addr": "2.2.2.2",
+   "dst_port": 22,
+   "client_version": "SSH-2.0-OpenSSH_9.6",
+   "server_version": "SSH-2.0-OpenSSH_8.9",
+   "kex": "curve25519-sha256",
+   "cipher": "aes256-gcm@openssh.com",
+   "mac": "hmac-sha2-256"
+  },
+  {
+   "src_addr": "10.0.0.3",
+   "src_port": 51001,
+   "dst_addr": "2.2.2.4",
+   "dst_port": 22,
+   "client_version": "SSH-2.0-OpenSSH_8.4",
+   "server_version": "SSH-2.0-OpenSSH_8.9",
+   "kex": "curve25519-sha256",
+   "cipher": "aes256-gcm@openssh.com",
+   "mac": "hmac-sha2-256"
+  }
+ ],
+ "events": []
+}

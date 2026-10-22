@@ -31,6 +31,33 @@ _EMBEDDED_GZIP_MAX_OUT = 16 * 1024 * 1024
 # Default cap on how many magic candidates find_embedded_gzip() tries.
 _EMBEDDED_GZIP_MAX_CANDIDATES = 64
 
+# Default cap on decompress_body() output (decompression-bomb guard). Generous
+# so that real HTTP bodies are never cut, but finite: a captured body is
+# attacker-controlled and a 16 KiB zstd frame can otherwise expand to 512 MiB.
+MAX_DECOMPRESSED_BODY = 256 * 1024 * 1024
+
+# Error text decompress_body() reports when *max_out* would be exceeded.
+DECOMPRESS_LIMIT_ERROR = "decompressed size exceeds limit"
+
+# Input slice fed per call by the chunked (output-unbounded API) decoders. A
+# zstd block yields at most 128 KiB from ~4 input bytes, so one slice can
+# overshoot the cap by a few MiB at worst before the check runs.
+_STREAM_INPUT_CHUNK = 256
+
+
+def _brotli_supports_output_limit() -> bool:
+    """True when ``brotli.Decompressor.process`` takes ``output_buffer_limit``."""
+    if not _brotli:
+        return False
+    try:
+        brotli.Decompressor().process(b"", output_buffer_limit=1)
+    except TypeError:
+        return False
+    return True
+
+
+_BROTLI_OUTPUT_LIMIT = _brotli_supports_output_limit()
+
 
 def _normalize_encoding(encoding: str) -> str:
     """Lower-cased, stripped encoding name with aliases resolved."""
@@ -38,43 +65,127 @@ def _normalize_encoding(encoding: str) -> str:
     return _ENCODING_ALIASES.get(enc, enc)
 
 
-def decompress_body(body: bytes, encoding: str) -> tuple[bytes, str]:
+def decompress_body(
+    body: bytes, encoding: str, max_out: int = MAX_DECOMPRESSED_BODY,
+) -> tuple[bytes, str]:
     """Decompress HTTP body based on Content-Encoding.
 
-    Returns (decompressed_body, error_message). Error is empty on success.
+    Output is bounded by *max_out* bytes for every encoding (streaming
+    decoders, never a one-shot inflate of an untrusted body); a larger result
+    is rejected, not truncated, with an error starting with
+    :data:`DECOMPRESS_LIMIT_ERROR`.
+
+    Returns (decompressed_body, error_message). Error is empty on success;
+    on error the unchanged *body* is returned.
     """
     if not body or not encoding:
         return body, ""
     enc = _normalize_encoding(encoding)
     try:
         if enc == "gzip":
-            return zlib.decompress(body, zlib.MAX_WBITS | 16), ""
+            return _inflate_to_end(body, zlib.MAX_WBITS | 16, max_out), ""
         elif enc in ("deflate", "permessage-deflate"):
-            try:
-                return zlib.decompress(body, -zlib.MAX_WBITS), ""
-            except zlib.error:
-                pass
-            # Try with RFC 7692 permessage-deflate sync flush trailer.
-            # Must use streaming decompressobj — the trailer is a flush
-            # point, not a stream end, so one-shot decompress() rejects it.
-            try:
-                dec = zlib.decompressobj(-zlib.MAX_WBITS)
-                return dec.decompress(body + b"\x00\x00\xff\xff"), ""
-            except zlib.error:
-                pass
-            # Try with zlib wrapper (some servers send wrapped deflate)
-            return zlib.decompress(body), ""
+            return _inflate_deflate(body, max_out), ""
         elif enc == "br":
             if _brotli:
-                return brotli.decompress(body), ""
+                return _brotli_bounded(body, max_out), ""
             return body, "brotli not installed"
         elif enc == "zstd":
             if _zstd:
-                return zstandard.ZstdDecompressor().decompress(body), ""
+                return _zstd_bounded(body, max_out), ""
             return body, "zstandard not installed"
+    except InflateLimitError:
+        return body, f"{DECOMPRESS_LIMIT_ERROR} ({max_out} bytes)"
     except Exception as e:
         return body, f"decompress failed: {e}"
     return body, ""
+
+
+class InflateLimitError(ValueError):
+    """A compressed body would inflate beyond the allowed size."""
+
+
+def _check_output_limit(produced: int, max_out: int) -> None:
+    """Raise :class:`InflateLimitError` once *produced* exceeds *max_out*."""
+    if produced > max_out:
+        raise InflateLimitError(f"inflate exceeds {max_out} B limit")
+
+
+def _inflate_to_end(body: bytes, wbits: int, max_out: int) -> bytes:
+    """Bounded one-stream zlib inflate; like ``zlib.decompress`` it rejects a
+    stream that does not finish (trailing bytes after the end are ignored).
+    """
+    inflater = zlib.decompressobj(wbits)
+    out = inflater.decompress(body, max_out + 1)
+    _check_output_limit(len(out), max_out)
+    if not inflater.eof:
+        raise zlib.error("Error -5 while decompressing data: incomplete or truncated stream")
+    return out
+
+
+def _inflate_deflate(body: bytes, max_out: int) -> bytes:
+    """Bounded ``deflate``: raw, then sync-flushed raw, then zlib-wrapped."""
+    try:
+        return _inflate_to_end(body, -zlib.MAX_WBITS, max_out)
+    except zlib.error:
+        pass
+    # Try with RFC 7692 permessage-deflate sync flush trailer.
+    # The trailer is a flush point, not a stream end, so the stream is not
+    # required to finish here.
+    try:
+        dec = zlib.decompressobj(-zlib.MAX_WBITS)
+        out = dec.decompress(body + b"\x00\x00\xff\xff", max_out + 1)
+        _check_output_limit(len(out), max_out)
+        return out
+    except zlib.error:
+        pass
+    # Try with zlib wrapper (some servers send wrapped deflate)
+    return _inflate_to_end(body, zlib.MAX_WBITS, max_out)
+
+
+def _feed_in_chunks(process, body: bytes, max_out: int, finished) -> bytes:
+    """Feed *body* to ``process(chunk) -> bytes`` slice by slice, bounded.
+
+    For decoders whose API cannot cap output per call: the cap is checked
+    after every :data:`_STREAM_INPUT_CHUNK`-byte slice. Stops early once
+    ``finished()`` reports the stream end.
+    """
+    parts: list[bytes] = []
+    produced = 0
+    for start in range(0, len(body), _STREAM_INPUT_CHUNK):
+        part = process(body[start:start + _STREAM_INPUT_CHUNK])
+        produced += len(part)
+        _check_output_limit(produced, max_out)
+        parts.append(part)
+        if finished():
+            break
+    return b"".join(parts)
+
+
+def _brotli_bounded(body: bytes, max_out: int) -> bytes:
+    """Bounded brotli decode; a stream that does not finish is an error."""
+    decoder = brotli.Decompressor()
+    if _BROTLI_OUTPUT_LIMIT:
+        out = decoder.process(body, output_buffer_limit=max_out + 1)
+        _check_output_limit(len(out), max_out)
+    else:
+        out = _feed_in_chunks(decoder.process, body, max_out, decoder.is_finished)
+    if not decoder.is_finished():
+        raise brotli.error("brotli: decoder failed (truncated stream)")
+    return out
+
+
+def _zstd_bounded(body: bytes, max_out: int) -> bytes:
+    """Bounded decode of the first zstd frame (trailing bytes ignored).
+
+    Unlike ``ZstdDecompressor().decompress`` this also accepts frames that
+    do not declare their content size; an unfinished frame is an error.
+    """
+    decoder = zstandard.ZstdDecompressor().decompressobj()
+    out = _feed_in_chunks(decoder.decompress, body, max_out, lambda: decoder.eof)
+    if not decoder.eof:
+        raise zstandard.ZstdError("decompression error: did not decompress full frame")
+    return out
 
 
 def _inflate_gzip_member(data: bytes, max_out: int) -> tuple[bytes, int] | None:
@@ -140,14 +251,15 @@ def _embedded_gzip_fallback(body: bytes) -> tuple[bytes, list[str], str | None]:
 
 
 def decompress_lenient(
-    body: bytes, encoding: str,
+    body: bytes, encoding: str, max_out: int = MAX_DECOMPRESSED_BODY,
 ) -> tuple[bytes, list[str], str | None]:
     """User-requested decompression that tolerates a framing prefix.
 
     Returns ``(data, notes, error)``. Strict :func:`decompress_body` runs
     first; for gzip a failure falls back to :func:`find_embedded_gzip` and
     adds a note such as ``"gzip member at offset 0x1C (N→M bytes)"``. An
-    unknown encoding yields an explicit error instead of a silent no-op.
+    unknown encoding yields an explicit error instead of a silent no-op, and
+    output over *max_out* is rejected like in :func:`decompress_body`.
     On error *data* is the unchanged *body*. HTTP ``Content-Encoding``
     handling should keep using the strict :func:`decompress_body`.
     """
@@ -156,9 +268,29 @@ def decompress_lenient(
     enc = _normalize_encoding(encoding)
     if enc not in _KNOWN_ENCODINGS:
         return body, [], f"unknown encoding: {encoding!r}"
-    data, err = decompress_body(body, enc)
+    data, err = decompress_body(body, enc, max_out)
     if not err:
         return data, [], None
-    if enc == "gzip":
+    if enc == "gzip" and not err.startswith(DECOMPRESS_LIMIT_ERROR):
         return _embedded_gzip_fallback(body)
     return body, [], err
+
+
+# Default cap on the inflated size for inflate_bounded() (decompression-bomb guard).
+MAX_INFLATE = 16 * 1024 * 1024
+
+
+def inflate_bounded(packed: bytes, limit: int = MAX_INFLATE) -> bytes:
+    """Inflate a gzip- or zlib-framed body to at most *limit* bytes.
+
+    ``MAX_WBITS | 32`` auto-detects the header (e.g. Telegram's ``gzip_packed``
+    carries real gzip members, which a plain zlib ``decompressobj()`` rejects).
+    Raises ``zlib.error`` on a corrupt stream and :class:`InflateLimitError`
+    when the output would exceed *limit* (input left unconsumed) instead of
+    inflating it unbounded.
+    """
+    inflater = zlib.decompressobj(zlib.MAX_WBITS | 32)
+    inflated = inflater.decompress(packed, limit)
+    if inflater.unconsumed_tail:
+        raise InflateLimitError(f"inflate exceeds {limit} B limit")
+    return inflated

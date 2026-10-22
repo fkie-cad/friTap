@@ -10,9 +10,13 @@ the appropriate server manager instance.
 from __future__ import annotations
 
 import sys
-from typing import Any
+from typing import Any, Dict, Optional
 
 from .base import BaseFridaServerManager
+
+# One AndroidServerManager per serial: its FridaManager owns the adb Popen
+# holding frida-server's stdio pipes, and dropping it may kill the server.
+_ANDROID_MANAGERS: Dict[Optional[str], BaseFridaServerManager] = {}
 
 
 def get_server_manager(device: Any = None) -> BaseFridaServerManager:
@@ -64,9 +68,7 @@ def _local_manager() -> BaseFridaServerManager:
 def _manager_for_os(os_id: str, device: Any) -> BaseFridaServerManager:
     """Return a manager matching the detected OS identifier."""
     if os_id == "android":
-        from .android import AndroidServerManager
-        device_serial = getattr(device, "id", None)
-        return AndroidServerManager(device_serial=device_serial)
+        return _android_manager(getattr(device, "id", None))
     elif os_id == "ios":
         from .ios import IOSServerManager
         return IOSServerManager()
@@ -81,3 +83,13 @@ def _manager_for_os(os_id: str, device: Any) -> BaseFridaServerManager:
         return WindowsServerManager()
     else:
         raise ValueError(f"Unsupported platform: {os_id}")
+
+
+def _android_manager(device_serial: Optional[str]) -> BaseFridaServerManager:
+    """Return the cached AndroidServerManager for *device_serial*."""
+    manager = _ANDROID_MANAGERS.get(device_serial)
+    if manager is None:
+        from .android import AndroidServerManager
+        manager = AndroidServerManager(device_serial=device_serial)
+        _ANDROID_MANAGERS[device_serial] = manager
+    return manager

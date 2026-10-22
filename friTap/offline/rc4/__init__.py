@@ -22,6 +22,10 @@ the entry self-registers and the emitter log-and-skips on a missing dependency.
 
 from __future__ import annotations
 
+# True if the optional AEAD backend (for the pure-Python TLS peel) is importable.
+# Never raises; standalone RC4 does not depend on it.
+from ..tls.backend import backend_available as rc4_backend_available  # noqa: F401
+
 
 class Rc4Error(Exception):
     """Base class for offline RC4 decryption errors."""
@@ -58,32 +62,35 @@ def _register_rc4_offline_decryptor() -> None:
     dependency or an import cycle during registration is logged at debug and
     skipped. Re-registration of an identical entry is idempotent.
     """
+    from friTap.offline.registry import register_offline_decryptors_safely
+
+    register_offline_decryptors_safely(
+        __name__, ("build_rc4_offline_decryptor_entry",),
+        "RC4 offline decryptor self-registration skipped",
+    )
+
+
+
+def _register_rc4_pipeline_state() -> None:
+    """Register the RC4 per-conversion state namespace on the writer state.
+
+    Guarded like the decryptor self-registration below: importing this package
+    can never raise; a failure is logged at debug and skipped.
+    """
     try:
-        from friTap.offline.registry import register_offline_decryptor
+        from .state import register_rc4_pipeline_state
 
-        from .offline_decryptor import build_rc4_offline_decryptor_entry
-
-        register_offline_decryptor(build_rc4_offline_decryptor_entry())
-    except Exception:  # noqa: BLE001 - registration must never break import
+        register_rc4_pipeline_state()
+    except Exception:  # noqa: BLE001 - registration must never break the import
         import logging
 
         logging.getLogger(__name__).debug(
-            "RC4 offline decryptor self-registration skipped", exc_info=True
-        )
+            "RC4 pipeline-state registration skipped", exc_info=True)
 
+
+_register_rc4_pipeline_state()
 
 _register_rc4_offline_decryptor()
-
-
-def rc4_backend_available() -> bool:
-    """Return True if the optional AEAD backend (for the pure-Python TLS peel) is
-    importable. Never raises; standalone RC4 does not depend on it."""
-    try:
-        from .crypto import backend_available
-
-        return backend_available()
-    except Exception:  # noqa: BLE001 - any import/probe failure means "unavailable"
-        return False
 
 
 # --------------------------------------------------------------------------- #

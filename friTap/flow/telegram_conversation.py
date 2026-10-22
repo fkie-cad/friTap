@@ -15,10 +15,10 @@ from __future__ import annotations
 
 from typing import Iterable, List, Optional
 
-from friTap.flow.display import TELEGRAM_LAYER_NAMES, _classify_method
+from friTap.flow.display import TELEGRAM_LAYER_NAMES, classify_method
 from friTap.offline.mtproto.tl.users import merge_user_directory, self_user, user_label
 
-#: Method rank that marks a chat operation (see ``display._classify_method``).
+#: Method rank that marks a chat operation (see ``display.classify_method``).
 CHAT_METHOD_RANK = 4
 #: Message-dict kind that carries chat text.
 CHAT_TEXT_KIND = "text"
@@ -92,7 +92,7 @@ def method_is_chat_ranked(summary_or_flow) -> bool:
     """True when the stored Method scalar ranks as a chat operation."""
     method = (getattr(summary_or_flow, "flow_method", "") or
               getattr(summary_or_flow, "method", "") or "")
-    return _classify_method(str(method)) >= CHAT_METHOD_RANK
+    return classify_method(str(method)) >= CHAT_METHOD_RANK
 
 
 def flow_has_chat_text(summary_or_flow) -> bool:

@@ -130,3 +130,60 @@ def test_unload_script_is_not_decorated():
     script = MagicMock()
     script.unload.side_effect = frida.TransportError("connection closed")
     assert backend.unload_script(script) is None
+
+
+# --- server_access: frida 17's ADB-only fallback answers with access='jailed' ---
+
+def _attach_failure_context(query_result=None, query_error=None):
+    backend = FridaBackend()
+    device = MagicMock()
+    device.attach.side_effect = frida.TransportError("closed")
+    if query_error is not None:
+        device.query_system_parameters.side_effect = query_error
+    else:
+        device.query_system_parameters.return_value = query_result
+    with pytest.raises(BackendTransportError) as exc_info:
+        backend.attach(device, "com.example.app")
+    return exc_info.value
+
+
+def test_jailed_access_is_not_a_reachable_server():
+    # No frida-server on a USB Android device: frida 17 still answers via ADB
+    # and reports 'jailed' — that must NOT read as server_reachable=True.
+    ctx = _attach_failure_context({"access": "jailed", "os": {"id": "android"}}).context
+    assert ctx.server_access == "jailed"
+    assert ctx.server_reachable is False
+
+
+def test_full_access_is_a_reachable_server():
+    ctx = _attach_failure_context({"access": "full"}).context
+    assert ctx.server_access == "full"
+    assert ctx.server_reachable is True
+
+
+def test_missing_access_key_keeps_answered_means_reachable():
+    ctx = _attach_failure_context({"os": {"id": "linux"}}).context
+    assert ctx.server_access is None
+    assert ctx.server_reachable is True
+
+
+def test_query_exception_means_unreachable():
+    ctx = _attach_failure_context(query_error=RuntimeError("boom")).context
+    assert ctx.server_access is None
+    assert ctx.server_reachable is False
+
+
+def test_default_server_access_is_none():
+    from friTap.backends.base import BackendErrorContext
+    assert BackendErrorContext().server_access is None
+
+
+def test_diagnostic_summary_renders_server_access():
+    summary = _attach_failure_context({"access": "jailed"}).diagnostic_summary()
+    assert "server_reachable=False" in summary
+    assert "server_access=jailed" in summary
+
+
+def test_diagnostic_summary_omits_unknown_server_access():
+    summary = _attach_failure_context({}).diagnostic_summary()
+    assert "server_access=" not in summary

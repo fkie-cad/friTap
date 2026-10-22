@@ -1,0 +1,288 @@
+{
+ "tap": {
+  "flow_count": 2,
+  "flows": [
+   {
+    "chunks": {
+     "count": 3,
+     "sha256": [
+      "6f7ea20a7e16c7e5910be528e8f494b41fbd3a286e558fb77bef36ae1423d8a9",
+      "3493bd52962511a819746b42cdfec16ad34fa0a50eb5a2f13099037d581d563f",
+      "5ead4e239ad1c14a08c37b49017fb7814169f20f86a6ebb210c5e7a51cf5f658"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:127.0.0.1:61066-127.0.0.1:8443",
+     "detected_protocol": "WebSocket",
+     "dst_addr": "127.0.0.1",
+     "dst_port": 8443,
+     "duration": 0.06849503517150879,
+     "ended": 1790506280.733814,
+     "findings": [],
+     "flow_id": "net:127.0.0.1:61066-127.0.0.1:8443:0",
+     "layers": [
+      "websocket"
+     ],
+     "notes": "",
+     "package_name": "out_lsass_ms3.pcap",
+     "process_name": "out_lsass_ms3.pcap",
+     "protocol": "WebSocket",
+     "request": null,
+     "response": null,
+     "src_addr": "127.0.0.1",
+     "src_port": 61066,
+     "ssl_session_id": "",
+     "started": 1790506280.665319,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 94,
+     "transport": "tls"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "depth": 0,
+       "name": "websocket"
+      },
+      "type": "AppLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": null,
+    "response": null,
+    "summary": {
+     "connection_id": "net:127.0.0.1:61066-127.0.0.1:8443",
+     "detected_protocol": "WebSocket",
+     "dst_addr": "127.0.0.1",
+     "dst_port": 8443,
+     "duration": 0.06849503517150879,
+     "ended": 1790506280.733814,
+     "finding_count": 0,
+     "flow_id": "net:127.0.0.1:61066-127.0.0.1:8443:0",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "",
+     "inner_e2e_protocol": "",
+     "inner_summary": "",
+     "method": "",
+     "outer_app_protocol": "WebSocket",
+     "process_name": "out_lsass_ms3.pcap",
+     "protocol": "WebSocket",
+     "src_addr": "127.0.0.1",
+     "src_port": 61066,
+     "ssl_session_id": "",
+     "started": 1790506280.665319,
+     "state": "complete",
+     "status_code": 0,
+     "tag_count": 0,
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 94,
+     "transport": "tls",
+     "url": ""
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   },
+   {
+    "chunks": {
+     "count": 2,
+     "sha256": [
+      "b8bb65843d796345fee290c9848f3763c34c61140af43fc61a3018fa1ff221c0",
+      "3c694db879c457ff659a4a7ba7e690b933d6cb7bb684d876e66caaddc80bbae7"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:127.0.0.1:61066-127.0.0.1:8443",
+     "detected_protocol": "",
+     "dst_addr": "127.0.0.1",
+     "dst_port": 8443,
+     "duration": 0.0016007423400878906,
+     "ended": 1790507882.128149,
+     "findings": [],
+     "flow_id": "net:127.0.0.1:61066-127.0.0.1:8443:1",
+     "layers": [
+      "rc4"
+     ],
+     "notes": "",
+     "package_name": "out_lsass_ms3.pcap",
+     "process_name": "out_lsass_ms3.pcap",
+     "protocol": "unknown",
+     "request": {
+      "body_size": 24,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {},
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": true,
+      "method": "",
+      "protocol": "unknown",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": ""
+     },
+     "response": {
+      "body_size": 62,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {},
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": false,
+      "method": "",
+      "protocol": "unknown",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": ""
+     },
+     "src_addr": "127.0.0.1",
+     "src_port": 61066,
+     "ssl_session_id": "",
+     "started": 1790507882.1265483,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 86,
+     "transport": "rc4"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "assoc": "",
+       "depth": 0,
+       "direction": "",
+       "framing": "",
+       "key_len": 0,
+       "message_count": 0,
+       "name": "rc4",
+       "records": [],
+       "source": ""
+      },
+      "type": "Rc4Layer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": {
+     "body_sha256": "09bc11bb96b1fb0579aeafcd66af35354dfe2256df8ab47152df32abfc6ac76c",
+     "body_size": 24,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {},
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": true,
+     "method": "",
+     "protocol": "unknown",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": ""
+    },
+    "response": {
+     "body_sha256": "df145c1c1b4b9cc008d862ab6184c176ca3889e3bb10f9afe58e4a207be49853",
+     "body_size": 62,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {},
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": false,
+     "method": "",
+     "protocol": "unknown",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": ""
+    },
+    "summary": {
+     "connection_id": "net:127.0.0.1:61066-127.0.0.1:8443",
+     "detected_protocol": "",
+     "dst_addr": "127.0.0.1",
+     "dst_port": 8443,
+     "duration": 0.0016007423400878906,
+     "ended": 1790507882.128149,
+     "finding_count": 0,
+     "flow_id": "net:127.0.0.1:61066-127.0.0.1:8443:1",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "",
+     "inner_e2e_protocol": "RC4",
+     "inner_summary": "",
+     "method": "",
+     "outer_app_protocol": "",
+     "process_name": "out_lsass_ms3.pcap",
+     "protocol": "unknown",
+     "src_addr": "127.0.0.1",
+     "src_port": 61066,
+     "ssl_session_id": "",
+     "started": 1790507882.1265483,
+     "state": "complete",
+     "status_code": 0,
+     "tag_count": 0,
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 86,
+     "transport": "rc4",
+     "url": ""
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   }
+  ],
+  "header": {
+   "capture_start": 1790506266.414784,
+   "capture_target": "out_lsass_ms3.pcap",
+   "ext_data": null,
+   "ext_header_len": 0,
+   "flags": 1,
+   "flow_count": 2,
+   "format_version": 1
+  },
+  "keylog_records": {
+   "count": 5,
+   "sha256": "626f533e467eab7f16346a6479468ce28601c354748fd646df37b344751ec459"
+  },
+  "meta": {
+   "flow_fields_version": 3,
+   "parse_result_version": 1,
+   "schema_version": 1
+  },
+  "summary_count": 2
+ }
+}

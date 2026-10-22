@@ -16,7 +16,16 @@ try:
 except ImportError:
     TEXTUAL_AVAILABLE = False
 
+from friTap.server_manager.probe import ServerState, probe_frida_server
 from friTap.tui.themes import c
+
+# Theme color per frida-server status (ServerState values).
+SERVER_STATUS_COLORS = {
+    ServerState.RUNNING.value: "success",
+    ServerState.GADGET.value: "warning",
+    ServerState.NOT_RUNNING.value: "error",
+    ServerState.UNREACHABLE.value: "error",
+}
 
 if TEXTUAL_AVAILABLE:
 
@@ -40,10 +49,11 @@ if TEXTUAL_AVAILABLE:
             parts.append(f"Device: {self.device_type} {self.device_name}")
 
             # frida-server status (only show when set — USB/remote devices)
-            if self.server_status == "running":
-                parts.append(f"frida-server: [bold {c('success')}]running[/]")
-            elif self.server_status == "not running":
-                parts.append(f"frida-server: [bold {c('error')}]not running[/]")
+            server_color = SERVER_STATUS_COLORS.get(self.server_status)
+            if server_color:
+                parts.append(
+                    f"frida-server: [bold {c(server_color)}]{self.server_status}[/]"
+                )
 
             # Target
             if self.target_app:
@@ -86,15 +96,12 @@ if TEXTUAL_AVAILABLE:
                 self.capture_mode = mode
 
         def check_server_status(self, device=None, backend=None) -> None:
-            """Check if frida-server is reachable on the device."""
+            """Probe frida-server on *device* and show the resulting state.
+
+            Uses the attach-capability probe instead of enumeration: on
+            frida 17 a server-less USB device still enumerates via ADB.
+            *backend* is kept for signature compatibility and is unused.
+            """
             if device is None:
                 return
-            if backend is not None:
-                reachable = backend.check_connectivity(device)
-            else:
-                try:
-                    device.enumerate_processes()
-                    reachable = True
-                except Exception:
-                    reachable = False
-            self.server_status = "running" if reachable else "not running"
+            self.server_status = probe_frida_server(device).value

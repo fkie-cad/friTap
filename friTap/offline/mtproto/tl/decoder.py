@@ -25,6 +25,12 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, List, Optional
 
+from friTap.parsers.decompress import (  # noqa: F401  (re-export, intentional)
+    MAX_INFLATE,
+    InflateLimitError,
+    inflate_bounded,
+)
+
 from .nodes import TlField, TlNode, TlRaw, TlVector
 from .registry import load_schema
 from .schema import TlCombinator, TlSchema, TlType, parse_type
@@ -41,7 +47,8 @@ MESSAGE_BARE_ID = 0x5BB8E511
 #: Default cap on the INFLATED size of a ``gzip_packed`` body. The packed bytes
 #: are peer-supplied, so an unbounded inflate is a decompression bomb; 16 MiB is
 #: far above any real Telegram TL payload while keeping a hostile record cheap.
-MAX_INFLATE = 16 * 1024 * 1024
+#: ``MAX_INFLATE`` (16 MiB) is defined with the generic bounded inflater in
+#: :mod:`friTap.parsers.decompress` and re-exported above.
 
 _FIXED_PRIMS = {"int": ("<i", 4), "long": ("<q", 8), "double": ("<d", 8), "#": ("<I", 4)}
 _WIDE_PRIMS = {"int128": 16, "int256": 32}
@@ -56,25 +63,6 @@ class TlLimits:
     max_nodes: int = 20000
     keep_vector_items: int = 20
     max_inflate: int = MAX_INFLATE
-
-
-class InflateLimitError(ValueError):
-    """A ``gzip_packed`` body would inflate beyond the allowed size."""
-
-
-def inflate_bounded(packed: bytes, limit: int = MAX_INFLATE) -> bytes:
-    """Inflate a gzip- or zlib-framed ``gzip_packed`` body to at most *limit* bytes.
-
-    ``MAX_WBITS | 32`` auto-detects the header (Telegram sends real gzip members,
-    which a plain zlib ``decompressobj()`` rejects). Raises ``zlib.error`` on a
-    corrupt stream and :class:`InflateLimitError` when the output would exceed
-    *limit* (input left unconsumed) instead of inflating it unbounded.
-    """
-    inflater = zlib.decompressobj(zlib.MAX_WBITS | 32)
-    inflated = inflater.decompress(packed, limit)
-    if inflater.unconsumed_tail:
-        raise InflateLimitError(f"inflate exceeds {limit} B limit")
-    return inflated
 
 
 class _Abort(Exception):

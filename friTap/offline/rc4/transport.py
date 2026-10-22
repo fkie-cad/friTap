@@ -10,8 +10,8 @@ per direction (client->server = ``"write"``, server->client = ``"read"``).
     which is itself the RC4 ciphertext. No new tshark invocation is invented.
 
   * **Standalone (RC4-over-raw-TCP)** — :func:`standalone_rc4_streams` reuses the
-    MTProto path's sequence-indexed TCP reassembler
-    (:func:`friTap.offline.mtproto.reassembly.reassemble_pcap`), which anchors on
+    shared sequence-indexed TCP reassembler
+    (:func:`friTap.offline.net.tcp_reassembly.reassemble_pcap`), which anchors on
     the first sequence number and exposes only a strictly in-order byte run —
     exactly what a position-dependent stream cipher needs.
 """
@@ -21,6 +21,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from typing import Dict, Iterator, Optional, Tuple
+
+from ..net.endpoints import join_by_direction, ss_family
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +74,7 @@ def rc4_streams_from_spans(tls_spans: Dict[str, Dict[str, list]]
         yield Rc4Stream(
             client_addr=client_addr,
             server_addr=server_addr,
-            ss_family="AF_INET6" if ":" in client_addr[0] else "AF_INET",
+            ss_family=ss_family(client_addr[0]),
             directions={d: b"".join(sp.data for sp in s) for d, s in kept.items()},
             spans=kept,
         )
@@ -100,14 +102,11 @@ def nested_rc4_streams(
         if not segments:
             continue
         client_addr, client_port, server_addr, server_port = endpoints
-        ss_family = "AF_INET6" if ":" in client_addr else "AF_INET"
-        by_direction: Dict[str, bytearray] = {"write": bytearray(), "read": bytearray()}
-        for direction, data in segments:
-            by_direction.setdefault(direction, bytearray()).extend(data)
+        by_direction = join_by_direction(segments)
         yield Rc4Stream(
             client_addr=(client_addr, client_port),
             server_addr=(server_addr, server_port),
-            ss_family=ss_family,
+            ss_family=ss_family(client_addr),
             directions={d: bytes(b) for d, b in by_direction.items() if b},
         )
 
@@ -119,7 +118,7 @@ def standalone_rc4_streams(
 ) -> Iterator[Rc4Stream]:
     """Yield one :class:`Rc4Stream` per raw-TCP conversation, its bytes being the
     reassembled per-direction TCP payload (the RC4 ciphertext over plain TCP)."""
-    from ..mtproto.reassembly import reassemble_pcap
+    from ..net.tcp_reassembly import reassemble_pcap
 
     pairs = reassemble_pcap(pcap_path, server_ports=server_ports)
     for pair in pairs.values():

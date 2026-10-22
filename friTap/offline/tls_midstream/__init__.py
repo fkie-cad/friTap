@@ -9,12 +9,13 @@ zero-false-accept oracle.
 
 from __future__ import annotations
 
-from .crypto import (
+from friTap.offline.tls.stream import (
     DEFAULT_MAX_SEQ,
     decrypt_stream_from,
     pick_suite,
     recover_seq,
 )
+
 from .transport import MidstreamTlsStream, midstream_tls_streams
 
 __all__ = [

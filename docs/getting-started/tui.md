@@ -269,8 +269,8 @@ debounce) and strictly when you press `Enter`.
 | `flow.duration` | float | Flow duration (seconds) |
 | `flow.size` | int | Total bytes in the flow |
 | `flow.has_request` / `flow.has_response` | bool | Presence predicates |
-| `tls` | bool | TLS flow (TLS transport or session ID present) |
-| `tls.session_id` | str | TLS session id |
+| `tls` | bool | TLS flow (TLS transport or a TLS layer). A session id alone no longer counts, so Telegram Secret-Chat (`telegram_e2e`) flows do not match |
+| `tls.session_id` | str | TLS session id (empty for non-TLS flows) |
 | `ohttp.present` | bool | Oblivious HTTP inner request/response present |
 | `ssh` | bool | Flow is SSH |
 | `ipsec` | bool | Flow is IPsec |
@@ -291,7 +291,8 @@ their members: `telegram`/`tg` → `mtproto`, `telegram_e2e`; `e2e`/`secretchat`
 
 Fields parsed from the decoded protocol layers are available per protocol, for
 example `mtproto.dc_id`, `mtproto.method`, `telegram.msg`, `telegram_e2e.chat_id`,
-`signal.msg`, `signal.sender`, `tls.sni`, `quic.version`, `ssh.kex` and
+`signal.msg`, `signal.sender`, `tls.sni`, `tls.library`, `quic.version`,
+`quic.library` (the hooked TLS/QUIC library of a live QUIC flow), `ssh.kex` and
 `ipsec.enc`. The filter help (`F1` in the filter dialog) lists all of them,
 generated from the same tables the engine uses.
 

@@ -251,18 +251,6 @@ def test_mtproto_n_events_give_n_completed_flows():
     assert all(len(f.chunks) == 1 for f in completed)
 
 
-def test_mtproto_grouped_method_is_best_ranked():
-    from friTap.flow.collector import _merge_tl_records
-    from friTap.parsers.base import ParseResult
-
-    service = ParseResult(protocol="MTProto", method="msgs_ack", raw=b"a", body=b"a")
-    rpc = ParseResult(protocol="MTProto", method="messages.getHistory", raw=b"b", body=b"b")
-    merged = _merge_tl_records(service, rpc)
-    assert merged.method == "messages.getHistory"
-    assert (merged.raw, merged.body) == (b"ab", b"ab")
-    assert _merge_tl_records(rpc, service).method == "messages.getHistory"
-
-
 def test_display_connection_literal_direction_flag():
     from friTap.flow.display import display_connection
     from friTap.parsers.base import ParseResult

@@ -29,8 +29,10 @@ import logging
 import os
 
 from friTap.events import DatalogEvent, EventBus
-from friTap.offline.pcap_to_tap import ConvertResult, _WriterState
+from friTap.offline.pipeline_api import ConvertResult, WriterState, protocol_state_of
 from friTap.offline.registry import OfflineDecryptorEntry
+
+from .state import RC4_STATE
 
 logger = logging.getLogger(__name__)
 
@@ -79,26 +81,15 @@ def _span_streams_kwargs(state, nested: bool) -> dict:
     return {"streams": rc4_streams_from_spans(spans)}
 
 
-def _rc4_session_id(msg) -> str:
-    """Per-connection session token (``rc4:<canonical 4-tuple>``).
-
-    Like the Telegram E2E token, it keys RC4 events onto their OWN flow (the
-    collector's ``sid:`` tier) instead of the ``net:`` 4-tuple flow the outer TLS
-    plaintext of the same connection lands in.
-    """
-    from friTap.connection_index import canonical_4tuple
-
-    return "rc4:" + canonical_4tuple(msg.src_addr, msg.src_port,
-                                     msg.dst_addr, msg.dst_port)
-
-
 def _rc4_datalog_event(msg) -> DatalogEvent:
     """The ``protocol="rc4"`` DatalogEvent for one decrypted message.
 
     Carries the pcap capture time when the message has one (else the event's
-    default clock, as before) and the per-connection RC4 session token.
+    default clock, as before). No session token: ``protocol="rc4"`` alone keys
+    it onto its OWN ``net:rc4:<4-tuple>`` flow, apart from the ``net:`` flow the
+    outer TLS plaintext of the same connection lands in.
     """
-    from friTap.offline.pcap_to_tap import _event_ts_kwargs
+    from friTap.offline.pipeline_api import event_ts_kwargs
 
     return DatalogEvent(
         data=msg.message,
@@ -109,10 +100,9 @@ def _rc4_datalog_event(msg) -> DatalogEvent:
         dst_addr=msg.dst_addr,
         dst_port=msg.dst_port,
         ss_family=msg.ss_family,
-        ssl_session_id=_rc4_session_id(msg),
         transport="tcp",
         protocol="rc4",
-        **_event_ts_kwargs(getattr(msg, "timestamp", 0.0) or 0.0),
+        **event_ts_kwargs(getattr(msg, "timestamp", 0.0) or 0.0),
     )
 
 
@@ -124,7 +114,7 @@ def _rc4_framing(msg) -> str:
 def _rc4_record(msg, data: bytes) -> dict:
     """Provenance record of one decrypted message (see ``Rc4Layer.records``),
     plus the key identity/framing and the private ``_chunk_key`` scope tag."""
-    from friTap.offline.pcap_to_tap import _chunk_key
+    from friTap.offline.pipeline_api import chunk_key
 
     return {
         "direction": msg.direction,
@@ -136,7 +126,7 @@ def _rc4_record(msg, data: bytes) -> dict:
         "source": msg.source,
         "key_len": len(msg.key or b""),
         "framing": _rc4_framing(msg),
-        "_chunk_key": _chunk_key(msg.direction, data),
+        "_chunk_key": chunk_key(msg.direction, data),
     }
 
 
@@ -145,7 +135,7 @@ def _record_rc4_provenance(state, key: str, msg, data: bytes) -> None:
 
     No-op for writer-state stand-ins without an ``rc4_provenance`` store.
     """
-    store = getattr(state, "rc4_provenance", None)
+    store = getattr(protocol_state_of(state, RC4_STATE), "rc4_provenance", None)
     if store is None:
         return
     store.setdefault(key, []).append(_rc4_record(msg, data))
@@ -159,7 +149,7 @@ def _emit_rc4_streams(
     tshark_bin: str,
     tls_ports: tuple[int, ...],
     bus: EventBus,
-    state: "_WriterState",
+    state: "WriterState",
     result: ConvertResult,
 ) -> None:
     """Decrypt RC4 (standalone or nested-in-TLS) and emit DatalogEvents.
@@ -172,7 +162,7 @@ def _emit_rc4_streams(
     ciphertext itself (see :func:`iter_decrypted_messages`).
     """
     from friTap.connection_index import canonical_4tuple
-    from friTap.offline.pcap_to_tap import _open_at_capture_time
+    from friTap.offline.pipeline_api import open_at_capture_time
     from friTap.offline.rc4.decrypt import Rc4Stats, iter_decrypted_messages
     from friTap.offline.rc4.keylog import load_rc4_keylog
 
@@ -215,7 +205,7 @@ def _emit_rc4_streams(
         # collector put the chunk in); the decrypted BYTES already ride the chunks.
         _record_rc4_provenance(state, canonical_4tuple(
             msg.src_addr, msg.src_port, msg.dst_addr, msg.dst_port), msg, ev.data)
-        _open_at_capture_time(state, msg.timestamp or 0.0)
+        open_at_capture_time(state, msg.timestamp or 0.0)
         result.decrypted_packet_count += 1
         bus.emit(ev)
 
@@ -244,9 +234,15 @@ def _rc4_offline_emitter(
     )
 
 
+# Attach-hook order: RC4-in-TLS runs before the Telegram attach (30).
+RC4_ATTACH_ORDER = 20
+
+
 def build_rc4_offline_decryptor_entry() -> OfflineDecryptorEntry:
     """Build the RC4 :class:`OfflineDecryptorEntry` (one entry, both modes)."""
     from friTap.flow.layers import Rc4Layer
+
+    from .tls_attach import attach_rc4_post_collection
 
     return OfflineDecryptorEntry(
         protocol_name="rc4",
@@ -257,6 +253,10 @@ def build_rc4_offline_decryptor_entry() -> OfflineDecryptorEntry:
         # may absorb) are held back until the post-collection RC4-in-TLS attach.
         nests_in_tls=True,
         emitter=_rc4_offline_emitter,
+        # Post-collection [TLS, RC4] fold; runs after the TLS-riding layering and
+        # before the Telegram attach (see RC4_ATTACH_ORDER).
+        attach=attach_rc4_post_collection,
+        attach_order=RC4_ATTACH_ORDER,
         layer_cls=Rc4Layer,
         counter_prefix="rc4",
         cli_help=(

@@ -35,6 +35,7 @@ from friTap.flow.models import format_byte_size
 from friTap.tui.modals.body_processing_modal import (
     BodyProcessingModal,
     BodyProcessingResult,
+    ProtobufConfig,
 )
 from friTap.tui.themes import c
 from friTap.tui.widgets import telegram_panes
@@ -201,6 +202,8 @@ if TEXTUAL_AVAILABLE:
             self._current_flow = None
             self._extra_tabs: list = []  # TabProvider instances
             self._active_processing: BodyProcessingResult | None = None
+            #: ``ProtobufView.mode`` of the last protobuf decode, for the pipeline label.
+            self._last_protobuf_mode: str | None = None
             self._pre_modal_processing: BodyProcessingResult | None = None
             self._raw_request: bool = False
             self._raw_response: bool = False
@@ -290,6 +293,7 @@ if TEXTUAL_AVAILABLE:
             self._raw_request = False
             self._raw_response = False
             self._active_processing = None
+            self._last_protobuf_mode = None
             self._current_layer_idx = 0
             self._layer_view = {}
 
@@ -543,6 +547,7 @@ if TEXTUAL_AVAILABLE:
                     body_preview=body,
                     on_change=self._on_body_processing_change,
                     segment_count=max(seg_count, 1),
+                    content_type=self._active_pane_content_type(),
                 ),
                 callback=self._on_body_processing_result,
             )
@@ -570,10 +575,13 @@ if TEXTUAL_AVAILABLE:
             flow = self._current_flow
             if not flow:
                 return
+            self._last_protobuf_mode = None
             try:
                 self._render_tab(flow, self._tabs.active)
             except Exception:
                 self.show_flow(flow)
+                return
+            self._update_header(flow)
 
         def action_processing_reset(self) -> None:
             self._reset_view_state()
@@ -775,6 +783,12 @@ if TEXTUAL_AVAILABLE:
                     return msg.body or b""
             return flow.response_body if pane == "response" else flow.request_body
 
+        def _active_pane_content_type(self) -> str:
+            """Content-Type of the active pane's message (``""`` when unknown)."""
+            flow = self._current_flow
+            msg = getattr(flow, "response" if self._active_pane() == "response" else "request", None)
+            return _get_header(getattr(msg, "headers", None) or {}, "content-type")
+
         def _active_pane(self) -> str:
             """``"response"`` when the Response tab is active, else ``"request"``.
 
@@ -824,13 +838,23 @@ if TEXTUAL_AVAILABLE:
             if self._active_processing.decoder:
                 label = self._active_processing.decoder
                 if label == "protobuf" and self._active_processing.protobuf_config:
-                    pc = self._active_processing.protobuf_config
-                    if pc.schema_path:
-                        label = "protobuf (schema)"
-                    else:
-                        label = "protobuf (raw)"
+                    label = self._protobuf_pipeline_label(self._active_processing.protobuf_config)
                 parts.append(label)
             return " -> ".join(parts)
+
+        _PROTOBUF_MODE_LABELS = {"schema": "schema", "blackbox": "blackbox", "wire": "raw"}
+
+        def _protobuf_pipeline_label(self, pc: ProtobufConfig) -> str:
+            """``protobuf (<mode>)`` from the decoder the last decode actually used.
+
+            A schema that failed to load falls back to the wire decoder, so the
+            configured mode alone would mislabel it; before the first decode the
+            label is derived from the configuration.
+            """
+            mode = getattr(self, "_last_protobuf_mode", None)
+            if mode is None:
+                mode = "schema" if not pc.schema_less and pc.schema_path else "wire"
+            return f"protobuf ({self._PROTOBUF_MODE_LABELS.get(mode, mode)})"
 
         def action_save_body(self) -> None:
             """Save the active tab's body (request or response) to a file."""
@@ -1411,7 +1435,11 @@ if TEXTUAL_AVAILABLE:
             log.write("")
             log.write(f"[bold]Source:[/]         {flow.src_addr}:{flow.src_port}")
             log.write(f"[bold]Destination:[/]    {flow.dst_addr}:{flow.dst_port}")
-            if flow.ssl_session_id:
+            if getattr(flow, "transport", "") == "telegram_e2e":
+                fingerprint = self._secret_chat_fingerprint(flow)
+                if fingerprint:
+                    log.write(f"[bold]Secret chat:[/]    {_markup_escape(fingerprint)}")
+            elif flow.ssl_session_id:
                 log.write(f"[bold]SSL Session:[/]    {flow.ssl_session_id}")
             log.write("")
 
@@ -1538,7 +1566,7 @@ if TEXTUAL_AVAILABLE:
         # to_dict() fallback. Keeps the most useful fields prominent.
         _LAYER_PRIMARY_FIELDS = {
             "tls": ("sni", "version", "alpn", "cipher", "library"),
-            "quic": ("sni", "version", "alpn", "cipher"),
+            "quic": ("sni", "version", "alpn", "cipher", "library"),
             "signal": ("chat_type", "identifier", "message_count"),
             "mtproto": ("transport", "dc_id", "auth_key_id", "message_count"),
             "rc4": ("source", "key_len", "framing", "direction", "message_count"),
@@ -2924,47 +2952,48 @@ if TEXTUAL_AVAILABLE:
         # Decoder functions for body rendering
         # ----------------------------------------------------------
 
+        #: Protobuf decode output is capped at this many lines (plus an overflow line).
+        _PROTOBUF_RENDER_MAX_LINES = 4000
+
         def _decode_protobuf(self, log: RichLog, body: bytes, headers: dict) -> None:
-            try:
-                from friTap.parsers.protobuf import (
-                    decode_raw,
-                    extract_grpc_messages,
-                    format_message,
-                )
-                content_type = _get_header(headers, "content-type")
-                grpc_msgs = extract_grpc_messages(body, content_type)
-                if grpc_msgs:
-                    for i, msg_bytes in enumerate(grpc_msgs):
-                        if i > 0:
-                            log.write("")
-                        log.write(f"[bold]gRPC message {i + 1}[/]")
-                        decoded = decode_raw(msg_bytes)
-                        log.write(format_message(decoded))
-                else:
-                    decoded = decode_raw(body)
-                    log.write(format_message(decoded))
-            except ImportError:
-                log.write("[dim yellow]Protobuf parser not available[/]")
-            except Exception as e:
-                log.write(f"[dim yellow]Protobuf decode error: {e}[/]")
+            """Shared protobuf/gRPC decode honouring the configured schema, gRPC mode
+            and backend; falls back to a hexdump when nothing decodes."""
+            from friTap.parsers.protobuf import decode_protobuf_view
+            from friTap.tui.widgets.protobuf_render import protobuf_view_lines
+
+            view = decode_protobuf_view(
+                body,
+                content_type=_get_header(headers, "content-type"),
+                grpc_encoding=_get_header(headers, "grpc-encoding"),
+                **self._protobuf_config().view_options(),
+            )
+            self._last_protobuf_mode = view.mode
+            # One joined write: a RichLog.write per line is ~4x slower on big bodies.
+            log.write("\n".join(protobuf_view_lines(view, self._PROTOBUF_RENDER_MAX_LINES)))
+            if not view.ok:
                 self._write_hexdump(log, body)
+
+        def _protobuf_config(self) -> ProtobufConfig:
+            """The active protobuf settings, or defaults when none were chosen."""
+            processing = self._active_processing
+            return getattr(processing, "protobuf_config", None) or ProtobufConfig()
 
         @staticmethod
         def _decode_json(log: RichLog, body: bytes, _headers: dict) -> None:
             try:
                 parsed = json.loads(body)
                 formatted = json.dumps(parsed, indent=2)
-                log.write(formatted)
+                log.write(_markup_escape(formatted))
             except (json.JSONDecodeError, UnicodeDecodeError):
                 log.write("[dim yellow]Not valid JSON[/]")
-                log.write(body.decode("utf-8", errors="replace"))
+                log.write(_markup_escape(body.decode("utf-8", errors="replace")))
 
         def _decode_base64(self, log: RichLog, body: bytes, _headers: dict) -> None:
             import base64 as b64mod
             try:
                 decoded_bytes = b64mod.b64decode(body)
                 if _is_text(decoded_bytes):
-                    log.write(decoded_bytes.decode("utf-8"))
+                    log.write(_markup_escape(decoded_bytes.decode("utf-8")))
                 else:
                     self._write_hexdump(log, decoded_bytes)
             except Exception:
@@ -2976,7 +3005,7 @@ if TEXTUAL_AVAILABLE:
 
         @staticmethod
         def _decode_raw_utf8(log: RichLog, body: bytes, _headers: dict) -> None:
-            log.write(body.decode("utf-8", errors="replace"))
+            log.write(_markup_escape(body.decode("utf-8", errors="replace")))
 
         def _tl_domain(self) -> str:
             """TL schema domain of the current flow: Secret-Chat or MTProto."""
@@ -3010,34 +3039,29 @@ if TEXTUAL_AVAILABLE:
                 log.write(f"[bold {c('primary')}]HTTP/2 Connection Control[/]")
 
             log.write(f"[bold {c('accent')}]{'═' * 40}[/]")
-            log.write(f"[bold]Frame:[/] {req.method}")
+            log.write(f"[bold]Frame:[/] {_markup_escape(str(req.method))}")
             log.write("")
 
             headers = req.headers if req.headers else {}
             if headers:
                 for name, value in headers.items():
-                    log.write(f"  [bold]{name}:[/]  {value}")
+                    log.write(f"  [bold]{_markup_escape(str(name))}:[/]  {_markup_escape(str(value))}")
 
         def _render_incomplete_h2_note(self, log: RichLog, raw: bytes) -> None:
             """Show informational note for incomplete HTTP/2 frames."""
-            if len(raw) < 9:
+            from friTap.parsers.http2_dataframe import describe_frame_header
+
+            header = describe_frame_header(raw)
+            if header is None:
                 return
-            try:
-                from friTap.parsers.http2 import _FRAME_HEADER_SIZE, _FRAME_TYPE_NAMES
-                length = int.from_bytes(raw[:3], "big")
-                frame_type = raw[3]
-                stream_id = int.from_bytes(raw[5:9], "big") & 0x7FFFFFFF
-                name = _FRAME_TYPE_NAMES.get(frame_type, f"type={frame_type}")
-                have = len(raw) - _FRAME_HEADER_SIZE
-                if length > have:
-                    log.write(
-                        f"[dim]  Frame: {name} (stream {stream_id}, "
-                        f"expected {length} bytes, got {have})[/]"
-                    )
-                else:
-                    log.write(f"[dim]  Frame: {name} (stream {stream_id}, {length} bytes)[/]")
-            except Exception:
-                pass
+            name, stream_id = header.type_name, header.stream_id
+            if header.truncated:
+                log.write(
+                    f"[dim]  Frame: {name} (stream {stream_id}, "
+                    f"expected {header.length} bytes, got {header.available})[/]"
+                )
+            else:
+                log.write(f"[dim]  Frame: {name} (stream {stream_id}, {header.length} bytes)[/]")
 
         def _render_body(
             self, log: RichLog, body: bytes, headers: dict, segment: int = 0,
@@ -3128,7 +3152,7 @@ if TEXTUAL_AVAILABLE:
             if "application/json" in content_type or "text/json" in content_type:
                 try:
                     parsed = json.loads(body)
-                    log.write(json.dumps(parsed, indent=2))
+                    log.write(_markup_escape(json.dumps(parsed, indent=2)))
                     return
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     pass

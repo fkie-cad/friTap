@@ -14,6 +14,8 @@ from types import SimpleNamespace
 
 from friTap.events import DatalogEvent, EventBus
 from friTap.offline import pcap_to_tap as p2t
+from friTap.offline import pipeline_api
+from friTap.offline.mtproto import offline_decryptor as mtproto_emit
 from friTap.offline.mtproto.e2e.records import SecretChatMessage
 from friTap.offline.mtproto.records import DecryptedMessage
 from tests.unit._offline_helpers import patch_keylog_loaders
@@ -35,37 +37,37 @@ def _cloud(ts: float, body: bytes = b"\x00" * 16, msg_id: int = 0) -> DecryptedM
 
 def test_time_ordered_sorts_by_timestamp():
     msgs = [SimpleNamespace(timestamp=t, n=i) for i, t in enumerate((3.0, 1.0, 2.0))]
-    assert [m.n for m in p2t._time_ordered(msgs)] == [1, 2, 0]
+    assert [m.n for m in mtproto_emit._time_ordered(msgs)] == [1, 2, 0]
 
 
 def test_time_ordered_is_stable_for_ties_and_unknowns():
     msgs = [SimpleNamespace(timestamp=t, n=i) for i, t in enumerate((5.0, 0.0, 5.0, 0.0))]
-    assert [m.n for m in p2t._time_ordered(msgs)] == [1, 3, 0, 2]
+    assert [m.n for m in mtproto_emit._time_ordered(msgs)] == [1, 3, 0, 2]
 
 
 def test_time_ordered_tolerates_missing_attribute():
     msgs = [SimpleNamespace(n=0), SimpleNamespace(n=1, timestamp=None)]
-    assert [m.n for m in p2t._time_ordered(msgs)] == [0, 1]
+    assert [m.n for m in mtproto_emit._time_ordered(msgs)] == [0, 1]
 
 
 def test_event_ts_kwargs_only_for_real_times():
-    assert p2t._event_ts_kwargs(12.5) == {"timestamp": 12.5}
-    assert p2t._event_ts_kwargs(0.0) == {}
-    assert p2t._event_ts_kwargs(-1.0) == {}
+    assert pipeline_api.event_ts_kwargs(12.5) == {"timestamp": 12.5}
+    assert pipeline_api.event_ts_kwargs(0.0) == {}
+    assert pipeline_api.event_ts_kwargs(-1.0) == {}
 
 
 def test_open_at_capture_time_uses_note_capture_time_when_available():
     calls = []
     state = SimpleNamespace(note_capture_time=calls.append)
-    p2t._open_at_capture_time(state, 7.0)
+    pipeline_api.open_at_capture_time(state, 7.0)
     assert calls == [7.0]
 
 
 def test_open_at_capture_time_falls_back_to_ensure_open():
     calls = []
     state = SimpleNamespace(ensure_open=calls.append)
-    p2t._open_at_capture_time(state, 7.0)
-    p2t._open_at_capture_time(state, 0.0)
+    pipeline_api.open_at_capture_time(state, 7.0)
+    pipeline_api.open_at_capture_time(state, 0.0)
     assert calls == [7.0, 0.0]
 
 
@@ -76,9 +78,9 @@ def test_parsed_dicts_fall_back_to_capture_ts_when_tl_date_missing():
         SimpleNamespace(sender_id=0, timestamp=111, kind="text", body="b",
                         has_media=False, peer_id=0),
     ]
-    dicts = p2t._parsed_mtproto_to_dicts(parsed, "write", fallback_ts=99.5)
+    dicts = mtproto_emit._parsed_mtproto_to_dicts(parsed, "write", fallback_ts=99.5)
     assert [d["timestamp"] for d in dicts] == [99.5, 111]
-    assert [d["timestamp"] for d in p2t._parsed_mtproto_to_dicts(parsed, "write")] == [0, 111]
+    assert [d["timestamp"] for d in mtproto_emit._parsed_mtproto_to_dicts(parsed, "write")] == [0, 111]
 
 
 def test_parsed_dicts_direction_follows_tl_out_flag_not_packet_direction():
@@ -87,7 +89,7 @@ def test_parsed_dicts_direction_follows_tl_out_flag_not_packet_direction():
 
     parsed = [ParsedMtprotoMessage(kind="text", body="echo", outgoing=True),
               ParsedMtprotoMessage(kind="text", body="reply")]
-    echo, reply = p2t._parsed_mtproto_to_dicts(parsed, "read")
+    echo, reply = mtproto_emit._parsed_mtproto_to_dicts(parsed, "read")
     assert (echo["direction"], echo["out"]) == ("write", True)
     assert (reply["direction"], reply["out"]) == ("read", False)
 
@@ -131,7 +133,7 @@ def _drive(state):
     events: list = []
     bus.subscribe(DatalogEvent, events.append)
     result = p2t.ConvertResult(tap_path="out.tap")
-    p2t._emit_telegram_streams("cap.pcap", "k.log", bus=bus, state=state, result=result)
+    mtproto_emit._emit_telegram_streams("cap.pcap", "k.log", bus=bus, state=state, result=result)
     return events
 
 

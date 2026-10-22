@@ -45,6 +45,16 @@ class ProtocolDescriptor:
             from an offline source (e.g. a pcap).
         decryptor: Optional callable producing a layer decryptor.
         creates_flows: True when this protocol multiplexes/creates child flows.
+        is_message_transport: True when this protocol is a transport whose
+            decrypted bytes are a self-contained message stream (not HTTP), so
+            generic application-protocol detection must not run on it.
+        inner_e2e_rank: Set when this layer is a candidate innermost E2E layer
+            for the layered protocol display (e.g. ``HTTP/2[Signal]``): the
+            ordering key among those layers, outermost first; ties keep
+            registration order. ``None`` (the default) means not an E2E layer.
+        carrier: Name of the layer that can wrap this inner E2E layer in a
+            genuine ``outer[inner]`` nesting (e.g. ``telegram_e2e`` in
+            ``mtproto``), or ``None``.
     """
 
     name: str
@@ -53,6 +63,9 @@ class ProtocolDescriptor:
     offline_extractor: Optional[Callable] = None
     decryptor: Optional[Callable] = None
     creates_flows: bool = False
+    is_message_transport: bool = False
+    inner_e2e_rank: Optional[int] = None
+    carrier: Optional[str] = None
 
     def __post_init__(self) -> None:
         self._validate()
@@ -117,11 +130,24 @@ def _register_builtins(registry: ProtocolRegistry) -> None:
     registry.register(ProtocolDescriptor("quic", QuicLayer, data_source="chunks"))
     registry.register(ProtocolDescriptor("ssh", SshLayer, data_source="none"))
     registry.register(ProtocolDescriptor("ipsec", IpsecLayer, data_source="none"))
-    registry.register(ProtocolDescriptor("mtproto", MtprotoLayer, data_source="chunks"))
-    registry.register(ProtocolDescriptor("telegram_e2e", TelegramE2ELayer, data_source="chunks"))
-    registry.register(ProtocolDescriptor("signal", SignalLayer, data_source="chunks"))
+    registry.register(ProtocolDescriptor(
+        "mtproto", MtprotoLayer, data_source="chunks",
+        is_message_transport=True, inner_e2e_rank=20,
+    ))
+    registry.register(ProtocolDescriptor(
+        "telegram_e2e", TelegramE2ELayer, data_source="chunks",
+        is_message_transport=True, inner_e2e_rank=30, carrier="mtproto",
+    ))
+    registry.register(ProtocolDescriptor(
+        "signal", SignalLayer, data_source="chunks",
+        inner_e2e_rank=10,
+    ))
     # RC4 is independent of TLS; its decrypted plaintext rides the flow's chunks.
-    registry.register(ProtocolDescriptor("rc4", Rc4Layer, data_source="chunks"))
+    # RC4-in-TLS: TLS plaintext carries an RC4 stream -> TLS[RC4].
+    registry.register(ProtocolDescriptor(
+        "rc4", Rc4Layer, data_source="chunks",
+        inner_e2e_rank=40, carrier="tls",
+    ))
     for app_name in APP_PROTOCOL_NAMES:
         registry.register(
             ProtocolDescriptor(app_name, AppLayer, data_source="chunks")
@@ -144,3 +170,34 @@ def register(desc: ProtocolDescriptor) -> None:
 def get(name: str) -> Optional[ProtocolDescriptor]:
     """Look up *name* in the process-global default registry."""
     return _DEFAULT_REGISTRY.get(name)
+
+
+# ---------------------------------------------------------------------------
+# Protocol facts derived from the descriptors
+# ---------------------------------------------------------------------------
+
+def _descriptors(registry: Optional[ProtocolRegistry]) -> list[ProtocolDescriptor]:
+    """Descriptors of *registry* (default: the global one) in registration order."""
+    return (registry or _DEFAULT_REGISTRY).list()
+
+
+def message_transport_names(
+    registry: Optional[ProtocolRegistry] = None,
+) -> tuple[str, ...]:
+    """Names of the message-stream transports, in registration order."""
+    return tuple(d.name for d in _descriptors(registry) if d.is_message_transport)
+
+
+def inner_e2e_layer_names(
+    registry: Optional[ProtocolRegistry] = None,
+) -> tuple[str, ...]:
+    """Inner E2E layer names ordered by ``inner_e2e_rank`` (outermost first)."""
+    inner = [d for d in _descriptors(registry) if d.inner_e2e_rank is not None]
+    return tuple(d.name for d in sorted(inner, key=lambda d: d.inner_e2e_rank))
+
+
+def carrier_for_inner(
+    registry: Optional[ProtocolRegistry] = None,
+) -> dict[str, str]:
+    """Map each inner layer that declares a carrier to that carrier's name."""
+    return {d.name: d.carrier for d in _descriptors(registry) if d.carrier}

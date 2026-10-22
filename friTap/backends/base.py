@@ -38,6 +38,11 @@ class BackendErrorContext:
     sip_enabled: Optional[bool] = None        # macOS only; None elsewhere
     target_alive: Optional[bool] = None
     server_reachable: Optional[bool] = None
+    # frida's ``query_system_parameters()["access"]`` ("full" / "jailed").
+    # On a USB Android device with NO frida-server running, frida 17 still
+    # answers via an ADB-only fallback and reports "jailed" — so this field
+    # is what tells "server answered" apart from "a real server answered".
+    server_access: Optional[str] = None
     # macOS target binary probes; populated when target is a PID and
     # ``codesign``/``ps`` are available. ``None`` means "not sampled".
     target_path: Optional[str] = None
@@ -107,6 +112,8 @@ class BackendError(Exception):
                 bits.append(f"target_alive={ctx.target_alive}")
             if ctx.server_reachable is not None:
                 bits.append(f"server_reachable={ctx.server_reachable}")
+            if ctx.server_access is not None:
+                bits.append(f"server_access={ctx.server_access}")
             for k, v in ctx.extra.items():
                 bits.append(f"{k}={v}")
             lines.append("  context: " + ", ".join(bits))

@@ -182,7 +182,7 @@ def test_legacy_mismatch_still_skipped_and_counted():
     assert result.dropped_packet_count == 1
 
 
-# --- _emit_quic_streams end-to-end ------------------------------------------
+# --- _QuicCombinedSink end-to-end -------------------------------------------
 
 class _FakeBus:
     def __init__(self):
@@ -197,19 +197,17 @@ class _FakeState:
         pass
 
 
-def test_emit_quic_streams_drains_leftovers_with_last_timestamp(monkeypatch):
+def test_quic_sink_drains_leftovers_with_last_timestamp():
     pkts = [
         _pkt([(0, None, b"AB", False)], ts="1.0"),
         _pkt([(0, 5, b"FG", False)], ts="2.0"),  # gap 2..5 never fills
         _pkt([(4, None, b"Z", False)], ts="3.0"),
     ]
-    monkeypatch.setattr(p2t, "build_quic_command", lambda *a, **k: ["tshark"])
-    monkeypatch.setattr(p2t, "stream_packets", lambda cmd: iter(pkts))
     bus, result = _FakeBus(), p2t.ConvertResult(tap_path="x.tap")
-    p2t._emit_quic_streams(
-        "tshark", "in.pcap", None, quic_ports=(), extra_decode_as=(),
-        heuristic=False, bus=bus, state=_FakeState(), result=result,
-        tracker=p2t._StreamDirectionTracker())
+    sink = p2t._QuicCombinedSink(bus, _FakeState(), result, p2t._StreamDirectionTracker())
+    for pkt in pkts:
+        sink.feed(pkt, pkt["layers"])
+    sink.flush()
     assert [(e.stream_id, e.data, e.timestamp) for e in bus.events] == [
         (0, b"AB", 1.0), (4, b"Z", 3.0), (0, b"FG", 3.0)]
     assert result.stream_count == 2

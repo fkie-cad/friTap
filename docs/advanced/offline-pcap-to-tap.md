@@ -45,8 +45,8 @@ friTap — see the [.tap format spec](../api/tap-format.md).
 flowchart TD
     A[pcap / pcapng] --> B{keylog or<br/>embedded DSB?}
     K[--keylog SSLKEYLOGFILE] -.-> B
-    B -- yes (keyed) --> C[tshark decrypt<br/>TLS follow + QUIC -T ek]
-    B -- no (keyless) --> D[tshark raw payload export<br/>plaintext ingest]
+    B -- yes (keyed) --> C[ONE tshark -T ek pass<br/>TLS handshake + app data,<br/>QUIC, SSH metadata]
+    B -- no (keyless) --> D[QUIC handshake pre-scan, then<br/>one plaintext + SSH pass]
     C --> E[friTap parsers<br/>HTTP/1.1, H2, H3, WebSocket]
     D --> E
     D -.->|encrypted TLS/QUIC<br/>streams detected| X[skipped + tallied as<br/>encrypted_streams_skipped]
@@ -54,6 +54,18 @@ flowchart TD
     E --> F[FlowCollector<br/>+ body de-dup]
     F --> G[(out.tap)]
 ```
+
+With keys, friTap runs **one** `tshark -T ek` pass per conversion (display
+filter `tls.handshake || tls.app_data || quic || ssh`). It yields the TLS
+handshake metadata, the decrypted TLS application data, the QUIC metadata and
+stream data, and the SSH banners/KEXINIT. Earlier releases ran five separate
+passes. The resulting `.tap` is the same, and that separate-pass code has been
+removed. Without keys, a QUIC handshake
+pre-scan finds the genuinely encrypted QUIC streams. A second pass then reads
+the plaintext payload and the SSH metadata together. friTap's own raw-TCP
+decryptors (MTProto, standalone RC4, mid-stream TLS) do not use tshark; they
+read the capture with a fast built-in pcap parser (see
+[Raw-TCP decryptors and the pcap parser](#raw-tcp-decryptors-and-the-pcap-parser)).
 
 ---
 
@@ -188,6 +200,96 @@ tallies):
 
 ---
 
+## Schannel (Windows lsass secrets)
+
+The Schannel memory-scan engine recovers TLS 1.2 masters and TLS 1.3 secrets
+from `lsass.exe`, but not the client random. It writes them **unpaired** to a
+`<memscan-keylog-stem>.schannel.unpaired` sidecar. Pass that sidecar with
+`--schannel-unpaired`. friTap then trial-decrypts each secret against the
+capture to find its connection, writes a derived NSS keylog next to the
+sidecar, and decrypts the paired TLS flows:
+
+```bash
+fritap --from-pcap win.pcapng --schannel-unpaired capture.schannel.unpaired --tap win.tap
+```
+
+Each sidecar line is:
+
+```text
+<kind> <secret_hex> <session_id|-> <ssl_version> [group=<id>]
+```
+
+* `kind` is `schannel_tls12_master` or `schannel_tls13_secret`, and
+  `ssl_version` is `771` (TLS 1.2) or `772` (TLS 1.3).
+* The optional **5th column** `group=<id>` (a bare token is accepted too) ties
+  the secrets of one connection together. An unlabeled TLS 1.3 secret is
+  placed as `EXPORTER_SECRET` **by elimination**: its group's connection must
+  already have all four decryptable labels placed (client/server handshake and
+  traffic secrets), and it must be the only secret of that group left.
+  `EXPORTER_SECRET` protects no records, so trial decryption alone can never
+  place it. The current agent build does not write the `group` column yet, so
+  sidecars without it parse exactly as before. Secrets that could not be placed
+  are logged with a count.
+
+**Trial decryption in Python.** A Python oracle decides most trials without
+spawning tshark. It decrypts a stream's first encrypted record with the
+candidate secret. For TLS 1.2 it handles the AES-GCM and ChaCha20-Poly1305
+suites. For TLS 1.3 it uses the handshake and traffic-secret anchors and
+follows KeyUpdates. tshark still decides CBC suites, TLS 1.0/1.1 and every
+stream the oracle cannot decide cleanly (for example a duplicate client random
+or a degraded stream). Set `FRITAP_SCHANNEL_ORACLE=0` to send every trial to
+tshark, as before. The oracle needs the `cryptography` backend; without it,
+friTap falls back to tshark automatically. `--repair-keylog` uses the same
+correlation.
+
+---
+
+## Raw-TCP decryptors and the pcap parser
+
+friTap's own decryptors for MTProto, standalone RC4 and mid-stream TLS
+reassemble TCP themselves. They share **one** parse of the capture per
+conversion. Captures larger than `FRITAP_PCAP_CACHE_MAX_MB` are parsed once
+per decryptor.
+
+The parse uses a fast built-in pcap/pcapng reader that decodes the link, IP and
+TCP headers itself. It hands rare packets back to scapy one at a time: tunnels,
+PPPoE/LLC/MPLS, IPv6 extension headers, IPv4 options, malformed headers and
+unknown link types. Set `FRITAP_PCAP_PARSER=scapy` to use the old full-scapy
+parser instead.
+
+!!! note "Intended differences from the scapy parser"
+    The two parsers produce the same segments except in two places, both
+    deliberate:
+
+    * **BSD loopback IPv6 is decoded.** On NULL/LOOP link types (0, 108), the
+      address families 2/0 (IPv4) and 24/28/30/10 (IPv6) are decoded on every
+      platform. Each IPv6 family counts only when the packet's IP version
+      nibble matches. Big-endian NULL headers are byte-swapped. Other families
+      are skipped. scapy decodes only the host platform's own IPv6 value, so a
+      macOS loopback capture read on Linux used to lose its `::1` connections.
+    * **Ethernet padding is not payload.** scapy attached the link-layer
+      padding of a short frame (e.g. a bare ACK) to the empty TCP segment as
+      payload, which added phantom zero bytes to reassembled streams. The fast
+      parser returns an empty payload.
+
+    Link type 14 is treated as raw IP on every platform. Simple packet blocks
+    in pcapng carry no timestamp and get time `0.0`.
+
+---
+
+## Environment variables
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `FRITAP_TSHARK` | unset | Path to the tshark binary. Checked after `--tshark-path` / `tshark_path=` and before `PATH`; `TSHARK_PATH` is accepted too. A value that is not executable is ignored with a warning. |
+| `FRITAP_PCAP_PARSER` | fast parser | `scapy` selects the old full-scapy pcap parser for the raw-TCP decryptors (see [above](#raw-tcp-decryptors-and-the-pcap-parser)). Any other value uses the fast parser. |
+| `FRITAP_PCAP_CACHE_MAX_MB` | `256` | Largest capture (in MB) whose TCP parse is shared across the raw-TCP decryptors of one conversion. `0` disables sharing. Non-numeric or non-finite values fall back to the default. |
+| `FRITAP_SCHANNEL_ORACLE` | enabled | `0` disables the Python trial-decryption oracle of the Schannel correlation (`--schannel-unpaired`, `--repair-keylog`), so tshark decides every trial. |
+| `FRITAP_DISABLE_OFFLINE_DECRYPTOR_DISCOVERY` | unset | Any value other than empty, `0`, `false` or `False` disables discovery of drop-in and entry-point (`fritap.offline_decryptors`) offline-decryptor plugins. Built-in decryptors stay registered. |
+| `FRITAP_NO_TSHARK_VERSION_CACHE` | unset | Any value other than empty or `0` disables the on-disk cache of `tshark --version` (a JSON file in `$XDG_CACHE_HOME/fritap`, else the user cache dir). Results are still cached in memory per process. The cache is keyed by the binary's real path, modification time and size, so an upgraded tshark is queried again. |
+
+---
+
 ## Caveats (read before you trust the output)
 
 !!! danger "Keyless captures have hard, silent limits"
@@ -273,6 +375,9 @@ result = pcap_to_tap(
     capture_target="",              # label stored in the .tap (default: basename)
     tshark_path=None,               # explicit tshark binary; else auto-discovered
     use_manifest=True,              # honor a <pcap>.fritap.json sidecar
+    protocol_keylogs={              # keylogs for friTap's own offline decryptors
+        "mtproto": "tg.keys",
+    },
 )
 
 print(result.to_dict())
@@ -280,6 +385,20 @@ print(result.to_dict())
 
 `pcap_to_tap()` is the manifest-aware wrapper (CLI > manifest > defaults). For a
 no-manifest core call, use `friTap.offline.pcap_to_tap.convert_pcap_to_tap()`.
+
+`protocol_keylogs` maps an offline-decryptor protocol name to its keylog path.
+It covers the built-in decryptors (`mtproto`, `telegram`, `signal`, `rc4`,
+`schannel`) and any registered plugin. It is the generic form of the CLI's
+per-protocol flags (`--mtproto-keylog`, `--schannel-unpaired`, …). The older
+`<protocol>_keylog=` keywords (e.g. `mtproto_keylog="tg.keys"`) still work: each
+is folded into `protocol_keylogs` under its leading protocol token, and an
+explicit `protocol_keylogs` entry wins. A keylog that is given but missing is
+logged, and that decryptor is skipped.
+
+`resync_search_depth` sets the maximum lag search when a mid-stream flow is
+re-aligned to a memory-recovered key. friTap forwards it only to decryptors
+whose registry entry names the receiving keyword (`resync_param`; MTProto and
+Telegram use `obf_max_blocks`). `None` keeps each decryptor's own default.
 
 It returns a `ConvertResult`:
 
@@ -293,8 +412,42 @@ It returns a `ConvertResult`:
 | `dropped_stream_count` | TLS streams that could not be followed/decoded. |
 | `findings_count` | Findings, when `run_scan=True`. |
 | `encrypted_streams_skipped` | Encrypted streams skipped in the keyless path. |
+| `per_protocol` | Per-protocol counters keyed by protocol prefix (`mtproto`, `telegram`, `signal`, `rc4`, plugins …); each bucket holds `messages`, `streams`, `undecryptable`, `degraded`, `partial`, `short`, `unknown_key_ids`, … |
+| `mtproto_messages`, `mtproto_streams`, `mtproto_records_undecryptable`, `mtproto_streams_degraded` | **Deprecated.** Read-only aliases of `per_protocol["mtproto"]` (`messages`, `streams`, `undecryptable`, `degraded`; 0 when absent). They stay in `to_dict()` for compatibility. Read `per_protocol` instead. |
 
 `ConvertResult.to_dict()` gives a JSON-safe view for web/API callers.
+
+### Flow and connection ids
+
+Every flow id is `<connection id>:<sequence>`. The connection id uses the first
+tier that applies:
+
+| Tier | Format | When |
+| --- | --- | --- |
+| client random | `cr:<protocol>:<client_random>` | The connection's client random is known. |
+| session id | `sid:<protocol>:<session token>` | A real session token is present, e.g. `sid:telegram_e2e:telegram_e2e:<fingerprint>` for a Secret Chat. |
+| endpoints (TLS) | `net:<4-tuple>` | TLS connections without either of the above. This is the historical format. |
+| endpoints (other) | `net:<protocol>:<canonical 4-tuple>` | Every other protocol, e.g. `net:mtproto:…`, `net:quic:…`, `net:rc4:…`, `net:signal:…`. |
+
+The 4-tuple is `lo-hi`: the two `addr:port` endpoints, sorted, so both directions
+give the same id. The canonical form also normalizes IPv6 spellings (no
+brackets, no zone id, compressed). Because the endpoint tier is scoped by
+protocol, a decrypted inner protocol (for example RC4 or Signal inside TLS)
+always gets its own flow, apart from the TLS flow on the same 4-tuple. Captures
+converted before friTap 2.3.0 used `net:<4-tuple>` for every protocol, and
+`sid:rc4:rc4:…` / `sid:signal:signal:…` for RC4 and Signal. Existing `.tap`
+files keep those ids.
+
+### Display filters on converted captures
+
+* `tls` matches a flow whose transport is TLS or that has a TLS layer. A
+  session id alone no longer counts, so Telegram Secret-Chat (`telegram_e2e`)
+  flows, which store `telegram_e2e:<fingerprint>` in that slot, no longer
+  match `tls`. They still match `telegram` and `telegram_e2e`.
+* `tls.session_id` is empty for non-TLS flows.
+* `quic.library` (`QuicLayer.library`) holds the hooked TLS/QUIC library of a
+  **live** QUIC flow, like `tls.library`. Offline QUIC flows never carry a
+  library, so it is empty there.
 
 `pcap_to_tap()` raises `NoDecryptionKeysError` (a `ValueError`) when the capture
 is encrypted and no keys are available; other tshark/IO failures propagate as
