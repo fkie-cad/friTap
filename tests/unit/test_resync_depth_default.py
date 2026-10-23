@@ -23,8 +23,14 @@ from friTap.offline.registry import (
     OfflineDecryptorEntry,
     get_offline_decryptor_registry,
 )
+from tests.unit import _fake_tshark as ft
 
 _PCAP = "tests/fixtures/schannel_tls13.pcap"
+
+
+@pytest.fixture(autouse=True)
+def _no_tshark_needed(monkeypatch):
+    ft.stub_tshark_discovery(monkeypatch)
 
 
 def _swap_emitter(monkeypatch, name: str, emitter) -> None:

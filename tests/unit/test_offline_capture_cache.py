@@ -20,6 +20,7 @@ from friTap.offline.net.tcp_reassembly import (  # noqa: E402
     parse_pcap,
     reassemble_pcap,
 )
+from tests.unit import _fake_tshark as ft  # noqa: E402
 
 _CLIENT = ("10.0.0.5", 50000)
 _SERVER = ("10.0.0.9", 443)
@@ -329,6 +330,7 @@ def test_conversion_parses_the_capture_once(tmp_path, parse_counter, monkeypatch
     pytest.importorskip("cryptography")
     from friTap.offline.pcap_to_tap import convert_pcap_to_tap
 
+    ft.stub_tshark_discovery(monkeypatch)
     if cache_mb is not None:
         monkeypatch.setenv(capture_cache.MAX_MB_ENV, cache_mb)
     pcap, keylogs = _write_orchestrator_inputs(tmp_path)
@@ -396,6 +398,7 @@ def test_single_consumer_conversion_holds_no_cache(tmp_path, parse_counter, monk
         original_init(self, *args, **kwargs)
 
     monkeypatch.setattr(capture_cache.CaptureCache, "__init__", spy_init)
+    ft.stub_tshark_discovery(monkeypatch)
     pcap, keylogs = _write_orchestrator_inputs(tmp_path)
     result = convert_pcap_to_tap(pcap, tap_path=str(tmp_path / "x.tap"),
                                  run_scan=False,

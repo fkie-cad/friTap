@@ -173,6 +173,18 @@ def same_frame(*rows) -> dict:
     return {"layers": merged}
 
 
+def stub_tshark_discovery(monkeypatch) -> None:
+    """Let a conversion run without a tshark install (as on CI).
+
+    Stubs the binary lookup, the version probe and the SSH metadata pass, the
+    only tshark use of a keyless conversion with raw-TCP decryptors only.
+    """
+    monkeypatch.setattr(p2t, "find_tshark", lambda *a, **k: "tshark")
+    monkeypatch.setattr(p2t, "tshark_version", lambda *a, **k: None)
+    monkeypatch.setattr(p2t, "warn_if_outdated", lambda *a, **k: None)
+    monkeypatch.setattr(p2t, "_emit_ssh_connections", lambda *a, **k: None)
+
+
 class FakeTshark:
     """Answer ``stream_packets`` by the argv's ``-Y`` filter and record every pass.
 
