@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 
-import subprocess
 import argparse
-import pathlib
 import json
-import sys
 import os
+import pathlib
+import subprocess
+import sys
 
 
 def build_parser() -> argparse.ArgumentParser:

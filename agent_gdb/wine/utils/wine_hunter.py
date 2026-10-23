@@ -1,10 +1,10 @@
-import pyghidra
 import argparse
 import contextlib
 import json
 import tempfile
 from pathlib import Path
 
+import pyghidra
 from jpype import JArray, JByte
 
 
