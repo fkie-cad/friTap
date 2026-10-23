@@ -26,18 +26,6 @@
    }
   },
   {
-   "id": "fx_signal_grpc_h2",
-   "tier": "fixture",
-   "protocol": "signal",
-   "pcap": "tests/fixtures/signal_grpc_h2.pcapng",
-   "args": {
-    "keylog_path": "tests/fixtures/signal_grpc_h2.tls.log",
-    "protocol_keylogs": {
-     "signal": "tests/fixtures/signal_grpc_h2.signal.log"
-    }
-   }
-  },
-  {
    "id": "fx_chrome_quic_encrypted",
    "tier": "fixture",
    "protocol": "quic",
@@ -164,68 +152,6 @@
     "protocol_keylogs": {
      "telegram": "research/misc/e2ekeys.log"
     }
-   }
-  },
-  {
-   "id": "rs_signal_s1capture",
-   "tier": "research",
-   "protocol": "signal",
-   "pcap": "research/misc/s1capture.pcapng",
-   "args": {
-    "keylog_path": "research/misc/s1keys.memscan.merged.tls.keylog",
-    "protocol_keylogs": {
-     "signal": "research/misc/s1keys.signal.log"
-    },
-    "tls_midstream_secrets": "research/misc/s1keys.memscan.tls_midstream.secrets.jsonl"
-   }
-  },
-  {
-   "id": "rs_signal_s22capture",
-   "tier": "research",
-   "protocol": "signal",
-   "pcap": "research/misc/s22capture.pcapng",
-   "args": {
-    "keylog_path": "research/misc/s22keys.memscan.merged.tls.keylog",
-    "protocol_keylogs": {
-     "signal": "research/misc/s22keys.signal.log"
-    },
-    "tls_midstream_secrets": "research/misc/s22keys.memscan.tls_midstream.secrets.jsonl"
-   }
-  },
-  {
-   "id": "rs_signal_s21capture",
-   "tier": "research",
-   "protocol": "signal",
-   "pcap": "research/misc/s21capture.pcapng",
-   "args": {
-    "protocol_keylogs": {
-     "signal": "research/misc/s21keys.signal.log"
-    }
-   }
-  },
-  {
-   "id": "rs_signal_22capture",
-   "tier": "research",
-   "protocol": "signal",
-   "pcap": "research/misc/22capture.pcapng",
-   "args": {
-    "keylog_path": "research/misc/22keys.tls.log",
-    "protocol_keylogs": {
-     "signal": "research/misc/22keys.signal.log"
-    }
-   }
-  },
-  {
-   "id": "rs_signal_captures1",
-   "tier": "research",
-   "protocol": "signal",
-   "pcap": "captures1.pcapng",
-   "args": {
-    "keylog_path": "keyss1.memscan.merged.tls.keylog",
-    "protocol_keylogs": {
-     "signal": "keyss1.signal.log"
-    },
-    "tls_midstream_secrets": "keyss1.memscan.tls_midstream.secrets.jsonl"
    }
   },
   {

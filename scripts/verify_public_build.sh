@@ -125,14 +125,21 @@ MUST_BE_GONE=(
   "friTap/fritap_agent_full.js"
   "friTap/fritap_agent_full.js.src"
   ".gitlab-ci.yml"
+  "dev/golden/baseline/*signal*.json"
+  "tests/fixtures/combined_pass/keyed_*signal*.json"
 )
+# Entries may contain '*' globs; nullglob makes a non-matching glob expand to
+# nothing (= absent) instead of the literal pattern text.
+shopt -s nullglob
 for rel in "${MUST_BE_GONE[@]}"; do
-  if [ -e "$PUBLIC_TREE/$rel" ]; then
+  leftovers=( "$PUBLIC_TREE"/$rel )
+  if [ "${#leftovers[@]}" -gt 0 ]; then
     fail "private path still present in public tree: $rel"
   else
     pass "absent: $rel"
   fi
 done
+shopt -u nullglob
 echo
 
 echo "--- Step 4b: token scan for private reveal-tokens ---"

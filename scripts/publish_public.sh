@@ -72,6 +72,27 @@ echo "  stripped private.txt paths"
 # --- 3. scrub substantive reveals (setup.py extra, mkdocs nav, CHANGELOG) ------
 python3 "$SCRIPT_DIR/scrub_public_tree.py" "$TREE"
 
+# --- 3.5 npm scripts must not name files the strip removed ----------------------
+# CI runs `npm run test:agent` on the PUBLIC tree; a script that lists a stripped
+# (private) test file fails there with "Could not find …" and names the private
+# path. Cheap and npm-free, so it runs even under --status.
+python3 - "$TREE" <<'PY' || { echo "ERROR: package.json scripts reference stripped files — refusing to publish." >&2; exit 1; }
+import json, os, re, sys
+tree = sys.argv[1]
+path = os.path.join(tree, "package.json")
+if not os.path.isfile(path):
+    sys.exit(0)
+with open(path, encoding="utf-8") as fh:
+    scripts = json.load(fh).get("scripts", {})
+missing = sorted({tok for cmd in scripts.values() for tok in cmd.split()
+                  if re.match(r"^agent/\S+\.(ts|js)$", tok)
+                  and not os.path.isfile(os.path.join(tree, tok))})
+for tok in missing:
+    print(f"  missing: {tok}", file=sys.stderr)
+sys.exit(1 if missing else 0)
+PY
+echo "  package.json scripts: all referenced agent files present"
+
 # Snapshot the INTENDED publish set NOW — a clean tree, before the gates below
 # create any __pycache__/.git scratch. The completeness guard (step 4.9) checks
 # the committed snapshot against this list, so a tracked file silently dropped by

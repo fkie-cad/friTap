@@ -20,6 +20,13 @@ Scope (deliberately conservative — see the user stance: operational privacy,
                       offline-quickstart Signal tip, example/README) plus the links
                       to the stripped protocols/signal.md, so the scrubbed tree's
                       ``mkdocs --strict`` stays green.
+  * package.json    — drop repo-relative source-path tokens (``agent/**.ts|js``)
+                      from ``scripts`` values when the file no longer exists in
+                      the tree (stripped paths would break ``npm run`` / CI).
+  * dev/golden/corpus.json
+                    — drop corpus entries whose ``dev/golden/baseline/<id>.json``
+                      is absent from the tree (only when the baseline dir exists).
+  Both are name-free: keyed purely on file existence in the stripped tree.
 
 NOT scrubbed here (accepted per the §F-strict decision, 2026-06):
   * functional bare-"signal" coupling in friTap/api.py and friTap/tui/** plus the
@@ -34,6 +41,7 @@ Usage: python3 scripts/scrub_public_tree.py <tree_dir>
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import re
 import sys
@@ -215,6 +223,100 @@ def scrub_doc_markers(tree: str) -> str:
     return f"doc markers: scrubbed {changed} of {scanned} .md file(s)"
 
 
+_SOURCE_PATH_TOKEN = re.compile(r"^agent/\S+\.(ts|js)$")
+
+
+def _detect_json_indent(text: str, default: int = 2) -> int:
+    """Return the leading-space count of the first indented line of *text*."""
+    for line in text.splitlines()[1:]:
+        stripped = line.lstrip(" ")
+        if stripped and len(stripped) != len(line):
+            return len(line) - len(stripped)
+    return default
+
+
+def _load_json_text(path: str) -> tuple[str, object] | None:
+    """Read *path* and parse it; ``None`` if the file is absent/unreadable."""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    return text, json.loads(text)
+
+
+def _dump_json_like(path: str, data: object, source_text: str) -> None:
+    """Write *data* back with the source file's indent and a trailing newline."""
+    indent = _detect_json_indent(source_text)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(data, indent=indent, ensure_ascii=False) + "\n")
+
+
+def _drop_missing_source_tokens(command: str, tree: str) -> tuple[str, int]:
+    """Remove source-path tokens from *command* that don't exist under *tree*."""
+    tokens = command.split()
+    kept = [t for t in tokens
+            if not (_SOURCE_PATH_TOKEN.match(t) and not os.path.exists(os.path.join(tree, t)))]
+    dropped = len(tokens) - len(kept)
+    return (" ".join(kept) if dropped else command), dropped
+
+
+def scrub_package_json(tree: str) -> str:
+    """Drop stripped ``agent/**.ts|js`` path tokens from package.json ``scripts``.
+
+    Name-free: a token is dropped only if it looks like a repo-relative agent
+    source path AND that file is absent from the tree. Key order and the source
+    indent are preserved; the file is rewritten only when something changed.
+    """
+    path = os.path.join(tree, "package.json")
+    loaded = _load_json_text(path)
+    if loaded is None:
+        return "package.json: absent (skip)"
+    text, data = loaded
+    scripts = data.get("scripts") if isinstance(data, dict) else None
+    if not isinstance(scripts, dict):
+        return "package.json: no scripts (already clean)"
+    total = 0
+    for key, command in scripts.items():
+        if isinstance(command, str):
+            scripts[key], dropped = _drop_missing_source_tokens(command, tree)
+            total += dropped
+    if total == 0:
+        return "package.json: no stripped paths in scripts (already clean)"
+    _dump_json_like(path, data, text)
+    return f"package.json: dropped {total} stripped path(s) from scripts"
+
+
+def scrub_golden_corpus(tree: str) -> str:
+    """Drop golden-corpus entries whose baseline snapshot is absent from the tree.
+
+    Name-free: an entry ``{"id": X}`` survives iff
+    ``dev/golden/baseline/X.json`` exists. Skipped entirely when the baseline
+    directory itself is missing, so a tree without baselines keeps every entry.
+    """
+    golden = os.path.join(tree, "dev", "golden")
+    path = os.path.join(golden, "corpus.json")
+    loaded = _load_json_text(path)
+    if loaded is None:
+        return "dev/golden/corpus.json: absent (skip)"
+    baseline_dir = os.path.join(golden, "baseline")
+    if not os.path.isdir(baseline_dir):
+        return "dev/golden/corpus.json: no baseline dir (skip)"
+    text, data = loaded
+    entries = data.get("entries") if isinstance(data, dict) else None
+    if not isinstance(entries, list):
+        return "dev/golden/corpus.json: no entries list (skip)"
+    kept = [e for e in entries
+            if not isinstance(e, dict) or "id" not in e
+            or os.path.isfile(os.path.join(baseline_dir, f"{e['id']}.json"))]
+    dropped = len(entries) - len(kept)
+    if dropped == 0:
+        return "dev/golden/corpus.json: all entries have baselines (already clean)"
+    data["entries"] = kept
+    _dump_json_like(path, data, text)
+    return f"dev/golden/corpus.json: dropped {dropped} corpus entry(ies) without a baseline"
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 2:
         print(__doc__)
@@ -223,7 +325,8 @@ def main(argv: list[str]) -> int:
     if not os.path.isdir(tree):
         print(f"ERROR: not a directory: {tree}", file=sys.stderr)
         return 2
-    for report in (scrub_setup_py(tree), scrub_mkdocs(tree), scrub_changelog(tree), scrub_doc_markers(tree)):
+    for report in (scrub_setup_py(tree), scrub_mkdocs(tree), scrub_changelog(tree),
+                   scrub_doc_markers(tree), scrub_package_json(tree), scrub_golden_corpus(tree)):
         print(f"  scrub: {report}")
     return 0
 
