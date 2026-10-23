@@ -1,5 +1,5 @@
 📦
-119007 /agent/memory_scan_agent.js
+119196 /agent/memory_scan_agent.js
 ✄
 // agent/ms_agent/state.ts
 var state = {
@@ -1318,6 +1318,7 @@ function runSchannelTls13Secret(ranges, stats, errors) {
   var g = tier.group || {};
   var doGroup = g.enabled === true && typeof g.client_off === "number" && typeof g.exporter_off === "number";
   var cipherAt = typeof g.cipher_at === "number" ? g.cipher_at : 8;
+  var lenByCipher = tier.secret_len_by_cipher || {};
   var sslVersion = 772;
   var patterns = [asciiToScanPattern(anchor), asciiToScanPattern(reverseStr(anchor))];
   var found = [];
@@ -1328,9 +1329,10 @@ function runSchannelTls13Secret(ranges, stats, errors) {
         stats.schannel.tls13Candidates++;
         try {
           var anchorAddr = hits[h].address;
+          var cipherId = readU32OrNull(anchorAddr.add(cipherAt));
+          var lenForCipher = cipherId !== null ? lenByCipher["0x" + cipherId.toString(16)] : void 0;
           var declared = sizeAt >= 0 ? readU32OrNull(anchorAddr.add(sizeAt)) : null;
-          var tryLens = declared === 32 || declared === 48 ? [declared] : lens;
-          var cipherId = doGroup ? readU32OrNull(anchorAddr.add(cipherAt)) : null;
+          var tryLens = typeof lenForCipher === "number" ? [lenForCipher] : declared === 32 || declared === 48 ? [declared] : lens;
           for (var li = 0; li < tryLens.length; li++) {
             var secret = readBytes(anchorAddr.add(secretAt), tryLens[li]);
             if (!schannelLooksLikeSecret(secret))
