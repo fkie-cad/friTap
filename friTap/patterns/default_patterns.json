@@ -81,6 +81,19 @@
             }
         }
     },
+    "libressl": {
+        "_docs": "LibreSSL key-schedule signatures: TLS 1.3 tls13_hkdf_expand_label_with_length and TLS 1.2 tls1_PRF. LibreSSL has NO keylog callback and NO ssl_log_secret. x64/win64 bytes are from curl-for-win LibreSSL 4.4.0; regenerate for other builds with agent_gdb/wine/utils/wine_hunter.py. client_random is not reachable from any KDF frame; it is parsed from the plaintext ClientHello on the socket send (ws2_32!send), so no struct offsets are needed.",
+        "windows": {
+            "x64": {
+                "hkdfWithLen": [
+                    "F3 0F 1E FA 55 41 56 56 57 53 48 81 EC A0 00 00 00 48 8D AC 24 80 00 00"
+                ],
+                "prf": [
+                    "F3 0F 1E FA 55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC D8 00 00 00"
+                ]
+            }
+        }
+    },
     "openssh": {
         "_comment": "Patterns for OpenSSH key derivation. Empty until extracted from target binaries.",
         "linux": {

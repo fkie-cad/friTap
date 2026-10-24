@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import shlex
+import signal
 import sys
 
 logger = None
@@ -16,6 +17,188 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 FRITAP_KEYLOG = None
 PATTERNS = None
+
+MASK64 = 0xFFFFFFFFFFFFFFFF
+
+# LibreSSL emits raw TLS 1.3 key-schedule labels; map them to the NSS keylog
+# labels Wireshark expects. Mirrors agent/tls/definitions/shared_constants.ts.
+TLS13_LABEL_MAP = {
+    "c hs traffic": "CLIENT_HANDSHAKE_TRAFFIC_SECRET",
+    "s hs traffic": "SERVER_HANDSHAKE_TRAFFIC_SECRET",
+    "c ap traffic": "CLIENT_TRAFFIC_SECRET_0",
+    "s ap traffic": "SERVER_TRAFFIC_SECRET_0",
+    "exp master": "EXPORTER_SECRET",
+    "res master": "RESUMPTION_MASTER_SECRET",
+}
+
+# Per-inferior client_random for LibreSSL. client_random is NOT reachable from
+# any LibreSSL KDF frame, so it is parsed out of the plaintext ClientHello written
+# to ws2_32!send (see Ws2SendClientHelloBP) and consumed by the leaf HKDF /
+# tls1_PRF hooks. Keyed by inferior number.
+_LIBRESSL_CLIENT_RANDOM = {}
+
+# Whether the ws2_32!send client_random breakpoint has been installed (once per
+# inferior that has a LibreSSL hook).
+_WS2_SEND_HOOKED = set()
+
+# Inferiors where a KDF-only (LibreSSL) hook was installed — drives the
+# ws2_32!send retry in find_hookable_functions until the send BP lands.
+_LIBRESSL_DETECTED = set()
+
+
+def _read_cstr(inferior, addr, limit=64):
+    # NOTE: gdb's Inferior.read_memory returns a memoryview; comparing it to a
+    # bytes literal (memoryview == b"\x00") does NOT match by content, so the
+    # NUL terminator must be detected on the converted bytes. Reading the whole
+    # chunk once and splitting on NUL is both correct and faster; fall back to a
+    # byte-at-a-time read when the string sits near the end of a mapping and a
+    # bulk read would run off into unmapped memory.
+    try:
+        raw = bytes(inferior.read_memory(addr, limit))
+    except gdb.error:
+        raw = bytearray()
+        for i in range(limit):
+            try:
+                raw += bytes(inferior.read_memory(addr + i, 1))
+            except gdb.error:
+                break
+        raw = bytes(raw)
+    return raw.split(b"\x00", 1)[0].decode("latin-1", "replace")
+
+
+def _ru16(inferior, addr):
+    return int.from_bytes(inferior.read_memory(addr, 2), "little")
+
+
+def _ru32(inferior, addr):
+    return int.from_bytes(inferior.read_memory(addr, 4), "little")
+
+
+def _find_pe_module_base(dll_substr):
+    """Return the load base of a PE module whose maps path contains dll_substr
+    (case-insensitive), picking the offset-0 mapping (the image header)."""
+    pid = gdb.selected_inferior().pid
+    needle = dll_substr.lower()
+    try:
+        with open(f"/proc/{pid}/maps") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 6:
+                    continue
+                addr, _perms, offset = parts[0], parts[1], parts[2]
+                path = parts[5]
+                if needle not in path.lower():
+                    continue
+                if int(offset, 16) != 0:
+                    continue  # want the image base (header at offset 0)
+                return int(addr.split("-")[0], 16)
+    except OSError:
+        return None
+    return None
+
+
+def _pe_find_export(base, export_name):
+    """Resolve an export address from a loaded PE image by walking its export
+    table in inferior memory. Ported from agent/platforms/wine.ts
+    parse_pe_find_export. Returns absolute VA or None."""
+    inf = gdb.selected_inferior()
+    try:
+        if _ru16(inf, base) != 0x5A4D:  # "MZ"
+            return None
+        pe_off = _ru32(inf, base + 0x3C)
+        if pe_off <= 0 or pe_off > 0x10000:
+            return None
+        if _ru32(inf, base + pe_off) != 0x00004550:  # "PE\0\0"
+            return None
+        opt_off = pe_off + 24
+        magic = _ru16(inf, base + opt_off)
+        if magic == 0x20B:
+            data_dir = opt_off + 112  # PE32+
+        elif magic == 0x10B:
+            data_dir = opt_off + 96   # PE32
+        else:
+            return None
+        export_rva = _ru32(inf, base + data_dir)
+        if export_rva == 0:
+            return None
+        ed = base + export_rva
+        num_funcs = _ru32(inf, ed + 0x14)
+        num_names = _ru32(inf, ed + 0x18)
+        funcs_rva = _ru32(inf, ed + 0x1C)
+        names_rva = _ru32(inf, ed + 0x20)
+        ords_rva = _ru32(inf, ed + 0x24)
+        if num_names == 0 or num_funcs == 0:
+            return None
+        for i in range(num_names):
+            name_rva = _ru32(inf, base + names_rva + i * 4)
+            if _read_cstr(inf, base + name_rva, 64) != export_name:
+                continue
+            ordinal = _ru16(inf, base + ords_rva + i * 2)
+            if ordinal >= num_funcs:
+                return None
+            func_rva = _ru32(inf, base + funcs_rva + ordinal * 4)
+            if func_rva == 0:
+                return None
+            return base + func_rva
+    except gdb.error:
+        return None
+    return None
+
+
+def _parse_clienthello_random(inferior, buf, length):
+    """Extract the 32-byte client_random (hex) from a ClientHello buffer in
+    either framing (TLS record 0x16 / bare handshake message 0x01), mirroring
+    agent/shared/clienthello_random.ts. Returns hex str or None."""
+    if buf == 0 or length < 38:
+        return None
+    try:
+        b = bytes(inferior.read_memory(buf, min(length, 11 + 32)))
+    except gdb.error:
+        return None
+    if b[0] == 0x16 and len(b) >= 11 + 32:
+        if b[5] == 0x01 and b[9] == 0x03:
+            return b[11:43].hex()
+    elif b[0] == 0x01 and len(b) >= 6 + 32:
+        if b[4] == 0x03:
+            return b[6:38].hex()
+    return None
+
+
+class Ws2SendClientHelloBP(gdb.Breakpoint):
+    """ws2_32!send(SOCKET s, const char *buf, int len, int flags) (Win64 ABI:
+    rcx=s, rdx=buf, r8=len). Parses the plaintext ClientHello to recover
+    client_random for the LibreSSL KDF hooks (which have no SSL* in frame)."""
+
+    def stop(self):
+        frame = gdb.selected_frame()
+        inferior = gdb.selected_inferior()
+        buf = int(frame.read_register("rdx")) & MASK64
+        length = int(frame.read_register("r8")) & 0xFFFFFFFF
+        cr = _parse_clienthello_random(inferior, buf, length)
+        if cr:
+            _LIBRESSL_CLIENT_RANDOM[inferior.num] = cr
+            logging.debug(f"[LibreSSL] client_random from ws2_32!send: {cr}")
+        return False
+
+
+def ensure_ws2_send_bp():
+    """Resolve ws2_32!send in the current inferior and plant a client_random
+    breakpoint on it (once). Called when a LibreSSL KDF hook is installed."""
+    num = gdb.selected_inferior().num
+    if num in _WS2_SEND_HOOKED:
+        return
+    base = _find_pe_module_base("ws2_32.dll")
+    if base is None:
+        logging.debug("[LibreSSL] ws2_32.dll not mapped yet; send hook deferred")
+        return
+    addr = _pe_find_export(base, "send")
+    if addr is None:
+        logging.debug("[LibreSSL] could not resolve ws2_32!send export")
+        return
+    _WS2_SEND_HOOKED.add(num)
+    bp = Ws2SendClientHelloBP("* " + hex(addr))
+    bp.inferior = num
+    logging.info(f"[LibreSSL] ws2_32!send client_random hook @ {hex(addr)}")
 
 
 def write_keylog(label, client_random, secret):
@@ -170,8 +353,113 @@ class FindHookablesBP(gdb.Breakpoint):
         return False
 
 
+class LibreSSLHkdfFinishWinBP(gdb.FinishBreakpoint):
+    """Reads the derived TLS 1.3 secret from *out after
+    tls13_hkdf_expand_label[_with_length] returns, then emits the keylog line."""
+
+    def __init__(self, out_ptr, nss_label):
+        super().__init__(internal=True)
+        self.out_ptr = out_ptr
+        self.nss_label = nss_label
+
+    def stop(self):
+        inferior = gdb.selected_inferior()
+        try:
+            data_ptr = int.from_bytes(inferior.read_memory(self.out_ptr, 8), "little") & MASK64
+            data_len = int.from_bytes(inferior.read_memory(self.out_ptr + 8, 8), "little")
+        except gdb.error:
+            return False
+        if data_ptr == 0 or not (0 < data_len < 256):
+            return False
+        try:
+            secret = bytes(inferior.read_memory(data_ptr, data_len)).hex()
+        except gdb.error:
+            return False
+        cr = _LIBRESSL_CLIENT_RANDOM.get(inferior.num)
+        if not cr:
+            logging.debug(f"[LibreSSL] client_random unknown, dropping {self.nss_label}")
+            return False
+        write_keylog(self.nss_label, cr, secret)
+        return False
+
+
+class LibreSSLHkdfExpandLabelWinBP(gdb.Breakpoint):
+    """LibreSSL TLS 1.3 tls13_hkdf_expand_label_with_length (Win64 ABI).
+
+        int tls13_hkdf_expand_label_with_length(struct tls13_secret *out,
+            const EVP_MD *md, const struct tls13_secret *secret,
+            const uint8_t *label, size_t label_len, const struct tls13_secret *context)
+
+    rcx=out, r9=label, [rsp+0x20]=label_len. The derived secret is written into
+    *out only on return, so we hand off to a FinishBreakpoint. tls13_secret is
+    { uint8_t *data; size_t len; }.
+    """
+
+    # Arms the ws2_32!send client_random capture (see hook_function).
+    needs_ws2_send_client_random = True
+
+    def stop(self):
+        frame = gdb.selected_frame()
+        inferior = gdb.selected_inferior()
+        out_ptr = int(frame.read_register("rcx")) & MASK64
+        label_ptr = int(frame.read_register("r9")) & MASK64
+        rsp = int(frame.read_register("rsp")) & MASK64
+        try:
+            label_len = int.from_bytes(inferior.read_memory(rsp + 0x20, 8), "little")
+            if 0 < label_len < 64:
+                label = bytes(inferior.read_memory(label_ptr, label_len)).decode("latin-1")
+            else:
+                label = _read_cstr(inferior, label_ptr)
+        except gdb.error:
+            return False
+        nss_label = TLS13_LABEL_MAP.get(label)
+        if not nss_label:
+            return False
+        try:
+            LibreSSLHkdfFinishWinBP(out_ptr, nss_label)
+        except (gdb.error, ValueError) as e:
+            logging.debug(f"[LibreSSL] could not set finish bp: {e}")
+        return False
+
+
+class LibreSSLTls1PrfWinBP(gdb.Breakpoint):
+    """LibreSSL TLS 1.2 tls1_PRF (Win64 ABI).
+
+    The "key expansion" PRF call carries the master secret in its register args
+    (secret=rdx, secret_len=r8, label=r9); client_random comes from the
+    ws2_32!send ClientHello capture (Ws2SendClientHelloBP). No SSL*, symbol, or
+    struct offset needed. Emits `CLIENT_RANDOM <cr> <master>`.
+    """
+
+    # Arms the ws2_32!send client_random capture (see hook_function).
+    needs_ws2_send_client_random = True
+
+    def stop(self):
+        frame = gdb.selected_frame()
+        inferior = gdb.selected_inferior()
+        try:
+            label_ptr = int(frame.read_register("r9")) & MASK64
+            if _read_cstr(inferior, label_ptr, 32) != "key expansion":
+                return False
+            secret_ptr = int(frame.read_register("rdx")) & MASK64
+            secret_len = int(frame.read_register("r8")) & 0xFFFFFFFF
+            if secret_ptr == 0 or not (0 < secret_len <= 64):
+                return False
+            cr = _LIBRESSL_CLIENT_RANDOM.get(inferior.num)
+            if not cr:
+                logging.debug("[LibreSSL] tls1_PRF: client_random not yet known")
+                return False
+            master = bytes(inferior.read_memory(secret_ptr, secret_len)).hex()
+            write_keylog("CLIENT_RANDOM", cr, master)
+        except gdb.error as e:
+            logging.debug(f"[LibreSSL] tls1_PRF read failed: {e}")
+        return False
+
+
 # Maps handler name strings to their classes for JSON loading.
 HANDLER_REGISTRY = {
+    "LibreSSLHkdfExpandLabelWinBP": LibreSSLHkdfExpandLabelWinBP,
+    "LibreSSLTls1PrfWinBP": LibreSSLTls1PrfWinBP,
     "GnuTLSCallKeylogUnixBP": GnuTLSCallKeylogUnixBP,
     "GnuTLSCallKeylogWindowsBP": GnuTLSCallKeylogWindowsBP,
     "GnuTLSNssKeylogFuncUnixBP": GnuTLSNssKeylogFuncUnixBP,
@@ -196,6 +484,23 @@ DEFAULT_TLS_PATTERNS = {
         "name": "SSL_log_secret windows",
         "offset": 0,
         "handler": "OpenSSLCallSSLLogSecretWindowsBP",
+    },
+    # LibreSSL (BoringSSL's SSL_log_secret does NOT exist in LibreSSL, and its
+    # keylog callback is never invoked). Keys come from the KDF. These x86-64/
+    # Win64 signatures are from curl-for-win LibreSSL 4.4.0; regenerate for other
+    # builds with utils/wine_hunter.py. client_random is recovered from the
+    # plaintext ClientHello written to ws2_32!send (see ensure_ws2_send_bp,
+    # armed when a LibreSSL hook is installed) — it is not reachable from any KDF
+    # frame, so no struct offsets / cr_chain are needed.
+    "f30f1efa5541565657534881eca0000000488dac24800000": {
+        "name": "libressl tls13_hkdf_expand_label_with_length windows",
+        "offset": 0,
+        "handler": "LibreSSLHkdfExpandLabelWinBP",
+    },
+    "f30f1efa5541574156415541545657534881ecd8000000": {
+        "name": "libressl tls1_PRF windows",
+        "offset": 0,
+        "handler": "LibreSSLTls1PrfWinBP",
     },
     # Fallback for builds that inline _gnutls_call_keylog_func (e.g. Ubuntu
     # gnutls 3.8.x): hook the registered NSS keylog callback instead. Prologue of
@@ -307,9 +612,15 @@ def hook_function(pattern, address):
     logging.debug(
         f"Hooking in {gdb.selected_inferior().num}: {PATTERNS[pattern]['name']}"
     )
-    bp = HANDLER_REGISTRY[PATTERNS[pattern]["handler"]]("* " + hex(target_address))
+    handler_cls = HANDLER_REGISTRY[PATTERNS[pattern]["handler"]]
+    bp = handler_cls("* " + hex(target_address))
     bp.inferior = gdb.selected_inferior().num
     _HOOKED.add((gdb.selected_inferior().num, target_address))
+    # A KDF-only handler (LibreSSL) exposes client_random nowhere else: request
+    # the ws2_32!send ClientHello capture, armed at the end of
+    # find_hookable_functions (and retried on later scans until ws2_32 maps).
+    if getattr(handler_cls, "needs_ws2_send_client_random", False):
+        _LIBRESSL_DETECTED.add(gdb.selected_inferior().num)
 
 
 def find_hookable_functions(ranges=None):
@@ -336,9 +647,33 @@ def find_hookable_functions(ranges=None):
         _SCANNED_RANGES.add(key)
 
         for pattern in PATTERNS:
-            offset = mem.find(pattern)
-            if offset != -1:
+            # Hook EVERY occurrence, not just the first. Several TLS prologues are
+            # not unique within a module (e.g. LibreSSL's tls1_PRF /
+            # tls13_hkdf_expand_label_with_length share their frame-setup prologue
+            # with sibling functions — 7 and 2 matches respectively in
+            # curl-for-win 4.4.0). mem.find() returns only the lowest address,
+            # which was usually the WRONG twin, so the real KDF was never hooked.
+            # The handlers filter by label / "key expansion", so breakpoints on
+            # non-KDF twins are harmless no-ops.
+            pos = 0
+            while True:
+                offset = mem.find(pattern, pos)
+                if offset == -1:
+                    break
                 hook_function(pattern, start + offset)
+                pos = offset + 1
+
+    # Once a LibreSSL KDF hook is in, arm the ws2_32!send client_random
+    # breakpoint, retrying on every scan until it lands (ensure_ws2_send_bp is
+    # idempotent). ws2_32.dll is frequently mapped AFTER the app image;
+    # new_objfile re-drives this scan when ws2_32 appears, and all-stop keeps the
+    # app frozen at that event, so the send hook is installed before the first
+    # send() call.
+    if inferior_num in _LIBRESSL_DETECTED:
+        try:
+            ensure_ws2_send_bp()
+        except Exception as e:
+            logging.debug(f"[LibreSSL] ensure_ws2_send_bp retry failed: {e}")
 
 
 def on_executable_changed_handler(event):
@@ -389,16 +724,44 @@ def attach(pid):
     gdb.execute("set non-stop off")
     gdb.execute("set follow-fork-mode parent")
     gdb.execute("handle all nostop")
-    gdb.execute("set detach-on-fork off")
+    # Detach from forked children and stay on the process we attached to (the one
+    # doing the TLS). With detach-on-fork OFF, all-stop cannot "resume the parent
+    # over vfork while holding the child stopped" when the app vfork+execs a Wine
+    # helper, so `c` aborts and gdb quits before the handshake. Detaching the
+    # child lets it run free while our breakpoints stay live in the parent.
+    gdb.execute("set detach-on-fork on")
     gdb.execute("set breakpoint pending on")
 
     _connect_scan_events()
+
+    # Keep SIGSTOP/SIGCONT quiet and non-stopping: the launcher freezes the app
+    # with SIGSTOP before we attach (so a one-shot like curl can't finish its
+    # handshake before the hooks are in — see _find_wine_app_pid(freeze=True)),
+    # then resumes it with SIGCONT to the process group WHILE we are blocked in
+    # `c` below. `handle all nostop` already covers these, but be explicit.
+    gdb.execute("handle SIGSTOP nostop noprint pass")
+    gdb.execute("handle SIGCONT nostop noprint pass")
 
     logging.info(f"attaching to {pid}")
     gdb.execute(f"attach {pid}")
 
     find_hookable_functions()
 
+    # Signal the launcher that hooks are installed, so it can SIGCONT the frozen
+    # app. Touching this is safe to race against the `c` below: the app is held
+    # ptrace-stopped until `c` regardless of when the SIGCONT lands, so it only
+    # clears the external group-stop. No-op outside the freeze-on-attach flow.
+    ready_file = os.environ.get("FRITAP_WINE_READY_FILE")
+    if ready_file:
+        try:
+            open(ready_file, "w").close()
+        except OSError as e:
+            logging.debug(f"could not write ready file {ready_file}: {e}")
+
+    # Hooks are installed above (synchronously, before any continue), so the app
+    # cannot reach TLS until this `c`. In all-stop, `c` blocks until the target
+    # exits, keeping the breakpoints live for the whole run; the launcher's
+    # SIGCONT clears the external group-stop once we are here.
     gdb.execute("c")
 
 

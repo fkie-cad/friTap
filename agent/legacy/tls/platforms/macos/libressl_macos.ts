@@ -7,20 +7,18 @@
 import { OpenSSL_BoringSSL } from "../../../../tls/libs/openssl_boringssl.js";
 import { socket_library } from "../../../../platforms/macos.js";
 import { devlog, devlog_error, log } from "../../../../util/log.js";
-import { patterns, isPatternReplaced, experimental } from "../../../../fritap_agent.js";
+import { patterns, isPatternReplaced, experimental, getParsedPatterns } from "../../../../fritap_agent.js";
 import { sendKeylog } from "../../../../shared/shared_structures.js";
-import { findNonExportedSymbols } from "../../../../shared/shared_functions.js";
+import { findLibreSslKdfAddresses, attachLibreSslPrfHook } from "../../../../shared/libressl_kdf.js";
+import { installLibreSslClientRandomViaSend, resolveLibreSslClientRandom, attachHandshakeTracker, currentHandshakeSsl } from "../../../../shared/libressl_client_random.js";
 import { readHexFromPointer } from "../../../../tls/decoders/hex_utils.js";
 import { executeSSLLibrary } from "../../../shared/shared_functions_legacy.js";
 import { TLS13_LABEL_MAP } from "../../../../tls/definitions/shared_constants.js";
 import { createKeylogCallbackTracker } from "../../../../shared/keylog_callback_tracker.js";
 
-// Pre-allocated buffers reused across hook invocations
-const _clientRandomBuf = Memory.alloc(32);
+// Pre-allocated buffer reused across hook invocations
 const _masterKeyBuf = Memory.alloc(48);
 
-// Thread-local SSL* tracking for KDF hooks
-const _threadSslMap = new Map<number, NativePointer>();
 
 export class LibreSSL_MacOS extends OpenSSL_BoringSSL {
 
@@ -34,7 +32,7 @@ export class LibreSSL_MacOS extends OpenSSL_BoringSSL {
             "SSL_get_session", "SSL_SESSION_get_id",
             "SSL_new", "SSL_CTX_set_keylog_callback",
             "SSL_get_client_random", "SSL_SESSION_get_master_key",
-            "SSL_do_handshake", "SSL_connect",
+            "SSL_do_handshake", "SSL_connect", "SSL_accept",
         ];
         library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
 
@@ -63,7 +61,6 @@ export class LibreSSL_MacOS extends OpenSSL_BoringSSL {
     }
 
     install_tls_keys_callback_hook() {
-        let keylogCallbackInstalled = false;
 
         // ── Tier 1: SSL_CTX_set_keylog_callback (LibreSSL 3.5+) ──
         const setKeylogAddr = this.addresses[this.moduleName]["SSL_CTX_set_keylog_callback"];
@@ -88,7 +85,6 @@ export class LibreSSL_MacOS extends OpenSSL_BoringSSL {
                             }
                         },
                     });
-                    keylogCallbackInstalled = true;
                     log("[LibreSSL] Keylog via SSL_CTX_set_keylog_callback installed");
                 }
             } catch (e) {
@@ -97,61 +93,44 @@ export class LibreSSL_MacOS extends OpenSSL_BoringSSL {
         }
 
         // ── Tier 2: Hook non-exported KDF functions ──
-        if (!keylogCallbackInstalled) {
-            log("[LibreSSL] SSL_CTX_set_keylog_callback not available, trying KDF hooks");
-            this.installKdfHooks();
-        }
+        // Always: LibreSSL exports SSL_CTX_set_keylog_callback (3.5+) but never
+        // invokes the callback, so Tier 1 alone yields no keys.
+        this.installKdfHooks();
     }
 
     private installKdfHooks(): void {
         this.installHandshakeTracker();
 
-        // Batch-resolve all non-exported symbols in a single pass
-        const nonExported = findNonExportedSymbols(this.moduleName, [
-            "tls13_hkdf_expand_label",
-            "tls13_hkdf_expand_label_with_length",
-            "tls1_PRF",
-        ]);
+        // Resolve the KDF functions: symbol table first (dynamic/symbol-bearing
+        // builds), byte-pattern fallback for stripped static hosts. Shared with
+        // the modern definition via agent/shared/libressl_kdf.ts.
+        const kdf = findLibreSslKdfAddresses(this.moduleName, getParsedPatterns());
+
+        // Stripped-static path: no SSL_get_client_random, and client_random is
+        // not reachable from any KDF frame — capture it from the ClientHello
+        // send() (getThreadClientRandom falls back to it).
+        if (!this.SSL_get_client_random_fn && (kdf.hkdf || kdf.hkdfWithLen || kdf.prf)) {
+            installLibreSslClientRandomViaSend();
+        }
 
         // ── TLS 1.3: tls13_hkdf_expand_label ──
-        const hkdfAddr = nonExported.get("tls13_hkdf_expand_label");
+        const hkdfAddr = kdf.hkdf;
         if (hkdfAddr) {
             log("[LibreSSL] Hooking tls13_hkdf_expand_label for TLS 1.3 key extraction");
             this.attachHkdfHook(hkdfAddr, "tls13_hkdf_expand_label");
         }
 
-        const hkdfWithLenAddr = nonExported.get("tls13_hkdf_expand_label_with_length");
+        const hkdfWithLenAddr = kdf.hkdfWithLen;
         if (hkdfWithLenAddr) {
             log("[LibreSSL] Hooking tls13_hkdf_expand_label_with_length");
             this.attachHkdfHook(hkdfWithLenAddr, "tls13_hkdf_expand_label_with_length");
         }
 
         // ── TLS 1.2: tls1_PRF ──
-        const prfAddr = nonExported.get("tls1_PRF");
+        const prfAddr = kdf.prf;
         if (prfAddr) {
             log("[LibreSSL] Hooking tls1_PRF for TLS 1.2 key extraction");
-            const instance = this;
-            Interceptor.attach(prfAddr, {
-                onEnter: function (args: any) {
-                    this.sslPtr = args[0];
-                },
-                onLeave: function (_retval: any) {
-                    try {
-                        if (!instance.SSL_get_client_random_fn) return;
-
-                        const crLen = instance.SSL_get_client_random_fn(this.sslPtr, _clientRandomBuf, 32);
-                        if (crLen !== 32) return;
-                        const clientRandom = readHexFromPointer(_clientRandomBuf, 32);
-
-                        const masterKey = instance.extractMasterKey(this.sslPtr);
-                        if (!masterKey) return;
-
-                        sendKeylog(`CLIENT_RANDOM ${clientRandom} ${masterKey}`);
-                    } catch (e) {
-                        devlog_error(`[LibreSSL] tls1_PRF onLeave error: ${e}`);
-                    }
-                },
-            });
+            attachLibreSslPrfHook(prfAddr, this.SSL_get_client_random_fn, (ssl) => this.extractMasterKey(ssl));
         }
     }
 
@@ -189,35 +168,19 @@ export class LibreSSL_MacOS extends OpenSSL_BoringSSL {
     }
 
     private installHandshakeTracker(): void {
-        for (const sym of ["SSL_do_handshake", "SSL_connect"]) {
+        // Hook every handshake entry point: LibreSSL's SSL_connect/SSL_accept
+        // call the method's handshake directly, NOT through SSL_do_handshake.
+        for (const sym of ["SSL_do_handshake", "SSL_connect", "SSL_accept"]) {
             const addr = this.addresses[this.moduleName][sym];
             if (addr && !addr.isNull()) {
-                Interceptor.attach(addr, {
-                    onEnter: function (args: any) {
-                        _threadSslMap.set(Process.getCurrentThreadId(), args[0]);
-                    },
-                    onLeave: function (_retval: any) {
-                        _threadSslMap.delete(Process.getCurrentThreadId());
-                    },
-                });
+                attachHandshakeTracker(addr);
                 devlog(`[LibreSSL] Handshake tracker installed on ${sym}`);
-                break;
             }
         }
     }
 
     private getThreadClientRandom(): string | null {
-        if (!this.SSL_get_client_random_fn) return null;
-        const ssl = _threadSslMap.get(Process.getCurrentThreadId());
-        if (!ssl) return null;
-        try {
-            const len = this.SSL_get_client_random_fn(ssl, _clientRandomBuf, 32);
-            if (len !== 32) return null;
-            return readHexFromPointer(_clientRandomBuf, 32);
-        } catch (e) {
-            devlog(`[LibreSSL] getThreadClientRandom error: ${e}`);
-            return null;
-        }
+        return resolveLibreSslClientRandom(this.SSL_get_client_random_fn, currentHandshakeSsl());
     }
 
     private extractMasterKey(ssl: NativePointer): string | null {
@@ -241,7 +204,7 @@ export class LibreSSL_MacOS extends OpenSSL_BoringSSL {
             "SSL_get_session", "SSL_SESSION_get_id",
             "SSL_new", "SSL_CTX_set_keylog_callback",
             "SSL_get_client_random", "SSL_SESSION_get_master_key",
-            "SSL_do_handshake", "SSL_connect",
+            "SSL_do_handshake", "SSL_connect", "SSL_accept",
         ]);
 
         this.install_plaintext_read_hook();

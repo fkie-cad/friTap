@@ -267,18 +267,37 @@ def run_wine_key_extraction(
                 pass
 
 
-def _find_wine_app_pid(exe_basename, exclude_pids, deadline):
-    """Poll /proc for the Wine process that actually does the TLS.
+def _find_wine_app_pid(exe_basename, exclude_pids, deadline, freeze=False,
+                       poll_interval=0.01):
+    """Poll /proc for the Wine process that actually runs the target app.
 
-    Wine spawns the app as a child of an initial launcher process, and several
-    processes share the exe name in their cmdline. We must attach to the one that
-    *maps the TLS library* (where the keylog function lives) -- attaching to the
-    short-lived parent makes gdb detach when it exits. So we keep polling until a
-    matching process has libgnutls/libssl mapped, and only fall back to any name
-    match once the timeout expires.
+    The app process is the one that maps the exe image (``curl.exe``) — the
+    transient ``wine`` launcher only has it in its cmdline. That single signal
+    identifies the app for BOTH statically linked TLS (curl-for-win's curl.exe,
+    which embeds LibreSSL and maps no libssl/libgnutls) and dynamically linked
+    TLS. The libssl/libgnutls-in-maps check is kept as an additional accept.
+
+    ``freeze=True`` sends ``SIGSTOP`` the instant the app is identified and
+    returns immediately. This is essential for a short one-shot like ``curl``:
+    the whole run is ~0.5 s and the TLS handshake fires ~150 ms after the image
+    is mapped — far too fast to win by attaching (gdb-attach latency alone loses
+    the race). Freezing is instantaneous, so it halts the app *before* TLS; gdb
+    then attaches to the frozen process at leisure, installs its hooks, and the
+    gdb side resumes it with ``SIGCONT`` (see ``attach()`` in the gdb script).
+    ``poll_interval`` defaults to 10 ms so detection lands well inside that
+    window.
     """
     import time
 
+    def _try_freeze(pid):
+        if freeze:
+            try:
+                os.kill(int(pid), signal.SIGSTOP)
+            except (OSError, ValueError):
+                pass
+        return pid
+
+    exe_lc = exe_basename.lower()
     fallback = None
     while time.time() < deadline:
         for d in glob.glob("/proc/[0-9]*"):
@@ -295,11 +314,17 @@ def _find_wine_app_pid(exe_basename, exclude_pids, deadline):
                 maps = open(d + "/maps").read()
             except OSError:
                 maps = ""
+            # The app maps its own exe image (static OR dynamic). Freeze + take it
+            # immediately — this is the earliest reliable identification, before
+            # the handshake. (For the static LibreSSL repro this is the only
+            # signal; ws2_32/libssl load slightly later.)
+            if exe_lc in maps.lower():
+                return _try_freeze(pid)
             if "libgnutls" in maps or "libssl" in maps:
-                return pid  # the process doing TLS -- attach here
+                return _try_freeze(pid)  # dynamic TLS before the exe image shows
             fallback = fallback or pid
-        time.sleep(0.3)
-    return fallback
+        time.sleep(poll_interval)
+    return _try_freeze(fallback) if fallback else None
 
 
 def launch_and_attach(
@@ -349,7 +374,8 @@ def launch_and_attach(
 
     try:
         pid = _find_wine_app_pid(
-            os.path.basename(program), before, time.time() + startup_timeout
+            os.path.basename(program), before, time.time() + startup_timeout,
+            freeze=True,
         )
         if pid is None:
             msg = (
@@ -362,15 +388,54 @@ def launch_and_attach(
                 print(msg, file=sys.stderr)
             _kill_tree()
             return 1
-        return run_wine_key_extraction(
-            attach=pid,
-            keylog=keylog,
-            patterns=patterns,
-            verbose=verbose,
-            debug_output=debug_output,
-            gdb_output=gdb_output,
-            on_process=on_process,  # also register gdb for teardown
-        )
+
+        # The app is frozen (SIGSTOP) so gdb can attach and install hooks before
+        # it reaches TLS. gdb's attach() installs the hooks synchronously, then
+        # touches FRITAP_WINE_READY_FILE and blocks in `c`. It cannot clear the
+        # external group-stop itself (a plain `c` hangs; a gdb-internal
+        # `signal SIGCONT` resumes it wrong), and SIGCONT'ing *before* gdb has
+        # hooked would let the app run free and finish un-hooked. So wait for the
+        # ready file, THEN SIGCONT the frozen app (repeatedly, harmless once it is
+        # running) while gdb stays blocked in `c`.
+        import tempfile
+        import threading
+
+        ready_fd, ready_path = tempfile.mkstemp(prefix="fritap_wine_ready_")
+        os.close(ready_fd)
+        os.unlink(ready_path)  # gdb re-creates it once hooks are installed
+        os.environ["FRITAP_WINE_READY_FILE"] = ready_path
+        resume_stop = threading.Event()
+
+        def _resumer():
+            # Wait until gdb signals "hooks installed", then clear the group-stop.
+            while not os.path.exists(ready_path):
+                if resume_stop.wait(0.02):
+                    return
+            while not resume_stop.wait(0.1):
+                try:
+                    os.kill(int(pid), signal.SIGCONT)
+                except (OSError, ValueError):
+                    return
+
+        resumer = threading.Thread(target=_resumer, name="fritap-wine-resume", daemon=True)
+        resumer.start()
+        try:
+            return run_wine_key_extraction(
+                attach=pid,
+                keylog=keylog,
+                patterns=patterns,
+                verbose=verbose,
+                debug_output=debug_output,
+                gdb_output=gdb_output,
+                on_process=on_process,  # also register gdb for teardown
+            )
+        finally:
+            resume_stop.set()
+            try:
+                os.unlink(ready_path)
+            except OSError:
+                pass
+            os.environ.pop("FRITAP_WINE_READY_FILE", None)
     finally:
         _kill_tree()
 

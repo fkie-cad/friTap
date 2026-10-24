@@ -30,7 +30,8 @@ This script currently only contains a limited number of patterns for hooking TLS
 |------------------|-----------------------------------------------------------------|
 | `GnuTLS (Linux)`           | used by wine for implementing schannel, hooking `_gnutls_call_keylog_func` |
 | `GnuTLS (Windows)`       | hooking `_gnutls_call_keylog_func`                |
-| `OpenSSL` | hooking `SSL_log_secret`         |
+| `OpenSSL/BoringSSL` | hooking `SSL_log_secret`         |
+| `LibreSSL` | hooking the KDF: `tls13_hkdf_expand_label_with_length` (TLS 1.3) and `tls1_PRF` (TLS 1.2). LibreSSL has **no** `SSL_log_secret` and never calls the keylog callback. `client_random` is parsed from the plaintext ClientHello on `ws2_32!send` (resolved from the PE export table), so statically linked hosts (e.g. curl-for-win) work with no extra config. |
 more patterns can be added by passing them via the `--patterns` or hard coding them in the dictionary `DEFAULT_TLS_PATTERNS`, depending on tls library more Breakpoint classes must be implemented, depending on the implementation of the TLS library.
 
 

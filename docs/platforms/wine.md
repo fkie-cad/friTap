@@ -59,9 +59,18 @@ Control this with `--wine`:
   both the classic layout (`wine-preloader`) and the newer *wow64* layout
   (a separate `wine64` loader, e.g. Wine 9.x on Ubuntu).
 - `kernel.yama.ptrace_scope=0` (or run as root): the GDB path attaches to the Wine
-  process, and on the wow64 layout friTap launches Wine normally and **attaches**
-  (gdb-spawning Wine deadlocks its wineserver/services cold boot under
-  `follow-fork`). Set it with `sudo sysctl -w kernel.yama.ptrace_scope=0`.
+  process. Set it with `sudo sysctl -w kernel.yama.ptrace_scope=0`.
+
+!!! note "How the `--spawn` path works (launch + freeze-on-detect + attach)"
+    gdb-*spawning* Wine tracks the whole wow64 process tree (wineserver, services,
+    …) and is too heavy — the app never reaches TLS. So friTap instead launches
+    Wine **normally** (fast, untraced), **fast-polls `/proc`** for the process that
+    maps the app's exe image, and **`SIGSTOP`s it the instant it appears** — before
+    it reaches the TLS handshake. gdb then attaches to the frozen process, installs
+    its hooks, and friTap resumes the app with `SIGCONT` while gdb stays attached
+    (`set detach-on-fork on` so the app's vfork'd Wine helpers run free). This
+    eliminates the attach race for short one-shots like `curl` (whole run ≈ 0.5 s,
+    handshake ≈ 150 ms after the image maps). Needs `ptrace_scope=0` as above.
 
 ### Signatures and different Wine / library builds
 
@@ -88,8 +97,23 @@ GnuTLS/OpenSSL build differs from the shipped signatures, regenerate them:
     `SSLKEYLOGFILE` is set, so keys are still captured passively. Wine's Schannel
     uses the host's native `libgnutls`, so this covers Windows apps that use the
     OS TLS stack (WinHTTP/WinINet/Schannel). Windows apps that **bundle** their own
-    TLS (e.g. a curl.exe statically linked against LibreSSL/OpenSSL) do not use
-    gnutls — those need the OpenSSL `SSL_log_secret` signature instead.
+    TLS do not use gnutls:
+
+    * A bundled **BoringSSL/OpenSSL** `libssl` needs the `SSL_log_secret`
+      signature.
+    * A bundled **LibreSSL** (e.g. a curl-for-win `curl.exe` statically linked
+      against LibreSSL) has **no** `SSL_log_secret` and **never** invokes the
+      keylog callback — its keys come from the KDF functions
+      (`tls13_hkdf_expand_label_with_length` for TLS 1.3, `tls1_PRF` for TLS 1.2).
+      friTap ships x86-64 signatures for these and reconstructs NSS keylog lines
+      (handler `LibreSSLHkdfExpandLabelWinBP`). `client_random` is **not**
+      reachable from any LibreSSL KDF frame, so friTap recovers it the same way
+      the Windows Schannel path does — by parsing the plaintext ClientHello off
+      the socket: it resolves `ws2_32!send` from the loaded PE export table and
+      reads the 32-byte random (handler `Ws2SendClientHelloBP`). No struct
+      offsets or `--patterns` are needed — the static curl-for-win case works out
+      of the box. A dynamically linked LibreSSL `libssl-*.dll` / `libtls-*.dll`
+      instead uses the exported `SSL_get_client_random`.
 
 You can also run the extractor standalone, outside friTap:
 
@@ -336,7 +360,9 @@ gated behind `--experimental` and work on both the legacy (default) and
 |----------------------|-----|--------------|--------|
 | `_gnutls_call_keylog_func` | System V (`rdi,rsi,rdx,rcx`) | x86-64 | native `libgnutls.so` **and Windows schannel** (via Wine's GnuTLS) |
 | `_gnutls_call_keylog_func` | Win64 (`rcx,rdx,r8,r9`) | x86-64 | PE-compiled `libgnutls-*.dll` bundled with an app |
-| `SSL_log_secret` | Win64 | x86-64 | PE-compiled OpenSSL/LibreSSL `libssl` |
+| `SSL_log_secret` | Win64 | x86-64 | PE-compiled OpenSSL/**BoringSSL** `libssl` (NOT LibreSSL) |
+| `tls13_hkdf_expand_label_with_length` (+ `ws2_32!send` for `client_random`) | Win64 | x86-64 | **LibreSSL** (PE `libssl-*.dll` or statically linked, e.g. curl-for-win); `client_random` parsed from the ClientHello on `send`, no offsets needed |
+| `tls1_PRF` | Win64 | x86-64 | **LibreSSL** TLS 1.2 (experimental) |
 | `_gnutls_call_keylog_func` | AAPCS64 (`x0,x1,x2,x3`) | *(none bundled — supply via `--patterns` or use layer 1/2)* | native ARM64 `libgnutls.so` |
 
 #### Dynamic pattern discovery for GnuTLS *(new)*

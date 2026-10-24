@@ -57,13 +57,16 @@ import { toHexString } from "../util/hex.js";
 import { sendKeylog } from "./shared_structures.js";
 import { log, devlog, devlog_error } from "../util/log.js";
 import { normalizeArchKey } from "../util/process_infos.js";
+import { resolveKdfPattern } from "./libressl_kdf.js";
+import { TLS13_LABEL_MAP } from "../tls/definitions/shared_constants.js";
+import { installLibreSslClientRandomViaSend, getLibreSslClientRandom } from "./libressl_client_random.js";
 
 type WineAbi = "sysv" | "win64" | "aarch64";
 
 interface WineKeylogSig {
     /** Human-readable id used in logs and as the pattern.json action key. */
     id: string;
-    /** "openssl" also covers LibreSSL. */
+    /** "openssl" is BoringSSL's ssl_log_secret (LibreSSL has none; see below). */
     library: "gnutls" | "openssl";
     abi: WineAbi;
 
@@ -121,6 +124,23 @@ function isPlausibleSecretLen(len: number): boolean {
     return len > 0 && len < 1024;
 }
 
+/** Integer/pointer argument `idx` of the call at `ctx` under `abi`. */
+function abiArg(ctx: CpuContext, abi: WineAbi, idx: number): NativePointer {
+    if (abi === "aarch64") {
+        const c = ctx as Arm64CpuContext;
+        return [c.x0, c.x1, c.x2, c.x3, c.x4, c.x5][idx];
+    } else if (abi === "win64") {
+        const c = ctx as X64CpuContext;
+        // args 0..3 in registers; 4..5 are stack slots at [rsp+0x20], [rsp+0x28]
+        if (idx < 4) return [c.rcx, c.rdx, c.r8, c.r9][idx];
+        return c.rsp.add(0x20 + (idx - 4) * 8).readPointer();
+    } else {
+        const c = ctx as X64CpuContext;
+        if (idx < 6) return [c.rdi, c.rsi, c.rdx, c.rcx, c.r8, c.r9][idx];
+        return c.rsp.add(8 + (idx - 6) * 8).readPointer();
+    }
+}
+
 /**
  * Read one SSLKEYLOGFILE line ("LABEL CR_HEX SECRET_HEX") from the registers
  * present at the hooked keylog-function entry, using the register set for this
@@ -139,18 +159,7 @@ export function readWineKeylogLine(
     ctx: CpuContext,
     sig: WineKeylogSig,
 ): string | null {
-    let a0: NativePointer, a1: NativePointer, a2: NativePointer, a3: NativePointer;
-    if (sig.abi === "aarch64") {
-        const c = ctx as Arm64CpuContext;
-        a0 = c.x0; a1 = c.x1; a2 = c.x2; a3 = c.x3;
-    } else if (sig.abi === "win64") {
-        const c = ctx as X64CpuContext;
-        a0 = c.rcx; a1 = c.rdx; a2 = c.r8; a3 = c.r9;
-    } else {
-        const c = ctx as X64CpuContext;
-        a0 = c.rdi; a1 = c.rsi; a2 = c.rdx; a3 = c.rcx;
-    }
-
+    const [a0, a1, a2, a3] = [0, 1, 2, 3].map((i) => abiArg(ctx, sig.abi, i));
 
     if (a0.isNull() || a1.isNull() || a2.isNull()) return null;
 
@@ -256,12 +265,12 @@ function enumerateExecRanges(mod: Module): RangeDetails[] {
     return ranges;
 }
 
-/** Scan pre-enumerated ranges for `pattern`, attaching on each match.
+/** Scan pre-enumerated ranges for `pattern`, calling `attach` on each match.
  *  Returns true if at least one match was found. */
 function scanRangesForPattern(
     ranges: RangeDetails[],
     pattern: string,
-    sig: WineKeylogSig,
+    attach: (address: NativePointer) => void,
     modName: string,
 ): boolean {
     let found = false;
@@ -269,7 +278,7 @@ function scanRangesForPattern(
         try {
             const matches = Memory.scanSync(range.base, range.size, pattern);
             for (const m of matches) {
-                attachKeylogHook(m.address, sig);
+                attach(m.address);
                 found = true;
             }
         } catch (e) {
@@ -302,13 +311,15 @@ export function installWineKeylogPatternHooks(
     // + NativeCallback path in agent/tls/libs/gnutls.ts, so failing this
     // gate silently is not a regression — it's just skipping a fallback.
     const archKey = normalizeArchKey(Process.arch);
-    if (archKey !== "x64" && (!userPatterns || !userPatterns.modules)) {
+    const scanKeylogSigs = archKey === "x64" || !!userPatterns?.modules;
+    if (!scanKeylogSigs) {
         devlog(
             `[Wine] keylog pattern hooking: no bundled ${archKey} patterns and no --patterns override; ` +
             `symbol-based gnutls hooks (native path) still active.`,
         );
-        return;
     }
+    const libreHkdfPatterns = resolveKdfPattern("hkdfWithLen", userPatterns);
+    if (!scanKeylogSigs && libreHkdfPatterns.length === 0) return;
 
     let modules: Module[];
     try {
@@ -325,10 +336,9 @@ export function installWineKeylogPatternHooks(
 
     // Patterns don't vary per module — resolve each signature's pattern list
     // once, not once per module.
-    const sigPatterns = WINE_KEYLOG_SIGNATURES.map((sig) => ({
-        sig,
-        patterns: resolvePatterns(sig, userPatterns),
-    }));
+    const sigPatterns = scanKeylogSigs
+        ? WINE_KEYLOG_SIGNATURES.map((sig) => ({ sig, patterns: resolvePatterns(sig, userPatterns) }))
+        : [];
 
     for (const mod of modules) {
         // Enumerate this module's executable ranges once, then scan every
@@ -338,8 +348,72 @@ export function installWineKeylogPatternHooks(
         for (const { sig, patterns } of sigPatterns) {
             // Try patterns in order; stop at the first that hits in this module.
             for (const pattern of patterns) {
-                if (scanRangesForPattern(ranges, pattern, sig, mod.name)) break;
+                if (scanRangesForPattern(ranges, pattern, (a) => attachKeylogHook(a, sig), mod.name)) break;
             }
         }
+        for (const pattern of libreHkdfPatterns) {
+            if (scanRangesForPattern(ranges, pattern, attachLibreSslHkdfHook, mod.name)) break;
+        }
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LibreSSL (Wine PE) — EXPERIMENTAL
+//
+// LibreSSL has no keylog callback and no SSL_log_secret (the openssl signature
+// above is BoringSSL's ssl_log_secret, which LibreSSL does NOT have). Keys come
+// from the KDF: tls13_hkdf_expand_label_with_length(out, md, secret, label,
+// label_len, context) writes the derived secret into *out on return, and the
+// raw TLS 1.3 label (arg3) maps to an NSS keylog label. The leaf has no SSL* in
+// its frame, so client_random is recovered by parsing the plaintext ClientHello
+// off the socket send() (agent/shared/libressl_client_random.ts) — no struct
+// offsets needed.
+//
+// This is the Frida counterpart of the GDB handlers in
+// agent_gdb/wine/gdb_script/gdb_wine_extract.py. For a name-matched / enumerable
+// PE libssl the full LibreSSL definition (agent/tls/definitions/libressl.ts,
+// with its own pattern fallback) is preferred; this hook targets the statically
+// linked exe. Under Wine the send() capture is best-effort (libc send); the GDB
+// backend, the default for Wine, resolves the PE ws2_32!send itself.
+
+function currentWineAbi(): WineAbi {
+    if (Process.arch === "arm64") return "aarch64";
+    // Under Wine on x86-64, PE code uses the Win64 ABI.
+    return "win64";
+}
+
+function attachLibreSslHkdfHook(address: NativePointer): void {
+    const key = "hkdf:" + address.toString();
+    if (hookedAddresses.has(key)) return;
+    hookedAddresses.add(key);
+
+    // Only needed once a LibreSSL KDF is actually present.
+    installLibreSslClientRandomViaSend();
+
+    const abi = currentWineAbi();
+    Interceptor.attach(address, {
+        onEnter() {
+            try {
+                this.outPtr = abiArg(this.context, abi, 0);
+                this.label = abiArg(this.context, abi, 3).readCString();
+            } catch (_) { this.label = null; }
+        },
+        onLeave() {
+            try {
+                if (!this.label) return;
+                const nss = (TLS13_LABEL_MAP as any)[this.label];
+                if (!nss) return;
+                const dataPtr = (this.outPtr as NativePointer).readPointer();
+                const dataLen = (this.outPtr as NativePointer).add(Process.pointerSize).readULong() as number;
+                if (dataPtr.isNull() || dataLen === 0 || dataLen > 256) return;
+                const cr = getLibreSslClientRandom();
+                if (!cr) return;
+                const secret = toHexString(dataPtr.readByteArray(dataLen));
+                sendKeylog(`${nss} ${cr} ${secret}`);
+            } catch (e) {
+                devlog_error(`[Wine/LibreSSL] hkdf onLeave error: ${e}`);
+            }
+        },
+    });
+    log(`[Wine/LibreSSL] hkdf hook @ ${address}`);
 }

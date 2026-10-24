@@ -11,13 +11,15 @@ import { HookDefinition, ResolvedFunctions, KeylogApproach } from "../../core/ho
 import { devlog, devlog_error, log } from "../../util/log.js";
 import { sendKeylog } from "../../shared/shared_structures.js";
 import { findNonExportedSymbols } from "../../shared/shared_functions.js";
+import { findLibreSslKdfAddresses, attachLibreSslPrfHook } from "../../shared/libressl_kdf.js";
+import { installLibreSslClientRandomViaSend, resolveLibreSslClientRandom, attachHandshakeTracker, currentHandshakeSsl } from "../../shared/libressl_client_random.js";
+import { getParsedPatterns } from "../../fritap_agent.js";
 import { readHexFromPointer } from "../decoders/hex_utils.js";
 import { STANDARD_SOCKET_SYMBOLS, TLS13_LABEL_MAP } from "./shared_constants.js";
 import { openSslClientRandomDecoder, openSslFdDecoder, openSslSessionIdDecoder } from "./openssl.js";
 import { createKeylogCallbackTracker } from "../../shared/keylog_callback_tracker.js";
 
-// Pre-allocated buffers reused across hook invocations
-const _clientRandomBuf = Memory.alloc(32);
+// Pre-allocated buffer reused across hook invocations
 const _masterKeyBuf = Memory.alloc(48);
 
 /**
@@ -29,7 +31,6 @@ function createLibreSslKeylogApproach(): KeylogApproach {
     return {
         kind: "custom",
         install: (addresses, modName, resolvedFns, _enableDefaultFd) => {
-            let keylogCallbackInstalled = false;
 
             // ── Tier 1: SSL_CTX_set_keylog_callback (LibreSSL 3.5+) ──
             const setKeylogAddr = addresses[modName]?.["SSL_CTX_set_keylog_callback"];
@@ -59,20 +60,16 @@ function createLibreSslKeylogApproach(): KeylogApproach {
                             }
                         },
                     });
-                    keylogCallbackInstalled = true;
                     log("[LibreSSL] Keylog via SSL_CTX_set_keylog_callback installed");
                 }
             }
 
             // ── Tier 2: Hook non-exported KDF functions ──
-            if (!keylogCallbackInstalled) {
-                log("[LibreSSL] SSL_CTX_set_keylog_callback not available, trying KDF hooks");
-                installKdfHooks(modName, resolvedFns);
-                log(`[*] ${modName}: keylog hooks installed via KDF function hooks (tls1_PRF / tls13_hkdf_expand_label)`);
-            } else {
-                log(`[*] ${modName}: keylog hooks installed via SSL_CTX_set_keylog_callback`);
-            }
-            return keylogCallbackInstalled;
+            // Always: LibreSSL exports SSL_CTX_set_keylog_callback (3.5+) but
+            // never invokes the callback, so Tier 1 alone yields no keys.
+            installKdfHooks(modName, resolvedFns);
+            log(`[*] ${modName}: keylog hooks installed via KDF function hooks (tls1_PRF / tls13_hkdf_expand_label)`);
+            return true;
         },
     };
 }
@@ -84,18 +81,24 @@ function createLibreSslKeylogApproach(): KeylogApproach {
 function installKdfHooks(modName: string, resolvedFns: ResolvedFunctions): void {
     const SSL_get_client_random = resolvedFns["SSL_get_client_random"];
 
-    // Batch-resolve all non-exported symbols in a single pass
-    const nonExported = findNonExportedSymbols(modName, [
-        "tls13_hkdf_expand_label",
-        "tls13_hkdf_expand_label_with_length",
-        "tls1_PRF",
-    ]);
+    // Resolve the KDF functions: symbol table first (dynamic/symbol-bearing
+    // builds), byte-pattern fallback for stripped static hosts. Shared with the
+    // legacy class via agent/shared/libressl_kdf.ts.
+    const nonExported = findLibreSslKdfAddresses(modName, getParsedPatterns());
+
+    // Stripped-static path: SSL_get_client_random is gone and client_random is
+    // not reachable from any KDF frame, so capture it from the plaintext
+    // ClientHello written to the socket (send()). The KDF hooks fall back to
+    // this per-thread value.
+    if (!SSL_get_client_random && (nonExported.hkdf || nonExported.hkdfWithLen || nonExported.prf)) {
+        installLibreSslClientRandomViaSend();
+    }
 
     // ── TLS 1.3: tls13_hkdf_expand_label ──
     // Signature: int tls13_hkdf_expand_label(tls13_secret *out, const EVP_MD *digest,
     //     const tls13_secret *secret, const char *label, const tls13_secret *context)
     // tls13_secret = { uint8_t *data; size_t len; }
-    const hkdfAddr = nonExported.get("tls13_hkdf_expand_label");
+    const hkdfAddr = nonExported.hkdf;
     if (hkdfAddr) {
         log("[LibreSSL] Hooking tls13_hkdf_expand_label for TLS 1.3 key extraction");
         attachHkdfHook(hkdfAddr, SSL_get_client_random, "tls13_hkdf_expand_label");
@@ -104,38 +107,17 @@ function installKdfHooks(modName: string, resolvedFns: ResolvedFunctions): void 
     }
 
     // Also try the _with_length variant
-    const hkdfWithLenAddr = nonExported.get("tls13_hkdf_expand_label_with_length");
+    const hkdfWithLenAddr = nonExported.hkdfWithLen;
     if (hkdfWithLenAddr) {
         log("[LibreSSL] Hooking tls13_hkdf_expand_label_with_length for TLS 1.3 key extraction");
         attachHkdfHook(hkdfWithLenAddr, SSL_get_client_random, "tls13_hkdf_expand_label_with_length");
     }
 
     // ── TLS 1.2: tls1_PRF ──
-    const prfAddr = nonExported.get("tls1_PRF");
+    const prfAddr = nonExported.prf;
     if (prfAddr) {
         log("[LibreSSL] Hooking tls1_PRF for TLS 1.2 key extraction");
-        Interceptor.attach(prfAddr, {
-            onEnter: function (args: any) {
-                this.sslPtr = args[0]; // SSL*
-            },
-            onLeave: function (_retval: any) {
-                try {
-                    if (!SSL_get_client_random) return;
-
-                    const crLen = SSL_get_client_random(this.sslPtr, _clientRandomBuf, 32) as number;
-                    if (crLen !== 32) return;
-                    const clientRandom = readHexFromPointer(_clientRandomBuf, 32);
-
-                    const masterKey = extractMasterKey(this.sslPtr, resolvedFns);
-                    if (!masterKey) return;
-
-                    devlog("invoking tls1_PRF keylog hook from LibreSSL");
-                    sendKeylog(`CLIENT_RANDOM ${clientRandom} ${masterKey}`);
-                } catch (e) {
-                    devlog_error(`[LibreSSL] tls1_PRF onLeave error: ${e}`);
-                }
-            },
-        });
+        attachLibreSslPrfHook(prfAddr, SSL_get_client_random, (ssl) => extractMasterKey(ssl, resolvedFns));
     } else {
         devlog("[LibreSSL] tls1_PRF not found (TLS 1.2 keylog unavailable)");
     }
@@ -189,12 +171,11 @@ function attachHkdfHook(
     });
 }
 
-// Thread-local SSL* tracking for mapping KDF calls back to their SSL connection
-const _threadSslMap = new Map<number, NativePointer>();
-
 function installHandshakeTracker(modName: string): void {
+    // Hook every handshake entry point: LibreSSL's SSL_connect/SSL_accept call
+    // the method's handshake directly, NOT through SSL_do_handshake.
     // Try exported symbols first (cheaper), then fall back to non-exported
-    for (const sym of ["SSL_do_handshake", "SSL_connect"]) {
+    for (const sym of ["SSL_do_handshake", "SSL_connect", "SSL_accept"]) {
         let hookAddr: NativePointer | null = null;
         try {
             hookAddr = Process.getModuleByName(modName).getExportByName(sym);
@@ -209,33 +190,14 @@ function installHandshakeTracker(modName: string): void {
         }
 
         if (hookAddr && !hookAddr.isNull()) {
-            Interceptor.attach(hookAddr, {
-                onEnter: function (args: any) {
-                    _threadSslMap.set(Process.getCurrentThreadId(), args[0]);
-                },
-                onLeave: function (_retval: any) {
-                    _threadSslMap.delete(Process.getCurrentThreadId());
-                },
-            });
+            attachHandshakeTracker(hookAddr);
             devlog(`[LibreSSL] Handshake tracker installed on ${sym}`);
-            break;
         }
     }
 }
 
 function getThreadClientRandom(SSL_get_client_random: NativeFunction<any, any> | undefined): string | null {
-    if (!SSL_get_client_random) return null;
-    const ssl = _threadSslMap.get(Process.getCurrentThreadId());
-    if (!ssl) return null;
-
-    try {
-        const len = SSL_get_client_random(ssl, _clientRandomBuf, 32) as number;
-        if (len !== 32) return null;
-        return readHexFromPointer(_clientRandomBuf, 32);
-    } catch (e) {
-        devlog(`[LibreSSL] getThreadClientRandom error: ${e}`);
-        return null;
-    }
+    return resolveLibreSslClientRandom(SSL_get_client_random, currentHandshakeSsl());
 }
 
 function extractMasterKey(ssl: NativePointer, resolvedFns: ResolvedFunctions): string | null {
@@ -266,6 +228,7 @@ export function createLibreSslDefinition(): HookDefinition {
         "SSL_SESSION_get_master_key",
         "SSL_do_handshake",
         "SSL_connect",
+        "SSL_accept",
     ];
 
     return {
