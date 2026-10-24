@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import shlex
 import sys
 
 logger = None
@@ -100,6 +101,44 @@ class OpenSSLCallSSLLogSecretWindowsBP(gdb.Breakpoint):
         return False
 
 
+class GnuTLSNssKeylogFuncUnixBP(gdb.Breakpoint):
+    """GnuTLS NSS keylog *callback* (SysV ABI):
+
+        int keylog_func(gnutls_session_t session, const char *label,
+                        const gnutls_datum_t *secret)
+
+    gnutls registers this callback unconditionally and invokes it for every
+    secret of every handshake (the SSLKEYLOGFILE check happens *inside* it), so
+    hooking its entry captures keys passively -- no SSLKEYLOGFILE needed. This is
+    the function to hook on builds where ``_gnutls_call_keylog_func`` is inlined
+    into the key schedule (e.g. Ubuntu gnutls 3.8.x), where the standalone
+    ``GnuTLSCallKeylog*`` signatures above never match. ``gnutls_datum_t`` is
+    ``{ unsigned char *data; unsigned int size; }`` and client_random lives at
+    ``session + 0x50`` (same session layout as the handlers above).
+    """
+
+    def stop(self):
+        frame = gdb.selected_frame()
+        inferior = gdb.selected_inferior()
+        rdi = frame.read_register("rdi")
+        rsi = frame.read_register("rsi")
+        rdx = frame.read_register("rdx")
+
+        label = rsi.cast(gdb.lookup_type("char").pointer()).string()
+        datum_ptr = int(rdx)
+        data_ptr = int.from_bytes(
+            inferior.read_memory(datum_ptr, 8), byteorder="little"
+        )
+        secret_size = int.from_bytes(
+            inferior.read_memory(datum_ptr + 8, 4), byteorder="little"
+        )
+        secret = bytes(inferior.read_memory(data_ptr, secret_size)).hex()
+        client_random = bytes(inferior.read_memory(int(rdi) + 0x50, 32)).hex()
+
+        write_keylog(label, client_random, secret)
+        return False
+
+
 class LdrLoadDLLWindowsBP(gdb.Breakpoint):
     def stop(self):
         ranges = get_memory_ranges()
@@ -135,6 +174,7 @@ class FindHookablesBP(gdb.Breakpoint):
 HANDLER_REGISTRY = {
     "GnuTLSCallKeylogUnixBP": GnuTLSCallKeylogUnixBP,
     "GnuTLSCallKeylogWindowsBP": GnuTLSCallKeylogWindowsBP,
+    "GnuTLSNssKeylogFuncUnixBP": GnuTLSNssKeylogFuncUnixBP,
     "OpenSSLCallSSLLogSecretWindowsBP": OpenSSLCallSSLLogSecretWindowsBP,
     "FindHookablesBP": FindHookablesBP,
     "LdrLoadDLLWindowsBP": LdrLoadDLLWindowsBP,
@@ -156,6 +196,14 @@ DEFAULT_TLS_PATTERNS = {
         "name": "SSL_log_secret windows",
         "offset": 0,
         "handler": "OpenSSLCallSSLLogSecretWindowsBP",
+    },
+    # Fallback for builds that inline _gnutls_call_keylog_func (e.g. Ubuntu
+    # gnutls 3.8.x): hook the registered NSS keylog callback instead. Prologue of
+    # the callback in libgnutls.so.30 (gnutls 3.8.9). See GnuTLSNssKeylogFuncUnixBP.
+    "f30f1efa554889e54157415641554154534881ece800000064488b0425280000": {
+        "name": "gnutls nss keylog callback unix (gnutls 3.8.x)",
+        "offset": 0,
+        "handler": "GnuTLSNssKeylogFuncUnixBP",
     },
 }
 
@@ -186,6 +234,15 @@ DEFAULT_WINE_PATTERNS = {
         "offset": 0,
     },
 }
+# NOTE: on the newer "wow64" Wine layout (e.g. wine 9.x on Ubuntu) there is no
+# wine-preloader and the loader entry points differ, so the loader signatures
+# above do not match. We deliberately do NOT add entry-point (offset 0) fallbacks
+# for the wow64 loader: a breakpoint planted at __wine_main/_start entry is torn
+# down during Wine's early wow64/exec transition and gdb then fails to re-insert
+# it ("Cannot insert breakpoint ... Cannot access memory"), aborting the run.
+# Re-scanning on this layout is instead driven by the new_objfile event (see
+# _connect_scan_events), which fires whenever a shared object -- including the
+# TLS library -- is mapped, so the loader breakpoints are redundant here anyway.
 
 
 def _load_patterns(config):
@@ -205,7 +262,7 @@ def _build_patterns(config):
 
     combined = {**tls, **wine}
 
-    for pattern, metadata in _load_patterns(config):
+    for pattern, metadata in _load_patterns(config).items():
         combined[pattern] = metadata
 
     logging.debug(f"Patterns loaded: {combined}")
@@ -224,13 +281,23 @@ def get_memory_ranges():
     return regions
 
 
+# (inferior_num, address) pairs we have already planted a breakpoint on.
+# Tracked ourselves instead of querying gdb.breakpoints(): gdb.Breakpoint.locations
+# only exists on gdb >= 13, and touching it on older gdb (e.g. 10.2) raises
+# AttributeError inside the scan, which previously aborted hooking entirely.
+_HOOKED = set()
+
+# (inferior_num, start, stop) ranges already read + pattern-scanned. new_objfile
+# fires once per shared object mapped (dozens of times during a Wine cold boot);
+# without this, every event would re-ptrace-copy and re-scan ALL executable
+# memory from scratch. Executable code does not change after a range is mapped
+# and freshly loaded libraries get fresh ranges, so scanning each range once is
+# sufficient. Mirrors the new-ranges diff already done in LdrLoadDllWindowsFinishBP.
+_SCANNED_RANGES = set()
+
+
 def is_hooked(address):
-    curr_inferior = gdb.selected_inferior().num
-    for breakpoint in gdb.breakpoints():
-        for location in breakpoint.locations:
-            if address == location.address and breakpoint.inferior == curr_inferior:
-                return True
-    return False
+    return (gdb.selected_inferior().num, address) in _HOOKED
 
 
 def hook_function(pattern, address):
@@ -242,6 +309,7 @@ def hook_function(pattern, address):
     )
     bp = HANDLER_REGISTRY[PATTERNS[pattern]["handler"]]("* " + hex(target_address))
     bp.inferior = gdb.selected_inferior().num
+    _HOOKED.add((gdb.selected_inferior().num, target_address))
 
 
 def find_hookable_functions(ranges=None):
@@ -249,9 +317,23 @@ def find_hookable_functions(ranges=None):
         ranges = get_memory_ranges()
 
     process = gdb.selected_inferior()
+    inferior_num = process.num
 
     for start, stop in ranges:
-        mem = bytes(process.read_memory(start, stop - start))
+        key = (inferior_num, start, stop)
+        if key in _SCANNED_RANGES:
+            continue  # already read + scanned this exact range (see _SCANNED_RANGES)
+        # Wine maps exotic/guard regions that are listed as readable in
+        # /proc/pid/maps but are not actually accessible to the debugger (and in
+        # non-stop mode a region can vanish mid-scan). A raised MemoryError here
+        # used to abort the whole scan, so a later range holding the TLS library
+        # was never searched. Skip unreadable ranges instead (do not mark them
+        # scanned, so a later attempt may retry).
+        try:
+            mem = bytes(process.read_memory(start, stop - start))
+        except (gdb.MemoryError, gdb.error):
+            continue
+        _SCANNED_RANGES.add(key)
 
         for pattern in PATTERNS:
             offset = mem.find(pattern)
@@ -261,20 +343,56 @@ def find_hookable_functions(ranges=None):
 
 def on_executable_changed_handler(event):
     logging.debug(
-        f"new program executed {event.progspace.filename}; {gdb.selected_inferior().num}"
+        f"scan event {type(event).__name__}; inferior {gdb.selected_inferior().num}"
     )
     find_hookable_functions()
 
 
+def _connect_scan_events():
+    """Connect re-scan triggers in a way that works across gdb versions.
+
+    ``gdb.events.executable_changed`` only exists on gdb >= 12 (the version the
+    original signatures were produced against). ``gdb.events.new_objfile`` exists
+    on every supported gdb and fires whenever a shared object (e.g. a TLS library)
+    is mapped -- exactly when we want to re-scan. Connect whichever are present so
+    the extractor runs unchanged on older gdb builds too.
+    """
+    connected = []
+    for name in ("executable_changed", "new_objfile"):
+        event = getattr(gdb.events, name, None)
+        if event is not None:
+            event.connect(on_executable_changed_handler)
+            connected.append(name)
+    logging.debug(f"connected scan events: {connected}")
+
+
+def _try_execute(cmd):
+    """Run an optional gdb setting, ignoring it if this gdb doesn't know it.
+
+    e.g. ``set exception-verbose`` is not available on older gdb (10.2) and
+    otherwise aborts attach before it even starts.
+    """
+    try:
+        gdb.execute(cmd)
+    except gdb.error as exc:
+        logging.debug(f"gdb command not supported, skipping: {cmd!r} ({exc})")
+
+
 def attach(pid):
-    gdb.execute("set exception-verbose on")
-    gdb.execute("set non-stop on")
+    _try_execute("set exception-verbose on")
+    # All-stop (not non-stop) for attach: the script drives gdb with no tty, so
+    # a non-stop "continue" returns immediately, the script ends and gdb detaches
+    # before any handshake fires ("No unwaited-for children left"). In all-stop,
+    # "continue" blocks until the target exits, keeping gdb alive and firing the
+    # keylog breakpoints the whole time; the scan also reads a stopped process.
+    # Our stop() handlers return False, so each hit resumes immediately.
+    gdb.execute("set non-stop off")
     gdb.execute("set follow-fork-mode parent")
     gdb.execute("handle all nostop")
     gdb.execute("set detach-on-fork off")
     gdb.execute("set breakpoint pending on")
 
-    gdb.events.executable_changed.connect(on_executable_changed_handler)
+    _connect_scan_events()
 
     logging.info(f"attaching to {pid}")
     gdb.execute(f"attach {pid}")
@@ -285,19 +403,25 @@ def attach(pid):
 
 
 def spawn(config, program_args=None):
+    wine_bin = config.get("wine-bin") or "wine"
     gdb.execute("set auto-solib-add on")
     gdb.execute("set non-stop on")
-    gdb.execute("file wine")
+    # Quote the loader path: it may live under a directory with spaces, and gdb's
+    # `file` tokenizes on whitespace otherwise.
+    gdb.execute("file " + shlex.quote(wine_bin))
     gdb.execute("set follow-fork-mode parent")
 
     gdb.execute("handle all nostop")
     gdb.execute("set detach-on-fork off")
     gdb.execute("set breakpoint pending on")
 
-    gdb.events.executable_changed.connect(on_executable_changed_handler)
+    _connect_scan_events()
 
-    arguments = " ".join([config["spawn"], *(program_args or [])])
-    arguments += f" 1>&{config['stdout-fd']} 2>&{config['stderr-fd']}"
+    # Shell-quote the program and its args (paths like "C:\Program Files\app.exe"
+    # contain spaces); gdb's `run` passes the string to the shell, so the fd
+    # redirection stays unquoted shell syntax.
+    quoted = " ".join(shlex.quote(a) for a in [config["spawn"], *(program_args or [])])
+    arguments = f"{quoted} 1>&{config['stdout-fd']} 2>&{config['stderr-fd']}"
     logging.info(f"Spawning executable {arguments}")
     gdb.execute(f"r {arguments}")
 

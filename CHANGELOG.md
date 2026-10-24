@@ -7,6 +7,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased] — 2.3.0
 
 ### Added
+  - **Automatic GDB-based TLS key extraction for Wine targets on Linux.** When a
+    Wine target is detected on a Linux host, friTap now routes key extraction
+    through the standalone GDB extractor (`agent_gdb/wine`) instead of injecting
+    Frida (gdb and Frida both need `ptrace`, so they cannot share the process).
+    No `--experimental` flag is needed. Works for both spawn (`fritap -s -k
+    keys.log wine app.exe`) and attach (`fritap -k keys.log $(pgrep -f app.exe)`).
+    This path extracts **key material only**; if plaintext/pcap capture is
+    requested, friTap prints a notice that it is not currently supported for Wine
+    and continues with key extraction. The extractor now resolves the real Wine
+    ELF loader automatically (handling the symlinked `wine` wrapper and the newer
+    *wow64* `wine64` layout with no `wine-preloader`), works on gdb builds without
+    `gdb.events.executable_changed` (falls back to `new_objfile`), ships fallback
+    loader signatures for the wow64 layout, and is now packaged into installed
+    wheels. See `docs/platforms/wine.md`. The extractor also gained a fallback
+    GnuTLS signature + handler (`GnuTLSNssKeylogFuncUnixBP`) for builds that
+    **inline** `_gnutls_call_keylog_func` (e.g. Ubuntu gnutls 3.8.x): it hooks the
+    registered NSS keylog callback, which gnutls invokes for every secret of every
+    handshake (the `SSLKEYLOGFILE` check is internal), so keys are captured
+    passively — verified to byte-match gnutls's own `SSLKEYLOGFILE` output. Also
+    made the extractor work on gdb < 13 (replaced `gdb.events.executable_changed`
+    with `new_objfile`, `Breakpoint.locations` with a tracked hook set, and made
+    `set exception-verbose` optional), skip unreadable Wine memory regions during
+    scanning, and use all-stop for attach so capture keeps running. For spawn
+    (`fritap -s wine app.exe`), friTap launches Wine normally and **attaches**
+    (gdb-spawning Wine deadlocks its cold boot on the wow64 layout); this needs
+    `kernel.yama.ptrace_scope=0`. Verified end to end on Ubuntu Wine 9.0 (wow64) +
+    gnutls 3.8.9 + gdb 10.2: real `CLIENT_RANDOM` keys captured from a live Windows
+    WinHTTP (Schannel→gnutls) app, byte-matching gnutls's own `SSLKEYLOGFILE`.
+  - **`--wine auto|on|off` and direct `.exe` targets.** A Windows binary given
+    directly on Linux (`fritap -s app.exe`) is now auto-detected as a Wine target
+    (by PE `MZ` magic, or the `.exe` name when the file can't be read) and `wine`
+    is prepended automatically. `--wine` controls this: `auto` (default) detects,
+    `on` forces the GDB Wine route, `off` disables it. An explicit `--backend
+    frida` keeps the Frida path for Wine targets (so the experimental Wine agent
+    stays reachable); `--wine on` overrides that.
   - **RC4 as a first-class protocol (`--protocol rc4`).** RC4 is independent of
     TLS: run it standalone (`--protocol rc4`) or nested inside TLS
     (`--protocol tls,rc4`, i.e. plaintext → RC4 → TLS). RC4 **keys** are hooked

@@ -75,7 +75,17 @@ setup(
             "plugins/examples/README.md",
             "offline/mtproto/schema/*.tl",
             "offline/mtproto/schema/SOURCE.txt",
-        ]
+        ],
+        # The Wine GDB key-extractor ships its in-gdb script + helpers as data
+        # (gdb_script/*.py is loaded via `gdb -x`, never imported as a module).
+        "agent_gdb": ["README.md"],
+        "agent_gdb.wine": [
+            "README.md",
+            "gdb_script/*.py",
+            "utils/*.py",
+            "utils/*.txt",
+            "utils/README.md",
+        ],
     },
     include_package_data=True,
     data_files=[
