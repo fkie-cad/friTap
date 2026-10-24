@@ -6,6 +6,7 @@ import { Platform, PLATFORM_WINE } from "../shared/shared_structures.js";
 import { contributedHooksFor } from "../shared/hook_contributors.js";
 import { load_linux_hooking_agent } from "./linux.js";
 import { installWineKeylogPatternHooks } from "../shared/wine_keylog_pattern_hook.js";
+import { libresslAwareDispatch } from "../shared/libressl_identification.js";
 
 // Import Windows-style TLS library hooks (reuse existing implementations)
 // Legacy v1 executors from legacy copies
@@ -21,8 +22,18 @@ import { gnutls_execute_modern as gnutls_execute_modern_windows } from "../tls/p
 import { mbedTLS_execute_modern as mbedTLS_execute_modern_windows } from "../tls/platforms/windows/mbedTLS_windows.js";
 import { nss_execute_modern as nss_execute_modern_windows } from "../tls/platforms/windows/nss_windows.js";
 import { wolfssl_execute_modern as wolfssl_execute_modern_windows } from "../tls/platforms/windows/wolfssl_windows.js";
+import { libressl_execute as libressl_execute_windows } from "../legacy/tls/platforms/windows/libressl_windows.js";
+import { libressl_execute_modern as libressl_execute_modern_windows } from "../tls/platforms/windows/libressl_windows.js";
 
 var platform_name: Platform = PLATFORM_WINE;
+
+// A PE libssl-NN.dll (or libtls-NN.dll) under Wine can be OpenSSL/BoringSSL or
+// LibreSSL. Route by content (the "LibreSSL" version string), since the two need
+// different key-extraction paths. Reuses the Windows executors (Win64 ABI).
+const libssl_dispatch_wine = () => libresslAwareDispatch(
+    use_modern ? libressl_execute_modern_windows : libressl_execute_windows,
+    use_modern ? boring_execute_modern_windows : boring_execute_windows,
+);
 
 // Wine uses Linux sockets (libc), not Windows sockets (WS2_32.dll)
 export const socket_library = "libc";
@@ -558,8 +569,12 @@ export function load_wine_hooking_agent(): void {
 
     // Then add Wine-specific DLL hooking
     hookRegistry.registerAll([
-        { platform: platform_name, pattern: /^(libssl|LIBSSL)-[0-9]+(_[0-9]+)?\.dll$/i, hookFn: (use_modern ? boring_execute_modern_windows : boring_execute_windows), library: "OpenSSL/BoringSSL", libraryType: "openssl" },
-        { platform: platform_name, pattern: /^.*libssl.*\.dll$/i, hookFn: (use_modern ? boring_execute_modern_windows : boring_execute_windows), library: "OpenSSL/BoringSSL", libraryType: "openssl" },
+        { platform: platform_name, pattern: /^(libssl|LIBSSL)-[0-9]+(_[0-9]+)?\.dll$/i, hookFn: libssl_dispatch_wine(), library: "OpenSSL/BoringSSL/LibreSSL", libraryType: "openssl" },
+        { platform: platform_name, pattern: /^.*libssl.*\.dll$/i, hookFn: libssl_dispatch_wine(), library: "OpenSSL/BoringSSL/LibreSSL", libraryType: "openssl" },
+        // LibreSSL's TLS wrapper DLL (libtls-NN.dll). Statically linked LibreSSL
+        // hosts have no DLL at all — those are covered by the GDB extractor and
+        // by the pattern tier of wine_keylog_pattern_hook.ts.
+        { platform: platform_name, pattern: /^(libtls|LIBTLS)-[0-9]+(_[0-9]+)?\.dll$/i, hookFn: libssl_dispatch_wine(), library: "LibreSSL (libtls)", libraryType: "libressl" },
         { platform: platform_name, pattern: /^.*(wolfssl|WOLFSSL).*\.dll$/i, hookFn: (use_modern ? wolfssl_execute_modern_windows : wolfssl_execute_windows), library: "WolfSSL", libraryType: "wolfssl" },
         { platform: platform_name, pattern: /^.*(libgnutls|LIBGNUTLS)-[0-9]+\.dll$/i, hookFn: (use_modern ? gnutls_execute_modern_windows : gnutls_execute_windows), library: "GnuTLS", libraryType: "gnutls" },
         { platform: platform_name, pattern: /^(nspr|NSPR)[0-9]*\.dll/i, hookFn: (use_modern ? nss_execute_modern_windows : nss_execute_windows), library: "NSS", libraryType: "nss" },

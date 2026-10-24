@@ -95,6 +95,10 @@ class HookingConfig:
     offsets: Optional[str] = None
     patterns: Optional[str] = None
     experimental: bool = False
+    # Wine GDB key-extraction route (Linux): "auto" detects Wine targets and uses
+    # the GDB extractor, "on" forces it on a local Linux target, "off" never uses
+    # it (falls through to the normal Frida flow). See SSL_Logger._should_use_wine_gdb.
+    wine_mode: str = "auto"
     enable_default_fd: bool = False
     anti_root: bool = False
     payload_modification: bool = False
@@ -243,6 +247,10 @@ class FriTapConfig:
     # string keep working unchanged. __post_init__ keeps the two in sync.
     protocols: List[str] = field(default_factory=list)
     backend: str = BackendName.FRIDA
+    # True when the user explicitly passed --backend (vs. the default). In "auto"
+    # Wine mode an explicit `--backend frida` suppresses the GDB Wine route so the
+    # experimental Frida Wine agent stays reachable.
+    backend_explicit: bool = False
     debug: bool = False
     debug_output: bool = False
     custom_hook_script: Optional[str] = None
@@ -326,6 +334,8 @@ class FriTapConfig:
         offsets: Optional[str] = None,
         debug_output: bool = False,
         experimental: bool = False,
+        wine_mode: str = "auto",
+        backend_explicit: bool = False,
         anti_root: bool = False,
         payload_modification: bool = False,
         library_scan: bool = False,
@@ -417,6 +427,7 @@ class FriTapConfig:
                 offsets=offsets,
                 patterns=patterns,
                 experimental=experimental,
+                wine_mode=wine_mode,
                 enable_default_fd=enable_default_fd,
                 anti_root=anti_root,
                 payload_modification=payload_modification,
@@ -441,6 +452,7 @@ class FriTapConfig:
             protocol=protocol,
             protocols=list(protocols) if protocols else [protocol],
             backend=backend,
+            backend_explicit=backend_explicit,
             debug=debug_mode,
             debug_output=debug_output,
             custom_hook_script=custom_hook_script,

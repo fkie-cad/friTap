@@ -1,5 +1,5 @@
 📦
-1618669 /agent/fritap_agent.js
+1629684 /agent/fritap_agent.js
 ✄
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -20945,6 +20945,28 @@ function blTarget(pc, insn) {
 function inModule(addr, start, end) {
   return addr.compare(start) >= 0 && addr.compare(end) < 0;
 }
+function findAnchorString(mod, ascii) {
+  const pattern = toHexPattern(ascii);
+  const ranges = mod.enumerateRanges("r--");
+  for (const range of ranges) {
+    try {
+      const hits = Memory.scanSync(range.base, range.size, pattern);
+      if (hits.length > 0)
+        return hits[0].address;
+    } catch (_e) {
+    }
+  }
+  const rx = mod.enumerateRanges("r-x");
+  for (const range of rx) {
+    try {
+      const hits = Memory.scanSync(range.base, range.size, pattern);
+      if (hits.length > 0)
+        return hits[0].address;
+    } catch (_e) {
+    }
+  }
+  return null;
+}
 var LOAD_SITE_WINDOW = 8;
 var MAX_LOAD_SITES = 8;
 var XREF_SCAN_CHUNK_BYTES = 2 * 1024 * 1024;
@@ -31272,37 +31294,447 @@ function ssl_python_execute_modern(moduleName, is_base_hook) {
   executeFromDefinition(def, moduleName, socket_library2, is_base_hook, enable_default_fd);
 }
 
-// agent/tls/platforms/linux/gnutls_linux.ts
+// agent/tls/platforms/linux/libressl_linux.ts
 init_node_globals();
-function gnutls_execute_modern2(moduleName, is_base_hook) {
-  executeFromDefinition(createGnuTlsDefinition(), moduleName, socket_library2, is_base_hook, enable_default_fd);
+
+// agent/tls/definitions/libressl.ts
+init_node_globals();
+init_shared_structures();
+
+// agent/shared/libressl_kdf.ts
+init_node_globals();
+init_shared_structures();
+
+// agent/shared/libressl_client_random.ts
+init_node_globals();
+
+// agent/shared/clienthello_random.ts
+init_node_globals();
+function extractClientRandomFromHandshake(buf, len) {
+  if (buf.isNull() || len < 38)
+    return null;
+  try {
+    const b0 = buf.readU8();
+    if (b0 === 22 && len >= 11 + 32) {
+      const hsType = buf.add(5).readU8();
+      const clientVersionHi = buf.add(9).readU8();
+      if (hsType === 1 && clientVersionHi === 3) {
+        const bytes = buf.add(11).readByteArray(32);
+        if (bytes)
+          return toHexString(bytes);
+      }
+      return null;
+    }
+    if (b0 === 1 && len >= 6 + 32) {
+      const clientVersionHi = buf.add(4).readU8();
+      if (clientVersionHi === 3) {
+        const bytes = buf.add(6).readByteArray(32);
+        if (bytes)
+          return toHexString(bytes);
+      }
+      return null;
+    }
+  } catch (_) {
+    return null;
+  }
+  return null;
 }
 
-// agent/tls/platforms/linux/wolfssl_linux.ts
-init_node_globals();
-function wolfssl_execute_modern2(moduleName, is_base_hook) {
-  executeFromDefinition(createWolfSslDefinition(), moduleName, socket_library2, is_base_hook, enable_default_fd);
+// agent/shared/libressl_client_random.ts
+var _crByThread = /* @__PURE__ */ new Map();
+var _sendHookInstalled = false;
+var _sslCrBuf = Memory.alloc(32);
+var _handshakeSslByThread = /* @__PURE__ */ new Map();
+function currentHandshakeSsl() {
+  return _handshakeSslByThread.get(Process.getCurrentThreadId());
+}
+function attachHandshakeTracker(addr) {
+  Interceptor.attach(addr, {
+    onEnter: function(args) {
+      const tid = Process.getCurrentThreadId();
+      this.prevSsl = _handshakeSslByThread.get(tid);
+      _handshakeSslByThread.set(tid, args[0]);
+    },
+    onLeave: function(_retval) {
+      const tid = Process.getCurrentThreadId();
+      if (this.prevSsl)
+        _handshakeSslByThread.set(tid, this.prevSsl);
+      else
+        _handshakeSslByThread.delete(tid);
+    }
+  });
+}
+function getLibreSslClientRandom() {
+  return _crByThread.get(Process.getCurrentThreadId()) ?? null;
+}
+function readSslClientRandom(SSL_get_client_random, ssl) {
+  if (!SSL_get_client_random || !ssl || ssl.isNull())
+    return null;
+  try {
+    const len = SSL_get_client_random(ssl, _sslCrBuf, 32);
+    if (len === 32)
+      return readHexFromPointer(_sslCrBuf, 32);
+  } catch (e) {
+    devlog(`[LibreSSL] SSL_get_client_random error: ${e}`);
+  }
+  return null;
+}
+function resolveLibreSslClientRandom(SSL_get_client_random, ssl) {
+  return readSslClientRandom(SSL_get_client_random, ssl) ?? getLibreSslClientRandom();
+}
+function installLibreSslClientRandomViaSend() {
+  if (_sendHookInstalled)
+    return;
+  let sendAddr = null;
+  try {
+    sendAddr = Module.findGlobalExportByName("send");
+  } catch (_) {
+    sendAddr = null;
+  }
+  if (!sendAddr || sendAddr.isNull()) {
+    devlog("[LibreSSL] send() not resolvable; client_random-via-send unavailable");
+    return;
+  }
+  try {
+    Interceptor.attach(sendAddr, {
+      onEnter(args) {
+        try {
+          const cr = extractClientRandomFromHandshake(args[1], args[2].toInt32());
+          if (cr) {
+            _crByThread.set(Process.getCurrentThreadId(), cr);
+            devlog(`[LibreSSL] client_random from send(): ${cr}`);
+          }
+        } catch (_) {
+        }
+      }
+    });
+  } catch (e) {
+    devlog_error(`[LibreSSL] failed to hook send(): ${e}`);
+    return;
+  }
+  _sendHookInstalled = true;
+  log("[LibreSSL] client_random capture via send() installed (stripped-static path)");
 }
 
-// agent/tls/platforms/linux/nss_linux.ts
-init_node_globals();
-function nss_execute_modern2(moduleName, is_base_hook) {
-  executeFromDefinition(createNssDefinition(), moduleName, socket_library2, is_base_hook, enable_default_fd);
+// agent/shared/libressl_kdf.ts
+var BUNDLED_LIBRESSL_KDF = {
+  x64: {
+    // tls13_hkdf_expand_label_with_length @ curl-for-win 4.4.0:
+    //   endbr64; push rbp; push r14; push rsi; push rdi; push rbx;
+    //   sub rsp, 0xA0; lea rbp, [rsp+0x80]
+    hkdfWithLen: "F3 0F 1E FA 55 41 56 56 57 53 48 81 EC A0 00 00 00 48 8D AC 24 80 00 00",
+    // tls1_PRF @ curl-for-win 4.4.0:
+    //   endbr64; push rbp; push r15..r12; push rsi; push rdi; push rbx;
+    //   sub rsp, 0xD8
+    prf: "F3 0F 1E FA 55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC D8 00 00 00"
+  }
+};
+function nodeToPatterns(node) {
+  if (!node)
+    return [];
+  if (typeof node === "string" && node.length > 0)
+    return [node];
+  if (Array.isArray(node))
+    return node.filter((p) => typeof p === "string" && p.length > 0);
+  const list = [];
+  for (const key of ["primary", "fallback", "second_fallback"]) {
+    const p = node[key];
+    if (typeof p === "string" && p.length > 0)
+      list.push(p);
+  }
+  return list;
+}
+function resolveKdfPattern(kind, userPatterns) {
+  const archKey = normalizeArchKey(Process.arch);
+  const platformKey = currentPlatformKey();
+  try {
+    const candidates = [
+      userPatterns?.modules?.libressl?.[archKey]?.[kind],
+      userPatterns?.libressl?.[platformKey]?.[archKey]?.[kind],
+      userPatterns?.libressl?.[archKey]?.[kind]
+    ];
+    for (const node of candidates) {
+      const list = nodeToPatterns(node);
+      if (list.length > 0) {
+        devlog(`[LibreSSL] Using --patterns override (arch=${archKey}) for ${kind}`);
+        return list;
+      }
+    }
+  } catch (e) {
+    devlog_error(`[LibreSSL] Error reading --patterns override for ${kind}: ${e}`);
+  }
+  const bundled = BUNDLED_LIBRESSL_KDF[archKey]?.[kind];
+  return bundled ? [bundled] : [];
+}
+function scanModuleFirst(moduleName, pattern) {
+  let mod;
+  try {
+    mod = Process.getModuleByName(moduleName);
+  } catch (e) {
+    devlog(`[LibreSSL] scan: module ${moduleName} not found: ${e}`);
+    return null;
+  }
+  for (const prot of ["r-x", "rwx"]) {
+    let ranges;
+    try {
+      ranges = mod.enumerateRanges(prot);
+    } catch (_) {
+      continue;
+    }
+    for (const r of ranges) {
+      try {
+        const matches = Memory.scanSync(r.base, r.size, pattern);
+        if (matches.length > 0)
+          return matches[0].address;
+      } catch (_) {
+      }
+    }
+  }
+  return null;
+}
+function scanKdf(moduleName, kind, userPatterns) {
+  for (const pat of resolveKdfPattern(kind, userPatterns)) {
+    const m2 = scanModuleFirst(moduleName, pat);
+    if (m2) {
+      log(`[LibreSSL] located ${kind} via byte pattern @ ${m2} in ${moduleName}`);
+      return m2;
+    }
+  }
+  return null;
+}
+function findLibreSslKdfAddresses(moduleName, userPatterns) {
+  const nonExported = findNonExportedSymbols(moduleName, [
+    "tls13_hkdf_expand_label",
+    "tls13_hkdf_expand_label_with_length",
+    "tls1_PRF"
+  ]);
+  const hkdf = nonExported.get("tls13_hkdf_expand_label") ?? null;
+  let hkdfWithLen = nonExported.get("tls13_hkdf_expand_label_with_length") ?? null;
+  let prf = nonExported.get("tls1_PRF") ?? null;
+  if (!hkdfWithLen && !hkdf)
+    hkdfWithLen = scanKdf(moduleName, "hkdfWithLen", userPatterns);
+  if (!prf)
+    prf = scanKdf(moduleName, "prf", userPatterns);
+  return { hkdf, hkdfWithLen, prf };
+}
+function attachLibreSslPrfHook(addr, SSL_get_client_random, masterKey) {
+  Interceptor.attach(addr, {
+    onEnter: function(args) {
+      this.sslPtr = args[0];
+      try {
+        if (args[3].readCString() === "key expansion") {
+          this.kxSecret = args[1];
+          this.kxSecretLen = args[2].toInt32();
+        }
+      } catch (_) {
+      }
+    },
+    onLeave: function(_retval) {
+      try {
+        const sslCr = readSslClientRandom(SSL_get_client_random, this.sslPtr);
+        const sslMaster = sslCr ? masterKey(this.sslPtr) : null;
+        if (sslCr && sslMaster) {
+          devlog("invoking tls1_PRF keylog hook from LibreSSL (dynamic)");
+          sendKeylog(`CLIENT_RANDOM ${sslCr} ${sslMaster}`);
+          return;
+        }
+        if (this.kxSecret && this.kxSecretLen > 0 && this.kxSecretLen <= 64 && !this.kxSecret.isNull()) {
+          const clientRandom = getLibreSslClientRandom();
+          if (!clientRandom)
+            return;
+          devlog("invoking tls1_PRF keylog hook from LibreSSL (stripped/args)");
+          sendKeylog(`CLIENT_RANDOM ${clientRandom} ${readHexFromPointer(this.kxSecret, this.kxSecretLen)}`);
+        }
+      } catch (e) {
+        devlog_error(`[LibreSSL] tls1_PRF onLeave error: ${e}`);
+      }
+    }
+  });
 }
 
-// agent/tls/platforms/linux/mbedTLS_linux.ts
-init_node_globals();
-function mbedTLS_execute_modern2(moduleName, is_base_hook) {
-  executeFromDefinition(createMbedTlsDefinition(), moduleName, socket_library2, is_base_hook, enable_default_fd);
+// agent/tls/definitions/libressl.ts
+var _masterKeyBuf = Memory.alloc(48);
+function createLibreSslKeylogApproach() {
+  return {
+    kind: "custom",
+    install: (addresses, modName, resolvedFns, _enableDefaultFd) => {
+      const setKeylogAddr = addresses[modName]?.["SSL_CTX_set_keylog_callback"];
+      if (resolvedFns["SSL_CTX_set_keylog_callback"] && setKeylogAddr && !setKeylogAddr.isNull()) {
+        const keylogCb = new NativeCallback(function(_ssl, line) {
+          devlog(`invoking keylog_callback from LibreSSL (${modName})`);
+          sendKeylog(line.readCString());
+        }, "void", ["pointer", "pointer"]);
+        const sslNewAddr = addresses[modName]?.["SSL_new"];
+        if (sslNewAddr && !sslNewAddr.isNull()) {
+          const tracker = createKeylogCallbackTracker(modName, setKeylogAddr, keylogCb, true);
+          Interceptor.attach(sslNewAddr, {
+            onEnter: function(args) {
+              try {
+                tracker.install(args[0]);
+              } catch (e) {
+                devlog_error(`[LibreSSL] Error in SSL_new keylog hook: ${e}`);
+              }
+            }
+          });
+          log("[LibreSSL] Keylog via SSL_CTX_set_keylog_callback installed");
+        }
+      }
+      installKdfHooks(modName, resolvedFns);
+      log(`[*] ${modName}: keylog hooks installed via KDF function hooks (tls1_PRF / tls13_hkdf_expand_label)`);
+      return true;
+    }
+  };
+}
+function installKdfHooks(modName, resolvedFns) {
+  const SSL_get_client_random = resolvedFns["SSL_get_client_random"];
+  const nonExported = findLibreSslKdfAddresses(modName, getParsedPatterns());
+  if (!SSL_get_client_random && (nonExported.hkdf || nonExported.hkdfWithLen || nonExported.prf)) {
+    installLibreSslClientRandomViaSend();
+  }
+  const hkdfAddr = nonExported.hkdf;
+  if (hkdfAddr) {
+    log("[LibreSSL] Hooking tls13_hkdf_expand_label for TLS 1.3 key extraction");
+    attachHkdfHook(hkdfAddr, SSL_get_client_random, "tls13_hkdf_expand_label");
+  } else {
+    devlog("[LibreSSL] tls13_hkdf_expand_label not found (TLS 1.3 keylog unavailable)");
+  }
+  const hkdfWithLenAddr = nonExported.hkdfWithLen;
+  if (hkdfWithLenAddr) {
+    log("[LibreSSL] Hooking tls13_hkdf_expand_label_with_length for TLS 1.3 key extraction");
+    attachHkdfHook(hkdfWithLenAddr, SSL_get_client_random, "tls13_hkdf_expand_label_with_length");
+  }
+  const prfAddr = nonExported.prf;
+  if (prfAddr) {
+    log("[LibreSSL] Hooking tls1_PRF for TLS 1.2 key extraction");
+    attachLibreSslPrfHook(prfAddr, SSL_get_client_random, (ssl) => extractMasterKey(ssl, resolvedFns));
+  } else {
+    devlog("[LibreSSL] tls1_PRF not found (TLS 1.2 keylog unavailable)");
+  }
+  installHandshakeTracker(modName);
+}
+function attachHkdfHook(addr, SSL_get_client_random, funcName) {
+  Interceptor.attach(addr, {
+    onEnter: function(args) {
+      this.outSecret = args[0];
+      this.labelPtr = args[3];
+    },
+    onLeave: function(_retval) {
+      try {
+        const label = this.labelPtr.readCString();
+        const sslkeylogLabel = TLS13_LABEL_MAP[label];
+        if (!sslkeylogLabel) {
+          devlog(`[LibreSSL] Unknown TLS 1.3 label: ${label}`);
+          return;
+        }
+        const dataPtr = this.outSecret.readPointer();
+        const dataLen = this.outSecret.add(Process.pointerSize).readULong();
+        if (dataPtr.isNull() || dataLen === 0)
+          return;
+        const secretHex = readHexFromPointer(dataPtr, dataLen);
+        const clientRandom = getThreadClientRandom(SSL_get_client_random);
+        if (!clientRandom) {
+          devlog(`[LibreSSL] Could not get client_random for ${funcName} keylog`);
+          return;
+        }
+        devlog(`invoking ${funcName} keylog hook from LibreSSL`);
+        sendKeylog(`${sslkeylogLabel} ${clientRandom} ${secretHex}`);
+      } catch (e) {
+        devlog_error(`[LibreSSL] ${funcName} onLeave error: ${e}`);
+      }
+    }
+  });
+}
+function installHandshakeTracker(modName) {
+  for (const sym of ["SSL_do_handshake", "SSL_connect", "SSL_accept"]) {
+    let hookAddr = null;
+    try {
+      hookAddr = Process.getModuleByName(modName).getExportByName(sym);
+    } catch (_) {
+    }
+    if (!hookAddr || hookAddr.isNull()) {
+      const found = findNonExportedSymbols(modName, [sym]);
+      hookAddr = found.get(sym) || null;
+    }
+    if (hookAddr && !hookAddr.isNull()) {
+      attachHandshakeTracker(hookAddr);
+      devlog(`[LibreSSL] Handshake tracker installed on ${sym}`);
+    }
+  }
+}
+function getThreadClientRandom(SSL_get_client_random) {
+  return resolveLibreSslClientRandom(SSL_get_client_random, currentHandshakeSsl());
+}
+function extractMasterKey(ssl, resolvedFns) {
+  if (!resolvedFns["SSL_get_session"])
+    return null;
+  const session = resolvedFns["SSL_get_session"](ssl);
+  if (session.isNull())
+    return null;
+  if (resolvedFns["SSL_SESSION_get_master_key"]) {
+    const mkLen = resolvedFns["SSL_SESSION_get_master_key"](session, _masterKeyBuf, 48);
+    if (mkLen > 0) {
+      return readHexFromPointer(_masterKeyBuf, mkLen);
+    }
+  }
+  return null;
+}
+function createLibreSslDefinition() {
+  const librarySymbols = [
+    "SSL_read",
+    "SSL_write",
+    "SSL_get_fd",
+    "SSL_get_session",
+    "SSL_SESSION_get_id",
+    "SSL_new",
+    "SSL_CTX_set_keylog_callback",
+    "SSL_get_client_random",
+    "SSL_SESSION_get_master_key",
+    "SSL_do_handshake",
+    "SSL_connect",
+    "SSL_accept"
+  ];
+  return {
+    libraryId: "libressl",
+    offsetKey: "openssl",
+    functions: {
+      librarySymbols,
+      socketSymbols: STANDARD_SOCKET_SYMBOLS
+    },
+    nativeFunctions: [
+      { symbol: "SSL_get_fd", retType: "int", argTypes: ["pointer"] },
+      { symbol: "SSL_get_session", retType: "pointer", argTypes: ["pointer"] },
+      { symbol: "SSL_SESSION_get_id", retType: "pointer", argTypes: ["pointer", "pointer"] },
+      { symbol: "SSL_CTX_set_keylog_callback", retType: "void", argTypes: ["pointer", "pointer"] },
+      { symbol: "SSL_get_client_random", retType: "int", argTypes: ["pointer", "pointer", "int"] },
+      { symbol: "SSL_SESSION_get_master_key", retType: "int", argTypes: ["pointer", "pointer", "int"] }
+    ],
+    fdDecoder: openSslFdDecoder,
+    sessionIdDecoder: openSslSessionIdDecoder,
+    clientRandomDecoder: openSslClientRandomDecoder,
+    readHook: {
+      symbol: "SSL_read",
+      args: { sslCtxArgIndex: 0, bufferArgIndex: 1, bytesTransferred: "retval" },
+      functionLabel: "SSL_read"
+    },
+    writeHook: {
+      symbol: "SSL_write",
+      args: { sslCtxArgIndex: 0, bufferArgIndex: 1, lengthArgIndex: 2, bytesTransferred: "arg" },
+      functionLabel: "SSL_write"
+    },
+    keylog: createLibreSslKeylogApproach()
+  };
 }
 
-// agent/tls/platforms/linux/s2ntls_linux.ts
-init_node_globals();
-function s2ntls_execute_modern2(moduleName, is_base_hook) {
-  executeFromDefinition(createS2nTlsDefinition(), moduleName, socket_library2, is_base_hook, enable_default_fd);
+// agent/tls/platforms/linux/libressl_linux.ts
+function libressl_execute_modern(moduleName, is_base_hook) {
+  enableDeepSymbolResolution(moduleName);
+  executeFromDefinition(createLibreSslDefinition(), moduleName, socket_library2, is_base_hook, enable_default_fd);
 }
 
-// agent/legacy/tls/platforms/linux/openssl_boringssl_linux.ts
+// agent/legacy/tls/platforms/linux/libressl_linux.ts
+init_node_globals();
+
+// agent/legacy/tls/platforms/macos/libressl_macos.ts
 init_node_globals();
 
 // agent/tls/libs/openssl_boringssl.ts
@@ -31768,7 +32200,3882 @@ var OpenSSL_BoringSSL2 = class _OpenSSL_BoringSSL {
   }
 };
 
+// agent/platforms/macos.ts
+init_node_globals();
+init_shared_structures();
+
+// agent/shared/darwin_library_patterns.ts
+init_node_globals();
+var VERSIONED_LIBSSL_DYLIB = /(^|\/)libssl\.\d+(\.\d+)*\.dylib$/;
+var SYSTEM_LIBRESSL_PATH = /^\/usr\/lib\/libssl\.\d+(\.\d+)*\.dylib$/;
+var ANY_LIBSSL_DYLIB = /.*libssl.*\.dylib/;
+
+// agent/legacy/tls/platforms/macos/openssl_boringssl_macos.ts
+init_node_globals();
+init_shared_structures();
+
+// agent/legacy/tls/shared/apple_keylog_offset.ts
+init_node_globals();
+var IOS_OFFSETS = [
+  { minMajor: 18, offset: 784, provenance: "measured-from-apple-binary", note: "iOS 18.6 + 26.2 simulator runtimes" },
+  { minMajor: 17, offset: 776, provenance: "measured-from-apple-binary", note: "iOS 17.0 + 17.5 simulator runtimes" },
+  { minMajor: 16, offset: 768, provenance: "field-reported", note: "contributed in 2be00c64; worked in the field, not re-measured here" },
+  { minMajor: 15, offset: 760, provenance: "field-reported", note: "contributed in 22386f56; worked in the field, not re-measured here" },
+  { minMajor: 14, offset: 696, provenance: "field-reported", note: "contributed in 22386f56; worked in the field, not re-measured here" },
+  { minMajor: 0, offset: 680, provenance: "field-reported", note: "original codeshare value, iOS < 14" }
+];
+var MACOS_OFFSETS = [
+  { minMajor: 15, offset: 784, provenance: "inferred-from-ios-twin", note: "matches measured iOS 18/26 value; confirmed by live derivation on macOS 26.3.1" },
+  { minMajor: 14, offset: 776, provenance: "inferred-from-ios-twin", note: "matches measured iOS 17 value" },
+  { minMajor: 13, offset: 768, provenance: "inferred-from-ios-twin", note: "matches iOS 16 bucket" },
+  { minMajor: 12, offset: 760, provenance: "inferred-from-ios-twin", note: "matches iOS 15 bucket" },
+  { minMajor: 11, offset: 696, provenance: "inferred-from-ios-twin", note: "matches iOS 14 bucket" },
+  { minMajor: 0, offset: 680, provenance: "field-reported", note: "original codeshare value" }
+];
+function readCoreFoundationVersion() {
+  try {
+    const cf = Process.findModuleByName("CoreFoundation");
+    if (cf === null)
+      return null;
+    const sym = cf.findExportByName("kCFCoreFoundationVersionNumber");
+    if (sym === null || sym.isNull())
+      return null;
+    return sym.readDouble();
+  } catch (e) {
+    return null;
+  }
+}
+function coreFoundationVersionToMajor(cf) {
+  if (cf > 1979.1)
+    return 17;
+  if (cf >= 1946.102)
+    return 16;
+  if (cf >= 1854)
+    return 15;
+  if (cf >= 1751.108)
+    return 14;
+  return 13;
+}
+function detectMajorVersion() {
+  const sysctlVersion = darwinProductVersion();
+  if (sysctlVersion !== null) {
+    const major = darwinMajorVersion();
+    if (major > 0) {
+      return { major, source: "sysctl", detail: `kern.osproductversion=${sysctlVersion}` };
+    }
+  }
+  try {
+    if (ObjC.available && ObjC.classes.NSProcessInfo !== void 0) {
+      const versionString = ObjC.classes.NSProcessInfo.processInfo().operatingSystemVersionString().toString();
+      const matched = versionString.match(/(\d+)\.(\d+)/);
+      if (matched !== null) {
+        return { major: parseInt(matched[1], 10), source: "NSProcessInfo", detail: versionString };
+      }
+    }
+  } catch (e) {
+  }
+  const cf = readCoreFoundationVersion();
+  if (cf !== null) {
+    return {
+      major: coreFoundationVersionToMajor(cf),
+      source: "CoreFoundation",
+      detail: `kCFCoreFoundationVersionNumber=${cf}`
+    };
+  }
+  return { major: -1, source: "unknown", detail: "no version source available" };
+}
+var MIN_PLAUSIBLE_CTX_FIELD_OFFSET = 128;
+var MAX_PLAUSIBLE_CTX_FIELD_OFFSET = 4096;
+function deriveOffsetFromBinary(moduleName) {
+  if (Process.arch !== "arm64")
+    return null;
+  try {
+    const mod = Process.findModuleByName(moduleName);
+    if (mod === null)
+      return null;
+    resetReadableCache();
+    const decodeSetter = (addr) => {
+      if (addr === null || addr.isNull())
+        return null;
+      if (!isReadable(addr, 8))
+        return null;
+      const body = addr.readU32();
+      if (!isSTRimmU64(body))
+        return null;
+      if (regRd(body) !== 1 || regRn(body) !== 0)
+        return null;
+      if (!isRET(addr.add(4).readU32()))
+        return null;
+      const offset = decodeSTRU64Imm(body);
+      if (offset < MIN_PLAUSIBLE_CTX_FIELD_OFFSET || offset > MAX_PLAUSIBLE_CTX_FIELD_OFFSET)
+        return null;
+      return offset;
+    };
+    if (decodeSetter(mod.findExportByName("SSL_CTX_set_info_callback")) === null) {
+      devlog(`[${moduleName}] setter decode calibration failed \u2014 not deriving the keylog offset`);
+      return null;
+    }
+    for (const sym of mod.enumerateSymbols()) {
+      if (sym.name !== "SSL_CTX_set_keylog_callback" && sym.name !== "_SSL_CTX_set_keylog_callback")
+        continue;
+      const offset = decodeSetter(sym.address);
+      if (offset !== null)
+        return offset;
+      devlog(`[${moduleName}] found SSL_CTX_set_keylog_callback but its body is not the expected setter shape`);
+      return null;
+    }
+    return null;
+  } catch (e) {
+    devlog(`[${moduleName}] keylog offset derivation failed: ${e}`);
+    return null;
+  }
+}
+function resolveKeylogCallbackOffset(platform, moduleName) {
+  const table = platform === "iOS" ? IOS_OFFSETS : MACOS_OFFSETS;
+  const detected = detectMajorVersion();
+  if (moduleName !== void 0) {
+    const selfDerived = deriveOffsetFromBinary(moduleName);
+    if (selfDerived !== null) {
+      return {
+        offset: selfDerived,
+        major: detected.major,
+        provenance: "measured-on-target",
+        versionSource: detected.source,
+        versionDetail: detected.detail,
+        note: `decoded from ${moduleName}!SSL_CTX_set_keylog_callback`
+      };
+    }
+  }
+  const bucket = table.find((b) => detected.major >= b.minMajor) ?? table[table.length - 1];
+  return {
+    offset: bucket.offset,
+    major: detected.major,
+    provenance: bucket.provenance,
+    versionSource: detected.source,
+    versionDetail: detected.detail,
+    note: bucket.note
+  };
+}
+function hex(value) {
+  return "0x" + value.toString(16).toUpperCase();
+}
+function installKeylogCallbackViaCtxWrite(setInfoCallbackAddress, keylogCallback, platform, moduleName) {
+  const resolved = resolveKeylogCallbackOffset(platform, moduleName);
+  devlog(`[${platform}] SSL_CTX.keylog_callback offset ${hex(resolved.offset)} (OS major ${resolved.major} via ${resolved.versionSource}: ${resolved.versionDetail}; provenance ${resolved.provenance} \u2014 ${resolved.note})`);
+  let installedOnce = false;
+  let vetoedOnce = false;
+  Interceptor.attach(setInfoCallbackAddress, {
+    onEnter(args) {
+      try {
+        const ctx = ptr(args[0]);
+        if (ctx.isNull())
+          return;
+        const target = ctx.add(resolved.offset);
+        if (!isWritable(target, Process.pointerSize)) {
+          if (!vetoedOnce) {
+            vetoedOnce = true;
+            log(`[-] ${platform}: refusing to install the BoringSSL keylog callback \u2014 SSL_CTX+${hex(resolved.offset)} is not in a writable mapping.`);
+            log(`[-] The keylog_callback offset for this OS is wrong (detected OS major ${resolved.major} via ${resolved.versionSource}: ${resolved.versionDetail}, offset provenance: ${resolved.provenance}). No TLS keys will be extracted.`);
+            log(`[-] Please report this with your exact OS version at https://github.com/fkie-cad/friTap/issues \u2014 and run 'python dev/derive_boringssl_keylog_offset.py' if you have Xcode installed.`);
+          }
+          return;
+        }
+        const current = safeReadPointer(target);
+        if (current === null) {
+          if (!vetoedOnce) {
+            vetoedOnce = true;
+            log(`[-] ${platform}: SSL_CTX+${hex(resolved.offset)} became unreadable \u2014 skipping the keylog callback install.`);
+          }
+          return;
+        }
+        if (current.equals(keylogCallback))
+          return;
+        if (!current.isNull()) {
+          if (!vetoedOnce) {
+            vetoedOnce = true;
+            log(`[-] ${platform}: refusing to overwrite SSL_CTX+${hex(resolved.offset)} \u2014 it already holds ${current}, so this is not an empty keylog_callback field.`);
+            log(`[-] Writing there would corrupt BoringSSL's own state and crash the target (fkie-cad/friTap#65). Detected OS major ${resolved.major} via ${resolved.versionSource}: ${resolved.versionDetail}; offset provenance: ${resolved.provenance}. No TLS keys will be extracted.`);
+            log(`[-] Please report your exact OS version at https://github.com/fkie-cad/friTap/issues so the offset table can be fixed.`);
+          }
+          return;
+        }
+        target.writePointer(keylogCallback);
+        if (!installedOnce) {
+          installedOnce = true;
+          devlog(`[${platform}] installed BoringSSL keylog callback at SSL_CTX+${hex(resolved.offset)}`);
+        }
+      } catch (e) {
+        if (!vetoedOnce) {
+          vetoedOnce = true;
+          log(`[-] ${platform}: keylog callback install failed: ${e}`);
+        }
+      }
+    }
+  });
+  return resolved;
+}
+
+// agent/legacy/tls/platforms/macos/openssl_boringssl_macos.ts
+var OpenSSL_BoringSSL_MacOS = class extends OpenSSL_BoringSSL2 {
+  moduleName;
+  socket_library;
+  install_tls_keys_callback_hook() {
+    if (ObjC.available) {
+      const setInfoCallback = this.addresses[this.module_name]["SSL_CTX_set_info_callback"];
+      if (setInfoCallback === void 0 || setInfoCallback === null || setInfoCallback.isNull()) {
+        devlog("[MacOS] SSL_CTX_set_info_callback unresolved \u2014 cannot install the keylog callback");
+        return;
+      }
+      installKeylogCallbackViaCtxWrite(setInfoCallback, this.keylog_callback, "MacOS", this.module_name);
+    }
+  }
+  constructor(moduleName, socket_library6, is_base_hook) {
+    var library_method_mapping = {};
+    library_method_mapping[`*${moduleName}*`] = ["SSL_CTX_set_info_callback"];
+    super(moduleName, socket_library6, is_base_hook, library_method_mapping);
+    this.moduleName = moduleName;
+    this.socket_library = socket_library6;
+  }
+  async execute_hooks() {
+    OpenSSL_BoringSSL2.initializePipeline(isPatternReplaced() ? patterns : void 0, experimental);
+    await this.resolveWithPipelineAsync(["SSL_CTX_set_info_callback"]);
+    this.install_tls_keys_callback_hook();
+  }
+};
+var OpenSSL_From_Python_MacOS = class extends OpenSSL_BoringSSL2 {
+  moduleName;
+  socket_library;
+  constructor(moduleName, socket_library6, is_base_hook) {
+    var library_method_mapping = {};
+    library_method_mapping[`*${moduleName}*`] = ["SSL_CTX_set_keylog_callback", "SSL_CTX_new", "SSL_new", "SSL_get_SSL_CTX"];
+    super(moduleName, socket_library6, is_base_hook, library_method_mapping);
+    this.moduleName = moduleName;
+    this.socket_library = socket_library6;
+  }
+  install_openssl_keys_callback_hook() {
+    var instance = this;
+    const ssl_new_ptr = this.addresses[this.module_name]["SSL_new"];
+    const ssl_get_ctx_ptr = this.addresses[this.module_name]["SSL_get_SSL_CTX"];
+    const set_keylog_cb_ptr = this.addresses[this.module_name]["SSL_CTX_set_keylog_callback"];
+    if (!ssl_new_ptr || !ssl_get_ctx_ptr || !set_keylog_cb_ptr) {
+      devlog_error(`Required functions not found in ${this.module_name}`);
+      return;
+    }
+    this.SSL_CTX_set_keylog_callback = new NativeFunction(set_keylog_cb_ptr, "void", ["pointer", "pointer"]);
+    const tracker = createKeylogCallbackTracker(this.module_name, set_keylog_cb_ptr, instance.keylog_callback, true);
+    try {
+      const SSL_get_SSL_CTX = new NativeFunction(ssl_get_ctx_ptr, "pointer", ["pointer"]);
+      Interceptor.attach(ssl_new_ptr, {
+        onEnter(args) {
+        },
+        onLeave(retval) {
+          if (retval.isNull()) {
+            devlog_error("SSL_new returned NULL");
+            return;
+          }
+          const ssl_ptr = retval;
+          const ctx_ptr = SSL_get_SSL_CTX(ssl_ptr);
+          if (ctx_ptr.isNull()) {
+            devlog_error("SSL_get_SSL_CTX returned NULL");
+            return;
+          }
+          try {
+            devlog("Installing callback for OpenSSL_From_Python for module: " + instance.module_name);
+            tracker.install(ctx_ptr);
+          } catch (e) {
+            devlog_error(`Failed to set keylog callback: ${e}`);
+          }
+        }
+      });
+    } catch (e) {
+      devlog_error(`Error hooking ${instance.module_name}: ${e}`);
+    }
+    try {
+      Interceptor.attach(set_keylog_cb_ptr, {
+        onEnter: function(args) {
+          let callback_func = args[1];
+          if (callback_func.isNull() || tracker.sealed)
+            return;
+          tracker.noteAppCallback(args[0], callback_func);
+          Interceptor.attach(callback_func, {
+            onEnter: function(args2) {
+              sendKeylog(args2[1].readCString());
+            }
+          });
+        }
+      });
+    } catch (e) {
+      devlog_error(`Failed to attach to SSL_CTX_set_keylog_callback in ${instance.module_name}: ${e}`);
+    }
+  }
+  async execute_hooks() {
+    OpenSSL_BoringSSL2.initializePipeline(isPatternReplaced() ? patterns : void 0, experimental);
+    await this.resolveWithPipelineAsync([
+      "SSL_CTX_set_keylog_callback",
+      "SSL_CTX_new",
+      "SSL_new",
+      "SSL_get_SSL_CTX"
+    ]);
+    this.install_openssl_keys_callback_hook();
+  }
+};
+function boring_execute2(moduleName, is_base_hook) {
+  enableDeepSymbolResolution(moduleName);
+  executeSSLLibrary(OpenSSL_BoringSSL_MacOS, moduleName, socket_library3, is_base_hook);
+}
+function ssl_python_execute(moduleName, is_base_hook) {
+  enableDeepSymbolResolution(moduleName);
+  executeSSLLibrary(OpenSSL_From_Python_MacOS, moduleName, socket_library3, is_base_hook);
+}
+
+// agent/tls/platforms/macos/openssl_boringssl_macos.ts
+init_node_globals();
+function boring_execute_modern3(moduleName, is_base_hook) {
+  enableDeepSymbolResolution(moduleName);
+  const def = createOpenSslDefinition({ skipReadWriteHooks: true });
+  def.keylog = createBoringSSLKeylogApproach();
+  def.libraryType = "boringssl";
+  executeFromDefinition(def, moduleName, socket_library3, is_base_hook, enable_default_fd);
+}
+function ssl_python_execute_modern2(moduleName, is_base_hook) {
+  enableDeepSymbolResolution(moduleName);
+  const def = createOpenSslDefinition({ includeExSymbols: true });
+  def.keylog = createBoringSSLKeylogApproach();
+  executeFromDefinition(def, moduleName, socket_library3, is_base_hook, enable_default_fd);
+}
+
+// agent/tls/platforms/macos/libressl_macos.ts
+init_node_globals();
+function libressl_execute_modern2(moduleName, is_base_hook) {
+  executeFromDefinition(createLibreSslDefinition(), moduleName, socket_library3, is_base_hook, enable_default_fd);
+}
+
+// agent/legacy/tls/platforms/macos/cronet_macos.ts
+init_node_globals();
+var Cronet_MacOS = class extends Cronet {
+  moduleName;
+  socket_library;
+  default_pattern;
+  constructor(moduleName, socket_library6, is_base_hook) {
+    super(moduleName, socket_library6, is_base_hook);
+    this.moduleName = moduleName;
+    this.socket_library = socket_library6;
+    this.default_pattern = {
+      "x64": CRONET_X64_PATTERNS,
+      "arm64": {
+        primary: "FF 83 01 D1 F6 57 03 A9 F4 4F 04 A9 FD 7B 05 A9 FD 43 01 91 08 34 40 F9 08 51 41 F9 48 08 00 B4",
+        fallback: "3F 23 03 D5 FF 03 02 D1 FD 7B 04 A9 F7 2B 00 F9 F6 57 06 A9 F4 4F 07 A9 FD 03 01 91 08 34 40 F9 08 11 41 F9 E8 0F 00 B4"
+      }
+    };
+  }
+  install_key_extraction_pattern_hook() {
+    const cronetModule = Process.findModuleByName(this.module_name);
+    if (cronetModule === null)
+      return null;
+    const hooker = new PatternBasedHooking(cronetModule);
+    if (isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, "Cronet", "Dump-Keys")) {
+      devlog("Hooking Cronet functions by pattern");
+      hooker.hook_DumpKeys(this.module_name, "Cronet", patterns, (args) => {
+        this.dumpKeys(args[1], args[0], args[2], lenArg(args[3]));
+      });
+    } else {
+      hooker.hookModuleByPattern(get_CPU_specific_pattern(this.default_pattern), (args) => {
+        this.dumpKeys(args[1], args[0], args[2], lenArg(args[3]));
+      });
+    }
+    return hooker;
+  }
+  execute_hooks() {
+    const hooker = this.install_key_extraction_pattern_hook();
+    if (hooker === null)
+      return [false, null];
+    return [!hooker.no_hooking_success, hooker];
+  }
+  // Symbol-based fallback for ssl_log_secret. Forwards the 4th `len` arg to
+  // dumpKeys so safeKeyLen can use the exact length from bssl::ssl_log_secret's
+  // ABI rather than falling back to the byte-walk heuristic.
+  execute_symbol_based_hooking(hooker) {
+    if (!hooker.no_hooking_success)
+      return;
+    devlog_debug("Trying symbol-based ssl_log_secret hook on " + this.module_name);
+    installBoringSSLSymbolHook(this.module_name, (label, ssl, data, len) => this.dumpKeys(label, ssl, data, len));
+  }
+};
+function cronet_execute2(moduleName, is_base_hook) {
+  let cronet;
+  try {
+    cronet = new Cronet_MacOS(moduleName, socket_library3, is_base_hook);
+  } catch (e) {
+    devlog_error(`cronet_execute constructor error for ${moduleName}: ${e}`);
+    return;
+  }
+  let success = false;
+  let hooker = null;
+  try {
+    [success, hooker] = cronet.execute_hooks();
+  } catch (e) {
+    devlog_error(`cronet_execute error: ${e}`);
+  }
+  if (!success) {
+    scheduleBoringSSLSymbolFallback(moduleName, hooker, () => cronet.execute_symbol_based_hooking(hooker), (label, ssl, data, len) => cronet.dumpKeys(label, ssl, data, len));
+  }
+  if (is_base_hook) {
+    try {
+      const init_addresses = cronet.addresses[moduleName];
+      if (init_addresses && Object.keys(init_addresses).length > 0) {
+        globalThis.init_addresses[moduleName] = init_addresses;
+      }
+    } catch (e) {
+      devlog_error(`cronet_execute base-hook error: ${e}`);
+    }
+  }
+}
+
+// agent/legacy/tls/platforms/macos/nss_macos.ts
+init_node_globals();
+var NSS_MacOS = class extends NSS {
+  moduleName;
+  socket_library;
+  constructor(moduleName, socket_library6, is_base_hook) {
+    var library_method_mapping = {};
+    devlog("Hooking module " + moduleName);
+    library_method_mapping[`*${moduleName}*`] = ["PR_Write", "PR_Read", "PR_FileDesc2NativeHandle", "PR_GetPeerName", "PR_GetSockName", "PR_GetNameForIdentity", "PR_GetDescType", "SSL_ImportFD", "SSL_HandshakeCallback", "PK11_ExtractKeyValue", "PK11_GetKeyData", "SSL_GetExperimentalAPI", "NSSSSL_GetVersion"];
+    library_method_mapping[`*${socket_library6}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
+    super(moduleName, socket_library6, library_method_mapping);
+    this.moduleName = moduleName;
+    this.socket_library = socket_library6;
+  }
+  execute_hooks() {
+    this.install_plaintext_read_hook();
+    this.install_plaintext_write_hook();
+    try {
+      this.install_tls_keys_callback_hook();
+    } catch (e) {
+      devlog("Installing NSS key hooking failed");
+      devlog("NSS Error code: " + e);
+    }
+  }
+  install_tls_keys_callback_hook() {
+    var nssModuleName = this.module_name;
+    NSS.detectVersionOffsets();
+    NSS.resolveExperimentalAPI();
+    NSS.getDescType = new NativeFunction(this.addresses[this.module_name]["PR_GetDescType"], "int", ["pointer"]);
+    NSS.PR_GetNameForIdentity = new NativeFunction(this.addresses[this.module_name]["PR_GetNameForIdentity"], "pointer", ["pointer"]);
+    NSS.get_SSL_Callback = new NativeFunction(this.addresses[this.module_name]["SSL_HandshakeCallback"], "int", ["pointer", "pointer", "pointer"]);
+    NSS.PK11_ExtractKeyValue = new NativeFunction(this.addresses[this.module_name]["PK11_ExtractKeyValue"], "int", ["pointer"]);
+    NSS.PK11_GetKeyData = new NativeFunction(this.addresses[this.module_name]["PK11_GetKeyData"], "pointer", ["pointer"]);
+    Interceptor.attach(this.addresses[this.module_name]["SSL_ImportFD"], {
+      onEnter(args) {
+        this.fd = args[1];
+      },
+      onLeave(retval) {
+        if (retval.isNull()) {
+          devlog("[-] SSL_ImportFD error: unknown null");
+          return;
+        }
+        var retValue = NSS.get_SSL_Callback(retval, NSS.keylog_callback, NULL);
+        NSS.register_secret_callback(retval);
+        if (retValue < 0) {
+          devlog("Callback Error");
+          try {
+            var getErrorText = new NativeFunction(Process.getModuleByName(nssModuleName).getExportByName("PR_GetErrorText"), "int", ["pointer"]);
+            var outbuffer = Memory.alloc(200);
+            getErrorText(outbuffer.readPointer());
+            devlog("Error msg: " + outbuffer);
+          } catch (e) {
+            devlog("Could not retrieve NSS error text: " + e);
+          }
+        } else {
+          devlog("[*] NSS keylog callback successfully installed");
+        }
+      }
+    });
+    Interceptor.attach(this.addresses[this.module_name]["SSL_HandshakeCallback"], {
+      onEnter(args) {
+        this.originalCallback = args[1];
+        Interceptor.attach(ptr(this.originalCallback), {
+          onEnter(args2) {
+            var sslSocketFD = args2[0];
+            devlog("[*] NSS keylog callback successfully installed via applications callback function");
+            NSS.ssl_RecordKeyLog(sslSocketFD);
+          },
+          onLeave(retval) {
+          }
+        });
+      },
+      onLeave(retval) {
+      }
+    });
+    NSS.installSecretCallbackInterceptor();
+  }
+};
+function nss_execute2(moduleName, is_base_hook) {
+  executeSSLLibrary(NSS_MacOS, moduleName, socket_library3, is_base_hook);
+}
+
+// agent/tls/platforms/macos/nss_macos.ts
+init_node_globals();
+function nss_execute_modern2(moduleName, is_base_hook) {
+  executeFromDefinition(createNssMacosDefinition(), moduleName, socket_library3, is_base_hook, enable_default_fd);
+}
+
+// agent/ssh/platforms/linux/ssh_linux.ts
+init_node_globals();
+init_shared_structures();
+
+// agent/ssh/platforms/linux/ssh_packet_hooks.ts
+init_node_globals();
+init_shared_structures();
+var ptrSize = Process.pointerSize;
+var MAX_SSH_PACKET = 65535;
+var MIN_SSH_PACKET = 6;
+function looksLikeSshPacketSshbuf(sshbufPtr, state2) {
+  if (!state2.sshbufPtrFn || !state2.sshbufLenFn)
+    return false;
+  try {
+    if (sshbufPtr.isNull())
+      return false;
+    const len = Number(state2.sshbufLenFn(sshbufPtr));
+    if (len < MIN_SSH_PACKET || len > MAX_SSH_PACKET)
+      return false;
+    const data = state2.sshbufPtrFn(sshbufPtr);
+    if (data.isNull())
+      return false;
+    const packetLength = data.readU8() << 24 | data.add(1).readU8() << 16 | data.add(2).readU8() << 8 | data.add(3).readU8();
+    if (packetLength + 4 !== len)
+      return false;
+    const padLen = data.add(4).readU8();
+    if (padLen < 4 || padLen > 255)
+      return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+function probeBufferOffset(sshPtr, state2, label) {
+  const cached = label === "outgoing_packet" ? state2.outgoingPacketOffset : state2.incomingPacketOffset;
+  if (cached !== null)
+    return cached;
+  try {
+    const sessionState = sshPtr.readPointer();
+    if (sessionState.isNull())
+      return null;
+    for (let off = 0; off < 1024; off += ptrSize) {
+      let cand;
+      try {
+        cand = sessionState.add(off).readPointer();
+      } catch {
+        continue;
+      }
+      if (looksLikeSshPacketSshbuf(cand, state2)) {
+        if (label === "outgoing_packet") {
+          state2.outgoingPacketOffset = off;
+        } else {
+          state2.incomingPacketOffset = off;
+        }
+        devlog(`[SSH] probed ${label} sshbuf offset in state: ${off}`);
+        return off;
+      }
+    }
+  } catch (e) {
+    devlog(`[SSH] probeBufferOffset(${label}) error: ${e}`);
+  }
+  return null;
+}
+function makeBaseMessage(fd, isRead, socketHelpers, fnLabel) {
+  try {
+    const msg = getPortsAndAddresses(fd, isRead, socketHelpers, enable_default_fd);
+    if (!msg)
+      return null;
+    msg["function"] = fnLabel;
+    msg["ssl_session_id"] = "";
+    return msg;
+  } catch (e) {
+    devlog(`[SSH] getPortsAndAddresses(fd=${fd}, isRead=${isRead}) failed: ${e}`);
+    return null;
+  }
+}
+function installSendHook(moduleName, state2) {
+  const addr = Module.findExportByName(moduleName, "ssh_packet_send2_wrapped");
+  if (!addr)
+    return false;
+  Interceptor.attach(addr, {
+    onEnter(args) {
+      try {
+        const sshPtr = args[0];
+        if (sshPtr.isNull())
+          return;
+        if (!state2.connOutFn)
+          return;
+        const fd = state2.connOutFn(sshPtr);
+        if (fd < 0 && !enable_default_fd)
+          return;
+        const off = probeBufferOffset(sshPtr, state2, "outgoing_packet");
+        if (off === null)
+          return;
+        if (!state2.sshbufPtrFn || !state2.sshbufLenFn)
+          return;
+        const sessionState = sshPtr.readPointer();
+        const outgoingBuf = sessionState.add(off).readPointer();
+        if (outgoingBuf.isNull())
+          return;
+        const len = Number(state2.sshbufLenFn(outgoingBuf));
+        if (len < MIN_SSH_PACKET || len > MAX_SSH_PACKET)
+          return;
+        const data = state2.sshbufPtrFn(outgoingBuf);
+        if (data.isNull())
+          return;
+        const bytes = data.readByteArray(len);
+        if (!bytes)
+          return;
+        const msg = makeBaseMessage(fd, false, state2.socketHelpers, "ssh_packet_send2");
+        if (!msg)
+          return;
+        sendDatalog(msg, bytes);
+      } catch (e) {
+        devlog_error(`[SSH] ssh_packet_send2_wrapped onEnter error: ${e}`);
+      }
+    }
+  });
+  log(`[SSH] Hooked ssh_packet_send2_wrapped in ${moduleName}`);
+  return true;
+}
+function installRecvHook(moduleName, state2) {
+  const addr = Module.findExportByName(moduleName, "ssh_packet_read_poll2");
+  if (!addr)
+    return false;
+  Interceptor.attach(addr, {
+    onEnter(args) {
+      this.sshPtr = args[0];
+    },
+    onLeave(retval) {
+      try {
+        if (retval.toInt32() !== 0)
+          return;
+        const sshPtr = this.sshPtr;
+        if (!sshPtr || sshPtr.isNull())
+          return;
+        if (!state2.connInFn)
+          return;
+        const fd = state2.connInFn(sshPtr);
+        if (fd < 0 && !enable_default_fd)
+          return;
+        const off = probeBufferOffset(sshPtr, state2, "incoming_packet");
+        if (off === null)
+          return;
+        if (!state2.sshbufPtrFn || !state2.sshbufLenFn)
+          return;
+        const sessionState = sshPtr.readPointer();
+        const incomingBuf = sessionState.add(off).readPointer();
+        if (incomingBuf.isNull())
+          return;
+        const len = Number(state2.sshbufLenFn(incomingBuf));
+        if (len < MIN_SSH_PACKET || len > MAX_SSH_PACKET)
+          return;
+        const data = state2.sshbufPtrFn(incomingBuf);
+        if (data.isNull())
+          return;
+        const bytes = data.readByteArray(len);
+        if (!bytes)
+          return;
+        const msg = makeBaseMessage(fd, true, state2.socketHelpers, "ssh_packet_read_poll2");
+        if (!msg)
+          return;
+        sendDatalog(msg, bytes);
+      } catch (e) {
+        devlog_error(`[SSH] ssh_packet_read_poll2 onLeave error: ${e}`);
+      }
+    }
+  });
+  log(`[SSH] Hooked ssh_packet_read_poll2 in ${moduleName}`);
+  return true;
+}
+function installCipherCryptFallback(moduleName, state2) {
+  const addr = Module.findExportByName(moduleName, "cipher_crypt");
+  if (!addr)
+    return false;
+  Interceptor.attach(addr, {
+    onEnter(args) {
+      try {
+        const cc = args[0];
+        const dest = args[2];
+        const src = args[3];
+        const len = args[4].toUInt32();
+        if (cc.isNull() || src.isNull() || dest.isNull())
+          return;
+        if (len < 1 || len > MAX_SSH_PACKET)
+          return;
+        const isEncrypt = cc.add(4).readInt() === 1;
+        if (isEncrypt) {
+          const bytes = src.readByteArray(len);
+          if (!bytes)
+            return;
+          const msg = makeBaseMessage(-1, false, state2.socketHelpers, "ssh_packet_send2");
+          if (!msg)
+            return;
+          sendDatalog(msg, bytes);
+          return;
+        }
+        this.decryptDest = dest;
+        this.decryptLen = len;
+      } catch (e) {
+        devlog(`[SSH] cipher_crypt onEnter error: ${e}`);
+      }
+    },
+    onLeave(_retval) {
+      try {
+        const dest = this.decryptDest;
+        if (!dest || dest.isNull())
+          return;
+        const bytes = dest.readByteArray(this.decryptLen);
+        if (!bytes)
+          return;
+        const msg = makeBaseMessage(-1, true, state2.socketHelpers, "ssh_packet_read_poll2");
+        if (!msg)
+          return;
+        sendDatalog(msg, bytes);
+      } catch (e) {
+        devlog_error(`[SSH] cipher_crypt onLeave error: ${e}`);
+      }
+    }
+  });
+  log(`[SSH] Hooked cipher_crypt fallback in ${moduleName} (synthetic 5-tuple).`);
+  return true;
+}
+var installedModules = /* @__PURE__ */ new Set();
+function installSshPacketHooks(moduleName, methodAddresses) {
+  if (!pcap_enabled)
+    return;
+  if (installedModules.has(moduleName))
+    return;
+  installedModules.add(moduleName);
+  const state2 = {
+    sshbufPtrFn: null,
+    sshbufLenFn: null,
+    connInFn: null,
+    connOutFn: null,
+    outgoingPacketOffset: null,
+    incomingPacketOffset: null,
+    socketHelpers: methodAddresses[moduleName] || {}
+  };
+  try {
+    const ptrAddr = Module.findExportByName(moduleName, "sshbuf_ptr");
+    const lenAddr = Module.findExportByName(moduleName, "sshbuf_len");
+    if (ptrAddr && lenAddr) {
+      state2.sshbufPtrFn = new NativeFunction(ptrAddr, "pointer", ["pointer"]);
+      state2.sshbufLenFn = new NativeFunction(lenAddr, "size_t", ["pointer"]);
+    } else {
+      devlog(`[SSH] sshbuf accessors not exported in ${moduleName}; plaintext probe disabled.`);
+    }
+    const inAddr = Module.findExportByName(moduleName, "ssh_packet_get_connection_in");
+    const outAddr = Module.findExportByName(moduleName, "ssh_packet_get_connection_out");
+    if (inAddr)
+      state2.connInFn = new NativeFunction(inAddr, "int", ["pointer"]);
+    if (outAddr)
+      state2.connOutFn = new NativeFunction(outAddr, "int", ["pointer"]);
+  } catch (e) {
+    devlog_error(`[SSH] accessor resolution failed in ${moduleName}: ${e}`);
+  }
+  const haveAccessors = state2.sshbufPtrFn !== null && state2.sshbufLenFn !== null && state2.connInFn !== null && state2.connOutFn !== null;
+  let primaryInstalled = false;
+  if (haveAccessors) {
+    primaryInstalled = installSendHook(moduleName, state2) || primaryInstalled;
+    primaryInstalled = installRecvHook(moduleName, state2) || primaryInstalled;
+  }
+  if (!primaryInstalled) {
+    devlog(`[SSH] primary plaintext hooks unavailable in ${moduleName} (accessors=${haveAccessors}); trying cipher_crypt fallback.`);
+    installCipherCryptFallback(moduleName, state2);
+  }
+}
+
+// agent/ssh/platforms/linux/ssh_linux.ts
+var SSHENC_CIPHER_NAME_OFFSET = 0;
+var SSHENC_KEY_LEN_OFFSET = 20;
+var SSHENC_IV_LEN_OFFSET = 24;
+var SSHENC_KEY_PTR_OFFSET = 32;
+var isServerSide = (() => {
+  try {
+    const modules = Process.enumerateModules();
+    if (!modules || modules.length === 0)
+      return false;
+    const mainPath = modules[0].path || modules[0].name || "";
+    const basename2 = mainPath.split("/").pop() || mainPath;
+    return /^sshd(-session)?$/.test(basename2);
+  } catch {
+    return false;
+  }
+})();
+function directionForEncryptFlag(do_encrypt) {
+  const localSends = do_encrypt === 1;
+  if (isServerSide) {
+    return localSends ? "S2C" : "C2S";
+  }
+  return localSends ? "C2S" : "S2C";
+}
+function emitSshKey(dir, cipherName, keyData, keyLen, ivData, ivLen) {
+  if (!keylog_enabled)
+    return;
+  if (keyData && keyLen > 0) {
+    sendKeyMaterial({
+      contentType: "ssh_key",
+      direction: dir,
+      key_type: `SSH_ENC_KEY_${dir}`,
+      cipher: cipherName,
+      key_len: keyLen,
+      key_data: toHexString(keyData)
+    });
+  }
+  if (ivData && ivLen > 0) {
+    sendKeyMaterial({
+      contentType: "ssh_key",
+      direction: dir,
+      key_type: `SSH_IV_${dir}`,
+      cipher: cipherName,
+      iv_len: ivLen,
+      key_data: toHexString(ivData)
+    });
+  }
+}
+var sshCookies = /* @__PURE__ */ new Map();
+function recordCookie(sshPtr, side, cookieHex) {
+  const tag = sshPtr.toString();
+  const entry = sshCookies.get(tag) || {};
+  entry[side] = cookieHex;
+  sshCookies.set(tag, entry);
+}
+function consumeCookies(sshPtr) {
+  const tag = sshPtr.toString();
+  const entry = sshCookies.get(tag) || {};
+  sshCookies.delete(tag);
+  return entry;
+}
+var ptrSize2 = Process.pointerSize;
+var kexOffsetInState = null;
+var myOffsetInKex = null;
+var sshbuf_ptr_fn = null;
+var sshbuf_len_fn = null;
+function ensureSshbufAccessors(moduleName) {
+  if (sshbuf_ptr_fn && sshbuf_len_fn)
+    return true;
+  try {
+    const ptrAddr = Module.findExportByName(moduleName, "sshbuf_ptr");
+    const lenAddr = Module.findExportByName(moduleName, "sshbuf_len");
+    if (!ptrAddr || !lenAddr)
+      return false;
+    sshbuf_ptr_fn = new NativeFunction(ptrAddr, "pointer", ["pointer"]);
+    sshbuf_len_fn = new NativeFunction(lenAddr, "size_t", ["pointer"]);
+    return true;
+  } catch (e) {
+    devlog(`[SSH] sshbuf accessor resolution failed: ${e}`);
+    return false;
+  }
+}
+function looksLikeSshbufWithKexinitPayload(maybeSshbuf) {
+  if (!sshbuf_ptr_fn || !sshbuf_len_fn)
+    return false;
+  try {
+    if (maybeSshbuf.isNull())
+      return false;
+    const len = Number(sshbuf_len_fn(maybeSshbuf));
+    if (len < 17 || len > 8192)
+      return false;
+    const data = sshbuf_ptr_fn(maybeSshbuf);
+    if (data.isNull())
+      return false;
+    const firstByte = data.readU8();
+    return firstByte === 20;
+  } catch {
+    return false;
+  }
+}
+function probeKexAndCookieOffsets(sshPtr) {
+  if (kexOffsetInState !== null && myOffsetInKex !== null) {
+    return true;
+  }
+  try {
+    const state2 = sshPtr.readPointer();
+    if (state2.isNull())
+      return false;
+    for (let kexOff = 0; kexOff < 512; kexOff += ptrSize2) {
+      let kexCandidate;
+      try {
+        kexCandidate = state2.add(kexOff).readPointer();
+      } catch {
+        continue;
+      }
+      if (kexCandidate.isNull())
+        continue;
+      for (let myOff = 0; myOff < 1024; myOff += ptrSize2) {
+        let myCand;
+        let peerCand;
+        try {
+          myCand = kexCandidate.add(myOff).readPointer();
+          peerCand = kexCandidate.add(myOff + ptrSize2).readPointer();
+        } catch {
+          continue;
+        }
+        const myOk = looksLikeSshbufWithKexinitPayload(myCand);
+        const peerOk = looksLikeSshbufWithKexinitPayload(peerCand);
+        if (myOk || peerOk) {
+          kexOffsetInState = kexOff;
+          myOffsetInKex = myOff;
+          devlog(`[SSH] probed offsets: state->kex=${kexOff}, kex->my=${myOff}, kex->peer=${myOff + ptrSize2} (my=${myOk ? "valid" : "unknown"}, peer=${peerOk ? "valid" : "unknown"})`);
+          return true;
+        }
+      }
+    }
+  } catch (e) {
+    devlog(`[SSH] probe error: ${e}`);
+  }
+  return false;
+}
+function readCookieFrom(sshbufPtr) {
+  if (!sshbuf_ptr_fn || !sshbuf_len_fn)
+    return null;
+  try {
+    if (sshbufPtr.isNull())
+      return null;
+    const len = Number(sshbuf_len_fn(sshbufPtr));
+    if (len < 17)
+      return null;
+    const data = sshbuf_ptr_fn(sshbufPtr);
+    if (data.isNull())
+      return null;
+    if (data.readU8() !== 20)
+      return null;
+    const bytes = data.add(1).readByteArray(16);
+    if (!bytes)
+      return null;
+    return toHexString(bytes);
+  } catch {
+    return null;
+  }
+}
+var newkeysOffsetInState = null;
+function plausibleSshencSlot(slotPtr) {
+  try {
+    if (slotPtr.isNull())
+      return false;
+    const namePtr = slotPtr.add(SSHENC_CIPHER_NAME_OFFSET).readPointer();
+    if (namePtr.isNull())
+      return false;
+    const name = namePtr.readCString(31);
+    if (!name || name.length === 0)
+      return false;
+    if (!/^[\x20-\x7e]+$/.test(name))
+      return false;
+    const keyLen = slotPtr.add(SSHENC_KEY_LEN_OFFSET).readU32();
+    const ivLen = slotPtr.add(SSHENC_IV_LEN_OFFSET).readU32();
+    if (keyLen < 8 || keyLen > 64)
+      return false;
+    if (ivLen < 8 || ivLen > 32)
+      return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+function readSshEncKeys(sshencPtr, mode) {
+  const dir = directionForEncryptFlag(mode === 1 ? 1 : 0);
+  try {
+    const cipherNamePtr = sshencPtr.add(SSHENC_CIPHER_NAME_OFFSET).readPointer();
+    const cipherName = cipherNamePtr.readCString() || "unknown";
+    const keyLen = sshencPtr.add(SSHENC_KEY_LEN_OFFSET).readU32();
+    const ivLen = sshencPtr.add(SSHENC_IV_LEN_OFFSET).readU32();
+    const keyPtr = sshencPtr.add(SSHENC_KEY_PTR_OFFSET).readPointer();
+    const ivPtr = sshencPtr.add(SSHENC_KEY_PTR_OFFSET + ptrSize2).readPointer();
+    const keyData = keyLen > 0 && keyLen < 256 && !keyPtr.isNull() ? keyPtr.readByteArray(keyLen) : null;
+    const ivData = ivLen > 0 && ivLen < 256 && !ivPtr.isNull() ? ivPtr.readByteArray(ivLen) : null;
+    emitSshKey(dir, cipherName, keyData, keyLen, ivData, ivLen);
+    if (keyData) {
+      devlog(`[SSH] (fallback) ${dir} key extracted via sshenc walk: cipher=${cipherName}, len=${keyLen}`);
+    }
+  } catch (e) {
+    devlog(`[SSH] sshenc-walk error in ${dir}: ${e}`);
+  }
+}
+function scanForNewkeysAndExtract(sshPtr) {
+  try {
+    const state2 = sshPtr.readPointer();
+    if (state2.isNull())
+      return;
+    if (newkeysOffsetInState !== null) {
+      const a = state2.add(newkeysOffsetInState).readPointer();
+      const b = state2.add(newkeysOffsetInState + ptrSize2).readPointer();
+      if (plausibleSshencSlot(a))
+        readSshEncKeys(a, 0);
+      if (plausibleSshencSlot(b))
+        readSshEncKeys(b, 1);
+      return;
+    }
+    for (let off = 0; off < 512; off += ptrSize2) {
+      let a;
+      let b;
+      try {
+        a = state2.add(off).readPointer();
+        b = state2.add(off + ptrSize2).readPointer();
+      } catch {
+        continue;
+      }
+      if (plausibleSshencSlot(a) && plausibleSshencSlot(b)) {
+        newkeysOffsetInState = off;
+        devlog(`[SSH] probed newkeys[] offset in state: ${off}`);
+        readSshEncKeys(a, 0);
+        readSshEncKeys(b, 1);
+        return;
+      }
+    }
+  } catch (e) {
+    devlog(`[SSH] scanForNewkeysAndExtract error: ${e}`);
+  }
+}
+function hookCipherInit(moduleName) {
+  const addr = Module.findExportByName(moduleName, "cipher_init");
+  if (!addr)
+    return false;
+  Interceptor.attach(addr, {
+    onEnter(args) {
+      try {
+        const cipherStruct = args[1];
+        const keyPtr = args[2];
+        const keyLen = args[3].toUInt32();
+        const ivPtr = args[4];
+        const ivLen = args[5].toUInt32();
+        const doEncrypt = args[6].toInt32();
+        let cipherName = "unknown";
+        if (!cipherStruct.isNull()) {
+          const namePtr = cipherStruct.readPointer();
+          if (!namePtr.isNull()) {
+            const s = namePtr.readCString();
+            if (s)
+              cipherName = s;
+          }
+        }
+        const dir = directionForEncryptFlag(doEncrypt);
+        const keyData = keyLen > 0 && keyLen < 256 && !keyPtr.isNull() ? keyPtr.readByteArray(keyLen) : null;
+        const ivData = ivLen > 0 && ivLen < 256 && !ivPtr.isNull() ? ivPtr.readByteArray(ivLen) : null;
+        emitSshKey(dir, cipherName, keyData, keyLen, ivData, ivLen);
+        devlog(`[SSH] cipher_init hooked: cipher=${cipherName} dir=${dir} keylen=${keyLen} ivlen=${ivLen}`);
+      } catch (e) {
+        devlog_error(`[SSH] cipher_init onEnter error: ${e}`);
+      }
+    }
+  });
+  log(`[SSH] Hooked cipher_init in ${moduleName}`);
+  return true;
+}
+function hookKexSendKexinit(moduleName) {
+  const addr = Module.findExportByName(moduleName, "kex_send_kexinit");
+  if (!addr)
+    return false;
+  Interceptor.attach(addr, {
+    onEnter(args) {
+      this.sshPtr = args[0];
+    },
+    onLeave(_retval) {
+      try {
+        if (!this.sshPtr || this.sshPtr.isNull())
+          return;
+        if (!probeKexAndCookieOffsets(this.sshPtr))
+          return;
+        if (myOffsetInKex === null || kexOffsetInState === null)
+          return;
+        const state2 = this.sshPtr.readPointer();
+        const kex = state2.add(kexOffsetInState).readPointer();
+        if (kex.isNull())
+          return;
+        const myBuf = kex.add(myOffsetInKex).readPointer();
+        const cookieHex = readCookieFrom(myBuf);
+        if (cookieHex)
+          recordCookie(this.sshPtr, "local", cookieHex);
+      } catch (e) {
+        devlog(`[SSH] kex_send_kexinit onLeave error: ${e}`);
+      }
+    }
+  });
+  log(`[SSH] Hooked kex_send_kexinit in ${moduleName}`);
+  return true;
+}
+function hookKexInputKexinit(moduleName) {
+  const addr = Module.findExportByName(moduleName, "kex_input_kexinit");
+  if (!addr)
+    return false;
+  Interceptor.attach(addr, {
+    onEnter(args) {
+      this.sshPtr = args[2];
+    },
+    onLeave(_retval) {
+      try {
+        if (!this.sshPtr || this.sshPtr.isNull())
+          return;
+        if (!probeKexAndCookieOffsets(this.sshPtr))
+          return;
+        if (myOffsetInKex === null || kexOffsetInState === null)
+          return;
+        const state2 = this.sshPtr.readPointer();
+        const kex = state2.add(kexOffsetInState).readPointer();
+        if (kex.isNull())
+          return;
+        const peerBuf = kex.add(myOffsetInKex + ptrSize2).readPointer();
+        const cookieHex = readCookieFrom(peerBuf);
+        if (cookieHex)
+          recordCookie(this.sshPtr, "peer", cookieHex);
+      } catch (e) {
+        devlog(`[SSH] kex_input_kexinit onLeave error: ${e}`);
+      }
+    }
+  });
+  log(`[SSH] Hooked kex_input_kexinit in ${moduleName}`);
+  return true;
+}
+function hookKexDeriveKeys(moduleName) {
+  const addr = Module.findExportByName(moduleName, "kex_derive_keys");
+  if (!addr)
+    return false;
+  Interceptor.attach(addr, {
+    onEnter(args) {
+      try {
+        this.sshPtr = args[0];
+        this.secretBuf = args[3];
+      } catch (e) {
+        devlog_error(`[SSH] kex_derive_keys onEnter capture error: ${e}`);
+      }
+    },
+    onLeave(_retval) {
+      if (!keylog_enabled)
+        return;
+      try {
+        const sshPtr = this.sshPtr;
+        const secretBuf = this.secretBuf;
+        if (!sshPtr || sshPtr.isNull())
+          return;
+        if (!secretBuf || secretBuf.isNull())
+          return;
+        if (!sshbuf_ptr_fn || !sshbuf_len_fn)
+          return;
+        const len = Number(sshbuf_len_fn(secretBuf));
+        if (len <= 0 || len > 16384)
+          return;
+        const data = sshbuf_ptr_fn(secretBuf);
+        if (data.isNull())
+          return;
+        const sharedSecretHex = toHexString(data.readByteArray(len));
+        const cookies = consumeCookies(sshPtr);
+        sendKeyMaterial({
+          contentType: "ssh_keylog",
+          cookie: cookies.local || "",
+          peer_cookie: cookies.peer || "",
+          shared_secret: sharedSecretHex,
+          direction: isServerSide ? "server" : "client",
+          session_tag: sshPtr.toString()
+        });
+        log(`[SSH] kex_derive_keys: emitted ssh_keylog (local_cookie=${cookies.local ? "yes" : "no"}, peer_cookie=${cookies.peer ? "yes" : "no"}, K-bytes=${len})`);
+      } catch (e) {
+        devlog_error(`[SSH] kex_derive_keys onLeave error: ${e}`);
+      }
+    }
+  });
+  log(`[SSH] Hooked kex_derive_keys in ${moduleName}`);
+  return true;
+}
+function hookSshSetNewkeys(moduleName, fallbackToScan) {
+  const addr = Module.findExportByName(moduleName, "ssh_set_newkeys");
+  if (!addr)
+    return false;
+  Interceptor.attach(addr, {
+    onEnter(args) {
+      this.sshPtr = args[0];
+      this.mode = args[1].toInt32();
+    },
+    onLeave(_retval) {
+      try {
+        const dir = directionForEncryptFlag(this.mode === 1 ? 1 : 0);
+        sendWithProtocol({
+          contentType: "ssh_newkeys",
+          direction: dir,
+          message: `SSH new keys activated: ${dir}`
+        });
+        if (fallbackToScan) {
+          scanForNewkeysAndExtract(this.sshPtr);
+        }
+      } catch (e) {
+        devlog(`[SSH] ssh_set_newkeys onLeave error: ${e}`);
+      }
+    }
+  });
+  log(`[SSH] Hooked ssh_set_newkeys in ${moduleName}`);
+  return true;
+}
+function ssh_execute(moduleName, _is_base_hook) {
+  devlog(`[SSH] Installing SSH hooks for: ${moduleName}`);
+  log(`[*] SSH library found: ${moduleName}`);
+  sendWithProtocol({
+    contentType: "library_detected",
+    library: moduleName,
+    message: `SSH library detected: ${moduleName}`
+  });
+  let methodAddresses = {};
+  try {
+    methodAddresses = readAddresses(moduleName, {
+      "*libc*": ["getpeername", "getsockname", "ntohs", "ntohl"]
+    });
+  } catch (e) {
+    devlog(`[SSH] readAddresses for socket helpers failed: ${e}`);
+  }
+  const haveSshbuf = ensureSshbufAccessors(moduleName);
+  if (!haveSshbuf) {
+    devlog(`[SSH] sshbuf_ptr/sshbuf_len not exported in ${moduleName}; cookie + K extraction degraded.`);
+  }
+  if (haveSshbuf) {
+    hookKexSendKexinit(moduleName);
+    hookKexInputKexinit(moduleName);
+  }
+  if (haveSshbuf) {
+    hookKexDeriveKeys(moduleName);
+  } else {
+    devlog(`[SSH] Skipping kex_derive_keys hook (sshbuf accessors unresolved).`);
+  }
+  const cipherInitHooked = hookCipherInit(moduleName);
+  if (!cipherInitHooked) {
+    devlog(`[SSH] cipher_init not resolvable in ${moduleName}; falling back to sshenc scan.`);
+  }
+  hookSshSetNewkeys(
+    moduleName,
+    /* fallbackToScan */
+    !cipherInitHooked
+  );
+  try {
+    installSshPacketHooks(moduleName, methodAddresses);
+  } catch (e) {
+    devlog_error(`[SSH] installSshPacketHooks failed for ${moduleName}: ${e}`);
+  }
+}
+
+// agent/ssh/platforms/macos/openssh_macos.ts
+init_node_globals();
+
+// agent/ssh/platforms/linux/openssh_linux.ts
+init_node_globals();
+
+// agent/ssh/definitions/openssh.ts
+init_node_globals();
+function opensshFdDecoder(_ctx, _fns) {
+  return -1;
+}
+function opensshSessionIdDecoder(_ctx, _fns) {
+  return "";
+}
+var OPENSSH_LIBRARY_SYMBOLS = [
+  "kex_derive_keys",
+  "kex_send_kexinit",
+  "kex_input_kexinit",
+  "ssh_set_newkeys",
+  "cipher_init",
+  "ssh_packet_send2_wrapped",
+  "ssh_packet_read_poll2",
+  "sshbuf_ptr",
+  "sshbuf_len"
+];
+function createOpenSshDefinition() {
+  return {
+    libraryId: "ssh_openssh",
+    offsetKey: "ssh_openssh",
+    functions: {
+      librarySymbols: OPENSSH_LIBRARY_SYMBOLS,
+      socketSymbols: STANDARD_SOCKET_SYMBOLS
+    },
+    nativeFunctions: [],
+    fdDecoder: opensshFdDecoder,
+    sessionIdDecoder: opensshSessionIdDecoder,
+    clientRandomDecoder: noOpClientRandomDecoder,
+    // readHook / writeHook intentionally undefined — SSH plaintext
+    // capture lives inside installSshPacketHooks() which is wired up
+    // by the legacy ssh_detect_execute() invoked from keylog.install.
+    // No loader-driven keylog install: the legacy ssh_detect_execute()
+    // executor owns BOTH key extraction and packet/plaintext capture, and
+    // self-gates keys on keylog_enabled and packets on pcap_enabled
+    // internally. It is wired up via extraHooks (below) so it runs on every
+    // run — including a `-p`-only run — because extraHooks is not subject to
+    // the loader's keylog gate.
+    keylog: { kind: "none" },
+    extraHooks: [
+      {
+        // Delegate to the legacy executor. It handles cookie
+        // correlation, kex_derive_keys, cipher_init, sshenc-walk
+        // fallback, and packet plaintext extraction in one place.
+        // extraHooks always runs in the loader (step 7), independent of
+        // keylog_enabled — so `-p`-only runs still install packet hooks.
+        install: (_addresses, moduleName, _resolvedFns, _enableDefaultFd) => {
+          ssh_execute(
+            moduleName,
+            /* is_base_hook */
+            true
+          );
+        }
+      }
+    ],
+    libraryType: "ssh_openssh"
+  };
+}
+
+// agent/ssh/platforms/linux/openssh_linux.ts
+function openssh_execute_modern(moduleName, is_base_hook) {
+  executeFromDefinition(createOpenSshDefinition(), moduleName, socket_library2, is_base_hook, enable_default_fd);
+}
+
+// agent/ssh/platforms/macos/libssh_macos.ts
+init_node_globals();
+
+// agent/ssh/platforms/linux/libssh_linux.ts
+init_node_globals();
+
+// agent/ssh/definitions/libssh.ts
+init_node_globals();
+function libsshFdDecoder(_ctx, _fns) {
+  return -1;
+}
+function libsshSessionIdDecoder(_ctx, _fns) {
+  return "";
+}
+var LIBSSH_LIBRARY_SYMBOLS = [
+  "ssh_make_sessionkey",
+  "ssh_packet_kexdh_init",
+  "ssh_packet_newkeys",
+  "ssh_socket_unbuffered_write",
+  "ssh_packet_socket_callback",
+  "ssh_channel_read",
+  "ssh_channel_write"
+];
+function createLibsshDefinition() {
+  return {
+    libraryId: "ssh_libssh",
+    offsetKey: "ssh_libssh",
+    functions: {
+      librarySymbols: LIBSSH_LIBRARY_SYMBOLS,
+      socketSymbols: STANDARD_SOCKET_SYMBOLS
+    },
+    nativeFunctions: [],
+    fdDecoder: libsshFdDecoder,
+    sessionIdDecoder: libsshSessionIdDecoder,
+    clientRandomDecoder: noOpClientRandomDecoder,
+    // readHook / writeHook intentionally undefined — see openssh.ts
+    // for the rationale; legacy ssh_detect_execute owns both paths.
+    // No loader-driven keylog install: the legacy ssh_detect_execute()
+    // executor owns BOTH key extraction and packet/plaintext capture and
+    // self-gates keys/packets internally (see openssh.ts). Wired via
+    // extraHooks so it runs on a `-p`-only run too.
+    keylog: { kind: "none" },
+    extraHooks: [
+      {
+        // Legacy ssh_detect_execute doesn't distinguish OpenSSH
+        // from libssh at the executor level — the hookers inside
+        // probe each symbol independently and no-op when missing.
+        // extraHooks always runs in the loader (step 7), independent of
+        // keylog_enabled.
+        install: (_addresses, moduleName, _resolvedFns, _enableDefaultFd) => {
+          ssh_execute(
+            moduleName,
+            /* is_base_hook */
+            true
+          );
+        }
+      }
+    ],
+    libraryType: "ssh_libssh"
+  };
+}
+
+// agent/ssh/platforms/linux/libssh_linux.ts
+function libssh_execute_modern(moduleName, is_base_hook) {
+  executeFromDefinition(createLibsshDefinition(), moduleName, socket_library2, is_base_hook, enable_default_fd);
+}
+
+// agent/ohttp/platforms/macos/nss_hpke_macos.ts
+init_node_globals();
+
+// agent/ohttp/definitions/nss_hpke.ts
+init_node_globals();
+
+// agent/ohttp/definitions/bhttp.ts
+init_node_globals();
+init_shared_structures();
+function looksLikeBhttp(dataPtr, len) {
+  if (len < 2)
+    return false;
+  const framing = dataPtr.readU8();
+  return framing === 0 || framing === 1;
+}
+function sendOhttpPlaintext(direction, source, data) {
+  if (!data)
+    return;
+  sendWithProtocol({ contentType: "ohttp_plaintext", direction, source }, data);
+}
+
+// agent/ohttp/definitions/nss_hpke.ts
+function readSECItem(ptr2) {
+  if (ptr2.isNull())
+    return null;
+  const dataPtr = ptr2.add(Process.pointerSize).readPointer();
+  const len = ptr2.add(Process.pointerSize * 2).readU32();
+  if (len === 0 || dataPtr.isNull())
+    return null;
+  return { data: dataPtr, len };
+}
+function installNssHpkeOhttp(addresses, moduleName) {
+  if (!pcap_enabled)
+    return;
+  const addrs = addresses[moduleName] ?? {};
+  const sealAddr = addrs["PK11_HPKE_Seal"];
+  if (sealAddr && !sealAddr.isNull()) {
+    Interceptor.attach(sealAddr, {
+      onEnter(args) {
+        const ptItem = readSECItem(args[2]);
+        if (!ptItem || !looksLikeBhttp(ptItem.data, ptItem.len))
+          return;
+        devlog(`[*] OHTTP: PK11_HPKE_Seal fired \u2014 ${ptItem.len} bytes bhttp request`);
+        sendOhttpPlaintext("request", "PK11_HPKE_Seal", ptItem.data.readByteArray(ptItem.len));
+      }
+    });
+    devlog("[*] OHTTP: PK11_HPKE_Seal hooked (NSS)");
+  } else {
+    devlog("[!] OHTTP: PK11_HPKE_Seal not found \u2014 NSS >= 3.58 required");
+  }
+  const openAddr = addrs["PK11_HPKE_Open"];
+  if (openAddr && !openAddr.isNull()) {
+    Interceptor.attach(openAddr, {
+      onEnter(args) {
+        this.outPtPtr = args[3];
+      },
+      onLeave(retval) {
+        if (retval.toInt32() !== 0)
+          return;
+        if (!this.outPtPtr || this.outPtPtr.isNull())
+          return;
+        const outPt = this.outPtPtr.readPointer();
+        if (outPt.isNull())
+          return;
+        const ptItem = readSECItem(outPt);
+        if (!ptItem || !looksLikeBhttp(ptItem.data, ptItem.len))
+          return;
+        devlog(`[*] OHTTP: PK11_HPKE_Open fired \u2014 ${ptItem.len} bytes bhttp response`);
+        sendOhttpPlaintext("response", "PK11_HPKE_Open", ptItem.data.readByteArray(ptItem.len));
+      }
+    });
+    devlog("[*] OHTTP: PK11_HPKE_Open hooked (NSS)");
+  } else {
+    devlog("[!] OHTTP: PK11_HPKE_Open not found \u2014 NSS >= 3.58 required");
+  }
+}
+function createNssHpkeDefinition() {
+  return {
+    libraryId: "nss_hpke",
+    offsetKey: "nss_hpke",
+    functions: {
+      librarySymbols: [],
+      socketSymbols: [],
+      auxiliaryLibraries: [
+        { pattern: "*libnss*", symbols: ["PK11_HPKE_Seal", "PK11_HPKE_Open"] }
+      ]
+    },
+    nativeFunctions: [],
+    fdDecoder: () => -1,
+    sessionIdDecoder: () => "",
+    keylog: { kind: "none" },
+    extraHooks: [{ install: installNssHpkeOhttp }]
+  };
+}
+
+// agent/ohttp/platforms/macos/nss_hpke_macos.ts
+function nss_hpke_execute_macos(moduleName, is_base_hook) {
+  executeFromDefinition(createNssHpkeDefinition(), moduleName, socket_library3, is_base_hook, false);
+}
+
+// agent/quic/platforms/macos/quiche_macos.ts
+init_node_globals();
+
+// agent/quic/definitions/quiche.ts
+init_node_globals();
+init_shared_structures();
+
+// agent/quic/shared/quic_connection_tracker.ts
+init_node_globals();
+function buildQuicMessage(info, connKey, functionLabel) {
+  return {
+    src_addr: info.peerAddr,
+    src_port: info.peerPort,
+    dst_addr: info.localAddr,
+    dst_port: info.localPort,
+    ss_family: info.ssFamily,
+    ssl_session_id: connKey,
+    function: functionLabel
+  };
+}
+function hashPtr(connPtr) {
+  let h = 2166136261;
+  for (let i = 0; i < connPtr.length; i++) {
+    h ^= connPtr.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+function formatAddr(addr, family) {
+  if (family === "AF_INET6" && typeof addr === "string" && addr.length === 32) {
+    return (addr.match(/.{1,4}/g) ?? []).join(":").toLowerCase();
+  }
+  if (typeof addr === "number") {
+    return (addr >>> 24 & 255) + "." + (addr >>> 16 & 255) + "." + (addr >>> 8 & 255) + "." + (addr & 255);
+  }
+  return String(addr);
+}
+var NON_QUIC_UDP_PORTS = /* @__PURE__ */ new Set([
+  53,
+  // DNS
+  5353,
+  // mDNS
+  5355,
+  // LLMNR
+  123,
+  // NTP
+  67,
+  68,
+  // DHCP
+  137,
+  138,
+  // NetBIOS
+  1900
+  // SSDP
+]);
+var QuicConnectionTracker = class {
+  _connections = /* @__PURE__ */ new Map();
+  // Maps a QuicSpdyStream*/visitor pointer to its owning connection pointer,
+  // so the per-stream read/write hooks can find the registered connection.
+  _streamToConn = /* @__PURE__ */ new Map();
+  // Most-recently observed real UDP peer (from the libc socket layer). QUIC
+  // does not expose its fd to the C++ stream objects, so we cannot correlate
+  // a specific connection to its socket without version-fragile struct walks.
+  // Folding the real server address into every synthetic flow is a deliberate
+  // best-effort: the per-connection synthetic local port still keeps each
+  // connection in its own Wireshark conversation.
+  _observedPeer = null;
+  // Last peer key (`addr:port`) we emitted a devlog for, per branch. The libc
+  // connect() observer fires on EVERY UDP connect() — including every DNS
+  // lookup to the resolver — so logging unconditionally floods the JS→Python
+  // message channel (hundreds of identical lines) and, at Ctrl+C, the
+  // un-drained backlog stalls script.unload()/session.detach(). We therefore
+  // log only when the peer actually changes; the stored _observedPeer is
+  // updated regardless, so capture behavior is unchanged.
+  _lastLoggedObservedKey = null;
+  _lastLoggedIgnoredKey = null;
+  /**
+   * Register a new QUIC connection.
+   * @param connPtr  Native pointer to the connection object (as hex string key)
+   * @param info     Connection metadata
+   */
+  register(connPtr, info) {
+    this._connections.set(connPtr, info);
+    devlog("[QUIC tracker] registered connection " + connPtr + " -> " + formatAddr(info.peerAddr, info.ssFamily) + ":" + info.peerPort);
+  }
+  /**
+   * Look up connection info by pointer.
+   */
+  get(connPtr) {
+    return this._connections.get(connPtr);
+  }
+  /**
+   * Remove a connection (on free/close).
+   */
+  remove(connPtr) {
+    const info = this._connections.get(connPtr);
+    if (info) {
+      this._connections.delete(connPtr);
+      devlog("[QUIC tracker] removed connection " + connPtr);
+    }
+    return info;
+  }
+  /** Record a stream pointer → connection pointer association. */
+  registerStream(streamPtr, connPtr) {
+    this._streamToConn.set(streamPtr, connPtr);
+  }
+  /** Resolve a stream pointer back to its connection pointer, if known. */
+  resolveStream(streamPtr) {
+    return this._streamToConn.get(streamPtr);
+  }
+  /**
+   * Record the real UDP peer seen at the socket layer (best-effort). Peers on
+   * well-known non-QUIC service ports (DNS, mDNS, NTP, …) are ignored so they
+   * cannot pollute the synthesized flow's server 4-tuple — see NON_QUIC_UDP_PORTS.
+   */
+  setObservedPeer(peer) {
+    const peerKey = peer.family + "|" + peer.addr + "|" + peer.port;
+    if (NON_QUIC_UDP_PORTS.has(peer.port)) {
+      if (peerKey !== this._lastLoggedIgnoredKey) {
+        this._lastLoggedIgnoredKey = peerKey;
+        devlog("[QUIC tracker] ignoring non-QUIC observed peer " + formatAddr(peer.addr, peer.family) + ":" + peer.port);
+      }
+      return;
+    }
+    this._observedPeer = peer;
+    if (peerKey !== this._lastLoggedObservedKey) {
+      this._lastLoggedObservedKey = peerKey;
+      devlog("[QUIC tracker] observed real UDP peer " + formatAddr(peer.addr, peer.family) + ":" + peer.port);
+    }
+  }
+  /**
+   * Resolve connection info for a key, always returning a usable, parseable
+   * 4-tuple. Prefers a registered connection, then a deterministic synthetic
+   * one (so a flow is never emitted as 0.0.0.0:0). The synthetic peer is
+   * replaced by the observed real peer when one is known.
+   */
+  resolveInfo(connPtr) {
+    return this._connections.get(connPtr) ?? this.synthesizeInfo(connPtr);
+  }
+  /**
+   * Build a deterministic, stable synthetic 4-tuple for a connection pointer.
+   * The peer (server) lands in 240.0.0.0/4 (reserved, non-routable, so it can
+   * never be confused with real capture traffic) keyed off the pointer hash;
+   * the client gets a fixed address with a per-connection ephemeral port. If a
+   * real peer was observed at the socket layer it is folded in for fidelity.
+   */
+  synthesizeInfo(connPtr) {
+    const h = hashPtr(connPtr);
+    const localPort = 49152 + h % 16384;
+    const peer = this._observedPeer;
+    if (peer && peer.family === "AF_INET6") {
+      const localV6 = "FD" + "00".repeat(11) + ("00000000" + h.toString(16).toUpperCase()).slice(-8);
+      return {
+        serverName: "",
+        scid: "",
+        dcid: "",
+        ssFamily: "AF_INET6",
+        peerAddr: peer.addr,
+        peerPort: peer.port,
+        localAddr: localV6,
+        localPort
+      };
+    }
+    const peerAddr = peer && peer.family === "AF_INET" ? peer.addr : (4026531840 | h & 268435455) >>> 0;
+    const peerPort = peer && peer.family === "AF_INET" ? peer.port : 443;
+    return {
+      serverName: "",
+      scid: "",
+      dcid: "",
+      ssFamily: "AF_INET",
+      peerAddr,
+      peerPort,
+      localAddr: 167772161,
+      // 10.0.0.1
+      localPort
+    };
+  }
+  /**
+   * Number of tracked connections.
+   */
+  get size() {
+    return this._connections.size;
+  }
+};
+var quicConnectionTracker = new QuicConnectionTracker();
+
+// agent/quic/definitions/quiche.ts
+function parseSockaddr(ptr2, len) {
+  if (ptr2.isNull() || len < 4) {
+    return { addr: 0, port: 0, family: "AF_INET" };
+  }
+  const family = readSockaddrFamily(ptr2, true);
+  if (family === 2 && len >= 16) {
+    const port = ptr2.add(2).readU16();
+    const portHost = (port & 255) << 8 | port >> 8 & 255;
+    const a = ptr2.add(4).readU8();
+    const b = ptr2.add(5).readU8();
+    const c = ptr2.add(6).readU8();
+    const d = ptr2.add(7).readU8();
+    const addrInt = (a << 24 | b << 16 | c << 8 | d) >>> 0;
+    return { addr: addrInt, port: portHost, family: "AF_INET" };
+  }
+  if ((family === 10 || family === 30) && len >= 28) {
+    const port = ptr2.add(2).readU16();
+    const portHost = (port & 255) << 8 | port >> 8 & 255;
+    const ipv6_addr = ptr2.add(8);
+    let hex2 = "";
+    for (let offset = 0; offset < 16; offset += 1) {
+      hex2 += ("0" + ipv6_addr.add(offset).readU8().toString(16).toUpperCase()).substr(-2);
+    }
+    if (hex2.indexOf("00000000000000000000FFFF") === 0) {
+      const a = ipv6_addr.add(12).readU8();
+      const b = ipv6_addr.add(13).readU8();
+      const c = ipv6_addr.add(14).readU8();
+      const d = ipv6_addr.add(15).readU8();
+      const hostInt = (a << 24 | b << 16 | c << 8 | d) >>> 0;
+      return { addr: hostInt, port: portHost, family: "AF_INET" };
+    }
+    return { addr: hex2, port: portHost, family: "AF_INET6" };
+  }
+  return { addr: 0, port: 0, family: "AF_INET" };
+}
+function createConnectTracker(ref, keylogPipeWriteFd) {
+  return {
+    install(addresses, moduleName, resolvedFns, _enableDefaultFd) {
+      const addr = addresses[moduleName]?.["quiche_connect"];
+      if (!addr || addr.isNull())
+        return;
+      Interceptor.attach(addr, {
+        onEnter(args) {
+          this.serverName = args[0].isNull() ? "" : args[0].readCString() || "";
+          const scidPtr = args[1];
+          const scidLen = args[2].toUInt32();
+          this.scid = scidLen > 0 && !scidPtr.isNull() ? readHexFromPointer(scidPtr, scidLen) : "";
+          const localPtr = args[3];
+          const localLen = args[4].toUInt32();
+          this.local = parseSockaddr(localPtr, localLen);
+          const peerPtr = args[5];
+          const peerLen = args[6].toUInt32();
+          this.peer = parseSockaddr(peerPtr, peerLen);
+          this.config = args[7];
+        },
+        onLeave(retval) {
+          if (retval.isNull())
+            return;
+          const connKey = retval.toString();
+          const info = {
+            serverName: this.serverName,
+            localAddr: this.local.addr,
+            localPort: this.local.port,
+            peerAddr: this.peer.addr,
+            peerPort: this.peer.port,
+            ssFamily: this.peer.family,
+            scid: this.scid,
+            dcid: ""
+          };
+          quicConnectionTracker.register(connKey, info);
+          if (keylog_enabled && ref.configLogKeys && !this.config.isNull()) {
+            try {
+              ref.configLogKeys(this.config);
+            } catch (e) {
+              devlog("[quiche] failed to enable config keylog: " + e);
+            }
+          }
+          if (ref.setKeylogFd && keylogPipeWriteFd >= 0) {
+            try {
+              ref.setKeylogFd(retval, keylogPipeWriteFd);
+            } catch (e) {
+              devlog("[quiche] failed to set keylog fd: " + e);
+            }
+          }
+          sendConnectionLifecycle("created", buildQuicMessage(info, connKey, "quiche_connect"));
+        }
+      });
+    }
+  };
+}
+function createAcceptTracker(ref, keylogPipeWriteFd) {
+  return {
+    install(addresses, moduleName, _resolvedFns, _enableDefaultFd) {
+      const addr = addresses[moduleName]?.["quiche_accept"];
+      if (!addr || addr.isNull())
+        return;
+      Interceptor.attach(addr, {
+        onEnter(args) {
+          const scidPtr = args[0];
+          const scidLen = args[1].toUInt32();
+          this.scid = scidLen > 0 && !scidPtr.isNull() ? readHexFromPointer(scidPtr, scidLen) : "";
+          const odcidPtr = args[2];
+          const odcidLen = args[3].toUInt32();
+          this.dcid = odcidLen > 0 && !odcidPtr.isNull() ? readHexFromPointer(odcidPtr, odcidLen) : "";
+          const localPtr = args[4];
+          const localLen = args[5].toUInt32();
+          this.local = parseSockaddr(localPtr, localLen);
+          const peerPtr = args[6];
+          const peerLen = args[7].toUInt32();
+          this.peer = parseSockaddr(peerPtr, peerLen);
+          this.config = args[8];
+        },
+        onLeave(retval) {
+          if (retval.isNull())
+            return;
+          const connKey = retval.toString();
+          const info = {
+            serverName: "",
+            localAddr: this.local.addr,
+            localPort: this.local.port,
+            peerAddr: this.peer.addr,
+            peerPort: this.peer.port,
+            ssFamily: this.peer.family,
+            scid: this.scid,
+            dcid: this.dcid
+          };
+          quicConnectionTracker.register(connKey, info);
+          if (keylog_enabled && ref.configLogKeys && !this.config.isNull()) {
+            try {
+              ref.configLogKeys(this.config);
+            } catch (e) {
+              devlog("[quiche] failed to enable config keylog: " + e);
+            }
+          }
+          if (ref.setKeylogFd && keylogPipeWriteFd >= 0) {
+            try {
+              ref.setKeylogFd(retval, keylogPipeWriteFd);
+            } catch (e) {
+              devlog("[quiche] failed to set keylog fd: " + e);
+            }
+          }
+          sendConnectionLifecycle("created", buildQuicMessage(info, connKey, "quiche_accept"));
+        }
+      });
+    }
+  };
+}
+function createStreamRecvHook() {
+  return {
+    install(addresses, moduleName, _resolvedFns, _enableDefaultFd) {
+      if (!pcap_enabled)
+        return;
+      const addr = addresses[moduleName]?.["quiche_conn_stream_recv"];
+      if (!addr || addr.isNull())
+        return;
+      Interceptor.attach(addr, {
+        onEnter(args) {
+          this.conn = args[0];
+          this.streamId = args[1].toInt32();
+          this.buf = args[2];
+          this.finPtr = args[4];
+        },
+        onLeave(retval) {
+          const n = retval.toInt32();
+          if (n < 0)
+            return;
+          const connKey = this.conn.toString();
+          const connInfo = quicConnectionTracker.get(connKey);
+          if (!connInfo)
+            return;
+          const message = buildQuicMessage(connInfo, connKey, "quiche_stream_recv");
+          if (n > 0) {
+            sendQuicDatalog(message, this.buf.readByteArray(n), this.streamId, connInfo.scid, connInfo.dcid);
+          }
+          if (this.finPtr && !this.finPtr.isNull()) {
+            try {
+              if (this.finPtr.readU8() !== 0) {
+                sendConnectionLifecycle("stream_fin", {
+                  ...message,
+                  stream_id: this.streamId
+                });
+              }
+            } catch (_e) {
+            }
+          }
+        }
+      });
+      log("[*] Hooked quiche_conn_stream_recv for plaintext capture");
+    }
+  };
+}
+function createStreamSendHook() {
+  return {
+    install(addresses, moduleName, _resolvedFns, _enableDefaultFd) {
+      if (!pcap_enabled)
+        return;
+      const addr = addresses[moduleName]?.["quiche_conn_stream_send"];
+      if (!addr || addr.isNull())
+        return;
+      Interceptor.attach(addr, {
+        onEnter(args) {
+          this.conn = args[0];
+          this.streamId = args[1].toInt32();
+          this.buf = args[2];
+          this.bufLen = args[3].toUInt32();
+          this.fin = args[4].toInt32() !== 0;
+        },
+        onLeave(retval) {
+          const n = retval.toInt32();
+          if (n < 0)
+            return;
+          const connKey = this.conn.toString();
+          const connInfo = quicConnectionTracker.get(connKey);
+          if (!connInfo)
+            return;
+          const bytesToCapture = n > 0 ? n : 0;
+          if (bytesToCapture > 0) {
+            const message = buildQuicMessage(connInfo, connKey, "quiche_stream_send");
+            sendQuicDatalog(message, this.buf.readByteArray(bytesToCapture), this.streamId, connInfo.scid, connInfo.dcid);
+          }
+          if (this.fin) {
+            const message = buildQuicMessage(connInfo, connKey, "quiche_stream_send");
+            sendConnectionLifecycle("stream_fin", {
+              ...message,
+              stream_id: this.streamId
+            });
+          }
+        }
+      });
+      log("[*] Hooked quiche_conn_stream_send for plaintext capture");
+    }
+  };
+}
+function createConnFreeHook() {
+  return {
+    install(addresses, moduleName, _resolvedFns, _enableDefaultFd) {
+      const addr = addresses[moduleName]?.["quiche_conn_free"];
+      if (!addr || addr.isNull())
+        return;
+      Interceptor.attach(addr, {
+        onEnter(args) {
+          const connKey = args[0].toString();
+          const info = quicConnectionTracker.remove(connKey);
+          if (info) {
+            sendConnectionLifecycle("destroyed", buildQuicMessage(info, connKey, "quiche_conn_free"));
+          }
+        }
+      });
+    }
+  };
+}
+function createKeylogConfigHook() {
+  return {
+    install(addresses, moduleName, resolvedFns, _enableDefaultFd) {
+      const configNewAddr = addresses[moduleName]?.["quiche_config_new"];
+      const configLogKeysAddr = addresses[moduleName]?.["quiche_config_log_keys"];
+      if (configNewAddr && !configNewAddr.isNull() && configLogKeysAddr && !configLogKeysAddr.isNull()) {
+        const configLogKeys = new NativeFunction(configLogKeysAddr, "void", ["pointer"]);
+        Interceptor.attach(configNewAddr, {
+          onLeave(retval) {
+            if (!retval.isNull()) {
+              try {
+                configLogKeys(retval);
+                devlog("[quiche] enabled keylog on new config " + retval);
+              } catch (e) {
+                devlog("[quiche] failed to enable keylog on config: " + e);
+              }
+            }
+          }
+        });
+        log("[*] Hooked quiche_config_new for automatic keylog enablement");
+      }
+      const setKeylogPathAddr = addresses[moduleName]?.["quiche_conn_set_keylog_path"];
+      if (setKeylogPathAddr && !setKeylogPathAddr.isNull()) {
+        Interceptor.attach(setKeylogPathAddr, {
+          onEnter(args) {
+            const path = args[1].readCString();
+            devlog("[quiche] app set keylog path: " + path);
+          }
+        });
+      }
+    }
+  };
+}
+function createKeylogPipe() {
+  try {
+    const pipeFn = new NativeFunction(Module.getGlobalExportByName("pipe"), "int", ["pointer"]);
+    const pipefd = Memory.alloc(8);
+    const result = pipeFn(pipefd);
+    if (result === 0) {
+      const readFd = pipefd.readS32();
+      const writeFd = pipefd.add(4).readS32();
+      devlog("[quiche] created keylog pipe: read=" + readFd + " write=" + writeFd);
+      return [readFd, writeFd];
+    }
+  } catch (e) {
+    devlog("[quiche] failed to create pipe: " + e);
+  }
+  return [-1, -1];
+}
+function startKeylogPipeReader(readFd) {
+  if (readFd < 0)
+    return;
+  const readAddr = Module.findGlobalExportByName("read");
+  if (readAddr === null || readAddr.isNull()) {
+    devlog("[quiche] libc 'read' unresolved \u2014 keylog pipe reader disabled");
+    return;
+  }
+  const readFn = new NativeFunction(readAddr, "ssize_t", ["int", "pointer", "size_t"]);
+  const bufSize = 4096;
+  const buf = Memory.alloc(bufSize);
+  const threadFn = new NativeCallback(function(_arg) {
+    let partial = "";
+    while (true) {
+      const n = readFn(readFd, buf, bufSize - 1);
+      if (n <= 0)
+        break;
+      const chunk = partial + buf.readUtf8String(n);
+      const lines = chunk.split("\n");
+      partial = lines.pop();
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.length > 0) {
+          devlog("invoking keylog from Quiche keylog pipe");
+          sendQuicKeylog(trimmed);
+        }
+      }
+    }
+    if (partial.trim().length > 0) {
+      devlog("invoking keylog from Quiche keylog pipe (flush)");
+      sendQuicKeylog(partial.trim());
+    }
+    return NULL;
+  }, "pointer", ["pointer"]);
+  try {
+    const pthreadCreate = new NativeFunction(Module.getGlobalExportByName("pthread_create"), "int", ["pointer", "pointer", "pointer", "pointer"]);
+    const threadId = Memory.alloc(Process.pointerSize);
+    pthreadCreate(threadId, NULL, threadFn, NULL);
+    devlog("[quiche] started keylog pipe reader thread");
+  } catch (e) {
+    devlog_error("[quiche] failed to start keylog pipe reader: " + e);
+  }
+}
+function createQuicheDefinition() {
+  let pipeWriteFd = -1;
+  if (keylog_enabled) {
+    const [pipeReadFd, writeFd] = createKeylogPipe();
+    pipeWriteFd = writeFd;
+    if (pipeReadFd >= 0) {
+      startKeylogPipeReader(pipeReadFd);
+    }
+  }
+  const resolvedRef = { configLogKeys: null, setKeylogFd: null };
+  return {
+    libraryId: "quiche",
+    offsetKey: "quiche",
+    functions: {
+      librarySymbols: [
+        "quiche_conn_stream_recv",
+        "quiche_conn_stream_send",
+        "quiche_connect",
+        "quiche_accept",
+        "quiche_config_new",
+        "quiche_config_log_keys",
+        "quiche_conn_set_keylog_fd",
+        "quiche_conn_set_keylog_path",
+        "quiche_conn_free",
+        "quiche_conn_source_id"
+      ],
+      socketSymbols: []
+      // QUIC doesn't use socket fds
+    },
+    nativeFunctions: [
+      { symbol: "quiche_config_log_keys", retType: "void", argTypes: ["pointer"] },
+      { symbol: "quiche_conn_set_keylog_fd", retType: "void", argTypes: ["pointer", "int"] }
+    ],
+    fdDecoder: (_sslCtx, _fns) => -1,
+    sessionIdDecoder: (sslCtx, _fns) => sslCtx.toString(),
+    keylog: { kind: "none" },
+    extraHooks: [
+      createConnectTracker(resolvedRef, pipeWriteFd),
+      createAcceptTracker(resolvedRef, pipeWriteFd),
+      createStreamRecvHook(),
+      createStreamSendHook(),
+      createConnFreeHook(),
+      // Keylog config force-enable + set_keylog_path interception is pure
+      // key-extraction machinery — only install it when keylog is wanted.
+      ...keylog_enabled ? [createKeylogConfigHook()] : []
+    ],
+    onNativeFunctionsResolved: (fns) => {
+      if (fns["quiche_config_log_keys"]) {
+        resolvedRef.configLogKeys = fns["quiche_config_log_keys"];
+      }
+      if (fns["quiche_conn_set_keylog_fd"]) {
+        resolvedRef.setKeylogFd = fns["quiche_conn_set_keylog_fd"];
+      }
+    }
+  };
+}
+
+// agent/quic/platforms/macos/quiche_macos.ts
+function quiche_execute(moduleName, is_base_hook) {
+  executeFromDefinition(createQuicheDefinition(), moduleName, socket_library3, is_base_hook, enable_default_fd);
+}
+
+// agent/quic/platforms/macos/google_quiche_macos.ts
+init_node_globals();
+
+// agent/quic/definitions/google_quiche.ts
+init_node_globals();
+init_shared_structures();
+
+// agent/quic/shared/google_quiche_offsets.ts
+init_node_globals();
+var MANGLED_SYMBOLS = {
+  // QuicSpdyStream::Readv(const struct iovec*, size_t)
+  readv: {
+    linux: "_ZN4quic14QuicSpdyStream5ReadvEPK5iovecm",
+    macos: "__ZN4quic14QuicSpdyStream5ReadvEPK5iovecm",
+    // Windows uses MSVC mangling
+    windows: "?Readv@QuicSpdyStream@quic@@MEAA_KPEBUiovec@@_K@Z"
+  },
+  // QuicSpdyStream::WriteOrBufferBody(std::__Cr::basic_string_view<char,...>, bool)
+  // Outgoing HTTP/3 body (clean, de-framed). Verified mangled name.
+  writeOrBufferBody: {
+    linux: "_ZN4quic14QuicSpdyStream17WriteOrBufferBodyENSt4__Cr17basic_string_viewIcNS1_11char_traitsIcEEEEb",
+    macos: "__ZN4quic14QuicSpdyStream17WriteOrBufferBodyENSt4__Cr17basic_string_viewIcNS1_11char_traitsIcEEEEb",
+    windows: "?WriteOrBufferBody@QuicSpdyStream@quic@@MEAAXV?$basic_string_view@DU?$char_traits@D@__1@std@@@absl@@_N@Z"
+  },
+  // QuicSpdyStream::HttpDecoderVisitor::OnDataFramePayload(std::__Cr::basic_string_view<char,...>)
+  // INCOMING HTTP/3 body — the HttpDecoder visitor callback. This is the clean
+  // de-framed body Chrome actually delivers (its OnDataAvailable() drains the
+  // sequencer via GetReadableRegion()+MarkConsumed() and runs HttpDecoder, so
+  // QuicStreamSequencer::Readv is never on the body path and QuicSpdyStream::Readv
+  // is inlined). NOTE: nested in QuicSpdyStream::HttpDecoderVisitor, so `this`
+  // (args[0]) is the visitor sub-object, not the stream. Verified mangled name.
+  onDataFramePayload: {
+    linux: "_ZN4quic14QuicSpdyStream18HttpDecoderVisitor18OnDataFramePayloadENSt4__Cr17basic_string_viewIcNS2_11char_traitsIcEEEE",
+    macos: "__ZN4quic14QuicSpdyStream18HttpDecoderVisitor18OnDataFramePayloadENSt4__Cr17basic_string_viewIcNS2_11char_traitsIcEEEE",
+    windows: "?OnDataFramePayload@HttpDecoderVisitor@QuicSpdyStream@quic@@UEAA_NV?$basic_string_view@DU?$char_traits@D@__1@std@@@absl@@@Z"
+  },
+  // QuicStream::WriteOrBufferData(std::__Cr::basic_string_view<char,...>, bool,
+  //   quiche::QuicheReferenceCountedPointer<QuicAckListenerInterface>)
+  // Outgoing stream-level write (HTTP/3-framed bytes). Fallback for egress when
+  // WriteOrBufferBody is unavailable. Verified mangled name.
+  quicStreamWriteOrBufferData: {
+    linux: "_ZN4quic10QuicStream17WriteOrBufferDataENSt4__Cr17basic_string_viewIcNS1_11char_traitsIcEEEEbN6quiche29QuicheReferenceCountedPointerINS_24QuicAckListenerInterfaceEEE",
+    macos: "__ZN4quic10QuicStream17WriteOrBufferDataENSt4__Cr17basic_string_viewIcNS1_11char_traitsIcEEEEbN6quiche29QuicheReferenceCountedPointerINS_24QuicAckListenerInterfaceEEE",
+    windows: ""
+  },
+  // QuicStreamSequencer::OnStreamFrame(const QuicStreamFrame&)
+  // Broad raw-cleartext fallback (includes HTTP/3 framing). Arg is a struct
+  // reference, not a string_view — extracting bytes needs QuicStreamFrame field
+  // offsets, so this is resolved-only / opt-in, not attached by default.
+  // Verified mangled name.
+  sequencerOnStreamFrame: {
+    linux: "_ZN4quic19QuicStreamSequencer13OnStreamFrameERKNS_15QuicStreamFrameE",
+    macos: "__ZN4quic19QuicStreamSequencer13OnStreamFrameERKNS_15QuicStreamFrameE",
+    windows: "?OnStreamFrame@QuicStreamSequencer@quic@@QEAAXAEBVQuicStreamFrame@2@@Z"
+  },
+  // QuicStream::Readv — base-class virtual. Survives when Chrome
+  // devirtualises QuicSpdyStream::Readv on a release ARM64 build.
+  quicStreamReadv: {
+    linux: "_ZN4quic10QuicStream5ReadvEPK5iovecm",
+    macos: "__ZN4quic10QuicStream5ReadvEPK5iovecm",
+    windows: "?Readv@QuicStream@quic@@QEAA_KPEBUiovec@@_K@Z"
+  },
+  // QuicStreamSequencer::Readv — low-level read on the post-decrypt cleartext
+  // ring buffer. Not virtual, not inlinable across the call boundary, so it's
+  // the most reliable extraction point on Cronet's HTTP/3 body path.
+  sequencerReadv: {
+    linux: "_ZN4quic19QuicStreamSequencer5ReadvEPK5iovecm",
+    macos: "__ZN4quic19QuicStreamSequencer5ReadvEPK5iovecm",
+    windows: "?Readv@QuicStreamSequencer@quic@@QEAA_KPEBUiovec@@_K@Z"
+  },
+  // QuicSpdyStream::OnBodyAvailable — diagnostic only; fires when body bytes
+  // arrive. Lets us prove the HTTP/3 stream reached the body stage even when
+  // none of the Readv variants get called.
+  onBodyAvailable: {
+    linux: "_ZN4quic14QuicSpdyStream15OnBodyAvailableEv",
+    macos: "__ZN4quic14QuicSpdyStream15OnBodyAvailableEv",
+    windows: "?OnBodyAvailable@QuicSpdyStream@quic@@UEAAXXZ"
+  },
+  // QuicSpdyStream::OnHeadersDecoded(QuicHeaderList headers /*BY VALUE*/,
+  //   bool header_list_size_limit_exceeded)
+  // RELIABLE incoming/response decoded-headers path for the app-API capture
+  // mode. NOTE the corrected signature: there is NO QuicStreamId argument.
+  // ARM64: x0 = this (QuicSpdyStream*), x1 = pointer to the by-value
+  // QuicHeaderList temp, w2 = bool. QuicHeaderList is in namespace quic, so it
+  // mangles as a substitution `NS_14QuicHeaderListE`. The trailing `b` is the
+  // bool. Verify length prefixes against a real libmonochrome/Cronet symtab.
+  onHeadersDecoded: {
+    linux: "_ZN4quic14QuicSpdyStream16OnHeadersDecodedENS_14QuicHeaderListEb",
+    macos: "__ZN4quic14QuicSpdyStream16OnHeadersDecodedENS_14QuicHeaderListEb",
+    windows: "?OnHeadersDecoded@QuicSpdyStream@quic@@UEAAXVQuicHeaderList@2@_N@Z"
+  },
+  // QuicSpdyStream::WriteHeaders(quiche::HttpHeaderBlock header_block /*BY VALUE*/,
+  //   bool fin, quiche::QuicheReferenceCountedPointer<QuicAckListenerInterface>)
+  // OUTGOING/request decoded-headers path for the app-API capture mode (the
+  // egress twin of OnHeadersDecoded). ARM64: x0 = this (QuicSpdyStream*),
+  // x1 = pointer to the by-value HttpHeaderBlock temp (non-trivial -> passed by
+  // invisible reference), w2 = fin. Older QUICHE used spdy::SpdyHeaderBlock /
+  // spdy::Http2HeaderBlock instead of quiche::HttpHeaderBlock — add those
+  // variants if a target build predates the rename. VERIFY the mangling
+  // (length prefixes + substitutions) against a real libmonochrome symtab;
+  // on stripped builds this resolves via pattern/offset, not the symbol.
+  writeHeaders: {
+    linux: "_ZN4quic14QuicSpdyStream12WriteHeadersEN6quiche15HttpHeaderBlockEbNS1_29QuicheReferenceCountedPointerINS_24QuicAckListenerInterfaceEEE",
+    macos: "__ZN4quic14QuicSpdyStream12WriteHeadersEN6quiche15HttpHeaderBlockEbNS1_29QuicheReferenceCountedPointerINS_24QuicAckListenerInterfaceEEE",
+    windows: ""
+  },
+  // PHASE-2 CHAIN-FALLBACK #1:
+  // net::QuicChromiumClientStream::WriteHeaders(quiche::HttpHeaderBlock /*BY VALUE*/,
+  //   bool fin, quiche::QuicheReferenceCountedPointer<quic::QuicAckListenerInterface>)
+  // CHROME-SHIM above the quiche stream. Lives in //net/quic and wraps a
+  // quic::QuicSpdyStream (the "inner" stream). args[0] is the
+  // QuicChromiumClientStream* WRAPPER, NOT a QuicSpdyStream. The wrapper holds
+  // the inner QuicSpdyStream* at a build-specific small offset; recover it via
+  // unwrapChromiumClientStream() in google_quiche.ts so the surrogate streamId
+  // matches OnHeadersDecoded (which fires on the inner pointer). Stripped on
+  // every Cronet release build — resolution goes through the pattern path in
+  // quic_patterns.json. The mangled strings here are best-effort and only
+  // matter on a hypothetical unstripped/debug build.
+  quicChromiumClientStreamWriteHeaders: {
+    linux: "_ZN3net25QuicChromiumClientStream12WriteHeadersEN6quiche15HttpHeaderBlockEbN6quiche29QuicheReferenceCountedPointerIN4quic24QuicAckListenerInterfaceEEE",
+    macos: "__ZN3net25QuicChromiumClientStream12WriteHeadersEN6quiche15HttpHeaderBlockEbN6quiche29QuicheReferenceCountedPointerIN4quic24QuicAckListenerInterfaceEEE",
+    windows: ""
+  },
+  // PHASE-2 CHAIN-FALLBACK #2:
+  // quic::QuicSpdySession::WriteHeadersOnHeadersStream(QuicStreamId,
+  //   quiche::HttpHeaderBlock /*BY VALUE*/, bool fin,
+  //   const spdy::SpdyStreamPrecedence&,
+  //   quiche::QuicheReferenceCountedPointer<quic::QuicAckListenerInterface>)
+  // SESSION-LEVEL fallback below both QuicSpdyStream::WriteHeaders and the
+  // chrome shim. ARM64:
+  //   args[0] = QuicSpdySession*  (NOT a stream)
+  //   args[1] = QuicStreamId      (uint32_t — read low 32 bits as surrogate)
+  //   args[2] = HttpHeaderBlock*  (NOTE: shifted right by one slot vs the
+  //                                stream-level hooks — ABI gotcha)
+  //   args[3] = bool fin
+  // Stripped on every Cronet release build; pattern path is the workhorse.
+  quicSpdySessionWriteHeadersOnHeadersStream: {
+    linux: "_ZN4quic15QuicSpdySession27WriteHeadersOnHeadersStreamEjN6quiche15HttpHeaderBlockEbRKN4spdy20SpdyStreamPrecedenceEN6quiche29QuicheReferenceCountedPointerIN4quic24QuicAckListenerInterfaceEEE",
+    macos: "__ZN4quic15QuicSpdySession27WriteHeadersOnHeadersStreamEjN6quiche15HttpHeaderBlockEbRKN4spdy20SpdyStreamPrecedenceEN6quiche29QuicheReferenceCountedPointerIN4quic24QuicAckListenerInterfaceEEE",
+    windows: ""
+  }
+};
+var LABEL_TO_KEY = {
+  QuicSpdyStream_Readv: "readv",
+  QuicStream_Readv: "quicStreamReadv",
+  QuicStreamSequencer_Readv: "sequencerReadv",
+  QuicSpdyStream_OnDataFramePayload: "onDataFramePayload",
+  QuicSpdyStream_WriteOrBufferBody: "writeOrBufferBody",
+  QuicStream_WriteOrBufferData: "quicStreamWriteOrBufferData",
+  QuicStreamSequencer_OnStreamFrame: "sequencerOnStreamFrame",
+  QuicSpdyStream_OnBodyAvailable: "onBodyAvailable",
+  QuicSpdyStream_OnHeadersDecoded: "onHeadersDecoded",
+  QuicSpdyStream_WriteHeaders: "writeHeaders",
+  // Phase-2 chain-fallback labels — see MANGLED_SYMBOLS comments above for
+  // ABI notes. Patterns live in quic_patterns.json. The fallback chain is
+  // wired in installGoogleQuicheHooks() as winner-takes-all.
+  QuicChromiumClientStream_WriteHeaders: "quicChromiumClientStreamWriteHeaders",
+  QuicSpdySession_WriteHeadersOnHeadersStream: "quicSpdySessionWriteHeadersOnHeadersStream"
+};
+var KEY_TO_LABEL = Object.fromEntries(Object.entries(LABEL_TO_KEY).map(([label, key]) => [key, label]));
+
+// agent/quic/definitions/google_quiche.ts
+function resolveQuicMessage(streamPtr, label) {
+  const connPtr = quicConnectionTracker.resolveStream(streamPtr) ?? streamPtr;
+  return buildQuicMessage(quicConnectionTracker.resolveInfo(connPtr), connPtr, label);
+}
+function parseObservedPeer(sa) {
+  if (sa.isNull() || !isReadable(sa, 2))
+    return null;
+  const family = readSockaddrFamily(sa, true);
+  const needed = family === AF_INET ? 8 : family === AF_INET6 ? 24 : 0;
+  if (needed === 0 || !isReadable(sa, needed))
+    return null;
+  const decoded = decodeSockaddr(sa, false, void 0, true);
+  if (!decoded || decoded.port === 0)
+    return null;
+  if (decoded.family === "AF_INET" && decoded.addr >>> 24 === 127)
+    return null;
+  return decoded;
+}
+var socketObserverInstalled = false;
+var CHROMIUM_INNER_PROBE_FAILED = -2;
+var chromiumStreamInnerOffset = -1;
+function unwrapChromiumClientStream(wrapperPtr) {
+  try {
+    if (!wrapperPtr || wrapperPtr.isNull())
+      return null;
+    resetReadableCache();
+    const wrapperModule = (() => {
+      try {
+        return Process.findModuleByAddress(wrapperPtr);
+      } catch (_e) {
+        return null;
+      }
+    })();
+    const isCronetFamilyModule = (m2) => {
+      if (!m2)
+        return false;
+      const n = m2.name.toLowerCase();
+      return n.startsWith("libcronet") || n.startsWith("libmainlinecronet") || n.startsWith("libmonochrome");
+    };
+    const moduleSameOrCronet = (m2) => {
+      if (!m2)
+        return false;
+      if (wrapperModule && m2.name === wrapperModule.name)
+        return true;
+      return isCronetFamilyModule(m2);
+    };
+    const validateChromiumInner = (off, inner) => {
+      if (!isReadable(inner, Process.pointerSize)) {
+        if (debug_output) {
+          devlog_debug(`[unwrapChromiumClientStream] off=0x${off.toString(16)} inner=${inner} not readable`);
+        }
+        return null;
+      }
+      const vtable2 = safeReadPointer(inner);
+      if (vtable2 === null || vtable2.isNull() || !isReadable(vtable2, Process.pointerSize)) {
+        if (debug_output) {
+          devlog_debug(`[unwrapChromiumClientStream] off=0x${off.toString(16)} vtable=${vtable2} not readable`);
+        }
+        return null;
+      }
+      const firstFn = safeReadPointer(vtable2);
+      if (firstFn === null || firstFn.isNull()) {
+        if (debug_output) {
+          devlog_debug(`[unwrapChromiumClientStream] off=0x${off.toString(16)} vtable[0]=null`);
+        }
+        return null;
+      }
+      let r = null;
+      try {
+        r = Process.findRangeByAddress(firstFn);
+      } catch (_e) {
+        r = null;
+      }
+      if (!r || r.protection.indexOf("x") < 0) {
+        if (debug_output) {
+          devlog_debug(`[unwrapChromiumClientStream] off=0x${off.toString(16)} vtable[0]=${firstFn} not in r-x range`);
+        }
+        return null;
+      }
+      let vtblModule = null;
+      try {
+        vtblModule = Process.findModuleByAddress(firstFn);
+      } catch (_e) {
+        vtblModule = null;
+      }
+      if (!moduleSameOrCronet(vtblModule)) {
+        if (debug_output) {
+          const where = vtblModule ? `${vtblModule.name}+0x${firstFn.sub(vtblModule.base).toString(16)}` : `<unknown range>`;
+          devlog_debug(`[unwrapChromiumClientStream] off=0x${off.toString(16)} vtable[0]=${firstFn} (in ${where}) is NOT in wrapper module (${wrapperModule ? wrapperModule.name : "?"}) or a Cronet-family module \u2014 rejecting as false positive`);
+        }
+        return null;
+      }
+      if (debug_output) {
+        const where = vtblModule ? `${vtblModule.name}+0x${firstFn.sub(vtblModule.base).toString(16)}` : `<unknown>`;
+        devlog_debug(`[unwrapChromiumClientStream] off=0x${off.toString(16)} PLAUSIBLE inner=${inner} vtable=${vtable2} vtable[0]=${firstFn} (in ${where})`);
+      }
+      return inner;
+    };
+    const tryOffset = (off) => {
+      const slot = wrapperPtr.add(off);
+      if (!isReadable(slot, Process.pointerSize)) {
+        if (debug_output) {
+          devlog_debug(`[unwrapChromiumClientStream] off=0x${off.toString(16)} slot=${slot} not readable`);
+        }
+        return null;
+      }
+      const inner = safeReadPointer(slot);
+      if (inner === null || inner.isNull()) {
+        if (debug_output) {
+          devlog_debug(`[unwrapChromiumClientStream] off=0x${off.toString(16)} inner=null`);
+        }
+        return null;
+      }
+      return validateChromiumInner(off, inner);
+    };
+    if (chromiumStreamInnerOffset >= 0) {
+      const cached = tryOffset(chromiumStreamInnerOffset);
+      if (cached)
+        return cached;
+      devlog_debug(`[unwrapChromiumClientStream] cached offset 0x${chromiumStreamInnerOffset.toString(16)} failed plausibility for wrapper=${wrapperPtr}; re-probing`);
+    }
+    if (chromiumStreamInnerOffset === CHROMIUM_INNER_PROBE_FAILED)
+      return null;
+    for (const off of [8, 16, 24, 32, 40, 48]) {
+      const inner = tryOffset(off);
+      if (inner) {
+        chromiumStreamInnerOffset = off;
+        devlog(`[unwrapChromiumClientStream] resolved inner QuicSpdyStream offset = 0x${off.toString(16)} (wrapper module = ${wrapperModule ? wrapperModule.name : "?"})`);
+        return inner;
+      }
+    }
+    chromiumStreamInnerOffset = CHROMIUM_INNER_PROBE_FAILED;
+    devlog(`[unwrapChromiumClientStream] no candidate offset matched for wrapper=${wrapperPtr}; chain fallback will use the wrapper ptr as streamKey (degraded correlation)`);
+    return null;
+  } catch (e) {
+    chromiumStreamInnerOffset = CHROMIUM_INNER_PROBE_FAILED;
+    devlog_error(`[unwrapChromiumClientStream] unexpected fault: ${e} (probing disabled for this attach)`);
+    return null;
+  }
+}
+function installQuicSocketObserver() {
+  if (socketObserverInstalled)
+    return;
+  socketObserverInstalled = true;
+  const udpFds = /* @__PURE__ */ new Set();
+  const socketAddr = Module.findGlobalExportByName("socket");
+  const connectAddr = Module.findGlobalExportByName("connect");
+  const closeAddr = Module.findGlobalExportByName("close");
+  if (socketAddr) {
+    Interceptor.attach(socketAddr, {
+      onEnter(args) {
+        this.sockType = args[1].toInt32();
+      },
+      onLeave(retval) {
+        const fd = retval.toInt32();
+        if (fd >= 0 && (this.sockType & 127) === 2)
+          udpFds.add(fd);
+      }
+    });
+  }
+  if (connectAddr) {
+    Interceptor.attach(connectAddr, {
+      onEnter(args) {
+        const fd = args[0].toInt32();
+        if (!udpFds.has(fd))
+          return;
+        try {
+          const peer = parseObservedPeer(args[1]);
+          if (peer)
+            quicConnectionTracker.setObservedPeer(peer);
+        } catch (e) {
+        }
+      }
+    });
+  }
+  if (closeAddr) {
+    Interceptor.attach(closeAddr, {
+      onEnter(args) {
+        udpFds.delete(args[0].toInt32());
+      }
+    });
+  }
+  devlog("[Google QUICHE] installed libc UDP socket observer for real-peer recovery");
+}
+function readIovec(iovPtr, iovLen, maxBytes) {
+  if (iovPtr.isNull() || iovLen === 0 || maxBytes === 0)
+    return null;
+  const ptrSize3 = Process.pointerSize;
+  const iovecSize = ptrSize3 * 2;
+  let remaining = maxBytes;
+  const parts = [];
+  resetReadableCache();
+  for (let i = 0; i < iovLen && remaining > 0; i++) {
+    try {
+      const entry = iovPtr.add(i * iovecSize);
+      if (!isReadable(entry, iovecSize))
+        continue;
+      const base = entry.readPointer();
+      const len = entry.add(ptrSize3).readULong();
+      if (base.isNull() || len === 0)
+        continue;
+      const toRead = Math.min(len, remaining);
+      if (!isReadable(base, toRead))
+        continue;
+      const chunk = base.readByteArray(toRead);
+      if (chunk) {
+        parts.push(chunk);
+        remaining -= toRead;
+      }
+    } catch (e) {
+      devlog_error(`[Google QUICHE] readIovec entry ${i} threw: ${e}`);
+      continue;
+    }
+  }
+  if (parts.length === 0)
+    return null;
+  if (parts.length === 1)
+    return parts[0];
+  const totalLen = maxBytes - remaining;
+  const result = new ArrayBuffer(totalLen);
+  const view = new Uint8Array(result);
+  let offset = 0;
+  for (const part of parts) {
+    view.set(new Uint8Array(part), offset);
+    offset += part.byteLength;
+  }
+  return result;
+}
+function _hexHead(p, n = 32) {
+  try {
+    if (!p || p.isNull())
+      return "<null>";
+    if (!isReadable(p, n))
+      return "<unreadable>";
+    return hexdump(p, { length: n, header: false, ansi: false }).replace(/\n/g, " | ");
+  } catch (e) {
+    return "<unreadable>";
+  }
+}
+function readLibcxxString(p) {
+  try {
+    const first = safeReadU8(p);
+    if (first === null)
+      return "";
+    if (first & 1) {
+      const size2 = safeReadULong(p.add(8));
+      const dataPtr = safeReadPointer(p.add(16));
+      if (size2 === null || dataPtr === null || dataPtr.isNull() || size2 <= 0 || size2 > 1 << 20)
+        return "";
+      return safeReadUtf8(dataPtr, size2);
+    }
+    const size = first >> 1;
+    if (size <= 0 || size > 22)
+      return "";
+    return safeReadUtf8(p.add(1), size);
+  } catch (e) {
+    return "";
+  }
+}
+function readQuicHeaderList(hl, maxPairs = 256) {
+  const out = [];
+  resetReadableCache();
+  try {
+    const begin = safeReadULong(hl);
+    const end = safeReadULong(hl.add(8));
+    const data = safeReadPointer(hl.add(16));
+    const cap = safeReadULong(hl.add(24));
+    if (begin === null || end === null || cap === null)
+      return out;
+    if (data === null || data.isNull() || cap <= 0 || cap > 65536)
+      return out;
+    const n = Math.min(end - begin, maxPairs);
+    if (n <= 0)
+      return out;
+    for (let i = 0; i < n; i++) {
+      const slot = data.add((begin + i) % cap * 48);
+      out.push([readLibcxxString(slot), readLibcxxString(slot.add(24))]);
+    }
+  } catch (e) {
+  }
+  return out;
+}
+function readStringView(p) {
+  try {
+    const ptr2 = safeReadPointer(p);
+    const len = safeReadULong(p.add(8));
+    if (ptr2 === null || len === null || ptr2.isNull() || len <= 0 || len > 1 << 20)
+      return "";
+    return safeReadUtf8(ptr2, len);
+  } catch (e) {
+    return "";
+  }
+}
+function readHeaderValue(hv) {
+  try {
+    const meta = safeReadULong(hv.add(8));
+    if (meta === null)
+      return "";
+    const allocated = meta & 1;
+    const count = meta >> 1;
+    if (count <= 0)
+      return "";
+    let svPtr;
+    if (!allocated) {
+      svPtr = hv.add(16);
+    } else {
+      const heap = safeReadPointer(hv.add(16));
+      if (heap === null || heap.isNull())
+        return "";
+      svPtr = heap;
+    }
+    return readStringView(svPtr);
+  } catch (e) {
+    return "";
+  }
+}
+function _looksLikeStdList(listObj) {
+  try {
+    const size = safeReadULong(listObj.add(16));
+    if (size === null || size <= 0 || size > 1e3)
+      return false;
+    const sentinel = listObj;
+    const first = safeReadPointer(listObj.add(8));
+    if (first === null || first.isNull() || first.equals(sentinel))
+      return false;
+    const prev = safeReadPointer(first);
+    return prev !== null && prev.equals(sentinel);
+  } catch (e) {
+    return false;
+  }
+}
+function _dumpEmptyHeaderBlockProbe(label, headerBlock) {
+  const probes = [16, 24, 32, 40, 48, 56, 64].map((o) => `${o}:${_looksLikeStdList(headerBlock.add(o)) ? "list" : "-"}`).join(" ");
+  devlog_debug(`[${label}] read 0 headers; raw=${_hexHead(headerBlock)} probes=[${probes}]`);
+}
+function readHttpHeaderBlock(hhb, maxPairs = 256) {
+  const out = [];
+  resetReadableCache();
+  try {
+    for (const off of [16, 24, 32, 40, 48, 56, 64]) {
+      const listObj = hhb.add(off);
+      if (!_looksLikeStdList(listObj))
+        continue;
+      const sentinel = listObj;
+      let node = safeReadPointer(listObj.add(8));
+      if (node === null)
+        continue;
+      let guard = 0;
+      while (!node.isNull() && !node.equals(sentinel) && guard < maxPairs) {
+        const pair = node.add(16);
+        const key = readStringView(pair);
+        const val = readHeaderValue(pair.add(16));
+        if (key.length > 0)
+          out.push([key, val]);
+        const next = safeReadPointer(node.add(8));
+        if (next === null)
+          break;
+        node = next;
+        guard++;
+      }
+      if (out.length > 0)
+        return out;
+    }
+  } catch (e) {
+  }
+  return out;
+}
+function installReadvHook(addr, label) {
+  let callCount = 0;
+  const MAX_DEBUG_CALLS = 5;
+  Interceptor.attach(addr, {
+    onEnter(args) {
+      this.streamObj = args[0];
+      this.iov = args[1];
+      this.iovLen = args[2].toUInt32();
+    },
+    onLeave(retval) {
+      if (_isShuttingDownNow())
+        return;
+      try {
+        const bytesRead = retval.toUInt32();
+        if (callCount < MAX_DEBUG_CALLS) {
+          callCount++;
+          devlog_debug(`[${label}] call #${callCount}: bytesRead=${bytesRead} iovLen=${this.iovLen}`);
+        }
+        if (bytesRead === 0)
+          return;
+        const data = readIovec(this.iov, this.iovLen, bytesRead);
+        if (!data)
+          return;
+        const message = resolveQuicMessage(this.streamObj.toString(), label);
+        sendQuicDatalog(message, data, -1);
+      } catch (e) {
+        devlog_error(`[${label}] onLeave threw: ${e}`);
+      }
+    }
+  });
+}
+function getMangledSymbol(key) {
+  const platform = Process.platform;
+  const symbols = MANGLED_SYMBOLS[key];
+  if (platform === "darwin")
+    return symbols.macos;
+  if (platform === "windows")
+    return symbols.windows;
+  return symbols.linux;
+}
+var CHAIN_CANDIDATE_KEYWORDS = {
+  // QuicSpdyStream::WriteHeaders — must contain BOTH "QuicSpdyStream" and "WriteHeaders".
+  writeHeaders: [["QuicSpdyStream", "WriteHeaders"]],
+  // net::QuicChromiumClientStream::WriteHeaders — chrome shim.
+  quicChromiumClientStreamWriteHeaders: [["ChromiumClientStream", "WriteHeaders"]],
+  // QuicSpdySession::WriteHeadersOnHeadersStream — session-level gQUIC.
+  quicSpdySessionWriteHeadersOnHeadersStream: [["WriteHeadersOnHeadersStream"]]
+};
+var CHAIN_LABEL_PRETTY = {
+  writeHeaders: "QuicSpdyStream::WriteHeaders",
+  quicChromiumClientStreamWriteHeaders: "net::QuicChromiumClientStream::WriteHeaders",
+  quicSpdySessionWriteHeadersOnHeadersStream: "quic::QuicSpdySession::WriteHeadersOnHeadersStream"
+};
+function scanRangeAllAsync(base, size, pattern) {
+  return new Promise((resolve) => {
+    const acc = [];
+    try {
+      Memory.scan(base, size, pattern, {
+        onMatch: (address) => {
+          acc.push(address);
+        },
+        onError: () => {
+        },
+        onComplete: () => resolve(acc)
+      });
+    } catch (_e) {
+      resolve(acc);
+    }
+  });
+}
+async function dumpChainCandidatesDebug(moduleName, resolved) {
+  if (!debug_output)
+    return;
+  if (_isShuttingDownNow())
+    return;
+  let mod = null;
+  try {
+    mod = Process.findModuleByName(moduleName);
+  } catch (_e) {
+    mod = null;
+  }
+  if (!mod) {
+    devlog_debug(`[chain-debug] module ${moduleName} not loaded; skipping enumeration`);
+    return;
+  }
+  const chainKeys = Object.keys(CHAIN_CANDIDATE_KEYWORDS);
+  const symHitsByKey = new Map(chainKeys.map((k) => [k, []]));
+  try {
+    for (const sym of mod.enumerateSymbols()) {
+      if (!sym.name || !sym.address || sym.address.isNull())
+        continue;
+      for (const key of chainKeys) {
+        const tokenSets = CHAIN_CANDIDATE_KEYWORDS[key] || [];
+        const matched = tokenSets.find((tokens) => tokens.every((t) => sym.name.includes(t)));
+        if (matched) {
+          symHitsByKey.get(key).push({ name: sym.name, address: sym.address });
+        }
+      }
+    }
+  } catch (e) {
+    devlog_debug(`[chain-debug] enumerateSymbols failed in ${moduleName}: ${e}`);
+  }
+  const parsed = getParsedPatterns();
+  let ranges = [];
+  try {
+    ranges = mod.enumerateRanges("r-x");
+  } catch (_e) {
+    ranges = [];
+  }
+  for (const key of chainKeys) {
+    const pretty = CHAIN_LABEL_PRETTY[key] || key;
+    const label = KEY_TO_LABEL[key];
+    const picked = resolved.get(key);
+    const pickedStr = picked ? picked.toString() : "<unresolved>";
+    const mangled = getMangledSymbol(key);
+    let exportHit = null;
+    try {
+      exportHit = mangled ? mod.findExportByName(mangled) : null;
+    } catch (_e) {
+      exportHit = null;
+    }
+    const symHits = symHitsByKey.get(key) || [];
+    let patternMatchCount = 0;
+    const patternMatches = [];
+    if (parsed && label && ranges.length > 0) {
+      const lib = parsed[moduleName] || parsed["google_quiche"];
+      const osEntry = lib && lib[currentPlatformKey()];
+      const arch = osEntry && (osEntry[normalizeArchKey()] || osEntry["default"]);
+      const labelPatterns = arch && arch[label];
+      const patternsList = Array.isArray(labelPatterns) ? labelPatterns : labelPatterns ? [labelPatterns] : [];
+      for (const pattern of patternsList) {
+        for (const range of ranges) {
+          if (_isShuttingDownNow())
+            break;
+          try {
+            const ms = await scanRangeAllAsync(range.base, range.size, pattern);
+            for (const m2 of ms) {
+              patternMatchCount++;
+              if (patternMatches.length < 8)
+                patternMatches.push(m2);
+            }
+          } catch (_e) {
+          }
+        }
+      }
+    }
+    devlog_debug(`[chain-debug] label=${label || "?"} (${pretty}) picked=${pickedStr} exports=${exportHit ? exportHit.toString() : "<none>"} symtab_hits=${symHits.length} pattern_hits=${patternMatchCount}`);
+    dumpHits("symtab", symHits, 5, (s) => `${s.address} ${s.name}`);
+    dumpHits("pattern", patternMatches, 8, (a) => `${a}`);
+    if (patternMatchCount > patternMatches.length) {
+      devlog_debug(`[chain-debug]    pattern: ... and ${patternMatchCount - patternMatches.length} more`);
+    }
+    if (patternMatchCount > 1) {
+      devlog_debug(`[chain-debug]    WARNING: pattern matched ${patternMatchCount} sites \u2014 uniqueness failure risk (see blog's PersistentSampleVector case)`);
+    }
+  }
+}
+function dumpHits(linePrefix, hits, maxShown, render) {
+  if (hits.length === 0)
+    return;
+  const shown = hits.slice(0, maxShown);
+  for (const h of shown) {
+    devlog_debug(`[chain-debug]    ${linePrefix}: ${render(h)}`);
+  }
+  if (hits.length > shown.length) {
+    devlog_debug(`[chain-debug]    ${linePrefix}: ... and ${hits.length - shown.length} more`);
+  }
+}
+async function resolveQuicheSymbols(moduleName) {
+  const resolved = /* @__PURE__ */ new Map();
+  const keys = Object.keys(MANGLED_SYMBOLS);
+  const remaining = [];
+  let mod = null;
+  try {
+    mod = Process.findModuleByName(moduleName);
+  } catch (_e) {
+  }
+  for (const key of keys) {
+    const mangledName = getMangledSymbol(key);
+    if (mod) {
+      try {
+        const addr = mod.findExportByName(mangledName);
+        if (addr && !addr.isNull()) {
+          devlog("[Google QUICHE] found " + key + " via symbol export in " + moduleName);
+          resolved.set(key, addr);
+          continue;
+        }
+      } catch (_e) {
+      }
+    }
+    remaining.push(key);
+  }
+  if (remaining.length === 0)
+    return resolved;
+  const symResults = findNonExportedSymbols(moduleName, remaining.map(getMangledSymbol));
+  for (const key of remaining) {
+    const addr = symResults.get(getMangledSymbol(key));
+    if (addr && !addr.isNull()) {
+      devlog("[Google QUICHE] found " + key + " via symbol table in " + moduleName);
+      resolved.set(key, addr);
+    }
+  }
+  let missing = Object.keys(MANGLED_SYMBOLS).filter((k) => !resolved.has(k));
+  if (missing.length > 0) {
+    const parsed = getParsedPatterns();
+    if (parsed) {
+      const labels = missing.map((k) => KEY_TO_LABEL[k]).filter(Boolean);
+      try {
+        const ps = new PatternStrategy(parsed);
+        const res = await ps.tryHookAsync(moduleName, "google_quiche", labels);
+        res.resolvedAddresses.forEach((addr, label) => {
+          const key = LABEL_TO_KEY[label];
+          if (key && !resolved.has(key)) {
+            resolved.set(key, addr);
+            devlog(`[Google QUICHE] found ${key} via pattern in ${moduleName}`);
+          }
+        });
+      } catch (e) {
+        devlog_debug(`[Google QUICHE] pattern strategy failed: ${e}`);
+      }
+    }
+  }
+  missing = Object.keys(MANGLED_SYMBOLS).filter((k) => !resolved.has(k));
+  if (missing.length > 0 && offsets !== "{OFFSETS}" && offsets.google_quiche) {
+    const base = getBaseAddress(moduleName);
+    const gq = offsets.google_quiche;
+    for (const k of missing) {
+      const entry = gq[KEY_TO_LABEL[k]];
+      if (!entry)
+        continue;
+      const a = ptr(entry.address);
+      resolved.set(k, entry.absolute || base == null ? a : base.add(a));
+      devlog(`[Google QUICHE] applied offset for ${k} in ${moduleName}`);
+    }
+  }
+  await dumpChainCandidatesDebug(moduleName, resolved);
+  return resolved;
+}
+async function installGoogleQuicheHooks(moduleName) {
+  if (!pcap_enabled)
+    return;
+  log("[*] Google QUICHE: attempting to hook QuicSpdyStream in " + moduleName);
+  installQuicSocketObserver();
+  const resolved = await resolveQuicheSymbols(moduleName);
+  const readvAddr = resolved.get("readv") || null;
+  const quicStreamReadvAddr = resolved.get("quicStreamReadv") || null;
+  const sequencerReadvAddr = resolved.get("sequencerReadv") || null;
+  const onBodyAvailableAddr = resolved.get("onBodyAvailable") || null;
+  const writeAddr = resolved.get("writeOrBufferBody") || null;
+  const onDataFramePayloadAddr = resolved.get("onDataFramePayload") || null;
+  const onHeadersDecodedAddr = resolved.get("onHeadersDecoded") || null;
+  const writeHeadersAddr = resolved.get("writeHeaders") || null;
+  const chromiumWriteHeadersAddr = resolved.get("quicChromiumClientStreamWriteHeaders") || null;
+  const sessionWriteHeadersOnHeadersStreamAddr = resolved.get("quicSpdySessionWriteHeadersOnHeadersStream") || null;
+  let effectiveWriteHeadersAddr = writeHeadersAddr;
+  let effectiveChromiumWriteHeadersAddr = chromiumWriteHeadersAddr;
+  let effectiveSessionWriteHeadersOnHeadersStreamAddr = sessionWriteHeadersOnHeadersStreamAddr;
+  const requestedLayer = quic_egress_headers_layer || "auto";
+  let forcedLayerActive = false;
+  switch (requestedLayer) {
+    case "auto":
+      break;
+    case "quiche-internal":
+      effectiveChromiumWriteHeadersAddr = null;
+      effectiveSessionWriteHeadersOnHeadersStreamAddr = null;
+      forcedLayerActive = true;
+      break;
+    case "chrome-shim":
+      effectiveWriteHeadersAddr = null;
+      effectiveSessionWriteHeadersOnHeadersStreamAddr = null;
+      forcedLayerActive = true;
+      break;
+    case "session-level":
+      effectiveWriteHeadersAddr = null;
+      effectiveChromiumWriteHeadersAddr = null;
+      forcedLayerActive = true;
+      break;
+    default:
+      log(`[!] Google QUICHE: unrecognised --quic-egress-headers-layer="${requestedLayer}"; falling back to "auto" (chain behaviour unchanged)`);
+      break;
+  }
+  if (forcedLayerActive) {
+    log(`[*] Google QUICHE: --quic-egress-headers-layer=${requestedLayer} (forced; other egress-headers layers will NOT be installed even if their patterns resolve)`);
+  }
+  const hasAnyResolvedAddress = !!(readvAddr || writeAddr || quicStreamReadvAddr || sequencerReadvAddr || onDataFramePayloadAddr || onHeadersDecodedAddr || writeHeadersAddr || chromiumWriteHeadersAddr || sessionWriteHeadersOnHeadersStreamAddr);
+  if (!hasAnyResolvedAddress) {
+    devlog("[Google QUICHE] could not resolve any stream functions in " + moduleName);
+    devlog("[Google QUICHE] note: stripped release builds require byte patterns in default_patterns.json");
+    if (quic_capture_mode === "app-api") {
+      log(`[*] Google QUICHE egress headers chain in ${moduleName}: active layer = NONE (no addresses resolved on this module)`);
+    }
+    return;
+  }
+  log(`[*] Google QUICHE: quic_capture_mode = "${quic_capture_mode}"`);
+  if (quic_capture_mode !== "app-api") {
+    const readvTargets = [
+      [readvAddr, "QuicSpdyStream_Readv", "QuicSpdyStream::Readv"],
+      [quicStreamReadvAddr, "QuicStream_Readv", "QuicStream::Readv"],
+      [sequencerReadvAddr, "QuicStreamSequencer_Readv", "QuicStreamSequencer::Readv"]
+    ];
+    for (const [addr, label, prettyName] of readvTargets) {
+      if (!addr || addr.isNull())
+        continue;
+      try {
+        installReadvHook(addr, label);
+        log(`[*] Hooked ${prettyName} for plaintext capture`);
+      } catch (e) {
+        devlog_error(`[Google QUICHE] failed to hook ${prettyName}: ${e}`);
+      }
+    }
+  }
+  if (onDataFramePayloadAddr && !onDataFramePayloadAddr.isNull()) {
+    try {
+      const breadcrumb = `QuicSpdyStream::OnDataFramePayload (${moduleName})`;
+      Interceptor.attach(onDataFramePayloadAddr, {
+        onEnter(args) {
+          if (_isShuttingDownNow())
+            return;
+          hookBreadcrumb(breadcrumb);
+          try {
+            const dataPtr = args[1];
+            const dataLen = args[2].toUInt32();
+            if (dataLen === 0 || dataPtr.isNull())
+              return;
+            resetReadableCache();
+            if (dataLen > 16 << 20 || !isReadable(dataPtr, dataLen)) {
+              devlog_debug(`[OnDataFramePayload] unreadable data ptr=${dataPtr} len=${dataLen} -> skip`);
+              return;
+            }
+            const data = dataPtr.readByteArray(dataLen);
+            if (!data)
+              return;
+            const message = resolveQuicMessage(args[0].toString(), "QuicSpdyStream_OnDataFramePayload");
+            sendQuicDatalog(message, data, -1);
+          } catch (e) {
+            devlog_error("[QuicSpdyStream_OnDataFramePayload] onEnter threw: " + e);
+          }
+        }
+      });
+      log("[*] Hooked QuicSpdyStream::OnDataFramePayload for plaintext capture (incoming HTTP/3 body)");
+    } catch (e) {
+      devlog_error("[Google QUICHE] failed to hook OnDataFramePayload: " + e);
+    }
+  }
+  if (onBodyAvailableAddr && !onBodyAvailableAddr.isNull()) {
+    try {
+      let onBodyCount = 0;
+      Interceptor.attach(onBodyAvailableAddr, {
+        onEnter(args) {
+          if (onBodyCount < 5) {
+            onBodyCount++;
+            devlog_debug(`[QuicSpdyStream_OnBodyAvailable] call #${onBodyCount}: this=${args[0]}`);
+          }
+        }
+      });
+      devlog("[*] Hooked QuicSpdyStream::OnBodyAvailable (diagnostic)");
+    } catch (e) {
+      devlog_error("[Google QUICHE] failed to hook OnBodyAvailable: " + e);
+    }
+  }
+  if (quic_capture_mode === "app-api" && onHeadersDecodedAddr && !onHeadersDecodedAddr.isNull()) {
+    try {
+      let ohdCount = 0;
+      Interceptor.attach(onHeadersDecodedAddr, {
+        onEnter(args) {
+          if (_isShuttingDownNow())
+            return;
+          try {
+            this.streamObj = args[0];
+            this.headerList = args[1];
+            devlog_debug(`[OnHeadersDecoded] FIRED this=${this.streamObj} headerList=${this.headerList}`);
+          } catch (e) {
+            devlog_error("[QuicSpdyStream_OnHeadersDecoded] onEnter threw: " + e);
+          }
+        },
+        onLeave(_retval) {
+          if (_isShuttingDownNow())
+            return;
+          try {
+            if (!this.headerList || this.headerList.isNull()) {
+              devlog_debug("[OnHeadersDecoded] headerList null -> skip");
+              return;
+            }
+            hookBreadcrumb(`QuicSpdyStream::OnHeadersDecoded reading QuicHeaderList this=${this.streamObj} headerList=${this.headerList}`);
+            const headers = readQuicHeaderList(this.headerList);
+            if (headers.length === 0) {
+              const hl = this.headerList;
+              let begin = -1, end = -1, cap = -1, data = "<?>";
+              try {
+                resetReadableCache();
+                const b = safeReadULong(hl);
+                if (b !== null)
+                  begin = b;
+                const e2 = safeReadULong(hl.add(8));
+                if (e2 !== null)
+                  end = e2;
+                const d = safeReadPointer(hl.add(16));
+                if (d !== null)
+                  data = d.toString();
+                const c = safeReadULong(hl.add(24));
+                if (c !== null)
+                  cap = c;
+              } catch (e) {
+              }
+              devlog_debug(`[OnHeadersDecoded] read 0 headers; raw=${_hexHead(hl)} begin=${begin} end=${end} data=${data} cap=${cap} size=${end - begin}`);
+              return;
+            }
+            if (ohdCount < 8) {
+              ohdCount++;
+              devlog_debug(`[OnHeadersDecoded] call #${ohdCount} in ${moduleName}: ${headers.length} header(s)`);
+            }
+            const streamId = this.streamObj.toUInt32();
+            const message = resolveQuicMessage(this.streamObj.toString(), "QuicSpdyStream_OnHeadersDecoded");
+            sendQuicDatalog(message, null, streamId, void 0, void 0, "udp", headers);
+          } catch (e) {
+            devlog_error("[QuicSpdyStream_OnHeadersDecoded] onLeave threw: " + e);
+          }
+        }
+      });
+      log("[*] Hooked QuicSpdyStream::OnHeadersDecoded for HTTP/3 header capture (incoming/response, app-api mode)");
+    } catch (e) {
+      devlog_error("[Google QUICHE] failed to hook OnHeadersDecoded: " + e);
+    }
+  }
+  if (quic_capture_mode === "app-api" && effectiveWriteHeadersAddr && !effectiveWriteHeadersAddr.isNull()) {
+    try {
+      let whCount = 0;
+      Interceptor.attach(effectiveWriteHeadersAddr, {
+        onEnter(args) {
+          if (_isShuttingDownNow())
+            return;
+          try {
+            const streamObj = args[0];
+            const headerBlock = args[1];
+            devlog_debug(`[WriteHeaders] FIRED this=${streamObj} headerBlock=${headerBlock}`);
+            if (!headerBlock || headerBlock.isNull())
+              return;
+            hookBreadcrumb(`QuicSpdyStream::WriteHeaders reading HttpHeaderBlock this=${streamObj} headerBlock=${headerBlock}`);
+            const headers = readHttpHeaderBlock(headerBlock);
+            if (headers.length === 0) {
+              _dumpEmptyHeaderBlockProbe("WriteHeaders", headerBlock);
+              return;
+            }
+            if (whCount < 8) {
+              whCount++;
+              devlog_debug(`[WriteHeaders] call #${whCount} in ${moduleName}: ${headers.length} header(s)`);
+            }
+            const streamId = streamObj.toUInt32();
+            const message = resolveQuicMessage(streamObj.toString(), "QuicSpdyStream_WriteHeaders");
+            sendQuicDatalog(message, null, streamId, void 0, void 0, "udp", headers);
+          } catch (e) {
+            devlog_error("[QuicSpdyStream_WriteHeaders] onEnter threw: " + e);
+          }
+        }
+      });
+      log("[*] Hooked QuicSpdyStream::WriteHeaders for HTTP/3 header capture (outgoing/request, app-api mode)");
+    } catch (e) {
+      devlog_error("[Google QUICHE] failed to hook WriteHeaders: " + e);
+    }
+  }
+  const wroteWriteHeadersHook = !!effectiveWriteHeadersAddr && !effectiveWriteHeadersAddr.isNull();
+  if (quic_capture_mode === "app-api" && !wroteWriteHeadersHook && effectiveChromiumWriteHeadersAddr && !effectiveChromiumWriteHeadersAddr.isNull()) {
+    try {
+      let cwhCount = 0;
+      Interceptor.attach(effectiveChromiumWriteHeadersAddr, {
+        onEnter(args) {
+          if (_isShuttingDownNow())
+            return;
+          try {
+            const wrapperObj = args[0];
+            const headerBlock = args[1];
+            devlog_debug(`[ChromiumClientStream_WriteHeaders] FIRED wrapper=${wrapperObj} headerBlock=${headerBlock}`);
+            if (!headerBlock || headerBlock.isNull())
+              return;
+            const innerStream = unwrapChromiumClientStream(wrapperObj);
+            if (!innerStream) {
+              devlog_debug(`[ChromiumClientStream_WriteHeaders] unwrap failed for wrapper=${wrapperObj} -> skip`);
+              return;
+            }
+            hookBreadcrumb(`QuicChromiumClientStream::WriteHeaders reading HttpHeaderBlock wrapper=${wrapperObj} inner=${innerStream} headerBlock=${headerBlock}`);
+            const headers = readHttpHeaderBlock(headerBlock);
+            if (headers.length === 0) {
+              _dumpEmptyHeaderBlockProbe("ChromiumClientStream_WriteHeaders", headerBlock);
+              return;
+            }
+            if (cwhCount < 8) {
+              cwhCount++;
+              devlog_debug(`[ChromiumClientStream_WriteHeaders] call #${cwhCount} in ${moduleName}: ${headers.length} header(s)`);
+            }
+            const streamId = innerStream.toUInt32();
+            const message = resolveQuicMessage(innerStream.toString(), "QuicChromiumClientStream_WriteHeaders");
+            sendQuicDatalog(message, null, streamId, void 0, void 0, "udp", headers);
+          } catch (e) {
+            devlog_error("[QuicChromiumClientStream_WriteHeaders] onEnter threw: " + e);
+          }
+        }
+      });
+      log("[*] Hooked net::QuicChromiumClientStream::WriteHeaders for HTTP/3 header capture (outgoing/request, app-api mode, chain-fallback)");
+    } catch (e) {
+      devlog_error("[Google QUICHE] failed to hook QuicChromiumClientStream::WriteHeaders: " + e);
+    }
+  }
+  const wroteAnyEgressHeaders = wroteWriteHeadersHook || !!effectiveChromiumWriteHeadersAddr && !effectiveChromiumWriteHeadersAddr.isNull();
+  if (quic_capture_mode === "app-api" && !wroteAnyEgressHeaders && effectiveSessionWriteHeadersOnHeadersStreamAddr && !effectiveSessionWriteHeadersOnHeadersStreamAddr.isNull()) {
+    try {
+      let swhCount = 0;
+      Interceptor.attach(effectiveSessionWriteHeadersOnHeadersStreamAddr, {
+        onEnter(args) {
+          if (_isShuttingDownNow())
+            return;
+          try {
+            const sessionObj = args[0];
+            const streamIdRaw = args[1].toUInt32();
+            const headerBlock = args[2];
+            devlog_debug(`[SpdySession_WriteHeadersOnHeadersStream] FIRED session=${sessionObj} streamId=${streamIdRaw} headerBlock=${headerBlock}`);
+            if (!headerBlock || headerBlock.isNull())
+              return;
+            hookBreadcrumb(`QuicSpdySession::WriteHeadersOnHeadersStream reading HttpHeaderBlock session=${sessionObj} streamId=${streamIdRaw} headerBlock=${headerBlock}`);
+            const headers = readHttpHeaderBlock(headerBlock);
+            if (headers.length === 0) {
+              _dumpEmptyHeaderBlockProbe("SpdySession_WriteHeadersOnHeadersStream", headerBlock);
+              return;
+            }
+            if (swhCount < 8) {
+              swhCount++;
+              devlog_debug(`[SpdySession_WriteHeadersOnHeadersStream] call #${swhCount} in ${moduleName}: ${headers.length} header(s)`);
+            }
+            const message = resolveQuicMessage(sessionObj.toString(), "QuicSpdySession_WriteHeadersOnHeadersStream");
+            sendQuicDatalog(message, null, streamIdRaw, void 0, void 0, "udp", headers);
+          } catch (e) {
+            devlog_error("[QuicSpdySession_WriteHeadersOnHeadersStream] onEnter threw: " + e);
+          }
+        }
+      });
+      log("[*] Hooked quic::QuicSpdySession::WriteHeadersOnHeadersStream for HTTP/3 header capture (outgoing/request, app-api mode, chain-fallback level 2 \u2014 surrogate may not pair with OnHeadersDecoded)");
+    } catch (e) {
+      devlog_error("[Google QUICHE] failed to hook QuicSpdySession::WriteHeadersOnHeadersStream: " + e);
+    }
+  }
+  if (writeAddr && !writeAddr.isNull()) {
+    try {
+      const breadcrumb = `QuicSpdyStream::WriteOrBufferBody (${moduleName})`;
+      Interceptor.attach(writeAddr, {
+        onEnter(args) {
+          if (_isShuttingDownNow()) {
+            this.data = null;
+            this.dataLen = 0;
+            return;
+          }
+          hookBreadcrumb(breadcrumb);
+          this.streamObj = args[0];
+          const dataPtr = args[1];
+          const dataLen = args[2].toUInt32();
+          this.dataLen = dataLen;
+          if (dataLen === 0 || dataPtr.isNull()) {
+            this.data = null;
+            return;
+          }
+          resetReadableCache();
+          if (dataLen > 16 << 20 || !isReadable(dataPtr, dataLen)) {
+            devlog_debug(`[WriteOrBufferBody] unreadable data ptr=${dataPtr} len=${dataLen} -> skip`);
+            this.data = null;
+            return;
+          }
+          this.data = dataPtr.readByteArray(dataLen);
+        },
+        onLeave(_retval) {
+          if (!this.data || this.dataLen === 0)
+            return;
+          const message = resolveQuicMessage(this.streamObj.toString(), "QuicSpdyStream_WriteOrBufferBody");
+          sendQuicDatalog(message, this.data, -1);
+        }
+      });
+      log("[*] Hooked QuicSpdyStream::WriteOrBufferBody for plaintext capture");
+    } catch (e) {
+      devlog_error("[Google QUICHE] failed to hook WriteOrBufferBody: " + e);
+    }
+  }
+  if (quic_capture_mode === "app-api") {
+    const activeLayer = wroteWriteHeadersHook ? "quiche-internal (QuicSpdyStream::WriteHeaders)" : effectiveChromiumWriteHeadersAddr && !effectiveChromiumWriteHeadersAddr.isNull() ? "chrome-shim (QuicChromiumClientStream::WriteHeaders)" : effectiveSessionWriteHeadersOnHeadersStreamAddr && !effectiveSessionWriteHeadersOnHeadersStreamAddr.isNull() ? "session-level (QuicSpdySession::WriteHeadersOnHeadersStream)" : "NONE (no egress HTTP/3 header capture)";
+    const forcedSuffix = forcedLayerActive ? ` [forced via --quic-egress-headers-layer=${requestedLayer}]` : "";
+    log(`[*] Google QUICHE egress headers chain in ${moduleName}: active layer = ${activeLayer}${forcedSuffix}`);
+    if (forcedLayerActive && activeLayer.startsWith("NONE")) {
+      const available = [];
+      if (writeHeadersAddr && !writeHeadersAddr.isNull())
+        available.push("quiche-internal");
+      if (chromiumWriteHeadersAddr && !chromiumWriteHeadersAddr.isNull())
+        available.push("chrome-shim");
+      if (sessionWriteHeadersOnHeadersStreamAddr && !sessionWriteHeadersOnHeadersStreamAddr.isNull())
+        available.push("session-level");
+      log(`[!] Google QUICHE: forced layer "${requestedLayer}" did not resolve in ${moduleName}; layers that WOULD have resolved if --quic-egress-headers-layer=auto: [${available.length > 0 ? available.join(", ") : "none"}]`);
+    }
+  }
+}
+
+// agent/quic/platforms/macos/google_quiche_macos.ts
+async function google_quiche_execute(moduleName, _is_base_hook) {
+  log("[*] Google QUICHE detected in " + moduleName + ", installing QUIC stream hooks...");
+  try {
+    await installGoogleQuicheHooks(moduleName);
+  } catch (e) {
+    devlog("[Google QUICHE] install failed in " + moduleName + ": " + e);
+  }
+}
+
+// agent/quic/platforms/macos/neqo_macos.ts
+init_node_globals();
+
+// agent/quic/definitions/neqo.ts
+init_node_globals();
+init_shared_structures();
+function resolveNeqoSymbols(moduleName, symbolNames) {
+  const resolved = /* @__PURE__ */ new Map();
+  const remaining = [];
+  for (const name of symbolNames) {
+    const addr = Module.findExportByName(moduleName, name);
+    if (addr && !addr.isNull()) {
+      resolved.set(name, addr);
+    } else {
+      remaining.push(name);
+    }
+  }
+  if (remaining.length === 0)
+    return resolved;
+  const withUnderscores = remaining.flatMap((n) => [n, "_" + n]);
+  const symResults = findNonExportedSymbols(moduleName, withUnderscores);
+  for (const name of remaining) {
+    const addr = symResults.get(name) || symResults.get("_" + name);
+    if (addr && !addr.isNull()) {
+      devlog("[neqo] found " + name + " via symbol table");
+      resolved.set(name, addr);
+    }
+  }
+  for (const name of remaining) {
+    if (resolved.has(name))
+      continue;
+    try {
+      const matches = DebugSymbol.findFunctionsNamed(name);
+      if (matches.length > 0) {
+        devlog("[neqo] found " + name + " via DebugSymbol");
+        resolved.set(name, matches[0]);
+      }
+    } catch (_e) {
+    }
+  }
+  return resolved;
+}
+var resolvedSymbolCache = null;
+function resolveNeqoSymbol(moduleName, symbolName) {
+  if (!resolvedSymbolCache) {
+    resolvedSymbolCache = resolveNeqoSymbols(moduleName, [
+      "neqo_http3conn_new",
+      "neqo_http3conn_read_response_data",
+      "neqo_htttp3conn_send_request_body",
+      "neqo_http3conn_send_request_body",
+      "neqo_http3conn_close"
+    ]);
+  }
+  return resolvedSymbolCache.get(symbolName) || null;
+}
+function parseNetAddr(ptr2) {
+  const sentinel = { addr: 0, port: 0, family: "AF_INET" };
+  if (ptr2.isNull())
+    return sentinel;
+  try {
+    const family = ptr2.readU16();
+    if (family !== 2 && family !== 10 && family !== 30) {
+      devlog("[neqo] unexpected NetAddr family: " + family);
+      return sentinel;
+    }
+    const portRaw = ptr2.add(2).readU16();
+    const port = (portRaw & 255) << 8 | portRaw >> 8 & 255;
+    if (family === 2) {
+      const a = ptr2.add(4).readU8();
+      const b = ptr2.add(5).readU8();
+      const c = ptr2.add(6).readU8();
+      const d = ptr2.add(7).readU8();
+      const addrInt = (a << 24 | b << 16 | c << 8 | d) >>> 0;
+      return { addr: addrInt, port, family: "AF_INET" };
+    }
+    const ipv6_addr = ptr2.add(8);
+    let hex2 = "";
+    for (let offset = 0; offset < 16; offset += 1) {
+      hex2 += ("0" + ipv6_addr.add(offset).readU8().toString(16).toUpperCase()).substr(-2);
+    }
+    if (hex2.indexOf("00000000000000000000FFFF") === 0) {
+      const a = ipv6_addr.add(12).readU8();
+      const b = ipv6_addr.add(13).readU8();
+      const c = ipv6_addr.add(14).readU8();
+      const d = ipv6_addr.add(15).readU8();
+      const hostInt = (a << 24 | b << 16 | c << 8 | d) >>> 0;
+      return { addr: hostInt, port, family: "AF_INET" };
+    }
+    return { addr: hex2, port, family: "AF_INET6" };
+  } catch (e) {
+    devlog("[neqo] failed to parse NetAddr: " + e);
+  }
+  return sentinel;
+}
+var UNKNOWN_CONNECTION = {
+  serverName: "",
+  localAddr: "0.0.0.0",
+  localPort: 0,
+  peerAddr: "0.0.0.0",
+  peerPort: 0,
+  ssFamily: "AF_INET",
+  scid: "",
+  dcid: ""
+};
+function createNeqoConnNewHook() {
+  return {
+    install(addresses, moduleName, _resolvedFns, _enableDefaultFd) {
+      let addr = addresses[moduleName]?.["neqo_http3conn_new"];
+      if (!addr || addr.isNull()) {
+        addr = resolveNeqoSymbol(moduleName, "neqo_http3conn_new");
+      }
+      if (!addr)
+        return;
+      Interceptor.attach(addr, {
+        onEnter(args) {
+          this.localAddr = parseNetAddr(args[2]);
+          this.remoteAddr = parseNetAddr(args[3]);
+          this.resultPtr = args[16];
+        },
+        onLeave(retval) {
+          if (this.resultPtr === void 0)
+            return;
+          if (retval.toUInt32() !== 0)
+            return;
+          try {
+            const connPtr = this.resultPtr.readPointer();
+            if (connPtr.isNull())
+              return;
+            const connKey = connPtr.toString();
+            const info = {
+              serverName: "",
+              localAddr: this.localAddr.addr,
+              localPort: this.localAddr.port,
+              peerAddr: this.remoteAddr.addr,
+              peerPort: this.remoteAddr.port,
+              ssFamily: this.remoteAddr.family,
+              scid: "",
+              dcid: ""
+            };
+            quicConnectionTracker.register(connKey, info);
+            sendConnectionLifecycle("created", buildQuicMessage(info, connKey, "neqo_http3conn_new"));
+          } catch (e) {
+            devlog("[neqo] failed to register connection: " + e);
+          }
+        }
+      });
+      log("[*] Hooked neqo_http3conn_new for connection tracking");
+    }
+  };
+}
+function createNeqoReadResponseHook() {
+  return {
+    install(addresses, moduleName, _resolvedFns, _enableDefaultFd) {
+      if (!pcap_enabled)
+        return;
+      let addr = addresses[moduleName]?.["neqo_http3conn_read_response_data"];
+      if (!addr || addr.isNull()) {
+        addr = resolveNeqoSymbol(moduleName, "neqo_http3conn_read_response_data");
+      }
+      if (!addr)
+        return;
+      Interceptor.attach(addr, {
+        onEnter(args) {
+          this.conn = args[0];
+          this.streamId = args[1].toUInt32();
+          this.buf = args[2];
+          this.len = args[3].toUInt32();
+          this.readPtr = args[4];
+          this.finPtr = args[5];
+        },
+        onLeave(retval) {
+          if (this.buf === void 0)
+            return;
+          if (retval.toUInt32() !== 0)
+            return;
+          try {
+            const bytesRead = Math.min(this.readPtr.readU32(), this.len);
+            if (bytesRead <= 0)
+              return;
+            const data = this.buf.readByteArray(bytesRead);
+            const connKey = this.conn.toString();
+            const connInfo = quicConnectionTracker.get(connKey) || UNKNOWN_CONNECTION;
+            const message = buildQuicMessage(connInfo, connKey, "neqo_read_response_data");
+            sendQuicDatalog(message, data, this.streamId, connInfo.scid, connInfo.dcid);
+            if (this.finPtr && !this.finPtr.isNull()) {
+              if (this.finPtr.readU8() !== 0) {
+                sendConnectionLifecycle("stream_fin", {
+                  ...message,
+                  stream_id: this.streamId
+                });
+              }
+            }
+          } catch (e) {
+            devlog("[neqo] read_response_data hook error: " + e);
+          }
+        }
+      });
+      log("[*] Hooked neqo_http3conn_read_response_data for plaintext capture");
+    }
+  };
+}
+function createNeqoSendRequestBodyHook() {
+  const SEND_CANDIDATES = [
+    "neqo_htttp3conn_send_request_body",
+    "neqo_http3conn_send_request_body"
+  ];
+  return {
+    install(addresses, moduleName, _resolvedFns, _enableDefaultFd) {
+      if (!pcap_enabled)
+        return;
+      let addr = null;
+      let resolvedName = "";
+      for (const name of SEND_CANDIDATES) {
+        addr = addresses[moduleName]?.[name];
+        if (addr && !addr.isNull()) {
+          resolvedName = name;
+          break;
+        }
+        addr = resolveNeqoSymbol(moduleName, name);
+        if (addr) {
+          resolvedName = name;
+          break;
+        }
+      }
+      if (!addr)
+        return;
+      devlog("[neqo] resolved send_request_body as: " + resolvedName);
+      Interceptor.attach(addr, {
+        onEnter(args) {
+          this.conn = args[0];
+          this.streamId = args[1].toUInt32();
+          const buf = args[2];
+          const len = args[3].toUInt32();
+          this.readPtr = args[4];
+          if (!buf.isNull() && len > 0) {
+            try {
+              this.data = buf.readByteArray(len);
+              this.dataLen = len;
+            } catch (e) {
+              devlog("[neqo] failed to read send buffer: " + e);
+            }
+          }
+        },
+        onLeave(retval) {
+          if (this.data === void 0)
+            return;
+          if (retval.toUInt32() !== 0)
+            return;
+          try {
+            const bytesSent = this.readPtr.readU32();
+            if (bytesSent <= 0)
+              return;
+            const data = bytesSent < this.dataLen ? this.data.slice(0, bytesSent) : this.data;
+            const connKey = this.conn.toString();
+            const connInfo = quicConnectionTracker.get(connKey) || UNKNOWN_CONNECTION;
+            const message = buildQuicMessage(connInfo, connKey, "neqo_send_request_body");
+            sendQuicDatalog(message, data, this.streamId, connInfo.scid, connInfo.dcid);
+          } catch (e) {
+            devlog("[neqo] send_request_body hook error: " + e);
+          }
+        }
+      });
+      log("[*] Hooked " + resolvedName + " for plaintext capture");
+    }
+  };
+}
+function createNeqoCloseHook() {
+  return {
+    install(addresses, moduleName, _resolvedFns, _enableDefaultFd) {
+      let addr = addresses[moduleName]?.["neqo_http3conn_close"];
+      if (!addr || addr.isNull()) {
+        addr = resolveNeqoSymbol(moduleName, "neqo_http3conn_close");
+      }
+      if (!addr)
+        return;
+      Interceptor.attach(addr, {
+        onEnter(args) {
+          const connKey = args[0].toString();
+          const info = quicConnectionTracker.remove(connKey);
+          if (info) {
+            sendConnectionLifecycle("destroyed", buildQuicMessage(info, connKey, "neqo_http3conn_close"));
+          }
+        }
+      });
+      log("[*] Hooked neqo_http3conn_close for connection cleanup");
+    }
+  };
+}
+function createNeqoDefinition() {
+  return {
+    libraryId: "neqo",
+    offsetKey: "neqo",
+    functions: {
+      librarySymbols: [
+        "neqo_http3conn_new",
+        "neqo_http3conn_read_response_data",
+        "neqo_htttp3conn_send_request_body",
+        // triple 't' typo in Mozilla source!
+        "neqo_http3conn_send_request_body",
+        // correct spelling fallback
+        "neqo_http3conn_close"
+      ],
+      socketSymbols: []
+    },
+    nativeFunctions: [],
+    fdDecoder: (_ctx, _fns) => -1,
+    sessionIdDecoder: (ctx) => ctx.toString(),
+    keylog: { kind: "none" },
+    // NSS handles keylogging for QUIC
+    extraHooks: [
+      createNeqoConnNewHook(),
+      createNeqoReadResponseHook(),
+      createNeqoSendRequestBodyHook(),
+      createNeqoCloseHook()
+    ]
+  };
+}
+
+// agent/quic/platforms/macos/neqo_macos.ts
+function neqo_execute(moduleName, is_base_hook) {
+  executeFromDefinition(createNeqoDefinition(), moduleName, socket_library3, is_base_hook, enable_default_fd);
+}
+
+// agent/platforms/macos.ts
+var plattform_name = PLATFORM_DARWIN;
+var socket_library3 = "libSystem.B.dylib";
+function hook_macOS_SSL_Libs(hookRegistry2, is_base_hook) {
+  ssl_library_loader(plattform_name, hookRegistry2, getModuleNames(), "MacOS", is_base_hook, selected_protocols);
+}
+function load_macos_hooking_agent() {
+  hookRegistry.registerAll([
+    // TLS libraries (TLS protocol family — also covers QUIC and OHTTP below)
+    { platform: plattform_name, pattern: /.*libboringssl\.dylib/, hookFn: use_modern ? boring_execute_modern3 : boring_execute2, library: "BoringSSL", libraryType: "boringssl", protocol: "tls" },
+    // ── The libssl*.dylib name space, partitioned three ways ──────────────
+    // Exhaustive and mutually exclusive by construction, which matters
+    // because ssl_library_loader invokes EVERY match, not the first:
+    //   * name is versioned (VERSIONED_LIBSSL_DYLIB) -> LibreSSL xor OpenSSL,
+    //     split by SYSTEM_LIBRESSL_PATH. The two entries share an identical
+    //     pattern and complementary predicates over that ONE constant, so
+    //     exactly one survives — including when the module path is unknown,
+    //     where pathFilter fails closed and excludePathFilter fails open.
+    //   * name is libssl-shaped but not versioned -> the generic entry only,
+    //     since its excludePattern IS VERSIONED_LIBSSL_DYLIB.
+    //   * neither -> not a libssl, no hook.
+    //
+    // LibreSSL: macOS system SSL. Its executor carries the tier-2 KDF hooks
+    // (tls1_PRF / tls13_hkdf_expand_label) that Apple's pre-3.5 LibreSSL
+    // needs, so a false negative here costs keys outright.
+    { platform: plattform_name, pattern: VERSIONED_LIBSSL_DYLIB, hookFn: use_modern ? libressl_execute_modern2 : libressl_execute, library: "LibreSSL", pathFilter: SYSTEM_LIBRESSL_PATH, priority: 150, libraryType: "libressl", protocol: "tls" },
+    // Genuine OpenSSL: every versioned libssl that is NOT the system one —
+    // Homebrew (arm64 /opt/homebrew and Intel /usr/local), pyenv, MacPorts,
+    // conda, python.org and Xcode framework Pythons, and app bundles.
+    //
+    // ssl_python_execute* is the genuine-OpenSSL executor; the "python" in
+    // its name is historical, from when a framework Python was the only case
+    // anyone had here. boring_execute* must NOT be used for real OpenSSL: in
+    // modern mode it is skipReadWriteHooks + libraryType "boringssl", which
+    // drops the read/write hooks and sends the hook chain hunting a
+    // bssl::ssl_log_secret symbol that cannot exist in OpenSSL (then into a
+    // pointless Memory.scan); in legacy mode it writes an Apple BoringSSL
+    // struct offset into a genuine OpenSSL SSL_CTX.
+    //
+    // priority 120 is load-bearing, not cosmetic: it makes THIS entry the
+    // deterministic winner of findByLibraryType(darwin, "openssl") on the
+    // tlsLibHunter scan path, which previously depended on Array#sort
+    // stability at equal priority. Do not "tidy" it away.
+    { platform: plattform_name, pattern: VERSIONED_LIBSSL_DYLIB, hookFn: use_modern ? ssl_python_execute_modern2 : ssl_python_execute, library: "OpenSSL", excludePathFilter: SYSTEM_LIBRESSL_PATH, priority: 120, libraryType: "openssl", protocol: "tls" },
+    // Everything else called libssl*: libssl.dylib, libssl_custom.dylib,
+    // mylibssl.3.dylib, and statically-bundled BoringSSL copies.
+    { platform: plattform_name, pattern: ANY_LIBSSL_DYLIB, hookFn: use_modern ? boring_execute_modern3 : boring_execute2, library: "OpenSSL/BoringSSL", excludePattern: VERSIONED_LIBSSL_DYLIB, libraryType: "openssl", protocol: "tls" },
+    // Cronet on Apple: pinned to legacy on both paths — Apple's Cronet build
+    // omits SSL_CTX_set_keylog_callback, so only legacy's ssl_log_secret
+    // byte-pattern works. cronet_execute_modern kept imported for a future fix.
+    { platform: plattform_name, pattern: /.*cronet.*\.dylib/, hookFn: cronet_execute2, library: "Cronet", libraryType: "boringssl", protocol: "tls" },
+    { platform: plattform_name, pattern: /.*libnss[0-9]*\.dylib/, hookFn: use_modern ? nss_execute_modern2 : nss_execute2, library: "NSS", libraryType: "nss", protocol: "tls" },
+    // SSH binaries / libraries
+    { platform: plattform_name, pattern: /.*libssh2?\.dylib/, hookFn: use_modern ? libssh_execute_modern : ssh_execute, library: "libssh", protocol: "ssh" },
+    { platform: plattform_name, pattern: /^(\/.+\/)?(ssh|sshd|sshd-session|scp|sftp-server)$/, hookFn: use_modern ? openssh_execute_modern : ssh_execute, library: "OpenSSH", protocol: "ssh" },
+    // OHTTP (NSS HPKE) — gated under the TLS family for `--protocol tls`
+    { platform: plattform_name, pattern: /.*libnss[0-9]*\.dylib/, hookFn: nss_hpke_execute_macos, library: "NSS HPKE (OHTTP)", protocol: "tls", libraryType: "nss_hpke" },
+    // QUIC libraries — gated under the TLS family for `--protocol tls`
+    { platform: plattform_name, pattern: /.*libquiche\.dylib/, hookFn: quiche_execute, library: "Cloudflare QUICHE", libraryType: "quiche", protocol: "tls" },
+    { platform: plattform_name, pattern: /Google Chrome Framework/, hookFn: google_quiche_execute, library: "Google QUICHE (Chrome)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
+    // Neqo (Firefox HTTP/3) — module is "XUL" at /Applications/Firefox.app/Contents/MacOS/XUL
+    { platform: plattform_name, pattern: /^XUL$/, hookFn: neqo_execute, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo", protocol: "tls", supplementary: true },
+    // Hooks contributed by optional units (e.g. the public RC4 key-capture
+    // unit under `--protocol rc4`). Empty when no unit registered.
+    ...collectContributedHooks()
+  ]);
+  const macosLoaderConfig = {
+    platform: plattform_name,
+    platformLabel: "MacOS",
+    loaderLibrary: /libSystem.B.dylib/,
+    functionName: "dlopen",
+    // Resolve the module path in the dlopen onLeave (as Linux already does).
+    // Without it `modulePath` is undefined on the dynamic-load path, where
+    // `_isExcluded` fails closed for a positive `pathFilter` — so the
+    // LibreSSL entry above could never install for a library that appears
+    // after attach. Python's `_ssl` loads its libssl lazily, which is exactly
+    // that case. The lookup in hookDynamicLoader is try/catch-guarded, so a
+    // not-yet-resolvable module degrades to "no path" instead of throwing
+    // inside the loader hook; the OpenSSL entry's `excludePathFilter` fails
+    // OPEN precisely so that degraded case still gets a hook.
+    extractModulePath: true
+  };
+  runInstallPhases("MacOS", [
+    // NOTE: shares the iOS implementation, so it needs the same additional testing.
+    { label: "ssl-libs", fn: () => hook_macOS_SSL_Libs(hookRegistry, true) },
+    { label: "ohttp", fn: () => installOhttpHooks(plattform_name, hookRegistry, getModuleNames(), "MacOS", macosLoaderConfig) },
+    { label: "scan-results", fn: () => processScanResults(scan_results, plattform_name, true, selected_protocols) },
+    { label: "loader", fn: () => hookDynamicLoader(macosLoaderConfig, hookRegistry, getModuleNames(), false, selected_protocols) }
+  ]);
+}
+
+// agent/legacy/tls/platforms/macos/libressl_macos.ts
+init_shared_structures();
+var _masterKeyBuf2 = Memory.alloc(48);
+var LibreSSL_MacOS = class extends OpenSSL_BoringSSL2 {
+  moduleName;
+  socket_library;
+  SSL_get_client_random_fn = null;
+  SSL_SESSION_get_master_key_fn = null;
+  constructor(moduleName, socket_library6, is_base_hook) {
+    var library_method_mapping = {};
+    library_method_mapping[`*${moduleName}*`] = [
+      "SSL_read",
+      "SSL_write",
+      "SSL_get_fd",
+      "SSL_get_session",
+      "SSL_SESSION_get_id",
+      "SSL_new",
+      "SSL_CTX_set_keylog_callback",
+      "SSL_get_client_random",
+      "SSL_SESSION_get_master_key",
+      "SSL_do_handshake",
+      "SSL_connect",
+      "SSL_accept"
+    ];
+    library_method_mapping[`*${socket_library6}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
+    super(moduleName, socket_library6, is_base_hook, library_method_mapping);
+    this.moduleName = moduleName;
+    this.socket_library = socket_library6;
+    this.do_read_write_hooks = true;
+    try {
+      this.SSL_SESSION_get_id = new NativeFunction(this.addresses[this.moduleName]["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
+      this.SSL_get_fd = new NativeFunction(this.addresses[this.moduleName]["SSL_get_fd"], "int", ["pointer"]);
+      this.SSL_get_session = new NativeFunction(this.addresses[this.moduleName]["SSL_get_session"], "pointer", ["pointer"]);
+    } catch (e) {
+      devlog_error(`[LibreSSL] Error creating NativeFunction wrappers: ${e}`);
+      this.do_read_write_hooks = false;
+    }
+    const crAddr = this.addresses[this.moduleName]["SSL_get_client_random"];
+    if (crAddr && !crAddr.isNull()) {
+      this.SSL_get_client_random_fn = new NativeFunction(crAddr, "int", ["pointer", "pointer", "int"]);
+    }
+    const mkAddr = this.addresses[this.moduleName]["SSL_SESSION_get_master_key"];
+    if (mkAddr && !mkAddr.isNull()) {
+      this.SSL_SESSION_get_master_key_fn = new NativeFunction(mkAddr, "int", ["pointer", "pointer", "int"]);
+    }
+  }
+  install_tls_keys_callback_hook() {
+    const setKeylogAddr = this.addresses[this.moduleName]["SSL_CTX_set_keylog_callback"];
+    if (setKeylogAddr && !setKeylogAddr.isNull()) {
+      try {
+        this.SSL_CTX_set_keylog_callback = new NativeFunction(setKeylogAddr, "void", ["pointer", "pointer"]);
+        const instance = this;
+        const sslNewAddr = this.addresses[this.moduleName]["SSL_new"];
+        if (sslNewAddr && !sslNewAddr.isNull()) {
+          const tracker = createKeylogCallbackTracker(this.moduleName, setKeylogAddr, instance.keylog_callback, true);
+          Interceptor.attach(sslNewAddr, {
+            onEnter: function(args) {
+              try {
+                tracker.install(args[0]);
+              } catch (e) {
+                devlog_error(`[LibreSSL] Error in SSL_new keylog hook: ${e}`);
+              }
+            }
+          });
+          log("[LibreSSL] Keylog via SSL_CTX_set_keylog_callback installed");
+        }
+      } catch (e) {
+        devlog(`[LibreSSL] SSL_CTX_set_keylog_callback setup failed: ${e}`);
+      }
+    }
+    this.installKdfHooks();
+  }
+  installKdfHooks() {
+    this.installHandshakeTracker();
+    const kdf = findLibreSslKdfAddresses(this.moduleName, getParsedPatterns());
+    if (!this.SSL_get_client_random_fn && (kdf.hkdf || kdf.hkdfWithLen || kdf.prf)) {
+      installLibreSslClientRandomViaSend();
+    }
+    const hkdfAddr = kdf.hkdf;
+    if (hkdfAddr) {
+      log("[LibreSSL] Hooking tls13_hkdf_expand_label for TLS 1.3 key extraction");
+      this.attachHkdfHook(hkdfAddr, "tls13_hkdf_expand_label");
+    }
+    const hkdfWithLenAddr = kdf.hkdfWithLen;
+    if (hkdfWithLenAddr) {
+      log("[LibreSSL] Hooking tls13_hkdf_expand_label_with_length");
+      this.attachHkdfHook(hkdfWithLenAddr, "tls13_hkdf_expand_label_with_length");
+    }
+    const prfAddr = kdf.prf;
+    if (prfAddr) {
+      log("[LibreSSL] Hooking tls1_PRF for TLS 1.2 key extraction");
+      attachLibreSslPrfHook(prfAddr, this.SSL_get_client_random_fn, (ssl) => this.extractMasterKey(ssl));
+    }
+  }
+  /**
+   * Shared HKDF hook installer for tls13_hkdf_expand_label variants.
+   * Both variants have the same argument layout: args[0]=out, args[3]=label.
+   */
+  attachHkdfHook(addr, funcName) {
+    const instance = this;
+    Interceptor.attach(addr, {
+      onEnter: function(args) {
+        this.outSecret = args[0];
+        this.labelPtr = args[3];
+      },
+      onLeave: function(_retval) {
+        try {
+          const label = this.labelPtr.readCString();
+          const sslkeylogLabel = TLS13_LABEL_MAP[label];
+          if (!sslkeylogLabel)
+            return;
+          const dataPtr = this.outSecret.readPointer();
+          const dataLen = this.outSecret.add(Process.pointerSize).readULong();
+          if (dataPtr.isNull() || dataLen === 0)
+            return;
+          const secretHex = readHexFromPointer(dataPtr, dataLen);
+          const clientRandom = instance.getThreadClientRandom();
+          if (!clientRandom)
+            return;
+          sendKeylog(`${sslkeylogLabel} ${clientRandom} ${secretHex}`);
+        } catch (e) {
+          devlog_error(`[LibreSSL] ${funcName} onLeave error: ${e}`);
+        }
+      }
+    });
+  }
+  installHandshakeTracker() {
+    for (const sym of ["SSL_do_handshake", "SSL_connect", "SSL_accept"]) {
+      const addr = this.addresses[this.moduleName][sym];
+      if (addr && !addr.isNull()) {
+        attachHandshakeTracker(addr);
+        devlog(`[LibreSSL] Handshake tracker installed on ${sym}`);
+      }
+    }
+  }
+  getThreadClientRandom() {
+    return resolveLibreSslClientRandom(this.SSL_get_client_random_fn, currentHandshakeSsl());
+  }
+  extractMasterKey(ssl) {
+    if (!this.SSL_get_session || !this.SSL_SESSION_get_master_key_fn)
+      return null;
+    const session = this.SSL_get_session(ssl);
+    if (session.isNull())
+      return null;
+    const mkLen = this.SSL_SESSION_get_master_key_fn(session, _masterKeyBuf2, 48);
+    if (mkLen > 0) {
+      return readHexFromPointer(_masterKeyBuf2, mkLen);
+    }
+    return null;
+  }
+  async execute_hooks() {
+    OpenSSL_BoringSSL2.initializePipeline(isPatternReplaced() ? patterns : void 0, experimental);
+    await this.resolveWithPipelineAsync([
+      "SSL_read",
+      "SSL_write",
+      "SSL_get_fd",
+      "SSL_get_session",
+      "SSL_SESSION_get_id",
+      "SSL_new",
+      "SSL_CTX_set_keylog_callback",
+      "SSL_get_client_random",
+      "SSL_SESSION_get_master_key",
+      "SSL_do_handshake",
+      "SSL_connect",
+      "SSL_accept"
+    ]);
+    this.install_plaintext_read_hook();
+    this.install_plaintext_write_hook();
+    this.install_tls_keys_callback_hook();
+  }
+};
+function libressl_execute(moduleName, is_base_hook) {
+  executeSSLLibrary(LibreSSL_MacOS, moduleName, socket_library3, is_base_hook);
+}
+
+// agent/legacy/tls/platforms/linux/libressl_linux.ts
+function libressl_execute2(moduleName, is_base_hook) {
+  enableDeepSymbolResolution(moduleName);
+  executeSSLLibrary(LibreSSL_MacOS, moduleName, socket_library2, is_base_hook);
+}
+
+// agent/shared/libressl_identification.ts
+init_node_globals();
+var _identCache = /* @__PURE__ */ new Map();
+function isLibreSslModule(moduleName) {
+  const cached = _identCache.get(moduleName);
+  if (cached !== void 0)
+    return cached;
+  let result = false;
+  try {
+    const mod = Process.getModuleByName(moduleName);
+    if (findAnchorString(mod, "LibreSSL")) {
+      result = true;
+    } else {
+      const syms = findNonExportedSymbols(moduleName, [
+        "tls13_hkdf_expand_label",
+        "ssl_log_secret"
+      ]);
+      if (syms.get("tls13_hkdf_expand_label") && !syms.get("ssl_log_secret")) {
+        result = true;
+      }
+    }
+  } catch (e) {
+    devlog(`[LibreSSL] identification of ${moduleName} failed: ${e}`);
+  }
+  _identCache.set(moduleName, result);
+  if (result)
+    devlog(`[LibreSSL] ${moduleName} identified as LibreSSL`);
+  return result;
+}
+function libresslAwareDispatch(libressl, other) {
+  return (moduleName, is_base_hook) => (isLibreSslModule(moduleName) ? libressl : other)(moduleName, is_base_hook);
+}
+
+// agent/tls/platforms/linux/gnutls_linux.ts
+init_node_globals();
+function gnutls_execute_modern2(moduleName, is_base_hook) {
+  executeFromDefinition(createGnuTlsDefinition(), moduleName, socket_library2, is_base_hook, enable_default_fd);
+}
+
+// agent/tls/platforms/linux/wolfssl_linux.ts
+init_node_globals();
+function wolfssl_execute_modern2(moduleName, is_base_hook) {
+  executeFromDefinition(createWolfSslDefinition(), moduleName, socket_library2, is_base_hook, enable_default_fd);
+}
+
+// agent/tls/platforms/linux/nss_linux.ts
+init_node_globals();
+function nss_execute_modern3(moduleName, is_base_hook) {
+  executeFromDefinition(createNssDefinition(), moduleName, socket_library2, is_base_hook, enable_default_fd);
+}
+
+// agent/tls/platforms/linux/mbedTLS_linux.ts
+init_node_globals();
+function mbedTLS_execute_modern2(moduleName, is_base_hook) {
+  executeFromDefinition(createMbedTlsDefinition(), moduleName, socket_library2, is_base_hook, enable_default_fd);
+}
+
+// agent/tls/platforms/linux/s2ntls_linux.ts
+init_node_globals();
+function s2ntls_execute_modern2(moduleName, is_base_hook) {
+  executeFromDefinition(createS2nTlsDefinition(), moduleName, socket_library2, is_base_hook, enable_default_fd);
+}
+
 // agent/legacy/tls/platforms/linux/openssl_boringssl_linux.ts
+init_node_globals();
 init_shared_structures();
 var OpenSSL_BoringSSL_Linux = class extends OpenSSL_BoringSSL2 {
   moduleName;
@@ -31978,11 +36285,11 @@ var OpenSSL_From_Python_Linux = class extends OpenSSL_BoringSSL2 {
     this.install_openssl_keys_callback_hook();
   }
 };
-function boring_execute2(moduleName, is_base_hook) {
+function boring_execute3(moduleName, is_base_hook) {
   enableDeepSymbolResolution(moduleName);
   executeSSLLibrary(OpenSSL_BoringSSL_Linux, moduleName, socket_library2, is_base_hook);
 }
-function ssl_python_execute(moduleName, is_base_hook) {
+function ssl_python_execute2(moduleName, is_base_hook) {
   enableDeepSymbolResolution(moduleName);
   executeSSLLibrary(OpenSSL_From_Python_Linux, moduleName, socket_library2, is_base_hook);
 }
@@ -32640,7 +36947,7 @@ var NSS_Linux = class extends NSS {
     NSS.installSecretCallbackInterceptor();
   }
 };
-function nss_execute2(moduleName, is_base_hook) {
+function nss_execute3(moduleName, is_base_hook) {
   executeSSLLibrary(NSS_Linux, moduleName, socket_library2, is_base_hook);
 }
 
@@ -32995,7 +37302,7 @@ var Cronet_Linux = class extends Cronet {
     installBoringSSLSymbolHook(this.module_name, (label, ssl, data, len) => this.dumpKeys(label, ssl, data, len));
   }
 };
-function cronet_execute2(moduleName, is_base_hook) {
+function cronet_execute3(moduleName, is_base_hook) {
   let cronet;
   try {
     cronet = new Cronet_Linux(moduleName, socket_library2, is_base_hook);
@@ -34309,2689 +38616,21 @@ function gotls_execute_modern2(moduleName, is_base_hook) {
   }
 }
 
-// agent/ssh/platforms/linux/ssh_linux.ts
-init_node_globals();
-init_shared_structures();
-
-// agent/ssh/platforms/linux/ssh_packet_hooks.ts
-init_node_globals();
-init_shared_structures();
-var ptrSize = Process.pointerSize;
-var MAX_SSH_PACKET = 65535;
-var MIN_SSH_PACKET = 6;
-function looksLikeSshPacketSshbuf(sshbufPtr, state2) {
-  if (!state2.sshbufPtrFn || !state2.sshbufLenFn)
-    return false;
-  try {
-    if (sshbufPtr.isNull())
-      return false;
-    const len = Number(state2.sshbufLenFn(sshbufPtr));
-    if (len < MIN_SSH_PACKET || len > MAX_SSH_PACKET)
-      return false;
-    const data = state2.sshbufPtrFn(sshbufPtr);
-    if (data.isNull())
-      return false;
-    const packetLength = data.readU8() << 24 | data.add(1).readU8() << 16 | data.add(2).readU8() << 8 | data.add(3).readU8();
-    if (packetLength + 4 !== len)
-      return false;
-    const padLen = data.add(4).readU8();
-    if (padLen < 4 || padLen > 255)
-      return false;
-    return true;
-  } catch {
-    return false;
-  }
-}
-function probeBufferOffset(sshPtr, state2, label) {
-  const cached = label === "outgoing_packet" ? state2.outgoingPacketOffset : state2.incomingPacketOffset;
-  if (cached !== null)
-    return cached;
-  try {
-    const sessionState = sshPtr.readPointer();
-    if (sessionState.isNull())
-      return null;
-    for (let off = 0; off < 1024; off += ptrSize) {
-      let cand;
-      try {
-        cand = sessionState.add(off).readPointer();
-      } catch {
-        continue;
-      }
-      if (looksLikeSshPacketSshbuf(cand, state2)) {
-        if (label === "outgoing_packet") {
-          state2.outgoingPacketOffset = off;
-        } else {
-          state2.incomingPacketOffset = off;
-        }
-        devlog(`[SSH] probed ${label} sshbuf offset in state: ${off}`);
-        return off;
-      }
-    }
-  } catch (e) {
-    devlog(`[SSH] probeBufferOffset(${label}) error: ${e}`);
-  }
-  return null;
-}
-function makeBaseMessage(fd, isRead, socketHelpers, fnLabel) {
-  try {
-    const msg = getPortsAndAddresses(fd, isRead, socketHelpers, enable_default_fd);
-    if (!msg)
-      return null;
-    msg["function"] = fnLabel;
-    msg["ssl_session_id"] = "";
-    return msg;
-  } catch (e) {
-    devlog(`[SSH] getPortsAndAddresses(fd=${fd}, isRead=${isRead}) failed: ${e}`);
-    return null;
-  }
-}
-function installSendHook(moduleName, state2) {
-  const addr = Module.findExportByName(moduleName, "ssh_packet_send2_wrapped");
-  if (!addr)
-    return false;
-  Interceptor.attach(addr, {
-    onEnter(args) {
-      try {
-        const sshPtr = args[0];
-        if (sshPtr.isNull())
-          return;
-        if (!state2.connOutFn)
-          return;
-        const fd = state2.connOutFn(sshPtr);
-        if (fd < 0 && !enable_default_fd)
-          return;
-        const off = probeBufferOffset(sshPtr, state2, "outgoing_packet");
-        if (off === null)
-          return;
-        if (!state2.sshbufPtrFn || !state2.sshbufLenFn)
-          return;
-        const sessionState = sshPtr.readPointer();
-        const outgoingBuf = sessionState.add(off).readPointer();
-        if (outgoingBuf.isNull())
-          return;
-        const len = Number(state2.sshbufLenFn(outgoingBuf));
-        if (len < MIN_SSH_PACKET || len > MAX_SSH_PACKET)
-          return;
-        const data = state2.sshbufPtrFn(outgoingBuf);
-        if (data.isNull())
-          return;
-        const bytes = data.readByteArray(len);
-        if (!bytes)
-          return;
-        const msg = makeBaseMessage(fd, false, state2.socketHelpers, "ssh_packet_send2");
-        if (!msg)
-          return;
-        sendDatalog(msg, bytes);
-      } catch (e) {
-        devlog_error(`[SSH] ssh_packet_send2_wrapped onEnter error: ${e}`);
-      }
-    }
-  });
-  log(`[SSH] Hooked ssh_packet_send2_wrapped in ${moduleName}`);
-  return true;
-}
-function installRecvHook(moduleName, state2) {
-  const addr = Module.findExportByName(moduleName, "ssh_packet_read_poll2");
-  if (!addr)
-    return false;
-  Interceptor.attach(addr, {
-    onEnter(args) {
-      this.sshPtr = args[0];
-    },
-    onLeave(retval) {
-      try {
-        if (retval.toInt32() !== 0)
-          return;
-        const sshPtr = this.sshPtr;
-        if (!sshPtr || sshPtr.isNull())
-          return;
-        if (!state2.connInFn)
-          return;
-        const fd = state2.connInFn(sshPtr);
-        if (fd < 0 && !enable_default_fd)
-          return;
-        const off = probeBufferOffset(sshPtr, state2, "incoming_packet");
-        if (off === null)
-          return;
-        if (!state2.sshbufPtrFn || !state2.sshbufLenFn)
-          return;
-        const sessionState = sshPtr.readPointer();
-        const incomingBuf = sessionState.add(off).readPointer();
-        if (incomingBuf.isNull())
-          return;
-        const len = Number(state2.sshbufLenFn(incomingBuf));
-        if (len < MIN_SSH_PACKET || len > MAX_SSH_PACKET)
-          return;
-        const data = state2.sshbufPtrFn(incomingBuf);
-        if (data.isNull())
-          return;
-        const bytes = data.readByteArray(len);
-        if (!bytes)
-          return;
-        const msg = makeBaseMessage(fd, true, state2.socketHelpers, "ssh_packet_read_poll2");
-        if (!msg)
-          return;
-        sendDatalog(msg, bytes);
-      } catch (e) {
-        devlog_error(`[SSH] ssh_packet_read_poll2 onLeave error: ${e}`);
-      }
-    }
-  });
-  log(`[SSH] Hooked ssh_packet_read_poll2 in ${moduleName}`);
-  return true;
-}
-function installCipherCryptFallback(moduleName, state2) {
-  const addr = Module.findExportByName(moduleName, "cipher_crypt");
-  if (!addr)
-    return false;
-  Interceptor.attach(addr, {
-    onEnter(args) {
-      try {
-        const cc = args[0];
-        const dest = args[2];
-        const src = args[3];
-        const len = args[4].toUInt32();
-        if (cc.isNull() || src.isNull() || dest.isNull())
-          return;
-        if (len < 1 || len > MAX_SSH_PACKET)
-          return;
-        const isEncrypt = cc.add(4).readInt() === 1;
-        if (isEncrypt) {
-          const bytes = src.readByteArray(len);
-          if (!bytes)
-            return;
-          const msg = makeBaseMessage(-1, false, state2.socketHelpers, "ssh_packet_send2");
-          if (!msg)
-            return;
-          sendDatalog(msg, bytes);
-          return;
-        }
-        this.decryptDest = dest;
-        this.decryptLen = len;
-      } catch (e) {
-        devlog(`[SSH] cipher_crypt onEnter error: ${e}`);
-      }
-    },
-    onLeave(_retval) {
-      try {
-        const dest = this.decryptDest;
-        if (!dest || dest.isNull())
-          return;
-        const bytes = dest.readByteArray(this.decryptLen);
-        if (!bytes)
-          return;
-        const msg = makeBaseMessage(-1, true, state2.socketHelpers, "ssh_packet_read_poll2");
-        if (!msg)
-          return;
-        sendDatalog(msg, bytes);
-      } catch (e) {
-        devlog_error(`[SSH] cipher_crypt onLeave error: ${e}`);
-      }
-    }
-  });
-  log(`[SSH] Hooked cipher_crypt fallback in ${moduleName} (synthetic 5-tuple).`);
-  return true;
-}
-var installedModules = /* @__PURE__ */ new Set();
-function installSshPacketHooks(moduleName, methodAddresses) {
-  if (!pcap_enabled)
-    return;
-  if (installedModules.has(moduleName))
-    return;
-  installedModules.add(moduleName);
-  const state2 = {
-    sshbufPtrFn: null,
-    sshbufLenFn: null,
-    connInFn: null,
-    connOutFn: null,
-    outgoingPacketOffset: null,
-    incomingPacketOffset: null,
-    socketHelpers: methodAddresses[moduleName] || {}
-  };
-  try {
-    const ptrAddr = Module.findExportByName(moduleName, "sshbuf_ptr");
-    const lenAddr = Module.findExportByName(moduleName, "sshbuf_len");
-    if (ptrAddr && lenAddr) {
-      state2.sshbufPtrFn = new NativeFunction(ptrAddr, "pointer", ["pointer"]);
-      state2.sshbufLenFn = new NativeFunction(lenAddr, "size_t", ["pointer"]);
-    } else {
-      devlog(`[SSH] sshbuf accessors not exported in ${moduleName}; plaintext probe disabled.`);
-    }
-    const inAddr = Module.findExportByName(moduleName, "ssh_packet_get_connection_in");
-    const outAddr = Module.findExportByName(moduleName, "ssh_packet_get_connection_out");
-    if (inAddr)
-      state2.connInFn = new NativeFunction(inAddr, "int", ["pointer"]);
-    if (outAddr)
-      state2.connOutFn = new NativeFunction(outAddr, "int", ["pointer"]);
-  } catch (e) {
-    devlog_error(`[SSH] accessor resolution failed in ${moduleName}: ${e}`);
-  }
-  const haveAccessors = state2.sshbufPtrFn !== null && state2.sshbufLenFn !== null && state2.connInFn !== null && state2.connOutFn !== null;
-  let primaryInstalled = false;
-  if (haveAccessors) {
-    primaryInstalled = installSendHook(moduleName, state2) || primaryInstalled;
-    primaryInstalled = installRecvHook(moduleName, state2) || primaryInstalled;
-  }
-  if (!primaryInstalled) {
-    devlog(`[SSH] primary plaintext hooks unavailable in ${moduleName} (accessors=${haveAccessors}); trying cipher_crypt fallback.`);
-    installCipherCryptFallback(moduleName, state2);
-  }
-}
-
-// agent/ssh/platforms/linux/ssh_linux.ts
-var SSHENC_CIPHER_NAME_OFFSET = 0;
-var SSHENC_KEY_LEN_OFFSET = 20;
-var SSHENC_IV_LEN_OFFSET = 24;
-var SSHENC_KEY_PTR_OFFSET = 32;
-var isServerSide = (() => {
-  try {
-    const modules = Process.enumerateModules();
-    if (!modules || modules.length === 0)
-      return false;
-    const mainPath = modules[0].path || modules[0].name || "";
-    const basename2 = mainPath.split("/").pop() || mainPath;
-    return /^sshd(-session)?$/.test(basename2);
-  } catch {
-    return false;
-  }
-})();
-function directionForEncryptFlag(do_encrypt) {
-  const localSends = do_encrypt === 1;
-  if (isServerSide) {
-    return localSends ? "S2C" : "C2S";
-  }
-  return localSends ? "C2S" : "S2C";
-}
-function emitSshKey(dir, cipherName, keyData, keyLen, ivData, ivLen) {
-  if (!keylog_enabled)
-    return;
-  if (keyData && keyLen > 0) {
-    sendKeyMaterial({
-      contentType: "ssh_key",
-      direction: dir,
-      key_type: `SSH_ENC_KEY_${dir}`,
-      cipher: cipherName,
-      key_len: keyLen,
-      key_data: toHexString(keyData)
-    });
-  }
-  if (ivData && ivLen > 0) {
-    sendKeyMaterial({
-      contentType: "ssh_key",
-      direction: dir,
-      key_type: `SSH_IV_${dir}`,
-      cipher: cipherName,
-      iv_len: ivLen,
-      key_data: toHexString(ivData)
-    });
-  }
-}
-var sshCookies = /* @__PURE__ */ new Map();
-function recordCookie(sshPtr, side, cookieHex) {
-  const tag = sshPtr.toString();
-  const entry = sshCookies.get(tag) || {};
-  entry[side] = cookieHex;
-  sshCookies.set(tag, entry);
-}
-function consumeCookies(sshPtr) {
-  const tag = sshPtr.toString();
-  const entry = sshCookies.get(tag) || {};
-  sshCookies.delete(tag);
-  return entry;
-}
-var ptrSize2 = Process.pointerSize;
-var kexOffsetInState = null;
-var myOffsetInKex = null;
-var sshbuf_ptr_fn = null;
-var sshbuf_len_fn = null;
-function ensureSshbufAccessors(moduleName) {
-  if (sshbuf_ptr_fn && sshbuf_len_fn)
-    return true;
-  try {
-    const ptrAddr = Module.findExportByName(moduleName, "sshbuf_ptr");
-    const lenAddr = Module.findExportByName(moduleName, "sshbuf_len");
-    if (!ptrAddr || !lenAddr)
-      return false;
-    sshbuf_ptr_fn = new NativeFunction(ptrAddr, "pointer", ["pointer"]);
-    sshbuf_len_fn = new NativeFunction(lenAddr, "size_t", ["pointer"]);
-    return true;
-  } catch (e) {
-    devlog(`[SSH] sshbuf accessor resolution failed: ${e}`);
-    return false;
-  }
-}
-function looksLikeSshbufWithKexinitPayload(maybeSshbuf) {
-  if (!sshbuf_ptr_fn || !sshbuf_len_fn)
-    return false;
-  try {
-    if (maybeSshbuf.isNull())
-      return false;
-    const len = Number(sshbuf_len_fn(maybeSshbuf));
-    if (len < 17 || len > 8192)
-      return false;
-    const data = sshbuf_ptr_fn(maybeSshbuf);
-    if (data.isNull())
-      return false;
-    const firstByte = data.readU8();
-    return firstByte === 20;
-  } catch {
-    return false;
-  }
-}
-function probeKexAndCookieOffsets(sshPtr) {
-  if (kexOffsetInState !== null && myOffsetInKex !== null) {
-    return true;
-  }
-  try {
-    const state2 = sshPtr.readPointer();
-    if (state2.isNull())
-      return false;
-    for (let kexOff = 0; kexOff < 512; kexOff += ptrSize2) {
-      let kexCandidate;
-      try {
-        kexCandidate = state2.add(kexOff).readPointer();
-      } catch {
-        continue;
-      }
-      if (kexCandidate.isNull())
-        continue;
-      for (let myOff = 0; myOff < 1024; myOff += ptrSize2) {
-        let myCand;
-        let peerCand;
-        try {
-          myCand = kexCandidate.add(myOff).readPointer();
-          peerCand = kexCandidate.add(myOff + ptrSize2).readPointer();
-        } catch {
-          continue;
-        }
-        const myOk = looksLikeSshbufWithKexinitPayload(myCand);
-        const peerOk = looksLikeSshbufWithKexinitPayload(peerCand);
-        if (myOk || peerOk) {
-          kexOffsetInState = kexOff;
-          myOffsetInKex = myOff;
-          devlog(`[SSH] probed offsets: state->kex=${kexOff}, kex->my=${myOff}, kex->peer=${myOff + ptrSize2} (my=${myOk ? "valid" : "unknown"}, peer=${peerOk ? "valid" : "unknown"})`);
-          return true;
-        }
-      }
-    }
-  } catch (e) {
-    devlog(`[SSH] probe error: ${e}`);
-  }
-  return false;
-}
-function readCookieFrom(sshbufPtr) {
-  if (!sshbuf_ptr_fn || !sshbuf_len_fn)
-    return null;
-  try {
-    if (sshbufPtr.isNull())
-      return null;
-    const len = Number(sshbuf_len_fn(sshbufPtr));
-    if (len < 17)
-      return null;
-    const data = sshbuf_ptr_fn(sshbufPtr);
-    if (data.isNull())
-      return null;
-    if (data.readU8() !== 20)
-      return null;
-    const bytes = data.add(1).readByteArray(16);
-    if (!bytes)
-      return null;
-    return toHexString(bytes);
-  } catch {
-    return null;
-  }
-}
-var newkeysOffsetInState = null;
-function plausibleSshencSlot(slotPtr) {
-  try {
-    if (slotPtr.isNull())
-      return false;
-    const namePtr = slotPtr.add(SSHENC_CIPHER_NAME_OFFSET).readPointer();
-    if (namePtr.isNull())
-      return false;
-    const name = namePtr.readCString(31);
-    if (!name || name.length === 0)
-      return false;
-    if (!/^[\x20-\x7e]+$/.test(name))
-      return false;
-    const keyLen = slotPtr.add(SSHENC_KEY_LEN_OFFSET).readU32();
-    const ivLen = slotPtr.add(SSHENC_IV_LEN_OFFSET).readU32();
-    if (keyLen < 8 || keyLen > 64)
-      return false;
-    if (ivLen < 8 || ivLen > 32)
-      return false;
-    return true;
-  } catch {
-    return false;
-  }
-}
-function readSshEncKeys(sshencPtr, mode) {
-  const dir = directionForEncryptFlag(mode === 1 ? 1 : 0);
-  try {
-    const cipherNamePtr = sshencPtr.add(SSHENC_CIPHER_NAME_OFFSET).readPointer();
-    const cipherName = cipherNamePtr.readCString() || "unknown";
-    const keyLen = sshencPtr.add(SSHENC_KEY_LEN_OFFSET).readU32();
-    const ivLen = sshencPtr.add(SSHENC_IV_LEN_OFFSET).readU32();
-    const keyPtr = sshencPtr.add(SSHENC_KEY_PTR_OFFSET).readPointer();
-    const ivPtr = sshencPtr.add(SSHENC_KEY_PTR_OFFSET + ptrSize2).readPointer();
-    const keyData = keyLen > 0 && keyLen < 256 && !keyPtr.isNull() ? keyPtr.readByteArray(keyLen) : null;
-    const ivData = ivLen > 0 && ivLen < 256 && !ivPtr.isNull() ? ivPtr.readByteArray(ivLen) : null;
-    emitSshKey(dir, cipherName, keyData, keyLen, ivData, ivLen);
-    if (keyData) {
-      devlog(`[SSH] (fallback) ${dir} key extracted via sshenc walk: cipher=${cipherName}, len=${keyLen}`);
-    }
-  } catch (e) {
-    devlog(`[SSH] sshenc-walk error in ${dir}: ${e}`);
-  }
-}
-function scanForNewkeysAndExtract(sshPtr) {
-  try {
-    const state2 = sshPtr.readPointer();
-    if (state2.isNull())
-      return;
-    if (newkeysOffsetInState !== null) {
-      const a = state2.add(newkeysOffsetInState).readPointer();
-      const b = state2.add(newkeysOffsetInState + ptrSize2).readPointer();
-      if (plausibleSshencSlot(a))
-        readSshEncKeys(a, 0);
-      if (plausibleSshencSlot(b))
-        readSshEncKeys(b, 1);
-      return;
-    }
-    for (let off = 0; off < 512; off += ptrSize2) {
-      let a;
-      let b;
-      try {
-        a = state2.add(off).readPointer();
-        b = state2.add(off + ptrSize2).readPointer();
-      } catch {
-        continue;
-      }
-      if (plausibleSshencSlot(a) && plausibleSshencSlot(b)) {
-        newkeysOffsetInState = off;
-        devlog(`[SSH] probed newkeys[] offset in state: ${off}`);
-        readSshEncKeys(a, 0);
-        readSshEncKeys(b, 1);
-        return;
-      }
-    }
-  } catch (e) {
-    devlog(`[SSH] scanForNewkeysAndExtract error: ${e}`);
-  }
-}
-function hookCipherInit(moduleName) {
-  const addr = Module.findExportByName(moduleName, "cipher_init");
-  if (!addr)
-    return false;
-  Interceptor.attach(addr, {
-    onEnter(args) {
-      try {
-        const cipherStruct = args[1];
-        const keyPtr = args[2];
-        const keyLen = args[3].toUInt32();
-        const ivPtr = args[4];
-        const ivLen = args[5].toUInt32();
-        const doEncrypt = args[6].toInt32();
-        let cipherName = "unknown";
-        if (!cipherStruct.isNull()) {
-          const namePtr = cipherStruct.readPointer();
-          if (!namePtr.isNull()) {
-            const s = namePtr.readCString();
-            if (s)
-              cipherName = s;
-          }
-        }
-        const dir = directionForEncryptFlag(doEncrypt);
-        const keyData = keyLen > 0 && keyLen < 256 && !keyPtr.isNull() ? keyPtr.readByteArray(keyLen) : null;
-        const ivData = ivLen > 0 && ivLen < 256 && !ivPtr.isNull() ? ivPtr.readByteArray(ivLen) : null;
-        emitSshKey(dir, cipherName, keyData, keyLen, ivData, ivLen);
-        devlog(`[SSH] cipher_init hooked: cipher=${cipherName} dir=${dir} keylen=${keyLen} ivlen=${ivLen}`);
-      } catch (e) {
-        devlog_error(`[SSH] cipher_init onEnter error: ${e}`);
-      }
-    }
-  });
-  log(`[SSH] Hooked cipher_init in ${moduleName}`);
-  return true;
-}
-function hookKexSendKexinit(moduleName) {
-  const addr = Module.findExportByName(moduleName, "kex_send_kexinit");
-  if (!addr)
-    return false;
-  Interceptor.attach(addr, {
-    onEnter(args) {
-      this.sshPtr = args[0];
-    },
-    onLeave(_retval) {
-      try {
-        if (!this.sshPtr || this.sshPtr.isNull())
-          return;
-        if (!probeKexAndCookieOffsets(this.sshPtr))
-          return;
-        if (myOffsetInKex === null || kexOffsetInState === null)
-          return;
-        const state2 = this.sshPtr.readPointer();
-        const kex = state2.add(kexOffsetInState).readPointer();
-        if (kex.isNull())
-          return;
-        const myBuf = kex.add(myOffsetInKex).readPointer();
-        const cookieHex = readCookieFrom(myBuf);
-        if (cookieHex)
-          recordCookie(this.sshPtr, "local", cookieHex);
-      } catch (e) {
-        devlog(`[SSH] kex_send_kexinit onLeave error: ${e}`);
-      }
-    }
-  });
-  log(`[SSH] Hooked kex_send_kexinit in ${moduleName}`);
-  return true;
-}
-function hookKexInputKexinit(moduleName) {
-  const addr = Module.findExportByName(moduleName, "kex_input_kexinit");
-  if (!addr)
-    return false;
-  Interceptor.attach(addr, {
-    onEnter(args) {
-      this.sshPtr = args[2];
-    },
-    onLeave(_retval) {
-      try {
-        if (!this.sshPtr || this.sshPtr.isNull())
-          return;
-        if (!probeKexAndCookieOffsets(this.sshPtr))
-          return;
-        if (myOffsetInKex === null || kexOffsetInState === null)
-          return;
-        const state2 = this.sshPtr.readPointer();
-        const kex = state2.add(kexOffsetInState).readPointer();
-        if (kex.isNull())
-          return;
-        const peerBuf = kex.add(myOffsetInKex + ptrSize2).readPointer();
-        const cookieHex = readCookieFrom(peerBuf);
-        if (cookieHex)
-          recordCookie(this.sshPtr, "peer", cookieHex);
-      } catch (e) {
-        devlog(`[SSH] kex_input_kexinit onLeave error: ${e}`);
-      }
-    }
-  });
-  log(`[SSH] Hooked kex_input_kexinit in ${moduleName}`);
-  return true;
-}
-function hookKexDeriveKeys(moduleName) {
-  const addr = Module.findExportByName(moduleName, "kex_derive_keys");
-  if (!addr)
-    return false;
-  Interceptor.attach(addr, {
-    onEnter(args) {
-      try {
-        this.sshPtr = args[0];
-        this.secretBuf = args[3];
-      } catch (e) {
-        devlog_error(`[SSH] kex_derive_keys onEnter capture error: ${e}`);
-      }
-    },
-    onLeave(_retval) {
-      if (!keylog_enabled)
-        return;
-      try {
-        const sshPtr = this.sshPtr;
-        const secretBuf = this.secretBuf;
-        if (!sshPtr || sshPtr.isNull())
-          return;
-        if (!secretBuf || secretBuf.isNull())
-          return;
-        if (!sshbuf_ptr_fn || !sshbuf_len_fn)
-          return;
-        const len = Number(sshbuf_len_fn(secretBuf));
-        if (len <= 0 || len > 16384)
-          return;
-        const data = sshbuf_ptr_fn(secretBuf);
-        if (data.isNull())
-          return;
-        const sharedSecretHex = toHexString(data.readByteArray(len));
-        const cookies = consumeCookies(sshPtr);
-        sendKeyMaterial({
-          contentType: "ssh_keylog",
-          cookie: cookies.local || "",
-          peer_cookie: cookies.peer || "",
-          shared_secret: sharedSecretHex,
-          direction: isServerSide ? "server" : "client",
-          session_tag: sshPtr.toString()
-        });
-        log(`[SSH] kex_derive_keys: emitted ssh_keylog (local_cookie=${cookies.local ? "yes" : "no"}, peer_cookie=${cookies.peer ? "yes" : "no"}, K-bytes=${len})`);
-      } catch (e) {
-        devlog_error(`[SSH] kex_derive_keys onLeave error: ${e}`);
-      }
-    }
-  });
-  log(`[SSH] Hooked kex_derive_keys in ${moduleName}`);
-  return true;
-}
-function hookSshSetNewkeys(moduleName, fallbackToScan) {
-  const addr = Module.findExportByName(moduleName, "ssh_set_newkeys");
-  if (!addr)
-    return false;
-  Interceptor.attach(addr, {
-    onEnter(args) {
-      this.sshPtr = args[0];
-      this.mode = args[1].toInt32();
-    },
-    onLeave(_retval) {
-      try {
-        const dir = directionForEncryptFlag(this.mode === 1 ? 1 : 0);
-        sendWithProtocol({
-          contentType: "ssh_newkeys",
-          direction: dir,
-          message: `SSH new keys activated: ${dir}`
-        });
-        if (fallbackToScan) {
-          scanForNewkeysAndExtract(this.sshPtr);
-        }
-      } catch (e) {
-        devlog(`[SSH] ssh_set_newkeys onLeave error: ${e}`);
-      }
-    }
-  });
-  log(`[SSH] Hooked ssh_set_newkeys in ${moduleName}`);
-  return true;
-}
-function ssh_execute(moduleName, _is_base_hook) {
-  devlog(`[SSH] Installing SSH hooks for: ${moduleName}`);
-  log(`[*] SSH library found: ${moduleName}`);
-  sendWithProtocol({
-    contentType: "library_detected",
-    library: moduleName,
-    message: `SSH library detected: ${moduleName}`
-  });
-  let methodAddresses = {};
-  try {
-    methodAddresses = readAddresses(moduleName, {
-      "*libc*": ["getpeername", "getsockname", "ntohs", "ntohl"]
-    });
-  } catch (e) {
-    devlog(`[SSH] readAddresses for socket helpers failed: ${e}`);
-  }
-  const haveSshbuf = ensureSshbufAccessors(moduleName);
-  if (!haveSshbuf) {
-    devlog(`[SSH] sshbuf_ptr/sshbuf_len not exported in ${moduleName}; cookie + K extraction degraded.`);
-  }
-  if (haveSshbuf) {
-    hookKexSendKexinit(moduleName);
-    hookKexInputKexinit(moduleName);
-  }
-  if (haveSshbuf) {
-    hookKexDeriveKeys(moduleName);
-  } else {
-    devlog(`[SSH] Skipping kex_derive_keys hook (sshbuf accessors unresolved).`);
-  }
-  const cipherInitHooked = hookCipherInit(moduleName);
-  if (!cipherInitHooked) {
-    devlog(`[SSH] cipher_init not resolvable in ${moduleName}; falling back to sshenc scan.`);
-  }
-  hookSshSetNewkeys(
-    moduleName,
-    /* fallbackToScan */
-    !cipherInitHooked
-  );
-  try {
-    installSshPacketHooks(moduleName, methodAddresses);
-  } catch (e) {
-    devlog_error(`[SSH] installSshPacketHooks failed for ${moduleName}: ${e}`);
-  }
-}
-
-// agent/ssh/platforms/linux/openssh_linux.ts
-init_node_globals();
-
-// agent/ssh/definitions/openssh.ts
-init_node_globals();
-function opensshFdDecoder(_ctx, _fns) {
-  return -1;
-}
-function opensshSessionIdDecoder(_ctx, _fns) {
-  return "";
-}
-var OPENSSH_LIBRARY_SYMBOLS = [
-  "kex_derive_keys",
-  "kex_send_kexinit",
-  "kex_input_kexinit",
-  "ssh_set_newkeys",
-  "cipher_init",
-  "ssh_packet_send2_wrapped",
-  "ssh_packet_read_poll2",
-  "sshbuf_ptr",
-  "sshbuf_len"
-];
-function createOpenSshDefinition() {
-  return {
-    libraryId: "ssh_openssh",
-    offsetKey: "ssh_openssh",
-    functions: {
-      librarySymbols: OPENSSH_LIBRARY_SYMBOLS,
-      socketSymbols: STANDARD_SOCKET_SYMBOLS
-    },
-    nativeFunctions: [],
-    fdDecoder: opensshFdDecoder,
-    sessionIdDecoder: opensshSessionIdDecoder,
-    clientRandomDecoder: noOpClientRandomDecoder,
-    // readHook / writeHook intentionally undefined — SSH plaintext
-    // capture lives inside installSshPacketHooks() which is wired up
-    // by the legacy ssh_detect_execute() invoked from keylog.install.
-    // No loader-driven keylog install: the legacy ssh_detect_execute()
-    // executor owns BOTH key extraction and packet/plaintext capture, and
-    // self-gates keys on keylog_enabled and packets on pcap_enabled
-    // internally. It is wired up via extraHooks (below) so it runs on every
-    // run — including a `-p`-only run — because extraHooks is not subject to
-    // the loader's keylog gate.
-    keylog: { kind: "none" },
-    extraHooks: [
-      {
-        // Delegate to the legacy executor. It handles cookie
-        // correlation, kex_derive_keys, cipher_init, sshenc-walk
-        // fallback, and packet plaintext extraction in one place.
-        // extraHooks always runs in the loader (step 7), independent of
-        // keylog_enabled — so `-p`-only runs still install packet hooks.
-        install: (_addresses, moduleName, _resolvedFns, _enableDefaultFd) => {
-          ssh_execute(
-            moduleName,
-            /* is_base_hook */
-            true
-          );
-        }
-      }
-    ],
-    libraryType: "ssh_openssh"
-  };
-}
-
-// agent/ssh/platforms/linux/openssh_linux.ts
-function openssh_execute_modern(moduleName, is_base_hook) {
-  executeFromDefinition(createOpenSshDefinition(), moduleName, socket_library2, is_base_hook, enable_default_fd);
-}
-
-// agent/ssh/platforms/linux/libssh_linux.ts
-init_node_globals();
-
-// agent/ssh/definitions/libssh.ts
-init_node_globals();
-function libsshFdDecoder(_ctx, _fns) {
-  return -1;
-}
-function libsshSessionIdDecoder(_ctx, _fns) {
-  return "";
-}
-var LIBSSH_LIBRARY_SYMBOLS = [
-  "ssh_make_sessionkey",
-  "ssh_packet_kexdh_init",
-  "ssh_packet_newkeys",
-  "ssh_socket_unbuffered_write",
-  "ssh_packet_socket_callback",
-  "ssh_channel_read",
-  "ssh_channel_write"
-];
-function createLibsshDefinition() {
-  return {
-    libraryId: "ssh_libssh",
-    offsetKey: "ssh_libssh",
-    functions: {
-      librarySymbols: LIBSSH_LIBRARY_SYMBOLS,
-      socketSymbols: STANDARD_SOCKET_SYMBOLS
-    },
-    nativeFunctions: [],
-    fdDecoder: libsshFdDecoder,
-    sessionIdDecoder: libsshSessionIdDecoder,
-    clientRandomDecoder: noOpClientRandomDecoder,
-    // readHook / writeHook intentionally undefined — see openssh.ts
-    // for the rationale; legacy ssh_detect_execute owns both paths.
-    // No loader-driven keylog install: the legacy ssh_detect_execute()
-    // executor owns BOTH key extraction and packet/plaintext capture and
-    // self-gates keys/packets internally (see openssh.ts). Wired via
-    // extraHooks so it runs on a `-p`-only run too.
-    keylog: { kind: "none" },
-    extraHooks: [
-      {
-        // Legacy ssh_detect_execute doesn't distinguish OpenSSH
-        // from libssh at the executor level — the hookers inside
-        // probe each symbol independently and no-op when missing.
-        // extraHooks always runs in the loader (step 7), independent of
-        // keylog_enabled.
-        install: (_addresses, moduleName, _resolvedFns, _enableDefaultFd) => {
-          ssh_execute(
-            moduleName,
-            /* is_base_hook */
-            true
-          );
-        }
-      }
-    ],
-    libraryType: "ssh_libssh"
-  };
-}
-
-// agent/ssh/platforms/linux/libssh_linux.ts
-function libssh_execute_modern(moduleName, is_base_hook) {
-  executeFromDefinition(createLibsshDefinition(), moduleName, socket_library2, is_base_hook, enable_default_fd);
-}
-
 // agent/ohttp/platforms/linux/nss_hpke_linux.ts
 init_node_globals();
-
-// agent/ohttp/definitions/nss_hpke.ts
-init_node_globals();
-
-// agent/ohttp/definitions/bhttp.ts
-init_node_globals();
-init_shared_structures();
-function looksLikeBhttp(dataPtr, len) {
-  if (len < 2)
-    return false;
-  const framing = dataPtr.readU8();
-  return framing === 0 || framing === 1;
-}
-function sendOhttpPlaintext(direction, source, data) {
-  if (!data)
-    return;
-  sendWithProtocol({ contentType: "ohttp_plaintext", direction, source }, data);
-}
-
-// agent/ohttp/definitions/nss_hpke.ts
-function readSECItem(ptr2) {
-  if (ptr2.isNull())
-    return null;
-  const dataPtr = ptr2.add(Process.pointerSize).readPointer();
-  const len = ptr2.add(Process.pointerSize * 2).readU32();
-  if (len === 0 || dataPtr.isNull())
-    return null;
-  return { data: dataPtr, len };
-}
-function installNssHpkeOhttp(addresses, moduleName) {
-  if (!pcap_enabled)
-    return;
-  const addrs = addresses[moduleName] ?? {};
-  const sealAddr = addrs["PK11_HPKE_Seal"];
-  if (sealAddr && !sealAddr.isNull()) {
-    Interceptor.attach(sealAddr, {
-      onEnter(args) {
-        const ptItem = readSECItem(args[2]);
-        if (!ptItem || !looksLikeBhttp(ptItem.data, ptItem.len))
-          return;
-        devlog(`[*] OHTTP: PK11_HPKE_Seal fired \u2014 ${ptItem.len} bytes bhttp request`);
-        sendOhttpPlaintext("request", "PK11_HPKE_Seal", ptItem.data.readByteArray(ptItem.len));
-      }
-    });
-    devlog("[*] OHTTP: PK11_HPKE_Seal hooked (NSS)");
-  } else {
-    devlog("[!] OHTTP: PK11_HPKE_Seal not found \u2014 NSS >= 3.58 required");
-  }
-  const openAddr = addrs["PK11_HPKE_Open"];
-  if (openAddr && !openAddr.isNull()) {
-    Interceptor.attach(openAddr, {
-      onEnter(args) {
-        this.outPtPtr = args[3];
-      },
-      onLeave(retval) {
-        if (retval.toInt32() !== 0)
-          return;
-        if (!this.outPtPtr || this.outPtPtr.isNull())
-          return;
-        const outPt = this.outPtPtr.readPointer();
-        if (outPt.isNull())
-          return;
-        const ptItem = readSECItem(outPt);
-        if (!ptItem || !looksLikeBhttp(ptItem.data, ptItem.len))
-          return;
-        devlog(`[*] OHTTP: PK11_HPKE_Open fired \u2014 ${ptItem.len} bytes bhttp response`);
-        sendOhttpPlaintext("response", "PK11_HPKE_Open", ptItem.data.readByteArray(ptItem.len));
-      }
-    });
-    devlog("[*] OHTTP: PK11_HPKE_Open hooked (NSS)");
-  } else {
-    devlog("[!] OHTTP: PK11_HPKE_Open not found \u2014 NSS >= 3.58 required");
-  }
-}
-function createNssHpkeDefinition() {
-  return {
-    libraryId: "nss_hpke",
-    offsetKey: "nss_hpke",
-    functions: {
-      librarySymbols: [],
-      socketSymbols: [],
-      auxiliaryLibraries: [
-        { pattern: "*libnss*", symbols: ["PK11_HPKE_Seal", "PK11_HPKE_Open"] }
-      ]
-    },
-    nativeFunctions: [],
-    fdDecoder: () => -1,
-    sessionIdDecoder: () => "",
-    keylog: { kind: "none" },
-    extraHooks: [{ install: installNssHpkeOhttp }]
-  };
-}
-
-// agent/ohttp/platforms/linux/nss_hpke_linux.ts
 function nss_hpke_execute_linux(moduleName, is_base_hook) {
   executeFromDefinition(createNssHpkeDefinition(), moduleName, socket_library2, is_base_hook, false);
 }
 
 // agent/quic/platforms/linux/quiche_linux.ts
 init_node_globals();
-
-// agent/quic/definitions/quiche.ts
-init_node_globals();
-init_shared_structures();
-
-// agent/quic/shared/quic_connection_tracker.ts
-init_node_globals();
-function buildQuicMessage(info, connKey, functionLabel) {
-  return {
-    src_addr: info.peerAddr,
-    src_port: info.peerPort,
-    dst_addr: info.localAddr,
-    dst_port: info.localPort,
-    ss_family: info.ssFamily,
-    ssl_session_id: connKey,
-    function: functionLabel
-  };
-}
-function hashPtr(connPtr) {
-  let h = 2166136261;
-  for (let i = 0; i < connPtr.length; i++) {
-    h ^= connPtr.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
-}
-function formatAddr(addr, family) {
-  if (family === "AF_INET6" && typeof addr === "string" && addr.length === 32) {
-    return (addr.match(/.{1,4}/g) ?? []).join(":").toLowerCase();
-  }
-  if (typeof addr === "number") {
-    return (addr >>> 24 & 255) + "." + (addr >>> 16 & 255) + "." + (addr >>> 8 & 255) + "." + (addr & 255);
-  }
-  return String(addr);
-}
-var NON_QUIC_UDP_PORTS = /* @__PURE__ */ new Set([
-  53,
-  // DNS
-  5353,
-  // mDNS
-  5355,
-  // LLMNR
-  123,
-  // NTP
-  67,
-  68,
-  // DHCP
-  137,
-  138,
-  // NetBIOS
-  1900
-  // SSDP
-]);
-var QuicConnectionTracker = class {
-  _connections = /* @__PURE__ */ new Map();
-  // Maps a QuicSpdyStream*/visitor pointer to its owning connection pointer,
-  // so the per-stream read/write hooks can find the registered connection.
-  _streamToConn = /* @__PURE__ */ new Map();
-  // Most-recently observed real UDP peer (from the libc socket layer). QUIC
-  // does not expose its fd to the C++ stream objects, so we cannot correlate
-  // a specific connection to its socket without version-fragile struct walks.
-  // Folding the real server address into every synthetic flow is a deliberate
-  // best-effort: the per-connection synthetic local port still keeps each
-  // connection in its own Wireshark conversation.
-  _observedPeer = null;
-  // Last peer key (`addr:port`) we emitted a devlog for, per branch. The libc
-  // connect() observer fires on EVERY UDP connect() — including every DNS
-  // lookup to the resolver — so logging unconditionally floods the JS→Python
-  // message channel (hundreds of identical lines) and, at Ctrl+C, the
-  // un-drained backlog stalls script.unload()/session.detach(). We therefore
-  // log only when the peer actually changes; the stored _observedPeer is
-  // updated regardless, so capture behavior is unchanged.
-  _lastLoggedObservedKey = null;
-  _lastLoggedIgnoredKey = null;
-  /**
-   * Register a new QUIC connection.
-   * @param connPtr  Native pointer to the connection object (as hex string key)
-   * @param info     Connection metadata
-   */
-  register(connPtr, info) {
-    this._connections.set(connPtr, info);
-    devlog("[QUIC tracker] registered connection " + connPtr + " -> " + formatAddr(info.peerAddr, info.ssFamily) + ":" + info.peerPort);
-  }
-  /**
-   * Look up connection info by pointer.
-   */
-  get(connPtr) {
-    return this._connections.get(connPtr);
-  }
-  /**
-   * Remove a connection (on free/close).
-   */
-  remove(connPtr) {
-    const info = this._connections.get(connPtr);
-    if (info) {
-      this._connections.delete(connPtr);
-      devlog("[QUIC tracker] removed connection " + connPtr);
-    }
-    return info;
-  }
-  /** Record a stream pointer → connection pointer association. */
-  registerStream(streamPtr, connPtr) {
-    this._streamToConn.set(streamPtr, connPtr);
-  }
-  /** Resolve a stream pointer back to its connection pointer, if known. */
-  resolveStream(streamPtr) {
-    return this._streamToConn.get(streamPtr);
-  }
-  /**
-   * Record the real UDP peer seen at the socket layer (best-effort). Peers on
-   * well-known non-QUIC service ports (DNS, mDNS, NTP, …) are ignored so they
-   * cannot pollute the synthesized flow's server 4-tuple — see NON_QUIC_UDP_PORTS.
-   */
-  setObservedPeer(peer) {
-    const peerKey = peer.family + "|" + peer.addr + "|" + peer.port;
-    if (NON_QUIC_UDP_PORTS.has(peer.port)) {
-      if (peerKey !== this._lastLoggedIgnoredKey) {
-        this._lastLoggedIgnoredKey = peerKey;
-        devlog("[QUIC tracker] ignoring non-QUIC observed peer " + formatAddr(peer.addr, peer.family) + ":" + peer.port);
-      }
-      return;
-    }
-    this._observedPeer = peer;
-    if (peerKey !== this._lastLoggedObservedKey) {
-      this._lastLoggedObservedKey = peerKey;
-      devlog("[QUIC tracker] observed real UDP peer " + formatAddr(peer.addr, peer.family) + ":" + peer.port);
-    }
-  }
-  /**
-   * Resolve connection info for a key, always returning a usable, parseable
-   * 4-tuple. Prefers a registered connection, then a deterministic synthetic
-   * one (so a flow is never emitted as 0.0.0.0:0). The synthetic peer is
-   * replaced by the observed real peer when one is known.
-   */
-  resolveInfo(connPtr) {
-    return this._connections.get(connPtr) ?? this.synthesizeInfo(connPtr);
-  }
-  /**
-   * Build a deterministic, stable synthetic 4-tuple for a connection pointer.
-   * The peer (server) lands in 240.0.0.0/4 (reserved, non-routable, so it can
-   * never be confused with real capture traffic) keyed off the pointer hash;
-   * the client gets a fixed address with a per-connection ephemeral port. If a
-   * real peer was observed at the socket layer it is folded in for fidelity.
-   */
-  synthesizeInfo(connPtr) {
-    const h = hashPtr(connPtr);
-    const localPort = 49152 + h % 16384;
-    const peer = this._observedPeer;
-    if (peer && peer.family === "AF_INET6") {
-      const localV6 = "FD" + "00".repeat(11) + ("00000000" + h.toString(16).toUpperCase()).slice(-8);
-      return {
-        serverName: "",
-        scid: "",
-        dcid: "",
-        ssFamily: "AF_INET6",
-        peerAddr: peer.addr,
-        peerPort: peer.port,
-        localAddr: localV6,
-        localPort
-      };
-    }
-    const peerAddr = peer && peer.family === "AF_INET" ? peer.addr : (4026531840 | h & 268435455) >>> 0;
-    const peerPort = peer && peer.family === "AF_INET" ? peer.port : 443;
-    return {
-      serverName: "",
-      scid: "",
-      dcid: "",
-      ssFamily: "AF_INET",
-      peerAddr,
-      peerPort,
-      localAddr: 167772161,
-      // 10.0.0.1
-      localPort
-    };
-  }
-  /**
-   * Number of tracked connections.
-   */
-  get size() {
-    return this._connections.size;
-  }
-};
-var quicConnectionTracker = new QuicConnectionTracker();
-
-// agent/quic/definitions/quiche.ts
-function parseSockaddr(ptr2, len) {
-  if (ptr2.isNull() || len < 4) {
-    return { addr: 0, port: 0, family: "AF_INET" };
-  }
-  const family = readSockaddrFamily(ptr2, true);
-  if (family === 2 && len >= 16) {
-    const port = ptr2.add(2).readU16();
-    const portHost = (port & 255) << 8 | port >> 8 & 255;
-    const a = ptr2.add(4).readU8();
-    const b = ptr2.add(5).readU8();
-    const c = ptr2.add(6).readU8();
-    const d = ptr2.add(7).readU8();
-    const addrInt = (a << 24 | b << 16 | c << 8 | d) >>> 0;
-    return { addr: addrInt, port: portHost, family: "AF_INET" };
-  }
-  if ((family === 10 || family === 30) && len >= 28) {
-    const port = ptr2.add(2).readU16();
-    const portHost = (port & 255) << 8 | port >> 8 & 255;
-    const ipv6_addr = ptr2.add(8);
-    let hex2 = "";
-    for (let offset = 0; offset < 16; offset += 1) {
-      hex2 += ("0" + ipv6_addr.add(offset).readU8().toString(16).toUpperCase()).substr(-2);
-    }
-    if (hex2.indexOf("00000000000000000000FFFF") === 0) {
-      const a = ipv6_addr.add(12).readU8();
-      const b = ipv6_addr.add(13).readU8();
-      const c = ipv6_addr.add(14).readU8();
-      const d = ipv6_addr.add(15).readU8();
-      const hostInt = (a << 24 | b << 16 | c << 8 | d) >>> 0;
-      return { addr: hostInt, port: portHost, family: "AF_INET" };
-    }
-    return { addr: hex2, port: portHost, family: "AF_INET6" };
-  }
-  return { addr: 0, port: 0, family: "AF_INET" };
-}
-function createConnectTracker(ref, keylogPipeWriteFd) {
-  return {
-    install(addresses, moduleName, resolvedFns, _enableDefaultFd) {
-      const addr = addresses[moduleName]?.["quiche_connect"];
-      if (!addr || addr.isNull())
-        return;
-      Interceptor.attach(addr, {
-        onEnter(args) {
-          this.serverName = args[0].isNull() ? "" : args[0].readCString() || "";
-          const scidPtr = args[1];
-          const scidLen = args[2].toUInt32();
-          this.scid = scidLen > 0 && !scidPtr.isNull() ? readHexFromPointer(scidPtr, scidLen) : "";
-          const localPtr = args[3];
-          const localLen = args[4].toUInt32();
-          this.local = parseSockaddr(localPtr, localLen);
-          const peerPtr = args[5];
-          const peerLen = args[6].toUInt32();
-          this.peer = parseSockaddr(peerPtr, peerLen);
-          this.config = args[7];
-        },
-        onLeave(retval) {
-          if (retval.isNull())
-            return;
-          const connKey = retval.toString();
-          const info = {
-            serverName: this.serverName,
-            localAddr: this.local.addr,
-            localPort: this.local.port,
-            peerAddr: this.peer.addr,
-            peerPort: this.peer.port,
-            ssFamily: this.peer.family,
-            scid: this.scid,
-            dcid: ""
-          };
-          quicConnectionTracker.register(connKey, info);
-          if (keylog_enabled && ref.configLogKeys && !this.config.isNull()) {
-            try {
-              ref.configLogKeys(this.config);
-            } catch (e) {
-              devlog("[quiche] failed to enable config keylog: " + e);
-            }
-          }
-          if (ref.setKeylogFd && keylogPipeWriteFd >= 0) {
-            try {
-              ref.setKeylogFd(retval, keylogPipeWriteFd);
-            } catch (e) {
-              devlog("[quiche] failed to set keylog fd: " + e);
-            }
-          }
-          sendConnectionLifecycle("created", buildQuicMessage(info, connKey, "quiche_connect"));
-        }
-      });
-    }
-  };
-}
-function createAcceptTracker(ref, keylogPipeWriteFd) {
-  return {
-    install(addresses, moduleName, _resolvedFns, _enableDefaultFd) {
-      const addr = addresses[moduleName]?.["quiche_accept"];
-      if (!addr || addr.isNull())
-        return;
-      Interceptor.attach(addr, {
-        onEnter(args) {
-          const scidPtr = args[0];
-          const scidLen = args[1].toUInt32();
-          this.scid = scidLen > 0 && !scidPtr.isNull() ? readHexFromPointer(scidPtr, scidLen) : "";
-          const odcidPtr = args[2];
-          const odcidLen = args[3].toUInt32();
-          this.dcid = odcidLen > 0 && !odcidPtr.isNull() ? readHexFromPointer(odcidPtr, odcidLen) : "";
-          const localPtr = args[4];
-          const localLen = args[5].toUInt32();
-          this.local = parseSockaddr(localPtr, localLen);
-          const peerPtr = args[6];
-          const peerLen = args[7].toUInt32();
-          this.peer = parseSockaddr(peerPtr, peerLen);
-          this.config = args[8];
-        },
-        onLeave(retval) {
-          if (retval.isNull())
-            return;
-          const connKey = retval.toString();
-          const info = {
-            serverName: "",
-            localAddr: this.local.addr,
-            localPort: this.local.port,
-            peerAddr: this.peer.addr,
-            peerPort: this.peer.port,
-            ssFamily: this.peer.family,
-            scid: this.scid,
-            dcid: this.dcid
-          };
-          quicConnectionTracker.register(connKey, info);
-          if (keylog_enabled && ref.configLogKeys && !this.config.isNull()) {
-            try {
-              ref.configLogKeys(this.config);
-            } catch (e) {
-              devlog("[quiche] failed to enable config keylog: " + e);
-            }
-          }
-          if (ref.setKeylogFd && keylogPipeWriteFd >= 0) {
-            try {
-              ref.setKeylogFd(retval, keylogPipeWriteFd);
-            } catch (e) {
-              devlog("[quiche] failed to set keylog fd: " + e);
-            }
-          }
-          sendConnectionLifecycle("created", buildQuicMessage(info, connKey, "quiche_accept"));
-        }
-      });
-    }
-  };
-}
-function createStreamRecvHook() {
-  return {
-    install(addresses, moduleName, _resolvedFns, _enableDefaultFd) {
-      if (!pcap_enabled)
-        return;
-      const addr = addresses[moduleName]?.["quiche_conn_stream_recv"];
-      if (!addr || addr.isNull())
-        return;
-      Interceptor.attach(addr, {
-        onEnter(args) {
-          this.conn = args[0];
-          this.streamId = args[1].toInt32();
-          this.buf = args[2];
-          this.finPtr = args[4];
-        },
-        onLeave(retval) {
-          const n = retval.toInt32();
-          if (n < 0)
-            return;
-          const connKey = this.conn.toString();
-          const connInfo = quicConnectionTracker.get(connKey);
-          if (!connInfo)
-            return;
-          const message = buildQuicMessage(connInfo, connKey, "quiche_stream_recv");
-          if (n > 0) {
-            sendQuicDatalog(message, this.buf.readByteArray(n), this.streamId, connInfo.scid, connInfo.dcid);
-          }
-          if (this.finPtr && !this.finPtr.isNull()) {
-            try {
-              if (this.finPtr.readU8() !== 0) {
-                sendConnectionLifecycle("stream_fin", {
-                  ...message,
-                  stream_id: this.streamId
-                });
-              }
-            } catch (_e) {
-            }
-          }
-        }
-      });
-      log("[*] Hooked quiche_conn_stream_recv for plaintext capture");
-    }
-  };
-}
-function createStreamSendHook() {
-  return {
-    install(addresses, moduleName, _resolvedFns, _enableDefaultFd) {
-      if (!pcap_enabled)
-        return;
-      const addr = addresses[moduleName]?.["quiche_conn_stream_send"];
-      if (!addr || addr.isNull())
-        return;
-      Interceptor.attach(addr, {
-        onEnter(args) {
-          this.conn = args[0];
-          this.streamId = args[1].toInt32();
-          this.buf = args[2];
-          this.bufLen = args[3].toUInt32();
-          this.fin = args[4].toInt32() !== 0;
-        },
-        onLeave(retval) {
-          const n = retval.toInt32();
-          if (n < 0)
-            return;
-          const connKey = this.conn.toString();
-          const connInfo = quicConnectionTracker.get(connKey);
-          if (!connInfo)
-            return;
-          const bytesToCapture = n > 0 ? n : 0;
-          if (bytesToCapture > 0) {
-            const message = buildQuicMessage(connInfo, connKey, "quiche_stream_send");
-            sendQuicDatalog(message, this.buf.readByteArray(bytesToCapture), this.streamId, connInfo.scid, connInfo.dcid);
-          }
-          if (this.fin) {
-            const message = buildQuicMessage(connInfo, connKey, "quiche_stream_send");
-            sendConnectionLifecycle("stream_fin", {
-              ...message,
-              stream_id: this.streamId
-            });
-          }
-        }
-      });
-      log("[*] Hooked quiche_conn_stream_send for plaintext capture");
-    }
-  };
-}
-function createConnFreeHook() {
-  return {
-    install(addresses, moduleName, _resolvedFns, _enableDefaultFd) {
-      const addr = addresses[moduleName]?.["quiche_conn_free"];
-      if (!addr || addr.isNull())
-        return;
-      Interceptor.attach(addr, {
-        onEnter(args) {
-          const connKey = args[0].toString();
-          const info = quicConnectionTracker.remove(connKey);
-          if (info) {
-            sendConnectionLifecycle("destroyed", buildQuicMessage(info, connKey, "quiche_conn_free"));
-          }
-        }
-      });
-    }
-  };
-}
-function createKeylogConfigHook() {
-  return {
-    install(addresses, moduleName, resolvedFns, _enableDefaultFd) {
-      const configNewAddr = addresses[moduleName]?.["quiche_config_new"];
-      const configLogKeysAddr = addresses[moduleName]?.["quiche_config_log_keys"];
-      if (configNewAddr && !configNewAddr.isNull() && configLogKeysAddr && !configLogKeysAddr.isNull()) {
-        const configLogKeys = new NativeFunction(configLogKeysAddr, "void", ["pointer"]);
-        Interceptor.attach(configNewAddr, {
-          onLeave(retval) {
-            if (!retval.isNull()) {
-              try {
-                configLogKeys(retval);
-                devlog("[quiche] enabled keylog on new config " + retval);
-              } catch (e) {
-                devlog("[quiche] failed to enable keylog on config: " + e);
-              }
-            }
-          }
-        });
-        log("[*] Hooked quiche_config_new for automatic keylog enablement");
-      }
-      const setKeylogPathAddr = addresses[moduleName]?.["quiche_conn_set_keylog_path"];
-      if (setKeylogPathAddr && !setKeylogPathAddr.isNull()) {
-        Interceptor.attach(setKeylogPathAddr, {
-          onEnter(args) {
-            const path = args[1].readCString();
-            devlog("[quiche] app set keylog path: " + path);
-          }
-        });
-      }
-    }
-  };
-}
-function createKeylogPipe() {
-  try {
-    const pipeFn = new NativeFunction(Module.getGlobalExportByName("pipe"), "int", ["pointer"]);
-    const pipefd = Memory.alloc(8);
-    const result = pipeFn(pipefd);
-    if (result === 0) {
-      const readFd = pipefd.readS32();
-      const writeFd = pipefd.add(4).readS32();
-      devlog("[quiche] created keylog pipe: read=" + readFd + " write=" + writeFd);
-      return [readFd, writeFd];
-    }
-  } catch (e) {
-    devlog("[quiche] failed to create pipe: " + e);
-  }
-  return [-1, -1];
-}
-function startKeylogPipeReader(readFd) {
-  if (readFd < 0)
-    return;
-  const readAddr = Module.findGlobalExportByName("read");
-  if (readAddr === null || readAddr.isNull()) {
-    devlog("[quiche] libc 'read' unresolved \u2014 keylog pipe reader disabled");
-    return;
-  }
-  const readFn = new NativeFunction(readAddr, "ssize_t", ["int", "pointer", "size_t"]);
-  const bufSize = 4096;
-  const buf = Memory.alloc(bufSize);
-  const threadFn = new NativeCallback(function(_arg) {
-    let partial = "";
-    while (true) {
-      const n = readFn(readFd, buf, bufSize - 1);
-      if (n <= 0)
-        break;
-      const chunk = partial + buf.readUtf8String(n);
-      const lines = chunk.split("\n");
-      partial = lines.pop();
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (trimmed.length > 0) {
-          devlog("invoking keylog from Quiche keylog pipe");
-          sendQuicKeylog(trimmed);
-        }
-      }
-    }
-    if (partial.trim().length > 0) {
-      devlog("invoking keylog from Quiche keylog pipe (flush)");
-      sendQuicKeylog(partial.trim());
-    }
-    return NULL;
-  }, "pointer", ["pointer"]);
-  try {
-    const pthreadCreate = new NativeFunction(Module.getGlobalExportByName("pthread_create"), "int", ["pointer", "pointer", "pointer", "pointer"]);
-    const threadId = Memory.alloc(Process.pointerSize);
-    pthreadCreate(threadId, NULL, threadFn, NULL);
-    devlog("[quiche] started keylog pipe reader thread");
-  } catch (e) {
-    devlog_error("[quiche] failed to start keylog pipe reader: " + e);
-  }
-}
-function createQuicheDefinition() {
-  let pipeWriteFd = -1;
-  if (keylog_enabled) {
-    const [pipeReadFd, writeFd] = createKeylogPipe();
-    pipeWriteFd = writeFd;
-    if (pipeReadFd >= 0) {
-      startKeylogPipeReader(pipeReadFd);
-    }
-  }
-  const resolvedRef = { configLogKeys: null, setKeylogFd: null };
-  return {
-    libraryId: "quiche",
-    offsetKey: "quiche",
-    functions: {
-      librarySymbols: [
-        "quiche_conn_stream_recv",
-        "quiche_conn_stream_send",
-        "quiche_connect",
-        "quiche_accept",
-        "quiche_config_new",
-        "quiche_config_log_keys",
-        "quiche_conn_set_keylog_fd",
-        "quiche_conn_set_keylog_path",
-        "quiche_conn_free",
-        "quiche_conn_source_id"
-      ],
-      socketSymbols: []
-      // QUIC doesn't use socket fds
-    },
-    nativeFunctions: [
-      { symbol: "quiche_config_log_keys", retType: "void", argTypes: ["pointer"] },
-      { symbol: "quiche_conn_set_keylog_fd", retType: "void", argTypes: ["pointer", "int"] }
-    ],
-    fdDecoder: (_sslCtx, _fns) => -1,
-    sessionIdDecoder: (sslCtx, _fns) => sslCtx.toString(),
-    keylog: { kind: "none" },
-    extraHooks: [
-      createConnectTracker(resolvedRef, pipeWriteFd),
-      createAcceptTracker(resolvedRef, pipeWriteFd),
-      createStreamRecvHook(),
-      createStreamSendHook(),
-      createConnFreeHook(),
-      // Keylog config force-enable + set_keylog_path interception is pure
-      // key-extraction machinery — only install it when keylog is wanted.
-      ...keylog_enabled ? [createKeylogConfigHook()] : []
-    ],
-    onNativeFunctionsResolved: (fns) => {
-      if (fns["quiche_config_log_keys"]) {
-        resolvedRef.configLogKeys = fns["quiche_config_log_keys"];
-      }
-      if (fns["quiche_conn_set_keylog_fd"]) {
-        resolvedRef.setKeylogFd = fns["quiche_conn_set_keylog_fd"];
-      }
-    }
-  };
-}
-
-// agent/quic/platforms/linux/quiche_linux.ts
-function quiche_execute(moduleName, is_base_hook) {
+function quiche_execute2(moduleName, is_base_hook) {
   executeFromDefinition(createQuicheDefinition(), moduleName, socket_library2, is_base_hook, enable_default_fd);
 }
 
 // agent/quic/platforms/linux/google_quiche_linux.ts
 init_node_globals();
-
-// agent/quic/definitions/google_quiche.ts
-init_node_globals();
-init_shared_structures();
-
-// agent/quic/shared/google_quiche_offsets.ts
-init_node_globals();
-var MANGLED_SYMBOLS = {
-  // QuicSpdyStream::Readv(const struct iovec*, size_t)
-  readv: {
-    linux: "_ZN4quic14QuicSpdyStream5ReadvEPK5iovecm",
-    macos: "__ZN4quic14QuicSpdyStream5ReadvEPK5iovecm",
-    // Windows uses MSVC mangling
-    windows: "?Readv@QuicSpdyStream@quic@@MEAA_KPEBUiovec@@_K@Z"
-  },
-  // QuicSpdyStream::WriteOrBufferBody(std::__Cr::basic_string_view<char,...>, bool)
-  // Outgoing HTTP/3 body (clean, de-framed). Verified mangled name.
-  writeOrBufferBody: {
-    linux: "_ZN4quic14QuicSpdyStream17WriteOrBufferBodyENSt4__Cr17basic_string_viewIcNS1_11char_traitsIcEEEEb",
-    macos: "__ZN4quic14QuicSpdyStream17WriteOrBufferBodyENSt4__Cr17basic_string_viewIcNS1_11char_traitsIcEEEEb",
-    windows: "?WriteOrBufferBody@QuicSpdyStream@quic@@MEAAXV?$basic_string_view@DU?$char_traits@D@__1@std@@@absl@@_N@Z"
-  },
-  // QuicSpdyStream::HttpDecoderVisitor::OnDataFramePayload(std::__Cr::basic_string_view<char,...>)
-  // INCOMING HTTP/3 body — the HttpDecoder visitor callback. This is the clean
-  // de-framed body Chrome actually delivers (its OnDataAvailable() drains the
-  // sequencer via GetReadableRegion()+MarkConsumed() and runs HttpDecoder, so
-  // QuicStreamSequencer::Readv is never on the body path and QuicSpdyStream::Readv
-  // is inlined). NOTE: nested in QuicSpdyStream::HttpDecoderVisitor, so `this`
-  // (args[0]) is the visitor sub-object, not the stream. Verified mangled name.
-  onDataFramePayload: {
-    linux: "_ZN4quic14QuicSpdyStream18HttpDecoderVisitor18OnDataFramePayloadENSt4__Cr17basic_string_viewIcNS2_11char_traitsIcEEEE",
-    macos: "__ZN4quic14QuicSpdyStream18HttpDecoderVisitor18OnDataFramePayloadENSt4__Cr17basic_string_viewIcNS2_11char_traitsIcEEEE",
-    windows: "?OnDataFramePayload@HttpDecoderVisitor@QuicSpdyStream@quic@@UEAA_NV?$basic_string_view@DU?$char_traits@D@__1@std@@@absl@@@Z"
-  },
-  // QuicStream::WriteOrBufferData(std::__Cr::basic_string_view<char,...>, bool,
-  //   quiche::QuicheReferenceCountedPointer<QuicAckListenerInterface>)
-  // Outgoing stream-level write (HTTP/3-framed bytes). Fallback for egress when
-  // WriteOrBufferBody is unavailable. Verified mangled name.
-  quicStreamWriteOrBufferData: {
-    linux: "_ZN4quic10QuicStream17WriteOrBufferDataENSt4__Cr17basic_string_viewIcNS1_11char_traitsIcEEEEbN6quiche29QuicheReferenceCountedPointerINS_24QuicAckListenerInterfaceEEE",
-    macos: "__ZN4quic10QuicStream17WriteOrBufferDataENSt4__Cr17basic_string_viewIcNS1_11char_traitsIcEEEEbN6quiche29QuicheReferenceCountedPointerINS_24QuicAckListenerInterfaceEEE",
-    windows: ""
-  },
-  // QuicStreamSequencer::OnStreamFrame(const QuicStreamFrame&)
-  // Broad raw-cleartext fallback (includes HTTP/3 framing). Arg is a struct
-  // reference, not a string_view — extracting bytes needs QuicStreamFrame field
-  // offsets, so this is resolved-only / opt-in, not attached by default.
-  // Verified mangled name.
-  sequencerOnStreamFrame: {
-    linux: "_ZN4quic19QuicStreamSequencer13OnStreamFrameERKNS_15QuicStreamFrameE",
-    macos: "__ZN4quic19QuicStreamSequencer13OnStreamFrameERKNS_15QuicStreamFrameE",
-    windows: "?OnStreamFrame@QuicStreamSequencer@quic@@QEAAXAEBVQuicStreamFrame@2@@Z"
-  },
-  // QuicStream::Readv — base-class virtual. Survives when Chrome
-  // devirtualises QuicSpdyStream::Readv on a release ARM64 build.
-  quicStreamReadv: {
-    linux: "_ZN4quic10QuicStream5ReadvEPK5iovecm",
-    macos: "__ZN4quic10QuicStream5ReadvEPK5iovecm",
-    windows: "?Readv@QuicStream@quic@@QEAA_KPEBUiovec@@_K@Z"
-  },
-  // QuicStreamSequencer::Readv — low-level read on the post-decrypt cleartext
-  // ring buffer. Not virtual, not inlinable across the call boundary, so it's
-  // the most reliable extraction point on Cronet's HTTP/3 body path.
-  sequencerReadv: {
-    linux: "_ZN4quic19QuicStreamSequencer5ReadvEPK5iovecm",
-    macos: "__ZN4quic19QuicStreamSequencer5ReadvEPK5iovecm",
-    windows: "?Readv@QuicStreamSequencer@quic@@QEAA_KPEBUiovec@@_K@Z"
-  },
-  // QuicSpdyStream::OnBodyAvailable — diagnostic only; fires when body bytes
-  // arrive. Lets us prove the HTTP/3 stream reached the body stage even when
-  // none of the Readv variants get called.
-  onBodyAvailable: {
-    linux: "_ZN4quic14QuicSpdyStream15OnBodyAvailableEv",
-    macos: "__ZN4quic14QuicSpdyStream15OnBodyAvailableEv",
-    windows: "?OnBodyAvailable@QuicSpdyStream@quic@@UEAAXXZ"
-  },
-  // QuicSpdyStream::OnHeadersDecoded(QuicHeaderList headers /*BY VALUE*/,
-  //   bool header_list_size_limit_exceeded)
-  // RELIABLE incoming/response decoded-headers path for the app-API capture
-  // mode. NOTE the corrected signature: there is NO QuicStreamId argument.
-  // ARM64: x0 = this (QuicSpdyStream*), x1 = pointer to the by-value
-  // QuicHeaderList temp, w2 = bool. QuicHeaderList is in namespace quic, so it
-  // mangles as a substitution `NS_14QuicHeaderListE`. The trailing `b` is the
-  // bool. Verify length prefixes against a real libmonochrome/Cronet symtab.
-  onHeadersDecoded: {
-    linux: "_ZN4quic14QuicSpdyStream16OnHeadersDecodedENS_14QuicHeaderListEb",
-    macos: "__ZN4quic14QuicSpdyStream16OnHeadersDecodedENS_14QuicHeaderListEb",
-    windows: "?OnHeadersDecoded@QuicSpdyStream@quic@@UEAAXVQuicHeaderList@2@_N@Z"
-  },
-  // QuicSpdyStream::WriteHeaders(quiche::HttpHeaderBlock header_block /*BY VALUE*/,
-  //   bool fin, quiche::QuicheReferenceCountedPointer<QuicAckListenerInterface>)
-  // OUTGOING/request decoded-headers path for the app-API capture mode (the
-  // egress twin of OnHeadersDecoded). ARM64: x0 = this (QuicSpdyStream*),
-  // x1 = pointer to the by-value HttpHeaderBlock temp (non-trivial -> passed by
-  // invisible reference), w2 = fin. Older QUICHE used spdy::SpdyHeaderBlock /
-  // spdy::Http2HeaderBlock instead of quiche::HttpHeaderBlock — add those
-  // variants if a target build predates the rename. VERIFY the mangling
-  // (length prefixes + substitutions) against a real libmonochrome symtab;
-  // on stripped builds this resolves via pattern/offset, not the symbol.
-  writeHeaders: {
-    linux: "_ZN4quic14QuicSpdyStream12WriteHeadersEN6quiche15HttpHeaderBlockEbNS1_29QuicheReferenceCountedPointerINS_24QuicAckListenerInterfaceEEE",
-    macos: "__ZN4quic14QuicSpdyStream12WriteHeadersEN6quiche15HttpHeaderBlockEbNS1_29QuicheReferenceCountedPointerINS_24QuicAckListenerInterfaceEEE",
-    windows: ""
-  },
-  // PHASE-2 CHAIN-FALLBACK #1:
-  // net::QuicChromiumClientStream::WriteHeaders(quiche::HttpHeaderBlock /*BY VALUE*/,
-  //   bool fin, quiche::QuicheReferenceCountedPointer<quic::QuicAckListenerInterface>)
-  // CHROME-SHIM above the quiche stream. Lives in //net/quic and wraps a
-  // quic::QuicSpdyStream (the "inner" stream). args[0] is the
-  // QuicChromiumClientStream* WRAPPER, NOT a QuicSpdyStream. The wrapper holds
-  // the inner QuicSpdyStream* at a build-specific small offset; recover it via
-  // unwrapChromiumClientStream() in google_quiche.ts so the surrogate streamId
-  // matches OnHeadersDecoded (which fires on the inner pointer). Stripped on
-  // every Cronet release build — resolution goes through the pattern path in
-  // quic_patterns.json. The mangled strings here are best-effort and only
-  // matter on a hypothetical unstripped/debug build.
-  quicChromiumClientStreamWriteHeaders: {
-    linux: "_ZN3net25QuicChromiumClientStream12WriteHeadersEN6quiche15HttpHeaderBlockEbN6quiche29QuicheReferenceCountedPointerIN4quic24QuicAckListenerInterfaceEEE",
-    macos: "__ZN3net25QuicChromiumClientStream12WriteHeadersEN6quiche15HttpHeaderBlockEbN6quiche29QuicheReferenceCountedPointerIN4quic24QuicAckListenerInterfaceEEE",
-    windows: ""
-  },
-  // PHASE-2 CHAIN-FALLBACK #2:
-  // quic::QuicSpdySession::WriteHeadersOnHeadersStream(QuicStreamId,
-  //   quiche::HttpHeaderBlock /*BY VALUE*/, bool fin,
-  //   const spdy::SpdyStreamPrecedence&,
-  //   quiche::QuicheReferenceCountedPointer<quic::QuicAckListenerInterface>)
-  // SESSION-LEVEL fallback below both QuicSpdyStream::WriteHeaders and the
-  // chrome shim. ARM64:
-  //   args[0] = QuicSpdySession*  (NOT a stream)
-  //   args[1] = QuicStreamId      (uint32_t — read low 32 bits as surrogate)
-  //   args[2] = HttpHeaderBlock*  (NOTE: shifted right by one slot vs the
-  //                                stream-level hooks — ABI gotcha)
-  //   args[3] = bool fin
-  // Stripped on every Cronet release build; pattern path is the workhorse.
-  quicSpdySessionWriteHeadersOnHeadersStream: {
-    linux: "_ZN4quic15QuicSpdySession27WriteHeadersOnHeadersStreamEjN6quiche15HttpHeaderBlockEbRKN4spdy20SpdyStreamPrecedenceEN6quiche29QuicheReferenceCountedPointerIN4quic24QuicAckListenerInterfaceEEE",
-    macos: "__ZN4quic15QuicSpdySession27WriteHeadersOnHeadersStreamEjN6quiche15HttpHeaderBlockEbRKN4spdy20SpdyStreamPrecedenceEN6quiche29QuicheReferenceCountedPointerIN4quic24QuicAckListenerInterfaceEEE",
-    windows: ""
-  }
-};
-var LABEL_TO_KEY = {
-  QuicSpdyStream_Readv: "readv",
-  QuicStream_Readv: "quicStreamReadv",
-  QuicStreamSequencer_Readv: "sequencerReadv",
-  QuicSpdyStream_OnDataFramePayload: "onDataFramePayload",
-  QuicSpdyStream_WriteOrBufferBody: "writeOrBufferBody",
-  QuicStream_WriteOrBufferData: "quicStreamWriteOrBufferData",
-  QuicStreamSequencer_OnStreamFrame: "sequencerOnStreamFrame",
-  QuicSpdyStream_OnBodyAvailable: "onBodyAvailable",
-  QuicSpdyStream_OnHeadersDecoded: "onHeadersDecoded",
-  QuicSpdyStream_WriteHeaders: "writeHeaders",
-  // Phase-2 chain-fallback labels — see MANGLED_SYMBOLS comments above for
-  // ABI notes. Patterns live in quic_patterns.json. The fallback chain is
-  // wired in installGoogleQuicheHooks() as winner-takes-all.
-  QuicChromiumClientStream_WriteHeaders: "quicChromiumClientStreamWriteHeaders",
-  QuicSpdySession_WriteHeadersOnHeadersStream: "quicSpdySessionWriteHeadersOnHeadersStream"
-};
-var KEY_TO_LABEL = Object.fromEntries(Object.entries(LABEL_TO_KEY).map(([label, key]) => [key, label]));
-
-// agent/quic/definitions/google_quiche.ts
-function resolveQuicMessage(streamPtr, label) {
-  const connPtr = quicConnectionTracker.resolveStream(streamPtr) ?? streamPtr;
-  return buildQuicMessage(quicConnectionTracker.resolveInfo(connPtr), connPtr, label);
-}
-function parseObservedPeer(sa) {
-  if (sa.isNull() || !isReadable(sa, 2))
-    return null;
-  const family = readSockaddrFamily(sa, true);
-  const needed = family === AF_INET ? 8 : family === AF_INET6 ? 24 : 0;
-  if (needed === 0 || !isReadable(sa, needed))
-    return null;
-  const decoded = decodeSockaddr(sa, false, void 0, true);
-  if (!decoded || decoded.port === 0)
-    return null;
-  if (decoded.family === "AF_INET" && decoded.addr >>> 24 === 127)
-    return null;
-  return decoded;
-}
-var socketObserverInstalled = false;
-var CHROMIUM_INNER_PROBE_FAILED = -2;
-var chromiumStreamInnerOffset = -1;
-function unwrapChromiumClientStream(wrapperPtr) {
-  try {
-    if (!wrapperPtr || wrapperPtr.isNull())
-      return null;
-    resetReadableCache();
-    const wrapperModule = (() => {
-      try {
-        return Process.findModuleByAddress(wrapperPtr);
-      } catch (_e) {
-        return null;
-      }
-    })();
-    const isCronetFamilyModule = (m2) => {
-      if (!m2)
-        return false;
-      const n = m2.name.toLowerCase();
-      return n.startsWith("libcronet") || n.startsWith("libmainlinecronet") || n.startsWith("libmonochrome");
-    };
-    const moduleSameOrCronet = (m2) => {
-      if (!m2)
-        return false;
-      if (wrapperModule && m2.name === wrapperModule.name)
-        return true;
-      return isCronetFamilyModule(m2);
-    };
-    const validateChromiumInner = (off, inner) => {
-      if (!isReadable(inner, Process.pointerSize)) {
-        if (debug_output) {
-          devlog_debug(`[unwrapChromiumClientStream] off=0x${off.toString(16)} inner=${inner} not readable`);
-        }
-        return null;
-      }
-      const vtable2 = safeReadPointer(inner);
-      if (vtable2 === null || vtable2.isNull() || !isReadable(vtable2, Process.pointerSize)) {
-        if (debug_output) {
-          devlog_debug(`[unwrapChromiumClientStream] off=0x${off.toString(16)} vtable=${vtable2} not readable`);
-        }
-        return null;
-      }
-      const firstFn = safeReadPointer(vtable2);
-      if (firstFn === null || firstFn.isNull()) {
-        if (debug_output) {
-          devlog_debug(`[unwrapChromiumClientStream] off=0x${off.toString(16)} vtable[0]=null`);
-        }
-        return null;
-      }
-      let r = null;
-      try {
-        r = Process.findRangeByAddress(firstFn);
-      } catch (_e) {
-        r = null;
-      }
-      if (!r || r.protection.indexOf("x") < 0) {
-        if (debug_output) {
-          devlog_debug(`[unwrapChromiumClientStream] off=0x${off.toString(16)} vtable[0]=${firstFn} not in r-x range`);
-        }
-        return null;
-      }
-      let vtblModule = null;
-      try {
-        vtblModule = Process.findModuleByAddress(firstFn);
-      } catch (_e) {
-        vtblModule = null;
-      }
-      if (!moduleSameOrCronet(vtblModule)) {
-        if (debug_output) {
-          const where = vtblModule ? `${vtblModule.name}+0x${firstFn.sub(vtblModule.base).toString(16)}` : `<unknown range>`;
-          devlog_debug(`[unwrapChromiumClientStream] off=0x${off.toString(16)} vtable[0]=${firstFn} (in ${where}) is NOT in wrapper module (${wrapperModule ? wrapperModule.name : "?"}) or a Cronet-family module \u2014 rejecting as false positive`);
-        }
-        return null;
-      }
-      if (debug_output) {
-        const where = vtblModule ? `${vtblModule.name}+0x${firstFn.sub(vtblModule.base).toString(16)}` : `<unknown>`;
-        devlog_debug(`[unwrapChromiumClientStream] off=0x${off.toString(16)} PLAUSIBLE inner=${inner} vtable=${vtable2} vtable[0]=${firstFn} (in ${where})`);
-      }
-      return inner;
-    };
-    const tryOffset = (off) => {
-      const slot = wrapperPtr.add(off);
-      if (!isReadable(slot, Process.pointerSize)) {
-        if (debug_output) {
-          devlog_debug(`[unwrapChromiumClientStream] off=0x${off.toString(16)} slot=${slot} not readable`);
-        }
-        return null;
-      }
-      const inner = safeReadPointer(slot);
-      if (inner === null || inner.isNull()) {
-        if (debug_output) {
-          devlog_debug(`[unwrapChromiumClientStream] off=0x${off.toString(16)} inner=null`);
-        }
-        return null;
-      }
-      return validateChromiumInner(off, inner);
-    };
-    if (chromiumStreamInnerOffset >= 0) {
-      const cached = tryOffset(chromiumStreamInnerOffset);
-      if (cached)
-        return cached;
-      devlog_debug(`[unwrapChromiumClientStream] cached offset 0x${chromiumStreamInnerOffset.toString(16)} failed plausibility for wrapper=${wrapperPtr}; re-probing`);
-    }
-    if (chromiumStreamInnerOffset === CHROMIUM_INNER_PROBE_FAILED)
-      return null;
-    for (const off of [8, 16, 24, 32, 40, 48]) {
-      const inner = tryOffset(off);
-      if (inner) {
-        chromiumStreamInnerOffset = off;
-        devlog(`[unwrapChromiumClientStream] resolved inner QuicSpdyStream offset = 0x${off.toString(16)} (wrapper module = ${wrapperModule ? wrapperModule.name : "?"})`);
-        return inner;
-      }
-    }
-    chromiumStreamInnerOffset = CHROMIUM_INNER_PROBE_FAILED;
-    devlog(`[unwrapChromiumClientStream] no candidate offset matched for wrapper=${wrapperPtr}; chain fallback will use the wrapper ptr as streamKey (degraded correlation)`);
-    return null;
-  } catch (e) {
-    chromiumStreamInnerOffset = CHROMIUM_INNER_PROBE_FAILED;
-    devlog_error(`[unwrapChromiumClientStream] unexpected fault: ${e} (probing disabled for this attach)`);
-    return null;
-  }
-}
-function installQuicSocketObserver() {
-  if (socketObserverInstalled)
-    return;
-  socketObserverInstalled = true;
-  const udpFds = /* @__PURE__ */ new Set();
-  const socketAddr = Module.findGlobalExportByName("socket");
-  const connectAddr = Module.findGlobalExportByName("connect");
-  const closeAddr = Module.findGlobalExportByName("close");
-  if (socketAddr) {
-    Interceptor.attach(socketAddr, {
-      onEnter(args) {
-        this.sockType = args[1].toInt32();
-      },
-      onLeave(retval) {
-        const fd = retval.toInt32();
-        if (fd >= 0 && (this.sockType & 127) === 2)
-          udpFds.add(fd);
-      }
-    });
-  }
-  if (connectAddr) {
-    Interceptor.attach(connectAddr, {
-      onEnter(args) {
-        const fd = args[0].toInt32();
-        if (!udpFds.has(fd))
-          return;
-        try {
-          const peer = parseObservedPeer(args[1]);
-          if (peer)
-            quicConnectionTracker.setObservedPeer(peer);
-        } catch (e) {
-        }
-      }
-    });
-  }
-  if (closeAddr) {
-    Interceptor.attach(closeAddr, {
-      onEnter(args) {
-        udpFds.delete(args[0].toInt32());
-      }
-    });
-  }
-  devlog("[Google QUICHE] installed libc UDP socket observer for real-peer recovery");
-}
-function readIovec(iovPtr, iovLen, maxBytes) {
-  if (iovPtr.isNull() || iovLen === 0 || maxBytes === 0)
-    return null;
-  const ptrSize3 = Process.pointerSize;
-  const iovecSize = ptrSize3 * 2;
-  let remaining = maxBytes;
-  const parts = [];
-  resetReadableCache();
-  for (let i = 0; i < iovLen && remaining > 0; i++) {
-    try {
-      const entry = iovPtr.add(i * iovecSize);
-      if (!isReadable(entry, iovecSize))
-        continue;
-      const base = entry.readPointer();
-      const len = entry.add(ptrSize3).readULong();
-      if (base.isNull() || len === 0)
-        continue;
-      const toRead = Math.min(len, remaining);
-      if (!isReadable(base, toRead))
-        continue;
-      const chunk = base.readByteArray(toRead);
-      if (chunk) {
-        parts.push(chunk);
-        remaining -= toRead;
-      }
-    } catch (e) {
-      devlog_error(`[Google QUICHE] readIovec entry ${i} threw: ${e}`);
-      continue;
-    }
-  }
-  if (parts.length === 0)
-    return null;
-  if (parts.length === 1)
-    return parts[0];
-  const totalLen = maxBytes - remaining;
-  const result = new ArrayBuffer(totalLen);
-  const view = new Uint8Array(result);
-  let offset = 0;
-  for (const part of parts) {
-    view.set(new Uint8Array(part), offset);
-    offset += part.byteLength;
-  }
-  return result;
-}
-function _hexHead(p, n = 32) {
-  try {
-    if (!p || p.isNull())
-      return "<null>";
-    if (!isReadable(p, n))
-      return "<unreadable>";
-    return hexdump(p, { length: n, header: false, ansi: false }).replace(/\n/g, " | ");
-  } catch (e) {
-    return "<unreadable>";
-  }
-}
-function readLibcxxString(p) {
-  try {
-    const first = safeReadU8(p);
-    if (first === null)
-      return "";
-    if (first & 1) {
-      const size2 = safeReadULong(p.add(8));
-      const dataPtr = safeReadPointer(p.add(16));
-      if (size2 === null || dataPtr === null || dataPtr.isNull() || size2 <= 0 || size2 > 1 << 20)
-        return "";
-      return safeReadUtf8(dataPtr, size2);
-    }
-    const size = first >> 1;
-    if (size <= 0 || size > 22)
-      return "";
-    return safeReadUtf8(p.add(1), size);
-  } catch (e) {
-    return "";
-  }
-}
-function readQuicHeaderList(hl, maxPairs = 256) {
-  const out = [];
-  resetReadableCache();
-  try {
-    const begin = safeReadULong(hl);
-    const end = safeReadULong(hl.add(8));
-    const data = safeReadPointer(hl.add(16));
-    const cap = safeReadULong(hl.add(24));
-    if (begin === null || end === null || cap === null)
-      return out;
-    if (data === null || data.isNull() || cap <= 0 || cap > 65536)
-      return out;
-    const n = Math.min(end - begin, maxPairs);
-    if (n <= 0)
-      return out;
-    for (let i = 0; i < n; i++) {
-      const slot = data.add((begin + i) % cap * 48);
-      out.push([readLibcxxString(slot), readLibcxxString(slot.add(24))]);
-    }
-  } catch (e) {
-  }
-  return out;
-}
-function readStringView(p) {
-  try {
-    const ptr2 = safeReadPointer(p);
-    const len = safeReadULong(p.add(8));
-    if (ptr2 === null || len === null || ptr2.isNull() || len <= 0 || len > 1 << 20)
-      return "";
-    return safeReadUtf8(ptr2, len);
-  } catch (e) {
-    return "";
-  }
-}
-function readHeaderValue(hv) {
-  try {
-    const meta = safeReadULong(hv.add(8));
-    if (meta === null)
-      return "";
-    const allocated = meta & 1;
-    const count = meta >> 1;
-    if (count <= 0)
-      return "";
-    let svPtr;
-    if (!allocated) {
-      svPtr = hv.add(16);
-    } else {
-      const heap = safeReadPointer(hv.add(16));
-      if (heap === null || heap.isNull())
-        return "";
-      svPtr = heap;
-    }
-    return readStringView(svPtr);
-  } catch (e) {
-    return "";
-  }
-}
-function _looksLikeStdList(listObj) {
-  try {
-    const size = safeReadULong(listObj.add(16));
-    if (size === null || size <= 0 || size > 1e3)
-      return false;
-    const sentinel = listObj;
-    const first = safeReadPointer(listObj.add(8));
-    if (first === null || first.isNull() || first.equals(sentinel))
-      return false;
-    const prev = safeReadPointer(first);
-    return prev !== null && prev.equals(sentinel);
-  } catch (e) {
-    return false;
-  }
-}
-function _dumpEmptyHeaderBlockProbe(label, headerBlock) {
-  const probes = [16, 24, 32, 40, 48, 56, 64].map((o) => `${o}:${_looksLikeStdList(headerBlock.add(o)) ? "list" : "-"}`).join(" ");
-  devlog_debug(`[${label}] read 0 headers; raw=${_hexHead(headerBlock)} probes=[${probes}]`);
-}
-function readHttpHeaderBlock(hhb, maxPairs = 256) {
-  const out = [];
-  resetReadableCache();
-  try {
-    for (const off of [16, 24, 32, 40, 48, 56, 64]) {
-      const listObj = hhb.add(off);
-      if (!_looksLikeStdList(listObj))
-        continue;
-      const sentinel = listObj;
-      let node = safeReadPointer(listObj.add(8));
-      if (node === null)
-        continue;
-      let guard = 0;
-      while (!node.isNull() && !node.equals(sentinel) && guard < maxPairs) {
-        const pair = node.add(16);
-        const key = readStringView(pair);
-        const val = readHeaderValue(pair.add(16));
-        if (key.length > 0)
-          out.push([key, val]);
-        const next = safeReadPointer(node.add(8));
-        if (next === null)
-          break;
-        node = next;
-        guard++;
-      }
-      if (out.length > 0)
-        return out;
-    }
-  } catch (e) {
-  }
-  return out;
-}
-function installReadvHook(addr, label) {
-  let callCount = 0;
-  const MAX_DEBUG_CALLS = 5;
-  Interceptor.attach(addr, {
-    onEnter(args) {
-      this.streamObj = args[0];
-      this.iov = args[1];
-      this.iovLen = args[2].toUInt32();
-    },
-    onLeave(retval) {
-      if (_isShuttingDownNow())
-        return;
-      try {
-        const bytesRead = retval.toUInt32();
-        if (callCount < MAX_DEBUG_CALLS) {
-          callCount++;
-          devlog_debug(`[${label}] call #${callCount}: bytesRead=${bytesRead} iovLen=${this.iovLen}`);
-        }
-        if (bytesRead === 0)
-          return;
-        const data = readIovec(this.iov, this.iovLen, bytesRead);
-        if (!data)
-          return;
-        const message = resolveQuicMessage(this.streamObj.toString(), label);
-        sendQuicDatalog(message, data, -1);
-      } catch (e) {
-        devlog_error(`[${label}] onLeave threw: ${e}`);
-      }
-    }
-  });
-}
-function getMangledSymbol(key) {
-  const platform = Process.platform;
-  const symbols = MANGLED_SYMBOLS[key];
-  if (platform === "darwin")
-    return symbols.macos;
-  if (platform === "windows")
-    return symbols.windows;
-  return symbols.linux;
-}
-var CHAIN_CANDIDATE_KEYWORDS = {
-  // QuicSpdyStream::WriteHeaders — must contain BOTH "QuicSpdyStream" and "WriteHeaders".
-  writeHeaders: [["QuicSpdyStream", "WriteHeaders"]],
-  // net::QuicChromiumClientStream::WriteHeaders — chrome shim.
-  quicChromiumClientStreamWriteHeaders: [["ChromiumClientStream", "WriteHeaders"]],
-  // QuicSpdySession::WriteHeadersOnHeadersStream — session-level gQUIC.
-  quicSpdySessionWriteHeadersOnHeadersStream: [["WriteHeadersOnHeadersStream"]]
-};
-var CHAIN_LABEL_PRETTY = {
-  writeHeaders: "QuicSpdyStream::WriteHeaders",
-  quicChromiumClientStreamWriteHeaders: "net::QuicChromiumClientStream::WriteHeaders",
-  quicSpdySessionWriteHeadersOnHeadersStream: "quic::QuicSpdySession::WriteHeadersOnHeadersStream"
-};
-function scanRangeAllAsync(base, size, pattern) {
-  return new Promise((resolve) => {
-    const acc = [];
-    try {
-      Memory.scan(base, size, pattern, {
-        onMatch: (address) => {
-          acc.push(address);
-        },
-        onError: () => {
-        },
-        onComplete: () => resolve(acc)
-      });
-    } catch (_e) {
-      resolve(acc);
-    }
-  });
-}
-async function dumpChainCandidatesDebug(moduleName, resolved) {
-  if (!debug_output)
-    return;
-  if (_isShuttingDownNow())
-    return;
-  let mod = null;
-  try {
-    mod = Process.findModuleByName(moduleName);
-  } catch (_e) {
-    mod = null;
-  }
-  if (!mod) {
-    devlog_debug(`[chain-debug] module ${moduleName} not loaded; skipping enumeration`);
-    return;
-  }
-  const chainKeys = Object.keys(CHAIN_CANDIDATE_KEYWORDS);
-  const symHitsByKey = new Map(chainKeys.map((k) => [k, []]));
-  try {
-    for (const sym of mod.enumerateSymbols()) {
-      if (!sym.name || !sym.address || sym.address.isNull())
-        continue;
-      for (const key of chainKeys) {
-        const tokenSets = CHAIN_CANDIDATE_KEYWORDS[key] || [];
-        const matched = tokenSets.find((tokens) => tokens.every((t) => sym.name.includes(t)));
-        if (matched) {
-          symHitsByKey.get(key).push({ name: sym.name, address: sym.address });
-        }
-      }
-    }
-  } catch (e) {
-    devlog_debug(`[chain-debug] enumerateSymbols failed in ${moduleName}: ${e}`);
-  }
-  const parsed = getParsedPatterns();
-  let ranges = [];
-  try {
-    ranges = mod.enumerateRanges("r-x");
-  } catch (_e) {
-    ranges = [];
-  }
-  for (const key of chainKeys) {
-    const pretty = CHAIN_LABEL_PRETTY[key] || key;
-    const label = KEY_TO_LABEL[key];
-    const picked = resolved.get(key);
-    const pickedStr = picked ? picked.toString() : "<unresolved>";
-    const mangled = getMangledSymbol(key);
-    let exportHit = null;
-    try {
-      exportHit = mangled ? mod.findExportByName(mangled) : null;
-    } catch (_e) {
-      exportHit = null;
-    }
-    const symHits = symHitsByKey.get(key) || [];
-    let patternMatchCount = 0;
-    const patternMatches = [];
-    if (parsed && label && ranges.length > 0) {
-      const lib = parsed[moduleName] || parsed["google_quiche"];
-      const osEntry = lib && lib[currentPlatformKey()];
-      const arch = osEntry && (osEntry[normalizeArchKey()] || osEntry["default"]);
-      const labelPatterns = arch && arch[label];
-      const patternsList = Array.isArray(labelPatterns) ? labelPatterns : labelPatterns ? [labelPatterns] : [];
-      for (const pattern of patternsList) {
-        for (const range of ranges) {
-          if (_isShuttingDownNow())
-            break;
-          try {
-            const ms = await scanRangeAllAsync(range.base, range.size, pattern);
-            for (const m2 of ms) {
-              patternMatchCount++;
-              if (patternMatches.length < 8)
-                patternMatches.push(m2);
-            }
-          } catch (_e) {
-          }
-        }
-      }
-    }
-    devlog_debug(`[chain-debug] label=${label || "?"} (${pretty}) picked=${pickedStr} exports=${exportHit ? exportHit.toString() : "<none>"} symtab_hits=${symHits.length} pattern_hits=${patternMatchCount}`);
-    dumpHits("symtab", symHits, 5, (s) => `${s.address} ${s.name}`);
-    dumpHits("pattern", patternMatches, 8, (a) => `${a}`);
-    if (patternMatchCount > patternMatches.length) {
-      devlog_debug(`[chain-debug]    pattern: ... and ${patternMatchCount - patternMatches.length} more`);
-    }
-    if (patternMatchCount > 1) {
-      devlog_debug(`[chain-debug]    WARNING: pattern matched ${patternMatchCount} sites \u2014 uniqueness failure risk (see blog's PersistentSampleVector case)`);
-    }
-  }
-}
-function dumpHits(linePrefix, hits, maxShown, render) {
-  if (hits.length === 0)
-    return;
-  const shown = hits.slice(0, maxShown);
-  for (const h of shown) {
-    devlog_debug(`[chain-debug]    ${linePrefix}: ${render(h)}`);
-  }
-  if (hits.length > shown.length) {
-    devlog_debug(`[chain-debug]    ${linePrefix}: ... and ${hits.length - shown.length} more`);
-  }
-}
-async function resolveQuicheSymbols(moduleName) {
-  const resolved = /* @__PURE__ */ new Map();
-  const keys = Object.keys(MANGLED_SYMBOLS);
-  const remaining = [];
-  let mod = null;
-  try {
-    mod = Process.findModuleByName(moduleName);
-  } catch (_e) {
-  }
-  for (const key of keys) {
-    const mangledName = getMangledSymbol(key);
-    if (mod) {
-      try {
-        const addr = mod.findExportByName(mangledName);
-        if (addr && !addr.isNull()) {
-          devlog("[Google QUICHE] found " + key + " via symbol export in " + moduleName);
-          resolved.set(key, addr);
-          continue;
-        }
-      } catch (_e) {
-      }
-    }
-    remaining.push(key);
-  }
-  if (remaining.length === 0)
-    return resolved;
-  const symResults = findNonExportedSymbols(moduleName, remaining.map(getMangledSymbol));
-  for (const key of remaining) {
-    const addr = symResults.get(getMangledSymbol(key));
-    if (addr && !addr.isNull()) {
-      devlog("[Google QUICHE] found " + key + " via symbol table in " + moduleName);
-      resolved.set(key, addr);
-    }
-  }
-  let missing = Object.keys(MANGLED_SYMBOLS).filter((k) => !resolved.has(k));
-  if (missing.length > 0) {
-    const parsed = getParsedPatterns();
-    if (parsed) {
-      const labels = missing.map((k) => KEY_TO_LABEL[k]).filter(Boolean);
-      try {
-        const ps = new PatternStrategy(parsed);
-        const res = await ps.tryHookAsync(moduleName, "google_quiche", labels);
-        res.resolvedAddresses.forEach((addr, label) => {
-          const key = LABEL_TO_KEY[label];
-          if (key && !resolved.has(key)) {
-            resolved.set(key, addr);
-            devlog(`[Google QUICHE] found ${key} via pattern in ${moduleName}`);
-          }
-        });
-      } catch (e) {
-        devlog_debug(`[Google QUICHE] pattern strategy failed: ${e}`);
-      }
-    }
-  }
-  missing = Object.keys(MANGLED_SYMBOLS).filter((k) => !resolved.has(k));
-  if (missing.length > 0 && offsets !== "{OFFSETS}" && offsets.google_quiche) {
-    const base = getBaseAddress(moduleName);
-    const gq = offsets.google_quiche;
-    for (const k of missing) {
-      const entry = gq[KEY_TO_LABEL[k]];
-      if (!entry)
-        continue;
-      const a = ptr(entry.address);
-      resolved.set(k, entry.absolute || base == null ? a : base.add(a));
-      devlog(`[Google QUICHE] applied offset for ${k} in ${moduleName}`);
-    }
-  }
-  await dumpChainCandidatesDebug(moduleName, resolved);
-  return resolved;
-}
-async function installGoogleQuicheHooks(moduleName) {
-  if (!pcap_enabled)
-    return;
-  log("[*] Google QUICHE: attempting to hook QuicSpdyStream in " + moduleName);
-  installQuicSocketObserver();
-  const resolved = await resolveQuicheSymbols(moduleName);
-  const readvAddr = resolved.get("readv") || null;
-  const quicStreamReadvAddr = resolved.get("quicStreamReadv") || null;
-  const sequencerReadvAddr = resolved.get("sequencerReadv") || null;
-  const onBodyAvailableAddr = resolved.get("onBodyAvailable") || null;
-  const writeAddr = resolved.get("writeOrBufferBody") || null;
-  const onDataFramePayloadAddr = resolved.get("onDataFramePayload") || null;
-  const onHeadersDecodedAddr = resolved.get("onHeadersDecoded") || null;
-  const writeHeadersAddr = resolved.get("writeHeaders") || null;
-  const chromiumWriteHeadersAddr = resolved.get("quicChromiumClientStreamWriteHeaders") || null;
-  const sessionWriteHeadersOnHeadersStreamAddr = resolved.get("quicSpdySessionWriteHeadersOnHeadersStream") || null;
-  let effectiveWriteHeadersAddr = writeHeadersAddr;
-  let effectiveChromiumWriteHeadersAddr = chromiumWriteHeadersAddr;
-  let effectiveSessionWriteHeadersOnHeadersStreamAddr = sessionWriteHeadersOnHeadersStreamAddr;
-  const requestedLayer = quic_egress_headers_layer || "auto";
-  let forcedLayerActive = false;
-  switch (requestedLayer) {
-    case "auto":
-      break;
-    case "quiche-internal":
-      effectiveChromiumWriteHeadersAddr = null;
-      effectiveSessionWriteHeadersOnHeadersStreamAddr = null;
-      forcedLayerActive = true;
-      break;
-    case "chrome-shim":
-      effectiveWriteHeadersAddr = null;
-      effectiveSessionWriteHeadersOnHeadersStreamAddr = null;
-      forcedLayerActive = true;
-      break;
-    case "session-level":
-      effectiveWriteHeadersAddr = null;
-      effectiveChromiumWriteHeadersAddr = null;
-      forcedLayerActive = true;
-      break;
-    default:
-      log(`[!] Google QUICHE: unrecognised --quic-egress-headers-layer="${requestedLayer}"; falling back to "auto" (chain behaviour unchanged)`);
-      break;
-  }
-  if (forcedLayerActive) {
-    log(`[*] Google QUICHE: --quic-egress-headers-layer=${requestedLayer} (forced; other egress-headers layers will NOT be installed even if their patterns resolve)`);
-  }
-  const hasAnyResolvedAddress = !!(readvAddr || writeAddr || quicStreamReadvAddr || sequencerReadvAddr || onDataFramePayloadAddr || onHeadersDecodedAddr || writeHeadersAddr || chromiumWriteHeadersAddr || sessionWriteHeadersOnHeadersStreamAddr);
-  if (!hasAnyResolvedAddress) {
-    devlog("[Google QUICHE] could not resolve any stream functions in " + moduleName);
-    devlog("[Google QUICHE] note: stripped release builds require byte patterns in default_patterns.json");
-    if (quic_capture_mode === "app-api") {
-      log(`[*] Google QUICHE egress headers chain in ${moduleName}: active layer = NONE (no addresses resolved on this module)`);
-    }
-    return;
-  }
-  log(`[*] Google QUICHE: quic_capture_mode = "${quic_capture_mode}"`);
-  if (quic_capture_mode !== "app-api") {
-    const readvTargets = [
-      [readvAddr, "QuicSpdyStream_Readv", "QuicSpdyStream::Readv"],
-      [quicStreamReadvAddr, "QuicStream_Readv", "QuicStream::Readv"],
-      [sequencerReadvAddr, "QuicStreamSequencer_Readv", "QuicStreamSequencer::Readv"]
-    ];
-    for (const [addr, label, prettyName] of readvTargets) {
-      if (!addr || addr.isNull())
-        continue;
-      try {
-        installReadvHook(addr, label);
-        log(`[*] Hooked ${prettyName} for plaintext capture`);
-      } catch (e) {
-        devlog_error(`[Google QUICHE] failed to hook ${prettyName}: ${e}`);
-      }
-    }
-  }
-  if (onDataFramePayloadAddr && !onDataFramePayloadAddr.isNull()) {
-    try {
-      const breadcrumb = `QuicSpdyStream::OnDataFramePayload (${moduleName})`;
-      Interceptor.attach(onDataFramePayloadAddr, {
-        onEnter(args) {
-          if (_isShuttingDownNow())
-            return;
-          hookBreadcrumb(breadcrumb);
-          try {
-            const dataPtr = args[1];
-            const dataLen = args[2].toUInt32();
-            if (dataLen === 0 || dataPtr.isNull())
-              return;
-            resetReadableCache();
-            if (dataLen > 16 << 20 || !isReadable(dataPtr, dataLen)) {
-              devlog_debug(`[OnDataFramePayload] unreadable data ptr=${dataPtr} len=${dataLen} -> skip`);
-              return;
-            }
-            const data = dataPtr.readByteArray(dataLen);
-            if (!data)
-              return;
-            const message = resolveQuicMessage(args[0].toString(), "QuicSpdyStream_OnDataFramePayload");
-            sendQuicDatalog(message, data, -1);
-          } catch (e) {
-            devlog_error("[QuicSpdyStream_OnDataFramePayload] onEnter threw: " + e);
-          }
-        }
-      });
-      log("[*] Hooked QuicSpdyStream::OnDataFramePayload for plaintext capture (incoming HTTP/3 body)");
-    } catch (e) {
-      devlog_error("[Google QUICHE] failed to hook OnDataFramePayload: " + e);
-    }
-  }
-  if (onBodyAvailableAddr && !onBodyAvailableAddr.isNull()) {
-    try {
-      let onBodyCount = 0;
-      Interceptor.attach(onBodyAvailableAddr, {
-        onEnter(args) {
-          if (onBodyCount < 5) {
-            onBodyCount++;
-            devlog_debug(`[QuicSpdyStream_OnBodyAvailable] call #${onBodyCount}: this=${args[0]}`);
-          }
-        }
-      });
-      devlog("[*] Hooked QuicSpdyStream::OnBodyAvailable (diagnostic)");
-    } catch (e) {
-      devlog_error("[Google QUICHE] failed to hook OnBodyAvailable: " + e);
-    }
-  }
-  if (quic_capture_mode === "app-api" && onHeadersDecodedAddr && !onHeadersDecodedAddr.isNull()) {
-    try {
-      let ohdCount = 0;
-      Interceptor.attach(onHeadersDecodedAddr, {
-        onEnter(args) {
-          if (_isShuttingDownNow())
-            return;
-          try {
-            this.streamObj = args[0];
-            this.headerList = args[1];
-            devlog_debug(`[OnHeadersDecoded] FIRED this=${this.streamObj} headerList=${this.headerList}`);
-          } catch (e) {
-            devlog_error("[QuicSpdyStream_OnHeadersDecoded] onEnter threw: " + e);
-          }
-        },
-        onLeave(_retval) {
-          if (_isShuttingDownNow())
-            return;
-          try {
-            if (!this.headerList || this.headerList.isNull()) {
-              devlog_debug("[OnHeadersDecoded] headerList null -> skip");
-              return;
-            }
-            hookBreadcrumb(`QuicSpdyStream::OnHeadersDecoded reading QuicHeaderList this=${this.streamObj} headerList=${this.headerList}`);
-            const headers = readQuicHeaderList(this.headerList);
-            if (headers.length === 0) {
-              const hl = this.headerList;
-              let begin = -1, end = -1, cap = -1, data = "<?>";
-              try {
-                resetReadableCache();
-                const b = safeReadULong(hl);
-                if (b !== null)
-                  begin = b;
-                const e2 = safeReadULong(hl.add(8));
-                if (e2 !== null)
-                  end = e2;
-                const d = safeReadPointer(hl.add(16));
-                if (d !== null)
-                  data = d.toString();
-                const c = safeReadULong(hl.add(24));
-                if (c !== null)
-                  cap = c;
-              } catch (e) {
-              }
-              devlog_debug(`[OnHeadersDecoded] read 0 headers; raw=${_hexHead(hl)} begin=${begin} end=${end} data=${data} cap=${cap} size=${end - begin}`);
-              return;
-            }
-            if (ohdCount < 8) {
-              ohdCount++;
-              devlog_debug(`[OnHeadersDecoded] call #${ohdCount} in ${moduleName}: ${headers.length} header(s)`);
-            }
-            const streamId = this.streamObj.toUInt32();
-            const message = resolveQuicMessage(this.streamObj.toString(), "QuicSpdyStream_OnHeadersDecoded");
-            sendQuicDatalog(message, null, streamId, void 0, void 0, "udp", headers);
-          } catch (e) {
-            devlog_error("[QuicSpdyStream_OnHeadersDecoded] onLeave threw: " + e);
-          }
-        }
-      });
-      log("[*] Hooked QuicSpdyStream::OnHeadersDecoded for HTTP/3 header capture (incoming/response, app-api mode)");
-    } catch (e) {
-      devlog_error("[Google QUICHE] failed to hook OnHeadersDecoded: " + e);
-    }
-  }
-  if (quic_capture_mode === "app-api" && effectiveWriteHeadersAddr && !effectiveWriteHeadersAddr.isNull()) {
-    try {
-      let whCount = 0;
-      Interceptor.attach(effectiveWriteHeadersAddr, {
-        onEnter(args) {
-          if (_isShuttingDownNow())
-            return;
-          try {
-            const streamObj = args[0];
-            const headerBlock = args[1];
-            devlog_debug(`[WriteHeaders] FIRED this=${streamObj} headerBlock=${headerBlock}`);
-            if (!headerBlock || headerBlock.isNull())
-              return;
-            hookBreadcrumb(`QuicSpdyStream::WriteHeaders reading HttpHeaderBlock this=${streamObj} headerBlock=${headerBlock}`);
-            const headers = readHttpHeaderBlock(headerBlock);
-            if (headers.length === 0) {
-              _dumpEmptyHeaderBlockProbe("WriteHeaders", headerBlock);
-              return;
-            }
-            if (whCount < 8) {
-              whCount++;
-              devlog_debug(`[WriteHeaders] call #${whCount} in ${moduleName}: ${headers.length} header(s)`);
-            }
-            const streamId = streamObj.toUInt32();
-            const message = resolveQuicMessage(streamObj.toString(), "QuicSpdyStream_WriteHeaders");
-            sendQuicDatalog(message, null, streamId, void 0, void 0, "udp", headers);
-          } catch (e) {
-            devlog_error("[QuicSpdyStream_WriteHeaders] onEnter threw: " + e);
-          }
-        }
-      });
-      log("[*] Hooked QuicSpdyStream::WriteHeaders for HTTP/3 header capture (outgoing/request, app-api mode)");
-    } catch (e) {
-      devlog_error("[Google QUICHE] failed to hook WriteHeaders: " + e);
-    }
-  }
-  const wroteWriteHeadersHook = !!effectiveWriteHeadersAddr && !effectiveWriteHeadersAddr.isNull();
-  if (quic_capture_mode === "app-api" && !wroteWriteHeadersHook && effectiveChromiumWriteHeadersAddr && !effectiveChromiumWriteHeadersAddr.isNull()) {
-    try {
-      let cwhCount = 0;
-      Interceptor.attach(effectiveChromiumWriteHeadersAddr, {
-        onEnter(args) {
-          if (_isShuttingDownNow())
-            return;
-          try {
-            const wrapperObj = args[0];
-            const headerBlock = args[1];
-            devlog_debug(`[ChromiumClientStream_WriteHeaders] FIRED wrapper=${wrapperObj} headerBlock=${headerBlock}`);
-            if (!headerBlock || headerBlock.isNull())
-              return;
-            const innerStream = unwrapChromiumClientStream(wrapperObj);
-            if (!innerStream) {
-              devlog_debug(`[ChromiumClientStream_WriteHeaders] unwrap failed for wrapper=${wrapperObj} -> skip`);
-              return;
-            }
-            hookBreadcrumb(`QuicChromiumClientStream::WriteHeaders reading HttpHeaderBlock wrapper=${wrapperObj} inner=${innerStream} headerBlock=${headerBlock}`);
-            const headers = readHttpHeaderBlock(headerBlock);
-            if (headers.length === 0) {
-              _dumpEmptyHeaderBlockProbe("ChromiumClientStream_WriteHeaders", headerBlock);
-              return;
-            }
-            if (cwhCount < 8) {
-              cwhCount++;
-              devlog_debug(`[ChromiumClientStream_WriteHeaders] call #${cwhCount} in ${moduleName}: ${headers.length} header(s)`);
-            }
-            const streamId = innerStream.toUInt32();
-            const message = resolveQuicMessage(innerStream.toString(), "QuicChromiumClientStream_WriteHeaders");
-            sendQuicDatalog(message, null, streamId, void 0, void 0, "udp", headers);
-          } catch (e) {
-            devlog_error("[QuicChromiumClientStream_WriteHeaders] onEnter threw: " + e);
-          }
-        }
-      });
-      log("[*] Hooked net::QuicChromiumClientStream::WriteHeaders for HTTP/3 header capture (outgoing/request, app-api mode, chain-fallback)");
-    } catch (e) {
-      devlog_error("[Google QUICHE] failed to hook QuicChromiumClientStream::WriteHeaders: " + e);
-    }
-  }
-  const wroteAnyEgressHeaders = wroteWriteHeadersHook || !!effectiveChromiumWriteHeadersAddr && !effectiveChromiumWriteHeadersAddr.isNull();
-  if (quic_capture_mode === "app-api" && !wroteAnyEgressHeaders && effectiveSessionWriteHeadersOnHeadersStreamAddr && !effectiveSessionWriteHeadersOnHeadersStreamAddr.isNull()) {
-    try {
-      let swhCount = 0;
-      Interceptor.attach(effectiveSessionWriteHeadersOnHeadersStreamAddr, {
-        onEnter(args) {
-          if (_isShuttingDownNow())
-            return;
-          try {
-            const sessionObj = args[0];
-            const streamIdRaw = args[1].toUInt32();
-            const headerBlock = args[2];
-            devlog_debug(`[SpdySession_WriteHeadersOnHeadersStream] FIRED session=${sessionObj} streamId=${streamIdRaw} headerBlock=${headerBlock}`);
-            if (!headerBlock || headerBlock.isNull())
-              return;
-            hookBreadcrumb(`QuicSpdySession::WriteHeadersOnHeadersStream reading HttpHeaderBlock session=${sessionObj} streamId=${streamIdRaw} headerBlock=${headerBlock}`);
-            const headers = readHttpHeaderBlock(headerBlock);
-            if (headers.length === 0) {
-              _dumpEmptyHeaderBlockProbe("SpdySession_WriteHeadersOnHeadersStream", headerBlock);
-              return;
-            }
-            if (swhCount < 8) {
-              swhCount++;
-              devlog_debug(`[SpdySession_WriteHeadersOnHeadersStream] call #${swhCount} in ${moduleName}: ${headers.length} header(s)`);
-            }
-            const message = resolveQuicMessage(sessionObj.toString(), "QuicSpdySession_WriteHeadersOnHeadersStream");
-            sendQuicDatalog(message, null, streamIdRaw, void 0, void 0, "udp", headers);
-          } catch (e) {
-            devlog_error("[QuicSpdySession_WriteHeadersOnHeadersStream] onEnter threw: " + e);
-          }
-        }
-      });
-      log("[*] Hooked quic::QuicSpdySession::WriteHeadersOnHeadersStream for HTTP/3 header capture (outgoing/request, app-api mode, chain-fallback level 2 \u2014 surrogate may not pair with OnHeadersDecoded)");
-    } catch (e) {
-      devlog_error("[Google QUICHE] failed to hook QuicSpdySession::WriteHeadersOnHeadersStream: " + e);
-    }
-  }
-  if (writeAddr && !writeAddr.isNull()) {
-    try {
-      const breadcrumb = `QuicSpdyStream::WriteOrBufferBody (${moduleName})`;
-      Interceptor.attach(writeAddr, {
-        onEnter(args) {
-          if (_isShuttingDownNow()) {
-            this.data = null;
-            this.dataLen = 0;
-            return;
-          }
-          hookBreadcrumb(breadcrumb);
-          this.streamObj = args[0];
-          const dataPtr = args[1];
-          const dataLen = args[2].toUInt32();
-          this.dataLen = dataLen;
-          if (dataLen === 0 || dataPtr.isNull()) {
-            this.data = null;
-            return;
-          }
-          resetReadableCache();
-          if (dataLen > 16 << 20 || !isReadable(dataPtr, dataLen)) {
-            devlog_debug(`[WriteOrBufferBody] unreadable data ptr=${dataPtr} len=${dataLen} -> skip`);
-            this.data = null;
-            return;
-          }
-          this.data = dataPtr.readByteArray(dataLen);
-        },
-        onLeave(_retval) {
-          if (!this.data || this.dataLen === 0)
-            return;
-          const message = resolveQuicMessage(this.streamObj.toString(), "QuicSpdyStream_WriteOrBufferBody");
-          sendQuicDatalog(message, this.data, -1);
-        }
-      });
-      log("[*] Hooked QuicSpdyStream::WriteOrBufferBody for plaintext capture");
-    } catch (e) {
-      devlog_error("[Google QUICHE] failed to hook WriteOrBufferBody: " + e);
-    }
-  }
-  if (quic_capture_mode === "app-api") {
-    const activeLayer = wroteWriteHeadersHook ? "quiche-internal (QuicSpdyStream::WriteHeaders)" : effectiveChromiumWriteHeadersAddr && !effectiveChromiumWriteHeadersAddr.isNull() ? "chrome-shim (QuicChromiumClientStream::WriteHeaders)" : effectiveSessionWriteHeadersOnHeadersStreamAddr && !effectiveSessionWriteHeadersOnHeadersStreamAddr.isNull() ? "session-level (QuicSpdySession::WriteHeadersOnHeadersStream)" : "NONE (no egress HTTP/3 header capture)";
-    const forcedSuffix = forcedLayerActive ? ` [forced via --quic-egress-headers-layer=${requestedLayer}]` : "";
-    log(`[*] Google QUICHE egress headers chain in ${moduleName}: active layer = ${activeLayer}${forcedSuffix}`);
-    if (forcedLayerActive && activeLayer.startsWith("NONE")) {
-      const available = [];
-      if (writeHeadersAddr && !writeHeadersAddr.isNull())
-        available.push("quiche-internal");
-      if (chromiumWriteHeadersAddr && !chromiumWriteHeadersAddr.isNull())
-        available.push("chrome-shim");
-      if (sessionWriteHeadersOnHeadersStreamAddr && !sessionWriteHeadersOnHeadersStreamAddr.isNull())
-        available.push("session-level");
-      log(`[!] Google QUICHE: forced layer "${requestedLayer}" did not resolve in ${moduleName}; layers that WOULD have resolved if --quic-egress-headers-layer=auto: [${available.length > 0 ? available.join(", ") : "none"}]`);
-    }
-  }
-}
-
-// agent/quic/platforms/linux/google_quiche_linux.ts
-async function google_quiche_execute(moduleName, _is_base_hook) {
+async function google_quiche_execute2(moduleName, _is_base_hook) {
   log("[*] Google QUICHE detected in " + moduleName + ", installing QUIC stream hooks...");
   try {
     await installGoogleQuicheHooks(moduleName);
@@ -37002,343 +38641,27 @@ async function google_quiche_execute(moduleName, _is_base_hook) {
 
 // agent/quic/platforms/linux/neqo_linux.ts
 init_node_globals();
-
-// agent/quic/definitions/neqo.ts
-init_node_globals();
-init_shared_structures();
-function resolveNeqoSymbols(moduleName, symbolNames) {
-  const resolved = /* @__PURE__ */ new Map();
-  const remaining = [];
-  for (const name of symbolNames) {
-    const addr = Module.findExportByName(moduleName, name);
-    if (addr && !addr.isNull()) {
-      resolved.set(name, addr);
-    } else {
-      remaining.push(name);
-    }
-  }
-  if (remaining.length === 0)
-    return resolved;
-  const withUnderscores = remaining.flatMap((n) => [n, "_" + n]);
-  const symResults = findNonExportedSymbols(moduleName, withUnderscores);
-  for (const name of remaining) {
-    const addr = symResults.get(name) || symResults.get("_" + name);
-    if (addr && !addr.isNull()) {
-      devlog("[neqo] found " + name + " via symbol table");
-      resolved.set(name, addr);
-    }
-  }
-  for (const name of remaining) {
-    if (resolved.has(name))
-      continue;
-    try {
-      const matches = DebugSymbol.findFunctionsNamed(name);
-      if (matches.length > 0) {
-        devlog("[neqo] found " + name + " via DebugSymbol");
-        resolved.set(name, matches[0]);
-      }
-    } catch (_e) {
-    }
-  }
-  return resolved;
-}
-var resolvedSymbolCache = null;
-function resolveNeqoSymbol(moduleName, symbolName) {
-  if (!resolvedSymbolCache) {
-    resolvedSymbolCache = resolveNeqoSymbols(moduleName, [
-      "neqo_http3conn_new",
-      "neqo_http3conn_read_response_data",
-      "neqo_htttp3conn_send_request_body",
-      "neqo_http3conn_send_request_body",
-      "neqo_http3conn_close"
-    ]);
-  }
-  return resolvedSymbolCache.get(symbolName) || null;
-}
-function parseNetAddr(ptr2) {
-  const sentinel = { addr: 0, port: 0, family: "AF_INET" };
-  if (ptr2.isNull())
-    return sentinel;
-  try {
-    const family = ptr2.readU16();
-    if (family !== 2 && family !== 10 && family !== 30) {
-      devlog("[neqo] unexpected NetAddr family: " + family);
-      return sentinel;
-    }
-    const portRaw = ptr2.add(2).readU16();
-    const port = (portRaw & 255) << 8 | portRaw >> 8 & 255;
-    if (family === 2) {
-      const a = ptr2.add(4).readU8();
-      const b = ptr2.add(5).readU8();
-      const c = ptr2.add(6).readU8();
-      const d = ptr2.add(7).readU8();
-      const addrInt = (a << 24 | b << 16 | c << 8 | d) >>> 0;
-      return { addr: addrInt, port, family: "AF_INET" };
-    }
-    const ipv6_addr = ptr2.add(8);
-    let hex2 = "";
-    for (let offset = 0; offset < 16; offset += 1) {
-      hex2 += ("0" + ipv6_addr.add(offset).readU8().toString(16).toUpperCase()).substr(-2);
-    }
-    if (hex2.indexOf("00000000000000000000FFFF") === 0) {
-      const a = ipv6_addr.add(12).readU8();
-      const b = ipv6_addr.add(13).readU8();
-      const c = ipv6_addr.add(14).readU8();
-      const d = ipv6_addr.add(15).readU8();
-      const hostInt = (a << 24 | b << 16 | c << 8 | d) >>> 0;
-      return { addr: hostInt, port, family: "AF_INET" };
-    }
-    return { addr: hex2, port, family: "AF_INET6" };
-  } catch (e) {
-    devlog("[neqo] failed to parse NetAddr: " + e);
-  }
-  return sentinel;
-}
-var UNKNOWN_CONNECTION = {
-  serverName: "",
-  localAddr: "0.0.0.0",
-  localPort: 0,
-  peerAddr: "0.0.0.0",
-  peerPort: 0,
-  ssFamily: "AF_INET",
-  scid: "",
-  dcid: ""
-};
-function createNeqoConnNewHook() {
-  return {
-    install(addresses, moduleName, _resolvedFns, _enableDefaultFd) {
-      let addr = addresses[moduleName]?.["neqo_http3conn_new"];
-      if (!addr || addr.isNull()) {
-        addr = resolveNeqoSymbol(moduleName, "neqo_http3conn_new");
-      }
-      if (!addr)
-        return;
-      Interceptor.attach(addr, {
-        onEnter(args) {
-          this.localAddr = parseNetAddr(args[2]);
-          this.remoteAddr = parseNetAddr(args[3]);
-          this.resultPtr = args[16];
-        },
-        onLeave(retval) {
-          if (this.resultPtr === void 0)
-            return;
-          if (retval.toUInt32() !== 0)
-            return;
-          try {
-            const connPtr = this.resultPtr.readPointer();
-            if (connPtr.isNull())
-              return;
-            const connKey = connPtr.toString();
-            const info = {
-              serverName: "",
-              localAddr: this.localAddr.addr,
-              localPort: this.localAddr.port,
-              peerAddr: this.remoteAddr.addr,
-              peerPort: this.remoteAddr.port,
-              ssFamily: this.remoteAddr.family,
-              scid: "",
-              dcid: ""
-            };
-            quicConnectionTracker.register(connKey, info);
-            sendConnectionLifecycle("created", buildQuicMessage(info, connKey, "neqo_http3conn_new"));
-          } catch (e) {
-            devlog("[neqo] failed to register connection: " + e);
-          }
-        }
-      });
-      log("[*] Hooked neqo_http3conn_new for connection tracking");
-    }
-  };
-}
-function createNeqoReadResponseHook() {
-  return {
-    install(addresses, moduleName, _resolvedFns, _enableDefaultFd) {
-      if (!pcap_enabled)
-        return;
-      let addr = addresses[moduleName]?.["neqo_http3conn_read_response_data"];
-      if (!addr || addr.isNull()) {
-        addr = resolveNeqoSymbol(moduleName, "neqo_http3conn_read_response_data");
-      }
-      if (!addr)
-        return;
-      Interceptor.attach(addr, {
-        onEnter(args) {
-          this.conn = args[0];
-          this.streamId = args[1].toUInt32();
-          this.buf = args[2];
-          this.len = args[3].toUInt32();
-          this.readPtr = args[4];
-          this.finPtr = args[5];
-        },
-        onLeave(retval) {
-          if (this.buf === void 0)
-            return;
-          if (retval.toUInt32() !== 0)
-            return;
-          try {
-            const bytesRead = Math.min(this.readPtr.readU32(), this.len);
-            if (bytesRead <= 0)
-              return;
-            const data = this.buf.readByteArray(bytesRead);
-            const connKey = this.conn.toString();
-            const connInfo = quicConnectionTracker.get(connKey) || UNKNOWN_CONNECTION;
-            const message = buildQuicMessage(connInfo, connKey, "neqo_read_response_data");
-            sendQuicDatalog(message, data, this.streamId, connInfo.scid, connInfo.dcid);
-            if (this.finPtr && !this.finPtr.isNull()) {
-              if (this.finPtr.readU8() !== 0) {
-                sendConnectionLifecycle("stream_fin", {
-                  ...message,
-                  stream_id: this.streamId
-                });
-              }
-            }
-          } catch (e) {
-            devlog("[neqo] read_response_data hook error: " + e);
-          }
-        }
-      });
-      log("[*] Hooked neqo_http3conn_read_response_data for plaintext capture");
-    }
-  };
-}
-function createNeqoSendRequestBodyHook() {
-  const SEND_CANDIDATES = [
-    "neqo_htttp3conn_send_request_body",
-    "neqo_http3conn_send_request_body"
-  ];
-  return {
-    install(addresses, moduleName, _resolvedFns, _enableDefaultFd) {
-      if (!pcap_enabled)
-        return;
-      let addr = null;
-      let resolvedName = "";
-      for (const name of SEND_CANDIDATES) {
-        addr = addresses[moduleName]?.[name];
-        if (addr && !addr.isNull()) {
-          resolvedName = name;
-          break;
-        }
-        addr = resolveNeqoSymbol(moduleName, name);
-        if (addr) {
-          resolvedName = name;
-          break;
-        }
-      }
-      if (!addr)
-        return;
-      devlog("[neqo] resolved send_request_body as: " + resolvedName);
-      Interceptor.attach(addr, {
-        onEnter(args) {
-          this.conn = args[0];
-          this.streamId = args[1].toUInt32();
-          const buf = args[2];
-          const len = args[3].toUInt32();
-          this.readPtr = args[4];
-          if (!buf.isNull() && len > 0) {
-            try {
-              this.data = buf.readByteArray(len);
-              this.dataLen = len;
-            } catch (e) {
-              devlog("[neqo] failed to read send buffer: " + e);
-            }
-          }
-        },
-        onLeave(retval) {
-          if (this.data === void 0)
-            return;
-          if (retval.toUInt32() !== 0)
-            return;
-          try {
-            const bytesSent = this.readPtr.readU32();
-            if (bytesSent <= 0)
-              return;
-            const data = bytesSent < this.dataLen ? this.data.slice(0, bytesSent) : this.data;
-            const connKey = this.conn.toString();
-            const connInfo = quicConnectionTracker.get(connKey) || UNKNOWN_CONNECTION;
-            const message = buildQuicMessage(connInfo, connKey, "neqo_send_request_body");
-            sendQuicDatalog(message, data, this.streamId, connInfo.scid, connInfo.dcid);
-          } catch (e) {
-            devlog("[neqo] send_request_body hook error: " + e);
-          }
-        }
-      });
-      log("[*] Hooked " + resolvedName + " for plaintext capture");
-    }
-  };
-}
-function createNeqoCloseHook() {
-  return {
-    install(addresses, moduleName, _resolvedFns, _enableDefaultFd) {
-      let addr = addresses[moduleName]?.["neqo_http3conn_close"];
-      if (!addr || addr.isNull()) {
-        addr = resolveNeqoSymbol(moduleName, "neqo_http3conn_close");
-      }
-      if (!addr)
-        return;
-      Interceptor.attach(addr, {
-        onEnter(args) {
-          const connKey = args[0].toString();
-          const info = quicConnectionTracker.remove(connKey);
-          if (info) {
-            sendConnectionLifecycle("destroyed", buildQuicMessage(info, connKey, "neqo_http3conn_close"));
-          }
-        }
-      });
-      log("[*] Hooked neqo_http3conn_close for connection cleanup");
-    }
-  };
-}
-function createNeqoDefinition() {
-  return {
-    libraryId: "neqo",
-    offsetKey: "neqo",
-    functions: {
-      librarySymbols: [
-        "neqo_http3conn_new",
-        "neqo_http3conn_read_response_data",
-        "neqo_htttp3conn_send_request_body",
-        // triple 't' typo in Mozilla source!
-        "neqo_http3conn_send_request_body",
-        // correct spelling fallback
-        "neqo_http3conn_close"
-      ],
-      socketSymbols: []
-    },
-    nativeFunctions: [],
-    fdDecoder: (_ctx, _fns) => -1,
-    sessionIdDecoder: (ctx) => ctx.toString(),
-    keylog: { kind: "none" },
-    // NSS handles keylogging for QUIC
-    extraHooks: [
-      createNeqoConnNewHook(),
-      createNeqoReadResponseHook(),
-      createNeqoSendRequestBodyHook(),
-      createNeqoCloseHook()
-    ]
-  };
-}
-
-// agent/quic/platforms/linux/neqo_linux.ts
-function neqo_execute(moduleName, is_base_hook) {
+function neqo_execute2(moduleName, is_base_hook) {
   executeFromDefinition(createNeqoDefinition(), moduleName, socket_library2, is_base_hook, enable_default_fd);
 }
 
 // agent/platforms/linux.ts
-var plattform_name = PLATFORM_LINUX;
+var plattform_name2 = PLATFORM_LINUX;
 var socket_library2 = "libc";
+var libssl_dispatch = () => libresslAwareDispatch(use_modern ? libressl_execute_modern : libressl_execute2, use_modern ? boring_execute_modern2 : boring_execute3);
 function hook_Linux_SSL_Libs(hookRegistry2, is_base_hook) {
-  ssl_library_loader(plattform_name, hookRegistry2, getModuleNames(), "Linux", is_base_hook, selected_protocols);
+  ssl_library_loader(plattform_name2, hookRegistry2, getModuleNames(), "Linux", is_base_hook, selected_protocols);
 }
 var QUIC_ONLY_LINUX_HOOKS = [
-  { platform: plattform_name, pattern: /.*libquiche\.so/, hookFn: quiche_execute, library: "Cloudflare QUICHE", libraryType: "quiche", protocol: "tls" },
-  { platform: plattform_name, pattern: /.*libcronet.*\.so/, hookFn: google_quiche_execute, library: "Google QUICHE (Cronet)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
-  { platform: plattform_name, pattern: /.*libxul\.so/, hookFn: neqo_execute, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo", protocol: "tls", supplementary: true }
+  { platform: plattform_name2, pattern: /.*libquiche\.so/, hookFn: quiche_execute2, library: "Cloudflare QUICHE", libraryType: "quiche", protocol: "tls" },
+  { platform: plattform_name2, pattern: /.*libcronet.*\.so/, hookFn: google_quiche_execute2, library: "Google QUICHE (Cronet)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
+  { platform: plattform_name2, pattern: /.*libxul\.so/, hookFn: neqo_execute2, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo", protocol: "tls", supplementary: true }
 ];
 function load_linux_hooking_agent(skipLoaderHook = false) {
   if (quic_only) {
     hookRegistry.registerAll(QUIC_ONLY_LINUX_HOOKS);
     const linuxLoaderConfig2 = {
-      platform: plattform_name,
+      platform: plattform_name2,
       platformLabel: "Linux",
       loaderLibrary: /.*libdl.*\.so/,
       // POSIX dynamic loader (libdl); arch-agnostic
@@ -37369,51 +38692,58 @@ function load_linux_hooking_agent(skipLoaderHook = false) {
   }
   hookRegistry.registerAll([
     // TLS libraries (TLS protocol family — also covers QUIC and OHTTP below)
-    { platform: plattform_name, pattern: /.*libssl_sb.so/, hookFn: use_modern ? boring_execute_modern2 : boring_execute2, library: "OpenSSL/BoringSSL", libraryType: "openssl", protocol: "tls" },
+    { platform: plattform_name2, pattern: /.*libssl_sb.so/, hookFn: use_modern ? boring_execute_modern2 : boring_execute3, library: "OpenSSL/BoringSSL", libraryType: "openssl", protocol: "tls" },
     // excludePathFilter is the exact complement of the next entry's
     // pathFilter. Without it a Python's own libssl (e.g.
     // /usr/lib/python3.11/lib-dynload/../../libssl.so.3) matched BOTH, and
     // since ssl_library_loader invokes EVERY match, two executors installed
     // on the same module.
-    { platform: plattform_name, pattern: /.*libssl\.so/, hookFn: use_modern ? boring_execute_modern2 : boring_execute2, library: "OpenSSL/BoringSSL", excludePathFilter: "python", libraryType: "openssl", protocol: "tls" },
-    { platform: plattform_name, pattern: /.*libssl.*\.so/, hookFn: use_modern ? ssl_python_execute_modern : ssl_python_execute, library: "Python OpenSSL", pathFilter: "python", libraryType: "openssl", protocol: "tls" },
-    { platform: plattform_name, pattern: /.*cronet.*\.so/, excludePattern: /_(libpki|libcrypto)\.so$/, hookFn: use_modern ? cronet_execute_modern2 : cronet_execute2, library: "Cronet", libraryType: "boringssl", protocol: "tls" },
-    { platform: plattform_name, pattern: /.*libgnutls\.so/, hookFn: use_modern ? gnutls_execute_modern2 : gnutls_execute2, library: "GnuTLS", libraryType: "gnutls", protocol: "tls" },
-    { platform: plattform_name, pattern: /.*libwolfssl\.so/, hookFn: use_modern ? wolfssl_execute_modern2 : wolfssl_execute2, library: "WolfSSL", libraryType: "wolfssl", protocol: "tls" },
-    { platform: plattform_name, pattern: /.*libnspr[0-9]?\.so/, hookFn: use_modern ? nss_execute_modern2 : nss_execute2, library: "NSS", libraryType: "nss", protocol: "tls" },
-    { platform: plattform_name, pattern: /libmbedtls\.so.*/, hookFn: use_modern ? mbedTLS_execute_modern2 : mbedTLS_execute2, library: "mbedTLS", libraryType: "mbedtls", protocol: "tls" },
-    { platform: plattform_name, pattern: /libssl_s.a/, hookFn: use_modern ? matrixSSL_execute_modern : matrixSSL_execute, library: "MatrixSSL", libraryType: "matrixssl", protocol: "tls" },
-    { platform: plattform_name, pattern: /.*libs2n.so/, hookFn: use_modern ? s2ntls_execute_modern2 : s2ntls_execute2, library: "s2n-tls", libraryType: "s2ntls", protocol: "tls" },
-    { platform: plattform_name, pattern: /.*rustls.*/, hookFn: use_modern ? rustls_execute_modern2 : rustls_execute2, library: "Rustls", libraryType: "rustls", protocol: "tls" },
-    { platform: plattform_name, pattern: /.*\.go.so$/, hookFn: use_modern ? gotls_execute_modern2 : gotls_execute2, library: "Go TLS", libraryType: "gotls", protocol: "tls" },
-    { platform: plattform_name, pattern: /.*go[0-9.]+$/, hookFn: use_modern ? gotls_execute_modern2 : gotls_execute2, library: "Go TLS", libraryType: "gotls", protocol: "tls" },
+    { platform: plattform_name2, pattern: /.*libssl\.so/, hookFn: libssl_dispatch(), library: "OpenSSL/BoringSSL/LibreSSL", excludePathFilter: "python", libraryType: "openssl", protocol: "tls" },
+    { platform: plattform_name2, pattern: /.*libssl.*\.so/, hookFn: use_modern ? ssl_python_execute_modern : ssl_python_execute2, library: "Python OpenSSL", pathFilter: "python", libraryType: "openssl", protocol: "tls" },
+    // Scan-only LibreSSL route: used by processScanResults/findByLibraryType
+    // when tlsLibHunter classifies a module (e.g. a statically linked exe)
+    // as LibreSSL by content. The sentinel pattern never matches a real
+    // loaded module name, so ssl_library_loader's name-match pass ignores it
+    // (findByLibraryType looks it up by libraryType, not by pattern) — this
+    // avoids double-hooking the libssl.so entry above.
+    { platform: plattform_name2, pattern: /__libressl_scan_only__/, hookFn: use_modern ? libressl_execute_modern : libressl_execute2, library: "LibreSSL", libraryType: "libressl", protocol: "tls" },
+    { platform: plattform_name2, pattern: /.*cronet.*\.so/, excludePattern: /_(libpki|libcrypto)\.so$/, hookFn: use_modern ? cronet_execute_modern2 : cronet_execute3, library: "Cronet", libraryType: "boringssl", protocol: "tls" },
+    { platform: plattform_name2, pattern: /.*libgnutls\.so/, hookFn: use_modern ? gnutls_execute_modern2 : gnutls_execute2, library: "GnuTLS", libraryType: "gnutls", protocol: "tls" },
+    { platform: plattform_name2, pattern: /.*libwolfssl\.so/, hookFn: use_modern ? wolfssl_execute_modern2 : wolfssl_execute2, library: "WolfSSL", libraryType: "wolfssl", protocol: "tls" },
+    { platform: plattform_name2, pattern: /.*libnspr[0-9]?\.so/, hookFn: use_modern ? nss_execute_modern3 : nss_execute3, library: "NSS", libraryType: "nss", protocol: "tls" },
+    { platform: plattform_name2, pattern: /libmbedtls\.so.*/, hookFn: use_modern ? mbedTLS_execute_modern2 : mbedTLS_execute2, library: "mbedTLS", libraryType: "mbedtls", protocol: "tls" },
+    { platform: plattform_name2, pattern: /libssl_s.a/, hookFn: use_modern ? matrixSSL_execute_modern : matrixSSL_execute, library: "MatrixSSL", libraryType: "matrixssl", protocol: "tls" },
+    { platform: plattform_name2, pattern: /.*libs2n.so/, hookFn: use_modern ? s2ntls_execute_modern2 : s2ntls_execute2, library: "s2n-tls", libraryType: "s2ntls", protocol: "tls" },
+    { platform: plattform_name2, pattern: /.*rustls.*/, hookFn: use_modern ? rustls_execute_modern2 : rustls_execute2, library: "Rustls", libraryType: "rustls", protocol: "tls" },
+    { platform: plattform_name2, pattern: /.*\.go.so$/, hookFn: use_modern ? gotls_execute_modern2 : gotls_execute2, library: "Go TLS", libraryType: "gotls", protocol: "tls" },
+    { platform: plattform_name2, pattern: /.*go[0-9.]+$/, hookFn: use_modern ? gotls_execute_modern2 : gotls_execute2, library: "Go TLS", libraryType: "gotls", protocol: "tls" },
     // IPSec libraries (detection stubs — key extraction in the future)
-    { platform: plattform_name, pattern: /.*libcharon\.so/, hookFn: use_modern ? strongswan_execute_modern : ipsec_execute, library: "strongSwan (charon)", libraryType: "ipsec_strongswan", protocol: "ipsec" },
-    { platform: plattform_name, pattern: /.*libstrongswan\.so/, hookFn: use_modern ? strongswan_execute_modern : ipsec_execute, library: "strongSwan", libraryType: "ipsec_strongswan", protocol: "ipsec" },
-    { platform: plattform_name, pattern: /.*libipsec\.so/, hookFn: use_modern ? strongswan_execute_modern : ipsec_execute, library: "strongSwan (IPSec)", libraryType: "ipsec_strongswan", protocol: "ipsec" },
+    { platform: plattform_name2, pattern: /.*libcharon\.so/, hookFn: use_modern ? strongswan_execute_modern : ipsec_execute, library: "strongSwan (charon)", libraryType: "ipsec_strongswan", protocol: "ipsec" },
+    { platform: plattform_name2, pattern: /.*libstrongswan\.so/, hookFn: use_modern ? strongswan_execute_modern : ipsec_execute, library: "strongSwan", libraryType: "ipsec_strongswan", protocol: "ipsec" },
+    { platform: plattform_name2, pattern: /.*libipsec\.so/, hookFn: use_modern ? strongswan_execute_modern : ipsec_execute, library: "strongSwan (IPSec)", libraryType: "ipsec_strongswan", protocol: "ipsec" },
     // SSH binaries / libraries
-    { platform: plattform_name, pattern: /.*libssh2?\.so/, hookFn: use_modern ? libssh_execute_modern : ssh_execute, library: "libssh", protocol: "ssh" },
-    { platform: plattform_name, pattern: /^(\/.+\/)?(ssh|sshd|sshd-session|scp|sftp-server)$/, hookFn: use_modern ? openssh_execute_modern : ssh_execute, library: "OpenSSH", protocol: "ssh" },
+    { platform: plattform_name2, pattern: /.*libssh2?\.so/, hookFn: use_modern ? libssh_execute_modern : ssh_execute, library: "libssh", protocol: "ssh" },
+    { platform: plattform_name2, pattern: /^(\/.+\/)?(ssh|sshd|sshd-session|scp|sftp-server)$/, hookFn: use_modern ? openssh_execute_modern : ssh_execute, library: "OpenSSH", protocol: "ssh" },
     // OHTTP (NSS HPKE) — gated under the TLS family for `--protocol tls`
-    { platform: plattform_name, pattern: /.*libnss3?\.so/, hookFn: nss_hpke_execute_linux, library: "NSS HPKE (OHTTP)", protocol: "tls", libraryType: "nss_hpke" },
+    { platform: plattform_name2, pattern: /.*libnss3?\.so/, hookFn: nss_hpke_execute_linux, library: "NSS HPKE (OHTTP)", protocol: "tls", libraryType: "nss_hpke" },
     // QUIC libraries — gated under the TLS family for `--protocol tls`
-    { platform: plattform_name, pattern: /.*libquiche\.so/, hookFn: quiche_execute, library: "Cloudflare QUICHE", libraryType: "quiche", protocol: "tls" },
-    { platform: plattform_name, pattern: /.*libcronet.*\.so/, hookFn: google_quiche_execute, library: "Google QUICHE (Cronet)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
-    { platform: plattform_name, pattern: /.*libxul\.so/, hookFn: neqo_execute, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo", protocol: "tls", supplementary: true },
+    { platform: plattform_name2, pattern: /.*libquiche\.so/, hookFn: quiche_execute2, library: "Cloudflare QUICHE", libraryType: "quiche", protocol: "tls" },
+    { platform: plattform_name2, pattern: /.*libcronet.*\.so/, hookFn: google_quiche_execute2, library: "Google QUICHE (Cronet)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
+    { platform: plattform_name2, pattern: /.*libxul\.so/, hookFn: neqo_execute2, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo", protocol: "tls", supplementary: true },
     // Hooks contributed by optional units (e.g. the public RC4 key-capture
     // unit under `--protocol rc4`). Empty when no unit registered.
     ...collectContributedHooks()
   ]);
   hook_Linux_SSL_Libs(hookRegistry, true);
   const linuxLoaderConfig = {
-    platform: plattform_name,
+    platform: plattform_name2,
     platformLabel: "Linux",
     loaderLibrary: /.*libdl.*\.so/,
     functionName: "dlopen",
     extractModulePath: true
   };
-  installOhttpHooks(plattform_name, hookRegistry, getModuleNames(), "Linux", linuxLoaderConfig, skipLoaderHook);
-  processScanResults(scan_results, plattform_name, true, selected_protocols);
+  installOhttpHooks(plattform_name2, hookRegistry, getModuleNames(), "Linux", linuxLoaderConfig, skipLoaderHook);
+  processScanResults(scan_results, plattform_name2, true, selected_protocols);
   if (!skipLoaderHook) {
     hookDynamicLoader(linuxLoaderConfig, hookRegistry, getModuleNames(), false, selected_protocols);
   }
@@ -38371,13 +39701,13 @@ function nss_hpke_execute_android(moduleName, is_base_hook) {
 
 // agent/quic/platforms/android/quiche_android.ts
 init_node_globals();
-function quiche_execute2(moduleName, is_base_hook) {
+function quiche_execute3(moduleName, is_base_hook) {
   executeFromDefinition(createQuicheDefinition(), moduleName, socket_library, is_base_hook, enable_default_fd);
 }
 
 // agent/quic/platforms/android/google_quiche_android.ts
 init_node_globals();
-async function google_quiche_execute2(moduleName, _is_base_hook) {
+async function google_quiche_execute3(moduleName, _is_base_hook) {
   if (!pcap_enabled) {
     devlog("[*] Google QUICHE detected in " + moduleName + " but plaintext pcap disabled; skipping QUIC stream hooks.");
     return;
@@ -38392,18 +39722,18 @@ async function google_quiche_execute2(moduleName, _is_base_hook) {
 
 // agent/quic/platforms/android/neqo_android.ts
 init_node_globals();
-function neqo_execute2(moduleName, is_base_hook) {
+function neqo_execute3(moduleName, is_base_hook) {
   executeFromDefinition(createNeqoDefinition(), moduleName, socket_library, is_base_hook, enable_default_fd);
 }
 
 // agent/platforms/android.ts
-var plattform_name2 = PLATFORM_LINUX;
+var plattform_name3 = PLATFORM_LINUX;
 var socket_library = "libc";
 function install_java_hooks() {
   java_execute();
 }
 function hook_native_Android_SSL_Libs(hookRegistry2, is_base_hook) {
-  ssl_library_loader(plattform_name2, hookRegistry2, getModuleNames(), "Android", is_base_hook, selected_protocols);
+  ssl_library_loader(plattform_name3, hookRegistry2, getModuleNames(), "Android", is_base_hook, selected_protocols);
 }
 function loadPatternsFromJSON(jsonContent) {
   try {
@@ -38423,7 +39753,7 @@ function install_pattern_based_hooks() {
     for (const patternKey of Object.keys(data.modules)) {
       devlog("[*] Module name: " + patternKey);
       hookRegistry.register({
-        platform: plattform_name2,
+        platform: plattform_name3,
         pattern: new RegExp(patternKey),
         hookFn: pattern_execute,
         library: "Pattern: " + patternKey
@@ -38463,31 +39793,31 @@ function install_pattern_based_hooks() {
 function load_android_hooking_agent() {
   const __androidHooks = [
     // TLS libraries (TLS protocol family — also covers QUIC and OHTTP below)
-    { platform: plattform_name2, pattern: /.*libssl_sb.so/, hookFn: use_modern ? boring_execute_modern : boring_execute, library: "OpenSSL/BoringSSL", libraryType: "openssl", protocol: "tls" },
-    { platform: plattform_name2, pattern: /.*libssl\.so/, hookFn: use_modern ? boring_execute_modern : boring_execute, library: "OpenSSL/BoringSSL", libraryType: "openssl", protocol: "tls" },
+    { platform: plattform_name3, pattern: /.*libssl_sb.so/, hookFn: use_modern ? boring_execute_modern : boring_execute, library: "OpenSSL/BoringSSL", libraryType: "openssl", protocol: "tls" },
+    { platform: plattform_name3, pattern: /.*libssl\.so/, hookFn: use_modern ? boring_execute_modern : boring_execute, library: "OpenSSL/BoringSSL", libraryType: "openssl", protocol: "tls" },
     // libhttpengine.so statically links BoringSSL and exports the SSL_* surface
     // (possibly only in .symtab). httpengine_execute* opts the module into deep
     // symbol resolution, then runs the standard BoringSSL chain.
-    { platform: plattform_name2, pattern: /.*libhttpengine\.so/, hookFn: use_modern ? httpengine_execute_modern : httpengine_execute, library: "httpengine (BoringSSL)", libraryType: "boringssl", protocol: "tls" },
+    { platform: plattform_name3, pattern: /.*libhttpengine\.so/, hookFn: use_modern ? httpengine_execute_modern : httpengine_execute, library: "httpengine (BoringSSL)", libraryType: "boringssl", protocol: "tls" },
     // libcommerce_http_client.so is com.blizzard.arc's statically-linked BoringSSL
     // (curl + BoringSSL). It exports SSL_CTX_set_keylog_callback but may keep the
     // SSL_* surface in .symtab; httpengine_execute* opts it into deep symbol
     // resolution, then runs the standard BoringSSL chain — same as libhttpengine.so.
-    { platform: plattform_name2, pattern: /.*libcommerce_http_client\.so/, hookFn: use_modern ? httpengine_execute_modern : httpengine_execute, library: "Blizzard commerce (BoringSSL)", libraryType: "boringssl", protocol: "tls" },
-    { platform: plattform_name2, pattern: /libconscrypt_gmscore_jni.so/, hookFn: use_modern ? conscrypt_execute_modern : conscrypt_native_execute, library: "Conscrypt", libraryType: "boringssl", protocol: "tls" },
-    { platform: plattform_name2, pattern: /libconscrypt_jni.so/, hookFn: use_modern ? conscrypt_execute_modern : conscrypt_native_execute, library: "Conscrypt", libraryType: "boringssl", protocol: "tls" },
-    { platform: plattform_name2, pattern: /.*flutter.*\.so/, hookFn: use_modern ? flutter_execute_modern : flutter_execute, library: "Flutter BoringSSL", libraryType: "boringssl", protocol: "tls" },
-    { platform: plattform_name2, pattern: /.*libgnutls\.so/, hookFn: use_modern ? gnutls_execute_modern : gnutls_execute, library: "GnuTLS", libraryType: "gnutls", protocol: "tls" },
-    { platform: plattform_name2, pattern: /.*libwolfssl\.so/, hookFn: use_modern ? wolfssl_execute_modern : wolfssl_execute, library: "WolfSSL", libraryType: "wolfssl", protocol: "tls" },
-    { platform: plattform_name2, pattern: /.*libnss[3-4]\.so/, hookFn: use_modern ? nss_execute_modern : nss_execute, library: "NSS", libraryType: "nss", protocol: "tls" },
-    { platform: plattform_name2, pattern: /libmbedtls\.so.*/, hookFn: use_modern ? mbedTLS_execute_modern : mbedTLS_execute, library: "mbedTLS", libraryType: "mbedtls", protocol: "tls" },
-    { platform: plattform_name2, pattern: /.*libs2n.so/, hookFn: use_modern ? s2ntls_execute_modern : s2ntls_execute, library: "s2n-tls", libraryType: "s2ntls", protocol: "tls" },
-    { platform: plattform_name2, pattern: /.*mono-btls.*\.so/, hookFn: use_modern ? mono_btls_execute_modern : mono_btls_execute, library: "Mono BTLS", libraryType: "boringssl", protocol: "tls" },
+    { platform: plattform_name3, pattern: /.*libcommerce_http_client\.so/, hookFn: use_modern ? httpengine_execute_modern : httpengine_execute, library: "Blizzard commerce (BoringSSL)", libraryType: "boringssl", protocol: "tls" },
+    { platform: plattform_name3, pattern: /libconscrypt_gmscore_jni.so/, hookFn: use_modern ? conscrypt_execute_modern : conscrypt_native_execute, library: "Conscrypt", libraryType: "boringssl", protocol: "tls" },
+    { platform: plattform_name3, pattern: /libconscrypt_jni.so/, hookFn: use_modern ? conscrypt_execute_modern : conscrypt_native_execute, library: "Conscrypt", libraryType: "boringssl", protocol: "tls" },
+    { platform: plattform_name3, pattern: /.*flutter.*\.so/, hookFn: use_modern ? flutter_execute_modern : flutter_execute, library: "Flutter BoringSSL", libraryType: "boringssl", protocol: "tls" },
+    { platform: plattform_name3, pattern: /.*libgnutls\.so/, hookFn: use_modern ? gnutls_execute_modern : gnutls_execute, library: "GnuTLS", libraryType: "gnutls", protocol: "tls" },
+    { platform: plattform_name3, pattern: /.*libwolfssl\.so/, hookFn: use_modern ? wolfssl_execute_modern : wolfssl_execute, library: "WolfSSL", libraryType: "wolfssl", protocol: "tls" },
+    { platform: plattform_name3, pattern: /.*libnss[3-4]\.so/, hookFn: use_modern ? nss_execute_modern : nss_execute, library: "NSS", libraryType: "nss", protocol: "tls" },
+    { platform: plattform_name3, pattern: /libmbedtls\.so.*/, hookFn: use_modern ? mbedTLS_execute_modern : mbedTLS_execute, library: "mbedTLS", libraryType: "mbedtls", protocol: "tls" },
+    { platform: plattform_name3, pattern: /.*libs2n.so/, hookFn: use_modern ? s2ntls_execute_modern : s2ntls_execute, library: "s2n-tls", libraryType: "s2ntls", protocol: "tls" },
+    { platform: plattform_name3, pattern: /.*mono-btls.*\.so/, hookFn: use_modern ? mono_btls_execute_modern : mono_btls_execute, library: "Mono BTLS", libraryType: "boringssl", protocol: "tls" },
     // Cronet APEX split: libmainlinecronet's BoringSSL surface lives in the
     // stable_cronet_libssl.so sibling. libraryType must match the sibling's
     // entry above ("openssl") for coveredBySibling suppression to fire.
     {
-      platform: plattform_name2,
+      platform: plattform_name3,
       pattern: /^libmainlinecronet\.[\d.]+\.so$/,
       hookFn: use_modern ? cronet_execute_modern : cronet_execute,
       library: "Cronet (mainline runtime)",
@@ -38507,69 +39837,69 @@ function load_android_hooking_agent() {
     // (standalone BoringSSL, owned by the libssl row) stay excluded. The old
     // /^libcronet([_.]|\.\d).*\.so$/ missed a plain libcronet.so, leaving it
     // to the key-less supplementary QUICHE row only.
-    { platform: plattform_name2, pattern: /^libcronet([_.].*)?\.so$/, hookFn: use_modern ? cronet_execute_modern : cronet_execute, library: "Cronet", libraryType: "boringssl", protocol: "tls" },
+    { platform: plattform_name3, pattern: /^libcronet([_.].*)?\.so$/, hookFn: use_modern ? cronet_execute_modern : cronet_execute, library: "Cronet", libraryType: "boringssl", protocol: "tls" },
     // libringrtc_rffi.so is Signal's WebRTC/calls BoringSSL — it carries no
     // chat-TLS keys, and its ranges are churned by the call subsystem, which
     // makes the recursive readable-parts pattern scan fault the target
     // (tombstone_12, 2026-06-15: SIGSEGV inside frida-agent Memory.scan).
     // Exclude it under `--protocol signal`; still scanned for generic TLS.
-    { platform: plattform_name2, pattern: /.*libringrtc_rffi.*\.so/, hookFn: use_modern ? cronet_execute_modern : cronet_execute, library: "Cronet (RingRTC)", libraryType: "boringssl", protocol: "tls", excludeProtocols: ["signal"] },
-    { platform: plattform_name2, pattern: /.*libsignal_jni.*\.so/, excludePattern: /_testing\.so$/, hookFn: use_modern ? cronet_execute_modern : cronet_execute, library: "Cronet (Signal)", libraryType: "boringssl", protocol: "tls" },
-    { platform: plattform_name2, pattern: /.*monochrome.*\.so/, hookFn: use_modern ? cronet_execute_modern : cronet_execute, library: "Cronet (Monochrome)", libraryType: "boringssl", protocol: "tls" },
+    { platform: plattform_name3, pattern: /.*libringrtc_rffi.*\.so/, hookFn: use_modern ? cronet_execute_modern : cronet_execute, library: "Cronet (RingRTC)", libraryType: "boringssl", protocol: "tls", excludeProtocols: ["signal"] },
+    { platform: plattform_name3, pattern: /.*libsignal_jni.*\.so/, excludePattern: /_testing\.so$/, hookFn: use_modern ? cronet_execute_modern : cronet_execute, library: "Cronet (Signal)", libraryType: "boringssl", protocol: "tls" },
+    { platform: plattform_name3, pattern: /.*monochrome.*\.so/, hookFn: use_modern ? cronet_execute_modern : cronet_execute, library: "Cronet (Monochrome)", libraryType: "boringssl", protocol: "tls" },
     // Android System WebView monolith — full Chromium with BoringSSL statically linked
     // (same shape as libmonochrome). The ssl_log_secret arm64 prologue is already covered
     // by the shipped wildcard pattern GENERIC_BORINGSSL_ARM64_FALLBACK (bundled_cronet_patterns.ts).
     // Verified concrete bytes (user-supplied, 2026-06):
     //   3F 23 03 D5 FF 03 02 D1 FD 7B 04 A9 F7 2B 00 F9 F6 57 06 A9 F4 4F 07 A9 FD 03 01 91 08 34 40 F9 08 29 41 F9 C8 05 00 B4
-    { platform: plattform_name2, pattern: /.*libwebviewchromium.*\.so/, hookFn: use_modern ? cronet_execute_modern : cronet_execute, library: "Cronet (WebView Chromium)", libraryType: "boringssl", protocol: "tls" },
+    { platform: plattform_name3, pattern: /.*libwebviewchromium.*\.so/, hookFn: use_modern ? cronet_execute_modern : cronet_execute, library: "Cronet (WebView Chromium)", libraryType: "boringssl", protocol: "tls" },
     // Chrome's own monolith (com.android.chrome) — full Chromium with BoringSSL
     // statically linked, same shape as libmonochrome. Without this row the only
     // match was the supplementary QUICHE row below, so no keys were extracted.
     // Verified on Chrome 153.0.8010.52: libchrome.so has no .symtab, and the
     // shipped arm64 fallback ssl_log_secret pattern hits exactly once.
-    { platform: plattform_name2, pattern: /.*libchrome\.so/, hookFn: use_modern ? cronet_execute_modern : cronet_execute, library: "Cronet (Chrome)", libraryType: "boringssl", protocol: "tls" },
-    { platform: plattform_name2, pattern: /.*libwarp_mobile.*\.so/, hookFn: use_modern ? cronet_execute_modern : cronet_execute, library: "Cronet (Warp Mobile)", libraryType: "boringssl", protocol: "tls" },
-    { platform: plattform_name2, pattern: /.*lib*quiche*.*\.so/, hookFn: use_modern ? cronet_execute_modern : cronet_execute, library: "Cronet (QUICHE)", libraryType: "boringssl", protocol: "tls" },
-    { platform: plattform_name2, pattern: /.*librustls.*\.so/, hookFn: use_modern ? rustls_execute_modern : rustls_execute, library: "Rustls", libraryType: "rustls", protocol: "tls" },
-    { platform: plattform_name2, pattern: /.*libstartup.*\.so/, hookFn: metartc_execute, library: "metaRTC", protocol: "tls" },
-    { platform: plattform_name2, pattern: /libgojni.*\.so/, hookFn: use_modern ? gotls_execute_modern : gotls_execute, library: "Go TLS", libraryType: "gotls", protocol: "tls" },
+    { platform: plattform_name3, pattern: /.*libchrome\.so/, hookFn: use_modern ? cronet_execute_modern : cronet_execute, library: "Cronet (Chrome)", libraryType: "boringssl", protocol: "tls" },
+    { platform: plattform_name3, pattern: /.*libwarp_mobile.*\.so/, hookFn: use_modern ? cronet_execute_modern : cronet_execute, library: "Cronet (Warp Mobile)", libraryType: "boringssl", protocol: "tls" },
+    { platform: plattform_name3, pattern: /.*lib*quiche*.*\.so/, hookFn: use_modern ? cronet_execute_modern : cronet_execute, library: "Cronet (QUICHE)", libraryType: "boringssl", protocol: "tls" },
+    { platform: plattform_name3, pattern: /.*librustls.*\.so/, hookFn: use_modern ? rustls_execute_modern : rustls_execute, library: "Rustls", libraryType: "rustls", protocol: "tls" },
+    { platform: plattform_name3, pattern: /.*libstartup.*\.so/, hookFn: metartc_execute, library: "metaRTC", protocol: "tls" },
+    { platform: plattform_name3, pattern: /libgojni.*\.so/, hookFn: use_modern ? gotls_execute_modern : gotls_execute, library: "Go TLS", libraryType: "gotls", protocol: "tls" },
     // IPSec libraries — strongSwan VPN is common on Android (detection stub, key extraction still needs to be done)
-    { platform: plattform_name2, pattern: /.*libcharon\.so/, hookFn: use_modern ? strongswan_execute_modern : ipsec_execute, library: "strongSwan (charon)", libraryType: "ipsec_strongswan", protocol: "ipsec" },
-    { platform: plattform_name2, pattern: /.*libstrongswan\.so/, hookFn: use_modern ? strongswan_execute_modern : ipsec_execute, library: "strongSwan", libraryType: "ipsec_strongswan", protocol: "ipsec" },
+    { platform: plattform_name3, pattern: /.*libcharon\.so/, hookFn: use_modern ? strongswan_execute_modern : ipsec_execute, library: "strongSwan (charon)", libraryType: "ipsec_strongswan", protocol: "ipsec" },
+    { platform: plattform_name3, pattern: /.*libstrongswan\.so/, hookFn: use_modern ? strongswan_execute_modern : ipsec_execute, library: "strongSwan", libraryType: "ipsec_strongswan", protocol: "ipsec" },
     // SSH binaries / libraries (Termux ships OpenSSH at $PREFIX/bin/ssh, sshd)
-    { platform: plattform_name2, pattern: /.*libssh2?\.so/, hookFn: use_modern ? libssh_execute_modern : ssh_execute, library: "libssh", protocol: "ssh" },
-    { platform: plattform_name2, pattern: /^(\/.+\/)?(ssh|sshd|sshd-session|scp|sftp-server)$/, hookFn: use_modern ? openssh_execute_modern : ssh_execute, library: "OpenSSH", protocol: "ssh" },
+    { platform: plattform_name3, pattern: /.*libssh2?\.so/, hookFn: use_modern ? libssh_execute_modern : ssh_execute, library: "libssh", protocol: "ssh" },
+    { platform: plattform_name3, pattern: /^(\/.+\/)?(ssh|sshd|sshd-session|scp|sftp-server)$/, hookFn: use_modern ? openssh_execute_modern : ssh_execute, library: "OpenSSH", protocol: "ssh" },
     // Dropbear stays on the legacy executor; no modern-path wrapper exists yet
-    { platform: plattform_name2, pattern: /^(\/.+\/)?dropbear$/, hookFn: ssh_execute, library: "Dropbear", protocol: "ssh" },
+    { platform: plattform_name3, pattern: /^(\/.+\/)?dropbear$/, hookFn: ssh_execute, library: "Dropbear", protocol: "ssh" },
     // Telegram MTProto (tgnet) — gated under `--protocol mtproto`. Hook bodies
     // are Phase-0 structured stubs (offsets require on-device RE).
-    { platform: plattform_name2, pattern: /libtmessages\.tmessages\.so/, hookFn: tgnet_execute_modern, library: "Telegram tgnet", libraryType: "mtproto_tgnet", protocol: "mtproto" },
-    { platform: plattform_name2, pattern: /libtmessages.*\.so/, hookFn: tgnet_execute_modern, library: "Telegram tgnet", libraryType: "mtproto_tgnet", protocol: "mtproto" },
+    { platform: plattform_name3, pattern: /libtmessages\.tmessages\.so/, hookFn: tgnet_execute_modern, library: "Telegram tgnet", libraryType: "mtproto_tgnet", protocol: "mtproto" },
+    { platform: plattform_name3, pattern: /libtmessages.*\.so/, hookFn: tgnet_execute_modern, library: "Telegram tgnet", libraryType: "mtproto_tgnet", protocol: "mtproto" },
     // Telegram Secret-Chat (Java E2E) — gated under `--protocol telegram`.
     // The Secret-Chat key + plaintext live in the Java layer
     // (SecretChatHelper / TLRPC$EncryptedChat); the native lib load is the
     // install trigger. `--protocol telegram` ALSO pulls in the tgnet/mtproto
     // transport hooks via registry.protocolMatches (telegram -> mtproto).
-    { platform: plattform_name2, pattern: /libtmessages.*\.so/, hookFn: telegram_execute_modern, library: "Telegram Secret Chat (Java E2E)", libraryType: "telegram_e2e", protocol: "telegram" },
+    { platform: plattform_name3, pattern: /libtmessages.*\.so/, hookFn: telegram_execute_modern, library: "Telegram Secret Chat (Java E2E)", libraryType: "telegram_e2e", protocol: "telegram" },
     // OHTTP (NSS HPKE) — gated under the TLS family for `--protocol tls`
-    { platform: plattform_name2, pattern: /.*libnss3?\.so/, hookFn: nss_hpke_execute_android, library: "NSS HPKE (OHTTP)", protocol: "tls", libraryType: "nss_hpke" },
+    { platform: plattform_name3, pattern: /.*libnss3?\.so/, hookFn: nss_hpke_execute_android, library: "NSS HPKE (OHTTP)", protocol: "tls", libraryType: "nss_hpke" },
     // QUIC libraries — gated under the TLS family for `--protocol tls`.
     // google_quiche/neqo rows are `supplementary`: stream hooks only (no keys),
     // so they never mark a module hooked for tls — see HookRegistration.supplementary.
-    { platform: plattform_name2, pattern: /.*libquiche\.so/, hookFn: quiche_execute2, library: "Cloudflare QUICHE", libraryType: "quiche", protocol: "tls" },
-    { platform: plattform_name2, pattern: /.*libchrome\.so/, hookFn: google_quiche_execute2, library: "Google QUICHE (Chrome)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
-    { platform: plattform_name2, pattern: /.*libcronet.*\.so/, hookFn: google_quiche_execute2, library: "Google QUICHE (Cronet)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
+    { platform: plattform_name3, pattern: /.*libquiche\.so/, hookFn: quiche_execute3, library: "Cloudflare QUICHE", libraryType: "quiche", protocol: "tls" },
+    { platform: plattform_name3, pattern: /.*libchrome\.so/, hookFn: google_quiche_execute3, library: "Google QUICHE (Chrome)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
+    { platform: plattform_name3, pattern: /.*libcronet.*\.so/, hookFn: google_quiche_execute3, library: "Google QUICHE (Cronet)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
     // libmainlinecronet does not match /.*libcronet.*\.so/ — "libcronet" is
     // not a substring of "libmainlinecronet". Needs its own entry.
-    { platform: plattform_name2, pattern: /^libmainlinecronet\.[\d.]+\.so$/, hookFn: google_quiche_execute2, library: "Google QUICHE (Mainline Cronet APEX)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
-    { platform: plattform_name2, pattern: /.*monochrome.*\.so/, hookFn: google_quiche_execute2, library: "Google QUICHE (Monochrome)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
-    { platform: plattform_name2, pattern: /.*libxul\.so/, hookFn: neqo_execute2, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo", protocol: "tls", supplementary: true },
+    { platform: plattform_name3, pattern: /^libmainlinecronet\.[\d.]+\.so$/, hookFn: google_quiche_execute3, library: "Google QUICHE (Mainline Cronet APEX)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
+    { platform: plattform_name3, pattern: /.*monochrome.*\.so/, hookFn: google_quiche_execute3, library: "Google QUICHE (Monochrome)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
+    { platform: plattform_name3, pattern: /.*libxul\.so/, hookFn: neqo_execute3, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo", protocol: "tls", supplementary: true },
     // Hooks contributed by optional, separately bundled units (empty in the
     // public build; a full build's private unit registers its rows before the
     // agent entry runs, so they are present here at registration time).
     ...collectContributedHooks()
   ];
-  const pairipSafeHooks = buildPairipSafeRegistrations(plattform_name2, use_modern);
+  const pairipSafeHooks = buildPairipSafeRegistrations(plattform_name3, use_modern);
   hookRegistry.registerAll(pairip_safe ? pairipSafeHooks : quic_only ? __androidHooks.filter((e) => e.libraryType === "google_quiche") : __androidHooks);
   let hasLoaderDlopen = false;
   for (const ln of ["linker64", "linker"]) {
@@ -38583,13 +39913,13 @@ function load_android_hooking_agent() {
     }
   }
   const androidLoaderConfig = hasLoaderDlopen ? {
-    platform: plattform_name2,
+    platform: plattform_name3,
     platformLabel: "Android",
     loaderLibrary: /(^|\/)linker(64)?$/,
     functionName: "__loader_android_dlopen_ext",
     preferFunction: "__loader_android_dlopen_ext"
   } : {
-    platform: plattform_name2,
+    platform: plattform_name3,
     platformLabel: "Android",
     loaderLibrary: /.*libdl.*\.so/,
     functionName: "dlopen",
@@ -38619,8 +39949,8 @@ function load_android_hooking_agent() {
     phases.push({
       label: "ohttp+scan-results",
       fn: () => {
-        installOhttpHooks(plattform_name2, hookRegistry, getModuleNames(), "Android", androidLoaderConfig, !installInlineLoaderHook);
-        processScanResults(scan_results, plattform_name2, true, selected_protocols);
+        installOhttpHooks(plattform_name3, hookRegistry, getModuleNames(), "Android", androidLoaderConfig, !installInlineLoaderHook);
+        processScanResults(scan_results, plattform_name3, true, selected_protocols);
       }
     });
   if (!pairip_safe)
@@ -38646,12 +39976,12 @@ function load_android_hooking_agent() {
       label: "library-scan",
       fn: () => {
         let matchedModules = findModulesWithSSLKeyLogCallback();
-        matchedModules = matchedModules.filter((mod) => !hookRegistry.findPrimaryMatch(plattform_name2, mod, "", selected_protocols));
+        matchedModules = matchedModules.filter((mod) => !hookRegistry.findPrimaryMatch(plattform_name3, mod, "", selected_protocols));
         if (matchedModules.length > 0) {
           for (const mod of matchedModules) {
             devlog("[!] Installing BoringSSL hooks for " + mod);
             hookRegistry.register({
-              platform: plattform_name2,
+              platform: plattform_name3,
               pattern: new RegExp(`.*${mod}`),
               hookFn: use_modern ? boring_execute_modern : boring_execute,
               library: "BoringSSL (auto-detected)",
@@ -38682,7 +40012,7 @@ function load_android_hooking_agent() {
   if (pairip_safe) {
     const PAIRIP_SAFE_HOOK_DELAY_MS = spawned ? 8e3 : 1500;
     const PAIRIP_SAFE_POLL_MS = 1e3;
-    installPairipSafeWatcher(plattform_name2, hookRegistry, getModuleNames, selected_protocols, (n) => matchPairipSafeLib(n) !== void 0, PAIRIP_SAFE_HOOK_DELAY_MS, PAIRIP_SAFE_POLL_MS);
+    installPairipSafeWatcher(plattform_name3, hookRegistry, getModuleNames, selected_protocols, (n) => matchPairipSafeLib(n) !== void 0, PAIRIP_SAFE_HOOK_DELAY_MS, PAIRIP_SAFE_POLL_MS);
   }
   if (!antiTamperPresent) {
     setTimeout(() => scanForAntiTamper(), 500);
@@ -38696,1107 +40026,6 @@ init_shared_structures();
 
 // agent/legacy/tls/platforms/ios/openssl_boringssl_ios.ts
 init_node_globals();
-
-// agent/legacy/tls/platforms/macos/openssl_boringssl_macos.ts
-init_node_globals();
-
-// agent/platforms/macos.ts
-init_node_globals();
-init_shared_structures();
-
-// agent/shared/darwin_library_patterns.ts
-init_node_globals();
-var VERSIONED_LIBSSL_DYLIB = /(^|\/)libssl\.\d+(\.\d+)*\.dylib$/;
-var SYSTEM_LIBRESSL_PATH = /^\/usr\/lib\/libssl\.\d+(\.\d+)*\.dylib$/;
-var ANY_LIBSSL_DYLIB = /.*libssl.*\.dylib/;
-
-// agent/tls/platforms/macos/openssl_boringssl_macos.ts
-init_node_globals();
-function boring_execute_modern3(moduleName, is_base_hook) {
-  enableDeepSymbolResolution(moduleName);
-  const def = createOpenSslDefinition({ skipReadWriteHooks: true });
-  def.keylog = createBoringSSLKeylogApproach();
-  def.libraryType = "boringssl";
-  executeFromDefinition(def, moduleName, socket_library3, is_base_hook, enable_default_fd);
-}
-function ssl_python_execute_modern2(moduleName, is_base_hook) {
-  enableDeepSymbolResolution(moduleName);
-  const def = createOpenSslDefinition({ includeExSymbols: true });
-  def.keylog = createBoringSSLKeylogApproach();
-  executeFromDefinition(def, moduleName, socket_library3, is_base_hook, enable_default_fd);
-}
-
-// agent/legacy/tls/platforms/macos/libressl_macos.ts
-init_node_globals();
-init_shared_structures();
-var _clientRandomBuf = Memory.alloc(32);
-var _masterKeyBuf = Memory.alloc(48);
-var _threadSslMap = /* @__PURE__ */ new Map();
-var LibreSSL_MacOS = class extends OpenSSL_BoringSSL2 {
-  moduleName;
-  socket_library;
-  SSL_get_client_random_fn = null;
-  SSL_SESSION_get_master_key_fn = null;
-  constructor(moduleName, socket_library6, is_base_hook) {
-    var library_method_mapping = {};
-    library_method_mapping[`*${moduleName}*`] = [
-      "SSL_read",
-      "SSL_write",
-      "SSL_get_fd",
-      "SSL_get_session",
-      "SSL_SESSION_get_id",
-      "SSL_new",
-      "SSL_CTX_set_keylog_callback",
-      "SSL_get_client_random",
-      "SSL_SESSION_get_master_key",
-      "SSL_do_handshake",
-      "SSL_connect"
-    ];
-    library_method_mapping[`*${socket_library6}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
-    super(moduleName, socket_library6, is_base_hook, library_method_mapping);
-    this.moduleName = moduleName;
-    this.socket_library = socket_library6;
-    this.do_read_write_hooks = true;
-    try {
-      this.SSL_SESSION_get_id = new NativeFunction(this.addresses[this.moduleName]["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
-      this.SSL_get_fd = new NativeFunction(this.addresses[this.moduleName]["SSL_get_fd"], "int", ["pointer"]);
-      this.SSL_get_session = new NativeFunction(this.addresses[this.moduleName]["SSL_get_session"], "pointer", ["pointer"]);
-    } catch (e) {
-      devlog_error(`[LibreSSL] Error creating NativeFunction wrappers: ${e}`);
-      this.do_read_write_hooks = false;
-    }
-    const crAddr = this.addresses[this.moduleName]["SSL_get_client_random"];
-    if (crAddr && !crAddr.isNull()) {
-      this.SSL_get_client_random_fn = new NativeFunction(crAddr, "int", ["pointer", "pointer", "int"]);
-    }
-    const mkAddr = this.addresses[this.moduleName]["SSL_SESSION_get_master_key"];
-    if (mkAddr && !mkAddr.isNull()) {
-      this.SSL_SESSION_get_master_key_fn = new NativeFunction(mkAddr, "int", ["pointer", "pointer", "int"]);
-    }
-  }
-  install_tls_keys_callback_hook() {
-    let keylogCallbackInstalled = false;
-    const setKeylogAddr = this.addresses[this.moduleName]["SSL_CTX_set_keylog_callback"];
-    if (setKeylogAddr && !setKeylogAddr.isNull()) {
-      try {
-        this.SSL_CTX_set_keylog_callback = new NativeFunction(setKeylogAddr, "void", ["pointer", "pointer"]);
-        const instance = this;
-        const sslNewAddr = this.addresses[this.moduleName]["SSL_new"];
-        if (sslNewAddr && !sslNewAddr.isNull()) {
-          const tracker = createKeylogCallbackTracker(this.moduleName, setKeylogAddr, instance.keylog_callback, true);
-          Interceptor.attach(sslNewAddr, {
-            onEnter: function(args) {
-              try {
-                tracker.install(args[0]);
-              } catch (e) {
-                devlog_error(`[LibreSSL] Error in SSL_new keylog hook: ${e}`);
-              }
-            }
-          });
-          keylogCallbackInstalled = true;
-          log("[LibreSSL] Keylog via SSL_CTX_set_keylog_callback installed");
-        }
-      } catch (e) {
-        devlog(`[LibreSSL] SSL_CTX_set_keylog_callback setup failed: ${e}`);
-      }
-    }
-    if (!keylogCallbackInstalled) {
-      log("[LibreSSL] SSL_CTX_set_keylog_callback not available, trying KDF hooks");
-      this.installKdfHooks();
-    }
-  }
-  installKdfHooks() {
-    this.installHandshakeTracker();
-    const nonExported = findNonExportedSymbols(this.moduleName, [
-      "tls13_hkdf_expand_label",
-      "tls13_hkdf_expand_label_with_length",
-      "tls1_PRF"
-    ]);
-    const hkdfAddr = nonExported.get("tls13_hkdf_expand_label");
-    if (hkdfAddr) {
-      log("[LibreSSL] Hooking tls13_hkdf_expand_label for TLS 1.3 key extraction");
-      this.attachHkdfHook(hkdfAddr, "tls13_hkdf_expand_label");
-    }
-    const hkdfWithLenAddr = nonExported.get("tls13_hkdf_expand_label_with_length");
-    if (hkdfWithLenAddr) {
-      log("[LibreSSL] Hooking tls13_hkdf_expand_label_with_length");
-      this.attachHkdfHook(hkdfWithLenAddr, "tls13_hkdf_expand_label_with_length");
-    }
-    const prfAddr = nonExported.get("tls1_PRF");
-    if (prfAddr) {
-      log("[LibreSSL] Hooking tls1_PRF for TLS 1.2 key extraction");
-      const instance = this;
-      Interceptor.attach(prfAddr, {
-        onEnter: function(args) {
-          this.sslPtr = args[0];
-        },
-        onLeave: function(_retval) {
-          try {
-            if (!instance.SSL_get_client_random_fn)
-              return;
-            const crLen = instance.SSL_get_client_random_fn(this.sslPtr, _clientRandomBuf, 32);
-            if (crLen !== 32)
-              return;
-            const clientRandom = readHexFromPointer(_clientRandomBuf, 32);
-            const masterKey = instance.extractMasterKey(this.sslPtr);
-            if (!masterKey)
-              return;
-            sendKeylog(`CLIENT_RANDOM ${clientRandom} ${masterKey}`);
-          } catch (e) {
-            devlog_error(`[LibreSSL] tls1_PRF onLeave error: ${e}`);
-          }
-        }
-      });
-    }
-  }
-  /**
-   * Shared HKDF hook installer for tls13_hkdf_expand_label variants.
-   * Both variants have the same argument layout: args[0]=out, args[3]=label.
-   */
-  attachHkdfHook(addr, funcName) {
-    const instance = this;
-    Interceptor.attach(addr, {
-      onEnter: function(args) {
-        this.outSecret = args[0];
-        this.labelPtr = args[3];
-      },
-      onLeave: function(_retval) {
-        try {
-          const label = this.labelPtr.readCString();
-          const sslkeylogLabel = TLS13_LABEL_MAP[label];
-          if (!sslkeylogLabel)
-            return;
-          const dataPtr = this.outSecret.readPointer();
-          const dataLen = this.outSecret.add(Process.pointerSize).readULong();
-          if (dataPtr.isNull() || dataLen === 0)
-            return;
-          const secretHex = readHexFromPointer(dataPtr, dataLen);
-          const clientRandom = instance.getThreadClientRandom();
-          if (!clientRandom)
-            return;
-          sendKeylog(`${sslkeylogLabel} ${clientRandom} ${secretHex}`);
-        } catch (e) {
-          devlog_error(`[LibreSSL] ${funcName} onLeave error: ${e}`);
-        }
-      }
-    });
-  }
-  installHandshakeTracker() {
-    for (const sym of ["SSL_do_handshake", "SSL_connect"]) {
-      const addr = this.addresses[this.moduleName][sym];
-      if (addr && !addr.isNull()) {
-        Interceptor.attach(addr, {
-          onEnter: function(args) {
-            _threadSslMap.set(Process.getCurrentThreadId(), args[0]);
-          },
-          onLeave: function(_retval) {
-            _threadSslMap.delete(Process.getCurrentThreadId());
-          }
-        });
-        devlog(`[LibreSSL] Handshake tracker installed on ${sym}`);
-        break;
-      }
-    }
-  }
-  getThreadClientRandom() {
-    if (!this.SSL_get_client_random_fn)
-      return null;
-    const ssl = _threadSslMap.get(Process.getCurrentThreadId());
-    if (!ssl)
-      return null;
-    try {
-      const len = this.SSL_get_client_random_fn(ssl, _clientRandomBuf, 32);
-      if (len !== 32)
-        return null;
-      return readHexFromPointer(_clientRandomBuf, 32);
-    } catch (e) {
-      devlog(`[LibreSSL] getThreadClientRandom error: ${e}`);
-      return null;
-    }
-  }
-  extractMasterKey(ssl) {
-    if (!this.SSL_get_session || !this.SSL_SESSION_get_master_key_fn)
-      return null;
-    const session = this.SSL_get_session(ssl);
-    if (session.isNull())
-      return null;
-    const mkLen = this.SSL_SESSION_get_master_key_fn(session, _masterKeyBuf, 48);
-    if (mkLen > 0) {
-      return readHexFromPointer(_masterKeyBuf, mkLen);
-    }
-    return null;
-  }
-  async execute_hooks() {
-    OpenSSL_BoringSSL2.initializePipeline(isPatternReplaced() ? patterns : void 0, experimental);
-    await this.resolveWithPipelineAsync([
-      "SSL_read",
-      "SSL_write",
-      "SSL_get_fd",
-      "SSL_get_session",
-      "SSL_SESSION_get_id",
-      "SSL_new",
-      "SSL_CTX_set_keylog_callback",
-      "SSL_get_client_random",
-      "SSL_SESSION_get_master_key",
-      "SSL_do_handshake",
-      "SSL_connect"
-    ]);
-    this.install_plaintext_read_hook();
-    this.install_plaintext_write_hook();
-    this.install_tls_keys_callback_hook();
-  }
-};
-function libressl_execute(moduleName, is_base_hook) {
-  executeSSLLibrary(LibreSSL_MacOS, moduleName, socket_library3, is_base_hook);
-}
-
-// agent/tls/platforms/macos/libressl_macos.ts
-init_node_globals();
-
-// agent/tls/definitions/libressl.ts
-init_node_globals();
-init_shared_structures();
-var _clientRandomBuf2 = Memory.alloc(32);
-var _masterKeyBuf2 = Memory.alloc(48);
-function createLibreSslKeylogApproach() {
-  return {
-    kind: "custom",
-    install: (addresses, modName, resolvedFns, _enableDefaultFd) => {
-      let keylogCallbackInstalled = false;
-      const setKeylogAddr = addresses[modName]?.["SSL_CTX_set_keylog_callback"];
-      if (resolvedFns["SSL_CTX_set_keylog_callback"] && setKeylogAddr && !setKeylogAddr.isNull()) {
-        const keylogCb = new NativeCallback(function(_ssl, line) {
-          devlog(`invoking keylog_callback from LibreSSL (${modName})`);
-          sendKeylog(line.readCString());
-        }, "void", ["pointer", "pointer"]);
-        const sslNewAddr = addresses[modName]?.["SSL_new"];
-        if (sslNewAddr && !sslNewAddr.isNull()) {
-          const tracker = createKeylogCallbackTracker(modName, setKeylogAddr, keylogCb, true);
-          Interceptor.attach(sslNewAddr, {
-            onEnter: function(args) {
-              try {
-                tracker.install(args[0]);
-              } catch (e) {
-                devlog_error(`[LibreSSL] Error in SSL_new keylog hook: ${e}`);
-              }
-            }
-          });
-          keylogCallbackInstalled = true;
-          log("[LibreSSL] Keylog via SSL_CTX_set_keylog_callback installed");
-        }
-      }
-      if (!keylogCallbackInstalled) {
-        log("[LibreSSL] SSL_CTX_set_keylog_callback not available, trying KDF hooks");
-        installKdfHooks(modName, resolvedFns);
-        log(`[*] ${modName}: keylog hooks installed via KDF function hooks (tls1_PRF / tls13_hkdf_expand_label)`);
-      } else {
-        log(`[*] ${modName}: keylog hooks installed via SSL_CTX_set_keylog_callback`);
-      }
-      return keylogCallbackInstalled;
-    }
-  };
-}
-function installKdfHooks(modName, resolvedFns) {
-  const SSL_get_client_random = resolvedFns["SSL_get_client_random"];
-  const nonExported = findNonExportedSymbols(modName, [
-    "tls13_hkdf_expand_label",
-    "tls13_hkdf_expand_label_with_length",
-    "tls1_PRF"
-  ]);
-  const hkdfAddr = nonExported.get("tls13_hkdf_expand_label");
-  if (hkdfAddr) {
-    log("[LibreSSL] Hooking tls13_hkdf_expand_label for TLS 1.3 key extraction");
-    attachHkdfHook(hkdfAddr, SSL_get_client_random, "tls13_hkdf_expand_label");
-  } else {
-    devlog("[LibreSSL] tls13_hkdf_expand_label not found (TLS 1.3 keylog unavailable)");
-  }
-  const hkdfWithLenAddr = nonExported.get("tls13_hkdf_expand_label_with_length");
-  if (hkdfWithLenAddr) {
-    log("[LibreSSL] Hooking tls13_hkdf_expand_label_with_length for TLS 1.3 key extraction");
-    attachHkdfHook(hkdfWithLenAddr, SSL_get_client_random, "tls13_hkdf_expand_label_with_length");
-  }
-  const prfAddr = nonExported.get("tls1_PRF");
-  if (prfAddr) {
-    log("[LibreSSL] Hooking tls1_PRF for TLS 1.2 key extraction");
-    Interceptor.attach(prfAddr, {
-      onEnter: function(args) {
-        this.sslPtr = args[0];
-      },
-      onLeave: function(_retval) {
-        try {
-          if (!SSL_get_client_random)
-            return;
-          const crLen = SSL_get_client_random(this.sslPtr, _clientRandomBuf2, 32);
-          if (crLen !== 32)
-            return;
-          const clientRandom = readHexFromPointer(_clientRandomBuf2, 32);
-          const masterKey = extractMasterKey(this.sslPtr, resolvedFns);
-          if (!masterKey)
-            return;
-          devlog("invoking tls1_PRF keylog hook from LibreSSL");
-          sendKeylog(`CLIENT_RANDOM ${clientRandom} ${masterKey}`);
-        } catch (e) {
-          devlog_error(`[LibreSSL] tls1_PRF onLeave error: ${e}`);
-        }
-      }
-    });
-  } else {
-    devlog("[LibreSSL] tls1_PRF not found (TLS 1.2 keylog unavailable)");
-  }
-  installHandshakeTracker(modName);
-}
-function attachHkdfHook(addr, SSL_get_client_random, funcName) {
-  Interceptor.attach(addr, {
-    onEnter: function(args) {
-      this.outSecret = args[0];
-      this.labelPtr = args[3];
-    },
-    onLeave: function(_retval) {
-      try {
-        const label = this.labelPtr.readCString();
-        const sslkeylogLabel = TLS13_LABEL_MAP[label];
-        if (!sslkeylogLabel) {
-          devlog(`[LibreSSL] Unknown TLS 1.3 label: ${label}`);
-          return;
-        }
-        const dataPtr = this.outSecret.readPointer();
-        const dataLen = this.outSecret.add(Process.pointerSize).readULong();
-        if (dataPtr.isNull() || dataLen === 0)
-          return;
-        const secretHex = readHexFromPointer(dataPtr, dataLen);
-        const clientRandom = getThreadClientRandom(SSL_get_client_random);
-        if (!clientRandom) {
-          devlog(`[LibreSSL] Could not get client_random for ${funcName} keylog`);
-          return;
-        }
-        devlog(`invoking ${funcName} keylog hook from LibreSSL`);
-        sendKeylog(`${sslkeylogLabel} ${clientRandom} ${secretHex}`);
-      } catch (e) {
-        devlog_error(`[LibreSSL] ${funcName} onLeave error: ${e}`);
-      }
-    }
-  });
-}
-var _threadSslMap2 = /* @__PURE__ */ new Map();
-function installHandshakeTracker(modName) {
-  for (const sym of ["SSL_do_handshake", "SSL_connect"]) {
-    let hookAddr = null;
-    try {
-      hookAddr = Process.getModuleByName(modName).getExportByName(sym);
-    } catch (_) {
-    }
-    if (!hookAddr || hookAddr.isNull()) {
-      const found = findNonExportedSymbols(modName, [sym]);
-      hookAddr = found.get(sym) || null;
-    }
-    if (hookAddr && !hookAddr.isNull()) {
-      Interceptor.attach(hookAddr, {
-        onEnter: function(args) {
-          _threadSslMap2.set(Process.getCurrentThreadId(), args[0]);
-        },
-        onLeave: function(_retval) {
-          _threadSslMap2.delete(Process.getCurrentThreadId());
-        }
-      });
-      devlog(`[LibreSSL] Handshake tracker installed on ${sym}`);
-      break;
-    }
-  }
-}
-function getThreadClientRandom(SSL_get_client_random) {
-  if (!SSL_get_client_random)
-    return null;
-  const ssl = _threadSslMap2.get(Process.getCurrentThreadId());
-  if (!ssl)
-    return null;
-  try {
-    const len = SSL_get_client_random(ssl, _clientRandomBuf2, 32);
-    if (len !== 32)
-      return null;
-    return readHexFromPointer(_clientRandomBuf2, 32);
-  } catch (e) {
-    devlog(`[LibreSSL] getThreadClientRandom error: ${e}`);
-    return null;
-  }
-}
-function extractMasterKey(ssl, resolvedFns) {
-  if (!resolvedFns["SSL_get_session"])
-    return null;
-  const session = resolvedFns["SSL_get_session"](ssl);
-  if (session.isNull())
-    return null;
-  if (resolvedFns["SSL_SESSION_get_master_key"]) {
-    const mkLen = resolvedFns["SSL_SESSION_get_master_key"](session, _masterKeyBuf2, 48);
-    if (mkLen > 0) {
-      return readHexFromPointer(_masterKeyBuf2, mkLen);
-    }
-  }
-  return null;
-}
-function createLibreSslDefinition() {
-  const librarySymbols = [
-    "SSL_read",
-    "SSL_write",
-    "SSL_get_fd",
-    "SSL_get_session",
-    "SSL_SESSION_get_id",
-    "SSL_new",
-    "SSL_CTX_set_keylog_callback",
-    "SSL_get_client_random",
-    "SSL_SESSION_get_master_key",
-    "SSL_do_handshake",
-    "SSL_connect"
-  ];
-  return {
-    libraryId: "libressl",
-    offsetKey: "openssl",
-    functions: {
-      librarySymbols,
-      socketSymbols: STANDARD_SOCKET_SYMBOLS
-    },
-    nativeFunctions: [
-      { symbol: "SSL_get_fd", retType: "int", argTypes: ["pointer"] },
-      { symbol: "SSL_get_session", retType: "pointer", argTypes: ["pointer"] },
-      { symbol: "SSL_SESSION_get_id", retType: "pointer", argTypes: ["pointer", "pointer"] },
-      { symbol: "SSL_CTX_set_keylog_callback", retType: "void", argTypes: ["pointer", "pointer"] },
-      { symbol: "SSL_get_client_random", retType: "int", argTypes: ["pointer", "pointer", "int"] },
-      { symbol: "SSL_SESSION_get_master_key", retType: "int", argTypes: ["pointer", "pointer", "int"] }
-    ],
-    fdDecoder: openSslFdDecoder,
-    sessionIdDecoder: openSslSessionIdDecoder,
-    clientRandomDecoder: openSslClientRandomDecoder,
-    readHook: {
-      symbol: "SSL_read",
-      args: { sslCtxArgIndex: 0, bufferArgIndex: 1, bytesTransferred: "retval" },
-      functionLabel: "SSL_read"
-    },
-    writeHook: {
-      symbol: "SSL_write",
-      args: { sslCtxArgIndex: 0, bufferArgIndex: 1, lengthArgIndex: 2, bytesTransferred: "arg" },
-      functionLabel: "SSL_write"
-    },
-    keylog: createLibreSslKeylogApproach()
-  };
-}
-
-// agent/tls/platforms/macos/libressl_macos.ts
-function libressl_execute_modern(moduleName, is_base_hook) {
-  executeFromDefinition(createLibreSslDefinition(), moduleName, socket_library3, is_base_hook, enable_default_fd);
-}
-
-// agent/legacy/tls/platforms/macos/cronet_macos.ts
-init_node_globals();
-var Cronet_MacOS = class extends Cronet {
-  moduleName;
-  socket_library;
-  default_pattern;
-  constructor(moduleName, socket_library6, is_base_hook) {
-    super(moduleName, socket_library6, is_base_hook);
-    this.moduleName = moduleName;
-    this.socket_library = socket_library6;
-    this.default_pattern = {
-      "x64": CRONET_X64_PATTERNS,
-      "arm64": {
-        primary: "FF 83 01 D1 F6 57 03 A9 F4 4F 04 A9 FD 7B 05 A9 FD 43 01 91 08 34 40 F9 08 51 41 F9 48 08 00 B4",
-        fallback: "3F 23 03 D5 FF 03 02 D1 FD 7B 04 A9 F7 2B 00 F9 F6 57 06 A9 F4 4F 07 A9 FD 03 01 91 08 34 40 F9 08 11 41 F9 E8 0F 00 B4"
-      }
-    };
-  }
-  install_key_extraction_pattern_hook() {
-    const cronetModule = Process.findModuleByName(this.module_name);
-    if (cronetModule === null)
-      return null;
-    const hooker = new PatternBasedHooking(cronetModule);
-    if (isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, "Cronet", "Dump-Keys")) {
-      devlog("Hooking Cronet functions by pattern");
-      hooker.hook_DumpKeys(this.module_name, "Cronet", patterns, (args) => {
-        this.dumpKeys(args[1], args[0], args[2], lenArg(args[3]));
-      });
-    } else {
-      hooker.hookModuleByPattern(get_CPU_specific_pattern(this.default_pattern), (args) => {
-        this.dumpKeys(args[1], args[0], args[2], lenArg(args[3]));
-      });
-    }
-    return hooker;
-  }
-  execute_hooks() {
-    const hooker = this.install_key_extraction_pattern_hook();
-    if (hooker === null)
-      return [false, null];
-    return [!hooker.no_hooking_success, hooker];
-  }
-  // Symbol-based fallback for ssl_log_secret. Forwards the 4th `len` arg to
-  // dumpKeys so safeKeyLen can use the exact length from bssl::ssl_log_secret's
-  // ABI rather than falling back to the byte-walk heuristic.
-  execute_symbol_based_hooking(hooker) {
-    if (!hooker.no_hooking_success)
-      return;
-    devlog_debug("Trying symbol-based ssl_log_secret hook on " + this.module_name);
-    installBoringSSLSymbolHook(this.module_name, (label, ssl, data, len) => this.dumpKeys(label, ssl, data, len));
-  }
-};
-function cronet_execute3(moduleName, is_base_hook) {
-  let cronet;
-  try {
-    cronet = new Cronet_MacOS(moduleName, socket_library3, is_base_hook);
-  } catch (e) {
-    devlog_error(`cronet_execute constructor error for ${moduleName}: ${e}`);
-    return;
-  }
-  let success = false;
-  let hooker = null;
-  try {
-    [success, hooker] = cronet.execute_hooks();
-  } catch (e) {
-    devlog_error(`cronet_execute error: ${e}`);
-  }
-  if (!success) {
-    scheduleBoringSSLSymbolFallback(moduleName, hooker, () => cronet.execute_symbol_based_hooking(hooker), (label, ssl, data, len) => cronet.dumpKeys(label, ssl, data, len));
-  }
-  if (is_base_hook) {
-    try {
-      const init_addresses = cronet.addresses[moduleName];
-      if (init_addresses && Object.keys(init_addresses).length > 0) {
-        globalThis.init_addresses[moduleName] = init_addresses;
-      }
-    } catch (e) {
-      devlog_error(`cronet_execute base-hook error: ${e}`);
-    }
-  }
-}
-
-// agent/legacy/tls/platforms/macos/nss_macos.ts
-init_node_globals();
-var NSS_MacOS = class extends NSS {
-  moduleName;
-  socket_library;
-  constructor(moduleName, socket_library6, is_base_hook) {
-    var library_method_mapping = {};
-    devlog("Hooking module " + moduleName);
-    library_method_mapping[`*${moduleName}*`] = ["PR_Write", "PR_Read", "PR_FileDesc2NativeHandle", "PR_GetPeerName", "PR_GetSockName", "PR_GetNameForIdentity", "PR_GetDescType", "SSL_ImportFD", "SSL_HandshakeCallback", "PK11_ExtractKeyValue", "PK11_GetKeyData", "SSL_GetExperimentalAPI", "NSSSSL_GetVersion"];
-    library_method_mapping[`*${socket_library6}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
-    super(moduleName, socket_library6, library_method_mapping);
-    this.moduleName = moduleName;
-    this.socket_library = socket_library6;
-  }
-  execute_hooks() {
-    this.install_plaintext_read_hook();
-    this.install_plaintext_write_hook();
-    try {
-      this.install_tls_keys_callback_hook();
-    } catch (e) {
-      devlog("Installing NSS key hooking failed");
-      devlog("NSS Error code: " + e);
-    }
-  }
-  install_tls_keys_callback_hook() {
-    var nssModuleName = this.module_name;
-    NSS.detectVersionOffsets();
-    NSS.resolveExperimentalAPI();
-    NSS.getDescType = new NativeFunction(this.addresses[this.module_name]["PR_GetDescType"], "int", ["pointer"]);
-    NSS.PR_GetNameForIdentity = new NativeFunction(this.addresses[this.module_name]["PR_GetNameForIdentity"], "pointer", ["pointer"]);
-    NSS.get_SSL_Callback = new NativeFunction(this.addresses[this.module_name]["SSL_HandshakeCallback"], "int", ["pointer", "pointer", "pointer"]);
-    NSS.PK11_ExtractKeyValue = new NativeFunction(this.addresses[this.module_name]["PK11_ExtractKeyValue"], "int", ["pointer"]);
-    NSS.PK11_GetKeyData = new NativeFunction(this.addresses[this.module_name]["PK11_GetKeyData"], "pointer", ["pointer"]);
-    Interceptor.attach(this.addresses[this.module_name]["SSL_ImportFD"], {
-      onEnter(args) {
-        this.fd = args[1];
-      },
-      onLeave(retval) {
-        if (retval.isNull()) {
-          devlog("[-] SSL_ImportFD error: unknown null");
-          return;
-        }
-        var retValue = NSS.get_SSL_Callback(retval, NSS.keylog_callback, NULL);
-        NSS.register_secret_callback(retval);
-        if (retValue < 0) {
-          devlog("Callback Error");
-          try {
-            var getErrorText = new NativeFunction(Process.getModuleByName(nssModuleName).getExportByName("PR_GetErrorText"), "int", ["pointer"]);
-            var outbuffer = Memory.alloc(200);
-            getErrorText(outbuffer.readPointer());
-            devlog("Error msg: " + outbuffer);
-          } catch (e) {
-            devlog("Could not retrieve NSS error text: " + e);
-          }
-        } else {
-          devlog("[*] NSS keylog callback successfully installed");
-        }
-      }
-    });
-    Interceptor.attach(this.addresses[this.module_name]["SSL_HandshakeCallback"], {
-      onEnter(args) {
-        this.originalCallback = args[1];
-        Interceptor.attach(ptr(this.originalCallback), {
-          onEnter(args2) {
-            var sslSocketFD = args2[0];
-            devlog("[*] NSS keylog callback successfully installed via applications callback function");
-            NSS.ssl_RecordKeyLog(sslSocketFD);
-          },
-          onLeave(retval) {
-          }
-        });
-      },
-      onLeave(retval) {
-      }
-    });
-    NSS.installSecretCallbackInterceptor();
-  }
-};
-function nss_execute3(moduleName, is_base_hook) {
-  executeSSLLibrary(NSS_MacOS, moduleName, socket_library3, is_base_hook);
-}
-
-// agent/tls/platforms/macos/nss_macos.ts
-init_node_globals();
-function nss_execute_modern3(moduleName, is_base_hook) {
-  executeFromDefinition(createNssMacosDefinition(), moduleName, socket_library3, is_base_hook, enable_default_fd);
-}
-
-// agent/ssh/platforms/macos/openssh_macos.ts
-init_node_globals();
-
-// agent/ssh/platforms/macos/libssh_macos.ts
-init_node_globals();
-
-// agent/ohttp/platforms/macos/nss_hpke_macos.ts
-init_node_globals();
-function nss_hpke_execute_macos(moduleName, is_base_hook) {
-  executeFromDefinition(createNssHpkeDefinition(), moduleName, socket_library3, is_base_hook, false);
-}
-
-// agent/quic/platforms/macos/quiche_macos.ts
-init_node_globals();
-function quiche_execute3(moduleName, is_base_hook) {
-  executeFromDefinition(createQuicheDefinition(), moduleName, socket_library3, is_base_hook, enable_default_fd);
-}
-
-// agent/quic/platforms/macos/google_quiche_macos.ts
-init_node_globals();
-async function google_quiche_execute3(moduleName, _is_base_hook) {
-  log("[*] Google QUICHE detected in " + moduleName + ", installing QUIC stream hooks...");
-  try {
-    await installGoogleQuicheHooks(moduleName);
-  } catch (e) {
-    devlog("[Google QUICHE] install failed in " + moduleName + ": " + e);
-  }
-}
-
-// agent/quic/platforms/macos/neqo_macos.ts
-init_node_globals();
-function neqo_execute3(moduleName, is_base_hook) {
-  executeFromDefinition(createNeqoDefinition(), moduleName, socket_library3, is_base_hook, enable_default_fd);
-}
-
-// agent/platforms/macos.ts
-var plattform_name3 = PLATFORM_DARWIN;
-var socket_library3 = "libSystem.B.dylib";
-function hook_macOS_SSL_Libs(hookRegistry2, is_base_hook) {
-  ssl_library_loader(plattform_name3, hookRegistry2, getModuleNames(), "MacOS", is_base_hook, selected_protocols);
-}
-function load_macos_hooking_agent() {
-  hookRegistry.registerAll([
-    // TLS libraries (TLS protocol family — also covers QUIC and OHTTP below)
-    { platform: plattform_name3, pattern: /.*libboringssl\.dylib/, hookFn: use_modern ? boring_execute_modern3 : boring_execute3, library: "BoringSSL", libraryType: "boringssl", protocol: "tls" },
-    // ── The libssl*.dylib name space, partitioned three ways ──────────────
-    // Exhaustive and mutually exclusive by construction, which matters
-    // because ssl_library_loader invokes EVERY match, not the first:
-    //   * name is versioned (VERSIONED_LIBSSL_DYLIB) -> LibreSSL xor OpenSSL,
-    //     split by SYSTEM_LIBRESSL_PATH. The two entries share an identical
-    //     pattern and complementary predicates over that ONE constant, so
-    //     exactly one survives — including when the module path is unknown,
-    //     where pathFilter fails closed and excludePathFilter fails open.
-    //   * name is libssl-shaped but not versioned -> the generic entry only,
-    //     since its excludePattern IS VERSIONED_LIBSSL_DYLIB.
-    //   * neither -> not a libssl, no hook.
-    //
-    // LibreSSL: macOS system SSL. Its executor carries the tier-2 KDF hooks
-    // (tls1_PRF / tls13_hkdf_expand_label) that Apple's pre-3.5 LibreSSL
-    // needs, so a false negative here costs keys outright.
-    { platform: plattform_name3, pattern: VERSIONED_LIBSSL_DYLIB, hookFn: use_modern ? libressl_execute_modern : libressl_execute, library: "LibreSSL", pathFilter: SYSTEM_LIBRESSL_PATH, priority: 150, libraryType: "libressl", protocol: "tls" },
-    // Genuine OpenSSL: every versioned libssl that is NOT the system one —
-    // Homebrew (arm64 /opt/homebrew and Intel /usr/local), pyenv, MacPorts,
-    // conda, python.org and Xcode framework Pythons, and app bundles.
-    //
-    // ssl_python_execute* is the genuine-OpenSSL executor; the "python" in
-    // its name is historical, from when a framework Python was the only case
-    // anyone had here. boring_execute* must NOT be used for real OpenSSL: in
-    // modern mode it is skipReadWriteHooks + libraryType "boringssl", which
-    // drops the read/write hooks and sends the hook chain hunting a
-    // bssl::ssl_log_secret symbol that cannot exist in OpenSSL (then into a
-    // pointless Memory.scan); in legacy mode it writes an Apple BoringSSL
-    // struct offset into a genuine OpenSSL SSL_CTX.
-    //
-    // priority 120 is load-bearing, not cosmetic: it makes THIS entry the
-    // deterministic winner of findByLibraryType(darwin, "openssl") on the
-    // tlsLibHunter scan path, which previously depended on Array#sort
-    // stability at equal priority. Do not "tidy" it away.
-    { platform: plattform_name3, pattern: VERSIONED_LIBSSL_DYLIB, hookFn: use_modern ? ssl_python_execute_modern2 : ssl_python_execute2, library: "OpenSSL", excludePathFilter: SYSTEM_LIBRESSL_PATH, priority: 120, libraryType: "openssl", protocol: "tls" },
-    // Everything else called libssl*: libssl.dylib, libssl_custom.dylib,
-    // mylibssl.3.dylib, and statically-bundled BoringSSL copies.
-    { platform: plattform_name3, pattern: ANY_LIBSSL_DYLIB, hookFn: use_modern ? boring_execute_modern3 : boring_execute3, library: "OpenSSL/BoringSSL", excludePattern: VERSIONED_LIBSSL_DYLIB, libraryType: "openssl", protocol: "tls" },
-    // Cronet on Apple: pinned to legacy on both paths — Apple's Cronet build
-    // omits SSL_CTX_set_keylog_callback, so only legacy's ssl_log_secret
-    // byte-pattern works. cronet_execute_modern kept imported for a future fix.
-    { platform: plattform_name3, pattern: /.*cronet.*\.dylib/, hookFn: cronet_execute3, library: "Cronet", libraryType: "boringssl", protocol: "tls" },
-    { platform: plattform_name3, pattern: /.*libnss[0-9]*\.dylib/, hookFn: use_modern ? nss_execute_modern3 : nss_execute3, library: "NSS", libraryType: "nss", protocol: "tls" },
-    // SSH binaries / libraries
-    { platform: plattform_name3, pattern: /.*libssh2?\.dylib/, hookFn: use_modern ? libssh_execute_modern : ssh_execute, library: "libssh", protocol: "ssh" },
-    { platform: plattform_name3, pattern: /^(\/.+\/)?(ssh|sshd|sshd-session|scp|sftp-server)$/, hookFn: use_modern ? openssh_execute_modern : ssh_execute, library: "OpenSSH", protocol: "ssh" },
-    // OHTTP (NSS HPKE) — gated under the TLS family for `--protocol tls`
-    { platform: plattform_name3, pattern: /.*libnss[0-9]*\.dylib/, hookFn: nss_hpke_execute_macos, library: "NSS HPKE (OHTTP)", protocol: "tls", libraryType: "nss_hpke" },
-    // QUIC libraries — gated under the TLS family for `--protocol tls`
-    { platform: plattform_name3, pattern: /.*libquiche\.dylib/, hookFn: quiche_execute3, library: "Cloudflare QUICHE", libraryType: "quiche", protocol: "tls" },
-    { platform: plattform_name3, pattern: /Google Chrome Framework/, hookFn: google_quiche_execute3, library: "Google QUICHE (Chrome)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
-    // Neqo (Firefox HTTP/3) — module is "XUL" at /Applications/Firefox.app/Contents/MacOS/XUL
-    { platform: plattform_name3, pattern: /^XUL$/, hookFn: neqo_execute3, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo", protocol: "tls", supplementary: true },
-    // Hooks contributed by optional units (e.g. the public RC4 key-capture
-    // unit under `--protocol rc4`). Empty when no unit registered.
-    ...collectContributedHooks()
-  ]);
-  const macosLoaderConfig = {
-    platform: plattform_name3,
-    platformLabel: "MacOS",
-    loaderLibrary: /libSystem.B.dylib/,
-    functionName: "dlopen",
-    // Resolve the module path in the dlopen onLeave (as Linux already does).
-    // Without it `modulePath` is undefined on the dynamic-load path, where
-    // `_isExcluded` fails closed for a positive `pathFilter` — so the
-    // LibreSSL entry above could never install for a library that appears
-    // after attach. Python's `_ssl` loads its libssl lazily, which is exactly
-    // that case. The lookup in hookDynamicLoader is try/catch-guarded, so a
-    // not-yet-resolvable module degrades to "no path" instead of throwing
-    // inside the loader hook; the OpenSSL entry's `excludePathFilter` fails
-    // OPEN precisely so that degraded case still gets a hook.
-    extractModulePath: true
-  };
-  runInstallPhases("MacOS", [
-    // NOTE: shares the iOS implementation, so it needs the same additional testing.
-    { label: "ssl-libs", fn: () => hook_macOS_SSL_Libs(hookRegistry, true) },
-    { label: "ohttp", fn: () => installOhttpHooks(plattform_name3, hookRegistry, getModuleNames(), "MacOS", macosLoaderConfig) },
-    { label: "scan-results", fn: () => processScanResults(scan_results, plattform_name3, true, selected_protocols) },
-    { label: "loader", fn: () => hookDynamicLoader(macosLoaderConfig, hookRegistry, getModuleNames(), false, selected_protocols) }
-  ]);
-}
-
-// agent/legacy/tls/platforms/macos/openssl_boringssl_macos.ts
-init_shared_structures();
-
-// agent/legacy/tls/shared/apple_keylog_offset.ts
-init_node_globals();
-var IOS_OFFSETS = [
-  { minMajor: 18, offset: 784, provenance: "measured-from-apple-binary", note: "iOS 18.6 + 26.2 simulator runtimes" },
-  { minMajor: 17, offset: 776, provenance: "measured-from-apple-binary", note: "iOS 17.0 + 17.5 simulator runtimes" },
-  { minMajor: 16, offset: 768, provenance: "field-reported", note: "contributed in 2be00c64; worked in the field, not re-measured here" },
-  { minMajor: 15, offset: 760, provenance: "field-reported", note: "contributed in 22386f56; worked in the field, not re-measured here" },
-  { minMajor: 14, offset: 696, provenance: "field-reported", note: "contributed in 22386f56; worked in the field, not re-measured here" },
-  { minMajor: 0, offset: 680, provenance: "field-reported", note: "original codeshare value, iOS < 14" }
-];
-var MACOS_OFFSETS = [
-  { minMajor: 15, offset: 784, provenance: "inferred-from-ios-twin", note: "matches measured iOS 18/26 value; confirmed by live derivation on macOS 26.3.1" },
-  { minMajor: 14, offset: 776, provenance: "inferred-from-ios-twin", note: "matches measured iOS 17 value" },
-  { minMajor: 13, offset: 768, provenance: "inferred-from-ios-twin", note: "matches iOS 16 bucket" },
-  { minMajor: 12, offset: 760, provenance: "inferred-from-ios-twin", note: "matches iOS 15 bucket" },
-  { minMajor: 11, offset: 696, provenance: "inferred-from-ios-twin", note: "matches iOS 14 bucket" },
-  { minMajor: 0, offset: 680, provenance: "field-reported", note: "original codeshare value" }
-];
-function readCoreFoundationVersion() {
-  try {
-    const cf = Process.findModuleByName("CoreFoundation");
-    if (cf === null)
-      return null;
-    const sym = cf.findExportByName("kCFCoreFoundationVersionNumber");
-    if (sym === null || sym.isNull())
-      return null;
-    return sym.readDouble();
-  } catch (e) {
-    return null;
-  }
-}
-function coreFoundationVersionToMajor(cf) {
-  if (cf > 1979.1)
-    return 17;
-  if (cf >= 1946.102)
-    return 16;
-  if (cf >= 1854)
-    return 15;
-  if (cf >= 1751.108)
-    return 14;
-  return 13;
-}
-function detectMajorVersion() {
-  const sysctlVersion = darwinProductVersion();
-  if (sysctlVersion !== null) {
-    const major = darwinMajorVersion();
-    if (major > 0) {
-      return { major, source: "sysctl", detail: `kern.osproductversion=${sysctlVersion}` };
-    }
-  }
-  try {
-    if (ObjC.available && ObjC.classes.NSProcessInfo !== void 0) {
-      const versionString = ObjC.classes.NSProcessInfo.processInfo().operatingSystemVersionString().toString();
-      const matched = versionString.match(/(\d+)\.(\d+)/);
-      if (matched !== null) {
-        return { major: parseInt(matched[1], 10), source: "NSProcessInfo", detail: versionString };
-      }
-    }
-  } catch (e) {
-  }
-  const cf = readCoreFoundationVersion();
-  if (cf !== null) {
-    return {
-      major: coreFoundationVersionToMajor(cf),
-      source: "CoreFoundation",
-      detail: `kCFCoreFoundationVersionNumber=${cf}`
-    };
-  }
-  return { major: -1, source: "unknown", detail: "no version source available" };
-}
-var MIN_PLAUSIBLE_CTX_FIELD_OFFSET = 128;
-var MAX_PLAUSIBLE_CTX_FIELD_OFFSET = 4096;
-function deriveOffsetFromBinary(moduleName) {
-  if (Process.arch !== "arm64")
-    return null;
-  try {
-    const mod = Process.findModuleByName(moduleName);
-    if (mod === null)
-      return null;
-    resetReadableCache();
-    const decodeSetter = (addr) => {
-      if (addr === null || addr.isNull())
-        return null;
-      if (!isReadable(addr, 8))
-        return null;
-      const body = addr.readU32();
-      if (!isSTRimmU64(body))
-        return null;
-      if (regRd(body) !== 1 || regRn(body) !== 0)
-        return null;
-      if (!isRET(addr.add(4).readU32()))
-        return null;
-      const offset = decodeSTRU64Imm(body);
-      if (offset < MIN_PLAUSIBLE_CTX_FIELD_OFFSET || offset > MAX_PLAUSIBLE_CTX_FIELD_OFFSET)
-        return null;
-      return offset;
-    };
-    if (decodeSetter(mod.findExportByName("SSL_CTX_set_info_callback")) === null) {
-      devlog(`[${moduleName}] setter decode calibration failed \u2014 not deriving the keylog offset`);
-      return null;
-    }
-    for (const sym of mod.enumerateSymbols()) {
-      if (sym.name !== "SSL_CTX_set_keylog_callback" && sym.name !== "_SSL_CTX_set_keylog_callback")
-        continue;
-      const offset = decodeSetter(sym.address);
-      if (offset !== null)
-        return offset;
-      devlog(`[${moduleName}] found SSL_CTX_set_keylog_callback but its body is not the expected setter shape`);
-      return null;
-    }
-    return null;
-  } catch (e) {
-    devlog(`[${moduleName}] keylog offset derivation failed: ${e}`);
-    return null;
-  }
-}
-function resolveKeylogCallbackOffset(platform, moduleName) {
-  const table = platform === "iOS" ? IOS_OFFSETS : MACOS_OFFSETS;
-  const detected = detectMajorVersion();
-  if (moduleName !== void 0) {
-    const selfDerived = deriveOffsetFromBinary(moduleName);
-    if (selfDerived !== null) {
-      return {
-        offset: selfDerived,
-        major: detected.major,
-        provenance: "measured-on-target",
-        versionSource: detected.source,
-        versionDetail: detected.detail,
-        note: `decoded from ${moduleName}!SSL_CTX_set_keylog_callback`
-      };
-    }
-  }
-  const bucket = table.find((b) => detected.major >= b.minMajor) ?? table[table.length - 1];
-  return {
-    offset: bucket.offset,
-    major: detected.major,
-    provenance: bucket.provenance,
-    versionSource: detected.source,
-    versionDetail: detected.detail,
-    note: bucket.note
-  };
-}
-function hex(value) {
-  return "0x" + value.toString(16).toUpperCase();
-}
-function installKeylogCallbackViaCtxWrite(setInfoCallbackAddress, keylogCallback, platform, moduleName) {
-  const resolved = resolveKeylogCallbackOffset(platform, moduleName);
-  devlog(`[${platform}] SSL_CTX.keylog_callback offset ${hex(resolved.offset)} (OS major ${resolved.major} via ${resolved.versionSource}: ${resolved.versionDetail}; provenance ${resolved.provenance} \u2014 ${resolved.note})`);
-  let installedOnce = false;
-  let vetoedOnce = false;
-  Interceptor.attach(setInfoCallbackAddress, {
-    onEnter(args) {
-      try {
-        const ctx = ptr(args[0]);
-        if (ctx.isNull())
-          return;
-        const target = ctx.add(resolved.offset);
-        if (!isWritable(target, Process.pointerSize)) {
-          if (!vetoedOnce) {
-            vetoedOnce = true;
-            log(`[-] ${platform}: refusing to install the BoringSSL keylog callback \u2014 SSL_CTX+${hex(resolved.offset)} is not in a writable mapping.`);
-            log(`[-] The keylog_callback offset for this OS is wrong (detected OS major ${resolved.major} via ${resolved.versionSource}: ${resolved.versionDetail}, offset provenance: ${resolved.provenance}). No TLS keys will be extracted.`);
-            log(`[-] Please report this with your exact OS version at https://github.com/fkie-cad/friTap/issues \u2014 and run 'python dev/derive_boringssl_keylog_offset.py' if you have Xcode installed.`);
-          }
-          return;
-        }
-        const current = safeReadPointer(target);
-        if (current === null) {
-          if (!vetoedOnce) {
-            vetoedOnce = true;
-            log(`[-] ${platform}: SSL_CTX+${hex(resolved.offset)} became unreadable \u2014 skipping the keylog callback install.`);
-          }
-          return;
-        }
-        if (current.equals(keylogCallback))
-          return;
-        if (!current.isNull()) {
-          if (!vetoedOnce) {
-            vetoedOnce = true;
-            log(`[-] ${platform}: refusing to overwrite SSL_CTX+${hex(resolved.offset)} \u2014 it already holds ${current}, so this is not an empty keylog_callback field.`);
-            log(`[-] Writing there would corrupt BoringSSL's own state and crash the target (fkie-cad/friTap#65). Detected OS major ${resolved.major} via ${resolved.versionSource}: ${resolved.versionDetail}; offset provenance: ${resolved.provenance}. No TLS keys will be extracted.`);
-            log(`[-] Please report your exact OS version at https://github.com/fkie-cad/friTap/issues so the offset table can be fixed.`);
-          }
-          return;
-        }
-        target.writePointer(keylogCallback);
-        if (!installedOnce) {
-          installedOnce = true;
-          devlog(`[${platform}] installed BoringSSL keylog callback at SSL_CTX+${hex(resolved.offset)}`);
-        }
-      } catch (e) {
-        if (!vetoedOnce) {
-          vetoedOnce = true;
-          log(`[-] ${platform}: keylog callback install failed: ${e}`);
-        }
-      }
-    }
-  });
-  return resolved;
-}
-
-// agent/legacy/tls/platforms/macos/openssl_boringssl_macos.ts
-var OpenSSL_BoringSSL_MacOS = class extends OpenSSL_BoringSSL2 {
-  moduleName;
-  socket_library;
-  install_tls_keys_callback_hook() {
-    if (ObjC.available) {
-      const setInfoCallback = this.addresses[this.module_name]["SSL_CTX_set_info_callback"];
-      if (setInfoCallback === void 0 || setInfoCallback === null || setInfoCallback.isNull()) {
-        devlog("[MacOS] SSL_CTX_set_info_callback unresolved \u2014 cannot install the keylog callback");
-        return;
-      }
-      installKeylogCallbackViaCtxWrite(setInfoCallback, this.keylog_callback, "MacOS", this.module_name);
-    }
-  }
-  constructor(moduleName, socket_library6, is_base_hook) {
-    var library_method_mapping = {};
-    library_method_mapping[`*${moduleName}*`] = ["SSL_CTX_set_info_callback"];
-    super(moduleName, socket_library6, is_base_hook, library_method_mapping);
-    this.moduleName = moduleName;
-    this.socket_library = socket_library6;
-  }
-  async execute_hooks() {
-    OpenSSL_BoringSSL2.initializePipeline(isPatternReplaced() ? patterns : void 0, experimental);
-    await this.resolveWithPipelineAsync(["SSL_CTX_set_info_callback"]);
-    this.install_tls_keys_callback_hook();
-  }
-};
-var OpenSSL_From_Python_MacOS = class extends OpenSSL_BoringSSL2 {
-  moduleName;
-  socket_library;
-  constructor(moduleName, socket_library6, is_base_hook) {
-    var library_method_mapping = {};
-    library_method_mapping[`*${moduleName}*`] = ["SSL_CTX_set_keylog_callback", "SSL_CTX_new", "SSL_new", "SSL_get_SSL_CTX"];
-    super(moduleName, socket_library6, is_base_hook, library_method_mapping);
-    this.moduleName = moduleName;
-    this.socket_library = socket_library6;
-  }
-  install_openssl_keys_callback_hook() {
-    var instance = this;
-    const ssl_new_ptr = this.addresses[this.module_name]["SSL_new"];
-    const ssl_get_ctx_ptr = this.addresses[this.module_name]["SSL_get_SSL_CTX"];
-    const set_keylog_cb_ptr = this.addresses[this.module_name]["SSL_CTX_set_keylog_callback"];
-    if (!ssl_new_ptr || !ssl_get_ctx_ptr || !set_keylog_cb_ptr) {
-      devlog_error(`Required functions not found in ${this.module_name}`);
-      return;
-    }
-    this.SSL_CTX_set_keylog_callback = new NativeFunction(set_keylog_cb_ptr, "void", ["pointer", "pointer"]);
-    const tracker = createKeylogCallbackTracker(this.module_name, set_keylog_cb_ptr, instance.keylog_callback, true);
-    try {
-      const SSL_get_SSL_CTX = new NativeFunction(ssl_get_ctx_ptr, "pointer", ["pointer"]);
-      Interceptor.attach(ssl_new_ptr, {
-        onEnter(args) {
-        },
-        onLeave(retval) {
-          if (retval.isNull()) {
-            devlog_error("SSL_new returned NULL");
-            return;
-          }
-          const ssl_ptr = retval;
-          const ctx_ptr = SSL_get_SSL_CTX(ssl_ptr);
-          if (ctx_ptr.isNull()) {
-            devlog_error("SSL_get_SSL_CTX returned NULL");
-            return;
-          }
-          try {
-            devlog("Installing callback for OpenSSL_From_Python for module: " + instance.module_name);
-            tracker.install(ctx_ptr);
-          } catch (e) {
-            devlog_error(`Failed to set keylog callback: ${e}`);
-          }
-        }
-      });
-    } catch (e) {
-      devlog_error(`Error hooking ${instance.module_name}: ${e}`);
-    }
-    try {
-      Interceptor.attach(set_keylog_cb_ptr, {
-        onEnter: function(args) {
-          let callback_func = args[1];
-          if (callback_func.isNull() || tracker.sealed)
-            return;
-          tracker.noteAppCallback(args[0], callback_func);
-          Interceptor.attach(callback_func, {
-            onEnter: function(args2) {
-              sendKeylog(args2[1].readCString());
-            }
-          });
-        }
-      });
-    } catch (e) {
-      devlog_error(`Failed to attach to SSL_CTX_set_keylog_callback in ${instance.module_name}: ${e}`);
-    }
-  }
-  async execute_hooks() {
-    OpenSSL_BoringSSL2.initializePipeline(isPatternReplaced() ? patterns : void 0, experimental);
-    await this.resolveWithPipelineAsync([
-      "SSL_CTX_set_keylog_callback",
-      "SSL_CTX_new",
-      "SSL_new",
-      "SSL_get_SSL_CTX"
-    ]);
-    this.install_openssl_keys_callback_hook();
-  }
-};
-function boring_execute3(moduleName, is_base_hook) {
-  enableDeepSymbolResolution(moduleName);
-  executeSSLLibrary(OpenSSL_BoringSSL_MacOS, moduleName, socket_library3, is_base_hook);
-}
-function ssl_python_execute2(moduleName, is_base_hook) {
-  enableDeepSymbolResolution(moduleName);
-  executeSSLLibrary(OpenSSL_From_Python_MacOS, moduleName, socket_library3, is_base_hook);
-}
-
-// agent/legacy/tls/platforms/ios/openssl_boringssl_ios.ts
 var OpenSSL_BoringSSL_iOS = class extends OpenSSL_BoringSSL2 {
   moduleName;
   socket_library;
@@ -39850,13 +40079,13 @@ function openssl_execute_modern(moduleName, is_base_hook) {
 
 // agent/legacy/tls/platforms/ios/libressl_ios.ts
 init_node_globals();
-function libressl_execute2(moduleName, is_base_hook) {
+function libressl_execute3(moduleName, is_base_hook) {
   executeSSLLibrary(LibreSSL_MacOS, moduleName, socket_library4, is_base_hook);
 }
 
 // agent/tls/platforms/ios/libressl_ios.ts
 init_node_globals();
-function libressl_execute_modern2(moduleName, is_base_hook) {
+function libressl_execute_modern3(moduleName, is_base_hook) {
   executeFromDefinition(createLibreSslDefinition(), moduleName, socket_library4, is_base_hook, enable_default_fd);
 }
 
@@ -40150,7 +40379,7 @@ function load_ios_hooking_agent() {
     // either/or selection in fritap_agent.ts (only one platform agent loads
     // per run) is therefore a load-bearing invariant now, not just a tidiness
     // choice — registering both would double every hook below.
-    { platform: plattform_name4, pattern: VERSIONED_LIBSSL_DYLIB, hookFn: use_modern ? libressl_execute_modern2 : libressl_execute2, library: "LibreSSL", pathFilter: SYSTEM_LIBRESSL_PATH, priority: 150, libraryType: "libressl", protocol: "tls" },
+    { platform: plattform_name4, pattern: VERSIONED_LIBSSL_DYLIB, hookFn: use_modern ? libressl_execute_modern3 : libressl_execute3, library: "LibreSSL", pathFilter: SYSTEM_LIBRESSL_PATH, priority: 150, libraryType: "libressl", protocol: "tls" },
     { platform: plattform_name4, pattern: VERSIONED_LIBSSL_DYLIB, hookFn: use_modern ? openssl_execute_modern : openssl_execute, library: "OpenSSL", excludePathFilter: SYSTEM_LIBRESSL_PATH, priority: 120, libraryType: "openssl", protocol: "tls" },
     { platform: plattform_name4, pattern: ANY_LIBSSL_DYLIB, hookFn: use_modern ? boring_execute_modern4 : boring_execute4, library: "OpenSSL/BoringSSL", excludePattern: VERSIONED_LIBSSL_DYLIB, libraryType: "openssl", protocol: "tls" },
     // Cronet on Apple: pinned to legacy on both paths — Apple's Cronet build
@@ -40927,6 +41156,20 @@ function ssl_python_execute_modern3(moduleName, is_base_hook) {
   executeFromDefinition(def, moduleName, socket_library5, is_base_hook, enable_default_fd);
 }
 
+// agent/tls/platforms/windows/libressl_windows.ts
+init_node_globals();
+function libressl_execute_modern4(moduleName, is_base_hook) {
+  enableDeepSymbolResolution(moduleName);
+  executeFromDefinition(createLibreSslDefinition(), moduleName, socket_library5, is_base_hook, enable_default_fd);
+}
+
+// agent/legacy/tls/platforms/windows/libressl_windows.ts
+init_node_globals();
+function libressl_execute4(moduleName, is_base_hook) {
+  enableDeepSymbolResolution(moduleName);
+  executeSSLLibrary(LibreSSL_MacOS, moduleName, socket_library5, is_base_hook);
+}
+
 // agent/legacy/tls/platforms/windows/gnutls_windows.ts
 init_node_globals();
 var GnuTLS_Windows = class extends GnuTLS2 {
@@ -41475,6 +41718,7 @@ function neqo_execute4(moduleName, is_base_hook) {
 // agent/platforms/windows.ts
 var plattform_name5 = PLATFORM_WINDOWS;
 var socket_library5 = "WS2_32.dll";
+var libssl_dispatch2 = () => libresslAwareDispatch(use_modern ? libressl_execute_modern4 : libressl_execute4, use_modern ? boring_execute_modern5 : boring_execute5);
 function hook_Windows_SSL_Libs(hookRegistry2, is_base_hook) {
   ssl_library_loader(plattform_name5, hookRegistry2, getModuleNames(), "Windows", is_base_hook, selected_protocols);
 }
@@ -41485,8 +41729,12 @@ function load_windows_hooking_agent() {
     // pathFilter. Without it C:\Python312\DLLs\libssl-3.dll matched BOTH,
     // and since ssl_library_loader invokes EVERY match, two executors
     // installed on the same module.
-    { platform: plattform_name5, pattern: /^(libssl|LIBSSL)-[0-9]+(_[0-9]+)?\.dll$/, hookFn: use_modern ? boring_execute_modern5 : boring_execute5, library: "OpenSSL/BoringSSL", excludePathFilter: "python", libraryType: "openssl", protocol: "tls" },
+    { platform: plattform_name5, pattern: /^(libssl|LIBSSL)-[0-9]+(_[0-9]+)?\.dll$/, hookFn: libssl_dispatch2(), library: "OpenSSL/BoringSSL/LibreSSL", excludePathFilter: "python", libraryType: "openssl", protocol: "tls" },
     { platform: plattform_name5, pattern: /^.*libssl.*\.dll$/, hookFn: use_modern ? ssl_python_execute_modern3 : ssl_python_execute3, library: "Python OpenSSL", pathFilter: "python", libraryType: "openssl", protocol: "tls" },
+    // Scan-only LibreSSL route (see linux.ts for rationale): findByLibraryType
+    // picks this up for a module tlsLibHunter classifies as LibreSSL (e.g. a
+    // statically linked curl.exe). Sentinel pattern never name-matches.
+    { platform: plattform_name5, pattern: /__libressl_scan_only__/, hookFn: use_modern ? libressl_execute_modern4 : libressl_execute4, library: "LibreSSL", libraryType: "libressl", protocol: "tls" },
     { platform: plattform_name5, pattern: /^.*(wolfssl|WOLFSSL).*\.dll$/, hookFn: use_modern ? wolfssl_execute_modern3 : wolfssl_execute3, library: "WolfSSL", libraryType: "wolfssl", protocol: "tls" },
     { platform: plattform_name5, pattern: /^.*(libgnutls|LIBGNUTLS)-[0-9]+\.dll$/, hookFn: use_modern ? gnutls_execute_modern3 : gnutls_execute3, library: "GnuTLS", libraryType: "gnutls", protocol: "tls" },
     { platform: plattform_name5, pattern: /^(nspr|NSPR)[0-9]*\.dll/, hookFn: use_modern ? nss_execute_modern4 : nss_execute4, library: "NSS", libraryType: "nss", protocol: "tls" },
@@ -41593,27 +41841,24 @@ var WINE_KEYLOG_SIGNATURES = [
 function isPlausibleSecretLen(len) {
   return len > 0 && len < 1024;
 }
-function readWineKeylogLine(ctx, sig) {
-  let a0, a1, a2, a3;
-  if (sig.abi === "aarch64") {
+function abiArg(ctx, abi, idx) {
+  if (abi === "aarch64") {
     const c = ctx;
-    a0 = c.x0;
-    a1 = c.x1;
-    a2 = c.x2;
-    a3 = c.x3;
-  } else if (sig.abi === "win64") {
+    return [c.x0, c.x1, c.x2, c.x3, c.x4, c.x5][idx];
+  } else if (abi === "win64") {
     const c = ctx;
-    a0 = c.rcx;
-    a1 = c.rdx;
-    a2 = c.r8;
-    a3 = c.r9;
+    if (idx < 4)
+      return [c.rcx, c.rdx, c.r8, c.r9][idx];
+    return c.rsp.add(32 + (idx - 4) * 8).readPointer();
   } else {
     const c = ctx;
-    a0 = c.rdi;
-    a1 = c.rsi;
-    a2 = c.rdx;
-    a3 = c.rcx;
+    if (idx < 6)
+      return [c.rdi, c.rsi, c.rdx, c.rcx, c.r8, c.r9][idx];
+    return c.rsp.add(8 + (idx - 6) * 8).readPointer();
   }
+}
+function readWineKeylogLine(ctx, sig) {
+  const [a0, a1, a2, a3] = [0, 1, 2, 3].map((i) => abiArg(ctx, sig.abi, i));
   if (a0.isNull() || a1.isNull() || a2.isNull())
     return null;
   const secretLen = a3.toInt32();
@@ -41688,13 +41933,13 @@ function enumerateExecRanges(mod) {
   }
   return ranges;
 }
-function scanRangesForPattern(ranges, pattern, sig, modName) {
+function scanRangesForPattern(ranges, pattern, attach2, modName) {
   let found = false;
   for (const range of ranges) {
     try {
       const matches = Memory.scanSync(range.base, range.size, pattern);
       for (const m2 of matches) {
-        attachKeylogHook(m2.address, sig);
+        attach2(m2.address);
         found = true;
       }
     } catch (e) {
@@ -41705,10 +41950,13 @@ function scanRangesForPattern(ranges, pattern, sig, modName) {
 }
 function installWineKeylogPatternHooks(moduleFilter, userPatterns) {
   const archKey = normalizeArchKey(Process.arch);
-  if (archKey !== "x64" && (!userPatterns || !userPatterns.modules)) {
+  const scanKeylogSigs = archKey === "x64" || !!userPatterns?.modules;
+  if (!scanKeylogSigs) {
     devlog(`[Wine] keylog pattern hooking: no bundled ${archKey} patterns and no --patterns override; symbol-based gnutls hooks (native path) still active.`);
-    return;
   }
+  const libreHkdfPatterns = resolveKdfPattern("hkdfWithLen", userPatterns);
+  if (!scanKeylogSigs && libreHkdfPatterns.length === 0)
+    return;
   let modules;
   try {
     modules = Process.enumerateModules();
@@ -41720,25 +41968,71 @@ function installWineKeylogPatternHooks(moduleFilter, userPatterns) {
     const needle = moduleFilter.toLowerCase();
     modules = modules.filter((m2) => m2.name.toLowerCase().includes(needle));
   }
-  const sigPatterns = WINE_KEYLOG_SIGNATURES.map((sig) => ({
-    sig,
-    patterns: resolvePatterns(sig, userPatterns)
-  }));
+  const sigPatterns = scanKeylogSigs ? WINE_KEYLOG_SIGNATURES.map((sig) => ({ sig, patterns: resolvePatterns(sig, userPatterns) })) : [];
   for (const mod of modules) {
     const ranges = enumerateExecRanges(mod);
     if (ranges.length === 0)
       continue;
     for (const { sig, patterns: patterns2 } of sigPatterns) {
       for (const pattern of patterns2) {
-        if (scanRangesForPattern(ranges, pattern, sig, mod.name))
+        if (scanRangesForPattern(ranges, pattern, (a) => attachKeylogHook(a, sig), mod.name))
           break;
       }
     }
+    for (const pattern of libreHkdfPatterns) {
+      if (scanRangesForPattern(ranges, pattern, attachLibreSslHkdfHook, mod.name))
+        break;
+    }
   }
+}
+function currentWineAbi() {
+  if (Process.arch === "arm64")
+    return "aarch64";
+  return "win64";
+}
+function attachLibreSslHkdfHook(address) {
+  const key = "hkdf:" + address.toString();
+  if (hookedAddresses.has(key))
+    return;
+  hookedAddresses.add(key);
+  installLibreSslClientRandomViaSend();
+  const abi = currentWineAbi();
+  Interceptor.attach(address, {
+    onEnter() {
+      try {
+        this.outPtr = abiArg(this.context, abi, 0);
+        this.label = abiArg(this.context, abi, 3).readCString();
+      } catch (_) {
+        this.label = null;
+      }
+    },
+    onLeave() {
+      try {
+        if (!this.label)
+          return;
+        const nss = TLS13_LABEL_MAP[this.label];
+        if (!nss)
+          return;
+        const dataPtr = this.outPtr.readPointer();
+        const dataLen = this.outPtr.add(Process.pointerSize).readULong();
+        if (dataPtr.isNull() || dataLen === 0 || dataLen > 256)
+          return;
+        const cr = getLibreSslClientRandom();
+        if (!cr)
+          return;
+        const secret = toHexString(dataPtr.readByteArray(dataLen));
+        sendKeylog(`${nss} ${cr} ${secret}`);
+      } catch (e) {
+        devlog_error(`[Wine/LibreSSL] hkdf onLeave error: ${e}`);
+      }
+    }
+  });
+  log(`[Wine/LibreSSL] hkdf hook @ ${address}`);
 }
 
 // agent/platforms/wine.ts
 var platform_name = PLATFORM_WINE;
+var libssl_dispatch_wine = () => libresslAwareDispatch(use_modern ? libressl_execute_modern4 : libressl_execute4, use_modern ? boring_execute_modern5 : boring_execute5);
 function tryGlobalExport2(name) {
   try {
     return Module.getGlobalExportByName(name);
@@ -42109,8 +42403,12 @@ function load_wine_hooking_agent() {
   log("[Wine] Loading Linux agent for native .so libraries...");
   load_linux_hooking_agent(true);
   hookRegistry.registerAll([
-    { platform: platform_name, pattern: /^(libssl|LIBSSL)-[0-9]+(_[0-9]+)?\.dll$/i, hookFn: use_modern ? boring_execute_modern5 : boring_execute5, library: "OpenSSL/BoringSSL", libraryType: "openssl" },
-    { platform: platform_name, pattern: /^.*libssl.*\.dll$/i, hookFn: use_modern ? boring_execute_modern5 : boring_execute5, library: "OpenSSL/BoringSSL", libraryType: "openssl" },
+    { platform: platform_name, pattern: /^(libssl|LIBSSL)-[0-9]+(_[0-9]+)?\.dll$/i, hookFn: libssl_dispatch_wine(), library: "OpenSSL/BoringSSL/LibreSSL", libraryType: "openssl" },
+    { platform: platform_name, pattern: /^.*libssl.*\.dll$/i, hookFn: libssl_dispatch_wine(), library: "OpenSSL/BoringSSL/LibreSSL", libraryType: "openssl" },
+    // LibreSSL's TLS wrapper DLL (libtls-NN.dll). Statically linked LibreSSL
+    // hosts have no DLL at all — those are covered by the GDB extractor and
+    // by the pattern tier of wine_keylog_pattern_hook.ts.
+    { platform: platform_name, pattern: /^(libtls|LIBTLS)-[0-9]+(_[0-9]+)?\.dll$/i, hookFn: libssl_dispatch_wine(), library: "LibreSSL (libtls)", libraryType: "libressl" },
     { platform: platform_name, pattern: /^.*(wolfssl|WOLFSSL).*\.dll$/i, hookFn: use_modern ? wolfssl_execute_modern3 : wolfssl_execute3, library: "WolfSSL", libraryType: "wolfssl" },
     { platform: platform_name, pattern: /^.*(libgnutls|LIBGNUTLS)-[0-9]+\.dll$/i, hookFn: use_modern ? gnutls_execute_modern3 : gnutls_execute3, library: "GnuTLS", libraryType: "gnutls" },
     { platform: platform_name, pattern: /^(nspr|NSPR)[0-9]*\.dll/i, hookFn: use_modern ? nss_execute_modern4 : nss_execute4, library: "NSS", libraryType: "nss" },

@@ -12,6 +12,122 @@ friTap's Wine support allows you to intercept TLS traffic from Windows applicati
 1. **Native Linux TLS Libraries** - Hooks Linux `.so` libraries that Wine applications may use
 2. **Windows DLL Interception** - Hooks Windows TLS libraries (`.dll` files) bundled with applications
 
+## Key Extraction via GDB (default on Linux)
+
+When you point friTap at a Wine target on a Linux host, friTap now **automatically
+routes TLS key extraction through a GDB-based extractor** (`agent_gdb/wine`) instead
+of injecting Frida. gdb and Frida both rely on `ptrace`, so they cannot drive the
+same process at once; the GDB path is the reliable one for Wine. No `--experimental`
+flag is required for this.
+
+```bash
+# Spawn: friTap detects the Wine launcher, runs the GDB extractor, writes keys.
+fritap -s -k keys.log wine /path/to/app.exe
+
+# Or give the Windows binary directly — a .exe/PE on Linux is auto-detected as a
+# Wine target and `wine` is prepended for you.
+fritap -s -k keys.log /path/to/app.exe
+
+# Attach to an already-running Wine process by PID.
+fritap -k keys.log $(pgrep -f app.exe)
+```
+
+Control this with `--wine`:
+
+- `--wine auto` (default): detect a Wine target (a `wine …` command, or a Windows
+  `.exe`/PE given directly) and use the GDB extractor.
+- `--wine on`: force the GDB Wine route on a local Linux target.
+- `--wine off`: never use it — fall through to the normal Frida flow (e.g. the
+  experimental Wine agent). An explicit `--backend frida` likewise keeps the Frida
+  path for a Wine target.
+
+!!! info "Key extraction only — no plaintext for Wine"
+    This GDB path extracts **TLS key material only** (an NSS key log, directly
+    loadable by Wireshark). Decrypted-plaintext capture (`-p`/pcap, live view,
+    payload modification) depends on Frida's `SSL_read`/`SSL_write` hooks, which
+    are not run on the Wine path. If you request them, friTap prints a notice that
+    plaintext capture is not currently supported for Wine and continues with key
+    extraction. Record a pcap separately (e.g. with `tcpdump`) and decrypt it in
+    Wireshark using the extracted key log.
+
+### Requirements for the GDB path
+
+- `gdb` on `PATH`, **built with Python support** (`gdb -batch -ex "python print(1)"`).
+  Works with older gdb too (tested on gdb 10.2): the extractor no longer requires
+  `gdb.events.executable_changed` or `Breakpoint.locations` (both gdb ≥ 13).
+- `wine` installed. friTap resolves the actual ELF loader automatically, handling
+  both the classic layout (`wine-preloader`) and the newer *wow64* layout
+  (a separate `wine64` loader, e.g. Wine 9.x on Ubuntu).
+- `kernel.yama.ptrace_scope=0` (or run as root): the GDB path attaches to the Wine
+  process. Set it with `sudo sysctl -w kernel.yama.ptrace_scope=0`.
+
+!!! note "How the `--spawn` path works (launch + freeze-on-detect + attach)"
+    gdb-*spawning* Wine tracks the whole wow64 process tree (wineserver, services,
+    …) and is too heavy — the app never reaches TLS. So friTap instead launches
+    Wine **normally** (fast, untraced), **fast-polls `/proc`** for the process that
+    maps the app's exe image, and **`SIGSTOP`s it the instant it appears** — before
+    it reaches the TLS handshake. gdb then attaches to the frozen process, installs
+    its hooks, and friTap resumes the app with `SIGCONT` while gdb stays attached
+    (`set detach-on-fork on` so the app's vfork'd Wine helpers run free). This
+    eliminates the attach race for short one-shots like `curl` (whole run ≈ 0.5 s,
+    handshake ≈ 150 ms after the image maps). Needs `ptrace_scope=0` as above.
+
+### Signatures and different Wine / library builds
+
+The extractor locates the TLS keylog functions (GnuTLS, OpenSSL `SSL_log_secret`)
+and the Wine loader entry points by **byte-signature scanning**. These signatures
+are specific to a given Wine / TLS-library build, so friTap ships several and treats
+extra ones as fallbacks: it scans every signature against the target's executable
+memory, and a re-scan is triggered on each shared-object load. If your Wine or
+GnuTLS/OpenSSL build differs from the shipped signatures, regenerate them:
+
+- With Ghidra/PyGhidra: `python agent_gdb/wine/utils/wine_hunter.py -i <inputs> -j patterns.json`
+  (see `agent_gdb/wine/utils/README.md`), then supply them via `--patterns patterns.json`
+  to `agent_gdb/wine/wine_key_extract.py` (which loads them through the
+  `FRITAP_PATTERNS` environment variable).
+- Or add the new hex signatures directly to `DEFAULT_TLS_PATTERNS` /
+  `DEFAULT_WINE_PATTERNS` in `agent_gdb/wine/gdb_script/gdb_wine_extract.py`.
+
+!!! note "GnuTLS builds that inline `_gnutls_call_keylog_func`"
+    On some distributions (e.g. Ubuntu's gnutls 3.8.x) `_gnutls_call_keylog_func`
+    is inlined into the key-schedule code, so there is no standalone function to
+    hook. For these, the extractor ships a fallback that hooks the registered NSS
+    keylog **callback** instead (`GnuTLSNssKeylogFuncUnixBP`). gnutls invokes that
+    callback for every secret of every handshake regardless of whether
+    `SSLKEYLOGFILE` is set, so keys are still captured passively. Wine's Schannel
+    uses the host's native `libgnutls`, so this covers Windows apps that use the
+    OS TLS stack (WinHTTP/WinINet/Schannel). Windows apps that **bundle** their own
+    TLS do not use gnutls:
+
+    * A bundled **BoringSSL/OpenSSL** `libssl` needs the `SSL_log_secret`
+      signature.
+    * A bundled **LibreSSL** (e.g. a curl-for-win `curl.exe` statically linked
+      against LibreSSL) has **no** `SSL_log_secret` and **never** invokes the
+      keylog callback — its keys come from the KDF functions
+      (`tls13_hkdf_expand_label_with_length` for TLS 1.3, `tls1_PRF` for TLS 1.2).
+      friTap ships x86-64 signatures for these and reconstructs NSS keylog lines
+      (handler `LibreSSLHkdfExpandLabelWinBP`). `client_random` is **not**
+      reachable from any LibreSSL KDF frame, so friTap recovers it the same way
+      the Windows Schannel path does — by parsing the plaintext ClientHello off
+      the socket: it resolves `ws2_32!send` from the loaded PE export table and
+      reads the 32-byte random (handler `Ws2SendClientHelloBP`). No struct
+      offsets or `--patterns` are needed — the static curl-for-win case works out
+      of the box. A dynamically linked LibreSSL `libssl-*.dll` / `libtls-*.dll`
+      instead uses the exported `SSL_get_client_random`.
+
+You can also run the extractor standalone, outside friTap:
+
+```bash
+python agent_gdb/wine/wine_key_extract.py --spawn /path/to/app.exe -k keys.log -- <args>
+python agent_gdb/wine/wine_key_extract.py --attach <pid> -k keys.log
+```
+
+---
+
+The remainder of this guide covers the **experimental Frida-based** Wine agent
+(`--experimental`), which is the path used for the hybrid native/DLL hooking and is
+the only route that can produce decrypted plaintext.
+
 ## Prerequisites
 
 ### System Requirements
@@ -127,7 +243,6 @@ sudo WINEPREFIX=/root/.wine -E fritap --experimental -k keys.log \
 Do **not** point a root-running Wine at a user-owned `~/.wine` — Wine will
 refuse the prefix and exit before friTap can hook anything.
 
->>>>>>> a8fe099f667b13ffeb2ea4e67031af5ee8228355
 ## Deployment Models
 
 There are two ways to run friTap against a Wine target:
@@ -245,7 +360,9 @@ gated behind `--experimental` and work on both the legacy (default) and
 |----------------------|-----|--------------|--------|
 | `_gnutls_call_keylog_func` | System V (`rdi,rsi,rdx,rcx`) | x86-64 | native `libgnutls.so` **and Windows schannel** (via Wine's GnuTLS) |
 | `_gnutls_call_keylog_func` | Win64 (`rcx,rdx,r8,r9`) | x86-64 | PE-compiled `libgnutls-*.dll` bundled with an app |
-| `SSL_log_secret` | Win64 | x86-64 | PE-compiled OpenSSL/LibreSSL `libssl` |
+| `SSL_log_secret` | Win64 | x86-64 | PE-compiled OpenSSL/**BoringSSL** `libssl` (NOT LibreSSL) |
+| `tls13_hkdf_expand_label_with_length` (+ `ws2_32!send` for `client_random`) | Win64 | x86-64 | **LibreSSL** (PE `libssl-*.dll` or statically linked, e.g. curl-for-win); `client_random` parsed from the ClientHello on `send`, no offsets needed |
+| `tls1_PRF` | Win64 | x86-64 | **LibreSSL** TLS 1.2 (experimental) |
 | `_gnutls_call_keylog_func` | AAPCS64 (`x0,x1,x2,x3`) | *(none bundled — supply via `--patterns` or use layer 1/2)* | native ARM64 `libgnutls.so` |
 
 #### Dynamic pattern discovery for GnuTLS *(new)*
@@ -295,7 +412,6 @@ version*. On AArch64 the schema arch key becomes `arm64` and the sig id becomes
 If you already have a pattern (from a previous discovery run, from a research
 build, or from a completely different Wine target), supply it with
 `--patterns pattern.json` under the `wine.<arch>` key:
->>>>>>> a8fe099f667b13ffeb2ea4e67031af5ee8228355
 
 ```json
 {
@@ -437,13 +553,6 @@ wine64 --version
 
 ```bash
 # Enable debug output
-<<<<<<< HEAD
-sudo fritap --experimental -do -v wine /path/to/app.exe
-
-# Check for DLL detection
-sudo fritap --experimental -do wine /path/to/app.exe 2>&1 | grep -i "dll\|library"
-
-# Try enabling default socket info
 fritap --experimental -do -v wine /path/to/app.exe
 
 # Check for DLL detection

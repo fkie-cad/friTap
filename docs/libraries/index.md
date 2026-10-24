@@ -8,7 +8,7 @@ friTap supports a wide range of SSL/TLS libraries across different platforms. Th
 |---------|-------|---------|-------|---------|-----|--------------|
 | **OpenSSL** | ✓ Full | R/W | Keys | ✓ Full | Keys | Most widely used |
 | **BoringSSL** | ✓ Full | R/W | Keys | ✓ Full | Keys | Google's OpenSSL fork |
-| **LibreSSL** | TBI | TBI | Keys | TBI | TBI | OpenBSD's fork (macOS system `/usr/lib/libssl.*.dylib`) |
+| **LibreSSL** | Keys | Keys | Keys | TBI | TBI | OpenBSD's fork (`libssl.so`, `libssl-*.dll`, macOS `/usr/lib/libssl.*.dylib`, statically linked e.g. curl-for-win, and via Wine). LibreSSL has no keylog callback; keys come from its KDF (`tls13_hkdf_expand_label` / `tls1_PRF`). |
 | **NSS** | ✓ Full | R/W | TBI | ✓ Full | TBI | Mozilla's library |
 | **GnuTLS** | R/W | R/W | TBI | ✓ Full | TBI | GNU project library |
 | **WolfSSL** | R/W | R/W | TBI | ✓ Full | TBI | Embedded/IoT focused |

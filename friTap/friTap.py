@@ -45,6 +45,7 @@ from .fritap_utility import (
     setup_fritap_logging,
 )
 from .inspector import LibraryInspector
+from .legacy.ssl_logger_core import WINE_BASENAMES
 from .ssl_logger import SSL_Logger
 
 
@@ -661,6 +662,67 @@ def _resolve_ms_rc4_ciphertext(value):
     return _hex_text_or_none(data) or data.hex()
 
 
+def _maybe_prepend_wine(parsed, logger):
+    """CLI-layer Wine synthesis.
+
+    When a Windows target is given directly on Linux (e.g. ``fritap -s app.exe``),
+    prepend the ``wine`` launcher so the rest of friTap sees a normal
+    ``wine app.exe`` spawn command and the existing Wine detection/route applies.
+
+    Controlled by ``--wine``: ``off`` disables synthesis; ``on`` forces it for any
+    non-Wine spawn target; ``auto`` (default) treats the target as Windows when the
+    file's magic is PE (``MZ``) — or, when the file can't be read, when its name
+    ends in ``.exe``. Linux host and spawn mode only; no-op if the command already
+    starts with a Wine launcher.
+    """
+    import os
+    import platform
+
+    if platform.system() != "Linux" or not getattr(parsed, "spawn", False):
+        return
+    mode = getattr(parsed, "wine", "auto")
+    if mode == "off":
+        return
+
+    argv = getattr(parsed, "exec_argv", None) or (
+        [parsed.exec] if getattr(parsed, "exec", None) else []
+    )
+    if not argv:
+        return
+    first = argv[0]
+    # Single source of truth for Wine launcher names: WINE_BASENAMES
+    # (the same set SSL_Logger._target_is_wine uses for routing).
+    if os.path.basename(first).lower() in WINE_BASENAMES:
+        return  # already a wine command
+
+    is_pe = False
+    exists = os.path.isfile(first)
+    if exists:
+        try:
+            with open(first, "rb") as fh:
+                is_pe = fh.read(2) == b"MZ"
+        except OSError:
+            is_pe = False
+    looks_exe = first.lower().endswith(".exe")
+
+    if mode == "on":
+        treat_as_wine = True
+    else:  # auto: trust PE magic for an existing file, else the .exe suffix
+        treat_as_wine = is_pe if exists else looks_exe
+    if not treat_as_wine:
+        return
+
+    import shutil
+    wine = shutil.which("wine") or "wine"
+    parsed.exec_argv = [wine, *argv]
+    parsed.exec = " ".join(parsed.exec_argv)
+    why = "PE binary" if is_pe else ("'.exe' target" if looks_exe else "Wine forced (--wine on)")
+    logger.info(
+        "%s on Linux -> assuming Wine; running '%s' with GDB key extraction "
+        "(override with --wine off).", why, parsed.exec,
+    )
+
+
 def cli():
     # Initial setup - will be reconfigured after parsing arguments
     logger = logging.getLogger('friTap')
@@ -982,8 +1044,16 @@ Offline (read / analyze .tap):
                       help="Only applied on windows systems. By default friTap is hooking the Local Security Authority Subsystem Service (LSASS) process as well as its the default TLS provider on Windows systems. With this parameter we are not hooking LSASS", dest="no_lsass")
     args.add_argument("-t", "--timeout", metavar="<seconds>", type=int, required=False, default=None,
                       help="Set a timeout in seconds for the process. After the timeout, the process will be resumed automatically. If not set, the process will resume immediately.")
-    args.add_argument("--backend", choices=[b.value for b in BackendName], default=BackendName.FRIDA,
+    # default=None (not FRIDA) so we can tell whether the user explicitly chose a
+    # backend; resolved to FRIDA right after parse_args (see cli()).
+    args.add_argument("--backend", choices=[b.value for b in BackendName], default=None,
                       help="Instrumentation backend to use (default: frida)")
+    args.add_argument("--wine", choices=["auto", "on", "off"], default="auto",
+                      help="Wine key extraction on Linux (default: auto). 'auto' detects a "
+                           "Wine target (a `wine ...` command, or a Windows .exe/PE given "
+                           "directly) and uses the GDB-based key extractor; 'on' forces it; "
+                           "'off' disables it (use the normal Frida flow, e.g. the "
+                           "experimental Wine agent).")
     from friTap.protocols.registry import (
         CUSTOM_GROUP,
         available_protocol_names,
@@ -1063,6 +1133,12 @@ Offline (read / analyze .tap):
                            "the agent's startup.")
     parsed = parser.parse_args()
 
+    # Resolve --backend: None means the user did not pass it, so record that
+    # (explicitness drives Wine-route precedence) and fall back to the default.
+    parsed.backend_explicit = parsed.backend is not None
+    if parsed.backend is None:
+        parsed.backend = BackendName.FRIDA
+
     # The target positional now captures one-or-more tokens (nargs="+") so a
     # spawn command with arguments parses, e.g. `wine /path/app.exe` (issue #66).
     # Keep the original token list as parsed.exec_argv so spawn can pass the real
@@ -1090,6 +1166,11 @@ Offline (read / analyze .tap):
     logger, special_logger = setup_fritap_logging(
         debug=parsed.debug, debug_output=parsed.debug_output
     )
+
+    # Wine synthesis: turn a bare Windows target (a .exe/PE given without an
+    # explicit `wine` launcher) into a `wine <exe>` command so the normal Wine
+    # detection/route applies. Linux + spawn only; respects --wine.
+    _maybe_prepend_wine(parsed, logger)
 
     # Bring up the debug-log file subsystem when the user asked for one,
     # either explicitly via --debug-log or implicitly via --debug-output.
@@ -1322,6 +1403,8 @@ Offline (read / analyze .tap):
             offsets=parsed.offsets,
             debug_output=parsed.debug_output,
             experimental=parsed.experimental,
+            wine_mode=parsed.wine,
+            backend_explicit=parsed.backend_explicit,
             anti_root=parsed.anti_root,
             payload_modification=parsed.payload_modification,
             library_scan=parsed.library_scan,

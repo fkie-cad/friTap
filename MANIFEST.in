@@ -11,3 +11,4 @@ recursive-include friTap/tui/css *.tcss
 recursive-include friTap/assets *
 recursive-include friTap/plugins/examples README*
 recursive-include integrations *.py *.sh README*
+recursive-include agent_gdb/wine *.py *.txt README*

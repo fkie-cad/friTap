@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import functools
 import json
 import logging
 import os
@@ -99,6 +100,10 @@ here = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 # bundle it was built alongside.
 FULL_AGENT_BUNDLE_NAME = "fritap_agent_full.js"
 FULL_AGENT_BUNDLE_SIDECAR_SUFFIX = ".src"
+
+# Wine launcher basenames. Module-level so the CLI layer can share it without
+# reaching through the (patchable) SSL_Logger class.
+WINE_BASENAMES = ("wine", "wine64", "wine32", "wine-preloader", "wine64-preloader")
 
 
 def _full_bundle_in_sync(full_bundle, public_bundle):
@@ -586,6 +591,14 @@ class SSL_Logger():
         return self._config.hooking.experimental
 
     @property
+    def wine_mode(self) -> str:
+        return getattr(self._config.hooking, "wine_mode", "auto")
+
+    @property
+    def backend_explicit(self) -> bool:
+        return getattr(self._config, "backend_explicit", False)
+
+    @property
     def custom_hook_script(self):
         return self._config.custom_hook_script
 
@@ -871,7 +884,7 @@ class SSL_Logger():
         crash can be attributed to it (fkie-cad/friTap#64)."""
         self._anti_tamper_seen = event.name or event.library or "anti-tamper protection"
 
-    _WINE_BASENAMES = ("wine", "wine64", "wine32", "wine-preloader", "wine64-preloader")
+    _WINE_BASENAMES = WINE_BASENAMES
 
     def _is_android_target(self) -> bool:
         """Cached check: is the Frida device an Android target?
@@ -2712,7 +2725,233 @@ class SSL_Logger():
         except Exception as e:
             self.logger.warning("Passive-analysis finalization failed: %s", e)
 
+    def _pid_is_wine(self, pid) -> bool:
+        """Does the mapped memory of ``pid`` look like a Wine process?
+
+        Used for attach mode, where argv[0] is a bare PID/name and the
+        argv-basename check in :meth:`_target_is_wine` cannot see Wine.
+        """
+        try:
+            with open(f"/proc/{int(pid)}/maps") as handle:
+                data = handle.read().lower()
+        except (OSError, ValueError):
+            return False
+        markers = (
+            "wine-preloader", "wine64-preloader", "/wine/", "/wine64",
+            "ntdll.dll.so", "ntdll.so",
+        )
+        return any(marker in data for marker in markers)
+
+    def _resolve_wine_attach_pid(self):
+        """Resolve an attach target to a numeric PID for the gdb extractor.
+
+        For a non-numeric name we scan /proc for a process whose cmdline contains
+        the name as a LITERAL substring (not a `pgrep -f` regex, which would treat
+        ``.`` etc. as metacharacters), preferring one that actually looks like a
+        Wine process so we don't attach to a short-lived launcher that then exits.
+        """
+        if self.pid:
+            return self.pid
+        app = (self.target_app or "").strip()
+        if app.isdigit():
+            return int(app)
+        if not app:
+            return None
+        import glob
+        own = str(os.getpid())
+        fallback = None
+        for entry in glob.glob("/proc/[0-9]*"):
+            pid = entry.rsplit("/", 1)[-1]
+            if pid == own:
+                continue
+            try:
+                cmdline = open(entry + "/cmdline", "rb").read().replace(b"\0", b" ").decode("latin1")
+            except OSError:
+                continue
+            if app not in cmdline:
+                continue
+            if self._pid_is_wine(pid):
+                return int(pid)
+            fallback = fallback or int(pid)
+        return fallback
+
+    def _should_use_wine_gdb(self) -> bool:
+        """True when this is a LOCAL Linux Wine target to hand to the GDB-based
+        key extractor (``agent_gdb/wine``) instead of Frida.
+
+        Frida's Wine support is experimental; the GDB extractor is the reliable
+        path. gdb and Frida both need ptrace, so for a Wine target we drive gdb
+        and skip Frida entirely. Only applies to a local Linux host driving a
+        local target — not mobile, not a remote device, not a non-Linux host.
+        """
+        import platform
+        if platform.system() != "Linux":
+            return False
+        if self.mobile or self.device_id or self.host:
+            return False
+
+        mode = self.wine_mode
+        if mode == "off":
+            return False
+        if mode == "on":
+            return True  # user forces the GDB Wine route on a local Linux target
+
+        # auto: an explicit `--backend frida` means the user wants the Frida path
+        # (e.g. the experimental Wine agent), so don't hijack it to GDB.
+        if self.backend_explicit and self._config.backend == BackendName.FRIDA:
+            return False
+
+        try:
+            if self._target_is_wine():
+                return True
+        except Exception:
+            return False
+        if not self.spawn:  # attach mode: inspect the live process maps
+            pid = self._resolve_wine_attach_pid()
+            return pid is not None and self._pid_is_wine(pid)
+        return False
+
+    def _run_wine_gdb_session(self, own_message_handler=None):
+        """Run GDB-based TLS key extraction for a Wine target (no Frida).
+
+        Arguments are validated synchronously (so a bad target is reported before
+        returning), then the blocking gdb session runs on a background daemon
+        thread — start_fritap_session must return promptly (``wait_for_completion``
+        blocks on ``_done_event``, and programmatic callers such as api.py expect a
+        quick return). Only key material is extracted; decrypted-plaintext capture
+        is not available on this path. Returns ``(None, None)`` to match the
+        ``start_session`` return contract. The gdb/Wine process is tracked so
+        :meth:`cleanup` can tear it down on Ctrl-C (see ``_terminate_wine_gdb``).
+        """
+        try:
+            from agent_gdb.wine.wine_key_extract import (
+                launch_and_attach,
+                run_wine_key_extraction,
+            )
+        except ImportError:
+            # Source checkout that was never installed: add the repo root so the
+            # sibling agent_gdb package is importable, then retry.
+            import sys as _sys
+            repo_root = os.path.dirname(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            )
+            if repo_root not in _sys.path:
+                _sys.path.insert(0, repo_root)
+            from agent_gdb.wine.wine_key_extract import (
+                launch_and_attach,
+                run_wine_key_extraction,
+            )
+
+        self.logger.info(
+            "Wine target detected on Linux — using the GDB-based key extractor "
+            "(Frida injection skipped)."
+        )
+
+        if self.pcap_name or self.live or self.payload_modification or self.socket_trace:
+            self.logger.warning(
+                "Plaintext/pcap capture is not currently supported for Wine "
+                "targets; only TLS key extraction (keylog) is available. Capture "
+                "the keys with -k and decrypt the traffic in Wireshark."
+            )
+
+        keylog = self.keylog
+        if not keylog:
+            keylog = os.path.abspath("wine_sslkeys.log")
+            self.logger.warning("No keylog file given (-k); writing keys to %s", keylog)
+        else:
+            self.logger.info("Logging Wine TLS keys to %s", keylog)
+
+        # Resolve the invocation synchronously so argument/target errors return
+        # before we start a thread.
+        if self.spawn:
+            # Launch Wine normally (full wineserver/services bootstrap) and
+            # attach: gdb-spawning Wine deadlocks its cold boot on the wow64
+            # layout. Needs kernel.yama.ptrace_scope=0 (see docs).
+            argv = self.target_argv or (self.target_app or "").split()
+            rest = argv[1:] if argv else []
+            if not rest:
+                self.logger.error(
+                    "Wine spawn target has no executable (expected e.g. `wine app.exe`)."
+                )
+                self._done_event.set()
+                return None, None
+            work = functools.partial(
+                launch_and_attach,
+                wine_cmd=argv[0],
+                program=rest[0],
+                program_args=rest[1:],
+                keylog=keylog,
+                verbose=self.verbose,
+                logger=self.logger,
+                on_process=self._track_wine_proc,
+            )
+        else:
+            attach = self._resolve_wine_attach_pid()
+            if attach is None:
+                self.logger.error(
+                    "Could not determine a PID to attach to for Wine target %r.",
+                    self.target_app,
+                )
+                self._done_event.set()
+                return None, None
+            work = functools.partial(
+                run_wine_key_extraction,
+                attach=str(attach),
+                keylog=keylog,
+                verbose=self.verbose,
+                on_process=self._track_wine_proc,
+            )
+
+        def _runner():
+            try:
+                rc = work()
+                self.logger.info(
+                    "Wine GDB key extraction finished (gdb exit %s). Keylog: %s",
+                    rc, keylog,
+                )
+            except Exception as exc:
+                self.logger.error("Wine GDB key extraction failed: %s", exc)
+            finally:
+                self._done_event.set()
+
+        self._wine_thread = threading.Thread(
+            target=_runner, name="fritap-wine-gdb", daemon=True
+        )
+        self._wine_thread.start()
+        return None, None
+
+    def _track_wine_proc(self, proc):
+        """Register a Wine-extraction process (the gdb session, and for spawn the
+        launched Wine session) for teardown. Each is a session leader
+        (start_new_session=True), so we record its pgid and killpg it later —
+        which works even after the leader itself has exited but the group lives on.
+        """
+        procs = getattr(self, "_wine_procs", None)
+        if procs is None:
+            procs = self._wine_procs = []
+        try:
+            procs.append((proc, os.getpgid(proc.pid)))
+        except (OSError, ProcessLookupError):
+            pass
+
+    def _terminate_wine_gdb(self):
+        """Stop a running Wine GDB extraction on teardown (Ctrl-C etc.).
+
+        friTap's SIGINT handler force-exits right after cleanup, so this is the
+        only place the gdb session (and, for spawn, the launched Wine tree) is
+        stopped rather than orphaned. Attach mode kills only gdb's own session, so
+        a user-launched target is left running. No-op if nothing was started.
+        """
+        import signal as _signal
+        for _proc, pgid in getattr(self, "_wine_procs", []):
+            try:
+                os.killpg(pgid, _signal.SIGTERM)
+            except (OSError, ProcessLookupError):
+                pass
+
     def start_fritap_session(self, own_message_handler=None):
+        if self._should_use_wine_gdb():
+            return self._run_wine_gdb_session(own_message_handler)
         self.connect_live()  # No-op if already connected or not in live mode
         # Wire passive analysis BEFORE instrumentation so no flows are missed.
         self._setup_live_scan()
@@ -2975,6 +3214,12 @@ class SSL_Logger():
         if self._cleanup_done:
             return
         self._cleanup_done = True
+
+        # Tear down a running Wine GDB extraction (gdb subprocess / launched Wine
+        # tree) first: friTap's SIGINT handler force-exits right after cleanup, so
+        # this is the only place that stops it being orphaned (ptrace-attached) on
+        # Ctrl-C. No-op on the Frida path / when no Wine extraction is running.
+        self._terminate_wine_gdb()
 
         # Run all teardown steps, then ALWAYS print the goodbye banner and force
         # a clean process exit — even if a step raised (e.g. the target crashed

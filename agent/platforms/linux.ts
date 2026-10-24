@@ -7,6 +7,9 @@ import { getModuleNames, ssl_library_loader, hookDynamicLoader, installOhttpHook
 import { Platform, PLATFORM_LINUX } from "../shared/shared_structures.js";
 // Modern (definition-based) executors
 import { boring_execute_modern, ssl_python_execute_modern } from "../tls/platforms/linux/openssl_boringssl_linux.js";
+import { libressl_execute_modern } from "../tls/platforms/linux/libressl_linux.js";
+import { libressl_execute } from "../legacy/tls/platforms/linux/libressl_linux.js";
+import { libresslAwareDispatch } from "../shared/libressl_identification.js";
 import { gnutls_execute_modern } from "../tls/platforms/linux/gnutls_linux.js";
 import { wolfssl_execute_modern } from "../tls/platforms/linux/wolfssl_linux.js";
 import { nss_execute_modern } from "../tls/platforms/linux/nss_linux.js";
@@ -39,6 +42,16 @@ import { neqo_execute } from "../quic/platforms/linux/neqo_linux.js";
 var plattform_name: Platform = PLATFORM_LINUX;
 
 export const socket_library = "libc"
+
+// A libssl.so can be genuine OpenSSL/BoringSSL or LibreSSL — same name, totally
+// different key-extraction path (LibreSSL has no keylog callback / ssl_log_secret;
+// keys come from its KDF functions). The registry matches by name only, so route
+// by CONTENT here: isLibreSslModule() checks the module for the "LibreSSL" version
+// string before dispatching. Used for the generic libssl.so entry below.
+const libssl_dispatch = () => libresslAwareDispatch(
+    use_modern ? libressl_execute_modern : libressl_execute,
+    use_modern ? boring_execute_modern : boring_execute,
+);
 
 function hook_Linux_SSL_Libs(hookRegistry: HookRegistry, is_base_hook: boolean) {
     ssl_library_loader(plattform_name, hookRegistry, getModuleNames(), "Linux", is_base_hook, selected_protocols)
@@ -111,8 +124,15 @@ export function load_linux_hooking_agent(skipLoaderHook: boolean = false) {
         // /usr/lib/python3.11/lib-dynload/../../libssl.so.3) matched BOTH, and
         // since ssl_library_loader invokes EVERY match, two executors installed
         // on the same module.
-        { platform: plattform_name, pattern: /.*libssl\.so/, hookFn: (use_modern ? boring_execute_modern : boring_execute), library: "OpenSSL/BoringSSL", excludePathFilter: "python", libraryType: "openssl", protocol: "tls" },
+        { platform: plattform_name, pattern: /.*libssl\.so/, hookFn: libssl_dispatch(), library: "OpenSSL/BoringSSL/LibreSSL", excludePathFilter: "python", libraryType: "openssl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libssl.*\.so/, hookFn: (use_modern ? ssl_python_execute_modern : ssl_python_execute), library: "Python OpenSSL", pathFilter: "python", libraryType: "openssl", protocol: "tls" },
+        // Scan-only LibreSSL route: used by processScanResults/findByLibraryType
+        // when tlsLibHunter classifies a module (e.g. a statically linked exe)
+        // as LibreSSL by content. The sentinel pattern never matches a real
+        // loaded module name, so ssl_library_loader's name-match pass ignores it
+        // (findByLibraryType looks it up by libraryType, not by pattern) — this
+        // avoids double-hooking the libssl.so entry above.
+        { platform: plattform_name, pattern: /__libressl_scan_only__/, hookFn: (use_modern ? libressl_execute_modern : libressl_execute), library: "LibreSSL", libraryType: "libressl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*cronet.*\.so/, excludePattern: /_(libpki|libcrypto)\.so$/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet", libraryType: "boringssl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libgnutls\.so/, hookFn: (use_modern ? gnutls_execute_modern : gnutls_execute), library: "GnuTLS", libraryType: "gnutls", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libwolfssl\.so/, hookFn: (use_modern ? wolfssl_execute_modern : wolfssl_execute), library: "WolfSSL", libraryType: "wolfssl", protocol: "tls" },

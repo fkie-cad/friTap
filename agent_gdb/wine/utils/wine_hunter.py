@@ -210,6 +210,166 @@ def analyze_wine(project, path):
     return {signature: result}
 
 
+def analyze_gnutls(project, path):
+    """Extract the GnuTLS keylog hook signature from libgnutls.so.
+
+    Two shapes exist across builds:
+
+    * builds that keep ``_gnutls_call_keylog_func`` as a standalone function
+      -> hook it directly (handler ``GnuTLSCallKeylogUnixBP``);
+    * builds that *inline* ``_gnutls_call_keylog_func`` into the key schedule
+      (e.g. Ubuntu gnutls 3.8.x) -> there is no standalone function, so hook the
+      registered NSS keylog *callback* instead (handler
+      ``GnuTLSNssKeylogFuncUnixBP``). gnutls invokes that callback for every
+      secret of every handshake, so capture stays passive.
+
+    The keylog symbols are usually stripped, so we try symbol names first and
+    then fall back to locating the callback via references to the exported
+    ``gnutls_session_set_keylog_function`` (its 2nd argument is the callback).
+
+    Best-effort/static: validate the emitted signature on the live library (the
+    dynamic gdb method documented in docs/platforms/wine.md) before relying on it.
+    """
+    prog_path = _load_binary(project, path)
+    with pyghidra.program_context(project, prog_path) as program:
+        _analyze_if_needed(program)
+        fm = program.getFunctionManager()
+        listing = program.getListing()
+
+        # 1) Direct symbol hit (debug/unstripped builds).
+        direct = {
+            "_gnutls_call_keylog_func": "GnuTLSCallKeylogUnixBP",
+            "_gnutls_nss_keylog_func": "GnuTLSNssKeylogFuncUnixBP",
+            "nss_keylog_func": "GnuTLSNssKeylogFuncUnixBP",
+        }
+        for func in fm.getFunctions(True):
+            handler = direct.get(func.getName())
+            if handler:
+                sig = bytes(
+                    int(x % 256) for x in _read_bytes(program, func.getEntryPoint(), 32)
+                ).hex()
+                return {sig: {"name": f"{func.getName()} unix", "handler": handler, "offset": 0}}
+
+        # 2) Fallback: find the callback passed to gnutls_session_set_keylog_function.
+        setter = next(
+            (f for f in fm.getFunctions(True)
+             if f.getName() == "gnutls_session_set_keylog_function"),
+            None,
+        )
+        if setter is None:
+            print("gnutls: neither keylog symbols nor the setter were found, skipping")
+            return {}
+
+        ref_mgr = program.getReferenceManager()
+        for ref in ref_mgr.getReferencesTo(setter.getEntryPoint()):
+            call_instr = listing.getInstructionAt(ref.getFromAddress())
+            if call_instr is None:
+                continue
+            # The callback address is loaded (lea/mov) shortly before the call.
+            cur = call_instr
+            for _ in range(16):
+                cur = listing.getInstructionBefore(cur.getAddress())
+                if cur is None:
+                    break
+                for r in cur.getReferencesFrom():
+                    callee = fm.getFunctionAt(r.getToAddress())
+                    if callee is not None and callee != setter:
+                        sig = bytes(
+                            int(x % 256)
+                            for x in _read_bytes(program, callee.getEntryPoint(), 32)
+                        ).hex()
+                        return {
+                            sig: {
+                                "name": "gnutls nss keylog callback unix",
+                                "handler": "GnuTLSNssKeylogFuncUnixBP",
+                                "offset": 0,
+                            }
+                        }
+
+        print("gnutls: could not resolve the keylog callback, skipping")
+        return {}
+
+
+def analyze_libressl(project, path):
+    """Extract LibreSSL TLS-key-schedule signatures from a libssl DLL/.so or a
+    statically linked host (e.g. curl-for-win's curl.exe).
+
+    LibreSSL has NO keylog callback and NO ssl_log_secret; keys come from the
+    KDF. We emit, where found:
+
+    * ``tls13_hkdf_expand_label_with_length`` (TLS 1.3 leaf, handler
+      ``LibreSSLHkdfExpandLabelWinBP``) — the derived secret + raw label; and
+    * ``tls1_PRF`` (TLS 1.2, handler ``LibreSSLTls1PrfWinBP``).
+
+    Symbol names are tried first (debug/unstripped builds). When stripped, the
+    leaf is located by cross-referencing an embedded TLS 1.3 label string
+    ("c hs traffic"): the function that loads it is the derive-secrets caller,
+    and the first function it calls is the HKDF leaf.
+
+    client_random needs no signature — the gdb extractor parses it from the
+    plaintext ClientHello on ``ws2_32!send`` at runtime (see ensure_ws2_send_bp
+    in gdb_wine_extract.py). Best-effort/static.
+    """
+    results = {}
+    prog_path = _load_binary(project, path)
+    with pyghidra.program_context(project, prog_path) as program:
+        _analyze_if_needed(program)
+        fm = program.getFunctionManager()
+
+        def emit(func, name, handler):
+            sig = bytes(
+                int(x % 256) for x in _read_bytes(program, func.getEntryPoint(), 24)
+            ).hex()
+            results[sig] = {"name": name, "handler": handler, "offset": 0}
+
+        # 1) Direct symbol hits (debug/unstripped builds).
+        by_symbol = {
+            "tls13_hkdf_expand_label_with_length": (
+                "libressl tls13_hkdf_expand_label_with_length windows",
+                "LibreSSLHkdfExpandLabelWinBP"),
+            "tls1_PRF": ("libressl tls1_PRF windows", "LibreSSLTls1PrfWinBP"),
+        }
+        found = set()
+        for func in fm.getFunctions(True):
+            spec = by_symbol.get(func.getName())
+            if spec:
+                emit(func, *spec)
+                found.add(func.getName())
+
+        # 2) Stripped fallback: cross-reference the "c hs traffic" label string
+        #    to reach the HKDF leaf (the first call out of the derive caller).
+        if "tls13_hkdf_expand_label_with_length" not in found:
+            listing = program.getListing()
+            ref_mgr = program.getReferenceManager()
+            mem = program.getMemory()
+            label = b"c hs traffic\x00"
+            addr = mem.findBytes(
+                program.getMinAddress(), label, None, True, None
+            )
+            if addr is not None:
+                for ref in ref_mgr.getReferencesTo(addr):
+                    caller = fm.getFunctionContaining(ref.getFromAddress())
+                    if caller is None:
+                        continue
+                    # The first call out of the derive caller is the hkdf leaf.
+                    instr = listing.getInstructionAt(caller.getEntryPoint())
+                    for _ in range(400):
+                        if instr is None:
+                            break
+                        if instr.getFlowType().isCall():
+                            for t in instr.getFlows():
+                                callee = fm.getFunctionAt(t)
+                                if callee is not None:
+                                    emit(callee, *by_symbol["tls13_hkdf_expand_label_with_length"])
+                            break
+                        instr = listing.getInstructionAfter(instr.getAddress())
+                    break
+
+    if not results:
+        print("libressl: no KDF symbols or label xrefs found, skipping")
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="Wine Hunter",
@@ -219,6 +379,7 @@ def main():
                     ntdll.so,        commonly found in /usr/lib64/wine-wow64/wine/x86_64-unix/ntdll.so
                     wine-preloader,  commonly found in /usr/lib64/wine-wow64/wine/x86_64-unix/wine-preloader
                     ntdll.dll,       commonly found in /home/<user>/.wine/drive_c/windows/syswow64/ntdll.dll
+                    libgnutls.so.30, the host GnuTLS used by Wine's Schannel, commonly /lib/x86_64-linux-gnu/libgnutls.so.30 (optional)
                     """,
     )
     parser.add_argument("-i", "--input-dir", default="inputs")
@@ -290,6 +451,29 @@ def main():
             else:
                 print("Analyzing wine")
                 results.update(analyze_wine(project, Path(args.input_dir) / "wine"))
+
+            # GnuTLS keylog signature (native libgnutls, as used by Wine's
+            # Schannel). Accept libgnutls.so, libgnutls.so.30, etc.
+            gnutls_inputs = sorted(Path(args.input_dir).glob("libgnutls.so*"))
+            if not gnutls_inputs:
+                print("libgnutls.so* missing")
+            else:
+                print(f"Analyzing {gnutls_inputs[0].name}")
+                results.update(analyze_gnutls(project, gnutls_inputs[0]))
+
+            # LibreSSL signatures: a PE libssl/libtls DLL, a statically linked
+            # host (e.g. curl.exe), or a native libssl.so. First match wins.
+            libressl_inputs = (
+                sorted(Path(args.input_dir).glob("libssl*.dll"))
+                + sorted(Path(args.input_dir).glob("libtls*.dll"))
+                + sorted(Path(args.input_dir).glob("libssl.so*"))
+                + sorted(Path(args.input_dir).glob("*.exe"))
+            )
+            if not libressl_inputs:
+                print("no LibreSSL candidate (libssl*.dll / libtls*.dll / libssl.so* / *.exe)")
+            else:
+                print(f"Analyzing {libressl_inputs[0].name} for LibreSSL")
+                results.update(analyze_libressl(project, libressl_inputs[0]))
 
     json_output = json.dumps(results, indent=4)
 

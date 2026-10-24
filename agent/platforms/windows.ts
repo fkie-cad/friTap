@@ -9,6 +9,9 @@ import { sspi_execute } from "../legacy/tls/platforms/windows/sspi.js";
 import { sspi_execute_modern } from "../tls/platforms/windows/sspi.js";
 import { boring_execute, ssl_python_execute } from "../legacy/tls/platforms/windows/openssl_boringssl_windows.js";
 import { boring_execute_modern, ssl_python_execute_modern } from "../tls/platforms/windows/openssl_boringssl_windows.js";
+import { libressl_execute_modern } from "../tls/platforms/windows/libressl_windows.js";
+import { libressl_execute } from "../legacy/tls/platforms/windows/libressl_windows.js";
+import { libresslAwareDispatch } from "../shared/libressl_identification.js";
 import { gnutls_execute } from "../legacy/tls/platforms/windows/gnutls_windows.js";
 import { gnutls_execute_modern } from "../tls/platforms/windows/gnutls_windows.js";
 import { mbedTLS_execute } from "../legacy/tls/platforms/windows/mbedTLS_windows.js";
@@ -33,6 +36,15 @@ var plattform_name: Platform = PLATFORM_WINDOWS;
 
 export const socket_library = "WS2_32.dll";
 
+// libssl-NN.dll can be genuine OpenSSL/BoringSSL or LibreSSL — route by content.
+// LibreSSL has no keylog callback / ssl_log_secret; keys come from its KDF
+// functions. isLibreSslModule() checks the module for the "LibreSSL" version
+// string before dispatching to the correct executor.
+const libssl_dispatch = () => libresslAwareDispatch(
+    use_modern ? libressl_execute_modern : libressl_execute,
+    use_modern ? boring_execute_modern : boring_execute,
+);
+
 function hook_Windows_SSL_Libs(hookRegistry: HookRegistry, is_base_hook: boolean) {
     ssl_library_loader(plattform_name, hookRegistry, getModuleNames(), "Windows", is_base_hook, selected_protocols)
 }
@@ -44,8 +56,12 @@ export function load_windows_hooking_agent() {
         // pathFilter. Without it C:\Python312\DLLs\libssl-3.dll matched BOTH,
         // and since ssl_library_loader invokes EVERY match, two executors
         // installed on the same module.
-        { platform: plattform_name, pattern: /^(libssl|LIBSSL)-[0-9]+(_[0-9]+)?\.dll$/, hookFn: (use_modern ? boring_execute_modern : boring_execute), library: "OpenSSL/BoringSSL", excludePathFilter: "python", libraryType: "openssl", protocol: "tls" },
+        { platform: plattform_name, pattern: /^(libssl|LIBSSL)-[0-9]+(_[0-9]+)?\.dll$/, hookFn: libssl_dispatch(), library: "OpenSSL/BoringSSL/LibreSSL", excludePathFilter: "python", libraryType: "openssl", protocol: "tls" },
         { platform: plattform_name, pattern: /^.*libssl.*\.dll$/, hookFn: (use_modern ? ssl_python_execute_modern : ssl_python_execute), library: "Python OpenSSL", pathFilter: "python", libraryType: "openssl", protocol: "tls" },
+        // Scan-only LibreSSL route (see linux.ts for rationale): findByLibraryType
+        // picks this up for a module tlsLibHunter classifies as LibreSSL (e.g. a
+        // statically linked curl.exe). Sentinel pattern never name-matches.
+        { platform: plattform_name, pattern: /__libressl_scan_only__/, hookFn: (use_modern ? libressl_execute_modern : libressl_execute), library: "LibreSSL", libraryType: "libressl", protocol: "tls" },
         { platform: plattform_name, pattern: /^.*(wolfssl|WOLFSSL).*\.dll$/, hookFn: (use_modern ? wolfssl_execute_modern : wolfssl_execute), library: "WolfSSL", libraryType: "wolfssl", protocol: "tls" },
         { platform: plattform_name, pattern: /^.*(libgnutls|LIBGNUTLS)-[0-9]+\.dll$/, hookFn: (use_modern ? gnutls_execute_modern : gnutls_execute), library: "GnuTLS", libraryType: "gnutls", protocol: "tls" },
         { platform: plattform_name, pattern: /^(nspr|NSPR)[0-9]*\.dll/, hookFn: (use_modern ? nss_execute_modern : nss_execute), library: "NSS", libraryType: "nss", protocol: "tls" },
