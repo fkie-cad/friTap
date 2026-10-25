@@ -1,9 +1,18 @@
-# Wine Platform Guide (Experimental)
+# Wine Platform Guide
 
 This guide covers Wine-specific setup, considerations, and best practices for using friTap to analyze Windows applications running under Wine on Linux.
 
-!!! warning "Experimental Feature"
-    Wine support is an **experimental feature** that requires the `--experimental` flag. It is still under development and may have stability issues. Please report any problems via GitHub issues.
+!!! warning "What is (and is not) experimental"
+    **TLS key extraction for Wine targets is the default on Linux and needs no
+    flag**: friTap routes Wine targets to its GDB-based key extractor
+    automatically (see [Key Extraction via GDB](#key-extraction-via-gdb)).
+    Full packet capture (`-p cap.pcapng -f`) works on that path too.
+
+    Only the **Frida-based Wine agent** is still experimental. It is the route for
+    decrypted *plaintext* pcaps (`-p` without `-f`), `--live` and payload
+    modification, and must be selected explicitly with `--wine off --experimental`.
+    It is still under development and may have stability issues. Please report
+    any problems via GitHub issues.
 
 ## Overview
 
@@ -12,7 +21,7 @@ friTap's Wine support allows you to intercept TLS traffic from Windows applicati
 1. **Native Linux TLS Libraries** - Hooks Linux `.so` libraries that Wine applications may use
 2. **Windows DLL Interception** - Hooks Windows TLS libraries (`.dll` files) bundled with applications
 
-## Key Extraction via GDB (default on Linux)
+## Key Extraction via GDB (default on Linux) {#key-extraction-via-gdb}
 
 When you point friTap at a Wine target on a Linux host, friTap now **automatically
 routes TLS key extraction through a GDB-based extractor** (`agent_gdb/wine`) instead
@@ -28,9 +37,20 @@ fritap -s -k keys.log wine /path/to/app.exe
 # Wine target and `wine` is prepended for you.
 fritap -s -k keys.log /path/to/app.exe
 
-# Attach to an already-running Wine process by PID.
-fritap -k keys.log $(pgrep -f app.exe)
+# Attach to an already-running Wine app (no -s): by exe name ...
+fritap -k keys.log app.exe
+
+# ... or by PID (the PID is positional; -p is --pcap, not a PID option).
+fritap -k keys.log "$(pgrep -f app.exe | head -1)"
 ```
+
+!!! note "`-s` spawns, no `-s` attaches"
+    With `-s`/`--spawn` friTap launches the app itself (launch +
+    freeze-on-detect + attach, see below). **Without `-s`, friTap attaches to an
+    already-running process.** This also applies to a launch-style command such as
+    `fritap -k keys.log wine /path/to/app.exe`: friTap then looks for a running
+    process that matches the exe path or its basename and attaches to it. If no
+    such process is running, friTap tells you to add `-s`.
 
 Control this with `--wine`:
 
@@ -41,14 +61,94 @@ Control this with `--wine`:
   experimental Wine agent). An explicit `--backend frida` likewise keeps the Frida
   path for a Wine target.
 
-!!! info "Key extraction only — no plaintext for Wine"
-    This GDB path extracts **TLS key material only** (an NSS key log, directly
-    loadable by Wireshark). Decrypted-plaintext capture (`-p`/pcap, live view,
-    payload modification) depends on Frida's `SSL_read`/`SSL_write` hooks, which
-    are not run on the Wine path. If you request them, friTap prints a notice that
-    plaintext capture is not currently supported for Wine and continues with key
-    extraction. Record a pcap separately (e.g. with `tcpdump`) and decrypt it in
-    Wireshark using the extracted key log.
+!!! info "Keys + full packet capture; no decrypted plaintext on the GDB path"
+    The GDB path extracts **TLS key material** (an NSS key log, directly loadable
+    by Wireshark) and supports **full packet capture** (`-p cap.pcapng -f`, see
+    [Full packet capture](#full-packet-capture) below).
+
+    A decrypted-*plaintext* pcap (`-p` without `-f`), `--live` and payload
+    modification depend on Frida's `SSL_read`/`SSL_write` hooks, which are not run
+    on the GDB path. If you request them, friTap prints a notice and continues
+    with key extraction. Use `-p … -f` instead, or select the experimental Frida
+    agent with `--wine off --experimental`.
+
+### Full packet capture (`-p … -f`) {#full-packet-capture}
+
+friTap can record the raw traffic of the Wine app while the GDB extractor
+collects the keys:
+
+```bash
+sudo fritap -s -k keys.log -p cap.pcapng -f wine /path/to/app.exe
+```
+
+- The packet sniffer needs root (or `CAP_NET_RAW`), hence `sudo`. Under `sudo`,
+  spawn mode **launches Wine as the invoking user** (taken from
+  `SUDO_UID`/`SUDO_GID`, with that user's `HOME`), so your normal `~/.wine`
+  prefix keeps working. gdb also drops to your user when it can (see
+  [Who runs as whom under `sudo`](#who-runs-as-whom-under-sudo)).
+- With a **`.pcapng`** output, friTap embeds the captured keys as a Decryption
+  Secrets Block (DSB), so the file decrypts directly:
+  `fritap -r cap.pcapng` or open it in Wireshark. With a **`.pcap`** output,
+  give Wireshark the key log (`keys.log`) yourself.
+- The capture is finalized both when you press Ctrl-C and when the app exits on
+  its own.
+
+#### Who runs as whom under `sudo` {#who-runs-as-whom-under-sudo}
+
+friTap keeps root only for the parts that need it:
+
+| Component | Runs as |
+|-----------|---------|
+| Packet sniffer (`-f`) | root |
+| `/proc` scan, `SIGSTOP`/`SIGCONT` freeze/resume, teardown | root |
+| Wine (spawn mode) | your user |
+| gdb (key extractor) | your user if the checks below pass, otherwise root |
+
+gdb parses the memory of an untrusted target and runs Python scripts, so it is the
+component that gains most from not being root. friTap runs it as your user when
+**all** of these hold:
+
+- `kernel.yama.ptrace_scope` is `0` (or Yama is absent). With `1` (the
+  Ubuntu/Debian default) an unprivileged tracer may only attach to its own
+  descendants; the Wine process was launched by friTap, not by gdb, so only a
+  root gdb can attach. `2` allows root only, `3` nobody.
+- The target process belongs to your user (always true in spawn mode; checked in
+  attach mode).
+- Your user can read friTap's gdb script directory (this fails e.g. when friTap
+  is installed under `/root`).
+- Your user can write the keylog. If it does not exist, friTap creates it owned by
+  you; an existing root-owned keylog from an older `sudo` run blocks the drop
+  (delete or `chown` it).
+
+On success friTap logs
+`Running gdb as <user> (uid N); kernel.yama.ptrace_scope=0 allows an unprivileged attach.`
+Otherwise gdb stays root and friTap logs `Keeping gdb as root: <reason>`.
+Key extraction works either way.
+
+!!! note "`ptrace_scope=0` is your choice"
+    `ptrace_scope=0` is a system-wide relaxation: any process can then attach to
+    other processes of the same user. friTap never changes it; with the default
+    `1` it simply keeps gdb as root.
+
+**Non-root alternative.** Instead of `sudo` (not in addition to it), give the
+Python interpreter the capture capabilities and lower `ptrace_scope`, then run
+friTap without `sudo`. `setcap` is only needed for this route; key extraction
+alone (`-k` without `-f`) needs neither `sudo` nor `setcap`, just
+`ptrace_scope=0`:
+
+```bash
+sudo setcap cap_net_raw,cap_net_admin+eip "$(readlink -f "$(which python3)")"
+sudo sysctl -w kernel.yama.ptrace_scope=0
+fritap -s -k keys.log -p cap.pcapng -f wine /path/to/app.exe
+```
+
+!!! warning "`setcap` applies to every script run by that interpreter"
+    `setcap` on `python3` gives raw-socket capabilities to **every** program that
+    interpreter runs, not just friTap. Prefer a dedicated virtualenv that holds
+    its **own copy** of the interpreter. A venv's `python3` is often a symlink to
+    the system binary, and `setcap` has to target a real file, so copy the binary
+    into the venv first (or create the venv with `--copies`) and run `setcap` on
+    that copy.
 
 ### Requirements for the GDB path
 
@@ -58,8 +158,11 @@ Control this with `--wine`:
 - `wine` installed. friTap resolves the actual ELF loader automatically, handling
   both the classic layout (`wine-preloader`) and the newer *wow64* layout
   (a separate `wine64` loader, e.g. Wine 9.x on Ubuntu).
-- `kernel.yama.ptrace_scope=0` (or run as root): the GDB path attaches to the Wine
-  process. Set it with `sudo sysctl -w kernel.yama.ptrace_scope=0`.
+- `kernel.yama.ptrace_scope=0` for an unprivileged gdb: the GDB path attaches to
+  the Wine process. Set it with `sudo sysctl -w kernel.yama.ptrace_scope=0`.
+  Non-root runs need it. Under `sudo` it is optional: with it, gdb drops to your
+  user; without it, gdb stays root, which needs no `ptrace_scope` change (see
+  [Who runs as whom under `sudo`](#who-runs-as-whom-under-sudo)).
 
 !!! note "How the `--spawn` path works (launch + freeze-on-detect + attach)"
     gdb-*spawning* Wine tracks the whole wow64 process tree (wineserver, services,
@@ -124,9 +227,11 @@ python agent_gdb/wine/wine_key_extract.py --attach <pid> -k keys.log
 
 ---
 
-The remainder of this guide covers the **experimental Frida-based** Wine agent
-(`--experimental`), which is the path used for the hybrid native/DLL hooking and is
-the only route that can produce decrypted plaintext.
+The remainder of this guide mostly covers the **experimental Frida-based** Wine
+agent (`--wine off --experimental`), which is the path used for the hybrid
+native/DLL hooking and is the only route that can produce decrypted plaintext
+(`-p` without `-f`, `--live`, payload modification). Without `--wine off`, a Wine
+target goes to the GDB extractor even if `--experimental` is given.
 
 ## Prerequisites
 
@@ -134,27 +239,36 @@ the only route that can produce decrypted plaintext.
 
 - **Linux system** with Wine installed
 - **Wine 5.0+** (recommended Wine 7.0+ for better compatibility)
-- **Root/sudo access** (required for Frida injection)
 - **Python 3.10+** with friTap installed (`setup.py` sets `python_requires=">=3.10"`)
-- **Frida injection privileges.** On a desktop Linux you almost always want to
-  run friTap as your *own* user — `sudo` is the most common source of failure
-  for Wine targets (see "Common mistake" below). Lower `kernel.yama.ptrace_scope`
-  so Frida can attach as a non-root user:
+- **Injection privileges (GDB and Frida).** Either run friTap as your *own*
+  user with a lowered `kernel.yama.ptrace_scope`, or use `sudo` (needed anyway
+  for full packet capture). A real root shell / `su` with a user-owned prefix is
+  the most common source of failure for Wine targets (see "Common mistake"
+  below). Lower `ptrace_scope` so gdb/Frida can attach as a non-root user:
 
   ```bash
   sudo sysctl kernel.yama.ptrace_scope=0   # one-time; survives until reboot
   ```
 
-!!! danger "Common mistake: `sudo fritap … wine …` with a user-owned WINEPREFIX"
+!!! danger "Common mistake: running Wine as root with a user-owned WINEPREFIX"
     Modern Wine (≥7) hard-aborts when the running uid does not match the
     WINEPREFIX directory's owner uid (it prints
     `wine: '/home/<you>/.wine' is not owned by you, refusing to create a
     configuration directory there` and exits within ~10–25 ms of starting).
-    The most common trigger is `sudo fritap … -s wine …` while your `~/.wine`
-    is owned by your desktop user. friTap's Wine agent now performs a
-    pre-flight check for this exact mismatch and bails out clearly instead of
-    looking like a hook crash. **Fix:** drop `sudo` (with `ptrace_scope=0`), or
-    set `WINEPREFIX=/root/.wine` so Wine creates a fresh root-owned prefix.
+
+    - **`sudo fritap -s … wine …` is handled for you**: in spawn mode friTap
+      launches Wine as the invoking user (from `SUDO_UID`/`SUDO_GID`, with that
+      user's `HOME`), so your own `~/.wine` is used. The sniffer stays root; gdb runs as you when
+      it can (see [Who runs as whom under `sudo`](#who-runs-as-whom-under-sudo)).
+    - **Pre-flight check.** Before launching Wine (spawn mode), both the GDB
+      path and the Frida Wine agent check WINEPREFIX ownership. If the prefix owner differs
+      from the uid Wine will run as, friTap aborts with a clear message that names
+      the prefix and its owner, so the failure no longer looks like a hook crash.
+    - **The remaining trap** is a real root shell or `su` (no `SUDO_UID`) with a
+      user-owned prefix, e.g. `WINEPREFIX=/home/<you>/.wine` in a root shell.
+      **Fix:** run friTap as your own user (with `ptrace_scope=0`), use `sudo`
+      instead of a root shell, or point Wine at a root-owned prefix with
+      `WINEPREFIX=/root/.wine`.
 
 
 ### Wine Installation
@@ -187,81 +301,124 @@ frida --version
 
 ### Analyzing Wine Applications
 
-Run friTap **as the owner of your WINEPREFIX** (normally your desktop user, not
-root). Do not prefix with `sudo` unless you have explicitly set up a
-root-owned WINEPREFIX.
+Run friTap **as the owner of your WINEPREFIX** (normally your desktop user, with
+`ptrace_scope=0`). No `--experimental` flag is needed: Wine targets go to the GDB
+key extractor by default.
 
 ```bash
-# Basic Wine application analysis (requires --experimental flag)
-fritap --experimental -k keys.log wine /path/to/application.exe
+# Launch the app and extract its TLS keys (spawn mode)
+fritap -s -k keys.log wine /path/to/application.exe
 
-# With PCAP capture
-fritap --experimental -k keys.log --pcap traffic.pcap wine /path/to/application.exe
+# Keys + full packet capture (the sniffer needs root; Wine still runs as you)
+sudo fritap -s -k keys.log -p traffic.pcapng -f wine /path/to/application.exe
 
-# Spawn mode for capturing initialization
-fritap --experimental -s -k keys.log wine /path/to/application.exe
+# Attach to an app that is already running
+fritap -k keys.log application.exe
+```
+
+!!! note "Without `-s`, friTap attaches"
+    `fritap -k keys.log wine /path/to/application.exe` (no `-s`) does **not**
+    launch the app. friTap attaches to an already-running process that matches the
+    exe path or basename. If none is running, it prints a hint to add `-s`.
+
+For a decrypted *plaintext* pcap (`-p` without `-f`), use the experimental Frida
+agent instead:
+
+```bash
+fritap --wine off --experimental -s -k keys.log --pcap plaintext.pcap \
+    wine /path/to/application.exe
 ```
 
 ### Examples
 
 ```bash
 # Analyze a Windows game
-sudo fritap --experimental -k game_keys.log wine ~/.wine/drive_c/Games/game.exe
+fritap -s -k game_keys.log wine ~/.wine/drive_c/Games/game.exe
 
 # Analyze with verbose output
-sudo fritap --experimental -v -k keys.log wine /path/to/app.exe
+fritap -s -v -k keys.log wine /path/to/app.exe
 
 # Debug mode for troubleshooting
-sudo fritap --experimental -do -v wine /path/to/app.exe
+fritap -s -do -v -k keys.log wine /path/to/app.exe
 
 # Spawn target whose path contains spaces — quote it so the shell passes one
 # token; friTap preserves the argv and spawns it intact (no space-splitting).
-sudo fritap --experimental -s -k keys.log wine "/home/u/.wine/drive_c/Program Files/App/app.exe"
+fritap -s -k keys.log wine "/home/u/.wine/drive_c/Program Files/App/app.exe"
+
+# Full capture of the game's traffic, decryptable straight from the pcapng
+sudo fritap -s -k game_keys.log -p game.pcapng -f wine ~/.wine/drive_c/Games/game.exe
+fritap -r game.pcapng
 ```
 
 ### Attach-mode pattern (most robust for Wine spawn issues)
 
 If spawn mode misbehaves for a specific target, start Wine yourself, then
-attach friTap by PID:
+attach friTap (no `-s`) by exe name or by PID. The target is positional; `-p` is
+`--pcap`, not a PID option.
 
 ```bash
 wine "/path/to/app.exe" &
 sleep 2
-fritap --experimental -k keys.log -p "$(pgrep -f app.exe | head -1)"
+fritap -k keys.log app.exe
+# or by PID:
+fritap -k keys.log "$(pgrep -f app.exe | head -1)"
 ```
+
+Attaching only catches handshakes that happen *after* friTap attached.
 
 ### If you must run friTap as root
 
-If your workflow genuinely requires `sudo` (e.g. a packaged frida-server setup
-that won't otherwise let you inject), give Wine a root-owned prefix:
+Plain `sudo fritap -s …` needs nothing extra: spawn mode launches Wine as the
+invoking user, so your own prefix is used (see
+[Full packet capture](#full-packet-capture)).
+
+In a real root shell or after `su` (no `SUDO_UID`, so friTap has no user to
+launch Wine as), Wine runs as root and needs a root-owned prefix:
 
 ```bash
-sudo WINEPREFIX=/root/.wine -E fritap --experimental -k keys.log \
-    -s wine /path/to/application.exe
+# in a root shell
+WINEPREFIX=/root/.wine fritap -s -k keys.log wine /path/to/application.exe
 ```
 
-Do **not** point a root-running Wine at a user-owned `~/.wine` — Wine will
-refuse the prefix and exit before friTap can hook anything.
+When passing variables through `sudo`, put `sudo` options such as `-E`
+**before** any `VAR=value` assignment: `sudo -E WINEPREFIX=… fritap …`.
+`sudo WINEPREFIX=… -E fritap …` is broken, because sudo stops parsing options
+at the first `VAR=value` and tries to run a command named `-E`.
+
+Do **not** point a root-running Wine at a user-owned `~/.wine`. friTap's
+pre-flight check aborts with a message naming the prefix and its owner (Wine
+would otherwise refuse the prefix and exit before anything can be hooked).
 
 ## Deployment Models
 
-There are two ways to run friTap against a Wine target:
+There are three ways to run friTap against a Wine target:
 
-1. **Linux-host Frida (recommended, the default).** Run friTap normally on Linux;
-   it injects native Frida into the Wine process. This gives full memory
-   visibility (so schannel's underlying GnuTLS is reachable) and is what every
-   command in this guide uses. Because the host Frida sees the System V ABI, PE
-   (Windows) code is read via the dual-ABI register technique described below.
+1. **GDB key extraction (the default on Linux).** Run friTap normally; a Wine
+   target is routed to the GDB extractor automatically. It produces an NSS key
+   log and supports full packet capture (`-p … -f`). See
+   [Key Extraction via GDB](#key-extraction-via-gdb).
 
    ```bash
-   fritap --experimental -k keys.log wine /path/to/application.exe
+   fritap -s -k keys.log wine /path/to/application.exe
    ```
 
-2. **Frida inside Wine (fallback).** Install friTap as a Windows process inside
+2. **Linux-host Frida agent (experimental, `--wine off --experimental`).**
+   friTap injects native Frida into the Wine process. This gives full memory
+   visibility (so schannel's underlying GnuTLS is reachable) and is the only
+   route for decrypted plaintext (`-p` without `-f`), `--live` and payload
+   modification. Because the host Frida sees the System V ABI, PE (Windows)
+   code is read via the dual-ABI register technique described below.
+
+   ```bash
+   fritap --wine off --experimental -s -k keys.log --pcap plaintext.pcap \
+       wine /path/to/application.exe
+   ```
+
+3. **Frida inside Wine (fallback).** Install friTap as a Windows process inside
    Wine and run it there (see `research/wine/tls_wine/Installing_fritap_wine.md`).
    Here `args[]` map to the Win64 ABI natively, but schannel memory is not always
-   visible and packaging is more involved. Use only if the host-side model does
-   not work for your target.
+   visible and packaging is more involved. Use only if neither host-side model
+   works for your target.
 
 ## How Wine Support Works
 
@@ -353,7 +510,7 @@ friTap combines three complementary mechanisms to solve both problems:
 The scan runs over already-loaded modules at startup and re-runs on each
 `LdrLoadDll` for freshly loaded DLLs. Extracted secrets flow through the
 normal keylog pipeline, so `-k`/`--pcap` work unchanged. All three layers are
-gated behind `--experimental` and work on both the legacy (default) and
+part of the Frida agent (`--wine off --experimental`) and work on both the legacy (default) and
 `--modern` agent paths.
 
 | Function (signature) | ABI | Bundled arch | Covers |
@@ -475,9 +632,11 @@ Wine applications can also use native Linux TLS libraries. All standard Linux li
 
 Wine applications use Linux sockets (via `libc`) rather than Windows sockets (`WS2_32.dll`). friTap's socket tracing works the same as native Linux applications.
 
+Socket tracing is part of the Frida agent, so select it explicitly:
+
 ```bash
-# Enable socket tracing for Wine apps
-fritap --experimental --socket_tracing -k keys.log wine /path/to/app.exe
+# Enable socket tracing for Wine apps (Frida agent)
+fritap --wine off --experimental -s --socket_tracing -k keys.log wine /path/to/app.exe
 ```
 
 ### Process Timing
@@ -497,8 +656,9 @@ works on your box:
 * Fires 120 HTTPS probes across 8 rotating hosts through Wine's
   WinHTTP → schannel → gnutls path — the rotation defeats TLS session
   resumption so every probe forces a fresh handshake.
-* Attaches friTap with `--experimental`, monitors the keylog and the
-  dynamic-discovery emissions in real time.
+* Attaches friTap with `--wine off --experimental` (the Frida agent — the
+  GDB key extractor used by default does not do dynamic pattern discovery),
+  monitors the keylog and the dynamic-discovery emissions in real time.
 * Reports the number of captured `CLIENT_RANDOM` lines and the
   ready-to-paste `--patterns` override for the local gnutls build.
 
@@ -523,11 +683,12 @@ scan can be pinned for this build:
 
 ### Known Limitations
 
-1. **Experimental Status** - The feature is still under development and needs more testing
-2. **Manual Flag Required** - Must explicitly enable with `--experimental`
+1. **Experimental Status (Frida agent)** - The Frida-based Wine agent is still under development and needs more testing
+2. **Manual Flag Required (Frida agent)** - The Frida agent must be selected with `--wine off --experimental`; the GDB key extractor is the default and needs no flag
 3. **Timing Sensitivity** - Some applications may load DLLs before hooks are installed
 4. **DLL Path Parsing** - Complex Windows paths may occasionally cause issues
-5. **Spawning issue** - Spawning a wine application mostly result in restarting wine without our hooks
+5. **Spawning issue (Frida agent)** - Spawning a Wine application with the Frida agent often results in Wine restarting without our hooks. The GDB path avoids this with launch + freeze-on-detect + attach
+6. **No decrypted plaintext on the GDB path** - Plaintext pcaps (`-p` without `-f`), `--live` and payload modification need the Frida agent
 
 ### Unsupported Scenarios
 
@@ -542,7 +703,7 @@ scan can be pinned for this build:
 
 ```bash
 # Check if Wine process is recognized
-fritap --experimental -do -v wine /path/to/app.exe 2>&1 | grep -i wine
+fritap -s -do -v -k keys.log wine /path/to/app.exe 2>&1 | grep -i wine
 
 # Verify Wine installation
 wine --version
@@ -553,14 +714,20 @@ wine64 --version
 
 ```bash
 # Enable debug output
-fritap --experimental -do -v wine /path/to/app.exe
+fritap -s -do -v -k keys.log wine /path/to/app.exe
 
-# Check for DLL detection
-fritap --experimental -do wine /path/to/app.exe 2>&1 | grep -i "dll\|library"
+# Without -s friTap attaches instead of launching; if the app is not running yet
+# it prints a hint to add -s. Make sure you are using the mode you intended.
 
-# Try enabling default socket info
-fritap --experimental --enable_default_fd -k keys.log wine /path/to/app.exe
+# Check for DLL detection (Frida agent)
+fritap --wine off --experimental -s -do wine /path/to/app.exe 2>&1 | grep -i "dll\|library"
+
+# Try enabling default socket info (Frida agent)
+fritap --wine off --experimental -s --enable_default_fd -k keys.log wine /path/to/app.exe
 ```
+
+If friTap aborts before launching Wine with a message about WINEPREFIX
+ownership, see "Common mistake" under [Prerequisites](#prerequisites).
 
 ### Application Crashes
 
@@ -569,15 +736,16 @@ fritap --experimental --enable_default_fd -k keys.log wine /path/to/app.exe
 # First start the application
 wine /path/to/app.exe &
 
-# Then attach to running process
-fritap --experimental -k keys.log $(pgrep -f app.exe)
+# Then attach to the running process (no -s), by name or by PID
+fritap -k keys.log app.exe
+fritap -k keys.log "$(pgrep -f app.exe | head -1)"
 ```
 
 ### DLL Not Hooked
 
 ```bash
 # List loaded DLLs in the Wine process
-cat /proc/$(pgrep -f app.exe)/maps | grep -i "\.dll"
+cat "/proc/$(pgrep -f app.exe | head -1)/maps" | grep -i "\.dll"
 
 # Check if the DLL matches supported patterns
 # The DLL must match one of the supported patterns listed above
@@ -588,8 +756,12 @@ cat /proc/$(pgrep -f app.exe)/maps | grep -i "\.dll"
 ### Game Analysis
 
 ```bash
-# Analyze network traffic from Windows games
-fritap --experimental -k game_keys.log --pcap game_traffic.pcap \
+# Analyze network traffic from Windows games: keys + full capture
+sudo fritap -s -k game_keys.log -p game_traffic.pcapng -f \
+    wine ~/.wine/drive_c/Games/SomeGame/game.exe
+
+# Decrypted plaintext pcap instead (experimental Frida agent)
+fritap --wine off --experimental -s -k game_keys.log --pcap game_plaintext.pcap \
     wine ~/.wine/drive_c/Games/SomeGame/game.exe
 ```
 
@@ -597,7 +769,7 @@ fritap --experimental -k game_keys.log --pcap game_traffic.pcap \
 
 ```bash
 # Test Windows applications for TLS issues
-fritap --experimental -v -k app_keys.log wine /path/to/app.exe
+fritap -s -v -k app_keys.log wine /path/to/app.exe
 ```
 
 
@@ -610,23 +782,26 @@ fritap --experimental -v -k app_keys.log wine /path/to/app.exe
 export WINEPREFIX=~/.wine_analysis
 wine winecfg  # Initialize prefix
 
-# Run analysis in isolated prefix
-WINEPREFIX=~/.wine_analysis sudo -E fritap --experimental -k keys.log wine /path/to/app.exe
+# Run analysis in isolated prefix (as the prefix owner, no sudo)
+WINEPREFIX=~/.wine_analysis fritap -s -k keys.log wine /path/to/app.exe
 ```
 
 ### 2. Enable Verbose Output Initially
 
 ```bash
 # Start with verbose output to understand what's being hooked
-fritap --experimental -v -do wine /path/to/app.exe
+fritap -s -v -do -k keys.log wine /path/to/app.exe
 ```
 
 ### 3. Use Spawn Mode for Initialization Capture
 
 ```bash
-# Capture traffic from application startup (still in an very early experimental state; can result into crashes)
-fritap --experimental -s -k keys.log wine /path/to/app.exe
+# Capture keys from application startup (GDB path: launch + freeze-on-detect + attach)
+fritap -s -k keys.log wine /path/to/app.exe
 ```
+
+Spawn mode with the Frida agent (`--wine off --experimental -s …`) is still in
+a very early experimental state and can crash the target.
 
 ### 4. Document Working Configurations
 

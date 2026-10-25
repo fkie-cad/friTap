@@ -958,27 +958,26 @@ class SSL_Logger():
     def _target_is_wine(self) -> bool:
         """Was the spawn target a Wine launcher binary?
 
-        Inspects argv[0] basename. Falls back to shlex-splitting the
-        space-joined target_app when target_argv is None (older configs).
+        Inspects the argv[0] basename of :meth:`_wine_target_argv`.
         """
-        first = None
-        argv = self.target_argv
-        if argv:
-            first = argv[0]
-        else:
-            app = self.target_app or ""
-            if app:
-                import shlex
-                try:
-                    tokens = shlex.split(app, posix=True)
-                    first = tokens[0] if tokens else None
-                except ValueError:
-                    parts = app.split()
-                    first = parts[0] if parts else None
-        if not first:
+        argv = self._wine_target_argv()
+        if not argv:
             return False
         import os as _os
-        return _os.path.basename(first).lower() in self._WINE_BASENAMES
+        return _os.path.basename(argv[0]).lower() in self._WINE_BASENAMES
+
+    def _wine_target_argv(self) -> list:
+        """The target's argv: ``target_argv``, else ``target_app`` shlex-split
+        (older configs only carry the space-joined string; an unbalanced quote
+        falls back to a plain whitespace split)."""
+        if self.target_argv:
+            return list(self.target_argv)
+        app = self.target_app or ""
+        import shlex
+        try:
+            return shlex.split(app, posix=True)
+        except ValueError:
+            return app.split()
 
     def _parse_crash_cause(self, report, summary):
         """Best-effort ``(signal, abort_message)`` extraction from a frida
@@ -1412,7 +1411,7 @@ class SSL_Logger():
                             "anti-cheat / DRM aborted.")
                         self.logger.error(
                             "  -> Try attach mode: start the app yourself with `wine ...`, "
-                            "then `fritap --experimental -p $(pgrep -f your_app.exe)`. See "
+                            "then `fritap -k keys.log your_app.exe`. See "
                             "docs/platforms/wine.md.")
                 else:
                     # No confirmed anti-tamper and not Wine.
@@ -2749,6 +2748,9 @@ class SSL_Logger():
         the name as a LITERAL substring (not a `pgrep -f` regex, which would treat
         ``.`` etc. as metacharacters), preferring one that actually looks like a
         Wine process so we don't attach to a short-lived launcher that then exits.
+        A ``wine <exe>`` launch command never appears verbatim in a running app's
+        cmdline, so for a Wine target we then retry with the exe path and its
+        basename (Wine processes only).
         """
         if self.pid:
             return self.pid
@@ -2757,23 +2759,103 @@ class SSL_Logger():
             return int(app)
         if not app:
             return None
-        import glob
-        own = str(os.getpid())
-        fallback = None
-        for entry in glob.glob("/proc/[0-9]*"):
-            pid = entry.rsplit("/", 1)[-1]
-            if pid == own:
-                continue
-            try:
-                cmdline = open(entry + "/cmdline", "rb").read().replace(b"\0", b" ").decode("latin1")
-            except OSError:
-                continue
-            if app not in cmdline:
-                continue
-            if self._pid_is_wine(pid):
-                return int(pid)
-            fallback = fallback or int(pid)
+        procs = list(self._iter_proc_cmdlines())  # one /proc snapshot for all needles
+        wine_cache = {}
+
+        def is_wine(pid):
+            if pid not in wine_cache:
+                wine_cache[pid] = self._pid_is_wine(pid)
+            return wine_cache[pid]
+
+        wine_pid, fallback = self._find_proc_by_cmdline(
+            procs, lambda cmdline: app in cmdline, is_wine,
+        )
+        if wine_pid is not None:
+            return wine_pid
+        for needle in self._wine_exe_needles(app):
+            wine_pid, _ = self._find_proc_by_cmdline(
+                procs, self._cmdline_matcher(needle), is_wine,
+            )
+            if wine_pid is not None:
+                return wine_pid
         return fallback
+
+    @staticmethod
+    def _find_proc_by_cmdline(procs, matches, is_wine):
+        """``(wine_pid, fallback_pid)`` for the first of *procs* (``(pid,
+        cmdline)`` pairs) whose cmdline *matches* (a predicate): the first one
+        *is_wine* accepts, and the first of any kind."""
+        fallback = None
+        for pid, cmdline in procs:
+            if not matches(cmdline):
+                continue
+            if is_wine(pid):
+                return int(pid), fallback
+            fallback = fallback or int(pid)
+        return None, fallback
+
+    @staticmethod
+    def _path_basename(path):
+        """Last component of a Windows or POSIX *path*."""
+        return re.split(r"[\\/]", path)[-1]
+
+    @classmethod
+    def _cmdline_matcher(cls, needle):
+        """Predicate for an exe *needle*: a path is matched as a substring, a
+        bare basename only as a whole cmdline token's basename (case-insensitive),
+        so ``a.exe`` does not match ``data.exe``."""
+        if re.search(r"[\\/]", needle):
+            return lambda cmdline: needle in cmdline
+        wanted = needle.lower()
+        return lambda cmdline: any(
+            cls._path_basename(token).lower() == wanted for token in cmdline.split()
+        )
+
+    def _wine_exe_needles(self, app):
+        """Exe path and basename of a ``wine <exe>`` target, for the attach retry.
+        Empty for a non-Wine target or one without an ``.exe`` argument."""
+        if not self._target_is_wine():
+            return []
+        exe = self._wine_target_exe()
+        if exe is None:
+            return []
+        basename = self._path_basename(exe)
+        return [n for n in dict.fromkeys((exe, basename)) if n and n != app]
+
+    def _wine_target_exe(self):
+        """First argument after the Wine launcher ending in ``.exe``
+        (case-insensitive), skipping launcher forms such as ``start /unix``;
+        None if there is none (e.g. ``wine cmd /c``)."""
+        for arg in self._wine_target_argv()[1:]:
+            if arg.lower().endswith(".exe"):
+                return arg
+        return None
+
+    @staticmethod
+    def _wine_extractor_module():
+        """The ``agent_gdb.wine.wine_key_extract`` module. In a source checkout
+        that was never installed, the repo root is added to ``sys.path`` so the
+        sibling ``agent_gdb`` package is importable; ImportError if still not."""
+        import importlib
+        name = "agent_gdb.wine.wine_key_extract"
+        try:
+            return importlib.import_module(name)
+        except ImportError:
+            import sys as _sys
+            repo_root = os.path.dirname(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            )
+            if repo_root not in _sys.path:
+                _sys.path.insert(0, repo_root)
+            return importlib.import_module(name)
+
+    @classmethod
+    def _iter_proc_cmdlines(cls):
+        """``(pid, cmdline)`` for each readable /proc process, skipping friTap
+        itself and its ancestors: a ``sudo fritap ... wine app.exe`` parent
+        carries the target string in its own cmdline."""
+        wke = cls._wine_extractor_module()
+        return wke.iter_proc_cmdlines(exclude=wke.own_process_lineage())
 
     def _should_use_wine_gdb(self) -> bool:
         """True when this is a LOCAL Linux Wine target to hand to the GDB-based
@@ -2807,9 +2889,20 @@ class SSL_Logger():
         except Exception:
             return False
         if not self.spawn:  # attach mode: inspect the live process maps
-            pid = self._resolve_wine_attach_pid()
-            return pid is not None and self._pid_is_wine(pid)
+            return self._attach_target_is_wine()
         return False
+
+    def _attach_target_is_wine(self) -> bool:
+        """Attach mode: does the resolved target process look like Wine? The
+        PID is cached for :meth:`_run_wine_gdb_session`. A missing Wine
+        extractor means False: a non-Wine attach must never fail on this path."""
+        try:
+            pid = self._resolve_wine_attach_pid()
+        except ImportError as exc:
+            self.logger.debug("Wine extractor unavailable, skipping Wine check: %s", exc)
+            return False
+        self._wine_attach_pid = pid
+        return pid is not None and self._pid_is_wine(pid)
 
     def _run_wine_gdb_session(self, own_message_handler=None):
         """Run GDB-based TLS key extraction for a Wine target (no Frida).
@@ -2823,36 +2916,14 @@ class SSL_Logger():
         ``start_session`` return contract. The gdb/Wine process is tracked so
         :meth:`cleanup` can tear it down on Ctrl-C (see ``_terminate_wine_gdb``).
         """
-        try:
-            from agent_gdb.wine.wine_key_extract import (
-                launch_and_attach,
-                run_wine_key_extraction,
-            )
-        except ImportError:
-            # Source checkout that was never installed: add the repo root so the
-            # sibling agent_gdb package is importable, then retry.
-            import sys as _sys
-            repo_root = os.path.dirname(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            )
-            if repo_root not in _sys.path:
-                _sys.path.insert(0, repo_root)
-            from agent_gdb.wine.wine_key_extract import (
-                launch_and_attach,
-                run_wine_key_extraction,
-            )
+        wke = self._wine_extractor_module()
 
         self.logger.info(
             "Wine target detected on Linux — using the GDB-based key extractor "
             "(Frida injection skipped)."
         )
 
-        if self.pcap_name or self.live or self.payload_modification or self.socket_trace:
-            self.logger.warning(
-                "Plaintext/pcap capture is not currently supported for Wine "
-                "targets; only TLS key extraction (keylog) is available. Capture "
-                "the keys with -k and decrypt the traffic in Wireshark."
-            )
+        self._log_wine_output_support()
 
         keylog = self.keylog
         if not keylog:
@@ -2860,6 +2931,10 @@ class SSL_Logger():
             self.logger.warning("No keylog file given (-k); writing keys to %s", keylog)
         else:
             self.logger.info("Logging Wine TLS keys to %s", keylog)
+        # Remembered so the full-capture finalize can embed these keys (DSB);
+        # gdb appends, so only bytes past the current size belong to this run.
+        self._wine_keylog_path = keylog
+        self._wine_keylog_offset = self._file_size(keylog)
 
         # Resolve the invocation synchronously so argument/target errors return
         # before we start a thread.
@@ -2867,7 +2942,7 @@ class SSL_Logger():
             # Launch Wine normally (full wineserver/services bootstrap) and
             # attach: gdb-spawning Wine deadlocks its cold boot on the wow64
             # layout. Needs kernel.yama.ptrace_scope=0 (see docs).
-            argv = self.target_argv or (self.target_app or "").split()
+            argv = self._wine_target_argv()
             rest = argv[1:] if argv else []
             if not rest:
                 self.logger.error(
@@ -2875,8 +2950,22 @@ class SSL_Logger():
                 )
                 self._done_event.set()
                 return None, None
+            # Wine refuses a prefix it does not own, so under sudo the Wine
+            # process itself is dropped back to the invoking user.
+            run_as = wke.sudo_invoker()
+            if run_as is not None:
+                self.logger.info(
+                    "Running as root via sudo; launching Wine as %s (uid %d) so it can use "
+                    "that user's prefix.", run_as.user, run_as.uid,
+                )
+            prefix_problem = wke.wine_prefix_problem(run_as)
+            if prefix_problem:
+                self.logger.error("%s", prefix_problem)
+                self._done_event.set()
+                return None, None
+            gdb_run_as = self._wine_gdb_run_as(run_as, keylog)
             work = functools.partial(
-                launch_and_attach,
+                wke.launch_and_attach,
                 wine_cmd=argv[0],
                 program=rest[0],
                 program_args=rest[1:],
@@ -2884,41 +2973,156 @@ class SSL_Logger():
                 verbose=self.verbose,
                 logger=self.logger,
                 on_process=self._track_wine_proc,
+                run_as=run_as,
+                gdb_run_as=gdb_run_as,
             )
         else:
-            attach = self._resolve_wine_attach_pid()
+            attach = getattr(self, "_wine_attach_pid", None)
+            if attach is None:
+                attach = self._resolve_wine_attach_pid()
             if attach is None:
                 self.logger.error(
                     "Could not determine a PID to attach to for Wine target %r.",
                     self.target_app,
                 )
+                self._log_wine_attach_hint()
                 self._done_event.set()
                 return None, None
+            gdb_run_as = self._wine_gdb_run_as(
+                wke.sudo_invoker(), keylog, target_pid=attach,
+            )
             work = functools.partial(
-                run_wine_key_extraction,
+                wke.run_wine_key_extraction,
                 attach=str(attach),
                 keylog=keylog,
                 verbose=self.verbose,
                 on_process=self._track_wine_proc,
+                run_as=gdb_run_as,
             )
 
         def _runner():
+            reason = "Wine GDB key extraction finished"
             try:
                 rc = work()
-                self.logger.info(
-                    "Wine GDB key extraction finished (gdb exit %s). Keylog: %s",
-                    rc, keylog,
-                )
+                reason = f"Wine GDB key extraction finished (gdb exit {rc})"
+                self.logger.info("%s. Keylog: %s", reason, keylog)
             except Exception as exc:
-                self.logger.error("Wine GDB key extraction failed: %s", exc)
+                reason = f"Wine GDB key extraction failed: {exc}"
+                self.logger.error("%s", reason)
             finally:
-                self._done_event.set()
+                self._finish_wine_session(reason)
 
         self._wine_thread = threading.Thread(
             target=_runner, name="fritap-wine-gdb", daemon=True
         )
         self._wine_thread.start()
         return None, None
+
+    def _log_wine_output_support(self):
+        """Tell the user which -p/-f/--live style outputs the Wine GDB path serves.
+
+        A full packet capture (-p FILE -f) works: the sniffer runs independently
+        and the extracted keys are embedded at finalize. Decrypted plaintext
+        outputs need the Frida agent and are not produced here.
+        """
+        if self.full_capture:
+            self.logger.info(
+                "Full packet capture is active; the TLS keys for it come from the "
+                "GDB extractor (embedded as a DSB when writing .pcapng)."
+            )
+        plaintext_pcap = self.pcap_name and not self.full_capture
+        if plaintext_pcap or self.live or self.payload_modification or self.socket_trace:
+            self.logger.warning(
+                "Plaintext/pcap capture is not currently supported for Wine "
+                "targets; only TLS key extraction (keylog) is available. For a "
+                "full packet capture use -p <file> -f, or capture the keys with "
+                "-k and decrypt the traffic in Wireshark."
+            )
+
+    def _log_wine_attach_hint(self):
+        """Explain a failed attach whose target looks like a Wine launch command."""
+        if not self._target_is_wine():
+            return
+        self.logger.error(
+            "Hint: %r looks like a Wine launch command, but friTap ran in attach "
+            "mode because -s/--spawn was not given.", self.target_app,
+        )
+        self.logger.error(
+            "  -> To launch it under friTap: fritap -s -k keys.log wine app.exe"
+        )
+        self.logger.error(
+            "  -> Or start the app first and attach by name: fritap -k keys.log app.exe"
+        )
+
+    def _wine_gdb_run_as(self, invoker, keylog, target_pid=None):
+        """The sudo *invoker* to run gdb as (least privilege), or None for root.
+
+        gdb is dropped only when that can work (Yama scope, target ids, script
+        and keylog access — see ``unprivileged_gdb_blocker``); otherwise it
+        stays root and the reason is logged. None when not running via sudo.
+        """
+        if invoker is None:
+            return None
+        wke = self._wine_extractor_module()
+        reason = wke.unprivileged_gdb_blocker(invoker, keylog, target_pid=target_pid)
+        if reason:
+            self.logger.info("Keeping gdb as root: %s", reason)
+            return None
+        self.logger.info(
+            "Running gdb as %s (uid %d); kernel.yama.ptrace_scope=0 allows an "
+            "unprivileged attach.", invoker.user, invoker.uid,
+        )
+        return invoker
+
+    def _finish_wine_session(self, reason):
+        """End a Wine GDB session that finished on its own through the shared
+        :meth:`_end_session` teardown (plugin/memscan notify, JSON end reason,
+        ``pcap_cleanup`` + ``cleanup``), so a full capture still gets its rename,
+        DSB and manifest. Skipped when a teardown (e.g. Ctrl-C) already ran;
+        ``_done_event`` is set on every path, even if finalizing raises.
+        """
+        try:
+            if not getattr(self, "_cleanup_done", False):
+                self._end_session(reason)
+        except Exception as exc:
+            self.logger.error("Finalizing the Wine GDB session failed: %s", exc)
+        finally:
+            self._done_event.set()
+
+    def _wine_keylog_lines(self):
+        """Valid NSS keylog lines written by the Wine GDB extractor during THIS
+        session (past ``_wine_keylog_offset``), deduplicated in order, for
+        embedding in a full capture. Comments, garbage and an unreadable file
+        yield nothing."""
+        path = getattr(self, "_wine_keylog_path", None)
+        if not path:
+            return []
+        from ..offline.tls.keylog import parse_strict_nss_line
+        try:
+            text = self._read_keylog_since(path, getattr(self, "_wine_keylog_offset", 0))
+        except OSError:
+            return []
+        entries = filter(None, map(parse_strict_nss_line, text.splitlines()))
+        return list(dict.fromkeys(
+            f"{e.label} {e.client_random} {e.secret}" for e in entries
+        ))
+
+    @staticmethod
+    def _read_keylog_since(path, offset):
+        """Text of *path* after byte *offset*, or all of it if the file shrank
+        below *offset* (truncated); undecodable bytes are replaced."""
+        with open(path, "rb") as handle:
+            size = os.fstat(handle.fileno()).st_size
+            handle.seek(offset if offset <= size else 0)
+            return handle.read().decode("utf-8", errors="replace")
+
+    @staticmethod
+    def _file_size(path):
+        """Size of *path* in bytes, 0 if it does not exist or is unreadable."""
+        try:
+            return os.path.getsize(path)
+        except OSError:
+            return 0
 
     def _track_wine_proc(self, proc):
         """Register a Wine-extraction process (the gdb session, and for spawn the
@@ -3403,6 +3607,10 @@ class SSL_Logger():
                 if isinstance(handler, KeyCollectorHandler):
                     formatted_keys = handler.get_collected_keys()
                     break
+            # The Wine GDB path bypasses the agent's key events, so its keys only
+            # exist in the keylog file the extractor wrote.
+            if not formatted_keys:
+                formatted_keys = self._wine_keylog_lines()
 
             pcap_name = self.pcap_obj.pcap_file_name
 

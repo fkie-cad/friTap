@@ -511,7 +511,7 @@ class TestNonIosGuidanceUnchangedByTheHoist:
         text = caplog.text
         assert "Hint: Wine target terminated unexpectedly." in text
         assert ("  -> Try attach mode: start the app yourself with `wine ...`, "
-                "then `fritap --experimental -p $(pgrep -f your_app.exe)`. See "
+                "then `fritap -k keys.log your_app.exe`. See "
                 "docs/platforms/wine.md.") in text
 
     def test_wine_root_branch_still_fires(self, caplog, monkeypatch):

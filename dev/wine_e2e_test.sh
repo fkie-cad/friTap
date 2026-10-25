@@ -9,7 +9,9 @@
 #      launching shell exiting.
 #   3. Waits until wine has fully loaded (ntdll.dll, kernelbase, gnutls) so
 #      the isWine() check inside the agent detects the process correctly.
-#   4. Attaches friTap by PID with --experimental.
+#   4. Attaches friTap by PID with --wine off --experimental (the Frida
+#      agent; without --wine off a Wine target is routed to the GDB key
+#      extractor, which never emits the "gnutls dyn" discovery lines below).
 #   5. Streams progress every 3s until keys land, fritap dies, or timeout.
 #
 # Requirements:
@@ -107,7 +109,7 @@ echo "[*] cscript PID: $CS  (exe: $(readlink /proc/$CS/exe))"
 
 # --- Attach friTap ---
 echo "[*] Attaching friTap → $CS (writing keys to $KEYS_LOG)..."
-"$FRITAP" --experimental -k "$KEYS_LOG" -v -do "$CS" > "$LOG_FRITAP" 2>&1 &
+"$FRITAP" --wine off --experimental -k "$KEYS_LOG" -v -do "$CS" > "$LOG_FRITAP" 2>&1 &
 FTPID=$!
 
 # --- Monitor for 90s ---

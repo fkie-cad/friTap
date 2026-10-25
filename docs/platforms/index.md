@@ -11,7 +11,7 @@ friTap supports multiple platforms and operating systems. This section provides 
 | **Linux** | ✓ Full Support | [Linux Guide](linux.md) | Native OpenSSL/GnuTLS, BPF capture, containers |
 | **macOS** | Keys (Partial) | [macOS Guide](macos.md) | BoringSSL keylog extraction, OpenSSL (Homebrew/pyenv/framework), LibreSSL |
 | **Windows** | ✓ Full Support | [Windows Guide](windows.md) | Schannel (via LSASS), OpenSSL, bundled libraries |
-| **Wine** | Experimental | [Wine Guide](wine.md) | Windows apps on Linux, hybrid DLL/SO hooking |
+| **Wine** | Supported (GDB key extraction); Frida agent experimental | [Wine Guide](wine.md) | Windows apps on Linux: keylog + full capture by default, hybrid DLL/SO hooking via the Frida agent |
 
 ### Mobile Platforms
 
@@ -28,7 +28,7 @@ friTap supports multiple platforms and operating systems. This section provides 
 - **Linux**: Best for server applications, command-line tools, and development environments
 - **macOS**: Limited to BoringSSL-based applications (Chrome), system LibreSSL, and genuine OpenSSL (Homebrew, pyenv, MacPorts, framework Pythons)
 - **Windows**: Perfect for Windows applications - comprehensive Schannel support via LSASS hooking
-- **Wine**: Analyze Windows applications running under Wine on Linux (experimental)
+- **Wine**: Analyze Windows applications running under Wine on Linux (GDB key extraction by default; the Frida agent is experimental)
 
 **For Mobile Applications:**
 - **Android**: Comprehensive Android app analysis with root access
@@ -336,7 +336,7 @@ Choose your platform and dive into the detailed guides:
 3. **[Windows Platform Guide](windows.md)** - Windows analysis with Schannel/LSASS support
 4. **[Android Platform Guide](android.md)** - Mobile Android app analysis (full support)
 5. **[iOS Platform Guide](ios.md)** - iOS app analysis (keylog extraction only)
-6. **[Wine Platform Guide](wine.md)** - Windows apps on Linux (experimental)
+6. **[Wine Platform Guide](wine.md)** - Windows apps on Linux (GDB key extraction by default; Frida agent experimental)
 
 For advanced features and cross-platform topics:
 - **[Pattern-based Hooking](../advanced/patterns.md)** - Custom library detection

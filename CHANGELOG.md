@@ -4,6 +4,50 @@ All notable changes to friTap will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.5.8] - 2026-10-25
+
+### Added
+  - **Full packet capture (`-p <file> -f`) on the Wine GDB path.** The whole-host
+    capture now runs alongside the GDB key extractor and is finalized both on
+    Ctrl-C and when the Wine app exits on its own (previously a natural exit left
+    only the `_<name>` temp file). With a `.pcapng` target the keys extracted by
+    gdb are embedded as a Decryption Secrets Block, so `fritap -r cap.pcapng` /
+    Wireshark decrypt it directly.
+  - **`sudo` + Wine spawn launches Wine as the invoking user.** When friTap runs
+    as root via `sudo` (needed for `-f`), spawn mode starts Wine with
+    `SUDO_UID`/`SUDO_GID` and that user's `HOME`, so the user's `~/.wine` prefix
+    works. The sniffer, the `/proc` scan, the `SIGSTOP`/`SIGCONT` freeze/resume
+    and teardown stay root.
+  - **gdb runs as the invoking user under `sudo` when possible (least
+    privilege).** gdb parses untrusted target memory and runs Python scripts, so
+    on the Wine GDB path friTap now drops it to the `sudo` user when
+    `kernel.yama.ptrace_scope=0` (or Yama is absent), the target belongs to that
+    user (always in spawn mode, checked in attach mode), the user can read
+    friTap's gdb script directory, and the user can write the keylog (a missing
+    keylog is created owned by the user; an existing root-owned one blocks the
+    drop). Otherwise gdb stays root and friTap logs `Keeping gdb as root:
+    <reason>`; on success it logs `Running gdb as <user> (uid N); ...`. friTap
+    never changes `ptrace_scope` itself.
+
+### Fixed
+  - **Wine launch command without `-s`.** `fritap -k keys.log wine app.exe` runs
+    in attach mode; friTap now also matches the running app by its exe path /
+    basename (a Wine process's cmdline never contains `wine app.exe`) and, if
+    nothing is running, prints a hint to add `-s` instead of only "Could not
+    determine a PID to attach to".
+  - **WINEPREFIX ownership pre-flight check** on the GDB Wine spawn path: friTap
+    aborts with a clear message when the prefix is owned by a different user than
+    the one Wine will run as (Wine would refuse it and exit silently).
+  - The "Plaintext/pcap capture is not supported for Wine" notice no longer fires
+    for full capture (`-f`), and now points to `-p <file> -f` for plaintext-only
+    requests.
+  - Broken attach examples: the Wine detach hint and `docs/platforms/wine.md`
+    used `-p "$(pgrep …)"`, but `-p` is `--pcap`; attach targets are positional.
+  - `docs/platforms/wine.md`: "Basic Usage" showed the stale `sudo fritap
+    --experimental -k keys.log wine app.exe` (no `-s`), fixed invalid `sudo
+    WINEPREFIX=… -E` ordering and a `sudo -E` example that hit the prefix trap,
+    and updated the deployment models to the GDB default.
+
 ## [Unreleased] — 2.3.0
 
 ### Added
