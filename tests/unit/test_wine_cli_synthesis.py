@@ -1,10 +1,11 @@
 """Tests for the CLI-layer Wine synthesis (`_maybe_prepend_wine`): turning a bare
 Windows target on Linux into a `wine <exe>` spawn command, gated by --wine."""
 
+import argparse
 import logging
 import types
 
-from friTap.friTap import _maybe_prepend_wine
+from friTap.friTap import _WINE_MODES, _maybe_prepend_wine, _normalize_bare_wine_flag
 
 LOG = logging.getLogger("test.wine.synth")
 
@@ -88,3 +89,58 @@ def test_non_linux_not_synthesized(tmp_path, monkeypatch):
     p = _parsed([str(exe)])
     _maybe_prepend_wine(p, LOG)
     assert p.exec_argv == [str(exe)]
+
+# --- bare `--wine` normalization ------------------------------------------------
+
+def test_bare_wine_before_target_becomes_auto():
+    assert _normalize_bare_wine_flag(["-s", "--wine", "app.exe"]) == \
+        ["-s", "--wine", "auto", "app.exe"]
+
+
+def test_bare_wine_before_flag_left_for_argparse_const():
+    argv = ["--wine", "-s", "app.exe"]
+    assert _normalize_bare_wine_flag(argv) == argv
+
+
+def test_bare_wine_at_end_left_for_argparse_const():
+    argv = ["-s", "app.exe", "--wine"]
+    assert _normalize_bare_wine_flag(argv) == argv
+
+
+def test_explicit_wine_modes_untouched():
+    for mode in _WINE_MODES:
+        argv = ["--wine", mode, "app.exe"]
+        assert _normalize_bare_wine_flag(argv) == argv
+
+
+def test_wine_equals_form_untouched():
+    argv = ["--wine=off", "app.exe"]
+    assert _normalize_bare_wine_flag(argv) == argv
+
+
+def test_wine_after_double_dash_belongs_to_target():
+    argv = ["-s", "--", "tool", "--wine", "x"]
+    assert _normalize_bare_wine_flag(argv) == argv
+
+
+def _wine_parser():
+    # Mirrors the --wine/target definitions in friTap.friTap.cli().
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-s", "--spawn", action="store_true")
+    parser.add_argument("-k", "--keylog")
+    parser.add_argument("--wine", choices=_WINE_MODES, nargs="?", const="auto", default="auto")
+    parser.add_argument("exec", nargs="+")
+    return parser
+
+
+def test_parser_bare_wine_with_target_and_dash_args():
+    argv = ["-s", "-k", "k.log", "--wine", "--", "curl.exe", "-sk", "https://x"]
+    parsed = _wine_parser().parse_args(_normalize_bare_wine_flag(argv))
+    assert parsed.wine == "auto"
+    assert parsed.exec == ["curl.exe", "-sk", "https://x"]
+
+
+def test_parser_bare_wine_directly_before_target():
+    parsed = _wine_parser().parse_args(_normalize_bare_wine_flag(["-s", "--wine", "app.exe"]))
+    assert parsed.wine == "auto"
+    assert parsed.exec == ["app.exe"]

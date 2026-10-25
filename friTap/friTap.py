@@ -662,6 +662,28 @@ def _resolve_ms_rc4_ciphertext(value):
     return _hex_text_or_none(data) or data.hex()
 
 
+_WINE_MODES = ("auto", "on", "off")
+
+
+def _normalize_bare_wine_flag(argv):
+    """Make a bare ``--wine`` mean ``--wine auto``.
+
+    ``--wine`` takes an optional mode; without this, argparse would consume the
+    following target (``fritap -s --wine app.exe``) as the mode and reject it.
+    Tokens after a ``--`` separator belong to the target and are left untouched.
+    """
+    out = []
+    for i, tok in enumerate(argv):
+        if tok == "--":
+            return out + list(argv[i:])
+        out.append(tok)
+        if tok == "--wine":
+            nxt = argv[i + 1] if i + 1 < len(argv) else None
+            if nxt is not None and nxt not in _WINE_MODES and not nxt.startswith("-"):
+                out.append("auto")
+    return out
+
+
 def _maybe_prepend_wine(parsed, logger):
     """CLI-layer Wine synthesis.
 
@@ -845,7 +867,10 @@ Offline (read / analyze .tap):
     args.add_argument("exec", metavar="<executable/app name/pid>", nargs="+",
                       help="executable/app whose SSL calls to log. Accepts a "
                            "command with arguments for spawn mode, e.g. "
-                           "'wine /path/to/application.exe' (issue #66).")
+                           "'wine /path/to/application.exe' (issue #66). If the "
+                           "target's own arguments start with '-', put the target "
+                           "after '--', e.g. 'fritap -s -k keys.log -- wine app.exe "
+                           "-sk https://example.com'.")
     args.add_argument("--offsets", required=False, metavar="<offsets.json>",
                       help="Provide custom offsets for all hooked functions inside a JSON file or a json string containing all offsets. For more details see our example json (offsets_example.json)")
     args.add_argument("--patterns", required=False, metavar="<pattern.json>",
@@ -1048,8 +1073,9 @@ Offline (read / analyze .tap):
     # backend; resolved to FRIDA right after parse_args (see cli()).
     args.add_argument("--backend", choices=[b.value for b in BackendName], default=None,
                       help="Instrumentation backend to use (default: frida)")
-    args.add_argument("--wine", choices=["auto", "on", "off"], default="auto",
-                      help="Wine key extraction on Linux (default: auto). 'auto' detects a "
+    args.add_argument("--wine", choices=_WINE_MODES, nargs="?", const="auto", default="auto",
+                      help="Wine key extraction on Linux (default: auto; '--wine' alone "
+                           "also means auto). 'auto' detects a "
                            "Wine target (a `wine ...` command, or a Windows .exe/PE given "
                            "directly) and uses the GDB-based key extractor; 'on' forces it; "
                            "'off' disables it (use the normal Frida flow, e.g. the "
@@ -1131,7 +1157,7 @@ Offline (read / analyze .tap):
                            "a library scan (--library-scan) or a key-region "
                            "scan (--scan-keys-region) is requested, since those scan inside "
                            "the agent's startup.")
-    parsed = parser.parse_args()
+    parsed = parser.parse_args(_normalize_bare_wine_flag(sys.argv[1:]))
 
     # Resolve --backend: None means the user did not pass it, so record that
     # (explicitness drives Wine-route precedence) and fall back to the default.

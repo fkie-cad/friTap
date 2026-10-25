@@ -37,12 +37,19 @@ fritap -s -k keys.log wine /path/to/app.exe
 # Wine target and `wine` is prepended for you.
 fritap -s -k keys.log /path/to/app.exe
 
+# Target with its own dash-arguments: put them after `--`.
+fritap -s -k keys.log -- wine /path/to/app.exe --its-flags
+fritap -s -k keys.log -- /path/to/curl.exe -sk https://example.com
+
 # Attach to an already-running Wine app (no -s): by exe name ...
 fritap -k keys.log app.exe
 
 # ... or by PID (the PID is positional; -p is --pcap, not a PID option).
 fritap -k keys.log "$(pgrep -f app.exe | head -1)"
 ```
+
+!!! note "Why `--`?"
+    Target arguments starting with `-` (e.g. curl's `-sk`) would otherwise be parsed as friTap options; everything after `--` belongs to the target. See [`-s, --spawn`](../api/cli.md#-s-spawn).
 
 !!! note "`-s` spawns, no `-s` attaches"
     With `-s`/`--spawn` friTap launches the app itself (launch +
@@ -60,6 +67,9 @@ Control this with `--wine`:
 - `--wine off`: never use it — fall through to the normal Frida flow (e.g. the
   experimental Wine agent). An explicit `--backend frida` likewise keeps the Frida
   path for a Wine target.
+
+A bare `--wine` (no value) means `--wine auto`, e.g.
+`fritap -s -k keys.log --wine -- /path/to/curl.exe -sk https://example.com`.
 
 !!! info "Keys + full packet capture; no decrypted plaintext on the GDB path"
     The GDB path extracts **TLS key material** (an NSS key log, directly loadable
@@ -344,6 +354,10 @@ fritap -s -do -v -k keys.log wine /path/to/app.exe
 # Spawn target whose path contains spaces — quote it so the shell passes one
 # token; friTap preserves the argv and spawns it intact (no space-splitting).
 fritap -s -k keys.log wine "/home/u/.wine/drive_c/Program Files/App/app.exe"
+
+# Target with its own dash-arguments (see the `--` note above)
+fritap -s -k keys.log -- wine /path/to/app.exe --its-flags
+fritap -s -k keys.log -- /path/to/curl.exe -sk https://example.com
 
 # Full capture of the game's traffic, decryptable straight from the pcapng
 sudo fritap -s -k game_keys.log -p game.pcapng -f wine ~/.wine/drive_c/Games/game.exe

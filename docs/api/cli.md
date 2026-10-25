@@ -59,6 +59,20 @@ fritap -s -k keys.log firefox
 fritap -m -s -k keys.log com.example.app
 ```
 
+The target is everything after friTap's own options, so a command with plain
+arguments works as-is (`fritap -s -k keys.log wine app.exe`).
+
+!!! note "Target arguments that start with `-` go after `--`"
+    If the target has its own dash-arguments (e.g. curl's `-sk`), argparse would
+    read them as friTap options (friTap has its own `-s`/`-k`). Put a `--` before
+    the target; everything after it belongs to the target. `--` is not needed when
+    the target has no dash-arguments. (This is separate from the
+    [`-ms`/`-sot` `--` rule](#-ms-memory-scan-patternjson).)
+
+    ```bash
+    fritap -s -k keys.log -- wine "$CURL" -sk https://web.de
+    ```
+
 #### `-env, --environment <env.json>`
 Provide environment variables for spawning as a JSON file. Especially useful on
 desktop. Example file:
@@ -508,6 +522,17 @@ Instrumentation backend to use. **Default `frida`**.
     `frida` is the supported backend. **`gdb`, `lldb`, and `ebpf` are
     EXPERIMENTAL/future** — the CLI accepts the choices, but the configuration
     layer rejects the unsupported ones with a clear error.
+
+#### `--wine [{auto,on,off}]`
+Wine key extraction on Linux. **Default `auto`**: a Wine target (a `wine …`
+command, or a Windows `.exe`/PE given directly) uses the GDB-based key extractor;
+`on` forces it, `off` disables it (normal Frida flow). A bare `--wine` with no
+value means `--wine auto`. See [Wine](../platforms/wine.md#key-extraction-via-gdb).
+
+```bash
+fritap -s -k keys.log --wine /path/to/app.exe
+fritap -s -k keys.log --wine -- /path/to/curl.exe -sk https://example.com
+```
 
 ---
 
