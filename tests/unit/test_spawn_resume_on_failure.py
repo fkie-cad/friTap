@@ -37,9 +37,10 @@ def _make_logger(spawn=True, pid=4242, device="dev"):
     obj._start_consumer_thread = lambda: None
     obj._start_instrument_thread = lambda: None
     obj._session_manager = MagicMock()
-    # Not a Wine target: keep the Frida path (on a Linux host this check would
+    # Not a Wine target: keep the Frida path (on a Linux host these checks would
     # otherwise read device/backend config these tests don't stub).
     obj._should_use_wine_gdb = lambda: False
+    obj._should_use_wine_frida_watch = lambda: False
     # spawn / the three gating flags are read-only properties over the config.
     obj._config = types.SimpleNamespace(
         device=types.SimpleNamespace(

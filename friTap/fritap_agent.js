@@ -1,5 +1,5 @@
 📦
-1629684 /agent/fritap_agent.js
+1651030 /agent/fritap_agent.js
 ✄
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -18821,8 +18821,10 @@ function initializePipeline(patternData, experimentalMode) {
       ps.setPatternData(patternData);
       defaultPipeline.addStrategy(ps);
     }
-    if (experimentalMode) {
+    if (experimentalMode && !lean_wine) {
       defaultPipeline.addStrategy(new MemoryScanStrategy());
+    } else if (experimentalMode && lean_wine) {
+      devlog(`[Pipeline] --lean-wine: Memory-scan strategy disabled for early Wine injection`);
     }
   }
   devlog(`[Pipeline] Initialized with ${defaultPipeline.size} strategies`);
@@ -19500,6 +19502,65 @@ function lenArg(a) {
   return a ? a.toUInt32() : void 0;
 }
 
+// agent/shared/call_abi.ts
+init_node_globals();
+var moduleAbi = /* @__PURE__ */ new Map();
+function setModuleCallAbi(moduleName, abi) {
+  moduleAbi.set(moduleName.toLowerCase(), abi);
+}
+function hostCallAbi() {
+  if (Process.arch === "arm64")
+    return "aarch64";
+  if (Process.arch === "x64")
+    return Process.platform === "windows" ? "win64" : "sysv";
+  return null;
+}
+function callAbiForModule(moduleName) {
+  return moduleAbi.get(moduleName.toLowerCase()) ?? hostCallAbi();
+}
+function argAt(ctx, abi, idx) {
+  if (abi === "aarch64") {
+    const c = ctx;
+    if (idx < 8)
+      return [c.x0, c.x1, c.x2, c.x3, c.x4, c.x5, c.x6, c.x7][idx];
+    return c.sp.add((idx - 8) * 8).readPointer();
+  } else if (abi === "win64") {
+    const c = ctx;
+    if (idx < 4)
+      return [c.rcx, c.rdx, c.r8, c.r9][idx];
+    return c.rsp.add(40 + (idx - 4) * 8).readPointer();
+  } else {
+    const c = ctx;
+    if (idx < 6)
+      return [c.rdi, c.rsi, c.rdx, c.rcx, c.r8, c.r9][idx];
+    return c.rsp.add(8 + (idx - 6) * 8).readPointer();
+  }
+}
+var MAX_SECRET_LEN2 = 64;
+function win64SpanIsByReference(spanSize) {
+  return spanSize !== null && spanSize > 0 && spanSize <= MAX_SECRET_LEN2;
+}
+function readSslLogSecretCall(args, ctx, abi) {
+  if (abi === null) {
+    return { ssl: args[0], label: args[1], data: args[2], len: args[3].toUInt32() };
+  }
+  const ssl = argAt(ctx, abi, 0);
+  const label = argAt(ctx, abi, 1);
+  const a2 = argAt(ctx, abi, 2);
+  if (abi !== "win64") {
+    return { ssl, label, data: a2, len: argAt(ctx, abi, 3).toUInt32() };
+  }
+  let spanSize = null;
+  try {
+    spanSize = a2.add(8).readU64().toNumber();
+  } catch (_e) {
+  }
+  if (win64SpanIsByReference(spanSize)) {
+    return { ssl, label, data: a2.readPointer(), len: spanSize };
+  }
+  return { ssl, label, data: a2, len: argAt(ctx, abi, 3).toUInt32() };
+}
+
 // agent/shared/boringssl_keylog_outcome.ts
 init_node_globals();
 var ALL_KEYLOG_TIERS_MISSED_MSG = (moduleName, detail) => `[!] ${moduleName}: no BoringSSL keylog hook could be installed (callback, symbol and pattern tiers all missed${detail ? `; ${detail}` : ""})`;
@@ -20117,7 +20178,7 @@ var PatternBasedHooking = class {
         log(`[*] ${moduleName ?? "<unknown>"}: keylog hooks installed via pattern (${pattern_name} @ ${address})`);
         Interceptor.attach(address, {
           onEnter: function(args) {
-            onMatchCallback(args);
+            onMatchCallback.call(this, args);
           }
         });
       },
@@ -20231,7 +20292,7 @@ var PatternBasedHooking = class {
               try {
                 Interceptor.attach(address, {
                   onEnter: function(args) {
-                    onMatchCallback(args);
+                    onMatchCallback.call(this, args);
                   }
                 });
               } catch (e) {
@@ -20803,12 +20864,18 @@ function installBoringSSLPatternHook(moduleName, patternsJson, dumpKeys, fallbac
   devlog(`[bssl-pattern] ${moduleName}: pattern source=${source.via} family=${family} arch=${arch}`);
   let installLogged = false;
   const guardedDumpKeys = guardKeylogDumpKeys(moduleName, "pattern", dumpKeys);
-  const onMatch = (args) => {
+  const abi = callAbiForModule(moduleName);
+  const onMatch = function(args) {
     if (!installLogged) {
       installLogged = true;
       devlog(`Installed ssl_log_secret() hooks using byte patterns for module ${moduleName}.`);
     }
-    guardedDumpKeys(args[1], args[0], args[2], lenArg(args[3]) ?? 0);
+    if (abi === null || this?.context === void 0) {
+      guardedDumpKeys(args[1], args[0], args[2], lenArg(args[3]) ?? 0);
+      return;
+    }
+    const c = readSslLogSecretCall(args, this.context, abi);
+    guardedDumpKeys(c.label, c.ssl, c.data, c.len);
   };
   let hooker;
   try {
@@ -21240,6 +21307,325 @@ function firstCallTargetForward(from2, limit, modStart, modEnd) {
   return null;
 }
 
+// agent/shared/x64_xref.ts
+init_node_globals();
+var LEA_ARG1_PREFIX = {
+  win64: "48 8d 15",
+  sysv: "48 8d 35"
+};
+var CALL_SEARCH_WINDOW = 64;
+var LEA_RIP_LEN = 7;
+function findRipLeaRefs(code4, codeVa, targets2, scanEnd = code4.length) {
+  const out = [];
+  const end = Math.min(scanEnd, code4.length - LEA_RIP_LEN + 1);
+  for (let k = code4.indexOf(141, 1); k !== -1 && k - 1 < end; k = code4.indexOf(141, k + 1)) {
+    const i = k - 1;
+    const rex = code4[i];
+    if (rex !== 72 && rex !== 76)
+      continue;
+    const modrm = code4[i + 2];
+    if ((modrm & 199) !== 5)
+      continue;
+    const disp = code4[i + 3] | code4[i + 4] << 8 | code4[i + 5] << 16 | code4[i + 6] << 24;
+    const site = codeVa + i;
+    const target = site + LEA_RIP_LEN + disp;
+    if (!targets2.has(target))
+      continue;
+    const reg = (modrm >> 3 & 7) + (rex === 76 ? 8 : 0);
+    out.push({ site, target, reg });
+  }
+  return out;
+}
+function firstCallAfter(code4, codeVa, leaOff, lo, hi, window = CALL_SEARCH_WINDOW) {
+  const start = leaOff + LEA_RIP_LEN;
+  const end = Math.min(start + window, code4.length - 5);
+  for (let j = start; j < end; j++) {
+    if (code4[j] !== 232)
+      continue;
+    const rel = code4[j + 1] | code4[j + 2] << 8 | code4[j + 3] << 16 | code4[j + 4] << 24;
+    const callee = codeVa + j + 5 + rel;
+    if (callee >= lo && callee < hi)
+      return callee;
+  }
+  return null;
+}
+var X64_REG = { rax: 0, rcx: 1, rdx: 2, rbx: 3, rsp: 4, rbp: 5, rsi: 6, rdi: 7 };
+var MIN_FIELD_OFFSET = 8;
+var MAX_CTX_OFFSET = 1024;
+var MAX_CB_OFFSET = 16384;
+function decodeMemOperand(code4, i, opcode) {
+  if (i + 3 > code4.length)
+    return null;
+  const rex = code4[i];
+  if ((rex & 248) !== 72 || (rex & 2) !== 0)
+    return null;
+  if (code4[i + 1] !== opcode)
+    return null;
+  const modrm = code4[i + 2];
+  const mod = modrm >> 6;
+  const rm = modrm & 7;
+  if (mod === 0 || mod === 3 || rm === 4)
+    return null;
+  const reg = (modrm >> 3 & 7) + (rex & 4 ? 8 : 0);
+  const base = rm + (rex & 1 ? 8 : 0);
+  let disp;
+  let len;
+  if (mod === 1) {
+    if (i + 4 > code4.length)
+      return null;
+    disp = code4[i + 3] << 24 >> 24;
+    len = 4;
+  } else {
+    if (i + 7 > code4.length)
+      return null;
+    disp = code4[i + 3] | code4[i + 4] << 8 | code4[i + 5] << 16 | code4[i + 6] << 24;
+    len = 7;
+  }
+  return { reg, base, disp, len };
+}
+function decodeMovRegReg(code4, i) {
+  if (i + 3 > code4.length)
+    return null;
+  const rex = code4[i];
+  if ((rex & 248) !== 72)
+    return null;
+  const op = code4[i + 1];
+  const modrm = code4[i + 2];
+  if (modrm >> 6 !== 3 || op !== 137 && op !== 139)
+    return null;
+  const r = (modrm >> 3 & 7) + (rex & 4 ? 8 : 0);
+  const m2 = (modrm & 7) + (rex & 1 ? 8 : 0);
+  return op === 137 ? [m2, r, 3] : [r, m2, 3];
+}
+function decodeX64CtxKeylogOffsets(code4, sslReg) {
+  const sslRegs = /* @__PURE__ */ new Set([sslReg]);
+  for (let i = 0; i + 3 <= code4.length; i++) {
+    const mv = decodeMovRegReg(code4, i);
+    if (mv !== null && sslRegs.has(mv[1]))
+      sslRegs.add(mv[0]);
+    const load = decodeMemOperand(code4, i, 139);
+    if (load === null || !sslRegs.has(load.base))
+      continue;
+    if (load.disp < MIN_FIELD_OFFSET || load.disp > MAX_CTX_OFFSET)
+      continue;
+    const ctxReg = load.reg;
+    const from2 = i + load.len;
+    for (let j = from2; j < Math.min(from2 + 24, code4.length); j++) {
+      const cmp = decodeMemOperand(code4, j, 131);
+      if (cmp !== null && cmp.reg % 8 === 7 && cmp.base === ctxReg && j + cmp.len < code4.length && code4[j + cmp.len] === 0) {
+        if (cmp.disp >= MIN_FIELD_OFFSET && cmp.disp <= MAX_CB_OFFSET) {
+          return { ctxOff: load.disp, cbOff: cmp.disp };
+        }
+      }
+      const ld2 = decodeMemOperand(code4, j, 139);
+      if (ld2 !== null && ld2.base === ctxReg && ld2.disp >= MIN_FIELD_OFFSET && ld2.disp <= MAX_CB_OFFSET) {
+        const t = j + ld2.len;
+        if (t + 3 <= code4.length && (code4[t] & 248) === 72 && code4[t + 1] === 133) {
+          const m2 = code4[t + 2];
+          const rexT = code4[t];
+          const r1 = (m2 >> 3 & 7) + (rexT & 4 ? 8 : 0);
+          const r2 = (m2 & 7) + (rexT & 1 ? 8 : 0);
+          if (m2 >> 6 === 3 && r1 === ld2.reg && r2 === ld2.reg) {
+            return { ctxOff: load.disp, cbOff: ld2.disp };
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
+
+// agent/util/proc_maps.ts
+init_node_globals();
+function tryGlobalExport(name) {
+  try {
+    return Module.getGlobalExportByName(name);
+  } catch (_e) {
+    return null;
+  }
+}
+function readProcSelfMaps() {
+  try {
+    const openPtr = tryGlobalExport("open");
+    const readPtr = tryGlobalExport("read");
+    const closePtr = tryGlobalExport("close");
+    if (!openPtr || !readPtr || !closePtr)
+      return null;
+    const open = new NativeFunction(openPtr, "int", ["pointer", "int"]);
+    const read2 = new NativeFunction(readPtr, "long", ["int", "pointer", "ulong"]);
+    const close = new NativeFunction(closePtr, "int", ["int"]);
+    const path = Memory.allocUtf8String("/proc/self/maps");
+    const fd = open(
+      path,
+      0
+      /* O_RDONLY */
+    );
+    if (fd < 0)
+      return null;
+    const chunkSize = 65536;
+    const buf = Memory.alloc(chunkSize);
+    const chunks = [];
+    let total = 0;
+    const cap = 4 * 1024 * 1024;
+    while (total < cap) {
+      const n = read2(fd, buf, chunkSize).valueOf();
+      if (n <= 0)
+        break;
+      const chunk = buf.readUtf8String(n);
+      if (chunk === null)
+        break;
+      chunks.push(chunk);
+      total += n;
+    }
+    close(fd);
+    return chunks.join("");
+  } catch (e) {
+    devlog(`[maps] readProcSelfMaps error: ${e}`);
+    return null;
+  }
+}
+function parseMapsPeImages(maps) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const line of maps.split("\n")) {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length < 6)
+      continue;
+    const [range, perms, offset] = parts;
+    if (!perms.startsWith("r"))
+      continue;
+    if (!/^0+$/.test(offset))
+      continue;
+    const path = parts.slice(5).join(" ");
+    if (!/\.(dll|exe)$/i.test(path))
+      continue;
+    if (seen.has(path))
+      continue;
+    seen.add(path);
+    const name = path.split(/[\\/]/).pop() ?? path;
+    out.push({ base: "0x" + range.split("-")[0], path, name });
+  }
+  return out;
+}
+function peSizeOfImage(base) {
+  try {
+    if (base.readU16() !== 23117)
+      return null;
+    const nt = base.add(base.add(60).readU32());
+    if (nt.readU32() !== 17744)
+      return null;
+    return nt.add(24 + 56).readU32();
+  } catch (_e) {
+    return null;
+  }
+}
+function peModuleLike(name, base, path) {
+  const size = peSizeOfImage(base);
+  if (size === null || size === 0)
+    return null;
+  const end = base.add(size);
+  return {
+    name,
+    base,
+    size,
+    path,
+    enumerateRanges(protection) {
+      const out = [];
+      for (const r of Process.enumerateRanges(protection)) {
+        const rEnd = r.base.add(r.size);
+        if (rEnd.compare(base) <= 0 || r.base.compare(end) >= 0)
+          continue;
+        const lo = r.base.compare(base) < 0 ? base : r.base;
+        const hi = rEnd.compare(end) > 0 ? end : rEnd;
+        out.push({ ...r, base: lo, size: hi.sub(lo).toInt32() });
+      }
+      return out;
+    }
+  };
+}
+function listPeImages() {
+  const maps = readProcSelfMaps();
+  if (!maps)
+    return [];
+  const out = [];
+  for (const e of parseMapsPeImages(maps)) {
+    const m2 = peModuleLike(e.name, ptr(e.base), e.path);
+    if (m2)
+      out.push(m2);
+  }
+  return out;
+}
+function findModuleOrPeImage(moduleName) {
+  try {
+    const m2 = Process.findModuleByName(moduleName);
+    if (m2 !== null)
+      return m2;
+  } catch (_e) {
+  }
+  const maps = readProcSelfMaps();
+  if (!maps)
+    return null;
+  const wanted = moduleName.toLowerCase();
+  for (const e of parseMapsPeImages(maps)) {
+    if (e.name.toLowerCase() === wanted)
+      return peModuleLike(e.name, ptr(e.base), e.path);
+  }
+  return null;
+}
+
+// agent/shared/win64_thunk.ts
+init_node_globals();
+var XMM_SAVE_BYTES = 10 * 16;
+var FRAME_BYTES = XMM_SAVE_BYTES + 8;
+function u32le(v) {
+  return [v & 255, v >>> 8 & 255, v >>> 16 & 255, v >>> 24 & 255];
+}
+function movdquRsp(n, off, store) {
+  const modrm = 132 | (n & 7) << 3;
+  const rex = n >= 8 ? [68] : [];
+  return [243, ...rex, 15, store ? 127 : 111, modrm, 36, ...u32le(off)];
+}
+function win64ToSysvThunkBytes(target, nargs) {
+  if (nargs < 0 || nargs > 4)
+    throw new Error(`win64 thunk supports 0..4 args, got ${nargs}`);
+  const out = [];
+  out.push(87, 86);
+  out.push(72, 129, 236, ...u32le(FRAME_BYTES));
+  for (let n = 6; n <= 15; n++)
+    out.push(...movdquRsp(n, (n - 6) * 16, true));
+  if (nargs > 0)
+    out.push(72, 137, 207);
+  if (nargs > 1)
+    out.push(72, 137, 214);
+  if (nargs > 2)
+    out.push(76, 137, 194);
+  if (nargs > 3)
+    out.push(76, 137, 201);
+  let t = BigInt(target);
+  const imm = [];
+  for (let i = 0; i < 8; i++) {
+    imm.push(Number(t & 0xffn));
+    t >>= 8n;
+  }
+  out.push(72, 184, ...imm);
+  out.push(255, 208);
+  for (let n = 6; n <= 15; n++)
+    out.push(...movdquRsp(n, (n - 6) * 16, false));
+  out.push(72, 129, 196, ...u32le(FRAME_BYTES));
+  out.push(94, 95, 195);
+  return out;
+}
+var rootedThunks = [];
+function makeWin64ToSysvThunk(target, nargs) {
+  const bytes = win64ToSysvThunkBytes(target.toString(), nargs);
+  const mem = Memory.alloc(Process.pageSize);
+  Memory.patchCode(mem, bytes.length, (code4) => {
+    code4.writeByteArray(bytes);
+  });
+  rootedThunks.push(mem);
+  return mem;
+}
+
 // agent/shared/boringssl_anchor_locator.ts
 var BORINGSSL_KEYLOG_LABELS = [
   "CLIENT_RANDOM",
@@ -21352,10 +21738,10 @@ function deriveOffsetsAt(addr) {
     return null;
   }
 }
-function installViaCtxWrite(moduleName, fnAddr, offs) {
+function installViaCtxWrite(moduleName, fnAddr, offs, abi = null) {
   const { ctxOff, cbOff } = offs;
   let dropLogged = false;
-  const keylogCb = new NativeCallback(function(_ssl, linePtr) {
+  const emitKeylogLine = (linePtr) => {
     try {
       if (linePtr.isNull())
         return;
@@ -21372,15 +21758,41 @@ function installViaCtxWrite(moduleName, fnAddr, offs) {
     } catch (e) {
       devlog(`[anchor-locator] ${moduleName}: keylog callback error: ${e}`);
     }
+  };
+  const keylogCb = new NativeCallback(function(_ssl, linePtr) {
+    emitKeylogLine(linePtr);
   }, "void", ["pointer", "pointer"]);
   rootedCallbacks.push(keylogCb);
+  const cbEntry = abi === "win64" && Process.platform !== "windows" ? makeWin64ToSysvThunk(keylogCb, 2) : keylogCb;
   let installedOnce = false;
   let vetoedOnce = false;
+  const hookedExisting = /* @__PURE__ */ new Set();
+  const hookExistingKeylogCallback = (fn) => {
+    const key = fn.toString();
+    if (hookedExisting.has(key))
+      return;
+    hookedExisting.add(key);
+    const range = Process.findRangeByAddress(fn);
+    if (range === null || !range.protection.includes("x")) {
+      log(`[-] ${moduleName}: ctx+0x${cbOff.toString(16)} holds ${fn}, which is not code; leaving it alone.`);
+      return;
+    }
+    try {
+      Interceptor.attach(fn, {
+        onEnter(args) {
+          emitKeylogLine(abi === null ? args[1] : argAt(this.context, abi, 1));
+        }
+      });
+      log(`[*] ${moduleName}: the app already sets a keylog callback (${fn}); hooked it instead of replacing it`);
+    } catch (e) {
+      log(`[-] ${moduleName}: could not hook the app's keylog callback at ${fn}: ${e}`);
+    }
+  };
   try {
     Interceptor.attach(fnAddr, {
       onEnter(args) {
         try {
-          const ssl = args[0];
+          const ssl = abi === null ? args[0] : argAt(this.context, abi, 0);
           if (ssl.isNull())
             return;
           const ctx = safeReadPointer(ssl.add(ctxOff));
@@ -21388,7 +21800,7 @@ function installViaCtxWrite(moduleName, fnAddr, offs) {
             return;
           const field = ctx.add(cbOff);
           const current = safeReadPointer(field);
-          if (current !== null && current.equals(keylogCb))
+          if (current !== null && current.equals(cbEntry))
             return;
           if (!isWritable(field, Process.pointerSize)) {
             if (!vetoedOnce) {
@@ -21400,16 +21812,13 @@ function installViaCtxWrite(moduleName, fnAddr, offs) {
           if (current === null)
             return;
           if (!current.isNull()) {
-            if (!vetoedOnce) {
-              vetoedOnce = true;
-              log(`[-] ${moduleName}: anchor-locator refused to overwrite ctx+0x${cbOff.toString(16)} \u2014 it already holds ${current}.`);
-            }
+            hookExistingKeylogCallback(current);
             return;
           }
           if (_isShuttingDownNow())
             return;
-          field.writePointer(keylogCb);
-          writtenKeylogFields.set(field.toString(), { field, cb: keylogCb });
+          field.writePointer(cbEntry);
+          writtenKeylogFields.set(field.toString(), { field, cb: cbEntry });
           if (!installedOnce) {
             installedOnce = true;
             devlog(`[anchor-locator] ${moduleName}: wrote keylog_callback at ctx+0x${cbOff.toString(16)}`);
@@ -21429,11 +21838,12 @@ function installViaCtxWrite(moduleName, fnAddr, offs) {
   log(`[*] ${moduleName}: keylog hooks installed via anchor-locator (derived ctx offsets 0x${ctxOff.toString(16)}/0x${cbOff.toString(16)})`);
   return true;
 }
-function installViaFieldDump(moduleName, fnAddr, dumpKeys) {
+function installViaFieldDump(moduleName, fnAddr, dumpKeys, abi = null) {
   try {
     Interceptor.attach(fnAddr, {
       onEnter(args) {
-        dumpKeys(args[1], args[0], args[2], args[3].toUInt32());
+        const c = readSslLogSecretCall(args, this.context, abi);
+        dumpKeys(c.label, c.ssl, c.data, c.len);
       }
     });
   } catch (e) {
@@ -21465,7 +21875,7 @@ function codeMegabytes(mod) {
 async function locateSslLogSecret(mod, moduleName) {
   const modStart = mod.base;
   const modEnd = mod.base.add(mod.size);
-  const started = Date.now();
+  const started2 = Date.now();
   devlog(`[anchor-locator] ${moduleName}: scanning ${codeMegabytes(mod)} MB of code for ${BORINGSSL_KEYLOG_LABELS.length} keylog label xrefs (background, non-blocking)`);
   const strAddrs = await findAnchorStringsAsync(mod, BORINGSSL_KEYLOG_LABELS.map((l) => l + "\0"));
   const labels = [];
@@ -21478,7 +21888,7 @@ async function locateSslLogSecret(mod, moduleName) {
   });
   const sites = targets2.length > 0 ? await findStringLoadSitesAsync(mod, targets2) : [];
   const pairs = collectLabelVotes(labels, sites, (site) => firstCallTargetForward(site, modEnd, modStart, modEnd));
-  devlog(`[anchor-locator] ${moduleName}: xref scan finished in ${Date.now() - started} ms (${targets2.length} label string(s), ${pairs.length} resolved a call)`);
+  devlog(`[anchor-locator] ${moduleName}: xref scan finished in ${Date.now() - started2} ms (${targets2.length} label string(s), ${pairs.length} resolved a call)`);
   devlog(`[anchor-locator] ${moduleName}: votes ` + (pairs.map((p) => `${p.label}->${p.callee}`).join(", ") || "(none)"));
   const agreed = pickAgreedCallee(pairs);
   if (agreed === null) {
@@ -21489,10 +21899,18 @@ async function locateSslLogSecret(mod, moduleName) {
   return ptr(agreed);
 }
 async function runAnchorLocatorTier4(moduleName, dumpKeys, _detail) {
+  if (Process.arch === "x64") {
+    const xmod = findModuleOrPeImage(moduleName);
+    if (xmod === null) {
+      devlog(`[anchor-locator] ${moduleName}: not loaded`);
+      return false;
+    }
+    return runAnchorLocatorX64(xmod, dumpKeys, callAbiForModule(moduleName) ?? "sysv");
+  }
   if (Process.arch !== "arm64") {
     if (!loggedNonArm64) {
       loggedNonArm64 = true;
-      log(`[*] anchor-locator (tier 4) skipped: only implemented for arm64 (arch=${Process.arch})`);
+      log(`[*] anchor-locator (tier 4) skipped: only implemented for arm64 and x64 (arch=${Process.arch})`);
     }
     return false;
   }
@@ -21521,6 +21939,151 @@ async function runAnchorLocatorTier4(moduleName, dumpKeys, _detail) {
   }
   devlog(`[anchor-locator] ${moduleName}: ctx-offset decode failed; using field-dump fallback`);
   return installViaFieldDump(moduleName, sslLogSecret, dumpKeys);
+}
+var X64_CHUNK_OVERLAP = 7 + CALL_SEARCH_WINDOW + 5;
+async function findLabelStringsX64(mod) {
+  const found = /* @__PURE__ */ new Map();
+  const have = /* @__PURE__ */ new Set();
+  const data = mod.enumerateRanges("r--");
+  await scanRangesChunked(data, BORINGSSL_KEYLOG_LABELS.map((label) => ({
+    pattern: toHexPattern("\0" + label + "\0"),
+    onMatch: (a) => {
+      if (have.has(label))
+        return;
+      have.add(label);
+      found.set(Number(a.add(1).toString()), label);
+    }
+  })));
+  return found;
+}
+async function collectLabelVotesX64Fast(mod, labelAt, abi) {
+  const prefix = LEA_ARG1_PREFIX[abi];
+  if (prefix === void 0)
+    return [];
+  const lo = Number(mod.base.toString());
+  const hi = lo + mod.size;
+  const targets2 = new Set([...labelAt.keys()].map((a) => ptr(a).toString()));
+  const voted = /* @__PURE__ */ new Map();
+  await scanRangesChunked(mod.enumerateRanges("r-x"), [{
+    pattern: prefix,
+    onMatch: (site) => {
+      try {
+        const target = site.add(7 + site.add(3).readS32()).toString();
+        if (!targets2.has(target))
+          return;
+        const label = labelAt.get(Number(target));
+        if (voted.has(label))
+          return;
+        const code4 = new Uint8Array(site.readByteArray(7 + CALL_SEARCH_WINDOW + 5));
+        const callee = firstCallAfter(code4, Number(site.toString()), 0, lo, hi);
+        if (callee !== null)
+          voted.set(label, ptr(callee).toString());
+      } catch (_e) {
+      }
+    }
+  }]);
+  return [...voted].map(([label, callee]) => ({ label, callee }));
+}
+async function collectLabelVotesX64(mod, labelAt) {
+  const lo = Number(mod.base.toString());
+  const hi = lo + mod.size;
+  const targets2 = new Set(labelAt.keys());
+  const voted = /* @__PURE__ */ new Map();
+  for (const range of mod.enumerateRanges("r-x")) {
+    for (let off = 0; off < range.size; off += XREF_SCAN_CHUNK_BYTES) {
+      if (_isShuttingDownNow())
+        return [];
+      const len = Math.min(XREF_SCAN_CHUNK_BYTES + X64_CHUNK_OVERLAP, range.size - off);
+      const at = range.base.add(off);
+      let buf = null;
+      try {
+        buf = at.readByteArray(len);
+      } catch (_e) {
+        buf = null;
+      }
+      if (buf !== null) {
+        const code4 = new Uint8Array(buf);
+        const va = Number(at.toString());
+        const own = Math.min(XREF_SCAN_CHUNK_BYTES, range.size - off);
+        for (const ref of findRipLeaRefs(code4, va, targets2, own)) {
+          const label = labelAt.get(ref.target);
+          if (voted.has(label))
+            continue;
+          const callee = firstCallAfter(code4, va, ref.site - va, lo, hi);
+          if (callee !== null)
+            voted.set(label, ptr(callee).toString());
+        }
+      }
+      await yieldToEventLoop();
+    }
+  }
+  return [...voted].map(([label, callee]) => ({ label, callee }));
+}
+function decodeCtxOffsetsX64At(fn, sslReg, moduleName) {
+  try {
+    if (!isReadable(fn, 96))
+      return null;
+    return decodeX64CtxKeylogOffsets(new Uint8Array(fn.readByteArray(96)), sslReg);
+  } catch (e) {
+    devlog(`[anchor-locator] ${moduleName}: x64 prologue read failed: ${e}`);
+    return null;
+  }
+}
+function pinnedSslLogSecret(mod) {
+  try {
+    const all = offsets;
+    if (!all || typeof all !== "object")
+      return null;
+    const key = Object.keys(all).find((k) => k.toLowerCase() === mod.name.toLowerCase());
+    const v = key === void 0 ? void 0 : all[key]?.["ssl_log_secret"];
+    if (!v || typeof v.address !== "string")
+      return null;
+    const addr = v.absolute ? ptr(v.address) : mod.base.add(ptr(v.address));
+    return addr.isNull() ? null : addr;
+  } catch (_e) {
+    return null;
+  }
+}
+async function runAnchorLocatorX64(mod, dumpKeys, abi) {
+  const moduleName = mod.name;
+  const sslReg = abi === "win64" ? X64_REG.rcx : X64_REG.rdi;
+  const pinned = pinnedSslLogSecret(mod);
+  if (pinned !== null) {
+    const offs2 = decodeCtxOffsetsX64At(pinned, sslReg, moduleName);
+    if (offs2 !== null) {
+      devlog(`[anchor-locator] ${moduleName}: ssl_log_secret @ ${pinned} from --offsets (rva 0x${pinned.sub(mod.base).toString(16)}); no scan needed`);
+      return installViaCtxWrite(moduleName, pinned, offs2, abi);
+    }
+    devlog(`[anchor-locator] ${moduleName}: --offsets ssl_log_secret @ ${pinned} does not decode; scanning instead`);
+  }
+  const started2 = Date.now();
+  devlog(`[anchor-locator] ${moduleName}: x64 label-xref scan of ${(mod.size / (1024 * 1024)).toFixed(1)} MB (abi=${abi}, background, non-blocking)`);
+  const labelAt = await findLabelStringsX64(mod);
+  if (labelAt.size < 2) {
+    devlog(`[anchor-locator] ${moduleName}: only ${labelAt.size} keylog label string(s) present; not BoringSSL`);
+    return false;
+  }
+  let pairs = await collectLabelVotesX64Fast(mod, labelAt, abi);
+  if (pickAgreedCallee(pairs) === null) {
+    devlog(`[anchor-locator] ${moduleName}: arg-register LEA scan inconclusive after ${Date.now() - started2} ms; walking all LEAs`);
+    pairs = await collectLabelVotesX64(mod, labelAt);
+  }
+  devlog(`[anchor-locator] ${moduleName}: x64 xref scan finished in ${Date.now() - started2} ms; votes ` + (pairs.map((p) => `${p.label}->${p.callee}`).join(", ") || "(none)"));
+  const agreed = pickAgreedCallee(pairs);
+  if (agreed === null) {
+    devlog(`[anchor-locator] ${moduleName}: no ssl_log_secret candidate agreed across >=2 labels`);
+    return false;
+  }
+  if (_isShuttingDownNow())
+    return false;
+  const fn = ptr(agreed);
+  devlog(`[anchor-locator] ${moduleName}: ssl_log_secret @ ${fn} (rva 0x${fn.sub(mod.base).toString(16)}, agreed by ${pairs.filter((p) => p.callee === agreed).length}/${pairs.length} labels)`);
+  resetReadableCache();
+  const offs = decodeCtxOffsetsX64At(fn, sslReg, moduleName);
+  if (offs !== null)
+    return installViaCtxWrite(moduleName, fn, offs, abi);
+  devlog(`[anchor-locator] ${moduleName}: x64 ctx-offset decode failed; using field-dump fallback`);
+  return installViaFieldDump(moduleName, fn, dumpKeys, abi);
 }
 registerBoringSSLTier4(runAnchorLocatorTier4);
 
@@ -21616,11 +22179,13 @@ function resolveSslLogSecretSymbol(mod) {
 function isResolvedSymbol(addr) {
   return !!addr && !addr.isNull();
 }
-function attachSslLogSecretHook(addr, cb) {
+function attachSslLogSecretHook(addr, cb, moduleName = "") {
+  const abi = callAbiForModule(moduleName);
   try {
     Interceptor.attach(addr, {
       onEnter(args) {
-        cb(args[1], args[0], args[2], args[3].toUInt32());
+        const c = readSslLogSecretCall(args, this.context, abi);
+        cb(c.label, c.ssl, c.data, c.len);
       }
     });
     return true;
@@ -21691,7 +22256,7 @@ function installBoringSSLSymbolHook(moduleName, dumpKeys) {
   const r = resolveSslLogSecretSymbol(mod);
   if (!r)
     return false;
-  const ok = attachSslLogSecretHook(r.address, guardKeylogDumpKeys(moduleName, "symbol", dumpKeys));
+  const ok = attachSslLogSecretHook(r.address, guardKeylogDumpKeys(moduleName, "symbol", dumpKeys), moduleName);
   if (ok) {
     log(`[*] ${moduleName}: keylog hooks installed via symbol (${r.via}: ${r.symbolName} @ ${r.address})`);
   }
@@ -27908,7 +28473,7 @@ var PatternBasedHooking2 = class {
         log(`[*] ${moduleName ?? "<unknown>"}: keylog hooks installed via pattern (${pattern_name} @ ${address})`);
         Interceptor.attach(address, {
           onEnter: function(args) {
-            onMatchCallback(args);
+            onMatchCallback.call(this, args);
           }
         });
       },
@@ -28012,7 +28577,7 @@ var PatternBasedHooking2 = class {
             try {
               Interceptor.attach(address, {
                 onEnter: function(args) {
-                  onMatchCallback(args);
+                  onMatchCallback.call(this, args);
                 }
               });
             } catch (e) {
@@ -30291,7 +30856,7 @@ function getGoSymbolVariants(symbol) {
   variants.add(symbol.replace(/crypto\/tls/g, "crypto_tls").replace(/\(\*Conn\)/g, "_ptr_Conn").replace(/\(\*Config\)/g, "_ptr_Config").replace(/\./g, "_"));
   return Array.from(variants);
 }
-function tryGlobalExport(symbol, variants) {
+function tryGlobalExport2(symbol, variants) {
   for (const variant of [symbol, ...variants]) {
     try {
       const addr = Module.findGlobalExportByName(variant);
@@ -30364,7 +30929,7 @@ function lookupInIndex(index, symbol, variants) {
 }
 function resolveCheapStrategies(moduleName, symbol) {
   const variants = getGoSymbolVariants(symbol);
-  return tryGlobalExport(symbol, variants) || tryModuleExport(moduleName, symbol, variants) || tryDebugSymbol(symbol);
+  return tryGlobalExport2(symbol, variants) || tryModuleExport(moduleName, symbol, variants) || tryDebugSymbol(symbol);
 }
 function resolveGoSymbols(moduleName) {
   const out = {};
@@ -41353,17 +41918,22 @@ var Cronet_Windows = class extends Cronet {
       }
     }
     const hooker = new PatternBasedHooking(cronetModule);
+    const self = this;
+    const abi = callAbiForModule(this.module_name);
+    const onSslLogSecret = function(args) {
+      devlog("Installed ssl_log_secret() hooks using byte patterns for module " + self.module_name + ".");
+      if (abi === null || this?.context === void 0) {
+        self.dumpKeys(args[1], args[0], args[2], Number(args[3]));
+        return;
+      }
+      const c = readSslLogSecretCall(args, this.context, abi);
+      self.dumpKeys(c.label, c.ssl, c.data, c.len);
+    };
     if (isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, "libcronet.dll", "Dump-Keys")) {
       devlog("Hooking libcronet functions by patterns from JSON file");
-      hooker.hook_DumpKeys(this.module_name, "libcronet.dll", patterns, (args) => {
-        devlog("Installed ssl_log_secret() hooks using byte patterns for module " + this.module_name + ".");
-        this.dumpKeys(args[1], args[0], args[2], Number(args[3]));
-      });
+      hooker.hook_DumpKeys(this.module_name, "libcronet.dll", patterns, onSslLogSecret);
     } else {
-      hooker.hookModuleByPattern(get_CPU_specific_pattern(this.default_pattern), (args) => {
-        devlog("Installed ssl_log_secret() hooks using byte patterns for module " + this.module_name + ".");
-        this.dumpKeys(args[1], args[0], args[2], Number(args[3]));
-      });
+      hooker.hookModuleByPattern(get_CPU_specific_pattern(this.default_pattern), onSslLogSecret);
     }
     return hooker;
   }
@@ -41715,6 +42285,61 @@ function neqo_execute4(moduleName, is_base_hook) {
   executeFromDefinition(createNeqoDefinition(), moduleName, socket_library5, is_base_hook, enable_default_fd);
 }
 
+// agent/shared/chromium_boringssl.ts
+init_node_globals();
+var CHROMIUM_BORINGSSL_MODULES = [
+  /^libcef\.dll$/i,
+  /^chrome\.dll$/i,
+  /^msedge\.dll$/i,
+  /^Qt[56]WebEngineCore\.dll$/i
+];
+var ELECTRON_EXE_MIN_SIZE = 64 * 1024 * 1024;
+var started = /* @__PURE__ */ new Set();
+function chromium_boringssl_execute(moduleName, winePe = false) {
+  if (!keylog_enabled)
+    return;
+  const key = moduleName.toLowerCase();
+  if (started.has(key))
+    return;
+  started.add(key);
+  if (winePe)
+    setModuleCallAbi(moduleName, "win64");
+  log(`[*] ${moduleName}: Chromium-embedded BoringSSL \u2014 locating ssl_log_secret via keylog-label xrefs`);
+  void onAllKeylogTiersMissed(moduleName, makeBoringSslDumpKeys(moduleName), {
+    detail: "Chromium-embedded BoringSSL (no exports/symbols; anchor locator only)",
+    pairipDisabled: false
+  });
+}
+function chromium_boringssl_hook(winePe) {
+  return (moduleName) => chromium_boringssl_execute(moduleName, winePe);
+}
+function hookElectronStyleExecutables(images, winePe) {
+  if (!keylog_enabled || !isTlsFamilyRequested())
+    return;
+  for (const m2 of images) {
+    if (!/\.exe$/i.test(m2.name) || m2.size < ELECTRON_EXE_MIN_SIZE)
+      continue;
+    const key = m2.name.toLowerCase();
+    if (!keylog_enabled || started.has(key))
+      continue;
+    started.add(key);
+    if (winePe)
+      setModuleCallAbi(m2.name, "win64");
+    devlog(`[chromium] ${m2.name}: large executable (${(m2.size / (1024 * 1024)).toFixed(0)} MB); checking for embedded BoringSSL`);
+    startTier4Once(m2.name, makeBoringSslDumpKeys(m2.name), "Electron-style executable");
+  }
+}
+function hookMappedChromiumPeImages() {
+  if (!keylog_enabled || !isTlsFamilyRequested())
+    return;
+  const images = listPeImages();
+  for (const m2 of images) {
+    if (CHROMIUM_BORINGSSL_MODULES.some((re) => re.test(m2.name)))
+      chromium_boringssl_execute(m2.name, true);
+  }
+  hookElectronStyleExecutables(images, true);
+}
+
 // agent/platforms/windows.ts
 var plattform_name5 = PLATFORM_WINDOWS;
 var socket_library5 = "WS2_32.dll";
@@ -41741,6 +42366,10 @@ function load_windows_hooking_agent() {
     { platform: plattform_name5, pattern: /(sspicli|SSPICLI|SspiCli)\.dll$/, hookFn: use_modern ? sspi_execute_modern : sspi_execute, library: "SSPI", libraryType: "sspi", protocol: "tls" },
     { platform: plattform_name5, pattern: /mbedTLS\.dll/, hookFn: use_modern ? mbedTLS_execute_modern3 : mbedTLS_execute3, library: "mbedTLS", libraryType: "mbedtls", protocol: "tls" },
     { platform: plattform_name5, pattern: /^.*(cronet|CRONET).*\.dll/, hookFn: use_modern ? cronet_execute_modern3 : cronet_execute5, library: "Cronet", libraryType: "boringssl", protocol: "tls" },
+    // BoringSSL statically linked into Chromium-family modules (CEF, Chrome/
+    // Edge, Qt WebEngine). chrome.dll also matches the QUIC row below; the
+    // loader invokes every match, so both install.
+    ...CHROMIUM_BORINGSSL_MODULES.map((pattern) => ({ platform: plattform_name5, pattern, hookFn: chromium_boringssl_hook(false), library: "BoringSSL (Chromium)", libraryType: "boringssl", protocol: "tls" })),
     { platform: plattform_name5, pattern: /matrixSSL\.dll/, hookFn: use_modern ? matrixSSL_execute_modern2 : matrixSSL_execute2, library: "MatrixSSL", libraryType: "matrixssl", protocol: "tls" },
     // OHTTP (NSS HPKE) — gated under the TLS family for `--protocol tls`
     { platform: plattform_name5, pattern: /^(nspr|NSPR)[0-9]*\.dll/, hookFn: nss_hpke_execute_windows, library: "NSS HPKE (OHTTP)", protocol: "tls", libraryType: "nss_hpke" },
@@ -41754,6 +42383,7 @@ function load_windows_hooking_agent() {
     ...collectContributedHooks()
   ]);
   hook_Windows_SSL_Libs(hookRegistry, true);
+  hookElectronStyleExecutables(Process.enumerateModules(), false);
   const windowsLoaderConfig = {
     platform: plattform_name5,
     platformLabel: "Windows",
@@ -41841,24 +42471,8 @@ var WINE_KEYLOG_SIGNATURES = [
 function isPlausibleSecretLen(len) {
   return len > 0 && len < 1024;
 }
-function abiArg(ctx, abi, idx) {
-  if (abi === "aarch64") {
-    const c = ctx;
-    return [c.x0, c.x1, c.x2, c.x3, c.x4, c.x5][idx];
-  } else if (abi === "win64") {
-    const c = ctx;
-    if (idx < 4)
-      return [c.rcx, c.rdx, c.r8, c.r9][idx];
-    return c.rsp.add(32 + (idx - 4) * 8).readPointer();
-  } else {
-    const c = ctx;
-    if (idx < 6)
-      return [c.rdi, c.rsi, c.rdx, c.rcx, c.r8, c.r9][idx];
-    return c.rsp.add(8 + (idx - 6) * 8).readPointer();
-  }
-}
 function readWineKeylogLine(ctx, sig) {
-  const [a0, a1, a2, a3] = [0, 1, 2, 3].map((i) => abiArg(ctx, sig.abi, i));
+  const [a0, a1, a2, a3] = [0, 1, 2, 3].map((i) => argAt(ctx, sig.abi, i));
   if (a0.isNull() || a1.isNull() || a2.isNull())
     return null;
   const secretLen = a3.toInt32();
@@ -42000,8 +42614,8 @@ function attachLibreSslHkdfHook(address) {
   Interceptor.attach(address, {
     onEnter() {
       try {
-        this.outPtr = abiArg(this.context, abi, 0);
-        this.label = abiArg(this.context, abi, 3).readCString();
+        this.outPtr = argAt(this.context, abi, 0);
+        this.label = argAt(this.context, abi, 3).readCString();
       } catch (_) {
         this.label = null;
       }
@@ -42033,7 +42647,7 @@ function attachLibreSslHkdfHook(address) {
 // agent/platforms/wine.ts
 var platform_name = PLATFORM_WINE;
 var libssl_dispatch_wine = () => libresslAwareDispatch(use_modern ? libressl_execute_modern4 : libressl_execute4, use_modern ? boring_execute_modern5 : boring_execute5);
-function tryGlobalExport2(name) {
+function tryGlobalExport3(name) {
   try {
     return Module.getGlobalExportByName(name);
   } catch (_e) {
@@ -42118,11 +42732,7 @@ function hook_Wine_LdrLoadDll(is_base_hook) {
             }
             break;
           }
-          try {
-            installWineKeylogPatternHooks(dllBaseName, getParsedPatterns());
-          } catch (error) {
-            devlog(`[Wine] keylog pattern scan error for ${dllBaseName}: ${error}`);
-          }
+          runKeylogSweep(dllBaseName);
         }
       }
     });
@@ -42134,48 +42744,8 @@ function hook_Wine_LdrLoadDll(is_base_hook) {
     return false;
   }
 }
-function read_proc_self_maps() {
-  try {
-    const openPtr = tryGlobalExport2("open");
-    const readPtr = tryGlobalExport2("read");
-    const closePtr = tryGlobalExport2("close");
-    if (!openPtr || !readPtr || !closePtr)
-      return null;
-    const open = new NativeFunction(openPtr, "int", ["pointer", "int"]);
-    const read2 = new NativeFunction(readPtr, "long", ["int", "pointer", "ulong"]);
-    const close = new NativeFunction(closePtr, "int", ["int"]);
-    const path = Memory.allocUtf8String("/proc/self/maps");
-    const fd = open(
-      path,
-      0
-      /* O_RDONLY */
-    );
-    if (fd < 0)
-      return null;
-    const chunkSize = 65536;
-    const buf = Memory.alloc(chunkSize);
-    const chunks = [];
-    let total = 0;
-    const cap = 4 * 1024 * 1024;
-    while (total < cap) {
-      const n = read2(fd, buf, chunkSize).valueOf();
-      if (n <= 0)
-        break;
-      const chunk = buf.readUtf8String(n);
-      if (chunk === null)
-        break;
-      chunks.push(chunk);
-      total += n;
-    }
-    close(fd);
-    return chunks.join("");
-  } catch (e) {
-    devlog(`[Wine] read_proc_self_maps error: ${e}`);
-    return null;
-  }
-}
 function find_pe_ntdll_ldr_load_dll() {
-  const maps = read_proc_self_maps();
+  const maps = readProcSelfMaps();
   if (!maps)
     return null;
   const lines = maps.split("\n");
@@ -42263,9 +42833,9 @@ function parse_pe_find_export(base, exportName) {
 }
 function preflight_wine_prefix_ownership() {
   try {
-    const geteuidPtr = tryGlobalExport2("geteuid");
-    const statPtr = tryGlobalExport2("stat");
-    const getenvPtr = tryGlobalExport2("getenv");
+    const geteuidPtr = tryGlobalExport3("geteuid");
+    const statPtr = tryGlobalExport3("stat");
+    const getenvPtr = tryGlobalExport3("getenv");
     if (!geteuidPtr || !statPtr || !getenvPtr) {
       devlog("[Wine] pre-flight: libc geteuid/stat/getenv not all resolvable; skipping check");
       return true;
@@ -42343,11 +42913,8 @@ function arm_wine_late_install() {
     if (!hook_Wine_LdrLoadDll(false))
       return;
     installed = true;
-    try {
-      installWineKeylogPatternHooks(void 0, getParsedPatterns());
-    } catch (error) {
-      devlog(`[Wine] deferred keylog pattern scan error: ${error}`);
-    }
+    runKeylogSweep();
+    hook_Wine_Mapped_Chromium();
     tearDown();
   };
   const isCandidate = (name) => {
@@ -42395,13 +42962,51 @@ function hook_Wine_Existing_DLLs(is_base_hook) {
     }
   }
 }
-function load_wine_hooking_agent() {
-  log("Running Script on Wine (Linux + Windows DLLs)");
+function hook_Wine_Mapped_Chromium() {
+  try {
+    hookMappedChromiumPeImages();
+  } catch (error) {
+    devlog(`[Wine] Chromium BoringSSL sweep error: ${error}`);
+  }
+}
+function cronet_execute_wine(moduleName, is_base_hook) {
+  setModuleCallAbi(moduleName, "win64");
+  cronet_execute5(moduleName, is_base_hook);
+}
+var _leanWine = false;
+function runKeylogSweep(dll) {
+  const run = () => {
+    try {
+      installWineKeylogPatternHooks(dll, getParsedPatterns());
+    } catch (error) {
+      devlog(`[Wine] keylog pattern scan error${dll ? ` for ${dll}` : ""}: ${error}`);
+    }
+  };
+  if (_leanWine) {
+    setTimeout(run, 0);
+  } else {
+    run();
+  }
+}
+function load_wine_hooking_agent(lean = false) {
+  _leanWine = lean;
+  log(`Running Script on Wine (Linux + Windows DLLs)${lean ? " [lean]" : ""}`);
   if (!preflight_wine_prefix_ownership()) {
     return;
   }
-  log("[Wine] Loading Linux agent for native .so libraries...");
-  load_linux_hooking_agent(true);
+  if (_leanWine) {
+    setTimeout(() => {
+      try {
+        log("[Wine] Loading Linux agent for native .so libraries (deferred, lean)...");
+        load_linux_hooking_agent(true);
+      } catch (e) {
+        devlog(`[Wine] deferred linux agent load error: ${e}`);
+      }
+    }, 0);
+  } else {
+    log("[Wine] Loading Linux agent for native .so libraries...");
+    load_linux_hooking_agent(true);
+  }
   hookRegistry.registerAll([
     { platform: platform_name, pattern: /^(libssl|LIBSSL)-[0-9]+(_[0-9]+)?\.dll$/i, hookFn: libssl_dispatch_wine(), library: "OpenSSL/BoringSSL/LibreSSL", libraryType: "openssl" },
     { platform: platform_name, pattern: /^.*libssl.*\.dll$/i, hookFn: libssl_dispatch_wine(), library: "OpenSSL/BoringSSL/LibreSSL", libraryType: "openssl" },
@@ -42413,23 +43018,33 @@ function load_wine_hooking_agent() {
     { platform: platform_name, pattern: /^.*(libgnutls|LIBGNUTLS)-[0-9]+\.dll$/i, hookFn: use_modern ? gnutls_execute_modern3 : gnutls_execute3, library: "GnuTLS", libraryType: "gnutls" },
     { platform: platform_name, pattern: /^(nspr|NSPR)[0-9]*\.dll/i, hookFn: use_modern ? nss_execute_modern4 : nss_execute4, library: "NSS", libraryType: "nss" },
     { platform: platform_name, pattern: /mbedTLS\.dll/i, hookFn: use_modern ? mbedTLS_execute_modern3 : mbedTLS_execute3, library: "mbedTLS", libraryType: "mbedtls" },
-    { platform: platform_name, pattern: /^.*(cronet|CRONET).*\.dll/i, hookFn: cronet_execute5, library: "Cronet", libraryType: "boringssl" }
+    { platform: platform_name, pattern: /^.*(cronet|CRONET).*\.dll/i, hookFn: cronet_execute_wine, library: "Cronet", libraryType: "boringssl" },
+    // BoringSSL statically linked into Chromium-family PE modules (CEF,
+    // Chrome/Edge, Qt WebEngine): the launchers of fkie-cad/friTap#52.
+    ...CHROMIUM_BORINGSSL_MODULES.map((pattern) => ({ platform: platform_name, pattern, hookFn: chromium_boringssl_hook(true), library: "BoringSSL (Chromium)", libraryType: "boringssl" }))
   ]);
   const contributedWindowsRows = contributedHooksFor(platform_name);
   if (contributedWindowsRows.length > 0) {
     hookRegistry.registerAll(contributedWindowsRows);
   }
-  log("[Wine] Checking for pre-loaded Windows DLLs...");
-  hook_Wine_Existing_DLLs(true);
+  if (_leanWine) {
+    setTimeout(() => {
+      try {
+        hook_Wine_Existing_DLLs(true);
+      } catch (e) {
+        devlog(`[Wine] deferred existing-DLL hook error: ${e}`);
+      }
+    }, 0);
+  } else {
+    log("[Wine] Checking for pre-loaded Windows DLLs...");
+    hook_Wine_Existing_DLLs(true);
+  }
   log("[Wine] Setting up LdrLoadDll hook for future DLL loads...");
   const installed = hook_Wine_LdrLoadDll(false);
   if (installed) {
     log("[Wine] Scanning loaded modules for dual-ABI TLS keylog signatures (experimental)...");
-    try {
-      installWineKeylogPatternHooks(void 0, getParsedPatterns());
-    } catch (error) {
-      devlog(`[Wine] keylog pattern scan error: ${error}`);
-    }
+    runKeylogSweep();
+    hook_Wine_Mapped_Chromium();
   } else {
     log("[Wine] ntdll not yet mapped \u2014 arming late-install watcher for LdrLoadDll + keylog pattern scan.");
     arm_wine_late_install();
@@ -45117,6 +45732,7 @@ var debug_output = false;
 var quic_only = false;
 var no_loader_hook = false;
 var spawned = false;
+var lean_wine = false;
 var stealth_loader = false;
 var pairip_safe = false;
 var probe = false;
@@ -45165,6 +45781,7 @@ quic_capture_mode = config_batch.quic_capture_mode ?? quic_capture_mode;
 quic_only = config_batch.quic_only ?? quic_only;
 no_loader_hook = config_batch.no_loader_hook ?? no_loader_hook;
 spawned = config_batch.spawned ?? spawned;
+lean_wine = config_batch.lean_wine ?? lean_wine;
 stealth_loader = config_batch.stealth_loader ?? stealth_loader;
 pairip_safe = config_batch.pairip_safe ?? pairip_safe;
 quic_egress_headers_layer = config_batch.quic_egress_headers_layer ?? quic_egress_headers_layer;
@@ -45186,10 +45803,10 @@ function getParsedPatterns() {
 function detectTarget() {
   if (isWindows())
     return "windows";
-  if (isAndroid())
-    return "android";
   if (isWine())
     return "wine";
+  if (isAndroid())
+    return "android";
   if (isLinux())
     return "linux";
   if (isiOS())
@@ -45232,10 +45849,10 @@ function planForTarget(target) {
     case "wine":
       if (experimental) {
         return {
-          label: "Wine (experimental)",
+          label: lean_wine ? "Wine (lean, experimental)" : "Wine (experimental)",
           install: () => {
             maybe_trace_sockets();
-            load_wine_hooking_agent();
+            load_wine_hooking_agent(lean_wine);
           }
         };
       }
@@ -45338,6 +45955,7 @@ export {
   install_lsass_hook,
   isPatternReplaced,
   keylog_enabled,
+  lean_wine,
   library_scan_enabled,
   no_loader_hook,
   offsets,

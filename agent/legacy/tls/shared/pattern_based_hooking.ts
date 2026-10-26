@@ -399,7 +399,9 @@ export class PatternBasedHooking {
                 // Attach the hook using the provided onMatchCallback
                 Interceptor.attach(address, {
                     onEnter: function (args) {
-                        onMatchCallback(args);
+                        // Forward the InvocationContext as `this` so ABI-aware
+                        // callbacks can read registers (see shared/call_abi.ts).
+                        onMatchCallback.call(this, args);
                     },
                 });
             },
@@ -522,7 +524,7 @@ export class PatternBasedHooking {
 
                 try {
                     Interceptor.attach(address, {
-                    onEnter: function (args) { onMatchCallback(args); },
+                    onEnter: function (args) { onMatchCallback.call(this, args); },
                     });
                 } catch (e) {
                     devlog_error(`Interceptor.attach failed at ${address}: ${e}`);

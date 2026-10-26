@@ -30,6 +30,7 @@ import { nss_hpke_execute_windows } from "../ohttp/platforms/windows/nss_hpke_wi
 import { quiche_execute } from "../quic/platforms/windows/quiche_windows.js";
 import { google_quiche_execute } from "../quic/platforms/windows/google_quiche_windows.js";
 import { neqo_execute } from "../quic/platforms/windows/neqo_windows.js";
+import { CHROMIUM_BORINGSSL_MODULES, chromium_boringssl_hook, hookElectronStyleExecutables } from "../shared/chromium_boringssl.js";
 
 
 var plattform_name: Platform = PLATFORM_WINDOWS;
@@ -68,6 +69,12 @@ export function load_windows_hooking_agent() {
         { platform: plattform_name, pattern: /(sspicli|SSPICLI|SspiCli)\.dll$/, hookFn: (use_modern ? sspi_execute_modern : sspi_execute), library: "SSPI", libraryType: "sspi", protocol: "tls" },
         { platform: plattform_name, pattern: /mbedTLS\.dll/, hookFn: (use_modern ? mbedTLS_execute_modern : mbedTLS_execute), library: "mbedTLS", libraryType: "mbedtls", protocol: "tls" },
         { platform: plattform_name, pattern: /^.*(cronet|CRONET).*\.dll/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet", libraryType: "boringssl", protocol: "tls" },
+        // BoringSSL statically linked into Chromium-family modules (CEF, Chrome/
+        // Edge, Qt WebEngine). chrome.dll also matches the QUIC row below; the
+        // loader invokes every match, so both install.
+        ...CHROMIUM_BORINGSSL_MODULES.map((pattern) => (
+            { platform: plattform_name, pattern, hookFn: chromium_boringssl_hook(false), library: "BoringSSL (Chromium)", libraryType: "boringssl" as const, protocol: "tls" as const }
+        )),
         { platform: plattform_name, pattern: /matrixSSL\.dll/, hookFn: (use_modern ? matrixSSL_execute_modern : matrixSSL_execute), library: "MatrixSSL", libraryType: "matrixssl", protocol: "tls" },
         // OHTTP (NSS HPKE) — gated under the TLS family for `--protocol tls`
         { platform: plattform_name, pattern: /^(nspr|NSPR)[0-9]*\.dll/, hookFn: nss_hpke_execute_windows, library: "NSS HPKE (OHTTP)", protocol: "tls", libraryType: "nss_hpke" },
@@ -82,6 +89,8 @@ export function load_windows_hooking_agent() {
     ]);
 
     hook_Windows_SSL_Libs(hookRegistry, true);
+    // Electron apps carry BoringSSL inside their own (arbitrarily named) .exe.
+    hookElectronStyleExecutables(Process.enumerateModules(), false);
     const windowsLoaderConfig = {
         platform: plattform_name,
         platformLabel: "Windows",

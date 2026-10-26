@@ -23,6 +23,7 @@
 // installs the hook. We do the same here.
 
 import { PatternBasedHooking } from "../tls/shared/pattern_based_hooking.js";
+import { callAbiForModule, readSslLogSecretCall } from "./call_abi.js";
 // Type-only: boringssl_symbol_hook.ts imports pollPatternOutcome from here,
 // so a value import would form a runtime cycle.
 import type { DumpKeysCb } from "./boringssl_symbol_hook.js";
@@ -151,12 +152,20 @@ export function installBoringSSLPatternHook(
     // Guarded: if another tier (tier 4, a parallel symbol hook) already owns
     // this module's keylog, a late pattern match must not emit every secret twice.
     const guardedDumpKeys = guardKeylogDumpKeys(moduleName, "pattern", dumpKeys);
-    const onMatch = (args: any[]): void => {
+    // PatternBasedHooking invokes this with the InvocationContext as `this`, so
+    // the Span can be read under the module's ABI (by reference on Win64).
+    const abi = callAbiForModule(moduleName);
+    const onMatch = function (this: InvocationContext, args: any[]): void {
         if (!installLogged) {
             installLogged = true;
             devlog(`Installed ssl_log_secret() hooks using byte patterns for module ${moduleName}.`);
         }
-        guardedDumpKeys(args[1], args[0], args[2], lenArg(args[3]) ?? 0);
+        if (abi === null || this?.context === undefined) {
+            guardedDumpKeys(args[1], args[0], args[2], lenArg(args[3]) ?? 0);
+            return;
+        }
+        const c = readSslLogSecretCall(args as unknown as InvocationArguments, this.context, abi);
+        guardedDumpKeys(c.label, c.ssl, c.data, c.len);
     };
 
     let hooker: PatternBasedHooking;

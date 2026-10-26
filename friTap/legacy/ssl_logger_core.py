@@ -8,6 +8,7 @@ import queue
 import re
 import socket
 import struct
+import subprocess
 import tempfile
 import threading
 import time
@@ -53,6 +54,9 @@ class _InstrumentRequest:
     pid: int
     label: str
     identifier: object = None
+    # False for processes that were never Frida-suspended (the Wine process
+    # watcher attaches to running processes): there is nothing to Frida-resume.
+    resume: bool = True
 
 
 class TargetOS(NamedTuple):
@@ -1743,6 +1747,12 @@ class SSL_Logger():
             # Spawn state lets the agent auto-skip the loader hook only in
             # spawn mode (where it trips PairIP's startup scan); attach keeps it.
             'spawned': bool(self._config.device.spawn),
+            # --lean-wine: trim the Wine agent load (defer the full-module
+            # Memory.scan sweep) so it installs fast when injected into a freshly-
+            # created Wine process early, before its first TLS. Set by the Wine
+            # process-watcher route, which attaches each new network-service
+            # process the instant it appears (fkie-cad/friTap#52).
+            'lean_wine': bool(getattr(self, '_wine_lean', False)),
             # EXPERIMENTAL: hardware-breakpoint loader watch (no linker patch).
             'stealth_loader': getattr(self._config.hooking, 'stealth_loader', False),
             # --pairip-safe: minimal symbol-only keylog on BoringSSL libs;
@@ -1898,17 +1908,20 @@ class SSL_Logger():
     # Gated instrumentation worker
     # ------------------------------------------------------------------
 
-    def _enqueue_instrumentation(self, pid, label, identifier=None):
-        """Hand a gated process to the serial instrument worker."""
+    def _enqueue_instrumentation(self, pid, label, identifier=None, resume=True):
+        """Hand a gated process to the serial instrument worker. ``resume=False``
+        for a process that is already running (not Frida-gated)."""
         if not self.running:
             # Teardown already started: instrumenting now would resurrect the
             # worker we just joined. Resume so nothing is left suspended.
             self.logger.debug("Capture stopping — resuming %s pid %s uninstrumented",
                               label, pid)
-            self._resume_quietly(pid)
+            if resume:
+                self._resume_quietly(pid)
             return
 
-        request = _InstrumentRequest(pid=pid, label=label, identifier=identifier)
+        request = _InstrumentRequest(pid=pid, label=label, identifier=identifier,
+                                     resume=resume)
         self._start_instrument_thread()
         try:
             self._instrument_queue.put_nowait(request)
@@ -1919,7 +1932,8 @@ class SSL_Logger():
             self.logger.warning(
                 "Instrumentation queue full — %s pid %s not instrumented", label, pid
             )
-            self._resume_quietly(pid)
+            if resume:
+                self._resume_quietly(pid)
 
     def _start_instrument_thread(self):
         """Start the serial worker that instruments gated processes.
@@ -1969,7 +1983,8 @@ class SSL_Logger():
                 self.own_message_handler,
             )
         finally:
-            self._resume_quietly(request.pid)
+            if request.resume:
+                self._resume_quietly(request.pid)
 
     def _load_script_bounded(self, script) -> None:
         """Load an agent script under the configured time bound.
@@ -2041,6 +2056,8 @@ class SSL_Logger():
                 request = self._instrument_queue.get_nowait()
             except queue.Empty:
                 break
+            if not request.resume:
+                continue
             try:
                 self._resume_quietly(request.pid)
                 resumed += 1
@@ -2904,6 +2921,267 @@ class SSL_Logger():
         self._wine_attach_pid = pid
         return pid is not None and self._pid_is_wine(pid)
 
+    # ------------------------------------------------------------------
+    # Wine + Frida with a host-side process watcher (fkie-cad/friTap#52)
+    # ------------------------------------------------------------------
+
+    def _wine_chromium_modules(self):
+        """Chromium-family BoringSSL modules (libcef.dll, chrome.dll, Electron
+        .exe, ...) of this Wine target, resolved once. Spawn: searched next to
+        the launched exe on disk. Attach: taken from the target's mappings."""
+        cached = getattr(self, "_wine_chromium_cache", None)
+        if cached is not None:
+            return cached
+        mods = []
+        try:
+            from ..wine_chromium import find_chromium_modules, wine_path_to_unix
+            if self.spawn:
+                exe = self._wine_target_exe()
+                if exe:
+                    unix = wine_path_to_unix(exe, os.environ.get("WINEPREFIX"))
+                    if os.path.isfile(unix):
+                        mods = find_chromium_modules(unix)
+            else:
+                pid = getattr(self, "_wine_attach_pid", None) or self._resolve_wine_attach_pid()
+                if pid is not None:
+                    mods = self._chromium_modules_in_maps(pid)
+        except Exception as exc:
+            self.logger.debug("Chromium module discovery failed: %s", exc)
+        self._wine_chromium_cache = mods
+        return mods
+
+    @staticmethod
+    def _chromium_modules_in_maps(pid):
+        """Chromium-family BoringSSL module files mapped into ``pid``."""
+        from ..wine_chromium import CHROMIUM_MODULE_NAMES, ELECTRON_EXE_MIN_SIZE
+        try:
+            with open(f"/proc/{int(pid)}/maps") as fh:
+                lines = fh.read().splitlines()
+        except (OSError, ValueError):
+            return []
+        found = []
+        for line in lines:
+            parts = line.split(None, 5)
+            if len(parts) < 6:
+                continue
+            path = parts[5]
+            name = os.path.basename(path).lower()
+            if path in found:
+                continue
+            if name in CHROMIUM_MODULE_NAMES:
+                found.append(path)
+            elif name.endswith(".exe"):
+                try:
+                    if os.path.getsize(path) >= ELECTRON_EXE_MIN_SIZE:
+                        found.append(path)
+                except OSError:
+                    pass
+        return found
+
+    def _should_use_wine_frida_watch(self) -> bool:
+        """True for a LOCAL Linux Wine target that should run on Frida with the
+        Wine process watcher instead of the GDB extractor.
+
+        Chosen in ``--wine auto`` when the target ships Chromium-embedded
+        BoringSSL (CEF / Chrome / Electron / Qt WebEngine — the launchers of
+        fkie-cad/friTap#52): those do TLS in a child process, which only this
+        route follows, and their key hook is the shared agent's tier-4 anchor
+        locator. An explicit ``--backend frida`` on a Wine target also lands here
+        (Frida cannot spawn the ``wine`` shell wrapper itself). ``--wine on``
+        keeps forcing GDB, ``--wine off`` keeps the plain Frida path.
+        """
+        import platform
+        if platform.system() != "Linux":
+            return False
+        if self.mobile or self.device_id or self.host:
+            return False
+        if self.wine_mode != "auto" or self._config.backend != BackendName.FRIDA:
+            return False
+        try:
+            is_wine = self._target_is_wine() if self.spawn else self._attach_target_is_wine()
+        except Exception:
+            return False
+        if not is_wine:
+            return False
+        if self.backend_explicit:
+            return True
+        return bool(self._wine_chromium_modules())
+
+    def _run_wine_frida_watch_session(self, own_message_handler=None):
+        """Run a Wine target on Frida, following its processes from the host.
+
+        Spawn: Wine is launched normally (as the GDB route does) and a
+        :class:`~friTap.wine_process_watcher.WineProcessWatcher` hands every new
+        app process of the prefix (browser, network service, helpers — not
+        renderers/GPU) to the instrument worker. Attach: the target is
+        instrumented, and with ``--enable_child_gating`` its later processes too.
+        Chromium modules are pre-resolved on the host so no process has to scan.
+        """
+        from ..wine_chromium import chromium_offsets, merge_offsets
+        from ..wine_process_watcher import (
+            WineProcessWatcher, current_pids, process_wine_prefix,
+        )
+        wke = self._wine_extractor_module()
+
+        self.logger.info(
+            "Wine target with Chromium-embedded BoringSSL — using Frida with a "
+            "Wine process watcher (child processes are followed)."
+            if self._wine_chromium_modules() else
+            "Wine target — using Frida with a Wine process watcher."
+        )
+        if not self.experimental:
+            # The Wine agent (PE-module rows, LdrLoadDll hook) is gated behind
+            # --experimental; this route is meaningless without it.
+            self._config.hooking.experimental = True
+        # Lean Wine agent load: the watcher attaches each new network-service
+        # process early (before its first TLS), so the agent must load fast
+        # without the full-module Memory.scan sweep (fkie-cad/friTap#52). Drives
+        # the `lean_wine` key in the config batch.
+        self._wine_lean = True
+        # Load the SLIM Wine bundle (frida-java/objc bridges excluded): a smaller
+        # bundle injects reliably into a freshly-created Chromium network service,
+        # which is what lets us attach it early enough to catch its first TLS
+        # handshakes. The full bundle's bridge bytes made early injection break
+        # the young service ~half the time. The operator FRITAP_AGENT_BUNDLE
+        # override still wins (checked first in _resolve_agent_bundle_path).
+        wine_bundle = os.path.join(here, "fritap_agent_wine.js")
+        if os.path.isfile(wine_bundle):
+            self.agent_script = "fritap_agent_wine.js"
+            self._resolved_agent_bundle = wine_bundle
+            self.logger.info("Using slim Wine agent bundle: %s", wine_bundle)
+        else:
+            self.logger.warning(
+                "Slim Wine agent bundle not found (%s); using the full bundle — "
+                "early network-service capture may be unreliable. Rebuild with "
+                "./dev/compile_agent.sh.", wine_bundle)
+        if os.geteuid() != 0 and wke.ptrace_scope() != 0:
+            self.logger.warning(
+                "kernel.yama.ptrace_scope=%d: Wine re-parents the app's processes, so "
+                "attaching to them needs ptrace_scope=0 (sudo sysctl "
+                "kernel.yama.ptrace_scope=0) or root.", wke.ptrace_scope(),
+            )
+
+        mods = self._wine_chromium_modules()
+        if mods:
+            extra = chromium_offsets(mods)
+            for name, entry in extra.items():
+                self.logger.info(
+                    "Pre-resolved ssl_log_secret in %s at rva %s",
+                    name, entry["ssl_log_secret"]["address"],
+                )
+            missing = [m for m in mods if os.path.basename(m) not in extra]
+            for path in missing:
+                self.logger.info("No ssl_log_secret pre-resolved for %s; the agent will scan it", path)
+            self.offsets_data = merge_offsets(self.offsets_data, extra)
+
+        if self.device is None:
+            self.device = self._backend.get_device()
+        self.connect_live()
+        self._setup_live_scan()
+        self._start_consumer_thread()
+        self._start_instrument_thread()
+
+        def on_new(pid, label):
+            self.logger.info("Wine process %s (pid %d): instrumenting", label, pid)
+            self._enqueue_instrumentation(
+                pid, f"Wine process {label}", label, resume=False,
+            )
+
+        launcher = None
+        if self.spawn:
+            argv = self._wine_target_argv()
+            rest = argv[1:] if argv else []
+            if not rest:
+                self.logger.error(
+                    "Wine spawn target has no executable (expected e.g. `wine app.exe`)."
+                )
+                self._done_event.set()
+                return None, None
+            run_as = wke.sudo_invoker()
+            prefix_problem = wke.wine_prefix_problem(run_as)
+            if prefix_problem:
+                self.logger.error("%s", prefix_problem)
+                self._done_event.set()
+                return None, None
+            home = run_as.home if run_as is not None else os.path.expanduser("~")
+            prefix = os.environ.get("WINEPREFIX") or os.path.join(home, ".wine")
+            # settle_seconds=0: attach each network-service process the instant
+            # it is ready, to catch its first TLS handshake. The slim Wine bundle
+            # (bridges excluded) makes such early injection reliable; a settle
+            # would miss a one-shot startup handshake (fkie-cad/friTap#52).
+            watcher = WineProcessWatcher(on_new, prefix=prefix, exclude=current_pids(),
+                                         settle_seconds=0.0)
+            self._wine_watcher = watcher
+            watcher.start()
+            launcher = subprocess.Popen(
+                [argv[0], *rest], start_new_session=True,
+                **wke._run_as_popen_kwargs(run_as, os.environ),
+            )
+            self._track_wine_proc(launcher)
+        else:
+            pid = getattr(self, "_wine_attach_pid", None) or self._resolve_wine_attach_pid()
+            if pid is None:
+                self.logger.error(
+                    "Could not determine a PID to attach to for Wine target %r.",
+                    self.target_app,
+                )
+                self._done_event.set()
+                return None, None
+            self.pid = int(pid)
+            watcher = None
+            if self.enable_child_gating:
+                watcher = WineProcessWatcher(
+                    on_new, prefix=process_wine_prefix(pid), exclude=current_pids(),
+                    settle_seconds=0.0,
+                )
+                self._wine_watcher = watcher
+                watcher.start()
+            # The already-running attach target is instrumented directly (its
+            # past TLS can't be recovered); its future network-service children
+            # are attached early by the watcher above.
+            on_new(int(pid), "attach target")
+        self._wine_watcher = watcher
+        self._wine_watch_monitor(launcher, watcher, attach_pid=None if self.spawn else self.pid)
+        return None, None
+
+    def _wine_watch_monitor(self, launcher, watcher, attach_pid=None):
+        """Finish the session once the Wine app is gone: the launcher exited
+        and no instrumented process is alive (spawn), or the attach target
+        and every followed process exited (attach)."""
+        def alive_targets():
+            alive = watcher.alive_reported() if watcher is not None else set()
+            if attach_pid is not None and os.path.exists(f"/proc/{attach_pid}"):
+                alive.add(attach_pid)
+            return alive
+
+        def _monitor():
+            idle = 0
+            while self.running and not self._done_event.is_set():
+                time.sleep(1.0)
+                launcher_alive = launcher is not None and launcher.poll() is None
+                if launcher_alive or alive_targets():
+                    idle = 0
+                    continue
+                idle += 1
+                if idle >= 3:
+                    self.logger.info("All Wine app processes exited; finishing.")
+                    if watcher is not None:
+                        watcher.stop()
+                    self.request_stop()
+                    self._wine_watch_finish()
+                    return
+
+        threading.Thread(target=_monitor, daemon=True, name="fritap-wine-monitor").start()
+
+    def _wine_watch_finish(self):
+        """Flush and signal completion for the watcher route (mirrors the
+        normal detach path closely enough for the CLI wait loop)."""
+        try:
+            self.finish_fritap()
+        except Exception as exc:
+            self.logger.debug("finish_fritap after Wine watch: %s", exc)
+        self._done_event.set()
+
     def _run_wine_gdb_session(self, own_message_handler=None):
         """Run GDB-based TLS key extraction for a Wine target (no Frida).
 
@@ -3147,13 +3425,27 @@ class SSL_Logger():
         a user-launched target is left running. No-op if nothing was started.
         """
         import signal as _signal
+        watcher = getattr(self, "_wine_watcher", None)
+        if watcher is not None:
+            watcher.stop()
         for _proc, pgid in getattr(self, "_wine_procs", []):
             try:
                 os.killpg(pgid, _signal.SIGTERM)
             except (OSError, ProcessLookupError):
                 pass
+        # Frida watcher route, spawn mode: Wine may move the app's processes out
+        # of the launcher's group, so stop the ones we followed explicitly. An
+        # attached (user-launched) target is left running.
+        if watcher is not None and self.spawn:
+            for pid in watcher.alive_reported():
+                try:
+                    os.kill(pid, _signal.SIGTERM)
+                except (OSError, ProcessLookupError):
+                    pass
 
     def start_fritap_session(self, own_message_handler=None):
+        if self._should_use_wine_frida_watch():
+            return self._run_wine_frida_watch_session(own_message_handler)
         if self._should_use_wine_gdb():
             return self._run_wine_gdb_session(own_message_handler)
         self.connect_live()  # No-op if already connected or not in live mode

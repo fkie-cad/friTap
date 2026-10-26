@@ -96,6 +96,28 @@ build_full() {
 INTERCEPT_ENTRY="agent/fritap_agent.ts";        INTERCEPT_OUT="friTap/fritap_agent.js"
 MEMSCAN_ENTRY="agent/memory_scan_agent.ts";     MEMSCAN_OUT="friTap/fritap_memscan.js"
 FULL_ENTRY="agent/fritap_agent_full.ts";        FULL_OUT="friTap/fritap_agent_full.js"
+# Slim Wine bundle (fkie-cad/friTap#52): the SAME intercept entry, built with
+# tsconfig.wine.json which aliases the frida-java/objc bridges to empty shims so
+# their bytes are excluded. The smaller bundle injects reliably into a freshly-
+# created Wine process, letting the watcher attach the Chromium network service
+# early enough to capture its first TLS handshakes.
+WINE_OUT="friTap/fritap_agent_wine.js"
+WINE_TSCONFIG="tsconfig.wine.json"
+
+# Build the slim Wine bundle. frida-compile reads ./tsconfig.json, so swap it
+# for the Wine tsconfig around this one build and restore it no matter what.
+build_wine() {
+    if [ ! -f "$WINE_TSCONFIG" ]; then
+        echo "[compile_agent.sh] $WINE_TSCONFIG not found; skipping slim Wine bundle" >&2
+        return 0
+    fi
+    local backup; backup="$(mktemp)"
+    cp tsconfig.json "$backup"
+    # shellcheck disable=SC2064
+    trap "cp '$backup' tsconfig.json; rm -f '$backup'" RETURN
+    cp "$WINE_TSCONFIG" tsconfig.json
+    build_one "$INTERCEPT_ENTRY" "$WINE_OUT" "slim Wine agent"
+}
 
 # Explicit ENTRY/OUT override => a single custom build, historical behavior
 # (defaults reproduce the old bare invocation for anything still relying on it).
@@ -116,6 +138,7 @@ case "$TARGET" in
         # exact same build as before; then the memory-scan agent.
         build_one "$INTERCEPT_ENTRY" "$INTERCEPT_OUT" "intercept agent"
         build_one "$MEMSCAN_ENTRY"   "$MEMSCAN_OUT"   "memory-scan agent"
+        build_wine
         # Full agent only exists in private clones; skipped silently elsewhere so
         # the public agent-build-check is unaffected.
         if [ -f "$FULL_ENTRY" ]; then
@@ -128,6 +151,9 @@ case "$TARGET" in
     ms|memory_scan|memscan)
         build_one "$MEMSCAN_ENTRY"   "$MEMSCAN_OUT"   "memory-scan agent"
         ;;
+    wine)
+        build_wine
+        ;;
     full)
         if [ ! -f "$FULL_ENTRY" ]; then
             echo "[compile_agent.sh] $FULL_ENTRY not found (private-clone only)" >&2
@@ -137,7 +163,7 @@ case "$TARGET" in
         ;;
     *)
         echo "[compile_agent.sh] unknown target '$TARGET'" >&2
-        echo "  valid targets: both (default) | intercept | ms | full  (see --help)" >&2
+        echo "  valid targets: both (default) | intercept | ms | wine | full  (see --help)" >&2
         exit 2
         ;;
 esac

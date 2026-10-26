@@ -260,7 +260,7 @@ caveats (notably: frida 15.x wheels target older Python versions).
 - [ ] add the capability to alter the decrypted payload
   - integration with https://github.com/mitmproxy/mitmproxy
   - integration with https://portswigger.net/burp/
-- [ ] add wine support
+- [x] <strike>add wine support</strike> — Linux Wine targets via the GDB key extractor (default) and the Frida agent, including Chromium/CEF/Electron launchers (Battle.net, Epic, …); see [docs/platforms/wine.md](docs/platforms/wine.md)
 - [x] <strike>add Flutter support</strike>
 - [ ] add further libraries (have a look at this [Wikipedia entry](https://en.wikipedia.org/wiki/Comparison_of_TLS_implementations)):
   - Botan (BSD license, Jack Lloyd)

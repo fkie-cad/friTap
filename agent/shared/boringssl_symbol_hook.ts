@@ -3,6 +3,7 @@ import { sendKeylog } from "./shared_structures.js";
 import { devlog, devlog_debug, devlog_error, log } from "../util/log.js";
 import { safeKeyLenLogged } from "./keylog_length.js";
 import { LruMap } from "./lru.js";
+import { callAbiForModule, readSslLogSecretCall } from "./call_abi.js";
 import {
     CLIENT_RANDOM_CACHE_MAX,
     tryReadClientRandomAt,
@@ -184,13 +185,16 @@ export type DumpKeysCb = (
     secretLen: number
 ) => void;
 
-export function attachSslLogSecretHook(addr: NativePointer, cb: DumpKeysCb): boolean {
+export function attachSslLogSecretHook(addr: NativePointer, cb: DumpKeysCb, moduleName: string = ""): boolean {
+    // bssl::ssl_log_secret(SSL const*, char const*, Span<u8 const>): the Span is
+    // (data, size) in registers on SysV/AAPCS64 but passed by reference on Win64
+    // (see call_abi.ts), so read it under the module's ABI.
+    const abi = callAbiForModule(moduleName);
     try {
         Interceptor.attach(addr, {
             onEnter(args) {
-                // bssl::ssl_log_secret(SSL const*, char const*, Span<u8 const>)
-                // ABI: arg0=ssl, arg1=label, arg2=secret.data(), arg3=secret.size()
-                cb(args[1], args[0], args[2], args[3].toUInt32());
+                const c = readSslLogSecretCall(args, this.context, abi);
+                cb(c.label, c.ssl, c.data, c.len);
             },
         });
         return true;
@@ -345,7 +349,7 @@ export function installBoringSSLSymbolHook(moduleName: string, dumpKeys: DumpKey
     if (!r) return false;
     // Guarded: the legacy Cronet chain runs this in parallel with a still-running
     // pattern scan on the same ssl_log_secret; only one tier may emit each secret.
-    const ok = attachSslLogSecretHook(r.address, guardKeylogDumpKeys(moduleName, "symbol", dumpKeys));
+    const ok = attachSslLogSecretHook(r.address, guardKeylogDumpKeys(moduleName, "symbol", dumpKeys), moduleName);
     if (ok) {
         // Use `log` (level=info) so the success banner reaches stdout under
         // default verbosity — `devlog` (level=debug) was only visible with

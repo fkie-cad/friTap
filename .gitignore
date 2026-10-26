@@ -186,9 +186,11 @@ tls_libs_Chrome/
 !tsconfig.json
 !custom.js
 !friTap/fritap_agent.js
+!friTap/fritap_agent_wine.js
 !friTap/fritap_memscan.js
 !friTap/fritap_agent_full.js
 !friTap/fritap_agent_full.js.src
+!tsconfig.wine.json
 !.gitlab-ci.yml
 !friTap/patterns/*.json
 !offsets_example.json

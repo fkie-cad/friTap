@@ -8,6 +8,7 @@ import { devlog, devlog_error, devlog_info, devlog_warn, devlog_debug, log } fro
 import { sendKeylog } from "../../../../shared/shared_structures.js";
 import { scheduleBoringSSLSymbolFallback, installBoringSSLSymbolHook } from "../../../../shared/boringssl_symbol_hook.js";
 import { createKeylogCallbackTracker, KeylogCallbackTracker } from "../../../../shared/keylog_callback_tracker.js";
+import { callAbiForModule, readSslLogSecretCall } from "../../../../shared/call_abi.js";
 
 export type HookingResult = [success: boolean, handle: PatternBasedHooking | null];
 const EXCLUDED_MODULE_SUFFIXES = ["_backup.dll", "_old.dll"]; // extensible list for problematic modules
@@ -42,20 +43,28 @@ export class Cronet_Windows extends Cronet {
             }
         }
         const hooker = new PatternBasedHooking(cronetModule);
+        // bssl::ssl_log_secret(ssl, label, Span<const uint8_t>): on Win64 (native
+        // Windows, or PE code under Wine) the Span is passed by reference, so the
+        // arguments are read under the module's ABI (see shared/call_abi.ts).
+        const self = this;
+        const abi = callAbiForModule(this.module_name);
+        const onSslLogSecret = function (this: InvocationContext, args: any[]): void {
+            devlog("Installed ssl_log_secret() hooks using byte patterns for module "+self.module_name+".");
+            if (abi === null || this?.context === undefined) {
+                self.dumpKeys(args[1], args[0], args[2], Number(args[3]));
+                return;
+            }
+            const c = readSslLogSecretCall(args as unknown as InvocationArguments, this.context, abi);
+            self.dumpKeys(c.label, c.ssl, c.data, c.len);
+        };
 
         if (isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, "libcronet.dll", "Dump-Keys")){
             devlog("Hooking libcronet functions by patterns from JSON file");
-            hooker.hook_DumpKeys(this.module_name,"libcronet.dll",patterns,(args: any[]) => {
-                devlog("Installed ssl_log_secret() hooks using byte patterns for module "+this.module_name+".");
-                this.dumpKeys(args[1], args[0], args[2], Number(args[3]));  // Unpack args into dumpKeys
-            });
+            hooker.hook_DumpKeys(this.module_name,"libcronet.dll",patterns,onSslLogSecret);
         }else{
             hooker.hookModuleByPattern(
                 get_CPU_specific_pattern(this.default_pattern),
-                (args) => {
-                    devlog("Installed ssl_log_secret() hooks using byte patterns for module "+this.module_name+".");
-                    this.dumpKeys(args[1], args[0], args[2], Number(args[3]));
-                }
+                onSslLogSecret
             );
         }
 

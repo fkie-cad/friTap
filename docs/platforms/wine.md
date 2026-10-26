@@ -612,6 +612,50 @@ On non-x86-64 architectures where friTap ships no bundled bytes, the scan is
 skipped unless you provide an override — the symbol-based gnutls hooks
 (layer 1 above) still capture keys either way.
 
+## Chromium / CEF / Electron launchers {#chromium-launchers}
+
+Game and store launchers such as **Battle.net, the EA app, Ubisoft Connect and
+the Epic Games Launcher** are Chromium-based (CEF / Electron / Qt WebEngine).
+Their TLS is **BoringSSL statically linked** into `libcef.dll`, `chrome.dll`,
+`msedge.dll`, `Qt*WebEngineCore.dll` or the app's own Electron `.exe` — there is
+no separate `libssl` DLL to hook — and the handshakes happen in a **child
+process** (Chromium's network service, `--type=utility ... network`), not in the
+process you launch (fkie-cad/friTap#52).
+
+friTap handles these automatically. When `--wine auto` (the default) sees a Wine
+target that ships a Chromium module, it takes a dedicated **Frida process-watcher
+route** instead of the GDB extractor:
+
+- **Child-process following.** Wine re-parents the processes a program starts, so
+  Frida's own child-gating never sees the network service. friTap instead watches
+  `/proc` and attaches to each new network-service process of the app's Wine
+  prefix itself (renderer / GPU / crashpad children, which do no TLS, are
+  skipped). This also follows restarts and additional renderers.
+- **First-handshake capture.** `bssl::ssl_log_secret` is pre-resolved on the host
+  straight from the PE file on disk (by cross-referencing the NSS keylog label
+  strings) and handed to the agent as an `--offsets` entry, and friTap loads a
+  **slim Wine agent bundle** (`fritap_agent_wine.js`, with the Frida Java/ObjC
+  bridges excluded) so the agent injects into a freshly-created network service
+  fast enough to hook it **before its first handshake** — including a login/start
+  page that fetches at startup. The slim bundle is built by
+  `./dev/compile_agent.sh` alongside the normal one.
+- **Nothing to configure.** `fritap -k keys.log -s wine Launcher.exe` (spawn) or
+  `fritap -k keys.log <pid>` (attach) just works; `--experimental` and the lean
+  load are enabled for you on this route. Use `--enable_child_gating` in attach
+  mode to also follow children the target spawns after you attach.
+
+```bash
+# Spawn a CEF app and capture BoringSSL keys from its network service:
+fritap -k keys.log -s wine /path/to/Launcher.exe
+
+# Attach to an already-running launcher (follows its network-service children):
+fritap -k keys.log --enable_child_gating <launcher-pid>
+```
+
+On native Windows the same Chromium modules are matched directly (no watcher
+needed, since there is no Wine re-parenting); that path ships but is not yet
+covered by the automated end-to-end tests.
+
 ## Supported TLS Libraries
 
 ### Windows DLLs (via Wine)
@@ -619,6 +663,7 @@ skipped unless you provide an override — the symbol-based gnutls hooks
 | Library | Support | Notes |
 |---------|---------|-------|
 | OpenSSL/BoringSSL | Full | Key extraction + traffic; PE builds keyed via Win64 `SSL_log_secret` pattern |
+| BoringSSL in Chromium/CEF/Electron | Keys | Statically linked in `libcef.dll`/`chrome.dll`/Electron `.exe`; auto Frida process-watcher route, see [Chromium launchers](#chromium-launchers) |
 | WolfSSL | Full | Key extraction + traffic |
 | GnuTLS | Full | Key extraction + traffic; dual-ABI keylog pattern (System V + Win64) |
 | Schannel | Keys | Key extraction via Wine's underlying GnuTLS (`_gnutls_call_keylog_func`) |
@@ -703,6 +748,7 @@ scan can be pinned for this build:
 4. **DLL Path Parsing** - Complex Windows paths may occasionally cause issues
 5. **Spawning issue (Frida agent)** - Spawning a Wine application with the Frida agent often results in Wine restarting without our hooks. The GDB path avoids this with launch + freeze-on-detect + attach
 6. **No decrypted plaintext on the GDB path** - Plaintext pcaps (`-p` without `-f`), `--live` and payload modification need the Frida agent
+7. **Chromium network-service capture is keys-only** - The [Chromium/CEF/Electron route](#chromium-launchers) extracts keys (not decrypted-plaintext pcaps) and relies on attaching each network-service process the instant it is created. It is reliable in testing, but a process that completes a handshake within the first few milliseconds of being created — before the agent finishes loading — may still be missed; such a request is normally retried and then captured.
 
 ### Unsupported Scenarios
 

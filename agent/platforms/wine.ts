@@ -1,11 +1,14 @@
 import { hookRegistry } from "../shared/registry.js";
 import { selected_protocols, use_modern, getParsedPatterns } from "../fritap_agent.js";
 import { log, devlog } from "../util/log.js";
+import { readProcSelfMaps } from "../util/proc_maps.js";
 import { getModuleNames } from "../shared/shared_functions.js";
 import { Platform, PLATFORM_WINE } from "../shared/shared_structures.js";
 import { contributedHooksFor } from "../shared/hook_contributors.js";
 import { load_linux_hooking_agent } from "./linux.js";
 import { installWineKeylogPatternHooks } from "../shared/wine_keylog_pattern_hook.js";
+import { CHROMIUM_BORINGSSL_MODULES, chromium_boringssl_hook, hookMappedChromiumPeImages } from "../shared/chromium_boringssl.js";
+import { setModuleCallAbi } from "../shared/call_abi.js";
 import { libresslAwareDispatch } from "../shared/libressl_identification.js";
 
 // Import Windows-style TLS library hooks (reuse existing implementations)
@@ -182,11 +185,7 @@ function hook_Wine_LdrLoadDll(is_base_hook: boolean): boolean {
                     // Also scan the freshly-loaded DLL for the dual-ABI keylog
                     // signatures (catches PE-bundled gnutls/openssl and schannel's
                     // internal gnutls even when no export-based hook matched).
-                    try {
-                        installWineKeylogPatternHooks(dllBaseName, getParsedPatterns());
-                    } catch (error) {
-                        devlog(`[Wine] keylog pattern scan error for ${dllBaseName}: ${error}`);
-                    }
+                    runKeylogSweep(dllBaseName);
                 }
             }
         });
@@ -197,48 +196,6 @@ function hook_Wine_LdrLoadDll(is_base_hook: boolean): boolean {
         devlog(`[Wine] Loader hook error: ${error}`);
         log("[Wine] Could not hook LdrLoadDll - DLL hooking disabled");
         return false;
-    }
-}
-
-/**
- * Read /proc/self/maps into a string via libc open/read/close. Frida can't
- * enumerate PE modules on Wine ≥9, so we need the raw mapping list to locate
- * ntdll.dll's base address. Bounded read: /proc/self/maps for a Wine process
- * is typically 200–500 KB; we cap the returned buffer at 4 MB defensively.
- */
-function read_proc_self_maps(): string | null {
-    try {
-        const openPtr = tryGlobalExport("open");
-        const readPtr = tryGlobalExport("read");
-        const closePtr = tryGlobalExport("close");
-        if (!openPtr || !readPtr || !closePtr) return null;
-
-        const open = new NativeFunction(openPtr, "int", ["pointer", "int"]);
-        const read = new NativeFunction(readPtr, "long", ["int", "pointer", "ulong"]);
-        const close = new NativeFunction(closePtr, "int", ["int"]);
-
-        const path = Memory.allocUtf8String("/proc/self/maps");
-        const fd = open(path, 0 /* O_RDONLY */) as number;
-        if (fd < 0) return null;
-
-        const chunkSize = 65536;
-        const buf = Memory.alloc(chunkSize);
-        const chunks: string[] = [];
-        let total = 0;
-        const cap = 4 * 1024 * 1024;
-        while (total < cap) {
-            const n = (read(fd, buf, chunkSize) as any).valueOf() as number;
-            if (n <= 0) break;
-            const chunk = buf.readUtf8String(n);
-            if (chunk === null) break;
-            chunks.push(chunk);
-            total += n;
-        }
-        close(fd);
-        return chunks.join("");
-    } catch (e) {
-        devlog(`[Wine] read_proc_self_maps error: ${e}`);
-        return null;
     }
 }
 
@@ -269,7 +226,7 @@ interface PeNtdllResolution {
  *     0x24  AddressOfNameOrdinals RVA
  */
 function find_pe_ntdll_ldr_load_dll(): PeNtdllResolution | null {
-    const maps = read_proc_self_maps();
+    const maps = readProcSelfMaps();
     if (!maps) return null;
 
     // Each line looks like:
@@ -469,11 +426,8 @@ function arm_wine_late_install(): void {
         // the dual-ABI keylog pattern scan once over everything currently
         // mapped. Subsequent late-loaded DLLs are scanned per-DLL inside the
         // LdrLoadDll onLeave (hook_Wine_LdrLoadDll above).
-        try {
-            installWineKeylogPatternHooks(undefined, getParsedPatterns());
-        } catch (error) {
-            devlog(`[Wine] deferred keylog pattern scan error: ${error}`);
-        }
+        runKeylogSweep();
+        hook_Wine_Mapped_Chromium();
         tearDown();
     };
 
@@ -540,6 +494,26 @@ function hook_Wine_Existing_DLLs(is_base_hook: boolean): void {
 }
 
 /**
+ * Chromium-family PE images (libcef.dll, chrome.dll, Electron .exe, ...) that
+ * were mapped before the LdrLoadDll hook went live. On Wine >= 9 they are not
+ * Frida modules, so hook_Wine_Existing_DLLs cannot see them; find them in
+ * /proc/self/maps instead. Later loads arrive through the LdrLoadDll rows.
+ */
+function hook_Wine_Mapped_Chromium(): void {
+    try {
+        hookMappedChromiumPeImages();
+    } catch (error) {
+        devlog(`[Wine] Chromium BoringSSL sweep error: ${error}`);
+    }
+}
+
+/** Cronet DLL under Wine: PE code, so pin its ssl_log_secret ABI to win64. */
+function cronet_execute_wine(moduleName: string, is_base_hook: boolean): void {
+    setModuleCallAbi(moduleName, "win64");
+    cronet_execute_windows(moduleName, is_base_hook);
+}
+
+/**
  * Main Wine hooking agent loader.
  *
  * Strategy:
@@ -548,8 +522,39 @@ function hook_Wine_Existing_DLLs(is_base_hook: boolean): void {
  * 2. Hook Wine's LdrLoadDll to intercept Windows DLL loading
  *    (for applications that bundle their own Windows TLS libraries)
  */
-export function load_wine_hooking_agent(): void {
-    log("Running Script on Wine (Linux + Windows DLLs)");
+// --lean-wine: when true, the full-module dual-ABI keylog Memory.scanSync sweep
+// is deferred off the critical load path (see runKeylogSweep). Set by
+// load_wine_hooking_agent(lean). The fast hooks — native .so symbols, the
+// LdrLoadDll hook, and the pre-resolved Chromium ssl_log_secret offset — stay
+// synchronous so they are in place before the process is resumed and does TLS.
+let _leanWine = false;
+
+/**
+ * Run the dual-ABI keylog pattern sweep for `dll` (or all modules when
+ * undefined). In lean mode the sweep is scheduled asynchronously so a large
+ * (e.g. 200 MB libcef.dll) Memory.scanSync never blocks the agent load or the
+ * LdrLoadDll onLeave — the Chromium keys come from the pre-resolved offset and
+ * the native/symbol hooks, and this sweep only adds coverage for anything they
+ * missed. In normal mode it runs synchronously, as before.
+ */
+function runKeylogSweep(dll?: string): void {
+    const run = () => {
+        try {
+            installWineKeylogPatternHooks(dll, getParsedPatterns());
+        } catch (error) {
+            devlog(`[Wine] keylog pattern scan error${dll ? ` for ${dll}` : ""}: ${error}`);
+        }
+    };
+    if (_leanWine) {
+        setTimeout(run, 0);
+    } else {
+        run();
+    }
+}
+
+export function load_wine_hooking_agent(lean: boolean = false): void {
+    _leanWine = lean;
+    log(`Running Script on Wine (Linux + Windows DLLs)${lean ? " [lean]" : ""}`);
 
     // Catch the common sudo-vs-user-owned-WINEPREFIX trap before installing
     // anything; surface the cause and bail so the inevitable wine64 exit is not
@@ -563,8 +568,25 @@ export function load_wine_hooking_agent(): void {
     // preloader, not glibc dlopen, so the inline libdl trampoline adds spawn-time
     // footprint without catching anything Wine actually loads. DLL interception
     // is handled below via hook_Wine_LdrLoadDll (armed once ntdll appears).
-    log("[Wine] Loading Linux agent for native .so libraries...");
-    load_linux_hooking_agent(true);
+    //
+    // In lean mode this native-.so mass-hook is DEFERRED off the critical path:
+    // it was the last thing to run before an early-injected Chromium network
+    // service crashed (fkie-cad/friTap#52). Chromium's TLS is BoringSSL inside
+    // libcef (hooked synchronously below via the pre-resolved offset / the
+    // LdrLoadDll hook), so a slightly later native-.so hook costs nothing for
+    // the Chromium case and only marginally delays a non-Chromium Wine app's
+    // first native-gnutls handshake.
+    if (_leanWine) {
+        setTimeout(() => {
+            try {
+                log("[Wine] Loading Linux agent for native .so libraries (deferred, lean)...");
+                load_linux_hooking_agent(true);
+            } catch (e) { devlog(`[Wine] deferred linux agent load error: ${e}`); }
+        }, 0);
+    } else {
+        log("[Wine] Loading Linux agent for native .so libraries...");
+        load_linux_hooking_agent(true);
+    }
 
 
     // Then add Wine-specific DLL hooking
@@ -579,7 +601,12 @@ export function load_wine_hooking_agent(): void {
         { platform: platform_name, pattern: /^.*(libgnutls|LIBGNUTLS)-[0-9]+\.dll$/i, hookFn: (use_modern ? gnutls_execute_modern_windows : gnutls_execute_windows), library: "GnuTLS", libraryType: "gnutls" },
         { platform: platform_name, pattern: /^(nspr|NSPR)[0-9]*\.dll/i, hookFn: (use_modern ? nss_execute_modern_windows : nss_execute_windows), library: "NSS", libraryType: "nss" },
         { platform: platform_name, pattern: /mbedTLS\.dll/i, hookFn: (use_modern ? mbedTLS_execute_modern_windows : mbedTLS_execute_windows), library: "mbedTLS", libraryType: "mbedtls" },
-        { platform: platform_name, pattern: /^.*(cronet|CRONET).*\.dll/i, hookFn: cronet_execute_windows, library: "Cronet", libraryType: "boringssl" },
+        { platform: platform_name, pattern: /^.*(cronet|CRONET).*\.dll/i, hookFn: cronet_execute_wine, library: "Cronet", libraryType: "boringssl" },
+        // BoringSSL statically linked into Chromium-family PE modules (CEF,
+        // Chrome/Edge, Qt WebEngine): the launchers of fkie-cad/friTap#52.
+        ...CHROMIUM_BORINGSSL_MODULES.map((pattern) => (
+            { platform: platform_name, pattern, hookFn: chromium_boringssl_hook(true), library: "BoringSSL (Chromium)", libraryType: "boringssl" as const }
+        )),
     ]);
 
     // Windows-DLL contributor rows (e.g. the `--protocol rc4` unit's hooks)
@@ -595,8 +622,17 @@ export function load_wine_hooking_agent(): void {
     // Hook existing Windows DLLs that are already loaded. At spawn time this
     // is almost always empty (Wine's preloader hasn't loaded ntdll yet); the
     // late-install watcher below catches everything that loads after resume().
-    log("[Wine] Checking for pre-loaded Windows DLLs...");
-    hook_Wine_Existing_DLLs(true);
+    // Deferred in lean mode (off the early-injection critical path); PE modules
+    // on Wine >= 9 are not in enumerateModules anyway, so libcef is handled by
+    // hook_Wine_Mapped_Chromium below, not here.
+    if (_leanWine) {
+        setTimeout(() => {
+            try { hook_Wine_Existing_DLLs(true); } catch (e) { devlog(`[Wine] deferred existing-DLL hook error: ${e}`); }
+        }, 0);
+    } else {
+        log("[Wine] Checking for pre-loaded Windows DLLs...");
+        hook_Wine_Existing_DLLs(true);
+    }
 
     // Try LdrLoadDll once eagerly — succeeds in attach mode (ntdll already up)
     // and is a no-op in spawn mode (ntdll not yet mapped). If it fails to install,
@@ -611,11 +647,8 @@ export function load_wine_hooking_agent(): void {
         // Attach-mode path: ntdll is already mapped, so the dual-ABI keylog
         // pattern scan over already-mapped modules is meaningful right now.
         log("[Wine] Scanning loaded modules for dual-ABI TLS keylog signatures (experimental)...");
-        try {
-            installWineKeylogPatternHooks(undefined, getParsedPatterns());
-        } catch (error) {
-            devlog(`[Wine] keylog pattern scan error: ${error}`);
-        }
+        runKeylogSweep();
+        hook_Wine_Mapped_Chromium();
     } else {
         log("[Wine] ntdll not yet mapped — arming late-install watcher for LdrLoadDll + keylog pattern scan.");
         arm_wine_late_install();

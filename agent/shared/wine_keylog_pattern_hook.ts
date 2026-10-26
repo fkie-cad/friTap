@@ -58,10 +58,11 @@ import { sendKeylog } from "./shared_structures.js";
 import { log, devlog, devlog_error } from "../util/log.js";
 import { normalizeArchKey } from "../util/process_infos.js";
 import { resolveKdfPattern } from "./libressl_kdf.js";
+import { argAt, type CallAbi } from "./call_abi.js";
 import { TLS13_LABEL_MAP } from "../tls/definitions/shared_constants.js";
 import { installLibreSslClientRandomViaSend, getLibreSslClientRandom } from "./libressl_client_random.js";
 
-type WineAbi = "sysv" | "win64" | "aarch64";
+type WineAbi = CallAbi;
 
 interface WineKeylogSig {
     /** Human-readable id used in logs and as the pattern.json action key. */
@@ -124,23 +125,6 @@ function isPlausibleSecretLen(len: number): boolean {
     return len > 0 && len < 1024;
 }
 
-/** Integer/pointer argument `idx` of the call at `ctx` under `abi`. */
-function abiArg(ctx: CpuContext, abi: WineAbi, idx: number): NativePointer {
-    if (abi === "aarch64") {
-        const c = ctx as Arm64CpuContext;
-        return [c.x0, c.x1, c.x2, c.x3, c.x4, c.x5][idx];
-    } else if (abi === "win64") {
-        const c = ctx as X64CpuContext;
-        // args 0..3 in registers; 4..5 are stack slots at [rsp+0x20], [rsp+0x28]
-        if (idx < 4) return [c.rcx, c.rdx, c.r8, c.r9][idx];
-        return c.rsp.add(0x20 + (idx - 4) * 8).readPointer();
-    } else {
-        const c = ctx as X64CpuContext;
-        if (idx < 6) return [c.rdi, c.rsi, c.rdx, c.rcx, c.r8, c.r9][idx];
-        return c.rsp.add(8 + (idx - 6) * 8).readPointer();
-    }
-}
-
 /**
  * Read one SSLKEYLOGFILE line ("LABEL CR_HEX SECRET_HEX") from the registers
  * present at the hooked keylog-function entry, using the register set for this
@@ -159,7 +143,7 @@ export function readWineKeylogLine(
     ctx: CpuContext,
     sig: WineKeylogSig,
 ): string | null {
-    const [a0, a1, a2, a3] = [0, 1, 2, 3].map((i) => abiArg(ctx, sig.abi, i));
+    const [a0, a1, a2, a3] = [0, 1, 2, 3].map((i) => argAt(ctx, sig.abi, i));
 
     if (a0.isNull() || a1.isNull() || a2.isNull()) return null;
 
@@ -394,8 +378,8 @@ function attachLibreSslHkdfHook(address: NativePointer): void {
     Interceptor.attach(address, {
         onEnter() {
             try {
-                this.outPtr = abiArg(this.context, abi, 0);
-                this.label = abiArg(this.context, abi, 3).readCString();
+                this.outPtr = argAt(this.context, abi, 0);
+                this.label = argAt(this.context, abi, 3).readCString();
             } catch (_) { this.label = null; }
         },
         onLeave() {

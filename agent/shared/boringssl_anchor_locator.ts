@@ -56,6 +56,15 @@ import {
 import { isReadable, isWritable, safeReadPointer, resetReadableCache } from "../util/safe_memory.js";
 import { claimKeylogHook, keylogHookOwner, registerBoringSSLTier4 } from "./boringssl_keylog_outcome.js";
 import type { DumpKeysCb } from "./boringssl_symbol_hook.js";
+import { argAt, callAbiForModule, readSslLogSecretCall, type CallAbi } from "./call_abi.js";
+import { scanRangesChunked, yieldToEventLoop, XREF_SCAN_CHUNK_BYTES, type ScanRange } from "./arm64_xref.js";
+import {
+    CALL_SEARCH_WINDOW, decodeX64CtxKeylogOffsets, findRipLeaRefs, firstCallAfter, LEA_ARG1_PREFIX, X64_REG,
+} from "./x64_xref.js";
+import { findModuleOrPeImage, type ModuleLike } from "../util/proc_maps.js";
+import { toHexPattern } from "../util/hex.js";
+import { makeWin64ToSysvThunk } from "./win64_thunk.js";
+import { offsets } from "../fritap_agent.js";
 
 /**
  * BoringSSL's NSS keylog label strings. ssl_log_secret is called once per label
@@ -235,10 +244,11 @@ function installViaCtxWrite(
     moduleName: string,
     fnAddr: NativePointer,
     offs: { ctxOff: number; cbOff: number },
+    abi: CallAbi | null = null,
 ): boolean {
     const { ctxOff, cbOff } = offs;
     let dropLogged = false;
-    const keylogCb = new NativeCallback(function (_ssl: NativePointer, linePtr: NativePointer) {
+    const emitKeylogLine = (linePtr: NativePointer): void => {
         try {
             if (linePtr.isNull()) return;
             // This path emits through BoringSSL's keylog_callback, not through
@@ -257,16 +267,47 @@ function installViaCtxWrite(
         } catch (e) {
             devlog(`[anchor-locator] ${moduleName}: keylog callback error: ${e}`);
         }
+    };
+    const keylogCb = new NativeCallback(function (_ssl: NativePointer, linePtr: NativePointer) {
+        emitKeylogLine(linePtr);
     }, "void", ["pointer", "pointer"]);
     rootedCallbacks.push(keylogCb); // load-bearing GC root
+    // The pointer BoringSSL will call. Win64 code under Wine (Linux-host Frida,
+    // which has no "win64" NativeCallback ABI) calls it through a thunk.
+    const cbEntry: NativePointer = (abi === "win64" && Process.platform !== "windows")
+        ? makeWin64ToSysvThunk(keylogCb, 2)
+        : keylogCb;
 
     let installedOnce = false;
     let vetoedOnce = false;
+    // App-owned keylog callbacks already hooked, by address.
+    const hookedExisting = new Set<string>();
+    const hookExistingKeylogCallback = (fn: NativePointer): void => {
+        const key = fn.toString();
+        if (hookedExisting.has(key)) return;
+        hookedExisting.add(key);
+        const range = Process.findRangeByAddress(fn);
+        if (range === null || !range.protection.includes("x")) {
+            log(`[-] ${moduleName}: ctx+0x${cbOff.toString(16)} holds ${fn}, which is not code; leaving it alone.`);
+            return;
+        }
+        try {
+            Interceptor.attach(fn, {
+                onEnter(args: InvocationArguments) {
+                    // keylog_callback(const SSL *ssl, const char *line)
+                    emitKeylogLine(abi === null ? args[1] : argAt(this.context, abi, 1));
+                },
+            });
+            log(`[*] ${moduleName}: the app already sets a keylog callback (${fn}); hooked it instead of replacing it`);
+        } catch (e) {
+            log(`[-] ${moduleName}: could not hook the app's keylog callback at ${fn}: ${e}`);
+        }
+    };
     try {
         Interceptor.attach(fnAddr, {
             onEnter(args: InvocationArguments) {
                 try {
-                    const ssl = args[0];
+                    const ssl = abi === null ? args[0] : argAt(this.context, abi, 0);
                     if (ssl.isNull()) return;
                     const ctx = safeReadPointer(ssl.add(ctxOff));
                     if (ctx === null || ctx.isNull()) return;
@@ -274,7 +315,7 @@ function installViaCtxWrite(
                     // Cheap cached read first: once installed, every later call
                     // returns here without the uncached isWritable range lookup.
                     const current = safeReadPointer(field);
-                    if (current !== null && current.equals(keylogCb)) return; // ours already
+                    if (current !== null && current.equals(cbEntry)) return; // ours already
                     if (!isWritable(field, Process.pointerSize)) {
                         if (!vetoedOnce) {
                             vetoedOnce = true;
@@ -285,16 +326,15 @@ function installViaCtxWrite(
                     }
                     if (current === null) return;
                     if (!current.isNull()) {
-                        if (!vetoedOnce) {
-                            vetoedOnce = true;
-                            log(`[-] ${moduleName}: anchor-locator refused to overwrite ` +
-                                `ctx+0x${cbOff.toString(16)} — it already holds ${current}.`);
-                        }
+                        // The app registered its own keylog callback (e.g. Chromium
+                        // with --ssl-key-log-file / SSLKEYLOGFILE). Never overwrite
+                        // it; hook it instead — BoringSSL hands it the same line.
+                        hookExistingKeylogCallback(current);
                         return;
                     }
                     if (_isShuttingDownNow()) return; // detach is restoring these fields
-                    field.writePointer(keylogCb);
-                    writtenKeylogFields.set(field.toString(), { field, cb: keylogCb });
+                    field.writePointer(cbEntry);
+                    writtenKeylogFields.set(field.toString(), { field, cb: cbEntry });
                     if (!installedOnce) {
                         installedOnce = true;
                         devlog(`[anchor-locator] ${moduleName}: wrote keylog_callback at ctx+0x${cbOff.toString(16)}`);
@@ -324,13 +364,15 @@ function installViaFieldDump(
     moduleName: string,
     fnAddr: NativePointer,
     dumpKeys: DumpKeysCb,
+    abi: CallAbi | null = null,
 ): boolean {
     try {
         Interceptor.attach(fnAddr, {
             onEnter(args: InvocationArguments) {
-                // bssl::ssl_log_secret(SSL const*, char const*, Span<u8 const>)
-                // ABI: arg0=ssl, arg1=label, arg2=secret.data(), arg3=secret.size()
-                dumpKeys(args[1], args[0], args[2], args[3].toUInt32());
+                // bssl::ssl_log_secret(SSL const*, char const*, Span<u8 const>);
+                // the Span is passed by reference on Win64 (see call_abi.ts).
+                const c = readSslLogSecretCall(args, this.context, abi);
+                dumpKeys(c.label, c.ssl, c.data, c.len);
             },
         });
     } catch (e) {
@@ -416,10 +458,18 @@ export async function runAnchorLocatorTier4(
     dumpKeys: DumpKeysCb,
     _detail?: string,
 ): Promise<boolean> {
+    if (Process.arch === "x64") {
+        const xmod = findModuleOrPeImage(moduleName);
+        if (xmod === null) {
+            devlog(`[anchor-locator] ${moduleName}: not loaded`);
+            return false;
+        }
+        return runAnchorLocatorX64(xmod, dumpKeys, callAbiForModule(moduleName) ?? "sysv");
+    }
     if (Process.arch !== "arm64") {
         if (!loggedNonArm64) {
             loggedNonArm64 = true;
-            log(`[*] anchor-locator (tier 4) skipped: only implemented for arm64 (arch=${Process.arch})`);
+            log(`[*] anchor-locator (tier 4) skipped: only implemented for arm64 and x64 (arch=${Process.arch})`);
         }
         return false;
     }
@@ -453,6 +503,190 @@ export async function runAnchorLocatorTier4(
     }
     devlog(`[anchor-locator] ${moduleName}: ctx-offset decode failed; using field-dump fallback`);
     return installViaFieldDump(moduleName, sslLogSecret, dumpKeys);
+}
+
+// ---- x86-64 (Windows PE / Wine PE / Linux ELF) ----------------------------
+
+// Overlap so a LEA plus its call window that straddles a chunk boundary is
+// still seen whole by the chunk the LEA starts in.
+const X64_CHUNK_OVERLAP = 7 + CALL_SEARCH_WINDOW + 5;
+
+/**
+ * Address -> label of each keylog label string in `mod`'s data. The string must
+ * be NUL-delimited on both sides (the preceding NUL keeps "EXPORTER_SECRET"
+ * from matching the tail of a longer string).
+ */
+async function findLabelStringsX64(mod: Module | ModuleLike): Promise<Map<number, string>> {
+    const found = new Map<number, string>();
+    const have = new Set<string>();
+    const data = mod.enumerateRanges("r--") as ScanRange[];
+    await scanRangesChunked(data, BORINGSSL_KEYLOG_LABELS.map((label) => ({
+        pattern: toHexPattern("\u0000" + label + "\u0000"),
+        onMatch: (a: NativePointer) => {
+            if (have.has(label)) return;
+            have.add(label);
+            found.set(Number(a.add(1).toString()), label);
+        },
+    })));
+    return found;
+}
+
+/**
+ * One (label, callee) vote per label: the first RIP-relative LEA of the label
+ * string followed by a direct call into the module's code. ONE linear pass over
+ * the module's executable ranges, chunked so it yields to the event loop.
+ */
+async function collectLabelVotesX64Fast(
+    mod: Module | ModuleLike,
+    labelAt: Map<number, string>,
+    abi: CallAbi,
+): Promise<{ label: string; callee: string }[]> {
+    const prefix = LEA_ARG1_PREFIX[abi];
+    if (prefix === undefined) return [];
+    const lo = Number(mod.base.toString());
+    const hi = lo + mod.size;
+    const targets = new Set<string>([...labelAt.keys()].map((a) => ptr(a).toString()));
+    const voted = new Map<string, string>();
+    await scanRangesChunked(mod.enumerateRanges("r-x") as ScanRange[], [{
+        pattern: prefix,
+        onMatch: (site: NativePointer) => {
+            try {
+                const target = site.add(7 + site.add(3).readS32()).toString();
+                if (!targets.has(target)) return;
+                const label = labelAt.get(Number(target))!;
+                if (voted.has(label)) return;
+                const code = new Uint8Array(site.readByteArray(7 + CALL_SEARCH_WINDOW + 5)!);
+                const callee = firstCallAfter(code, Number(site.toString()), 0, lo, hi);
+                if (callee !== null) voted.set(label, ptr(callee).toString());
+            } catch (_e) { /* unreadable tail: skip this site */ }
+        },
+    }]);
+    return [...voted].map(([label, callee]) => ({ label, callee }));
+}
+
+async function collectLabelVotesX64(
+    mod: Module | ModuleLike,
+    labelAt: Map<number, string>,
+): Promise<{ label: string; callee: string }[]> {
+    const lo = Number(mod.base.toString());
+    const hi = lo + mod.size;
+    const targets = new Set<number>(labelAt.keys());
+    const voted = new Map<string, string>();
+    for (const range of mod.enumerateRanges("r-x") as ScanRange[]) {
+        for (let off = 0; off < range.size; off += XREF_SCAN_CHUNK_BYTES) {
+            if (_isShuttingDownNow()) return [];
+            const len = Math.min(XREF_SCAN_CHUNK_BYTES + X64_CHUNK_OVERLAP, range.size - off);
+            const at = range.base.add(off);
+            let buf: ArrayBuffer | null = null;
+            try { buf = at.readByteArray(len); } catch (_e) { buf = null; }
+            if (buf !== null) {
+                const code = new Uint8Array(buf);
+                const va = Number(at.toString());
+                const own = Math.min(XREF_SCAN_CHUNK_BYTES, range.size - off);
+                for (const ref of findRipLeaRefs(code, va, targets, own)) {
+                    const label = labelAt.get(ref.target)!;
+                    if (voted.has(label)) continue;
+                    const callee = firstCallAfter(code, va, ref.site - va, lo, hi);
+                    if (callee !== null) voted.set(label, ptr(callee).toString());
+                }
+            }
+            await yieldToEventLoop();
+        }
+    }
+    return [...voted].map(([label, callee]) => ({ label, callee }));
+}
+
+/** Decode the ctx/keylog offsets from the x86-64 prologue at `fn`, or null. */
+function decodeCtxOffsetsX64At(
+    fn: NativePointer, sslReg: number, moduleName: string,
+): { ctxOff: number; cbOff: number } | null {
+    try {
+        if (!isReadable(fn, 96)) return null;
+        return decodeX64CtxKeylogOffsets(new Uint8Array(fn.readByteArray(96)!), sslReg);
+    } catch (e) {
+        devlog(`[anchor-locator] ${moduleName}: x64 prologue read failed: ${e}`);
+        return null;
+    }
+}
+
+/** ssl_log_secret address from an --offsets entry for `mod` (module name
+ *  matched case-insensitively), or null. */
+function pinnedSslLogSecret(mod: Module | ModuleLike): NativePointer | null {
+    try {
+        const all: any = offsets as any;
+        if (!all || typeof all !== "object") return null;
+        const key = Object.keys(all).find((k) => k.toLowerCase() === mod.name.toLowerCase());
+        const v = key === undefined ? undefined : all[key]?.["ssl_log_secret"];
+        if (!v || typeof v.address !== "string") return null;
+        const addr = v.absolute ? ptr(v.address) : mod.base.add(ptr(v.address));
+        return addr.isNull() ? null : addr;
+    } catch (_e) {
+        return null;
+    }
+}
+
+/**
+ * Tier 4 on x86-64: locate ssl_log_secret in `mod` by label xrefs, then install
+ * via the ctx->keylog_callback write (offsets decoded from its prologue) or,
+ * failing that, the ABI-aware field dump. `mod` may be a /proc/self/maps
+ * ModuleLike (PE images on Wine >= 9 are not Frida modules). Resolves true iff
+ * a keylog hook was installed.
+ */
+export async function runAnchorLocatorX64(
+    mod: Module | ModuleLike,
+    dumpKeys: DumpKeysCb,
+    abi: CallAbi,
+): Promise<boolean> {
+    const moduleName = mod.name;
+    const sslReg = abi === "win64" ? X64_REG.rcx : X64_REG.rdi;
+
+    // Host-resolved RVA (friTap/wine_chromium.py pre-resolves Chromium modules
+    // from the PE file on disk and passes it as an --offsets entry): no scan.
+    // Accepted only if the ctx/keylog prologue decodes there, so a stale cache
+    // entry (or a same-named module of another build) falls back to the scan.
+    const pinned = pinnedSslLogSecret(mod);
+    if (pinned !== null) {
+        const offs = decodeCtxOffsetsX64At(pinned, sslReg, moduleName);
+        if (offs !== null) {
+            devlog(`[anchor-locator] ${moduleName}: ssl_log_secret @ ${pinned} from --offsets ` +
+                `(rva 0x${pinned.sub(mod.base).toString(16)}); no scan needed`);
+            return installViaCtxWrite(moduleName, pinned, offs, abi);
+        }
+        devlog(`[anchor-locator] ${moduleName}: --offsets ssl_log_secret @ ${pinned} does not decode; scanning instead`);
+    }
+
+    const started = Date.now();
+    devlog(`[anchor-locator] ${moduleName}: x64 label-xref scan of ${(mod.size / (1024 * 1024)).toFixed(1)} MB ` +
+        `(abi=${abi}, background, non-blocking)`);
+    const labelAt = await findLabelStringsX64(mod);
+    if (labelAt.size < 2) {
+        devlog(`[anchor-locator] ${moduleName}: only ${labelAt.size} keylog label string(s) present; not BoringSSL`);
+        return false;
+    }
+    // Fast path: native scan for `lea <arg1>, [rip+X]`; the full LEA walk only
+    // when that does not yield an agreed callee (label staged in another register).
+    let pairs = await collectLabelVotesX64Fast(mod, labelAt, abi);
+    if (pickAgreedCallee(pairs) === null) {
+        devlog(`[anchor-locator] ${moduleName}: arg-register LEA scan inconclusive after ${Date.now() - started} ms; walking all LEAs`);
+        pairs = await collectLabelVotesX64(mod, labelAt);
+    }
+    devlog(`[anchor-locator] ${moduleName}: x64 xref scan finished in ${Date.now() - started} ms; votes ` +
+        (pairs.map((p) => `${p.label}->${p.callee}`).join(", ") || "(none)"));
+    const agreed = pickAgreedCallee(pairs);
+    if (agreed === null) {
+        devlog(`[anchor-locator] ${moduleName}: no ssl_log_secret candidate agreed across >=2 labels`);
+        return false;
+    }
+    if (_isShuttingDownNow()) return false;
+    const fn = ptr(agreed);
+    devlog(`[anchor-locator] ${moduleName}: ssl_log_secret @ ${fn} (rva 0x${fn.sub(mod.base).toString(16)}, ` +
+        `agreed by ${pairs.filter((p) => p.callee === agreed).length}/${pairs.length} labels)`);
+
+    resetReadableCache();
+    const offs = decodeCtxOffsetsX64At(fn, sslReg, moduleName);
+    if (offs !== null) return installViaCtxWrite(moduleName, fn, offs, abi);
+    devlog(`[anchor-locator] ${moduleName}: x64 ctx-offset decode failed; using field-dump fallback`);
+    return installViaFieldDump(moduleName, fn, dumpKeys, abi);
 }
 
 // Self-register so onAllKeylogTiersMissed() can invoke tier 4 without importing

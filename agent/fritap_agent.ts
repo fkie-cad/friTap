@@ -328,6 +328,18 @@ export let no_loader_hook: boolean = false;
 //@ts-ignore
 export let spawned: boolean = false;
 
+// --lean-wine (fkie-cad/friTap#52): trim the Wine load path so the agent can be
+// injected into a freshly-created Wine process EARLY (before its first TLS
+// handshake) without crashing it. The friTap host sets this for the Wine
+// process-watcher route, where it SIGSTOPs each new Wine process the instant it
+// appears, attaches, and SIGCONTs once hooks are in. Lean mode keeps the fast
+// hooks on the critical path (native .so TLS symbols, the LdrLoadDll hook, and
+// the pre-resolved Chromium ssl_log_secret offset) and defers the expensive
+// full-module Memory.scanSync keylog sweep so it never blocks the load. See
+// agent/platforms/wine.ts.
+//@ts-ignore
+export let lean_wine: boolean = false;
+
 // EXPERIMENTAL (--experimental-stealth-loader, Part C / friTap#64). When true,
 // the Android loader is watched via a hardware breakpoint (ARM64 debug
 // registers, no linker code patch) instead of the inline android_dlopen_ext
@@ -432,6 +444,7 @@ quic_capture_mode = config_batch.quic_capture_mode ?? quic_capture_mode;
 quic_only = config_batch.quic_only ?? quic_only;
 no_loader_hook = config_batch.no_loader_hook ?? no_loader_hook;
 spawned = config_batch.spawned ?? spawned;
+lean_wine = config_batch.lean_wine ?? lean_wine;
 stealth_loader = config_batch.stealth_loader ?? stealth_loader;
 pairip_safe = config_batch.pairip_safe ?? pairip_safe;
 quic_egress_headers_layer = config_batch.quic_egress_headers_layer ?? quic_egress_headers_layer;
@@ -490,8 +503,14 @@ type TargetKind = "windows" | "android" | "wine" | "linux" | "ios" | "macos" | "
 
 function detectTarget(): TargetKind {
     if (isWindows()) return "windows";
-    if (isAndroid()) return "android";
+    // isWine() BEFORE isAndroid(): isAndroid() reads Java.available, which walks
+    // the module list probing for the ART runtime. In a still-initializing Wine
+    // process that probe is both pointless (no JVM) and destabilizing — it is
+    // one of the things that makes an early agent attach crash the process
+    // (fkie-cad/friTap#52). isWine() is a cheap module-name check and a Wine
+    // process is never Android, so this reorder is safe for every target.
     if (isWine()) return "wine";
+    if (isAndroid()) return "android";
     if (isLinux()) return "linux";
     if (isiOS()) return "ios";
     if (isMacOS()) return "macos";
@@ -561,10 +580,10 @@ function planForTarget(target: TargetKind): PlatformPlan {
             // so a probe report never claims a Wine run that did not happen.
             if (experimental) {
                 return {
-                    label: 'Wine (experimental)',
+                    label: lean_wine ? 'Wine (lean, experimental)' : 'Wine (experimental)',
                     install: () => {
                         maybe_trace_sockets();
-                        load_wine_hooking_agent();
+                        load_wine_hooking_agent(lean_wine);
                     }
                 };
             }

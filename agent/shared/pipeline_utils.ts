@@ -10,7 +10,7 @@
  import { SymbolStrategy } from "./strategies/symbol_strategy.js";
  import { PatternStrategy } from "./strategies/pattern_strategy.js";
  import { MemoryScanStrategy } from "./strategies/memory_scan_strategy.js";
- import { pairip_safe } from "../fritap_agent.js";
+ import { pairip_safe, lean_wine } from "../fritap_agent.js";
  
  /**
   * Initialize the singleton pipeline with available strategies.
@@ -38,9 +38,15 @@
              defaultPipeline.addStrategy(ps);
          }
 
-         // Priority 40: Memory scan (only when user explicitly enables --experimental)
-         if (experimentalMode) {
+         // Priority 40: Memory scan (only when user explicitly enables --experimental).
+         // --lean-wine suppresses it: Wine always implies --experimental, but an
+         // early-injected Wine process must not run a full Memory.scan at load
+         // (fkie-cad/friTap#52). The Chromium keylog comes from a pre-resolved
+         // offset / the LdrLoadDll hook instead.
+         if (experimentalMode && !lean_wine) {
              defaultPipeline.addStrategy(new MemoryScanStrategy());
+         } else if (experimentalMode && lean_wine) {
+             devlog(`[Pipeline] --lean-wine: Memory-scan strategy disabled for early Wine injection`);
          }
      }
  
