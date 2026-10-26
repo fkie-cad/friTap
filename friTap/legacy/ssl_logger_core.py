@@ -3019,7 +3019,9 @@ class SSL_Logger():
         """
         from ..wine_chromium import chromium_offsets, merge_offsets
         from ..wine_process_watcher import (
-            WineProcessWatcher, current_pids, process_wine_prefix,
+            WineProcessWatcher,
+            current_pids,
+            process_wine_prefix,
         )
         wke = self._wine_extractor_module()
 

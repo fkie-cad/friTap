@@ -10,7 +10,7 @@ tests drive poll_once() directly against in-memory process tables — no real
 Run: pytest tests/unit/test_wine_process_watcher.py
 """
 
-import pytest
+import os
 
 from friTap.wine_process_watcher import (
     WineProcessWatcher,
@@ -71,7 +71,9 @@ def _watcher(procs, **kw):
         list_pids=lambda: list(procs.keys()),
         read_cmdline=lambda p: procs.get(p, {}).get("cmdline"),
         read_maps=lambda p: procs.get(p, {}).get("maps", ""),
-        read_prefix=lambda p: procs.get(p, {}).get("prefix", PREFIX),
+        # Like process_wine_prefix, report the prefix realpath'd (on macOS
+        # /home resolves to /System/Volumes/Data/home).
+        read_prefix=lambda p: os.path.realpath(procs.get(p, {}).get("prefix", PREFIX)),
         clock=lambda: clock["t"],
         **kw,
     )

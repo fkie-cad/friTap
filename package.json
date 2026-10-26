@@ -1,6 +1,6 @@
 {
     "name": "friTap",
-    "version": "2.5.9",
+    "version": "2.6.0",
     "description": "Frida agent for logging encrypted traffic as plaintext and extracting its encryption keys",
     "private": true,
     "main": "agent/fritap_agent.ts",
