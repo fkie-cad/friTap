@@ -45,6 +45,8 @@ export class AntiRoot {
     }
 
     java_based_bypasses(){
+        // `this` inside Java.perform / .implementation is not this AntiRoot instance.
+        const antiRoot = this;
 
         Java.perform(function() {
     
@@ -114,7 +116,7 @@ export class AntiRoot {
         
             
             PackageManager.getPackageInfo.overload('java.lang.String', 'int').implementation = function(pname :any, flags :any) {
-                var shouldFakePackage = (this.RootPackages.indexOf(pname) > -1);
+                var shouldFakePackage = (antiRoot.RootPackages.indexOf(pname) > -1);
                 if (shouldFakePackage) {
                    log("Bypass root check for package: " + pname);
                     pname = "set.package.name.to.a.fake.one.so.we.can.bypass.it";
@@ -268,9 +270,9 @@ export class AntiRoot {
             
         
             get.implementation = function(name :any) {
-                if (this.RootPropertiesKeys.indexOf(name) != -1) {
+                if (antiRoot.RootPropertiesKeys.indexOf(name) != -1) {
                    log("Bypass " + name);
-                    return this.RootProperties[name];
+                    return (antiRoot.RootProperties as any)[name];
                 }
                 return this.get.call(this, name);
             };
@@ -380,6 +382,8 @@ export class AntiRoot {
     }
 
     native_based_bypasses(){
+        // `this` inside an Interceptor callback is the InvocationContext, not this instance.
+        const antiRoot = this;
 
 
         // char *strstr(const char *str1, const char *str2);
@@ -419,7 +423,7 @@ Interceptor.attach(this.addresses[this.module_name]["fopen"], {
         //@ts-ignore
         var path_array = path.split("/");
         var executable = path_array[path_array.length - 1];
-        var shouldFakeReturn = (this.RootBinaries.indexOf(executable) > -1)
+        var shouldFakeReturn = (antiRoot.RootBinaries.indexOf(executable) > -1)
         if (shouldFakeReturn) {
             args[0].writeUtf8String("/notexists");
            log("Bypass native fopen");

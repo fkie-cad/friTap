@@ -24,6 +24,7 @@ import re
 from typing import Any, Protocol, runtime_checkable
 
 from friTap.analysis import Finding, Severity
+from friTap.analysis.redaction import redact_finding
 
 # ---------------------------------------------------------------------------
 # Output sanitisation (finding text is attacker-controlled)
@@ -131,85 +132,15 @@ def _finding_to_dict(finding: Finding) -> dict[str, Any]:
     return finding.to_dict()
 
 
-# Categories whose values are sensitive and redacted by default in reports.
-_SENSITIVE_CATEGORIES = frozenset({"pii", "secret"})
-
-# Redaction is deny-by-default: for a sensitive (pii/secret) finding, EVERY
-# string evidence value is masked unless its key names purely-descriptive
-# context (a name/type/location/metric/flag — never the matched content). This
-# allowlist is the safe set; any other key (``value``, ``payload``, ``bearer``,
-# a future analyzer's new key, …) is treated as sensitive and masked. This is
-# the robust inverse of an easily-outgrown denylist of "sensitive" key names.
-_SAFE_EVIDENCE_KEYS = frozenset({
-    "location", "host", "type", "header", "field", "context", "content_type",
-    "cwe", "scheme", "port", "algorithm", "pii_type", "pattern", "parameter",
-    "method", "direction", "charset", "category", "id_type", "card_scheme",
-    "status", "kty", "redacted", "redactable", "confidence", "length", "size",
-    "entropy", "suppressed", "reasons", "locations", "issues",
-})
-
-# Don't scrub very short raw values out of title/description — a 1-3 char value
-# would mangle unrelated substrings. Such values are still masked in evidence.
-_MIN_SCRUB_LEN = 5
-
-
-def _mask(value: str, keep: int = 4) -> str:
-    """Mask a sensitive string, keeping only the first ``keep`` characters."""
-    if len(value) <= keep:
-        return "****"
-    return value[:keep] + "****"
-
-
-def _redact_finding(finding: Finding) -> Finding:
-    """Return a redaction-safe copy of *finding* for presentation.
-
-    The reporter layer is the single enforcement point for redaction (the
-    ``.tap``/in-memory finding keeps full fidelity for the TUI/API). Only
-    findings in :data:`_SENSITIVE_CATEGORIES` that are not already redacted by
-    their analyzer (``evidence["redacted"]``) are touched. Every evidence string
-    value whose key is not in :data:`_SAFE_EVIDENCE_KEYS` is masked, and each
-    such raw value is scrubbed from the title and description so a value embedded
-    in free text (e.g. the IOC email title) does not leak.
-    """
-    import dataclasses
-
-    if finding.category not in _SENSITIVE_CATEGORIES:
-        return finding
-    if finding.evidence.get("redacted"):
-        return finding
-
-    raw_values: list[str] = []
-    new_evidence = dict(finding.evidence)
-    for key, val in finding.evidence.items():
-        if key in _SAFE_EVIDENCE_KEYS:
-            continue
-        if isinstance(val, str) and val:
-            raw_values.append(val)
-            new_evidence[key] = _mask(val)
-    if not raw_values:
-        return finding  # nothing sensitive to mask
-
-    new_evidence["redacted"] = True
-
-    title = finding.title
-    description = finding.description
-    for raw in sorted(set(raw_values), key=len, reverse=True):
-        if len(raw) < _MIN_SCRUB_LEN:
-            continue
-        masked = _mask(raw)
-        title = title.replace(raw, masked)
-        description = description.replace(raw, masked)
-
-    return dataclasses.replace(
-        finding, title=title, description=description, evidence=new_evidence
-    )
+# Redaction rules live in :mod:`friTap.analysis.redaction` (shared with the
+# ``fritap report`` digest).
 
 
 def _prepare(findings: list[Finding], redact_pii: bool) -> list[Finding]:
     """Apply reporter-layer redaction to *findings* when *redact_pii* is set."""
     if not redact_pii:
         return findings
-    return [_redact_finding(f) for f in findings]
+    return [redact_finding(f) for f in findings]
 
 
 class JsonReporter:

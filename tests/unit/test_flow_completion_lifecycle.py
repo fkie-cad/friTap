@@ -138,3 +138,39 @@ def test_two_complete_responses_emit_two_completed():
     assert len(completed) == 2
     flow_ids = {fid for _, fid in completed}
     assert len(flow_ids) == 2
+
+
+# ---------------------------------------------------------------------------
+# retain_completed=False (headless --tap): completed flows are released
+# ---------------------------------------------------------------------------
+
+def test_release_mode_drops_flow_after_completed_reaches_subscribers():
+    fc = FlowCollector(retain_completed=False)
+    seen_while_notified: list[bool] = []
+    fc.subscribe(lambda flow, et: et.value == "completed"
+                 and seen_while_notified.append(fc.get_flow(flow.flow_id) is not None))
+
+    _drive_request_response(fc)
+
+    assert seen_while_notified == [True]  # writer still sees it at COMPLETED
+    assert fc.get_flows() == []
+    assert fc.memory_stats()["flow_count"] == 0
+
+
+def test_release_mode_keeps_capturing_on_the_same_connection():
+    fc = FlowCollector(retain_completed=False)
+    completed: list[str] = []
+    fc.subscribe(lambda flow, et: et.value == "completed" and completed.append(flow.flow_id))
+
+    _drive_request_response(fc, t=1000.0)
+    _drive_request_response(fc, t=1001.0)
+    fc.flush()
+
+    assert len(completed) == 2 and len(set(completed)) == 2
+    assert fc.get_flows() == []
+
+
+def test_default_mode_retains_completed_flows():
+    fc = FlowCollector()
+    _drive_request_response(fc)
+    assert len(fc.get_flows()) == 1

@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 
 from .connection_index import resolve_connection_key
-from .constants import SSL_READ, ContentType
+from .constants import ContentType, direction_for_function
 from .events import (
     AntiTamperDetectedEvent,
     ConsoleEvent,
@@ -164,7 +164,7 @@ class MessageRouter:
         self._event_bus.emit(DatalogEvent(
             data=data,
             function=function,
-            direction="read" if function in SSL_READ else "write",
+            direction=direction_for_function(function, payload.get("direction")),
             src_addr=src_addr_str,
             src_port=src_port,
             dst_addr=dst_addr_str,

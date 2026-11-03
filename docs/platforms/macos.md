@@ -53,8 +53,9 @@ pip3 install fritap
     It is very likely that you have to deactivate System Integrity Protection to
     use friTap on macOS. Frida attaches to another local process via
     `task_for_pid`, which SIP blocks. Note that disabling SIP is **not** sufficient
-    for Apple's own SIP-protected platform binaries — those stay unattachable even
-    as root.
+    for Apple's own arm64e platform binaries (`/usr/bin/curl` & co.) — see
+    [Apple platform binaries](#apple-platform-binaries-usrbincurl-usrbinpython3) for
+    the boot-arg and the no-root `--macos-unsign-copy` workaround.
 
 ```bash
 # Check SIP status
@@ -177,11 +178,44 @@ otool -L "/Applications/App.app/Contents/MacOS/App" | grep -Ei "ssl|tls|boringss
 Only Apple's legacy **SecureTransport** (`libcoretls`, `SSLCreateContext`,
 `CFStream`) has no friTap hooks at all.
 
+### Apple platform binaries (`/usr/bin/curl`, `/usr/bin/python3`, ...)
+
+On Apple silicon every binary in `/usr/bin`, `/bin`, `/usr/sbin` and
+`/System` is an **arm64e platform binary** (`codesign -dv` prints
+`Platform identifier=<n>`). Frida cannot inject into those as a normal user, and
+disabling SIP alone is not enough: the kernel kills `frida-helper` and Frida
+reports `PermissionDeniedError: oops, frida-helper appears to have crashed`.
+
+friTap detects this before spawning and exits with code 1, listing three options:
+
+| Option | Needs | Result |
+|---|---|---|
+| `fritap -s --macos-unsign-copy ... -- /usr/bin/curl ...` | nothing (no root, no reboot) | keys + plaintext from an ad-hoc signed **copy** |
+| a Homebrew build, e.g. `$(brew --prefix curl)/bin/curl` | nothing | keys + plaintext from a different build |
+| the original binary | SIP off, `sudo nvram boot-args="-arm64e_preview_abi"` (Frida also suggests adding `thid_should_crash=0 tss_should_crash=0`), a **reboot**, and running friTap with `sudo` | keys + plaintext from the real binary |
+
+`--macos-unsign-copy` copies the target into a fresh temp directory, thins it to
+its native slice (`lipo -thin arm64e`), ad-hoc signs it (`codesign -f -s -`) and
+spawns that copy with your arguments. The copy is no longer a platform binary, so
+Frida can inject; it still loads the system `libssl.48.dylib` /
+`libboringssl.dylib`, so the normal hooks apply. The temp directory is deleted
+when friTap exits.
+
+!!! warning "It is a copy"
+    The original's entitlements are dropped, so a binary that depends on them
+    (keychain groups, sandbox, private Apple entitlements) may behave differently or
+    refuse to start. App bundles (`*.app/Contents/...`) are not supported. The
+    Rosetta route (`arch -x86_64 ...` or an x86_64 copy) does **not** work: Frida
+    17 fails on translated processes ("unexpected error while probing dyld").
+
 ### Command-Line Applications
 
 ```bash
-# curl (links against LibreSSL on macOS → keys *and* plaintext)
-sudo fritap -s -k curl_keys.log curl https://httpbin.org/get
+# Apple's curl (LibreSSL → keys *and* plaintext) via a signed copy, no root needed
+fritap -s -k curl_keys.log -p curl.pcap --macos-unsign-copy -- /usr/bin/curl https://httpbin.org/get
+
+# Or a Homebrew curl
+fritap -s -k curl_keys.log -- "$(brew --prefix curl)/bin/curl" https://httpbin.org/get
 
 # Python
 sudo fritap -s -k python_keys.log python3 my_script.py

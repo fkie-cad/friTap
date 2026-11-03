@@ -14,7 +14,7 @@ import logging
 import time
 from typing import IO, TYPE_CHECKING, List, Optional
 
-from ..constants import SSL_READ
+from ..constants import is_read_function
 from ..sinks.tcp_state import (
     TcpSessionTracker,
     build_framed_packets_from_fields,
@@ -35,6 +35,8 @@ if TYPE_CHECKING:
 
 class PcapngOutputHandler(OutputHandler):
     """Writes PCAPNG with embedded Decryption Secrets Blocks."""
+
+    consumes_plaintext = True
 
     def __init__(self, output_path: str, protocol_handler=None) -> None:
         self._path = output_path
@@ -113,7 +115,7 @@ class PcapngOutputHandler(OutputHandler):
             src_port=event.src_port,
             dst_addr=event.dst_addr_raw,
             dst_port=event.dst_port,
-            is_read=event.function in SSL_READ,
+            is_read=is_read_function(event.function),
             data=event.data,
             tracker=self._tracker,
             transport=event.transport,

@@ -10,6 +10,7 @@ import time
 import traceback
 
 from .backends import (
+    BackendError,
     BackendInvalidArgumentError,
     BackendInvalidOperationError,
     BackendNotRunningError,
@@ -34,6 +35,12 @@ except ImportError:
     class FridaBasedException(Exception):
         pass
 from .about import __author__, __version__
+from .exit_codes import (
+    EXIT_OK,
+    EXIT_RUNTIME_ERROR,
+    EXIT_TARGET_DETACHED,
+    EXIT_USAGE_ERROR,
+)
 from .backends.base import BackendName
 from .config import FriTapConfig, UnsupportedProtocolBackendError
 from .fritap_utility import (
@@ -86,7 +93,7 @@ _MODERN_LEGACY_DELEGATED = "iOS/macOS Cronet, Windows LSASS"
 
 def _build_lsass_config(pid_of_lsass, *, pcap_name, verbose, keylog, live, debug_mode,
                         host, debug_output, enable_default_fd, patterns,
-                        custom_hook_script, json_output, full_capture):
+                        custom_hook_script, json_output, full_capture, json_keys=False):
     """Config for the LSASS helper session, which contributes to the target's outputs.
 
     It is marked ``auxiliary_session`` and shares the target session's -p, -k
@@ -118,9 +125,16 @@ def _build_lsass_config(pid_of_lsass, *, pcap_name, verbose, keylog, live, debug
         patterns=patterns,
         custom_hook_script=custom_hook_script,
         json_output=json_output,
+        # Same JSON key-material policy as the target session sharing the file.
+        json_keys=json_keys,
         install_lsass_hook=True
     )
     config.output.auxiliary_session = True
+    # -f: like the target session (which drops its plaintext hooks in full-capture
+    # mode, tcpdump records the raw packets), the helper installs no plaintext
+    # hooks either, even though a shared -j output would consume them otherwise.
+    # Read by SSL_Logger._plaintext_hooks_needed (OutputConfig has no field yet).
+    config.output.plaintext_hooks_disabled = bool(full_capture)
     return config
 
 
@@ -142,7 +156,7 @@ class LsassHookManager:
     def start_lsass_hook(self, pcap_name=None, verbose=False, keylog=False, live=False, 
                         debug_mode=False, host=False, debug_output=False, 
                         enable_default_fd=False, patterns=None, custom_hook_script=None, 
-                        json_output=None, full_capture=False):
+                        json_output=None, full_capture=False, json_keys=False):
         """Start LSASS hooking in a background thread.
 
         ``full_capture`` is the TARGET session's -f mode: that session alone owns
@@ -175,7 +189,7 @@ class LsassHookManager:
                     live=live, debug_mode=debug_mode, host=host, debug_output=debug_output,
                     enable_default_fd=enable_default_fd, patterns=patterns,
                     custom_hook_script=custom_hook_script, json_output=json_output,
-                    full_capture=full_capture)
+                    full_capture=full_capture, json_keys=json_keys)
                 self.lsass_logger = SSL_Logger(config=config)
                 
                 # Start the LSASS session
@@ -265,7 +279,8 @@ _lsass_hook_manager = LsassHookManager()
 
 def hook_lsass(pcap_name=None, verbose=False, keylog=False, live=False, debug_mode=False, 
                host=False, debug_output=False, enable_default_fd=False, patterns=None, 
-               custom_hook_script=None, json_output=None, full_capture=False):
+               custom_hook_script=None, json_output=None, full_capture=False,
+               json_keys=False):
     """
     Hook the Local Security Authority Subsystem Service (LSASS) process.
     This runs in a background thread and doesn't block the main friTap session.
@@ -282,7 +297,8 @@ def hook_lsass(pcap_name=None, verbose=False, keylog=False, live=False, debug_mo
         patterns=patterns,
         custom_hook_script=custom_hook_script,
         json_output=json_output,
-        full_capture=full_capture
+        full_capture=full_capture,
+        json_keys=json_keys,
     )
 
 def cleanup_lsass_hook():
@@ -429,10 +445,157 @@ def _confirm_full_capture_without_keylog(parsed, logger):
     if getattr(parsed, "memory_scan", False):
         logger.info("Full capture without -k: key material will be recorded by the memory scanner (-ms).")
         return
+    if _is_non_interactive(parsed):
+        logger.warning(
+            "Full capture without -k: no key material will be recorded, so the TLS "
+            "traffic in the pcap cannot be decrypted. Continuing (non-interactive).")
+        return
     logger.warning("Are you sure you want to proceed without recording the key material (-k <keys.log>)?")
     logger.warning("Without the key material, you have a complete network record, but no way to view the contents of the TLS traffic.")
     logger.info("Do you want to proceed without recording keys? : <press any key to proceed or Ctrl+C to abort>")
     input()
+
+
+def _stdin_is_interactive():
+    """True when stdin is a terminal a human could answer a prompt on."""
+    try:
+        return bool(sys.stdin) and sys.stdin.isatty()
+    except (AttributeError, ValueError):  # closed/replaced stdin
+        return False
+
+
+def _is_non_interactive(parsed):
+    """True when an ``input()`` prompt must not block: --non-interactive was
+    passed, or stdin is not a TTY (scripts, CI, AI agents)."""
+    return bool(getattr(parsed, "non_interactive", False)) or not _stdin_is_interactive()
+
+
+def _apply_non_interactive_flag(parsed):
+    """--non-interactive implies -y/--yes (auto-confirm every prompt)."""
+    if getattr(parsed, "non_interactive", False):
+        parsed.yes = True
+
+
+def _validate_duration(parsed, parser):
+    """--duration must be a positive number of seconds."""
+    duration = getattr(parsed, "duration", None)
+    if duration is not None and not duration > 0:
+        parser.error("--duration must be a positive number of seconds")
+
+
+_CONSOLE_LOGGER_NAMES = ("friTap", "friTap.no_prefix")
+
+
+def _claim_stdout_for_json_stream(parsed):
+    """-j -: reserve stdout for JSONL before any banner/log line is written.
+
+    Everything else that would reach stdout (print, logging, a spawned target's
+    output) is redirected to stderr at the fd level; see
+    :mod:`friTap.output.stdout_stream`.
+    """
+    from .output.stdout_stream import claim_stdout_for_json_stream, is_stdout_target
+    if is_stdout_target(parsed.json):
+        claim_stdout_for_json_stream()
+
+
+def _is_console_handler(handler):
+    """A StreamHandler writing to stdout/stderr (not the debug-log proxy)."""
+    return (isinstance(handler, logging.StreamHandler)
+            and getattr(handler, "stream", None) in (sys.stdout, sys.stderr))
+
+
+def _apply_quiet_console(quiet):
+    """--quiet: raise the console handlers of friTap's loggers to WARNING.
+
+    Only console StreamHandlers are touched, so the banner and info lines
+    disappear while warnings/errors still reach stderr and a --debug-log /
+    -do file handler keeps logging everything."""
+    if not quiet:
+        return
+    for name in _CONSOLE_LOGGER_NAMES:
+        for handler in logging.getLogger(name).handlers:
+            if _is_console_handler(handler):
+                handler.setLevel(logging.WARNING)
+
+
+def _stop_capture_after_duration(ssl_log, seconds, logger):
+    """Timer callback: end the capture via the same path as Ctrl+C."""
+    logger.info(f"--duration {seconds:g}s elapsed; stopping the capture.")
+    ssl_log.stop_capture_gracefully()
+
+
+def _start_duration_timer(ssl_log, seconds, logger):
+    """Arm a daemon timer that stops the capture after *seconds*.
+
+    Returns the started timer, or None when no duration was requested."""
+    if not seconds:
+        return None
+    timer = threading.Timer(seconds, _stop_capture_after_duration,
+                            args=(ssl_log, seconds, logger))
+    timer.name = "fritap-duration"
+    timer.daemon = True
+    timer.start()
+    logger.info(f"Capture will stop automatically after {seconds:g}s (--duration).")
+    return timer
+
+
+_DEVICE_NOT_FOUND_HINT = (
+    "Unable to identify the target device; pass its ID with -m <device-id> "
+    "(see `adb devices` or `fritap devices`).")
+
+_REMOTE_SERVER_DOWN_HINT = (
+    "Backend server is not running on remote device. Please start frida-server "
+    "(e.g. via `afrim` or the TUI's Server Check -> Install) and rerun.")
+
+
+def _error_type_name(error):
+    """The underlying (e.g. frida) class name, not the backend's wrapper type."""
+    return type(getattr(error, "original_exception", None) or error).__name__
+
+
+def _stream_hint(hint_lines):
+    """Hint lines as one string ('-> ' bullets stripped), or None."""
+    parts = [line.strip().lstrip("->").strip() for line in hint_lines or ()]
+    return " ".join(part for part in parts if part) or None
+
+
+def _note_stream_runtime_error(error, hint_lines=None):
+    """Note *error* as the cause of a failed capture for the '-j -' stream.
+
+    Only records it: the stream writes the ``error`` record when it closes,
+    with the final exit code (see JsonlStdoutHandler.close). No-op otherwise.
+    """
+    from .output.stdout_stream import note_runtime_error
+    note_runtime_error(_error_type_name(error), str(error), _stream_hint(hint_lines))
+
+
+def _unexpected_error_line(error):
+    """The log line for an error the capture's specific handlers did not catch.
+
+    A plain backend error (e.g. frida's ExecutableNotFoundError) is shown as
+    "<FridaClass>: <message>"; only a genuinely unexpected exception (a friTap
+    bug, category ``backend_bug``) keeps the "Unknown error" wording.
+    """
+    if isinstance(error, BackendError) and error.category != "backend_bug":
+        return f"{_error_type_name(error)}: {error}"
+    if "NotSupportedError" in type(error).__name__:
+        return f"Backend error: {error}"
+    return f"Unknown error: {error}"
+
+
+def _register_stream_exit_status(ssl_log):
+    """Let the '-j -' stream read *ssl_log*'s final exit status at stream_end."""
+    from .output.stdout_stream import register_exit_status_provider
+    register_exit_status_provider(
+        lambda: getattr(ssl_log, "_exit_status", EXIT_OK))
+
+
+def _record_capture_exit_status(ssl_log, exit_code):
+    """Hand the capture's outcome to the logger, whose cleanup() owns the final
+    os._exit (see SSL_Logger.set_exit_status for the first-non-zero-wins rule)."""
+    if exit_code is None or not isinstance(ssl_log, SSL_Logger):
+        return
+    ssl_log.set_exit_status(exit_code)
 
 
 def _normalize_protocol_selection(raw, parser, valid_names):
@@ -554,10 +717,13 @@ def _run_early_exit_command(label, action_fn, logger, special_logger):
         raise
     except BackendTransportError as fe:
         logger.error(f"Backend transport error: {fe}")
+        _note_stream_runtime_error(fe)
     except FridaBasedException as e:
         logger.error(f"Backend error: {e}")
+        _note_stream_runtime_error(e)
     except Exception as e:
         logger.error(f"An error occurred: {e}")
+        _note_stream_runtime_error(e)
     else:
         # Everything below MUST stay in the else: clause. Success/Failure
         # subclass Exception, so raising them inside the try: body would be
@@ -598,6 +764,51 @@ def _reject_invalid_headless_filter(filter_expression, logger):
         raise Failure(info=err, logger=logger)
 
 
+def _emit_json_stream_usage_error(message):
+    """With '-j -' on the command line, keep stdout pure JSONL on a usage error.
+
+    Claims stdout (so the human help text below goes to stderr) and writes one
+    ``{"type": "usage_error", ...}`` record for the consuming script/agent.
+    """
+    from .output.stdout_stream import (
+        argv_requests_stdout_stream,
+        claim_stdout_for_json_stream,
+        write_stream_record,
+    )
+    if not argv_requests_stdout_stream(sys.argv[1:]):
+        return
+    from .output.stdout_stream import mark_stream_closed
+    claim_stdout_for_json_stream()
+    write_stream_record({"type": "usage_error", "error": message,
+                         "exit_code": EXIT_USAGE_ERROR})
+    mark_stream_closed()  # the usage_error record is the stream's last line
+
+
+def _split_exit_info(info):
+    """A FriTapExit's (possibly multi-line) info as (message, hint lines)."""
+    lines = [line for line in (info or "").splitlines() if line.strip()]
+    if not lines:
+        return None, []
+    return lines[0].strip(), lines[1:]
+
+
+def _finish_json_stream_on_exit(exit_code, info=None, error_type="StartupError"):
+    """'-j -': give a run that ends before/without the capture teardown the
+    full stream envelope (stream_start, error, stream_end).
+
+    The general net for early failures after argparse (a refused macOS
+    platform binary, a rejected --filter, a config error, ...): the cause is
+    noted from the exit's own text unless an earlier, more specific one was
+    already noted (first wins). No-op without '-j -' or when the stream
+    already ended (the normal teardown or a usage_error record).
+    """
+    from .output.stdout_stream import finish_unclosed_stream, note_runtime_error
+    message, hint_lines = _split_exit_info(info)
+    if exit_code and message:
+        note_runtime_error(error_type, message, _stream_hint(hint_lines))
+    finish_unclosed_stream(exit_code)
+
+
 class ArgParser(argparse.ArgumentParser):
     """Argument parser that prints the full help on a usage error.
 
@@ -609,13 +820,14 @@ class ArgParser(argparse.ArgumentParser):
     """
 
     def error(self, message):
+        _emit_json_stream_usage_error(message)
         print("friTap v" + __version__)
         print("by " + __author__)
         print()
         print("Error: " + message)
         print()
         print(self.format_help().replace("usage:", "Usage:"))
-        self.exit(2)
+        self.exit(EXIT_USAGE_ERROR)
 
 
 def _hex_text_or_none(data):
@@ -1071,7 +1283,23 @@ Offline (read / analyze .tap):
                            "when prefixed with 're:' or a trailing '*' for prefix matching. "
                            "Also honored via the FRITAP_FORCE_SCAN env var (comma-separated).")
     args.add_argument("-j", "--json", metavar="<path>", required=False,
-                      help="Save session metadata and analysis results in JSON format")
+                      help="Save session metadata and analysis results in JSON format "
+                           "(a *.jsonl path writes one event per line). Use '-j -' to "
+                           "stream JSONL events to stdout for scripts/AI agents: stdout "
+                           "then carries only JSONL and all logging goes to stderr. Key "
+                           "material is redacted in every JSON output unless -k or "
+                           "--json-keys is also given.")
+    args.add_argument("--json-keys", required=False, action="store_true", default=False,
+                      dest="json_keys",
+                      help="Include raw key material (key_data) in the -j JSON/JSONL "
+                           "output even without -k. Without -k or --json-keys keylog "
+                           "records are redacted to their label (and public "
+                           "client_random) with \"redacted\": true.")
+    args.add_argument("--tap", metavar="<file.tap>", required=False, default=None,
+                      dest="tap",
+                      help="Write the decrypted flows of this capture to a .tap file "
+                           "(the TUI's capture format; open with --analyze or the TUI). "
+                           "Finalized on Ctrl+C, --duration and target exit.")
     args.add_argument("-ll", "--list-libraries", required=False, action="store_const", const=True,
                       help="List loaded libraries in order to help debugging the hooking process. This will not start the logging process, but only list the libraries and exit.", dest="list_libraries")
     args.add_argument("--extract-libraries", required=False, metavar="<dir>",
@@ -1091,6 +1319,9 @@ Offline (read / analyze .tap):
                            "directly) and uses the GDB-based key extractor; 'on' forces it; "
                            "'off' disables it (use the normal Frida flow, e.g. the "
                            "experimental Wine agent).")
+    args.add_argument("--macos-unsign-copy", action="store_true", default=False,
+                      help="macOS, with -s: spawn an ad-hoc signed temp copy of an Apple platform "
+                           "binary (e.g. /usr/bin/curl) so it can be instrumented without root/boot-args.")
     from friTap.protocols.registry import (
         CUSTOM_GROUP,
         available_protocol_names,
@@ -1123,6 +1354,22 @@ Offline (read / analyze .tap):
                            f"Available: {', '.join(available_protocol_names() + ['all', 'auto', CUSTOM_GROUP])}.")
     args.add_argument("-y", "--yes", required=False, action="store_true", default=False,
                       help="Auto-confirm interactive prompts (e.g. --protocol all warning).")
+    # Unattended / automation flags (scripts, CI, AI agents). See the
+    # "Unattended / automation" section of docs/api/cli.md.
+    args.add_argument("--non-interactive", required=False, action="store_true",
+                      default=False, dest="non_interactive",
+                      help="Never prompt: implies -y/--yes, and the -f-without--k "
+                           "confirmation only logs a warning and continues. That "
+                           "prompt is also skipped automatically when stdin is not a TTY.")
+    args.add_argument("--duration", metavar="<seconds>", type=float, required=False,
+                      default=None, dest="duration",
+                      help="Stop the capture cleanly after <seconds> (same teardown as "
+                           "Ctrl+C: pcap/keylog/JSON are flushed, exit code 0). Unrelated "
+                           "to -t/--timeout, which delays resuming a spawned process.")
+    args.add_argument("-q", "--quiet", required=False, action="store_true",
+                      default=False, dest="quiet",
+                      help="Suppress the banner and info messages on the console; "
+                           "warnings and errors are still printed to stderr.")
     args.add_argument("--proxy", metavar="<host:port>", required=False, default=None,
                       help="Redirect connections to a proxy (e.g., mitmproxy) and bypass cert pinning. Requires fritap-proxy package.")
     args.add_argument("--filter", metavar="<expression>", required=False, default=None,
@@ -1175,7 +1422,10 @@ Offline (read / analyze .tap):
                            "triggered by captured (attacker-controlled) traffic cannot reach "
                            "the friTap process. Same as FRITAP_ISOLATE_DECODERS=1.")
     parsed = parser.parse_args(_normalize_bare_wine_flag(sys.argv[1:]))
+    _claim_stdout_for_json_stream(parsed)
     _apply_decoder_isolation_flag(parsed)
+    _apply_non_interactive_flag(parsed)
+    _validate_duration(parsed, parser)
 
     # Resolve --backend: None means the user did not pass it, so record that
     # (explicitness drives Wine-route precedence) and fall back to the default.
@@ -1210,11 +1460,15 @@ Offline (read / analyze .tap):
     logger, special_logger = setup_fritap_logging(
         debug=parsed.debug, debug_output=parsed.debug_output
     )
+    _apply_quiet_console(parsed.quiet)
 
     # Wine synthesis: turn a bare Windows target (a .exe/PE given without an
     # explicit `wine` launcher) into a `wine <exe>` command so the normal Wine
     # detection/route applies. Linux + spawn only; respects --wine.
     _maybe_prepend_wine(parsed, logger)
+    # Apple platform binaries (arm64e): fail fast with options, or --macos-unsign-copy.
+    from friTap.platform_support.macos_targets import prepare_macos_spawn_target
+    prepare_macos_spawn_target(parsed, logger)
 
     # Bring up the debug-log file subsystem when the user asked for one,
     # either explicitly via --debug-log or implicitly via --debug-output.
@@ -1277,7 +1531,8 @@ Offline (read / analyze .tap):
             logger.info("Hooking LSASS process for SSL/TLS traffic decryption.")
             # --owner-capture implies -f (enabled further below), so it counts here.
             hook_lsass(parsed.pcap, parsed.verbose, parsed.keylog, parsed.live, parsed.debug, parsed.host, parsed.debug_output, parsed.enable_default_fd, parsed.patterns, parsed.custom_script, parsed.json,
-                       full_capture=bool(parsed.full_capture or getattr(parsed, 'owner_capture', False)))
+                       full_capture=bool(parsed.full_capture or getattr(parsed, 'owner_capture', False)),
+                       json_keys=parsed.json_keys)
             atexit.register(cleanup_lsass_hook)
     elif (parsed.mobile or parsed.host) and not parsed.no_lsass:
         logger.debug("LSASS hooking is a local-Windows-only feature; skipping for the mobile/remote target.")
@@ -1414,6 +1669,9 @@ Offline (read / analyze .tap):
             "Run  adb shell \"ps -A | grep %s\"  to see which child processes "
             "actually exist for your Chrome build.", target)
 
+    # Runtime-error unless the capture returns normally (see the else/except
+    # branches); handed to SSL_Logger.cleanup()'s os._exit in the finally.
+    capture_exit_code = EXIT_RUNTIME_ERROR
     try:
         special_logger.info("Start logging")
         special_logger.info("Press Ctrl+C to stop logging")
@@ -1456,6 +1714,7 @@ Offline (read / analyze .tap):
             patterns=parsed.patterns,
             custom_hook_script=parsed.custom_script,
             json_output=parsed.json,
+            json_keys=parsed.json_keys,
             install_lsass_hook=install_lsass_hook,
             timeout=parsed.timeout,
             script_load_timeout=parsed.script_load_timeout,
@@ -1505,7 +1764,10 @@ Offline (read / analyze .tap):
         # --filter was already validated by _reject_invalid_headless_filter()
         # right after argument parsing, before the banners above.
 
+        config.output.tap_output = parsed.tap
+
         ssl_log = SSL_Logger(config=config)
+        _register_stream_exit_status(ssl_log)
 
         # Propagate an explicit --modern onto the logger so the agent
         # config_batch sees use_modern=true (legacy/ssl_logger_core.py reads
@@ -1515,18 +1777,26 @@ Offline (read / analyze .tap):
 
         ssl_log.install_signal_handler()
         ssl_log.start_fritap_session()
+
+        # --duration: a probe run exits on its own, so only arm it for captures.
+        if not parsed.probe:
+            _start_duration_timer(ssl_log, parsed.duration, logger)
         
         # Wait for user input or interrupt
         ssl_log.wait_for_completion()
             
     except KeyboardInterrupt:
+        capture_exit_code = None  # unchanged: the Ctrl+C teardown decides
         logger.info("Keyboard interrupt received. Cleaning up...")
         cleanup_lsass_hook()
         raise
-    except SystemExit:
+    except SystemExit as se:
+        capture_exit_code = se.code if isinstance(se.code, int) else None
         cleanup_lsass_hook()
         raise
     except BackendTransportError as fe:
+        capture_exit_code = EXIT_TARGET_DETACHED
+        _note_stream_runtime_error(fe)
         # A transport error mid-session almost always means the target process
         # died (often a native crash inside a hook). If on_detach already
         # attributed it (process-terminated → clear crash message), don't repeat
@@ -1560,23 +1830,37 @@ Offline (read / analyze .tap):
         # parsed.script_load_timeout is only what the user typed, so it would
         # under-report for --patterns / --library-scan / --scan-keys-region.
         bound = se.bound_seconds or parsed.script_load_timeout
-        for line in _script_load_timeout_hints(se.elapsed_seconds, crumb, bound):
+        hint_lines = _script_load_timeout_hints(se.elapsed_seconds, crumb, bound)
+        for line in hint_lines:
             logger.error(line)
+        _note_stream_runtime_error(se, hint_lines[1:])
     except BackendProcessNotRespondingError as pe:
-        for line in _process_not_responding_hints(str(pe), parsed.spawn):
+        hint_lines = _process_not_responding_hints(str(pe), parsed.spawn)
+        for line in hint_lines:
             logger.error(line)
+        _note_stream_runtime_error(pe, hint_lines[1:])
     except FridaBasedException as e:
         logger.error(f"Backend error: {e}")
+        _note_stream_runtime_error(e)
     except BackendTimedOutError as te:
         logger.error(f"TimeOutError: {te}")
+        _note_stream_runtime_error(te)
     except BackendProcessNotFoundError as pe:
         logger.error(f"ProcessNotFoundError: {pe}")
+        _note_stream_runtime_error(pe)
     except BackendPermissionDeniedError as e:
         logger.error(f"Permission denied: {e}")
+        from friTap.platform_support.macos_targets import hardened_process_hint_lines
+        hint_lines = hardened_process_hint_lines(str(e), parsed.exec or "")
+        for line in hint_lines:
+            logger.error(line)
+        _note_stream_runtime_error(e, hint_lines)
     except BackendNotRunningError as e:
         logger.error(f"Backend server is not running: {e}")
+        _note_stream_runtime_error(e)
     except BackendInvalidArgumentError as e:
         logger.error(f"Invalid argument: {e}")
+        _note_stream_runtime_error(e, [_DEVICE_NOT_FOUND_HINT] if "device not found" in str(e) else None)
         if "device not found" in str(e):
             logger.error("Unable to identify the target device.")
             logger.error("If you have multiple devices connected, please specify the device ID using the `-m` option:")
@@ -1585,8 +1869,10 @@ Offline (read / analyze .tap):
             logger.error("\t   fritap -m <device-id> <target>")
     except BackendInvalidOperationError as e:
         logger.error(f"Invalid operation: {e}")
+        _note_stream_runtime_error(e)
     except UnsupportedProtocolBackendError as e:
         logger.error(f"Unsupported protocol-backend combination: {e}")
+        _note_stream_runtime_error(e)
     except Exception as ar:
         ex_type, ex_value, ex_traceback = sys.exc_info()
         trace_back = traceback.extract_tb(ex_traceback)
@@ -1603,13 +1889,12 @@ Offline (read / analyze .tap):
             logger.error("Stack trace : %s" %stack_trace)
 
 
-        if "unable to connect to remote frida-server: closed" in str(ar):
-            logger.error("Backend server is not running on remote device. Please start frida-server (e.g. via `afrim` or the TUI's Server Check -> Install) and rerun.")
+        remote_server_down = "unable to connect to remote frida-server: closed" in str(ar)
+        if remote_server_down:
+            logger.error(_REMOTE_SERVER_DOWN_HINT)
+        _note_stream_runtime_error(ar, [_REMOTE_SERVER_DOWN_HINT] if remote_server_down else None)
             
-        if "NotSupportedError" in ex_type.__name__:
-            logger.error(f"Backend error: {ex_value}")
-        else:
-            logger.error(f"Unknown error: {ex_value}")
+        logger.error(_unexpected_error_line(ar))
 
         if "unable to access process with pid" in str(ex_value).lower():
             raise Success(logger=special_logger)
@@ -1617,18 +1902,20 @@ Offline (read / analyze .tap):
             logger.error("This feature is currently not supported on this OS.")
             raise Success(logger=special_logger)
 
-        return
+        raise Failure(code=EXIT_RUNTIME_ERROR)
 
     else:
         # normal end, no error
+        capture_exit_code = EXIT_OK
         return
     finally:
+        _record_capture_exit_status(locals().get("ssl_log"), capture_exit_code)
         if 'ssl_log' in locals() and isinstance(ssl_log, SSL_Logger):
             ssl_log.pcap_cleanup(parsed.full_capture,parsed.mobile,parsed.pcap)
             ssl_log.cleanup(parsed.live,parsed.socket_tracing,parsed.full_capture,parsed.debug,parsed.debug_output)
     
     # only reached when error
-    raise Failure
+    raise Failure(code=capture_exit_code if capture_exit_code is not None else EXIT_RUNTIME_ERROR)
 
 def _looks_like_tap_input(token):
     """Return True when ``token`` looks like a ``.tap`` capture file argument.
@@ -1715,6 +2002,15 @@ def _dispatch_special_mode(argv):
     if (len(argv) >= 3 and argv[1] == "analyze"
             and _looks_like_tap_input(argv[2])):
         return ("analyze", argv[2:])
+    # Report (AI-agent digest): same rule — only when followed by a .tap input.
+    if (len(argv) >= 3 and argv[1] == "report"
+            and _looks_like_tap_input(argv[2])):
+        return ("report", argv[2:])
+    # devices / apps listing: only when every following token is a listing
+    # option, so `fritap apps -k keys.log` still captures a process named 'apps'.
+    from .commands.devices import is_listing_invocation
+    if is_listing_invocation(argv):
+        return (argv[1], argv[2:])
 
     # Replay / pcap-wizard: -r/--replay <file>, or a single trailing path.
     # A .pcap/.pcapng input opens the guided pcap-to-tap wizard (convert +
@@ -1779,6 +2075,14 @@ def main():
             from .commands.analyze import run_analyze_cli
             return run_analyze_cli(payload)
 
+        if kind == "report":
+            from .commands.report import run_report_cli
+            return run_report_cli(payload)
+
+        if kind in ("devices", "apps"):
+            from .commands.devices import run_listing_cli
+            return run_listing_cli(kind, payload)
+
         if kind == "replay" and payload is None:
             print("Usage: fritap -r <capture.tap>")
             return
@@ -1832,8 +2136,20 @@ def main():
     try:
         cli()
     except FriTapExit as e:
+        _finish_json_stream_on_exit(e.code, e.info)
         e.exit()
+    except SystemExit as se:
+        code = se.code if isinstance(se.code, int) else (0 if se.code is None else EXIT_RUNTIME_ERROR)
+        _finish_json_stream_on_exit(code, se.code if isinstance(se.code, str) else None)
+        raise
+    except BaseException as unexpected:  # noqa: BLE001 - re-raised below
+        if not isinstance(unexpected, KeyboardInterrupt):
+            _finish_json_stream_on_exit(
+                EXIT_RUNTIME_ERROR, f"{type(unexpected).__name__}: {unexpected}",
+                error_type=type(unexpected).__name__)
+        raise
 
 
 if __name__ == "__main__":
-    main()
+    # Like the console-script wrapper: a subcommand's return code is the exit code.
+    sys.exit(main())

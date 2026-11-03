@@ -42,7 +42,21 @@ class OutputConfig:
     """Configuration for output destinations and formats."""
     pcap: Optional[str] = None
     keylog: Optional[str] = None
+    # -j <file>: JSON (or *.jsonl) output file. ``-j -`` is normalized away at
+    # construction: it sets ``json_stream`` and leaves this None, so nothing
+    # downstream ever has to recognise the "-" sentinel.
     json_output: Optional[str] = None
+    # -j -: stream JSONL events to stdout (see friTap.output.stdout_stream).
+    json_stream: bool = False
+    # --json-keys: put raw key material into the -j JSON/JSONL output even
+    # without -k. Off by default: JSON output is often handed to scripts and AI
+    # agents, so without -k/--json-keys keylog records are redacted.
+    json_keys: bool = False
+    # --tap <file>: write a .tap capture (decrypted flows) from a CLI session.
+    tap_output: Optional[str] = None
+    # Forces plaintext hooks off even when a selected handler consumes
+    # plaintext (the LSASS helper session of a -f full-capture run).
+    plaintext_hooks_disabled: bool = False
     output_format: str = "auto"
     live: bool = False
     live_mode: str = ""  # "", "wireshark", "live_pcapng"
@@ -87,6 +101,21 @@ class OutputConfig:
     # External analyzer references ("module" or "module:Class") to load for the
     # live scan, mirroring offline ``analyze --analyzer-path``. Repeatable.
     scan_analyzer_path: Optional[List[str]] = None
+
+    def __post_init__(self) -> None:
+        if self.json_output is not None:
+            self.set_json_target(self.json_output)
+
+    def set_json_target(self, path: Optional[str]) -> None:
+        """Select the -j target: a file path, or ``-`` for the stdout stream."""
+        from .output.stdout_stream import is_stdout_target
+        self.json_stream = is_stdout_target(path)
+        self.json_output = None if self.json_stream else path
+
+    @property
+    def wants_json(self) -> bool:
+        """Any -j output (file or the stdout stream) was requested."""
+        return bool(self.json_output or self.json_stream)
 
 
 @dataclass
@@ -343,6 +372,7 @@ class FriTapConfig:
         patterns: Optional[str] = None,
         custom_hook_script: Optional[str] = None,
         json_output: Optional[str] = None,
+        json_keys: bool = False,
         install_lsass_hook: bool = True,
         timeout: Optional[int] = None,
         script_load_timeout: float = 20.0,
@@ -401,6 +431,7 @@ class FriTapConfig:
                 pcap=pcap_name,
                 keylog=keylog if isinstance(keylog, str) else (keylog or None),
                 json_output=json_output,
+                json_keys=json_keys,
                 live=live,
                 verbose=verbose,
                 full_capture=full_capture,
@@ -523,7 +554,8 @@ def memory_scan_only(config: "FriTapConfig") -> bool:
     other_capture = any((
         out.keylog,
         agent_pcap,
-        out.json_output,
+        out.wants_json,
+        out.tap_output,
         out.socket_trace,
         out.live,
         out.scan,

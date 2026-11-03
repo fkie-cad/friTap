@@ -75,6 +75,9 @@ def _make_logger(instrument=None, maxsize=16, running=True,
     obj._instrument_stop = threading.Event()
     obj._instrument_thread = None
     obj._instrument_thread_lock = threading.Lock()
+    obj._suspended_pids = set()
+    obj._suspended_pids_lock = threading.Lock()
+    obj.pid = None
     obj.instrument = MagicMock() if instrument is None else instrument
     obj._config = types.SimpleNamespace(
         target=target,
@@ -105,6 +108,18 @@ class ThreadRecordingInstrument:
                 raise RuntimeError("simulated attach/load failure")
         finally:
             self.called.set()
+
+
+def _join_resumes(timeout=2.0):
+    """Wait for every off-event-thread resume (``fritap-resume`` threads).
+
+    Gating callbacks run on Frida's event loop, where a synchronous resume
+    deadlocks it, so the "resume right away" paths hand the resume to a
+    short-lived thread; tests join those before asserting on the resume.
+    """
+    for thread in threading.enumerate():
+        if thread.name == "fritap-resume":
+            thread.join(timeout)
 
 
 def _assert_never_on_caller_thread(stub, caller):
@@ -161,7 +176,8 @@ def test_unrelated_spawn_is_resumed_inline_and_not_enqueued():
     obj = _make_logger(target="com.example.app", mobile=True)
     obj.on_spawn_added(FakeSpawn(pid=777, identifier="com.other.vendor.app"))
 
-    # Resuming is cheap and non-blocking, so it happens synchronously here.
+    # Resumed right away, on a short-lived thread rather than Frida's loop.
+    _join_resumes()
     obj._backend.resume.assert_called_once_with(FAKE_DEVICE, 777)
     assert obj._instrument_queue.empty()
     # No worker was needed for a spawn we never instrument.
@@ -248,6 +264,7 @@ def test_full_queue_resumes_instead_of_stranding(caplog):
         obj._enqueue_instrumentation(555, "child process")
 
     assert "queue full" in caplog.text
+    _join_resumes()
     obj._backend.resume.assert_called_once_with(FAKE_DEVICE, 555)
     # The pre-filled request is untouched; only the overflow was dropped.
     assert obj._instrument_queue.qsize() == 1
@@ -331,6 +348,7 @@ def test_stopping_session_resumes_without_enqueueing():
 
     obj._enqueue_instrumentation(321, "child process")
 
+    _join_resumes()
     obj._backend.resume.assert_called_once_with(FAKE_DEVICE, 321)
     assert obj._instrument_queue.empty()
     assert obj._instrument_thread is None
@@ -378,3 +396,141 @@ def test_start_fritap_session_skips_worker_without_gating():
     obj.start_fritap_session()
 
     assert obj._instrument_thread is None
+
+
+# ----------------------------------------------------------------------
+# teardown must never leave a gated process at Frida's spawn breakpoint
+# ----------------------------------------------------------------------
+#
+# Live repro (macOS, --enable_child_gating, /opt/homebrew/bin/python3, a launcher
+# that exec()s Python.app): the 'process-replaced' detach starts the teardown,
+# which stops the worker first but clears ``running`` only near its end; the
+# exec'd image's child-added arrived in between, _start_instrument_thread()
+# revived a worker, and friTap os._exit()ed with the child still parked at
+# Frida's dyld breakpoint -> EXC_BREAKPOINT in dyld4::RuntimeState::notifyObjCInit.
+
+def test_child_arriving_after_worker_stop_is_resumed_not_instrumented():
+    """running is still True here — exactly the on_detach teardown window."""
+    stub = ThreadRecordingInstrument()
+    obj = _make_logger(instrument=stub, running=True)
+    obj._stop_instrument_thread()  # teardown step 1
+
+    obj.on_child_added(FakeChild(pid=53840))
+
+    _join_resumes()
+    obj._backend.resume.assert_called_once_with(FAKE_DEVICE, 53840)
+    assert obj._instrument_thread is None, "teardown must not revive the worker"
+    assert obj._instrument_stop.is_set(), "the stop flag must stay set"
+    assert obj._instrument_queue.empty()
+    assert stub.calls == 0
+
+
+def test_teardown_resumes_a_pid_the_worker_is_still_instrumenting():
+    """join(timeout=5) can give up on a worker stuck in attach/script load."""
+    obj = _make_logger()
+    obj._track_suspended(4242)  # gated; worker busy with 4242, never finishes
+
+    obj._stop_instrument_thread()
+
+    obj._backend.resume.assert_called_once_with(FAKE_DEVICE, 4242)
+
+
+def test_gated_pid_is_tracked_until_the_worker_resumes_it():
+    seen_in_flight = []
+    obj = _make_logger()
+
+    def instrument(_session, _handler):
+        seen_in_flight.append(set(obj._suspended_pids))
+
+    obj.instrument = instrument
+    obj._track_suspended(7)  # as _enqueue_instrumentation does on the gating event
+    obj._instrument_gated_process(_InstrumentRequest(pid=7, label="child process"))
+
+    assert seen_in_flight == [{7}]
+    assert obj._suspended_pids == set()
+    obj._backend.resume.assert_called_once_with(FAKE_DEVICE, 7)
+
+    # Teardown afterwards has nothing left to resume.
+    obj._stop_instrument_thread()
+    obj._backend.resume.assert_called_once_with(FAKE_DEVICE, 7)
+
+
+def test_not_resumed_running_process_is_not_tracked():
+    """resume=False requests name an already-running process: never resumed."""
+    obj = _make_logger()
+    obj._instrument_gated_process(
+        _InstrumentRequest(pid=8, label="attached process", resume=False))
+    obj._stop_instrument_thread()
+    obj._backend.resume.assert_not_called()
+
+
+# ----------------------------------------------------------------------
+# the main spawned target: Ctrl+C before it was resumed
+# ----------------------------------------------------------------------
+
+def _spawned_logger(awaiting):
+    obj = _make_logger()
+    obj.pid = 55064
+    obj._config.device.spawn = True
+    if awaiting:
+        obj._track_suspended(obj.pid)  # as SessionManager does right after spawn
+    return obj
+
+
+def test_teardown_resumes_a_spawn_still_awaiting_resume(caplog):
+    """SIGINT in the pre-resume window (agent load, -t wait) goes through
+    cleanup() + os._exit, never through _run_session's except."""
+    obj = _spawned_logger(awaiting=True)
+
+    with caplog.at_level(logging.WARNING):
+        obj._resume_suspended_pids()
+        obj._resume_suspended_pids()  # idempotent
+
+    obj._backend.resume.assert_called_once_with(FAKE_DEVICE, 55064)
+    assert obj._suspended_pids == set()
+    assert "before the spawned pid 55064 was resumed" in caplog.text
+
+
+def test_teardown_leaves_an_already_resumed_spawn_alone():
+    obj = _spawned_logger(awaiting=False)
+    obj._resume_suspended_pids()
+    obj._backend.resume.assert_not_called()
+
+
+def test_teardown_with_nothing_suspended_is_a_no_op():
+    obj = _make_logger()
+    obj.pid = 1
+    obj._resume_suspended_pids()
+    obj._backend.resume.assert_not_called()
+
+
+def test_error_path_resume_clears_the_flag_so_teardown_does_not_repeat_it():
+    obj = _spawned_logger(awaiting=True)
+    obj._resume_uninstrumented_spawn()
+    obj._resume_suspended_pids()
+    obj._backend.resume.assert_called_once_with(FAKE_DEVICE, 55064)
+
+
+def test_gating_event_tracks_the_pid_until_the_rejection_resumes_it():
+    obj = _make_logger(running=False)
+    obj._enqueue_instrumentation(61, "child process")
+    _join_resumes()
+    obj._backend.resume.assert_called_once_with(FAKE_DEVICE, 61)
+    assert obj._suspended_pids == set()
+
+
+def test_running_process_request_is_never_tracked_nor_resumed():
+    obj = _make_logger(running=False)
+    obj._enqueue_instrumentation(62, "attached process", resume=False)
+    obj._backend.resume.assert_not_called()
+    assert obj._suspended_pids == set()
+
+
+def test_queued_pid_is_resumed_once_by_the_drain_not_again_by_the_sweep():
+    obj = _make_logger()
+    obj._instrument_thread = object()  # worker "running", never consumes
+    obj._enqueue_instrumentation(63, "child process")
+    obj._instrument_thread = None
+    obj._stop_instrument_thread()
+    obj._backend.resume.assert_called_once_with(FAKE_DEVICE, 63)
+    assert obj._suspended_pids == set()

@@ -384,7 +384,7 @@ def test_sigterm_runs_the_full_teardown_with_a_failure_status(exits):
 
     pcap_obj.stop_device_capture.assert_called_once()
     ssl_log.cleanup.assert_called_once()
-    assert ssl_log._exit_status == 128 + signal.SIGTERM
+    ssl_log.set_exit_status.assert_called_once_with(128 + signal.SIGTERM)
     assert exits == [128 + signal.SIGTERM]
 
 

@@ -1,11 +1,11 @@
-import { readAddresses, getPortsAndAddresses, resolveOffsets, isSymbolAvailable, calculateZeroBytePercentage } from "../../../shared/shared_functions.js";
+import { readAddresses, resolveOffsets, isSymbolAvailable, calculateZeroBytePercentage } from "../../../shared/shared_functions.js";
 import { checkNumberOfExports } from "../../shared/shared_functions_legacy.js";
 import { enable_default_fd, pcap_enabled, keylog_enabled } from "../../../fritap_agent.js";
 import { devlog, devlog_error, log, devlog_info } from "../../../util/log.js";
 import { initializePipeline as sharedInitializePipeline, resolveWithPipelineAsync as sharedResolveWithPipelineAsync } from "../../../shared/pipeline_utils.js";
 import { ObjC } from "../../../shared/objclib.js";
-import { sendKeylog, sendDatalog } from "../../../shared/shared_structures.js";
-import { installSocketFdTracker, recoverSocketFd } from "../../../shared/socket_fd_tracker.js";
+import { sendKeylog } from "../../../shared/shared_structures.js";
+import { SslPlaintextHooks } from "../../../shared/ssl_plaintext_hooks.js";
 import { buildDefaultSslMethodMapping, addModuleMethod, hasResolvableSslSurface, isResolvedAddress } from "./ssl_method_mapping.js";
 
 class ModifyReceiver{
@@ -197,173 +197,38 @@ export class OpenSSL_BoringSSL {
     }
 
 
+    private _plaintextHooks?: SslPlaintextHooks;
+
+    /** The plaintext SSL_read/SSL_write(_ex) hooks, with SSL-scoped fd attribution (shared/ssl_plaintext_hooks.ts). */
+    protected get plaintextHooks(): SslPlaintextHooks {
+        if (!this._plaintextHooks) {
+            this._plaintextHooks = new SslPlaintextHooks(this, OpenSSL_BoringSSL.modReceiver, ObjC.available);
+        }
+        return this._plaintextHooks;
+    }
+
     install_plaintext_read_hook(){
-        if (!pcap_enabled) return;
-        if (this.do_read_write_hooks && !isResolvedAddress(this.addresses[this.moduleName]["SSL_read"])) {
+        if (!pcap_enabled || !this.do_read_write_hooks) return;
+        const address = this.addresses[this.moduleName]["SSL_read"];
+        if (!isResolvedAddress(address)) {
             // Guard: Interceptor.attach(undefined) would throw and abort the
             // rest of execute_hooks (including the keylog install).
             devlog_info("SSL_read unresolved for " + this.moduleName + "; skipping plaintext SSL_read hook");
             return;
         }
-        if(this.do_read_write_hooks){
-            function ab2str(buf: ArrayBuffer) {
-                //@ts-ignore
-                return String.fromCharCode.apply(null, new Uint16Array(buf));
-            }
-            function str2ab(str: string ) {
-                var buf = new ArrayBuffer(str.length + 1); // 2 bytes for each char
-                var bufView = new Uint8Array(buf);
-                for (var i=0, strLen=str.length; i < strLen; i++) {
-                bufView[i] = str.charCodeAt(i);
-                }
-                bufView[str.length] = 0;
-                return buf;
-            }
-    
-            var lib_addesses = this.addresses;
-            var instance = this;
-            var current_module_name = this.module_name;
-    
-            Interceptor.attach(this.addresses[this.moduleName]["SSL_read"],
-            {
-                
-                onEnter: function (args: any) 
-                {
-                    this.bufLen = args[2].toInt32()
-                    this.fd = instance.SSL_get_fd(args[0])
-                    if (this.fd < 0) {
-                        // BIO-based TLS (e.g. Conscrypt): no socket fd on the SSL object.
-                        // Arm the fd-less recovery tracker LAZILY (idempotent) — only now that
-                        // we've actually observed SSL_get_fd()<0 — then recover the real peer
-                        // via thread->socket-fd correlation.
-                        installSocketFdTracker();
-                        const recovered = recoverSocketFd();
-                        if (recovered >= 0) this.fd = recovered;
-                    }
-                    if(this.fd < 0 && enable_default_fd == false) {
-                        return
-                    }
-
-
-
-
-                    var message = getPortsAndAddresses(this.fd as number, true, lib_addesses[current_module_name], enable_default_fd)
-                    if (message === null) { return; }
-                    message["ssl_session_id"] = instance.getSslSessionId(args[0])
-                    message["function"] = "SSL_read"
-                    this.message = message
-
-                    this.buf = args[1]
-                
-                },
-                onLeave: function (retval: any) {
-                    retval |= 0 // Cast retval to 32-bit integer.
-                    if (retval <= 0 || (this.fd < 0 && !enable_default_fd)) {
-                        return
-                    }
-
-
-                    if(OpenSSL_BoringSSL.modReceiver.readmod !== null){
-                        //NULL out buffer
-                        this.buf.writeByteArray(new Uint8Array(this.bufLen));
-    
-                        this.buf.writeByteArray(OpenSSL_BoringSSL.modReceiver.readmod);
-                        retval = OpenSSL_BoringSSL.modReceiver.readmod.byteLength;                
-                    }
-    
-                    sendDatalog(this.message, this.buf.readByteArray(retval))
-
-                }
-            })
-        }
-
-
+        this.plaintextHooks.installScopeHooks();
+        this.plaintextHooks.attachRead(address);
     }
 
-
-
     install_plaintext_write_hook(){
-        if (!pcap_enabled) return;
-        if (this.do_read_write_hooks && !isResolvedAddress(this.addresses[this.moduleName]["SSL_write"])) {
-            // Guard: Interceptor.attach(undefined) would throw and abort the
-            // rest of execute_hooks (including the keylog install).
+        if (!pcap_enabled || !this.do_read_write_hooks) return;
+        const address = this.addresses[this.moduleName]["SSL_write"];
+        if (!isResolvedAddress(address)) {
             devlog_info("SSL_write unresolved for " + this.moduleName + "; skipping plaintext SSL_write hook");
             return;
         }
-        if(this.do_read_write_hooks){
-            function str2ab(str: string ) {
-                var buf = new ArrayBuffer(str.length + 1); // 2 bytes for each char
-                var bufView = new Uint8Array(buf);
-                for (var i=0, strLen=str.length; i < strLen; i++) {
-                bufView[i] = str.charCodeAt(i);
-                }
-                bufView[str.length] = 0;
-                return buf;
-            }
-    
-            var current_module_name = this.module_name;
-            var lib_addesses = this.addresses;
-            var instance = this;
-            Interceptor.attach(this.addresses[this.moduleName]["SSL_write"],
-            {
-                onEnter: function (args: any) {
-                    if (!ObjC.available){
-                        try {
-                           
-                            this.fd = instance.SSL_get_fd(args[0]);
-                            
-                        
-                    }catch (error) {
-                        if (!this.is_base_hook) {
-                            const fallback_addresses = (globalThis as any).init_addresses;
-    
-                            //console.log("Current ModuleName: "+current_module_name);
-                            let keys = Object.keys(fallback_addresses);
-                            let firstKey = keys[0];
-                            instance.SSL_SESSION_get_id = new NativeFunction(fallback_addresses[firstKey]["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
-                            instance.SSL_get_fd = ObjC.available ? new NativeFunction(fallback_addresses[firstKey]["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(fallback_addresses["SSL_get_fd"], "int", ["pointer"]);
-                            instance.SSL_get_session = new NativeFunction(fallback_addresses[firstKey]["SSL_get_session"], "pointer", ["pointer"]);
-                        }else{
-                            if (error instanceof Error) {
-                                devlog_error("Error: " + error.message);
-                                devlog_error("Stack: " + error.stack);
-                            } else {
-                                devlog_error("Unexpected error: " + error);
-                            }
-                        }
-
-                        }
-                    if (this.fd < 0) {
-                        // BIO-based TLS (e.g. Conscrypt): no socket fd on the SSL object.
-                        // Arm the fd-less recovery tracker LAZILY (idempotent) — only now that
-                        // we've actually observed SSL_get_fd()<0 — then recover the real peer
-                        // via thread->socket-fd correlation.
-                        installSocketFdTracker();
-                        const recovered = recoverSocketFd();
-                        if (recovered >= 0) this.fd = recovered;
-                    }
-                    if(this.fd < 0 && enable_default_fd == false) {
-                        return
-                    }
-                    var message = getPortsAndAddresses(this.fd as number, false, lib_addesses[current_module_name], enable_default_fd)
-                    if (message === null) { return; }
-                    message["ssl_session_id"] = instance.getSslSessionId(args[0])
-                    message["function"] = "SSL_write"
-                    if(OpenSSL_BoringSSL.modReceiver.writemod !== null){
-                        const newPointer = Memory.alloc(OpenSSL_BoringSSL.modReceiver.writemod.byteLength)
-                        newPointer.writeByteArray(OpenSSL_BoringSSL.modReceiver.writemod);
-                        args[1] = newPointer;
-                        args[2] = new NativePointer(OpenSSL_BoringSSL.modReceiver.writemod.byteLength);
-                    }
-
-                    sendDatalog(message, args[1].readByteArray(args[2].toInt32()))
-                    } // this is a temporary workaround for the fd problem on iOS
-                },
-                onLeave: function (retval: any) {
-                }
-            })
-        }
-
+        this.plaintextHooks.installScopeHooks();
+        this.plaintextHooks.attachWrite(address);
     }
 
     install_tls_keys_callback_hook(){
@@ -485,106 +350,9 @@ export class OpenSSL_BoringSSL {
     install_extended_hooks(){
         if (!pcap_enabled) return;
         // these functions (and its symbols) only available on OpenSSL
-        if (this.is_openssl){
-
-        
-            var current_module_name = this.module_name;
-            var lib_addesses = this.addresses;
-            var instance = this;
-
-            Interceptor.attach(this.addresses[this.moduleName]["SSL_read_ex"],
-            {
-                
-                onEnter: function (args: any) 
-                {
-                    this.bufLen = args[2].toInt32()
-                    this.fd = instance.SSL_get_fd(args[0])
-                    if (this.fd < 0) {
-                        // BIO-based TLS (e.g. Conscrypt): no socket fd on the SSL object.
-                        // Arm the fd-less recovery tracker LAZILY (idempotent) — only now that
-                        // we've actually observed SSL_get_fd()<0 — then recover the real peer
-                        // via thread->socket-fd correlation.
-                        installSocketFdTracker();
-                        const recovered = recoverSocketFd();
-                        if (recovered >= 0) this.fd = recovered;
-                    }
-                    if(this.fd < 0 && enable_default_fd == false) {
-                        return
-                    }
-
-                    var message = getPortsAndAddresses(this.fd as number, true, lib_addesses[current_module_name], enable_default_fd)
-                    if (message === null) { return; }
-                    message["ssl_session_id"] = instance.getSslSessionId(args[0])
-                    message["function"] = "SSL_read_ex"
-                    this.message = message
-
-                    this.buf = args[1]
-                    this.readbytes_ptr = args[3]
-
-                },
-                onLeave: function (retval: any) {
-                    retval |= 0 // Cast retval to 32-bit integer.
-                    var actual_bytes = this.readbytes_ptr.readULong()
-                    if (actual_bytes <= 0 || (this.fd < 0 && !enable_default_fd)) {
-                        return
-                    }
-
-                    sendDatalog(this.message, this.buf.readByteArray(actual_bytes))
-
-                }
-            });
-
-            Interceptor.attach(this.addresses[this.moduleName]["SSL_write_ex"],
-            {
-                onEnter: function (args: any) {
-                    if (!ObjC.available){
-                        try {
-                        
-                            this.fd = instance.SSL_get_fd(args[0]);
-                            
-                        
-                    }catch (error) {
-                        if (!this.is_base_hook) {
-                            const fallback_addresses = (globalThis as any).init_addresses;
-
-                            let keys = Object.keys(fallback_addresses);
-                            let firstKey = keys[0];
-                            instance.SSL_SESSION_get_id = new NativeFunction(fallback_addresses[firstKey]["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
-                            instance.SSL_get_fd = ObjC.available ? new NativeFunction(fallback_addresses[firstKey]["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(fallback_addresses["SSL_get_fd"], "int", ["pointer"]);
-                            instance.SSL_get_session = new NativeFunction(fallback_addresses[firstKey]["SSL_get_session"], "pointer", ["pointer"]);
-                        }else{
-                            if (error instanceof Error) {
-                                devlog_error("Error: " + error.message);
-                                devlog_error("Stack: " + error.stack);
-                            } else {
-                                devlog_error("Unexpected error: " + error);
-                            }
-                        }
-
-                        }
-                    if (this.fd < 0) {
-                        // BIO-based TLS (e.g. Conscrypt): no socket fd on the SSL object.
-                        // Arm the fd-less recovery tracker LAZILY (idempotent) — only now that
-                        // we've actually observed SSL_get_fd()<0 — then recover the real peer
-                        // via thread->socket-fd correlation.
-                        installSocketFdTracker();
-                        const recovered = recoverSocketFd();
-                        if (recovered >= 0) this.fd = recovered;
-                    }
-                    if(this.fd < 0 && enable_default_fd == false) {
-                        return
-                    }
-                    var message = getPortsAndAddresses(this.fd as number, false, lib_addesses[current_module_name], enable_default_fd)
-                    if (message === null) { return; }
-                    message["ssl_session_id"] = instance.getSslSessionId(args[0])
-                    message["function"] = "SSL_write_ex"
-                    sendDatalog(message, args[1].readByteArray(args[2].toInt32()))
-                    } // this is a temporary workaround for the fd problem on iOS
-                },
-                onLeave: function (retval: any) {
-                }
-            });
-        }
+        if (!this.is_openssl) return;
+        this.plaintextHooks.attachReadEx(this.addresses[this.moduleName]["SSL_read_ex"]);
+        this.plaintextHooks.attachWriteEx(this.addresses[this.moduleName]["SSL_write_ex"]);
     }
 
 

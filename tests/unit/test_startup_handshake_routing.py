@@ -33,6 +33,7 @@ import threading
 import types
 from unittest.mock import MagicMock
 
+from friTap.config import OutputConfig
 from friTap.legacy.ssl_logger_core import SSL_Logger
 
 
@@ -63,7 +64,7 @@ def _make_logger(startup=True, queue_maxsize=0, anti_root=True):
             anti_root=anti_root, experimental=True, enable_default_fd=False,
             library_scan=False, scan_keys_region=None,
         ),
-        output=types.SimpleNamespace(
+        output=OutputConfig(
             socket_trace=False, keylog=True, pcap=None, full_capture=False,
         ),
         device=types.SimpleNamespace(spawn=True),

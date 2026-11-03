@@ -386,6 +386,29 @@ class Android:
             self.logger.debug("get_crash_logcat failed", exc_info=True)
             return ""
 
+    _DEVICE_CLOCK_RE = re.compile(r"^\s*(\d+)([+-])(\d{2})(\d{2})\s*$")
+
+    def get_device_clock(self, timeout=10):
+        """Return ``(epoch_seconds, utc_offset_seconds)`` of the device clock, or
+        ``None`` when it cannot be read.
+
+        Device logcat/tombstone timestamps are wall-clock times in the DEVICE's
+        timezone, which need not match the host's; this is what maps them onto
+        an absolute timeline. ``date +%s%z`` (one token, so no shell quoting
+        through the root elevator) prints e.g. ``1730000000+0100``.
+        """
+        try:
+            out = self.adb.shell("date +%s%z", timeout=timeout).stdout or ""
+        except Exception:
+            self.logger.debug("get_device_clock failed", exc_info=True)
+            return None
+        m = self._DEVICE_CLOCK_RE.match(out.strip().splitlines()[-1] if out.strip() else "")
+        if not m:
+            return None
+        sign = -1 if m.group(2) == "-" else 1
+        offset = sign * (int(m.group(3)) * 3600 + int(m.group(4)) * 60)
+        return int(m.group(1)), offset
+
     def get_latest_tombstone(self, pid=None, cmdline_hint="", list_timeout=15, cat_timeout=30):
         """Return ``(path, text)`` of the newest ``/data/tombstones`` entry that
         belongs to the crashed process, or ``(None, "")``.

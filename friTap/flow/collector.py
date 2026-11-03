@@ -11,8 +11,8 @@ from typing import TYPE_CHECKING, Callable, Optional
 if TYPE_CHECKING:
     from .models import FlowSummary
 
-from friTap.connection_index import resolve_connection_key
-from friTap.constants import SSL_READ
+from friTap.connection_index import ConnectionKeyAliases, resolve_connection_key
+from friTap.constants import direction_for_function
 from friTap.events import (
     ERROR_SEVERITY_WARNING,
     SESSION_DESTROYED,
@@ -72,12 +72,6 @@ MAX_SIGNAL_RAW_BYTES = 16 * 1024 * 1024
 MAX_TRACKED_CONNECTIONS = 4096
 MAX_ORPHAN_REQUESTS = 1024
 
-# Read-function names used to determine direction.
-# Superset of SSL_READ from constants — includes _ex variants and platform names.
-_READ_FUNCTIONS = SSL_READ | frozenset({
-    'SSL_read_ex', 'PR_Recv', 'SSLRead',
-})
-
 # Decrypted-TL transports (Flow.transport values) whose parser is pinned by the
 # registry instead of byte-sniffed; every event on them is exactly one packet.
 _TRANSPORT_TELEGRAM_E2E = "telegram_e2e"
@@ -87,9 +81,16 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
     """Thread-safe flow collector that groups SSL events into flows."""
 
     def __init__(self, event_bus=None, show_control_frames: bool = True,
-                 signal_messages: bool = False):
+                 signal_messages: bool = False, retain_completed: bool = True):
         self._lock = threading.Lock()
         self._flows: dict[str, Flow] = {}  # flow_id -> Flow
+        # Opt-in (headless ``--tap``): when False, a flow is dropped from
+        # _flows once its COMPLETED notification has reached every subscriber
+        # (i.e. after the TapWriter persisted it), so a long capture does not
+        # keep every flow's chunks in memory. Trade-off: a late orphan response
+        # can no longer be merged into an already-released request flow. The
+        # TUI keeps the default (True): it browses completed flows.
+        self._retain_completed = retain_completed
         # conn_id -> [flow_id], maintained in lockstep with _flows. Lets
         # per-connection work (metadata stamping, synthetic-flow sequencing)
         # look up a connection's flows directly instead of scanning every flow
@@ -107,6 +108,10 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
         # conn_id -> state, in least-recently-used order (see
         # MAX_TRACKED_CONNECTIONS / _touch_connection).
         self._connections: OrderedDict[str, _ConnectionState] = OrderedDict()
+        # Folds the net:/sid: keys one live 4-tuple is seen under into the
+        # first one (TLS 1.3 legacy: SSL_write has no session id yet, SSL_read
+        # does), so a connection never splits into a request and a response flow.
+        self._key_aliases = ConnectionKeyAliases(capacity=4 * MAX_TRACKED_CONNECTIONS)
         # Owns the *vertical* layer-stack structure (transport -> app -> inner).
         # Invoked at flow finalize (inside the lock, before the COMPLETE flip).
         self._pipeline = LayerPipeline()
@@ -364,18 +369,24 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
         # None is normalized to "tls" inside resolve_connection_key, the same
         # single source of truth MessageRouter._emit_lifecycle keys through, so
         # lifecycle and data events always resolve to the same key.
-        conn_id = resolve_connection_key(
+        protocol = getattr(event, 'protocol', 'tls')
+        record_key = resolve_connection_key(
             event.src_addr, event.src_port,
             event.dst_addr, event.dst_port,
             session_token=getattr(event, 'ssl_session_id', ''),
             client_random=getattr(event, 'client_random', ''),
-            protocol=getattr(event, 'protocol', 'tls'),
+            protocol=protocol,
         )
 
         pending = []
         signal_events: list = []
 
         with self._lock:
+            conn_id = self._key_aliases.resolve(
+                record_key, event.src_addr, event.src_port,
+                event.dst_addr, event.dst_port, str(protocol or "tls"),
+                self._connections.__contains__,
+            )
             # Get or create connection state (LRU-capped)
             conn = self._touch_connection(conn_id, event, pending)
 
@@ -797,6 +808,7 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
         pending = []
         errors_to_emit: list = []
         with self._lock:
+            conn_id = self._lifecycle_conn_id(event, conn_id)
             conn = self._connections.get(conn_id)
             if conn is None:
                 return
@@ -810,6 +822,15 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
         for event_type, flow in pending:
             self._notify(event_type, flow)
         self._emit_errors(errors_to_emit)
+
+    def _lifecycle_conn_id(self, event, conn_id: str) -> str:
+        """Map a SessionEvent's key onto the live connection it aliases. Under lock."""
+        return self._key_aliases.lookup(
+            conn_id,
+            getattr(event, 'src_addr', ''), getattr(event, 'src_port', 0),
+            getattr(event, 'dst_addr', ''), getattr(event, 'dst_port', 0),
+            self._connections.__contains__,
+        )
 
     @staticmethod
     def _apply_session_metadata(flow: Flow, meta: dict) -> bool:
@@ -880,6 +901,7 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
 
         pending = []
         with self._lock:
+            conn_id = self._lifecycle_conn_id(event, conn_id)
             # Merge into any existing cache entry so a partial RESUMED event
             # never blanks fields a prior STARTED already set.
             cached = self._session_tls.setdefault(conn_id, {})
@@ -952,6 +974,7 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
             self._flow_index.clear()
             self._flow_seq.clear()
             self._connections.clear()
+            self._key_aliases.clear()
             self._h2_stream_flows.clear()
             self._clear_orphan_requests()
             self._session_tls.clear()
@@ -1571,10 +1594,7 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
 
     def _get_direction(self, function: str) -> str:
         """Determine direction from function name."""
-        func_base = function.split('(')[0].strip() if '(' in function else function.strip()
-        if func_base in _READ_FUNCTIONS or 'read' in func_base.lower() or 'recv' in func_base.lower():
-            return "read"
-        return "write"
+        return direction_for_function(function)
 
     def _create_or_update_flow(self, conn, chunk, result, event, pending):
         """Create new flow or update existing based on parse result."""
@@ -1866,8 +1886,8 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
 
     def _unindex_flow(self, flow: Flow) -> None:
         """Drop *flow* from the per-connection index. Must run under the lock, at
-        every site that removes from ``_flows`` (currently only the orphan-merge
-        in :meth:`_merge_remaining_orphans`)."""
+        every site that removes from ``_flows`` (the orphan-merge in
+        :meth:`_merge_remaining_orphans` and :meth:`_release_flow`)."""
         ids = self._flow_index.get(flow.connection_id)
         if not ids:
             return
@@ -1962,6 +1982,23 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
                 ))
             except Exception:
                 logger.debug("FlowEvent emit error", exc_info=True)
+        if event_type == FlowEventType.COMPLETED and not self._retain_completed:
+            self._release_flow(flow)
+
+    def _release_flow(self, flow: Flow) -> None:
+        """Forget a completed flow (``retain_completed=False``). Takes the lock.
+
+        Every lookup of a flow id (active flow, HTTP/2 stream map, orphan
+        index) is guarded by ``in self._flows``/``.get``, so stale ids left in
+        those maps are simply skipped.
+        """
+        with self._lock:
+            if self._flows.get(flow.flow_id) is not flow:
+                return
+            del self._flows[flow.flow_id]
+            self._unindex_flow(flow)
+            self._flow_retained_bytes.pop(flow.flow_id, None)
+            self._truncated_flow_ids.discard(flow.flow_id)
 
 
 class _ConnectionState:

@@ -11,8 +11,8 @@
 //      Plaintext is final only at the second call. Modelled via extraHooks
 //      so we don't need a new HookDefinition variant.
 //   2. The read path's retval is a MATRIXSSL_* status code, not a byte
-//      count. Legacy code (agent/legacy/tls/libs/matrixssl.ts) reads bytes
-//      whenever retval > 0; we preserve that semantic via extraHooks too.
+//      count: plaintext is in the (*ptbuf, *ptlen) out-params only when it is
+//      MATRIXSSL_APP_DATA. Both live in shared/matrixssl_plaintext.ts.
 
 import {
     HookDefinition,
@@ -25,6 +25,7 @@ import { pcap_enabled } from "../../fritap_agent.js";
 import { devlog } from "../../util/log.js";
 import { STANDARD_SOCKET_SYMBOLS } from "./shared_constants.js";
 import { noOpClientRandomDecoder } from "./shared_factories.js";
+import { hookMatrixSslReads, hookMatrixSslWrites, MatrixSslEmit } from "../../shared/matrixssl_plaintext.js";
 
 // MatrixSSL exposes no fd getter. Returning -1 routes downstream metadata
 // through the enable_default_fd path (synthetic 5-tuple). Matches legacy
@@ -56,6 +57,21 @@ function matrixSslSessionIdDecoder(ssl: NativePointer, fns: ResolvedFunctions): 
     }
 }
 
+/** Emits one MatrixSSL plaintext record (MatrixSSL exposes no fd getter: fd -1). */
+function matrixSslEmitter(isRead: boolean, moduleAddrs: { [fn: string]: NativePointer }, resolvedFns: ResolvedFunctions, enableDefaultFd: boolean): MatrixSslEmit {
+    return (ssl, data, functionName) => {
+        try {
+            const message = getPortsAndAddresses(-1, isRead, moduleAddrs, enableDefaultFd);
+            if (message === null) return;
+            message["ssl_session_id"] = matrixSslSessionIdDecoder(ssl, resolvedFns);
+            message["function"] = functionName;
+            sendDatalog(message, data);
+        } catch (e) {
+            devlog(`[matrixssl] ${isRead ? "read" : "write"} capture error: ${e}`);
+        }
+    };
+}
+
 function createMatrixSslReadHook(): ExtraHookDef {
     return {
         install: (addresses, modName, resolvedFns, enableDefaultFd) => {
@@ -66,33 +82,8 @@ function createMatrixSslReadHook(): ExtraHookDef {
                 devlog("[matrixssl] matrixSslReceivedData unresolved – read capture disabled");
                 return;
             }
-
-            Interceptor.attach(addr, {
-                onEnter: function (args: any) {
-                    this.ssl = args[0];
-                    // Mirror legacy semantics: args[2] = plaintext buffer,
-                    // args[3] = output length pointer (legacy treated it as
-                    // a numeric length — preserved here to avoid behaviour
-                    // change). See agent/legacy/tls/libs/matrixssl.ts:53-54.
-                    this.buffer = args[2];
-                    this.len = args[3];
-                },
-                onLeave: function (retval: any) {
-                    retval |= 0;
-                    if (retval <= 0) return;
-                    try {
-                        const data = this.buffer.readByteArray(this.len);
-                        const message = getPortsAndAddresses(-1, true, moduleAddrs, enableDefaultFd);
-                        if (message === null) return;
-                        message["ssl_session_id"] =
-                            matrixSslSessionIdDecoder(this.ssl, resolvedFns);
-                        message["function"] = "matrixSslReceivedData";
-                        sendDatalog(message, data);
-                    } catch (e) {
-                        devlog(`[matrixssl] read capture error: ${e}`);
-                    }
-                },
-            });
+            hookMatrixSslReads(addr, moduleAddrs["matrixSslProcessedData"],
+                matrixSslEmitter(true, moduleAddrs, resolvedFns, enableDefaultFd));
         },
     };
 }
@@ -112,46 +103,8 @@ function createMatrixSslWriteHooks(): ExtraHookDef {
                 devlog("[matrixssl] matrixSslEncodeWritebuf unresolved – write capture disabled");
                 return;
             }
-
-            // Per-thread state. GetWritebuf and EncodeWritebuf are called
-            // back-to-back on the same thread per MatrixSSL's documented usage.
-            const pending: Map<number, { ssl: NativePointer; buf: NativePointer; len: number }> = new Map();
-
-            Interceptor.attach(getBufAddr, {
-                onEnter: function (args: any) {
-                    this.ssl = args[0];
-                    this.outBuffer = args[1];
-                },
-                onLeave: function (retval: any) {
-                    retval |= 0;
-                    if (retval <= 0) return;
-                    pending.set(Process.getCurrentThreadId(), {
-                        ssl: this.ssl,
-                        buf: this.outBuffer,
-                        len: retval,
-                    });
-                },
-            });
-
-            Interceptor.attach(encodeAddr, {
-                onEnter: function (args: any) {
-                    const tid = Process.getCurrentThreadId();
-                    const state = pending.get(tid);
-                    if (!state) return;
-                    pending.delete(tid);
-                    try {
-                        const data = state.buf.readByteArray(state.len);
-                        const message = getPortsAndAddresses(-1, false, moduleAddrs, enableDefaultFd);
-                        if (message === null) return;
-                        message["ssl_session_id"] =
-                            matrixSslSessionIdDecoder(state.ssl, resolvedFns);
-                        message["function"] = "matrixSslEncodeWritebuf";
-                        sendDatalog(message, data);
-                    } catch (e) {
-                        devlog(`[matrixssl] write capture error: ${e}`);
-                    }
-                },
-            });
+            hookMatrixSslWrites(getBufAddr, encodeAddr,
+                matrixSslEmitter(false, moduleAddrs, resolvedFns, enableDefaultFd));
         },
     };
 }
@@ -163,6 +116,7 @@ export function createMatrixSslDefinition(): HookDefinition {
         functions: {
             librarySymbols: [
                 "matrixSslReceivedData",
+                "matrixSslProcessedData",
                 "matrixSslGetWritebuf",
                 "matrixSslEncodeWritebuf",
                 "matrixSslGetSid",

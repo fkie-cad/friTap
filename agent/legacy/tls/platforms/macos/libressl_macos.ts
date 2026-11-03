@@ -38,16 +38,9 @@ export class LibreSSL_MacOS extends OpenSSL_BoringSSL {
 
         super(moduleName, socket_library, is_base_hook, library_method_mapping);
 
-        // Force read/write hooks ON (LibreSSL's SSL_get_fd works on macOS, unlike BoringSSL)
-        this.do_read_write_hooks = true;
-        try {
-            this.SSL_SESSION_get_id = new NativeFunction(this.addresses[this.moduleName]["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
-            this.SSL_get_fd = new NativeFunction(this.addresses[this.moduleName]["SSL_get_fd"], "int", ["pointer"]);
-            this.SSL_get_session = new NativeFunction(this.addresses[this.moduleName]["SSL_get_session"], "pointer", ["pointer"]);
-        } catch (e) {
-            devlog_error(`[LibreSSL] Error creating NativeFunction wrappers: ${e}`);
-            this.do_read_write_hooks = false;
-        }
+        // Force read/write hooks ON (LibreSSL's SSL_get_fd works on macOS, unlike
+        // Apple's BoringSSL) — even if the base constructor's SSL-surface gate skipped it.
+        this.bindSslFdAndSessionFunctions();
 
         const crAddr = this.addresses[this.moduleName]["SSL_get_client_random"];
         if (crAddr && !crAddr.isNull()) {

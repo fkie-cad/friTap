@@ -109,7 +109,7 @@ def test_no_crash_object_reports_plain_termination(caplog):
     with caplog.at_level(logging.WARNING):
         obj._report_target_crash("process-terminated", None)
     text = caplog.text
-    assert "terminated (killed or exited)" in text
+    assert "terminated (no crash evidence; possibly killed/force-stopped)" in text
     assert "pattern-scan: libssl.so" in text
     assert "crashed inside an instrumented hook" not in text
     assert "PairIP" not in text
@@ -136,7 +136,7 @@ def test_spawn_exit_with_empty_crumb_is_not_a_clean_exit(caplog):
     obj = _make_logger(anti_tamper="", crumb="", spawn=True)
     with caplog.at_level(logging.WARNING):
         obj._report_target_crash("process-terminated", None)
-    assert "terminated (killed or exited)" in caplog.text
+    assert "terminated (no crash evidence; possibly killed/force-stopped)" in caplog.text
     assert "Target process exited" not in caplog.text
     assert "crashed inside an instrumented hook" not in caplog.text
 
@@ -179,11 +179,12 @@ def test_external_kill_in_attach_mode_is_plain_termination(caplog):
     with caplog.at_level(logging.DEBUG):
         obj._report_target_crash("process-terminated", None)
     text = caplog.text
-    assert "Target process terminated (killed or exited)" in text
+    assert "Target process terminated (no crash evidence" in text
     assert "crashed inside an instrumented hook" not in text
     assert "PairIP" not in text
     assert all(r.levelno < logging.ERROR for r in caplog.records)
-    assert [e.error for e in events] == ["Target process terminated"]
+    # No crash evidence: a lifecycle event (the detach), not an `error` record.
+    assert events == []
 
 
 def test_android_spawn_kill_without_crash_does_not_guess_pairip(caplog):
@@ -240,3 +241,31 @@ def test_crash_report_makes_no_frida_calls():
         assert not hasattr(obj, attr)
     obj._report_target_crash("process-terminated", None)
     obj._report_target_crash("process-terminated", FakeCrash(report="frida-agent"))
+
+
+def test_spawned_target_exiting_after_capture_gets_no_attach_advice(caplog):
+    # A short-lived spawned target (e.g. Homebrew curl) that exits on its own
+    # after the capture started and produced keys: exit 3 is right, but there is
+    # nothing to fix, so no "try ATTACH instead" advice. The last agent stage is
+    # a loader breadcrumb, never "agent-init: complete", for such a target.
+    obj = _make_logger(crumb="install-phase: MacOS/loader", spawn=True)
+    obj._captured_any_secret = True
+    with caplog.at_level(logging.WARNING):
+        obj._report_target_crash("process-terminated", None)
+    assert "ATTACH" not in caplog.text
+
+
+def test_spawned_target_dying_during_startup_keeps_attach_advice(caplog):
+    obj = _make_logger(crumb="install-phase: MacOS/loader", spawn=True)
+    obj._captured_any_secret = True  # e.g. a key from a pre-resume phase
+    obj.begin_startup()  # ... but the capture never started
+    with caplog.at_level(logging.WARNING):
+        obj._report_target_crash("process-terminated", None)
+    assert "ATTACH" in caplog.text
+
+
+def test_spawned_target_exiting_without_output_keeps_attach_advice(caplog):
+    obj = _make_logger(crumb="install-phase: MacOS/loader", spawn=True)
+    with caplog.at_level(logging.WARNING):
+        obj._report_target_crash("process-terminated", None)
+    assert "ATTACH" in caplog.text

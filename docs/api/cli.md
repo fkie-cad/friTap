@@ -211,10 +211,56 @@ With `--owner-capture`: NFLOG group used for the Tier-2 in-kernel capture.
 **Default `30`.** Change it only if group 30 is already claimed on the device.
 
 #### `-j, --json <path>`
-Save session metadata and analysis results in JSON format.
+Save session metadata and analysis results in JSON format. A `*.jsonl` path
+writes one event per line instead. `-j -` streams JSONL events to **stdout**
+for scripts and AI agents (see [Unattended / automation](#unattended--automation)).
+
+Every JSON output (`session.json`, `*.jsonl` and `-j -`) includes the decrypted
+plaintext as `data` events, so `-j` on its own turns on the agent's plaintext
+read/write hooks; `-p` or `--tap` are not needed for that. Each `data` event
+carries `direction` `read` (received, e.g. a response) or `write` (sent).
+
+**Key material is redacted by default** in every JSON output (`session.json`,
+`*.jsonl` and `-j -`), because JSON is often handed to scripts, tickets and
+AI agents/LLMs. Raw secrets (`key_data`, and the structured `payload` of a
+keylog record) are written only when `-k` is given or with `--json-keys`.
+Without either, each keylog record is kept so you still see that a key was
+captured, but reduced to its `label` (plus the public `client_random` of NSS
+lines) and marked `"redacted": true`:
+
+```json
+{"timestamp": 1730000000.0, "type": "key_extraction", "label": "CLIENT_RANDOM",
+ "client_random": "aa…aa", "redacted": true}
+```
 
 ```bash
-fritap -j session.json -k keys.log target
+fritap -j session.json -k keys.log target   # keys in keys.log and in session.json
+fritap -j session.json target               # session.json: key records redacted
+fritap -j session.json --json-keys target   # raw keys in session.json, no keylog file
+fritap -j - --duration 30 target | jq -c 'select(.type=="data")'
+```
+
+!!! warning "Behaviour change"
+    Before this change `-j file.json` / `-j file.jsonl` wrote the raw
+    `key_data` of every key that reached them (for example the `-ms`
+    memory-scan keys), even without `-k`. To restore the old output add
+    `--json-keys` (or `-k <keylog>`, which also writes a keylog file). In the
+    Python API use `.json_keys()`.
+
+#### `--json-keys`
+Write raw key material (`key_data` / `payload`) into the `-j` output (file or
+stdout stream) even without `-k`. Like `-k`, it turns on key extraction in the
+agent, so the hooked TLS keys reach the JSON without writing a keylog file.
+Has no effect without `-j`.
+
+#### `--tap <file.tap>`
+Write the decrypted flows of the capture to a `.tap` file, the capture format
+the TUI saves (open it with `fritap capture.tap`, `fritap analyze capture.tap`
+or `fritap report capture.tap`). The file is finalized (flow index + footer) on
+every stop: Ctrl+C, `--duration`, and the target exiting/detaching (exit `3`).
+
+```bash
+fritap --tap capture.tap --duration 60 target
 ```
 
 #### `-l, --live`
@@ -893,6 +939,24 @@ hardened runtime, library validation, or without
 
 Full detail: [macOS platform guide](../platforms/macos.md).
 
+### macOS: Apple platform binaries need root + a boot-arg, or `--macos-unsign-copy`
+
+Apple's own binaries (`/usr/bin/curl`, ...) are arm64e platform binaries. Frida
+can only inject into them as root with the boot-arg
+`sudo nvram boot-args="-arm64e_preview_abi"` set (then reboot). Without that,
+`fritap -s ... /usr/bin/curl` stops before spawning with exit code **1** and
+lists the options.
+
+| Flag | Description |
+|---|---|
+| `--macos-unsign-copy` | macOS, spawn mode (`-s`) only. If the target is an Apple platform binary, spawn an ad-hoc signed copy of it (copied to a temp dir, thinned to arm64e, `codesign -f -s -`) instead; no root, no reboot. The copy drops the original's entitlements and is deleted when friTap exits. No effect on other targets. |
+
+```bash
+fritap -s -k keys.log -p plain.pcap --macos-unsign-copy -- /usr/bin/curl -s https://example.com
+```
+
+Details: [macOS platform guide](../platforms/macos.md#apple-platform-binaries-usrbincurl-usrbinpython3).
+
 ### iOS: jailbreak required
 
 Every `-m`/`-H` iOS flow needs a **jailbroken device** with a running
@@ -1065,13 +1129,126 @@ fritap -m -p log.pcap --enable_default_fd com.example.app
 
 ---
 
+## Unattended / automation
+
+Flags for running a capture from scripts, CI jobs or AI agents without a human
+at the terminal. All are opt-in; without them friTap behaves exactly as before.
+
+| Flag | Effect |
+|------|--------|
+| `--duration <seconds>` | Stop the capture cleanly after `<seconds>` (float). Uses the same teardown as Ctrl+C: pcap, keylog and JSON are flushed, the target is detached, exit code `0`. Not to be confused with `-t/--timeout`, which only delays resuming a spawned process. Ignored by `--probe`. |
+| `-q, --quiet` | Suppress the banner and info messages on the console. Warnings and errors still go to stderr; a `--debug-log`/`-do` file keeps logging everything. |
+| `--non-interactive` | Never prompt. Implies `-y/--yes`; the `-f` without `-k` confirmation only logs a warning and continues. That confirmation is also skipped automatically whenever stdin is not a TTY. (`--protocol all` without `-y` still fails fast on a non-TTY stdin; use `--protocol auto` or `-y`.) |
+
+```bash
+# 60-second unattended capture, quiet console, never blocks on a prompt
+fritap --non-interactive -q --duration 60 -k keys.log -p traffic.pcap target
+echo "friTap exited with $?"
+```
+
+### Machine-readable output
+
+| Flag / command | Output |
+|----------------|--------|
+| `-j -` / `--json -` | JSONL event stream on stdout (details below). |
+| `--tap <file.tap>` | `.tap` capture of the decrypted flows, finalized on every stop path. |
+| `fritap devices [--json]` | Frida devices: `id`, `name`, `type`. |
+| `fritap apps [-m [ID] \| --device ID \| -H HOST] [--running] [--json]` | Installed apps (`name`, `identifier`, `pid`; `pid` `0` = not running), running ones first. A device without an app list (desktop local device) lists its processes (`kind: "process"`, `identifier: null`). Default device: local. |
+
+**`-j -` stream.** stdout carries nothing but JSONL: friTap reserves the real
+stdout for the stream at startup and points file descriptor 1 at stderr, so the
+banner, log lines, `-v` hexdumps and the output of a spawned target all go to
+**stderr**. Every line is a JSON object with
+
+- `"schema": "fritap.events/1"` (bumped on incompatible changes),
+- `"type"`: `stream_start` (first line), `stream_end` (last line on every
+  teardown, with the process's final `"exit_code"`; `null` if it is not known),
+  or the event kind — `keylog`, `data`, `session`, `library`,
+  `console`, `error`, `detach`, `instrument`, `platform_report`, `script_loaded`,
+  `socket_trace`, `ohttp`, `message`, … (`snake_case` of the event class),
+- `"event"`: the event class name, `"timestamp"` (epoch seconds), `"protocol"`,
+  and the event's fields. `bytes` values (the decrypted plaintext in `data`
+  records) are hex-encoded.
+
+**Key material** is in the stream only when it was explicitly requested with
+`-k` or `--json-keys`. Otherwise a `keylog` record keeps only `label` (and the
+public `client_random` of NSS lines) plus `"redacted": true`; `stream_start`
+reports the policy as `"key_material": true|false`. The `-j file.json` /
+`.jsonl` file outputs follow the same policy (see [`-j`](#-j-json-path)).
+
+A usage error with `-j -` on the command line prints one
+`{"type": "usage_error", "error": ..., "exit_code": 2}` record on stdout and the
+help text on stderr.
+
+A **runtime error** (spawn/attach failure, unknown app, missing executable,
+agent script load failure, backend error, …) adds one record right before
+`stream_end`, so a consumer learns the reason without parsing stderr:
+
+```json
+{"schema": "fritap.events/1", "type": "error", "timestamp": 1730000000.0,
+ "error_type": "ExecutableNotFoundError",
+ "message": "unable to find executable at '/nonexistent/binary'",
+ "hint": "…optional next step…", "exit_code": 1}
+{"schema": "fritap.events/1", "type": "stream_end", "timestamp": 1730000000.1, "exit_code": 1}
+```
+
+It is written when the stream closes, so its `exit_code` is the final one (for
+example `3` when the target had already died before the error). `hint` is only
+present when friTap has a concrete next step. Unlike agent-side `error` events,
+this record has no `"event"` field. A target that simply exits (`exit_code` 3)
+gets a `detach` record but no `error` record.
+
+```bash
+# 30 s capture: JSONL events on stdout, decrypted flows in a .tap, logs on stderr
+fritap --non-interactive --duration 30 -j - --tap capture.tap -s -- /usr/local/bin/app \
+    2> fritap.log | python3 -c 'import json,sys; [print(json.loads(l)["type"]) for l in sys.stdin]'
+
+fritap devices --json
+# {"schema": "fritap.devices/1", "devices": [{"id": "local", "name": "Local System", "type": "local"}, ...]}
+fritap apps -m emulator-5554 --running --json
+# {"schema": "fritap.apps/1", "device": {...}, "apps": [{"name": "Chrome", "identifier": "com.android.chrome", "pid": 4242, "kind": "app"}, ...]}
+```
+
+`apps` lists every app once: Frida can enumerate an app twice, so entries are
+deduplicated by `identifier` (processes by `pid`), keeping the running entry.
+`devices`/`apps` exit `0` on success, `1` on a Frida error (device not found,
+frida-server not running, …) and `2` on bad arguments; with `--json` the error
+is printed on stdout as `{"error": ..., "error_type": ..., "exit_code": ...}`,
+otherwise on stderr. They are only treated as subcommands when **every**
+following token is one of the options above, so a process literally named
+`devices`/`apps` is still captured by adding any capture option
+(`fritap apps -k keys.log`, `fritap -m apps`).
+
+Live-capture exit codes (constants in `friTap/exit_codes.py`):
+
+| Code | Constant | Meaning |
+|------|----------|---------|
+| `0` | `EXIT_OK` | Normal stop: Ctrl+C/SIGINT, `--duration` elapsed, or a clean return |
+| `1` | `EXIT_RUNTIME_ERROR` | Runtime error: attach/spawn failure, agent script load failure, backend error |
+| `2` | `EXIT_USAGE_ERROR` | Usage error: invalid arguments/configuration (argparse) |
+| `3` | `EXIT_TARGET_DETACHED` | The target process died or detached before friTap was asked to stop (including a target that simply exited on its own) |
+
+A termination signal other than SIGINT (e.g. SIGTERM) exits with `128 + signum`.
+
+**The first non-zero status wins.** Whichever of target detach (`3`), runtime
+error (`1`) or a non-SIGINT signal (`128 + signum`) happens first is the exit
+code; later events never override it, and a clean stop (`0`) never overrides
+an earlier failure. So Ctrl+C or SIGTERM after the target already detached
+still exits `3`, and an error reported after the target died stays `3`.
+There is no `--max-flows`: in a plain CLI capture friTap does not track flow
+completion (flow events exist only with `--scan`), so a flow count could only
+stop the capture in the middle of the Nth connection. Use `--duration` instead.
+
+---
+
 ## Exit codes
 
 | Mode | Codes |
 |------|-------|
-| Live capture | `0` success · `1` general error · `2` invalid arguments/configuration · additional Frida-specific codes |
+| Live capture | `0` success (incl. `--duration` elapsed) · `1` runtime error · `2` invalid arguments/configuration · `3` target died/detached unexpectedly · `128+signum` non-SIGINT signal (see [Unattended / automation](#unattended--automation)) |
 | `--probe` | `0` probe completed (agent loaded, no hooks installed) · `2` the loaded agent bundle does not implement probe mode |
 | `analyze` / `--analyze` | `0` success · `2` finding at/above gate severity (medium) · `1` usage/IO error |
+| `devices` / `apps` | `0` success · `1` Frida error (device not found, server not running, …) · `2` invalid arguments |
 | `--from-pcap` | `0` success · `2` pcap not found · `3` tshark missing · `4` no decrypted packets · `5` no decryption keys · `1` other failure |
 
 ---

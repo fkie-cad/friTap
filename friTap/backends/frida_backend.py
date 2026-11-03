@@ -52,6 +52,23 @@ _EXCEPTION_MAP = {
 # Pre-computed tuple of exception types for the except clause (avoids rebuilding per call)
 _FRIDA_EXCEPTION_TYPES = tuple(_EXCEPTION_MAP.keys())
 
+# Every other frida.* error class (ExecutableNotFoundError, NotSupportedError,
+# ...) is an ordinary "frida said no", not a friTap bug: it keeps its message
+# verbatim and the generic BackendError type. getattr: the set differs between
+# frida versions.
+_OTHER_FRIDA_ERROR_CATEGORIES = {
+    "ExecutableNotFoundError": "frida_executable_not_found",
+    "ExecutableNotSupportedError": "frida_executable_not_supported",
+    "NotSupportedError": "frida_not_supported",
+    "AddressInUseError": "frida_address_in_use",
+    "OperationCancelledError": "frida_cancelled",
+    "ProtocolError": "frida_protocol",
+}
+_OTHER_FRIDA_EXCEPTION_TYPES = tuple(
+    getattr(frida, name) for name in _OTHER_FRIDA_ERROR_CATEGORIES
+    if isinstance(getattr(frida, name, None), type)
+)
+
 # Stable category tags surfaced via BackendError.category. Used by the TUI
 # to render a meaningful diagnostic instead of just the message string.
 _FRIDA_CATEGORY = {
@@ -241,6 +258,14 @@ def _wrap_frida_errors(
             except BackendError:
                 # Already enriched by an inner wrapped call; let it propagate.
                 raise
+            except _OTHER_FRIDA_EXCEPTION_TYPES as exc:
+                raise BackendError(
+                    str(exc),
+                    original_exception=exc,
+                    category=_OTHER_FRIDA_ERROR_CATEGORIES.get(
+                        type(exc).__name__, "frida_error"),
+                    context=_collect_context(),
+                ) from exc
             except Exception as exc:
                 raise BackendError(
                     f"Internal error in {self.__class__.__name__}."

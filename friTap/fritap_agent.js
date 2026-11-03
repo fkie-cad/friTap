@@ -1,5 +1,5 @@
 📦
-1651269 /agent/fritap_agent.js
+1659436 /agent/fritap_agent.js
 ✄
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -14291,12 +14291,112 @@ init_shared_structures();
 
 // agent/shared/library_scanner.ts
 init_node_globals();
-var hookedModules = /* @__PURE__ */ new Set();
+
+// agent/shared/module_identity.ts
+init_node_globals();
+var realpathFn;
+function libcRealpath() {
+  if (realpathFn !== void 0)
+    return realpathFn;
+  realpathFn = null;
+  try {
+    const address = Module.findGlobalExportByName("realpath");
+    if (address !== null && !address.isNull()) {
+      realpathFn = new NativeFunction(address, "pointer", ["pointer", "pointer"]);
+    }
+  } catch (error) {
+    devlog(`[module-identity] realpath unavailable: ${error}`);
+  }
+  return realpathFn;
+}
+function canonicalPath(path) {
+  const realpath = libcRealpath();
+  if (realpath === null)
+    return null;
+  try {
+    const resolved = Memory.alloc(4096);
+    const result = realpath(Memory.allocUtf8String(path), resolved);
+    return result.isNull() ? null : resolved.readUtf8String();
+  } catch (_) {
+    return null;
+  }
+}
+function findLoadedModule(nameOrPath) {
+  let module = null;
+  try {
+    module = Process.findModuleByName(nameOrPath);
+  } catch (_) {
+  }
+  if (module === null && nameOrPath.includes("/")) {
+    const canonical = canonicalPath(nameOrPath);
+    if (canonical !== null && canonical !== nameOrPath) {
+      try {
+        module = Process.findModuleByName(canonical);
+      } catch (_) {
+      }
+    }
+  }
+  return module;
+}
+function moduleIdentityKey(nameOrPath) {
+  const module = findLoadedModule(nameOrPath);
+  return module !== null ? baseKey(module.base) : nameKey(nameOrPath);
+}
+function baseKey(base) {
+  return `base:${base.toString()}`;
+}
+function nameKey(nameOrPath) {
+  return `name:${nameOrPath}`;
+}
+
+// agent/shared/library_scanner.ts
+var hookedModules = /* @__PURE__ */ new Map();
+var unloadObserverAttached = false;
+function forgetUnloadedModule(module) {
+  for (const key of [baseKey(module.base), nameKey(module.name), nameKey(module.path)]) {
+    if (hookedModules.delete(key))
+      devlog(`[hook-guard] ${module.name} unloaded; markers cleared`);
+  }
+}
+function ensureUnloadObserver() {
+  if (unloadObserverAttached)
+    return;
+  unloadObserverAttached = true;
+  const P2 = Process;
+  if (typeof P2.attachModuleObserver !== "function")
+    return;
+  try {
+    P2.attachModuleObserver({ onRemoved: (m2) => forgetUnloadedModule(m2) });
+  } catch (error) {
+    devlog(`[hook-guard] module observer unavailable: ${error}`);
+  }
+}
 function markModuleHooked(moduleName, protocol = "tls") {
-  hookedModules.add(`${moduleName}:${protocol}`);
+  ensureUnloadObserver();
+  const key = moduleIdentityKey(moduleName);
+  let tags = hookedModules.get(key);
+  if (tags === void 0)
+    hookedModules.set(key, tags = /* @__PURE__ */ new Set());
+  tags.add(protocol);
 }
 function isModuleHooked(moduleName, protocol = "tls") {
-  return hookedModules.has(`${moduleName}:${protocol}`);
+  for (const key of [moduleIdentityKey(moduleName), nameKey(moduleName)]) {
+    if (hookedModules.get(key)?.has(protocol))
+      return true;
+  }
+  return false;
+}
+function executorModuleName(nameOrPath) {
+  const module = findLoadedModule(nameOrPath);
+  if (module === null)
+    return nameOrPath;
+  let byName = null;
+  try {
+    byName = Process.findModuleByName(module.name);
+  } catch (_) {
+  }
+  const nameIsUnique = byName !== null && byName.base.toString() === module.base.toString();
+  return nameIsUnique ? module.name : module.path;
 }
 function installTagFor(match, protocol = "tls") {
   return match.supplementary ? `${protocol}:supplementary:${match.library}` : protocol;
@@ -14325,6 +14425,7 @@ function processScanResults(scanData, platform, is_base_hook, protocol) {
   }
   log(`[Scanner] Processing ${entries.length} pre-scanned libraries`);
   for (const entry of entries) {
+    entry.name = executorModuleName(entry.name);
     if (isModuleHooked(entry.name, protocolTag)) {
       devlog(`[Scanner] ${entry.name} already hooked for ${protocolTag}, skipping`);
       continue;
@@ -14647,6 +14748,7 @@ function wait_for_library_loaded(module_name) {
 function ssl_library_loader(platform, hookRegistry2, moduleNames, platformOs, is_base_hook, protocol) {
   const protocolTag = protocolLabel(protocol);
   for (let module_name of moduleNames) {
+    module_name = executorModuleName(module_name);
     if (warnAntiTamper(module_name))
       continue;
     let modulePath;
@@ -14729,6 +14831,38 @@ function installPairipSafeWatcher(platform, hookRegistry2, getFreshModuleNames, 
     }
   }, firstDelayMs);
 }
+function takeNewDependencyModules(known, loaded, requested) {
+  const fresh = [];
+  for (const module of loaded) {
+    if (known.has(module.path))
+      continue;
+    known.add(module.path);
+    const isRequested = requested !== void 0 && (requested === module.path || requested === module.name || requested.endsWith("/" + module.name));
+    if (!isRequested)
+      fresh.push(module.name);
+  }
+  return fresh;
+}
+function newImageFeed(known) {
+  const P2 = Process;
+  if (typeof P2.attachModuleObserver !== "function") {
+    return () => Process.enumerateModules();
+  }
+  const added = [];
+  let attaching = true;
+  P2.attachModuleObserver({
+    onAdded(m2) {
+      if (!attaching)
+        added.push({ name: m2.name, path: m2.path });
+    },
+    // An unloaded image must count as new again when a later dlopen() remaps it.
+    onRemoved(m2) {
+      known.delete(m2.path);
+    }
+  });
+  attaching = false;
+  return () => added.splice(0, added.length);
+}
 function hookDynamicLoader(config2, hookRegistry2, moduleNames, is_base_hook, protocol) {
   const protocolTag = protocolLabel(protocol);
   const dedupKey = `${config2.platform}:${config2.functionName}:${config2.preferFunction ?? ""}:${protocolTag}`;
@@ -14764,6 +14898,8 @@ function hookDynamicLoader(config2, hookRegistry2, moduleNames, is_base_hook, pr
       }
       hookAddress = Process.getModuleByName(loaderModule).getExportByName(funcName);
     }
+    const knownImages = config2.hookDependencies ? new Set(Process.enumerateModules().map((m2) => m2.path)) : null;
+    const takeNewImages = knownImages !== null ? newImageFeed(knownImages) : null;
     Interceptor.attach(hookAddress, {
       onEnter: function(args) {
         if (!config2.moduleFromRetval) {
@@ -14771,6 +14907,12 @@ function hookDynamicLoader(config2, hookRegistry2, moduleNames, is_base_hook, pr
         }
       },
       onLeave: function(retval) {
+        if (takeNewImages !== null && !retval.isNull()) {
+          const dependencies = takeNewDependencyModules(knownImages, takeNewImages(), this.moduleName ?? void 0);
+          if (dependencies.length > 0) {
+            ssl_library_loader(config2.platform, hookRegistry2, dependencies, config2.platformLabel, is_base_hook, protocol);
+          }
+        }
         let moduleName;
         if (config2.moduleFromRetval) {
           const map = new ModuleMap();
@@ -14778,7 +14920,7 @@ function hookDynamicLoader(config2, hookRegistry2, moduleNames, is_base_hook, pr
           if (moduleName === null)
             return;
         } else {
-          moduleName = this.moduleName;
+          moduleName = this.moduleName == void 0 ? void 0 : executorModuleName(this.moduleName);
         }
         if (moduleName != void 0) {
           if (warnAntiTamper(moduleName))
@@ -18859,6 +19001,67 @@ init_shared_structures();
 
 // agent/shared/socket_fd_tracker.ts
 init_node_globals();
+
+// agent/shared/ssl_fd_cache.ts
+init_node_globals();
+var SslFdCache = class {
+  maxEntries;
+  /** SSL object (pointer string) -> fd. Map order doubles as LRU order. */
+  fdBySsl = /* @__PURE__ */ new Map();
+  /** fd -> the SSL objects currently cached with it (kept in sync with fdBySsl). */
+  sslsByFd = /* @__PURE__ */ new Map();
+  constructor(maxEntries) {
+    this.maxEntries = maxEntries;
+  }
+  get size() {
+    return this.fdBySsl.size;
+  }
+  get(ssl) {
+    return this.fdBySsl.get(ssl);
+  }
+  /** Cache ssl -> fd as the most recently used entry, evicting the oldest past the bound. */
+  set(ssl, fd) {
+    this.deleteSsl(ssl);
+    this.fdBySsl.set(ssl, fd);
+    let ssls = this.sslsByFd.get(fd);
+    if (ssls === void 0) {
+      ssls = /* @__PURE__ */ new Set();
+      this.sslsByFd.set(fd, ssls);
+    }
+    ssls.add(ssl);
+    if (this.fdBySsl.size > this.maxEntries) {
+      this.deleteSsl(this.fdBySsl.keys().next().value);
+    }
+  }
+  /** SSL_free(ssl): drop its entry. */
+  deleteSsl(ssl) {
+    const fd = this.fdBySsl.get(ssl);
+    if (fd === void 0)
+      return;
+    this.fdBySsl.delete(ssl);
+    const ssls = this.sslsByFd.get(fd);
+    if (ssls === void 0)
+      return;
+    ssls.delete(ssl);
+    if (ssls.size === 0)
+      this.sslsByFd.delete(fd);
+  }
+  /** close(fd): drop every SSL object cached with fd (the number may be reused). */
+  deleteFd(fd) {
+    const ssls = this.sslsByFd.get(fd);
+    if (ssls === void 0)
+      return;
+    this.sslsByFd.delete(fd);
+    for (const ssl of ssls)
+      this.fdBySsl.delete(ssl);
+  }
+  /** Number of fds in the reverse index (test hook for index consistency). */
+  get indexedFdCount() {
+    return this.sslsByFd.size;
+  }
+};
+
+// agent/shared/socket_fd_tracker.ts
 var SOCK_STREAM2 = 1;
 var IS_DARWIN = Process.platform === "darwin";
 var SOL_SOCKET = IS_DARWIN ? 65535 : 1;
@@ -18945,6 +19148,7 @@ function installSocketFdTracker() {
             if (mapped === fd)
               threadToFd.delete(tid);
           }
+          forgetFd(fd);
         }
       }
     });
@@ -18958,7 +19162,7 @@ function installSocketFdTracker() {
         const fd = args[0].toInt32();
         if (fd < 0 || !classifyStream(fd))
           return;
-        threadToFd.set(Process.getCurrentThreadId(), fd);
+        noteStreamIo(Process.getCurrentThreadId(), fd);
       }
     });
   }
@@ -18967,6 +19171,135 @@ function installSocketFdTracker() {
 function recoverSocketFd() {
   const fd = threadToFd.get(Process.getCurrentThreadId());
   return fd === void 0 ? -1 : fd;
+}
+var MAX_SCOPE_DEPTH = 16;
+var MAX_SSL_FD_ENTRIES = 1024;
+var threadScopes = /* @__PURE__ */ new Map();
+var activeScopes = 0;
+var sslToFd = new SslFdCache(MAX_SSL_FD_ENTRIES);
+function noteStreamIo(tid, fd) {
+  threadToFd.set(tid, fd);
+  if (activeScopes === 0)
+    return;
+  const stack = threadScopes.get(tid);
+  if (stack !== void 0 && stack.length > 0)
+    stack[stack.length - 1].fd = fd;
+}
+function cacheSslFd(ssl, fd) {
+  sslToFd.set(ssl, fd);
+}
+function forgetFd(fd) {
+  sslToFd.deleteFd(fd);
+  if (activeScopes === 0)
+    return;
+  const stack = threadScopes.get(Process.getCurrentThreadId());
+  if (stack === void 0)
+    return;
+  for (const scope of stack) {
+    if (scope.fd === fd)
+      scope.fd = -1;
+  }
+}
+function forgetSsl(ssl) {
+  if (sslToFd.size === 0)
+    return;
+  sslToFd.deleteSsl(ssl.toString());
+}
+function enterSslScope(ssl) {
+  const tid = Process.getCurrentThreadId();
+  let stack = threadScopes.get(tid);
+  if (stack === void 0) {
+    stack = [];
+    threadScopes.set(tid, stack);
+  }
+  if (stack.length >= MAX_SCOPE_DEPTH) {
+    stack.shift();
+    activeScopes--;
+  }
+  stack.push({ ssl: ssl.toString(), fd: -1 });
+  activeScopes++;
+}
+function leaveSslScope(ssl) {
+  const stack = threadScopes.get(Process.getCurrentThreadId());
+  if (stack === void 0 || !stack.some((scope2) => scope2.ssl === ssl))
+    return -1;
+  let scope;
+  do {
+    scope = stack.pop();
+    activeScopes--;
+  } while (scope.ssl !== ssl);
+  if (scope.fd >= 0)
+    cacheSslFd(ssl, scope.fd);
+  return scope.fd;
+}
+var _recoveryLogged = false;
+function fdOrDeferred(fd, ssl) {
+  if (fd >= 0)
+    return fd;
+  installSocketFdTracker();
+  enterSslScope(ssl);
+  return null;
+}
+function recoveredFd(ssl) {
+  const key = ssl.toString();
+  let recovered = leaveSslScope(key);
+  if (recovered < 0)
+    recovered = sslToFd.get(key) ?? recoverSocketFd();
+  if (recovered >= 0 && !_recoveryLogged) {
+    _recoveryLogged = true;
+    devlog("[fd-recovery] SSL object exposed no socket fd (SSL_get_fd<0); recovered peer via SSL-scoped socket-fd correlation \u2014 BIO-path active (e.g. curl connection filters, Conscrypt SSLEngine).");
+  }
+  return recovered;
+}
+var HANDSHAKE_SYMBOLS = ["SSL_do_handshake", "SSL_connect", "SSL_accept"];
+var _scopeHookedAddresses = /* @__PURE__ */ new Set();
+function findModuleExport(moduleName, symbol) {
+  try {
+    const module = Process.findModuleByName(moduleName);
+    const address = module ? module.findExportByName(symbol) : null;
+    return address && !address.isNull() ? address : null;
+  } catch (e) {
+    return null;
+  }
+}
+function attachOnce(address, callbacks) {
+  if (address === null || _scopeHookedAddresses.has(address.toString()))
+    return;
+  _scopeHookedAddresses.add(address.toString());
+  Interceptor.attach(address, callbacks);
+}
+function installSslScopeHooks(moduleName, getFd) {
+  for (const symbol of HANDSHAKE_SYMBOLS) {
+    attachOnce(findModuleExport(moduleName, symbol), {
+      onEnter(args) {
+        const ssl = args[0];
+        if (ssl.isNull() || fdOrDeferred(getFd(ssl), ssl) !== null)
+          return;
+        this.scopedSsl = ssl;
+      },
+      onLeave() {
+        const ssl = this.scopedSsl;
+        if (ssl)
+          leaveSslScope(ssl.toString());
+      }
+    });
+  }
+  attachOnce(findModuleExport(moduleName, "SSL_free"), {
+    onEnter(args) {
+      forgetSsl(args[0]);
+    }
+  });
+}
+
+// agent/shared/record_message.ts
+init_node_globals();
+function buildRecordMessage(ctx, sessionFields) {
+  const message = ctx.resolvePeer ? ctx.resolvePeer() : getPortsAndAddresses(ctx.fd, ctx.isRead, ctx.methodAddresses, ctx.enableDefaultFd);
+  if (message === null)
+    return null;
+  Object.assign(message, sessionFields());
+  message["function"] = ctx.functionName;
+  return message;
 }
 
 // agent/shared/tls13_secret_recovery.ts
@@ -19216,30 +19549,43 @@ function recoverTls13Secrets(moduleName, sslPtr) {
   }
 }
 
+// agent/shared/write_length.ts
+init_node_globals();
+function bytesWrittenFromRetval(requested, retval) {
+  if (!(retval > 0) || !(requested > 0))
+    return 0;
+  return Math.min(requested, retval);
+}
+function bytesWrittenFromOutParam(requested, succeeded, written) {
+  if (!(succeeded > 0) || !(requested > 0))
+    return 0;
+  if (!written || written.isNull())
+    return requested;
+  return Math.min(requested, written.readU32());
+}
+
 // agent/core/executors/read_write.ts
-var _recoveryLogged = false;
-function buildMessage(sslCtx, isRead, def, resolvedFns, methodAddresses, enableDefaultFd, label) {
-  let fd = def.fdDecoder(sslCtx, resolvedFns);
-  if (fd < 0) {
-    installSocketFdTracker();
-    const recovered = recoverSocketFd();
-    if (recovered >= 0) {
-      fd = recovered;
-      if (!_recoveryLogged) {
-        _recoveryLogged = true;
-        devlog("[fd-recovery] SSL object exposed no socket fd (SSL_get_fd<0); recovered peer via thread->socket-fd correlation \u2014 BIO-path active (e.g. Conscrypt SSLEngine).");
-      }
-    }
-  }
-  const message = def.customAddressExtractor ? def.customAddressExtractor(sslCtx, isRead, resolvedFns, enableDefaultFd) : getPortsAndAddresses(fd, isRead, methodAddresses, enableDefaultFd);
-  if (message === null)
-    return null;
-  message["ssl_session_id"] = def.sessionIdDecoder(sslCtx, resolvedFns);
-  if (def.clientRandomDecoder) {
-    message["client_random"] = def.clientRandomDecoder(sslCtx, resolvedFns);
-  }
-  message["function"] = label;
-  return message;
+function sslFdOrDeferred(sslCtx, def, resolvedFns) {
+  const fd = def.fdDecoder(sslCtx, resolvedFns);
+  if (fd >= 0 || def.customAddressExtractor)
+    return fd;
+  return fdOrDeferred(fd, sslCtx);
+}
+function recordMessageBuilder(def, resolvedFns, methodAddresses, enableDefaultFd, isRead, label) {
+  const extractor = def.customAddressExtractor;
+  return (sslCtx, fd) => buildRecordMessage({
+    fd,
+    isRead,
+    functionName: label,
+    methodAddresses,
+    enableDefaultFd,
+    resolvePeer: extractor ? () => extractor(sslCtx, isRead, resolvedFns, enableDefaultFd) : void 0
+  }, () => {
+    const fields = { ssl_session_id: def.sessionIdDecoder(sslCtx, resolvedFns) };
+    if (def.clientRandomDecoder)
+      fields["client_random"] = def.clientRandomDecoder(sslCtx, resolvedFns);
+    return fields;
+  });
 }
 function installReadHook(def, addresses, moduleName, resolvedFns, enableDefaultFd) {
   if (!pcap_enabled)
@@ -19250,6 +19596,7 @@ function installReadHook(def, addresses, moduleName, resolvedFns, enableDefaultF
   const label = hook.functionLabel || "SSL_read";
   const methodAddresses = addresses[moduleName];
   const breadcrumb = `${label} (${moduleName})`;
+  const buildMessage = recordMessageBuilder(def, resolvedFns, methodAddresses, enableDefaultFd, true, label);
   const hookAddr = addresses[moduleName][hook.symbol];
   if (!hookAddr || hookAddr.isNull())
     return;
@@ -19257,16 +19604,25 @@ function installReadHook(def, addresses, moduleName, resolvedFns, enableDefaultF
     onEnter: function(args) {
       hookBreadcrumb(breadcrumb);
       const sslCtx = args[hook.args.sslCtxArgIndex];
-      const message = buildMessage(sslCtx, true, def, resolvedFns, methodAddresses, enableDefaultFd, label);
+      this.buf = args[hook.args.bufferArgIndex];
+      const fd = sslFdOrDeferred(sslCtx, def, resolvedFns);
+      if (fd === null) {
+        this.deferredSsl = sslCtx;
+        return;
+      }
+      const message = buildMessage(sslCtx, fd);
       if (message === null)
         return;
       this.message = message;
-      this.buf = args[hook.args.bufferArgIndex];
     },
     onLeave: function(retval) {
+      const recovered = this.deferredSsl ? recoveredFd(this.deferredSsl) : -1;
       retval |= 0;
       if (retval <= 0)
         return;
+      if (this.deferredSsl) {
+        this.message = buildMessage(this.deferredSsl, recovered);
+      }
       if (!this.message)
         return;
       sendDatalog(this.message, this.buf.readByteArray(retval));
@@ -19282,47 +19638,43 @@ function installWriteHook(def, addresses, moduleName, resolvedFns, enableDefault
   const label = hook.functionLabel || "SSL_write";
   const methodAddresses = addresses[moduleName];
   const breadcrumb = `${label} (${moduleName})`;
+  const buildMessage = recordMessageBuilder(def, resolvedFns, methodAddresses, enableDefaultFd, false, label);
   const hookAddr = addresses[moduleName][hook.symbol];
   if (!hookAddr || hookAddr.isNull())
     return;
-  if (hook.args.bytesTransferred === "retval") {
-    Interceptor.attach(hookAddr, {
-      onEnter: function(args) {
-        hookBreadcrumb(breadcrumb);
-        const sslCtx = args[hook.args.sslCtxArgIndex];
-        recoverTls13Secrets(moduleName, sslCtx);
-        const message = buildMessage(sslCtx, false, def, resolvedFns, methodAddresses, enableDefaultFd, label);
-        if (message === null)
-          return;
-        this.message = message;
-        this.buf = args[hook.args.bufferArgIndex];
-      },
-      onLeave: function(retval) {
-        retval |= 0;
-        if (retval <= 0)
-          return;
-        if (!this.message)
-          return;
-        sendDatalog(this.message, this.buf.readByteArray(retval));
+  const lengthArgIndex = hook.args.bytesTransferred === "arg" ? hook.args.lengthArgIndex : void 0;
+  Interceptor.attach(hookAddr, {
+    onEnter: function(args) {
+      hookBreadcrumb(breadcrumb);
+      const sslCtx = args[hook.args.sslCtxArgIndex];
+      recoverTls13Secrets(moduleName, sslCtx);
+      this.buf = args[hook.args.bufferArgIndex];
+      if (lengthArgIndex !== void 0)
+        this.len = parseInt(args[lengthArgIndex]);
+      const fd = sslFdOrDeferred(sslCtx, def, resolvedFns);
+      if (fd === null) {
+        this.deferredSsl = sslCtx;
+        return;
       }
-    });
-  } else {
-    Interceptor.attach(hookAddr, {
-      onEnter: function(args) {
-        hookBreadcrumb(breadcrumb);
-        const sslCtx = args[hook.args.sslCtxArgIndex];
-        recoverTls13Secrets(moduleName, sslCtx);
-        const message = buildMessage(sslCtx, false, def, resolvedFns, methodAddresses, enableDefaultFd, label);
-        if (message === null)
-          return;
-        const buf = args[hook.args.bufferArgIndex];
-        const len = parseInt(args[hook.args.lengthArgIndex]);
-        sendDatalog(message, buf.readByteArray(len));
-      },
-      onLeave: function(_retval) {
+      const message = buildMessage(sslCtx, fd);
+      if (message === null)
+        return;
+      this.message = message;
+    },
+    onLeave: function(retval) {
+      const recovered = this.deferredSsl ? recoveredFd(this.deferredSsl) : -1;
+      const returned = retval.toInt32();
+      const count = lengthArgIndex !== void 0 ? bytesWrittenFromRetval(this.len, returned) : Math.max(returned, 0);
+      if (count <= 0)
+        return;
+      if (this.deferredSsl) {
+        this.message = buildMessage(this.deferredSsl, recovered);
       }
-    });
-  }
+      if (!this.message)
+        return;
+      sendDatalog(this.message, this.buf.readByteArray(count));
+    }
+  });
 }
 
 // agent/core/executors/keylog_callback.ts
@@ -24658,7 +25010,8 @@ function createOpenSslDefinition(options) {
   }
   def.extraHooks = [
     ...def.extraHooks || [],
-    createLifecycleHook("SSL_free", openSslFdDecoder, openSslSessionIdDecoder, openSslClientRandomDecoder)
+    createLifecycleHook("SSL_free", openSslFdDecoder, openSslSessionIdDecoder, openSslClientRandomDecoder),
+    ...skipRW ? [] : [createSslFdScopeHooks()]
   ];
   return def;
 }
@@ -24738,8 +25091,25 @@ function createBoringSSLKeylogApproach() {
     }
   };
 }
+function createSslFdScopeHooks() {
+  return {
+    install: (_addresses, modName, resolvedFns, _enableDefaultFd) => {
+      if (!pcap_enabled)
+        return;
+      installSslScopeHooks(modName, (ssl) => openSslFdDecoder(ssl, resolvedFns));
+    }
+  };
+}
+function buildExMessage(fd, isRead, ssl, functionName, methodAddresses, resolvedFns, enableDefaultFd) {
+  return buildRecordMessage({ fd, isRead, functionName, methodAddresses, enableDefaultFd }, () => ({
+    ssl_session_id: openSslSessionIdDecoder(ssl, resolvedFns),
+    client_random: openSslClientRandomDecoder(ssl, resolvedFns)
+  }));
+}
 function createSslReadWriteExHooks() {
   return [
+    // Some platform definitions REPLACE extraHooks with this list; keep the scope hooks.
+    createSslFdScopeHooks(),
     {
       install: (addresses, modName, resolvedFns, enableDefaultFd) => {
         if (!pcap_enabled)
@@ -24749,18 +25119,25 @@ function createSslReadWriteExHooks() {
           Interceptor.attach(readExAddr, {
             onEnter: function(args) {
               const ssl = args[0];
-              const fd = resolvedFns["SSL_get_fd"]?.(ssl) ?? -1;
-              const message = getPortsAndAddresses(fd, true, addresses[modName], enableDefaultFd);
-              if (message === null)
-                return;
-              message["ssl_session_id"] = openSslSessionIdDecoder(ssl, resolvedFns);
-              message["client_random"] = openSslClientRandomDecoder(ssl, resolvedFns);
-              message["function"] = "SSL_read_ex";
-              this.message = message;
+              const fd = fdOrDeferred(resolvedFns["SSL_get_fd"]?.(ssl) ?? -1, ssl);
               this.buf = args[1];
               this.readbytes = args[3];
+              if (fd === null) {
+                this.deferredSsl = ssl;
+                return;
+              }
+              const message = buildExMessage(fd, true, ssl, "SSL_read_ex", addresses[modName], resolvedFns, enableDefaultFd);
+              if (message === null)
+                return;
+              this.message = message;
             },
             onLeave: function(retval) {
+              const recovered = this.deferredSsl ? recoveredFd(this.deferredSsl) : -1;
+              if ((retval | 0) <= 0)
+                return;
+              if (this.deferredSsl) {
+                this.message = buildExMessage(recovered, true, this.deferredSsl, "SSL_read_ex", addresses[modName], resolvedFns, enableDefaultFd);
+              }
               if (!this.message)
                 return;
               const actualBytes = this.readbytes.readU32();
@@ -24775,16 +25152,30 @@ function createSslReadWriteExHooks() {
           Interceptor.attach(writeExAddr, {
             onEnter: function(args) {
               const ssl = args[0];
-              const fd = resolvedFns["SSL_get_fd"]?.(ssl) ?? -1;
-              const message = getPortsAndAddresses(fd, false, addresses[modName], enableDefaultFd);
+              const fd = fdOrDeferred(resolvedFns["SSL_get_fd"]?.(ssl) ?? -1, ssl);
+              this.buf = args[1];
+              this.bufLen = parseInt(args[2]);
+              this.written = args[3];
+              if (fd === null) {
+                this.deferredSsl = ssl;
+                return;
+              }
+              const message = buildExMessage(fd, false, ssl, "SSL_write_ex", addresses[modName], resolvedFns, enableDefaultFd);
               if (message === null)
                 return;
-              message["ssl_session_id"] = openSslSessionIdDecoder(ssl, resolvedFns);
-              message["client_random"] = openSslClientRandomDecoder(ssl, resolvedFns);
-              message["function"] = "SSL_write_ex";
-              const buf = args[1];
-              const bufLen = parseInt(args[2]);
-              sendDatalog(message, buf.readByteArray(bufLen));
+              this.message = message;
+            },
+            onLeave: function(retval) {
+              const recovered = this.deferredSsl ? recoveredFd(this.deferredSsl) : -1;
+              const count = bytesWrittenFromOutParam(this.bufLen, retval.toInt32(), this.written);
+              if (count <= 0)
+                return;
+              if (this.deferredSsl) {
+                this.message = buildExMessage(recovered, false, this.deferredSsl, "SSL_write_ex", addresses[modName], resolvedFns, enableDefaultFd);
+              }
+              if (!this.message)
+                return;
+              sendDatalog(this.message, this.buf.readByteArray(count));
             }
           });
         }
@@ -24864,6 +25255,218 @@ function hasMoreThanFiveExports(moduleName) {
 
 // agent/legacy/tls/libs/openssl_boringssl.ts
 init_shared_structures();
+
+// agent/shared/ssl_plaintext_hooks.ts
+init_node_globals();
+init_shared_structures();
+var SslPlaintextHooks = class {
+  host;
+  modifications;
+  useBioGetFd;
+  /**
+   * @param useBioGetFd rebind SSL_get_fd to BIO_get_fd when falling back to the
+   *                    init_addresses module (Apple's libboringssl only).
+   */
+  constructor(host, modifications, useBioGetFd) {
+    this.host = host;
+    this.modifications = modifications;
+    this.useBioGetFd = useBioGetFd;
+  }
+  /**
+   * Peer/session metadata for one plaintext record, or null when it cannot be
+   * attributed (no usable fd and no --enable_default_fd, or a non-IP socket).
+   */
+  buildMessage(fd, isRead, ssl, functionName) {
+    if (fd < 0 && !enable_default_fd)
+      return null;
+    const host = this.host;
+    return buildRecordMessage({ fd, isRead, functionName, methodAddresses: host.addresses[host.module_name], enableDefaultFd: enable_default_fd }, () => ({ ssl_session_id: host.getSslSessionId(ssl) }));
+  }
+  /**
+   * SSL_get_fd for the write hooks, or -1 if the call threw. On a throw outside the
+   * base hook, rebinds the SSL helpers from the fallback (init_addresses) module.
+   */
+  writeSslFd(ssl, isBaseHook) {
+    try {
+      return this.host.SSL_get_fd(ssl);
+    } catch (error) {
+      if (!isBaseHook) {
+        this.rebindFromFallback();
+      } else if (error instanceof Error) {
+        devlog_error("Error: " + error.message);
+        devlog_error("Stack: " + error.stack);
+      } else {
+        devlog_error("Unexpected error: " + error);
+      }
+      return -1;
+    }
+  }
+  /**
+   * Rebind the SSL helpers to the first base-hooked module's addresses. Never throws:
+   * with no usable fallback the helpers stay as they are (this record falls back to
+   * deferred attribution instead of being lost to an exception in onEnter).
+   */
+  rebindFromFallback() {
+    const host = this.host;
+    const fallback = globalThis.init_addresses ?? {};
+    const firstKey = Object.keys(fallback)[0];
+    const base = firstKey === void 0 ? void 0 : fallback[firstKey];
+    const fdFunction = this.useBioGetFd ? "BIO_get_fd" : "SSL_get_fd";
+    if (!base || !base[fdFunction] || !base["SSL_SESSION_get_id"] || !base["SSL_get_session"]) {
+      devlog_error(`SSL_get_fd failed in ${host.moduleName} and no base-hook fallback is available`);
+      return;
+    }
+    host.SSL_SESSION_get_id = new NativeFunction(base["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
+    host.SSL_get_fd = new NativeFunction(base[fdFunction], "int", ["pointer"]);
+    host.SSL_get_session = new NativeFunction(base["SSL_get_session"], "pointer", ["pointer"]);
+  }
+  /**
+   * Scope SSL_do_handshake/SSL_connect/SSL_accept for fd-less SSL objects and forget an
+   * SSL's fd on SSL_free. Idempotent per address.
+   */
+  installScopeHooks() {
+    installSslScopeHooks(this.host.moduleName, (ssl) => {
+      try {
+        return this.host.SSL_get_fd(ssl);
+      } catch (e) {
+        return -1;
+      }
+    });
+  }
+  /** SSL_read(ssl, buf, num) -> bytes read. */
+  attachRead(address, functionName = "SSL_read") {
+    const hooks = this;
+    Interceptor.attach(address, {
+      onEnter(args) {
+        this.bufLen = args[2].toInt32();
+        this.buf = args[1];
+        const fd = fdOrDeferred(hooks.host.SSL_get_fd(args[0]), args[0]);
+        if (fd === null) {
+          this.deferredSsl = args[0];
+          return;
+        }
+        this.message = hooks.buildMessage(fd, true, args[0], functionName);
+      },
+      onLeave(retval) {
+        const recovered = this.deferredSsl ? recoveredFd(this.deferredSsl) : -1;
+        let length = retval.toInt32();
+        if (length <= 0)
+          return;
+        if (this.deferredSsl) {
+          this.message = hooks.buildMessage(recovered, true, this.deferredSsl, functionName);
+        }
+        if (!this.message)
+          return;
+        const readmod = hooks.modifications.readmod;
+        if (readmod !== null) {
+          this.buf.writeByteArray(new Uint8Array(this.bufLen));
+          this.buf.writeByteArray(readmod);
+          length = readmod.byteLength;
+        }
+        sendDatalog(this.message, this.buf.readByteArray(length));
+      }
+    });
+  }
+  /**
+   * SSL_write(ssl, buf, num) -> bytes written. The record is emitted in onLeave with
+   * min(num, retval) bytes, so a partial write never duplicates plaintext (the app
+   * retries with the remainder). The caller owns `buf` for the whole synchronous call.
+   */
+  attachWrite(address, functionName = "SSL_write") {
+    const hooks = this;
+    Interceptor.attach(address, {
+      onEnter(args) {
+        if (!hooks.prepareWrite(this, args, functionName))
+          return;
+        this.len = args[2].toInt32();
+      },
+      onLeave(retval) {
+        hooks.emitWrite(this, bytesWrittenFromRetval(this.len, retval.toInt32()), functionName);
+      }
+    });
+  }
+  /** SSL_read_ex(ssl, buf, num, *readbytes) -> 1 on success. */
+  attachReadEx(address, functionName = "SSL_read_ex") {
+    const hooks = this;
+    Interceptor.attach(address, {
+      onEnter(args) {
+        this.buf = args[1];
+        this.readbytes_ptr = args[3];
+        const fd = fdOrDeferred(hooks.host.SSL_get_fd(args[0]), args[0]);
+        if (fd === null) {
+          this.deferredSsl = args[0];
+          return;
+        }
+        this.message = hooks.buildMessage(fd, true, args[0], functionName);
+      },
+      onLeave(retval) {
+        const recovered = this.deferredSsl ? recoveredFd(this.deferredSsl) : -1;
+        if (retval.toInt32() <= 0)
+          return;
+        if (this.deferredSsl) {
+          this.message = hooks.buildMessage(recovered, true, this.deferredSsl, functionName);
+        }
+        if (!this.message)
+          return;
+        const actualBytes = this.readbytes_ptr.readULong();
+        if (actualBytes <= 0)
+          return;
+        sendDatalog(this.message, this.buf.readByteArray(actualBytes));
+      }
+    });
+  }
+  /** SSL_write_ex(ssl, buf, num, *written) -> 1 on success; emits *written bytes in onLeave. */
+  attachWriteEx(address, functionName = "SSL_write_ex") {
+    const hooks = this;
+    Interceptor.attach(address, {
+      onEnter(args) {
+        if (!hooks.prepareWrite(this, args, functionName))
+          return;
+        this.len = args[2].toInt32();
+        this.writtenPtr = args[3];
+      },
+      onLeave(retval) {
+        const count = bytesWrittenFromOutParam(this.len, retval.toInt32(), this.writtenPtr);
+        hooks.emitWrite(this, count, functionName);
+      }
+    });
+  }
+  /**
+   * onEnter of a write hook: resolves the fd (or opens a deferred SSL scope), applies a
+   * writemod replacement and remembers the buffer. Returns false when the record cannot
+   * be attributed (nothing to emit in onLeave).
+   */
+  prepareWrite(call, args, functionName) {
+    const ssl = args[0];
+    const fd = fdOrDeferred(this.writeSslFd(ssl, this.host.is_base_hook), ssl);
+    if (fd === null) {
+      call.deferredSsl = ssl;
+    } else {
+      call.message = this.buildMessage(fd, false, ssl, functionName);
+      if (call.message === null)
+        return false;
+    }
+    const writemod = this.modifications.writemod;
+    if (writemod !== null) {
+      call.replacement = Memory.alloc(writemod.byteLength);
+      call.replacement.writeByteArray(writemod);
+      args[1] = call.replacement;
+      args[2] = new NativePointer(writemod.byteLength);
+    }
+    call.buf = args[1];
+    return true;
+  }
+  /** onLeave of a write hook: emits `count` bytes (0 = failed call, retried by the app). */
+  emitWrite(call, count, functionName) {
+    const recovered = call.deferredSsl ? recoveredFd(call.deferredSsl) : -1;
+    if (count <= 0)
+      return;
+    const message = call.deferredSsl ? this.buildMessage(recovered, false, call.deferredSsl, functionName) : call.message;
+    if (!message)
+      return;
+    sendDatalog(message, call.buf.readByteArray(count));
+  }
+};
 
 // agent/legacy/tls/libs/ssl_method_mapping.ts
 init_node_globals();
@@ -25026,137 +25629,35 @@ var OpenSSL_BoringSSL = class _OpenSSL_BoringSSL {
   static initializePipeline(patternData, experimentalMode) {
     initializePipeline(patternData, experimentalMode);
   }
+  _plaintextHooks;
+  /** The plaintext SSL_read/SSL_write(_ex) hooks, with SSL-scoped fd attribution (shared/ssl_plaintext_hooks.ts). */
+  get plaintextHooks() {
+    if (!this._plaintextHooks) {
+      this._plaintextHooks = new SslPlaintextHooks(this, _OpenSSL_BoringSSL.modReceiver, ObjC.available);
+    }
+    return this._plaintextHooks;
+  }
   install_plaintext_read_hook() {
-    if (!pcap_enabled)
+    if (!pcap_enabled || !this.do_read_write_hooks)
       return;
-    if (this.do_read_write_hooks && !isResolvedAddress(this.addresses[this.moduleName]["SSL_read"])) {
+    const address = this.addresses[this.moduleName]["SSL_read"];
+    if (!isResolvedAddress(address)) {
       devlog_info("SSL_read unresolved for " + this.moduleName + "; skipping plaintext SSL_read hook");
       return;
     }
-    if (this.do_read_write_hooks) {
-      let ab2str2 = function(buf) {
-        return String.fromCharCode.apply(null, new Uint16Array(buf));
-      }, str2ab2 = function(str) {
-        var buf = new ArrayBuffer(str.length + 1);
-        var bufView = new Uint8Array(buf);
-        for (var i = 0, strLen = str.length; i < strLen; i++) {
-          bufView[i] = str.charCodeAt(i);
-        }
-        bufView[str.length] = 0;
-        return buf;
-      };
-      var ab2str = ab2str2, str2ab = str2ab2;
-      var lib_addesses = this.addresses;
-      var instance = this;
-      var current_module_name = this.module_name;
-      Interceptor.attach(this.addresses[this.moduleName]["SSL_read"], {
-        onEnter: function(args) {
-          this.bufLen = args[2].toInt32();
-          this.fd = instance.SSL_get_fd(args[0]);
-          if (this.fd < 0) {
-            installSocketFdTracker();
-            const recovered = recoverSocketFd();
-            if (recovered >= 0)
-              this.fd = recovered;
-          }
-          if (this.fd < 0 && enable_default_fd == false) {
-            return;
-          }
-          var message = getPortsAndAddresses(this.fd, true, lib_addesses[current_module_name], enable_default_fd);
-          if (message === null) {
-            return;
-          }
-          message["ssl_session_id"] = instance.getSslSessionId(args[0]);
-          message["function"] = "SSL_read";
-          this.message = message;
-          this.buf = args[1];
-        },
-        onLeave: function(retval) {
-          retval |= 0;
-          if (retval <= 0 || this.fd < 0 && !enable_default_fd) {
-            return;
-          }
-          if (_OpenSSL_BoringSSL.modReceiver.readmod !== null) {
-            this.buf.writeByteArray(new Uint8Array(this.bufLen));
-            this.buf.writeByteArray(_OpenSSL_BoringSSL.modReceiver.readmod);
-            retval = _OpenSSL_BoringSSL.modReceiver.readmod.byteLength;
-          }
-          sendDatalog(this.message, this.buf.readByteArray(retval));
-        }
-      });
-    }
+    this.plaintextHooks.installScopeHooks();
+    this.plaintextHooks.attachRead(address);
   }
   install_plaintext_write_hook() {
-    if (!pcap_enabled)
+    if (!pcap_enabled || !this.do_read_write_hooks)
       return;
-    if (this.do_read_write_hooks && !isResolvedAddress(this.addresses[this.moduleName]["SSL_write"])) {
+    const address = this.addresses[this.moduleName]["SSL_write"];
+    if (!isResolvedAddress(address)) {
       devlog_info("SSL_write unresolved for " + this.moduleName + "; skipping plaintext SSL_write hook");
       return;
     }
-    if (this.do_read_write_hooks) {
-      let str2ab2 = function(str) {
-        var buf = new ArrayBuffer(str.length + 1);
-        var bufView = new Uint8Array(buf);
-        for (var i = 0, strLen = str.length; i < strLen; i++) {
-          bufView[i] = str.charCodeAt(i);
-        }
-        bufView[str.length] = 0;
-        return buf;
-      };
-      var str2ab = str2ab2;
-      var current_module_name = this.module_name;
-      var lib_addesses = this.addresses;
-      var instance = this;
-      Interceptor.attach(this.addresses[this.moduleName]["SSL_write"], {
-        onEnter: function(args) {
-          if (!ObjC.available) {
-            try {
-              this.fd = instance.SSL_get_fd(args[0]);
-            } catch (error) {
-              if (!this.is_base_hook) {
-                const fallback_addresses = globalThis.init_addresses;
-                let keys = Object.keys(fallback_addresses);
-                let firstKey = keys[0];
-                instance.SSL_SESSION_get_id = new NativeFunction(fallback_addresses[firstKey]["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
-                instance.SSL_get_fd = ObjC.available ? new NativeFunction(fallback_addresses[firstKey]["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(fallback_addresses["SSL_get_fd"], "int", ["pointer"]);
-                instance.SSL_get_session = new NativeFunction(fallback_addresses[firstKey]["SSL_get_session"], "pointer", ["pointer"]);
-              } else {
-                if (error instanceof Error) {
-                  devlog_error("Error: " + error.message);
-                  devlog_error("Stack: " + error.stack);
-                } else {
-                  devlog_error("Unexpected error: " + error);
-                }
-              }
-            }
-            if (this.fd < 0) {
-              installSocketFdTracker();
-              const recovered = recoverSocketFd();
-              if (recovered >= 0)
-                this.fd = recovered;
-            }
-            if (this.fd < 0 && enable_default_fd == false) {
-              return;
-            }
-            var message = getPortsAndAddresses(this.fd, false, lib_addesses[current_module_name], enable_default_fd);
-            if (message === null) {
-              return;
-            }
-            message["ssl_session_id"] = instance.getSslSessionId(args[0]);
-            message["function"] = "SSL_write";
-            if (_OpenSSL_BoringSSL.modReceiver.writemod !== null) {
-              const newPointer = Memory.alloc(_OpenSSL_BoringSSL.modReceiver.writemod.byteLength);
-              newPointer.writeByteArray(_OpenSSL_BoringSSL.modReceiver.writemod);
-              args[1] = newPointer;
-              args[2] = new NativePointer(_OpenSSL_BoringSSL.modReceiver.writemod.byteLength);
-            }
-            sendDatalog(message, args[1].readByteArray(args[2].toInt32()));
-          }
-        },
-        onLeave: function(retval) {
-        }
-      });
-    }
+    this.plaintextHooks.installScopeHooks();
+    this.plaintextHooks.attachWrite(address);
   }
   install_tls_keys_callback_hook() {
     if (!keylog_enabled)
@@ -25217,86 +25718,10 @@ var OpenSSL_BoringSSL = class _OpenSSL_BoringSSL {
   install_extended_hooks() {
     if (!pcap_enabled)
       return;
-    if (this.is_openssl) {
-      var current_module_name = this.module_name;
-      var lib_addesses = this.addresses;
-      var instance = this;
-      Interceptor.attach(this.addresses[this.moduleName]["SSL_read_ex"], {
-        onEnter: function(args) {
-          this.bufLen = args[2].toInt32();
-          this.fd = instance.SSL_get_fd(args[0]);
-          if (this.fd < 0) {
-            installSocketFdTracker();
-            const recovered = recoverSocketFd();
-            if (recovered >= 0)
-              this.fd = recovered;
-          }
-          if (this.fd < 0 && enable_default_fd == false) {
-            return;
-          }
-          var message = getPortsAndAddresses(this.fd, true, lib_addesses[current_module_name], enable_default_fd);
-          if (message === null) {
-            return;
-          }
-          message["ssl_session_id"] = instance.getSslSessionId(args[0]);
-          message["function"] = "SSL_read_ex";
-          this.message = message;
-          this.buf = args[1];
-          this.readbytes_ptr = args[3];
-        },
-        onLeave: function(retval) {
-          retval |= 0;
-          var actual_bytes = this.readbytes_ptr.readULong();
-          if (actual_bytes <= 0 || this.fd < 0 && !enable_default_fd) {
-            return;
-          }
-          sendDatalog(this.message, this.buf.readByteArray(actual_bytes));
-        }
-      });
-      Interceptor.attach(this.addresses[this.moduleName]["SSL_write_ex"], {
-        onEnter: function(args) {
-          if (!ObjC.available) {
-            try {
-              this.fd = instance.SSL_get_fd(args[0]);
-            } catch (error) {
-              if (!this.is_base_hook) {
-                const fallback_addresses = globalThis.init_addresses;
-                let keys = Object.keys(fallback_addresses);
-                let firstKey = keys[0];
-                instance.SSL_SESSION_get_id = new NativeFunction(fallback_addresses[firstKey]["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
-                instance.SSL_get_fd = ObjC.available ? new NativeFunction(fallback_addresses[firstKey]["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(fallback_addresses["SSL_get_fd"], "int", ["pointer"]);
-                instance.SSL_get_session = new NativeFunction(fallback_addresses[firstKey]["SSL_get_session"], "pointer", ["pointer"]);
-              } else {
-                if (error instanceof Error) {
-                  devlog_error("Error: " + error.message);
-                  devlog_error("Stack: " + error.stack);
-                } else {
-                  devlog_error("Unexpected error: " + error);
-                }
-              }
-            }
-            if (this.fd < 0) {
-              installSocketFdTracker();
-              const recovered = recoverSocketFd();
-              if (recovered >= 0)
-                this.fd = recovered;
-            }
-            if (this.fd < 0 && enable_default_fd == false) {
-              return;
-            }
-            var message = getPortsAndAddresses(this.fd, false, lib_addesses[current_module_name], enable_default_fd);
-            if (message === null) {
-              return;
-            }
-            message["ssl_session_id"] = instance.getSslSessionId(args[0]);
-            message["function"] = "SSL_write_ex";
-            sendDatalog(message, args[1].readByteArray(args[2].toInt32()));
-          }
-        },
-        onLeave: function(retval) {
-        }
-      });
-    }
+    if (!this.is_openssl)
+      return;
+    this.plaintextHooks.attachReadEx(this.addresses[this.moduleName]["SSL_read_ex"]);
+    this.plaintextHooks.attachWriteEx(this.addresses[this.moduleName]["SSL_write_ex"]);
   }
   /**
     * Get the session_id of SSL object and return it as a hex string.
@@ -32399,6 +32824,9 @@ var ModifyReceiver2 = class {
     this.writeModification = val;
   }
 };
+function usesBioGetFd(moduleName) {
+  return moduleName.split("/").pop() === "libboringssl.dylib";
+}
 var OpenSSL_BoringSSL2 = class _OpenSSL_BoringSSL {
   moduleName;
   socket_library;
@@ -32468,17 +32896,8 @@ var OpenSSL_BoringSSL2 = class _OpenSSL_BoringSSL {
     if (moduleName.includes("libconscrypt_jni")) {
       devlog("trying to load addtional functions for conscrypt");
     }
-    if (!ObjC.available && sslSurfaceResolvable) {
-      try {
-        this.SSL_SESSION_get_id = new NativeFunction(this.addresses[this.moduleName]["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
-        this.SSL_get_fd = ObjC.available ? new NativeFunction(this.addresses[this.moduleName]["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(this.addresses[this.moduleName]["SSL_get_fd"], "int", ["pointer"]);
-        this.SSL_get_session = new NativeFunction(this.addresses[this.moduleName]["SSL_get_session"], "pointer", ["pointer"]);
-        this.do_read_write_hooks = true;
-      } catch (e) {
-        this.do_read_write_hooks = false;
-        devlog_error("Error while loading additional hooks for OpenSSL/BoringSSL: " + e);
-        devlog_info("Only key extraction will be available for " + this.moduleName);
-      }
+    if (!usesBioGetFd(moduleName) && sslSurfaceResolvable) {
+      this.bindSslFdAndSessionFunctions();
     } else {
       this.do_read_write_hooks = false;
     }
@@ -32507,117 +32926,43 @@ var OpenSSL_BoringSSL2 = class _OpenSSL_BoringSSL {
   static initializePipeline(patternData, experimentalMode) {
     initializePipeline(patternData, experimentalMode);
   }
-  install_plaintext_read_hook() {
-    if (!pcap_enabled)
-      return;
-    if (this.do_read_write_hooks) {
-      let ab2str2 = function(buf) {
-        return String.fromCharCode.apply(null, new Uint16Array(buf));
-      }, str2ab2 = function(str) {
-        var buf = new ArrayBuffer(str.length + 1);
-        var bufView = new Uint8Array(buf);
-        for (var i = 0, strLen = str.length; i < strLen; i++) {
-          bufView[i] = str.charCodeAt(i);
-        }
-        bufView[str.length] = 0;
-        return buf;
-      };
-      var ab2str = ab2str2, str2ab = str2ab2;
-      var lib_addesses = this.addresses;
-      var instance = this;
-      var current_module_name = this.module_name;
-      Interceptor.attach(this.addresses[this.moduleName]["SSL_read"], {
-        onEnter: function(args) {
-          this.bufLen = args[2].toInt32();
-          this.fd = instance.SSL_get_fd(args[0]);
-          if (this.fd < 0 && enable_default_fd == false) {
-            return;
-          }
-          var message = getPortsAndAddresses(this.fd, true, lib_addesses[current_module_name], enable_default_fd);
-          if (message === null) {
-            return;
-          }
-          message["ssl_session_id"] = instance.getSslSessionId(args[0]);
-          message["function"] = "SSL_read";
-          this.message = message;
-          this.buf = args[1];
-        },
-        onLeave: function(retval) {
-          retval |= 0;
-          if (retval <= 0 || this.fd < 0 && !enable_default_fd) {
-            return;
-          }
-          if (_OpenSSL_BoringSSL.modReceiver.readmod !== null) {
-            this.buf.writeByteArray(new Uint8Array(this.bufLen));
-            this.buf.writeByteArray(_OpenSSL_BoringSSL.modReceiver.readmod);
-            retval = _OpenSSL_BoringSSL.modReceiver.readmod.byteLength;
-          }
-          sendDatalog(this.message, this.buf.readByteArray(retval));
-        }
-      });
+  /**
+   * Bind SSL_get_fd / SSL_get_session / SSL_SESSION_get_id and turn the
+   * plaintext hooks on. Returns false — keys only — if a symbol is unresolved.
+   */
+  bindSslFdAndSessionFunctions() {
+    try {
+      this.SSL_SESSION_get_id = new NativeFunction(this.addresses[this.moduleName]["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
+      this.SSL_get_fd = new NativeFunction(this.addresses[this.moduleName]["SSL_get_fd"], "int", ["pointer"]);
+      this.SSL_get_session = new NativeFunction(this.addresses[this.moduleName]["SSL_get_session"], "pointer", ["pointer"]);
+    } catch (e) {
+      this.do_read_write_hooks = false;
+      devlog_error("Error while loading additional hooks for OpenSSL/BoringSSL: " + e);
+      devlog_info("Only key extraction will be available for " + this.moduleName);
+      return false;
     }
+    this.do_read_write_hooks = true;
+    return true;
+  }
+  _plaintextHooks;
+  /** The plaintext SSL_read/SSL_write(_ex) hooks, with SSL-scoped fd attribution (shared/ssl_plaintext_hooks.ts). */
+  get plaintextHooks() {
+    if (!this._plaintextHooks) {
+      this._plaintextHooks = new SslPlaintextHooks(this, _OpenSSL_BoringSSL.modReceiver, usesBioGetFd(this.module_name));
+    }
+    return this._plaintextHooks;
+  }
+  install_plaintext_read_hook() {
+    if (!pcap_enabled || !this.do_read_write_hooks)
+      return;
+    this.plaintextHooks.installScopeHooks();
+    this.plaintextHooks.attachRead(this.addresses[this.moduleName]["SSL_read"]);
   }
   install_plaintext_write_hook() {
-    if (!pcap_enabled)
+    if (!pcap_enabled || !this.do_read_write_hooks)
       return;
-    if (this.do_read_write_hooks) {
-      let str2ab2 = function(str) {
-        var buf = new ArrayBuffer(str.length + 1);
-        var bufView = new Uint8Array(buf);
-        for (var i = 0, strLen = str.length; i < strLen; i++) {
-          bufView[i] = str.charCodeAt(i);
-        }
-        bufView[str.length] = 0;
-        return buf;
-      };
-      var str2ab = str2ab2;
-      var current_module_name = this.module_name;
-      var lib_addesses = this.addresses;
-      var instance = this;
-      Interceptor.attach(this.addresses[this.moduleName]["SSL_write"], {
-        onEnter: function(args) {
-          if (!ObjC.available) {
-            try {
-              this.fd = instance.SSL_get_fd(args[0]);
-            } catch (error) {
-              if (!this.is_base_hook) {
-                const fallback_addresses = globalThis.init_addresses;
-                let keys = Object.keys(fallback_addresses);
-                let firstKey = keys[0];
-                instance.SSL_SESSION_get_id = new NativeFunction(fallback_addresses[firstKey]["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
-                instance.SSL_get_fd = ObjC.available ? new NativeFunction(fallback_addresses[firstKey]["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(fallback_addresses["SSL_get_fd"], "int", ["pointer"]);
-                instance.SSL_get_session = new NativeFunction(fallback_addresses[firstKey]["SSL_get_session"], "pointer", ["pointer"]);
-              } else {
-                if (error instanceof Error) {
-                  devlog_error("Error: " + error.message);
-                  devlog_error("Stack: " + error.stack);
-                } else {
-                  devlog_error("Unexpected error: " + error);
-                }
-              }
-            }
-            if (this.fd < 0 && enable_default_fd == false) {
-              return;
-            }
-            var message = getPortsAndAddresses(this.fd, false, lib_addesses[current_module_name], enable_default_fd);
-            if (message === null) {
-              return;
-            }
-            message["ssl_session_id"] = instance.getSslSessionId(args[0]);
-            message["function"] = "SSL_write";
-            if (_OpenSSL_BoringSSL.modReceiver.writemod !== null) {
-              const newPointer = Memory.alloc(_OpenSSL_BoringSSL.modReceiver.writemod.byteLength);
-              newPointer.writeByteArray(_OpenSSL_BoringSSL.modReceiver.writemod);
-              args[1] = newPointer;
-              args[2] = new NativePointer(_OpenSSL_BoringSSL.modReceiver.writemod.byteLength);
-            }
-            sendDatalog(message, args[1].readByteArray(args[2].toInt32()));
-          }
-        },
-        onLeave: function(retval) {
-        }
-      });
-    }
+    this.plaintextHooks.installScopeHooks();
+    this.plaintextHooks.attachWrite(this.addresses[this.moduleName]["SSL_write"]);
   }
   install_tls_keys_callback_hook() {
     log("Error: TLS key extraction not implemented yet.");
@@ -32672,74 +33017,10 @@ var OpenSSL_BoringSSL2 = class _OpenSSL_BoringSSL {
   install_extended_hooks() {
     if (!pcap_enabled)
       return;
-    if (this.is_openssl) {
-      var current_module_name = this.module_name;
-      var lib_addesses = this.addresses;
-      var instance = this;
-      Interceptor.attach(this.addresses[this.moduleName]["SSL_read_ex"], {
-        onEnter: function(args) {
-          this.bufLen = args[2].toInt32();
-          this.fd = instance.SSL_get_fd(args[0]);
-          if (this.fd < 0 && enable_default_fd == false) {
-            return;
-          }
-          var message = getPortsAndAddresses(this.fd, true, lib_addesses[current_module_name], enable_default_fd);
-          if (message === null) {
-            return;
-          }
-          message["ssl_session_id"] = instance.getSslSessionId(args[0]);
-          message["function"] = "SSL_read_ex";
-          this.message = message;
-          this.buf = args[1];
-          this.readbytes_ptr = args[3];
-        },
-        onLeave: function(retval) {
-          retval |= 0;
-          var actual_bytes = this.readbytes_ptr.readULong();
-          if (actual_bytes <= 0 || this.fd < 0 && !enable_default_fd) {
-            return;
-          }
-          sendDatalog(this.message, this.buf.readByteArray(actual_bytes));
-        }
-      });
-      Interceptor.attach(this.addresses[this.moduleName]["SSL_write_ex"], {
-        onEnter: function(args) {
-          if (!ObjC.available) {
-            try {
-              this.fd = instance.SSL_get_fd(args[0]);
-            } catch (error) {
-              if (!this.is_base_hook) {
-                const fallback_addresses = globalThis.init_addresses;
-                let keys = Object.keys(fallback_addresses);
-                let firstKey = keys[0];
-                instance.SSL_SESSION_get_id = new NativeFunction(fallback_addresses[firstKey]["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
-                instance.SSL_get_fd = ObjC.available ? new NativeFunction(fallback_addresses[firstKey]["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(fallback_addresses["SSL_get_fd"], "int", ["pointer"]);
-                instance.SSL_get_session = new NativeFunction(fallback_addresses[firstKey]["SSL_get_session"], "pointer", ["pointer"]);
-              } else {
-                if (error instanceof Error) {
-                  devlog_error("Error: " + error.message);
-                  devlog_error("Stack: " + error.stack);
-                } else {
-                  devlog_error("Unexpected error: " + error);
-                }
-              }
-            }
-            if (this.fd < 0 && enable_default_fd == false) {
-              return;
-            }
-            var message = getPortsAndAddresses(this.fd, false, lib_addesses[current_module_name], enable_default_fd);
-            if (message === null) {
-              return;
-            }
-            message["ssl_session_id"] = instance.getSslSessionId(args[0]);
-            message["function"] = "SSL_write_ex";
-            sendDatalog(message, args[1].readByteArray(args[2].toInt32()));
-          }
-        },
-        onLeave: function(retval) {
-        }
-      });
-    }
+    if (!this.is_openssl)
+      return;
+    this.plaintextHooks.attachReadEx(this.addresses[this.moduleName]["SSL_read_ex"]);
+    this.plaintextHooks.attachWriteEx(this.addresses[this.moduleName]["SSL_write_ex"]);
   }
   /**
     * Get the session_id of SSL object and return it as a hex string.
@@ -33016,10 +33297,40 @@ var OpenSSL_From_Python_MacOS = class extends OpenSSL_BoringSSL2 {
   socket_library;
   constructor(moduleName, socket_library6, is_base_hook) {
     var library_method_mapping = {};
-    library_method_mapping[`*${moduleName}*`] = ["SSL_CTX_set_keylog_callback", "SSL_CTX_new", "SSL_new", "SSL_get_SSL_CTX"];
+    library_method_mapping[`*${moduleName}*`] = [
+      "SSL_CTX_set_keylog_callback",
+      "SSL_CTX_new",
+      "SSL_new",
+      "SSL_get_SSL_CTX",
+      "SSL_read",
+      "SSL_write",
+      "SSL_get_fd",
+      "SSL_get_session",
+      "SSL_SESSION_get_id"
+    ];
+    library_method_mapping[`*${socket_library6}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
     super(moduleName, socket_library6, is_base_hook, library_method_mapping);
     this.moduleName = moduleName;
     this.socket_library = socket_library6;
+  }
+  /**
+   * SSL_read/SSL_write (curl) and SSL_read_ex/SSL_write_ex (CPython) via the
+   * base-class installers. curl >= 7.87 wraps the socket in its own BIO, so
+   * SSL_get_fd() is -1 there; those installers then recover the peer through
+   * the socket-fd tracker (shared/socket_fd_tracker.ts).
+   */
+  install_plaintext_hooks() {
+    if (!this.do_read_write_hooks) {
+      devlog(`[MacOS] ${this.module_name}: plaintext hooks unavailable, extracting keys only`);
+      return;
+    }
+    try {
+      this.install_plaintext_read_hook();
+      this.install_plaintext_write_hook();
+      this.install_extended_hooks();
+    } catch (e) {
+      devlog_error(`[MacOS] ${this.module_name}: failed to install the plaintext hooks: ${e}`);
+    }
   }
   install_openssl_keys_callback_hook() {
     var instance = this;
@@ -33086,6 +33397,7 @@ var OpenSSL_From_Python_MacOS = class extends OpenSSL_BoringSSL2 {
       "SSL_get_SSL_CTX"
     ]);
     this.install_openssl_keys_callback_hook();
+    this.install_plaintext_hooks();
   }
 };
 function boring_execute2(moduleName, is_base_hook) {
@@ -33110,6 +33422,7 @@ function ssl_python_execute_modern2(moduleName, is_base_hook) {
   enableDeepSymbolResolution(moduleName);
   const def = createOpenSslDefinition({ includeExSymbols: true });
   def.keylog = createBoringSSLKeylogApproach();
+  def.extraHooks = [...def.extraHooks || [], ...createSslReadWriteExHooks()];
   executeFromDefinition(def, moduleName, socket_library3, is_base_hook, enable_default_fd);
 }
 
@@ -36388,7 +36701,12 @@ function load_macos_hooking_agent() {
     // not-yet-resolvable module degrades to "no path" instead of throwing
     // inside the loader hook; the OpenSSL entry's `excludePathFilter` fails
     // OPEN precisely so that degraded case still gets a hook.
-    extractModulePath: true
+    extractModulePath: true,
+    // Python's `_ssl` is also why this is needed: dlopen() names only
+    // `_ssl.cpython-3xx-darwin.so`; the libssl.3.dylib it links is mapped as a
+    // dependency and was never offered to the registry, so a spawned Homebrew /
+    // python.org / pyenv Python yielded neither keys nor plaintext.
+    hookDependencies: true
   };
   runInstallPhases("MacOS", [
     // NOTE: shares the iOS implementation, so it needs the same additional testing.
@@ -36427,15 +36745,7 @@ var LibreSSL_MacOS = class extends OpenSSL_BoringSSL2 {
     super(moduleName, socket_library6, is_base_hook, library_method_mapping);
     this.moduleName = moduleName;
     this.socket_library = socket_library6;
-    this.do_read_write_hooks = true;
-    try {
-      this.SSL_SESSION_get_id = new NativeFunction(this.addresses[this.moduleName]["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
-      this.SSL_get_fd = new NativeFunction(this.addresses[this.moduleName]["SSL_get_fd"], "int", ["pointer"]);
-      this.SSL_get_session = new NativeFunction(this.addresses[this.moduleName]["SSL_get_session"], "pointer", ["pointer"]);
-    } catch (e) {
-      devlog_error(`[LibreSSL] Error creating NativeFunction wrappers: ${e}`);
-      this.do_read_write_hooks = false;
-    }
+    this.bindSslFdAndSessionFunctions();
     const crAddr = this.addresses[this.moduleName]["SSL_get_client_random"];
     if (crAddr && !crAddr.isNull()) {
       this.SSL_get_client_random_fn = new NativeFunction(crAddr, "int", ["pointer", "pointer", "int"]);
@@ -37913,6 +38223,81 @@ init_node_globals();
 // agent/tls/definitions/matrixssl.ts
 init_node_globals();
 init_shared_structures();
+
+// agent/shared/matrixssl_plaintext.ts
+init_node_globals();
+var MATRIXSSL_APP_DATA = 4;
+function receivedPlaintext(status, ptbufOut, ptlenOut) {
+  if (status !== MATRIXSSL_APP_DATA)
+    return null;
+  if (!ptbufOut || ptbufOut.isNull() || !ptlenOut || ptlenOut.isNull())
+    return null;
+  const length = ptlenOut.readU32();
+  if (length === 0)
+    return null;
+  const plaintext = ptbufOut.readPointer();
+  if (plaintext.isNull())
+    return null;
+  return plaintext.readByteArray(length);
+}
+function encodedLength(requested, available) {
+  if (!(requested > 0) || !(available > 0))
+    return 0;
+  return Math.min(requested, available);
+}
+function attachReceive(address, functionName, ptbufIndex, emit2) {
+  if (!address || address.isNull())
+    return;
+  Interceptor.attach(address, {
+    onEnter(args) {
+      this.ssl = args[0];
+      this.ptbufOut = args[ptbufIndex];
+      this.ptlenOut = args[ptbufIndex + 1];
+    },
+    onLeave(retval) {
+      const data = receivedPlaintext(retval.toInt32(), this.ptbufOut, this.ptlenOut);
+      if (data !== null)
+        emit2(this.ssl, data, functionName);
+    }
+  });
+}
+function hookMatrixSslReads(receivedData, processedData, emit2) {
+  attachReceive(receivedData, "matrixSslReceivedData", 2, emit2);
+  attachReceive(processedData, "matrixSslProcessedData", 1, emit2);
+}
+function hookMatrixSslWrites(getWritebuf, encodeWritebuf, emit2) {
+  if (!getWritebuf || getWritebuf.isNull() || !encodeWritebuf || encodeWritebuf.isNull())
+    return;
+  const pending = /* @__PURE__ */ new Map();
+  Interceptor.attach(getWritebuf, {
+    onEnter(args) {
+      this.bufOut = args[1];
+    },
+    onLeave(retval) {
+      const available = retval.toInt32();
+      if (available <= 0 || !this.bufOut || this.bufOut.isNull())
+        return;
+      const buffer = this.bufOut.readPointer();
+      if (buffer.isNull())
+        return;
+      pending.set(Process.getCurrentThreadId(), { buffer, available });
+    }
+  });
+  Interceptor.attach(encodeWritebuf, {
+    onEnter(args) {
+      const tid = Process.getCurrentThreadId();
+      const state2 = pending.get(tid);
+      if (state2 === void 0)
+        return;
+      pending.delete(tid);
+      const length = encodedLength(args[1].toUInt32(), state2.available);
+      if (length > 0)
+        emit2(args[0], state2.buffer.readByteArray(length), "matrixSslEncodeWritebuf");
+    }
+  });
+}
+
+// agent/tls/definitions/matrixssl.ts
 function matrixSslFdDecoder(_ssl, _fns) {
   return -1;
 }
@@ -37937,6 +38322,20 @@ function matrixSslSessionIdDecoder(ssl, fns) {
     return "";
   }
 }
+function matrixSslEmitter(isRead, moduleAddrs, resolvedFns, enableDefaultFd) {
+  return (ssl, data, functionName) => {
+    try {
+      const message = getPortsAndAddresses(-1, isRead, moduleAddrs, enableDefaultFd);
+      if (message === null)
+        return;
+      message["ssl_session_id"] = matrixSslSessionIdDecoder(ssl, resolvedFns);
+      message["function"] = functionName;
+      sendDatalog(message, data);
+    } catch (e) {
+      devlog(`[matrixssl] ${isRead ? "read" : "write"} capture error: ${e}`);
+    }
+  };
+}
 function createMatrixSslReadHook() {
   return {
     install: (addresses, modName, resolvedFns, enableDefaultFd) => {
@@ -37948,29 +38347,7 @@ function createMatrixSslReadHook() {
         devlog("[matrixssl] matrixSslReceivedData unresolved \u2013 read capture disabled");
         return;
       }
-      Interceptor.attach(addr, {
-        onEnter: function(args) {
-          this.ssl = args[0];
-          this.buffer = args[2];
-          this.len = args[3];
-        },
-        onLeave: function(retval) {
-          retval |= 0;
-          if (retval <= 0)
-            return;
-          try {
-            const data = this.buffer.readByteArray(this.len);
-            const message = getPortsAndAddresses(-1, true, moduleAddrs, enableDefaultFd);
-            if (message === null)
-              return;
-            message["ssl_session_id"] = matrixSslSessionIdDecoder(this.ssl, resolvedFns);
-            message["function"] = "matrixSslReceivedData";
-            sendDatalog(message, data);
-          } catch (e) {
-            devlog(`[matrixssl] read capture error: ${e}`);
-          }
-        }
-      });
+      hookMatrixSslReads(addr, moduleAddrs["matrixSslProcessedData"], matrixSslEmitter(true, moduleAddrs, resolvedFns, enableDefaultFd));
     }
   };
 }
@@ -37990,43 +38367,7 @@ function createMatrixSslWriteHooks() {
         devlog("[matrixssl] matrixSslEncodeWritebuf unresolved \u2013 write capture disabled");
         return;
       }
-      const pending = /* @__PURE__ */ new Map();
-      Interceptor.attach(getBufAddr, {
-        onEnter: function(args) {
-          this.ssl = args[0];
-          this.outBuffer = args[1];
-        },
-        onLeave: function(retval) {
-          retval |= 0;
-          if (retval <= 0)
-            return;
-          pending.set(Process.getCurrentThreadId(), {
-            ssl: this.ssl,
-            buf: this.outBuffer,
-            len: retval
-          });
-        }
-      });
-      Interceptor.attach(encodeAddr, {
-        onEnter: function(args) {
-          const tid = Process.getCurrentThreadId();
-          const state2 = pending.get(tid);
-          if (!state2)
-            return;
-          pending.delete(tid);
-          try {
-            const data = state2.buf.readByteArray(state2.len);
-            const message = getPortsAndAddresses(-1, false, moduleAddrs, enableDefaultFd);
-            if (message === null)
-              return;
-            message["ssl_session_id"] = matrixSslSessionIdDecoder(state2.ssl, resolvedFns);
-            message["function"] = "matrixSslEncodeWritebuf";
-            sendDatalog(message, data);
-          } catch (e) {
-            devlog(`[matrixssl] write capture error: ${e}`);
-          }
-        }
-      });
+      hookMatrixSslWrites(getBufAddr, encodeAddr, matrixSslEmitter(false, moduleAddrs, resolvedFns, enableDefaultFd));
     }
   };
 }
@@ -38037,6 +38378,7 @@ function createMatrixSslDefinition() {
     functions: {
       librarySymbols: [
         "matrixSslReceivedData",
+        "matrixSslProcessedData",
         "matrixSslGetWritebuf",
         "matrixSslEncodeWritebuf",
         "matrixSslGetSid"
@@ -38075,6 +38417,8 @@ var matrix_SSL = class _matrix_SSL {
   library_method_mapping = {};
   addresses;
   module_name;
+  /** Socket fd of the last successful connect() (install_helper_hook); -1 until then. */
+  fd = -1;
   static matrixSslNewCLientSession;
   static sessionId;
   static matrixSslGetSid;
@@ -38085,7 +38429,7 @@ var matrix_SSL = class _matrix_SSL {
     if (typeof passed_library_method_mapping !== "undefined") {
       this.library_method_mapping = passed_library_method_mapping;
     } else {
-      this.library_method_mapping[`*${moduleName}*`] = ["matrixSslReceivedData", "matrixSslGetWritebuf", "matrixSslGetSid", "matrixSslEncodeWritebuf"];
+      this.library_method_mapping[`*${moduleName}*`] = ["matrixSslReceivedData", "matrixSslProcessedData", "matrixSslGetWritebuf", "matrixSslGetSid", "matrixSslEncodeWritebuf"];
       this.library_method_mapping[`*${socket_library6}*`] = ["getpeername", "getsockname", "ntohs", "ntohl", "socket"];
     }
     this.addresses = readAddresses(moduleName, this.library_method_mapping);
@@ -38097,57 +38441,28 @@ var matrix_SSL = class _matrix_SSL {
   install_plaintext_read_hook() {
     if (!pcap_enabled)
       return;
-    var current_module_name = this.module_name;
-    var lib_addesses = this.addresses;
-    Interceptor.attach(this.addresses[this.moduleName]["matrixSslReceivedData"], {
-      onEnter: function(args) {
-        this.buffer = args[2];
-        this.len = args[3];
-        var message = getPortsAndAddresses(this.fd, true, lib_addesses[current_module_name], enable_default_fd);
-        message["ssl_session_id"] = this.addresses[this.moduleName]["matrixSslGetSid"] === void 0 ? _matrix_SSL.sessionId : this.getSessionId(args[0]);
-        message["function"] = "matrixSslReceivedData";
-        this.message = message;
-      },
-      onLeave: function(retval) {
-        retval |= 0;
-        if (retval <= 0) {
-          return;
-        }
-        var data = this.buffer.readByteArray(this.len);
-        sendDatalog(this.message, data);
-      }
-    });
+    const moduleAddresses = this.addresses[this.moduleName];
+    hookMatrixSslReads(moduleAddresses["matrixSslReceivedData"], moduleAddresses["matrixSslProcessedData"], (ssl, data, functionName) => this.emitRecord(true, ssl, data, functionName));
   }
   install_plaintext_write_hook() {
     if (!pcap_enabled)
       return;
-    var current_module_name = this.module_name;
-    var lib_addesses = this.addresses;
-    Interceptor.attach(this.addresses[this.moduleName]["matrixSslGetWritebuf"], {
-      onEnter: function(args) {
-        this.outBuffer = args[1];
-      },
-      onLeave: function(retval) {
-        retval |= 0;
-        if (retval <= 0) {
-          return;
-        }
-        this.outBufferLength = retval;
-      }
-    });
-    Interceptor.attach(this.addresses[this.moduleName]["matrixSslEncodeWritebuf"], {
-      onEnter: function(args) {
-        var data = this.outBuffer.readByteArray(this.outBufferLength);
-        var message = getPortsAndAddresses(this.fd, false, lib_addesses[current_module_name], enable_default_fd);
-        message["ssl_session_id"] = this.addresses[this.moduleName]["matrixSslGetSid"] === void 0 ? _matrix_SSL.sessionId : this.getSessionId(args[0]);
-        message["function"] = "matrixSslEncodeWritebuf";
-        sendDatalog(message, data);
-      }
-    });
+    const moduleAddresses = this.addresses[this.moduleName];
+    hookMatrixSslWrites(moduleAddresses["matrixSslGetWritebuf"], moduleAddresses["matrixSslEncodeWritebuf"], (ssl, data, functionName) => this.emitRecord(false, ssl, data, functionName));
+  }
+  /** Send one plaintext record, attributed to the fd of the last successful connect(). */
+  emitRecord(isRead, ssl, data, functionName) {
+    const message = getPortsAndAddresses(this.fd, isRead, this.addresses[this.module_name], enable_default_fd);
+    if (message === null)
+      return;
+    message["ssl_session_id"] = this.sessionIdFor(ssl);
+    message["function"] = functionName;
+    sendDatalog(message, data);
   }
   install_tls_keys_callback_hook() {
   }
   install_helper_hook() {
+    const self = this;
     Interceptor.attach(this.addresses[this.moduleName]["matrixSslNewSessionId"], {
       onEnter: function(args) {
         this.sslSessionPointer = args[0];
@@ -38163,15 +38478,19 @@ var matrix_SSL = class _matrix_SSL {
     });
     Interceptor.attach(this.addresses[this.moduleName]["connect"], {
       onEnter: function(args) {
+        this.sockfd = args[0].toInt32();
       },
       onLeave: function(retval) {
-        retval |= 0;
-        if (retval <= 0) {
+        if (retval.toInt32() !== 0) {
           return;
         }
-        this.fd = retval;
+        self.fd = this.sockfd;
       }
     });
+  }
+  /** Session id from matrixSslGetSid when resolved, else the one install_helper_hook saved. */
+  sessionIdFor(ssl) {
+    return this.addresses[this.moduleName]["matrixSslGetSid"] === void 0 ? _matrix_SSL.sessionId : this.getSessionId(ssl);
   }
   getSessionId(ssl) {
     const sid = _matrix_SSL.matrixSslGetSid(ssl);
@@ -42730,7 +43049,7 @@ function hook_Wine_LdrLoadDll(is_base_hook) {
           for (const match of matches) {
             log(`[Wine] ${dllBaseName} loaded & will be hooked (${match.library})!`);
             try {
-              match.hookFn(dllBaseName, is_base_hook);
+              hookWineDllOnce(match, dllBaseName, is_base_hook);
             } catch (error) {
               devlog(`[Wine] DLL hook error for ${dllBaseName}: ${error}`);
             }
@@ -42948,6 +43267,15 @@ function arm_wine_late_install() {
   }, 250);
   devlog("[Wine] late-install watcher polling every 250 ms (up to 10 s)");
 }
+function hookWineDllOnce(match, dllName, is_base_hook) {
+  const protocolTag = protocolLabel(selected_protocols);
+  if (isModuleHooked(dllName, installTagFor(match, protocolTag))) {
+    devlog(`[Wine] ${dllName}: ${match.library} already installed, skipping`);
+    return;
+  }
+  match.hookFn(dllName, is_base_hook);
+  recordHookInstalled(match, dllName, protocolTag);
+}
 function hook_Wine_Existing_DLLs(is_base_hook) {
   const modules = Process.enumerateModules();
   for (const mod of modules) {
@@ -42959,7 +43287,7 @@ function hook_Wine_Existing_DLLs(is_base_hook) {
       const match = matches[0];
       log(`[Wine] Found pre-loaded DLL ${mod.name} (${match.library}), hooking...`);
       try {
-        match.hookFn(mod.name, is_base_hook);
+        hookWineDllOnce(match, mod.name, is_base_hook);
       } catch (error) {
         devlog(`[Wine] Pre-loaded DLL hook error for ${mod.name}: ${error}`);
       }
@@ -43194,7 +43522,7 @@ function resolveExport(mod, name) {
   return null;
 }
 var _attachedSites = /* @__PURE__ */ new Set();
-function attachOnce(mod, fn, callbacks) {
+function attachOnce2(mod, fn, callbacks) {
   const site = `${mod}!${fn}`;
   if (_attachedSites.has(site))
     return true;
@@ -43247,7 +43575,7 @@ function makeRc4Executor(label, install) {
 }
 function installOpenSslRc4Hooks(moduleName) {
   let any = false;
-  any = attachOnce(moduleName, "RC4_set_key", {
+  any = attachOnce2(moduleName, "RC4_set_key", {
     onEnter(args) {
       try {
         const len = args[1].toInt32();
@@ -43265,7 +43593,7 @@ function installOpenSslRc4Hooks(moduleName) {
 function installNettleRc4Hooks(moduleName) {
   let any = false;
   for (const fn of ["nettle_arcfour_set_key", "arcfour_set_key"]) {
-    any = attachOnce(moduleName, fn, {
+    any = attachOnce2(moduleName, fn, {
       onEnter(args) {
         try {
           const len = args[1].toInt32();
@@ -43282,7 +43610,7 @@ function installNettleRc4Hooks(moduleName) {
   return any;
 }
 function installMbedtlsRc4Hooks(moduleName) {
-  return attachOnce(moduleName, "mbedtls_arc4_setup", {
+  return attachOnce2(moduleName, "mbedtls_arc4_setup", {
     onEnter(args) {
       try {
         const keylen = args[2].toInt32();
@@ -43299,7 +43627,7 @@ function installMbedtlsRc4Hooks(moduleName) {
 var _rc4AlgHandles = {};
 function installWindowsCngRc4Hooks(moduleName) {
   let any = false;
-  any = attachOnce(moduleName, "BCryptOpenAlgorithmProvider", {
+  any = attachOnce2(moduleName, "BCryptOpenAlgorithmProvider", {
     // (phAlgorithm, pszAlgId, pszImplementation, dwFlags)
     onEnter(args) {
       this.phAlg = args[0];
@@ -43319,7 +43647,7 @@ function installWindowsCngRc4Hooks(moduleName) {
       }
     }
   }) || any;
-  any = attachOnce(moduleName, "BCryptGenerateSymmetricKey", {
+  any = attachOnce2(moduleName, "BCryptGenerateSymmetricKey", {
     // (hAlgorithm, phKey, pbKeyObject, cbKeyObject, pbSecret, cbSecret, dwFlags)
     onEnter(args) {
       try {
@@ -43376,7 +43704,7 @@ function tryExportCapiKey(hKey) {
 }
 var _reportedNonExportable = false;
 function installWindowsCapiRc4Hooks(moduleName) {
-  return attachOnce(moduleName, "CryptEncrypt", {
+  return attachOnce2(moduleName, "CryptEncrypt", {
     // (hKey, hHash, Final, dwFlags, pbData, pdwDataLen, dwBufLen)
     onEnter(args) {
       try {
@@ -44406,6 +44734,7 @@ var AntiRoot = class {
       this.RootPropertiesKeys.push(k);
   }
   java_based_bypasses() {
+    const antiRoot = this;
     Java.perform(function() {
       var PackageManager = Java.use("android.app.ApplicationPackageManager");
       var Runtime3 = Java.use("java.lang.Runtime");
@@ -44443,7 +44772,7 @@ var AntiRoot = class {
         log("KeyInfo hook not loaded");
       }
       PackageManager.getPackageInfo.overload("java.lang.String", "int").implementation = function(pname, flags) {
-        var shouldFakePackage = this.RootPackages.indexOf(pname) > -1;
+        var shouldFakePackage = antiRoot.RootPackages.indexOf(pname) > -1;
         if (shouldFakePackage) {
           log("Bypass root check for package: " + pname);
           pname = "set.package.name.to.a.fake.one.so.we.can.bypass.it";
@@ -44552,9 +44881,9 @@ var AntiRoot = class {
       };
       var get2 = SystemProperties.get.overload("java.lang.String");
       get2.implementation = function(name) {
-        if (this.RootPropertiesKeys.indexOf(name) != -1) {
+        if (antiRoot.RootPropertiesKeys.indexOf(name) != -1) {
           log("Bypass " + name);
-          return this.RootProperties[name];
+          return antiRoot.RootProperties[name];
         }
         return this.get.call(this, name);
       };
@@ -44635,6 +44964,7 @@ var AntiRoot = class {
     });
   }
   native_based_bypasses() {
+    const antiRoot = this;
     Interceptor.attach(this.addresses[this.module_name]["strstr"], {
       onEnter: function(args) {
         this.str_source = args[0];
@@ -44658,7 +44988,7 @@ var AntiRoot = class {
         var path = args[0].readCString();
         var path_array = path.split("/");
         var executable = path_array[path_array.length - 1];
-        var shouldFakeReturn = this.RootBinaries.indexOf(executable) > -1;
+        var shouldFakeReturn = antiRoot.RootBinaries.indexOf(executable) > -1;
         if (shouldFakeReturn) {
           args[0].writeUtf8String("/notexists");
           log("Bypass native fopen");
@@ -44907,7 +45237,7 @@ function socket_trace_execute() {
           }
           message["function"] = "Full_write";
           message["contentType"] = "netlog";
-          socketFDs.set(this.fd, message["dst_addr"]);
+          socketFDs.set(fd, message["dst_addr"]);
           send(message);
         }
       },

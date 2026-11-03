@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
 
 from .base import OutputHandler
+from .key_material import apply_key_material_policy
 
 if TYPE_CHECKING:
     from ..events import (
@@ -63,11 +64,21 @@ class JsonOutputHandler(OutputHandler):
     An *auxiliary* session (LSASS) records its session_info under
     ``auxiliary_sessions`` so ``session_info`` stays the target session's. With a
     single session the file content is unchanged.
+
+    ``key_extractions`` records carry raw key material (``key_data``) only when
+    *include_key_material* is set (``-k`` or ``--json-keys``); otherwise they
+    are redacted (see :mod:`friTap.output.key_material`).
     """
 
+    # The JSON document is the primary machine-readable input (AI agents,
+    # scripts) and serialises every data event, so -j alone turns the agent's
+    # plaintext read/write hooks on.
+    consumes_plaintext = True
+
     def __init__(self, json_path: str, session_info: Optional[dict] = None,
-                 auxiliary: bool = False) -> None:
+                 auxiliary: bool = False, include_key_material: bool = False) -> None:
         self._path = json_path
+        self._include_key_material = include_key_material
         self._writer: Optional["JsonStreamWriter"] = None
         self._logger = logging.getLogger("friTap.output.json")
         self._session_info = session_info or {}
@@ -126,7 +137,8 @@ class JsonOutputHandler(OutputHandler):
         # protocol="memscan"; surface their provenance in the JSON output.
         # Protocol-specific memory-scan keys (protocol="mtproto"/"rc4") are
         # deliberately left as plain "key_extraction" records with their full
-        # key_data preserved: they are recovered protocol keys, not the generic
+        # key_data preserved (subject to the key-material policy applied below,
+        # like every other key record): they are recovered protocol keys, not the generic
         # TLS-secret findings the "memory_scan_finding" shape (label/tier/source)
         # describes. Both mtproto and rc4 behave identically here on purpose.
         if event.protocol == "memscan":
@@ -140,6 +152,7 @@ class JsonOutputHandler(OutputHandler):
             })
         if self._writer is None:
             return
+        record = apply_key_material_policy(record, self._include_key_material)
         with self._lock:
             self._data["key_extractions"].append(record)
 

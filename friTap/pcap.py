@@ -17,6 +17,7 @@ import psutil
 from friTap.constants import build_capture_bpf
 
 from .android import Android
+from .constants import is_read_function
 from .pcap_utility import is_pcapng_filename
 from .sinks.tcp_state import (
     InvalidEndpointError,
@@ -1022,7 +1023,7 @@ class PCAP:
             self.logger.warning("Packet has unknown/unsupported family!")
             return
 
-        is_read = function in self.SSL_READ
+        is_read = is_read_function(function)
         if is_read:
             session_unique_key = str(src_addr) + str(src_port) + \
                 str(dst_addr) + str(dst_port)
@@ -1232,7 +1233,7 @@ class PCAP:
             #     source -> server_port = src_port
             #   - on a WRITE we wrote to the peer, so the peer (server) is the
             #     destination -> server_port = dst_port
-            if function in self.SSL_READ:
+            if is_read_function(function):
                 server_port = src_port
             else:
                 server_port = dst_port

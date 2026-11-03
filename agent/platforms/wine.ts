@@ -1,4 +1,5 @@
-import { hookRegistry } from "../shared/registry.js";
+import { hookRegistry, HookRegistration, protocolLabel } from "../shared/registry.js";
+import { installTagFor, isModuleHooked, recordHookInstalled } from "../shared/library_scanner.js";
 import { selected_protocols, use_modern, getParsedPatterns } from "../fritap_agent.js";
 import { log, devlog } from "../util/log.js";
 import { readProcSelfMaps } from "../util/proc_maps.js";
@@ -175,7 +176,7 @@ function hook_Wine_LdrLoadDll(is_base_hook: boolean): boolean {
                     for (const match of matches) {
                         log(`[Wine] ${dllBaseName} loaded & will be hooked (${match.library})!`);
                         try {
-                            match.hookFn(dllBaseName, is_base_hook);
+                            hookWineDllOnce(match, dllBaseName, is_base_hook);
                         } catch (error) {
                             devlog(`[Wine] DLL hook error for ${dllBaseName}: ${error}`);
                         }
@@ -468,6 +469,22 @@ function arm_wine_late_install(): void {
 }
 
 /**
+ * Run `match` on `dllName` unless it is already installed on that image. A
+ * LdrLoadDll of an already-mapped DLL (refcount bump, another spelling of its
+ * path) or the pre-loaded scan followed by a load event must not attach the
+ * executor's listeners a second time: every record would be emitted twice.
+ */
+function hookWineDllOnce(match: HookRegistration, dllName: string, is_base_hook: boolean): void {
+    const protocolTag = protocolLabel(selected_protocols);
+    if (isModuleHooked(dllName, installTagFor(match, protocolTag))) {
+        devlog(`[Wine] ${dllName}: ${match.library} already installed, skipping`);
+        return;
+    }
+    match.hookFn(dllName, is_base_hook);
+    recordHookInstalled(match, dllName, protocolTag);
+}
+
+/**
  * Check already-loaded modules for Windows DLLs that should be hooked.
  * This handles cases where the DLL was loaded before we attached.
  */
@@ -485,7 +502,7 @@ function hook_Wine_Existing_DLLs(is_base_hook: boolean): void {
             const match = matches[0];
             log(`[Wine] Found pre-loaded DLL ${mod.name} (${match.library}), hooking...`);
             try {
-                match.hookFn(mod.name, is_base_hook);
+                hookWineDllOnce(match, mod.name, is_base_hook);
             } catch (error) {
                 devlog(`[Wine] Pre-loaded DLL hook error for ${mod.name}: ${error}`);
             }

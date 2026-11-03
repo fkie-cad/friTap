@@ -52,6 +52,7 @@ import queue
 import threading
 import types
 
+from friTap.config import OutputConfig
 from friTap.legacy.ssl_logger_core import SSL_Logger
 
 # Every wait in this file is bounded. HANDSHAKE_WAIT is the "healthy" bound:
@@ -240,6 +241,8 @@ def _make_logger(backend):
     obj._instrument_stop = threading.Event()
     obj._instrument_thread = None
     obj._instrument_thread_lock = threading.Lock()
+    obj._suspended_pids = set()
+    obj._suspended_pids_lock = threading.Lock()
 
     obj.offsets_data = None
     obj.pattern_data = None
@@ -267,7 +270,7 @@ def _make_logger(backend):
             # Bounded, but far above the fake handshake cost.
             script_load_timeout=10,
         ),
-        output=types.SimpleNamespace(
+        output=OutputConfig(
             pcap="out.pcap",
             keylog=True,
             full_capture=False,

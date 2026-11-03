@@ -162,7 +162,8 @@ def test_concurrent_detach_and_scan_ended_tear_down_once(exits):
     assert obj._done_event.is_set()
     assert pcap.finalize_calls == 1
     assert obj.pcap_cleanup_calls == 1
-    assert exits == [0]
+    # The frida detach came first: the target died on its own (exit 3).
+    assert exits == [3]
 
 
 def test_bounded_end_sets_done_event_on_pre_flush_wedge(exits, monkeypatch):

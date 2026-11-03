@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import functools
 import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Dict, Optional, Set, Tuple
 
@@ -132,6 +133,101 @@ def resolve_connection_key(
     if protocol == _LEGACY_NET_PROTOCOL:
         return f"net:{normalize_4tuple(src_addr, src_port, dst_addr, dst_port)}"
     return f"net:{protocol}:{canonical_4tuple(src_addr, src_port, dst_addr, dst_port)}"
+
+
+_UNSPECIFIED_ADDRS = frozenset({"", "0.0.0.0", "::", "[::]"})
+
+
+def has_usable_endpoints(src_addr: str, src_port: int,
+                         dst_addr: str, dst_port: int) -> bool:
+    """True when a record carries a real 4-tuple (both addresses and ports set).
+
+    Records from hooks that could not resolve their socket (no fd, ``-ed``
+    default addresses) report empty/unspecified addresses or port 0; those can
+    only be keyed by their session token.
+    """
+    try:
+        ports_ok = int(src_port or 0) > 0 and int(dst_port or 0) > 0
+    except (TypeError, ValueError):
+        return False
+    return (ports_ok
+            and str(src_addr or "").strip() not in _UNSPECIFIED_ADDRS
+            and str(dst_addr or "").strip() not in _UNSPECIFIED_ADDRS)
+
+
+class ConnectionKeyAliases:
+    """Folds the different keys one live connection is seen under into one.
+
+    :func:`resolve_connection_key` is pure, so a connection whose records carry
+    a session id only part of the time resolves to two keys. The typical case is
+    TLS 1.3 in legacy mode: the session id exists only after the server's
+    NewSessionTicket, so the request (``SSL_write``) keys as ``net:<4tuple>``
+    and the response (``SSL_read``) as ``sid:<id>``, splitting one connection
+    into two flows.
+
+    For records with a usable 4-tuple the FIRST key seen on that 4-tuple owns
+    the connection; any other ``net:`` / ``sid:`` key later seen on the same
+    live 4-tuple is aliased to the owner. Records without addresses (and
+    lifecycle events) resolve through those aliases, falling back to their own
+    ``sid:`` key. ``cr:`` keys are never re-keyed (they are already unique per
+    connection). Not thread-safe: callers hold their own lock.
+    """
+
+    def __init__(self, capacity: int = 16384) -> None:
+        self._capacity = capacity
+        self._owner_by_endpoint: "OrderedDict[str, str]" = OrderedDict()
+        self._alias_to_owner: "OrderedDict[str, str]" = OrderedDict()
+
+    def resolve(self, key: str, src_addr: str, src_port: int, dst_addr: str,
+                dst_port: int, protocol: str, is_live) -> str:
+        """Canonical connection key for a record whose pure key is *key*.
+
+        *is_live(key)* reports whether a connection key is still tracked; a
+        finished owner no longer captures new records on its 4-tuple.
+        """
+        if key.startswith("cr:"):
+            return key
+        if not has_usable_endpoints(src_addr, src_port, dst_addr, dst_port):
+            return self.canonical(key)
+        endpoint_key = resolve_connection_key(
+            src_addr, src_port, dst_addr, dst_port, protocol=protocol)
+        owner = self._owner_by_endpoint.get(endpoint_key)
+        if owner is not None and owner != key and is_live(owner):
+            self._remember(self._alias_to_owner, key, owner)
+            return owner
+        self._remember(self._owner_by_endpoint, endpoint_key, key)
+        self._alias_to_owner.pop(key, None)
+        return key
+
+    def lookup(self, key: str, src_addr: str, src_port: int, dst_addr: str,
+               dst_port: int, is_live) -> str:
+        """Like :meth:`resolve` but read-only (lifecycle events must not claim
+        a 4-tuple): the live owner *key* maps to, else *key* itself."""
+        canonical = self.canonical(key)
+        if key.startswith("cr:") or is_live(canonical):
+            return canonical
+        if key.startswith("sid:") and has_usable_endpoints(
+                src_addr, src_port, dst_addr, dst_port):
+            protocol = key.split(":", 2)[1]
+            owner = self._owner_by_endpoint.get(resolve_connection_key(
+                src_addr, src_port, dst_addr, dst_port, protocol=protocol))
+            if owner is not None and is_live(owner):
+                return owner
+        return canonical
+
+    def canonical(self, key: str) -> str:
+        """The owner key *key* was aliased to, else *key* itself."""
+        return self._alias_to_owner.get(key, key)
+
+    def clear(self) -> None:
+        self._owner_by_endpoint.clear()
+        self._alias_to_owner.clear()
+
+    def _remember(self, table: "OrderedDict[str, str]", key: str, value: str) -> None:
+        table[key] = value
+        table.move_to_end(key)
+        while len(table) > self._capacity:
+            table.popitem(last=False)
 
 
 @dataclass

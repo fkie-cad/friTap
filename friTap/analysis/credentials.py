@@ -31,6 +31,7 @@ from friTap.analysis._limits import (
     clip,
     safe_json_loads,
 )
+from friTap.analysis.redaction import mask
 
 if TYPE_CHECKING:
     from friTap.flow.models import Flow
@@ -119,11 +120,37 @@ def _decodes_clean(s: str, charset: str) -> bool:
     return (printable / len(raw)) > 0.70
 
 
+# Values up to this length are masked completely: any prefix of a short
+# secret is a large share of it.
+_REDACT_MIN_LEN = 8
+# At most 1/_REDACT_MAX_FRACTION of a value is ever revealed.
+_REDACT_MAX_FRACTION = 4
+
+
 def _redact(value: str, keep: int = 8) -> str:
-    """Redact a secret value, keeping only the first ``keep`` characters."""
-    if len(value) <= 8:
-        return "****"
-    return value[:keep] + "****"
+    """Redact a secret, revealing at most a short prefix for correlation.
+
+    Rule: values of ``_REDACT_MIN_LEN`` (8) characters or fewer become
+    ``"****"``. Longer values reveal ``min(keep, len(value) // 4)``
+    characters followed by ``"****"``, so at most a quarter of the value
+    (and never more than ``keep`` characters) is shown, and never all of it.
+    """
+    if len(value) <= _REDACT_MIN_LEN:
+        return mask(value, keep=len(value))
+    return mask(value, keep=min(keep, len(value) // _REDACT_MAX_FRACTION))
+
+
+def _redact_cookie_header(header_value: str) -> str:
+    """Redact a ``Cookie`` header: keep cookie names, :func:`_redact` each value.
+
+    ``sessionid=abcdef...; theme=dark`` -> ``sessionid=abcd****; theme=****``.
+    Names identify the session cookie for correlation; values are secrets.
+    """
+    parts = []
+    for pair in header_value.split(";"):
+        name, sep, value = pair.strip().partition("=")
+        parts.append(f"{name}={_redact(value)}" if sep else _redact(name))
+    return clip("; ".join(parts))
 
 
 def _try_decode_jwt(token: str) -> dict | None:
@@ -530,7 +557,7 @@ class CredentialAnalyzer:
                     evidence={
                         "location": "request_header",
                         "header": "Cookie",
-                        "value": _redact(header_value, keep=30),
+                        "value": _redact_cookie_header(header_value),
                         "host": flow.display_host,
                     },
                 ))

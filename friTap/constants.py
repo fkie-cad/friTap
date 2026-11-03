@@ -2,39 +2,95 @@
 
 """Shared constants used by both legacy and modern paths."""
 
+# Canonical read/write classification of the agent's datalog ``function``
+# labels. Every Python consumer (message router, pipeline, flow collector,
+# pcap/pcapng writers) derives a record's direction from these sets via
+# ``is_read_function`` / ``direction_for_function`` instead of keeping its own
+# list. Add a new hook label here when the agent starts emitting it.
 SSL_READ = frozenset({
-    "SSL_read", "wolfSSL_read", "readApplicationData", "NSS_read", "Full_read",
-    "gnutls_record_recv", "PR_Read", "mbedtls_ssl_read", "s2n_recv",
+    # OpenSSL / BoringSSL / LibreSSL / Cronet / GoTLS (legacy label)
+    "SSL_read", "SSL_read_ex",
+    "wolfSSL_read", "gnutls_record_recv", "mbedtls_ssl_read", "s2n_recv",
+    "matrixSslReceivedData",
+    # NSS
+    "NSS_read", "PR_Read", "PR_Recv",
+    # Java (BouncyCastle / Conscrypt) and the raw-socket full-capture tracer
+    "readApplicationData", "Full_read",
+    # Apple SecureTransport, Windows Schannel (SSPI), Go crypto/tls
+    "SSLRead", "DecryptMessage", "Go_Conn_Read",
     # QUIC stream/datagram receive functions
-    "quiche_stream_recv", "quiche_dgram_recv",
+    "quiche_stream_recv", "quiche_conn_stream_recv", "quiche_dgram_recv",
     "msquic_stream_recv",
-    "QuicSpdyStream_Readv",
+    "QuicSpdyStream_Readv", "QuicStream_Readv", "QuicStreamSequencer_Readv",
     # Google QUICHE (Chrome/Cronet) HTTP/3 incoming body: the HttpDecoder visitor
     # callback (clean de-framed body) and the raw-cleartext sequencer fallback.
     "QuicSpdyStream_OnDataFramePayload",
+    "QuicSpdyStream_OnHeadersDecoded",
     "QuicStreamSequencer_OnStreamFrame",
     # Neqo (Firefox HTTP/3) stream receive
-    "neqo_read_response_data",
+    "neqo_read_response_data", "neqo_http3conn_read_response_data",
     # SSH plaintext receive (OpenSSH packet layer)
     "ssh_packet_read_poll2",
     # Telegram MTProto: decrypted inbound server response (post AES-IGE decrypt)
     "mtproto_decrypt",
+    # Signal (libsignal Java) decrypt hooks: always incoming
+    "SessionCipher.decrypt", "GroupCipher.decrypt", "SealedSessionCipher.decrypt",
 })
 
 SSL_WRITE = frozenset({
-    "SSL_write", "wolfSSL_write", "writeApplicationData", "NSS_write", "Full_write",
-    "gnutls_record_send", "PR_Write", "mbedtls_ssl_write", "s2n_send",
+    "SSL_write", "SSL_write_ex",
+    "wolfSSL_write", "gnutls_record_send", "mbedtls_ssl_write", "s2n_send",
+    "matrixSslEncodeWritebuf",
+    "NSS_write", "PR_Write", "PR_Send",
+    "writeApplicationData", "Full_write",
+    "SSLWrite", "EncryptMessage", "Go_Conn_Write",
     # QUIC stream/datagram send functions
-    "quiche_stream_send", "quiche_dgram_send",
+    "quiche_stream_send", "quiche_conn_stream_send", "quiche_dgram_send",
     "msquic_stream_send",
-    "QuicSpdyStream_WriteOrBufferBody",
+    "QuicSpdyStream_WriteOrBufferBody", "QuicSpdyStream_WriteHeaders",
+    "QuicChromiumClientStream_WriteHeaders",
+    "QuicSpdySession_WriteHeadersOnHeadersStream",
     # Neqo (Firefox HTTP/3) stream send
-    "neqo_send_request_body",
+    "neqo_send_request_body", "neqo_http3conn_send_request_body",
     # SSH plaintext send (OpenSSH packet layer)
     "ssh_packet_send2",
     # Telegram MTProto: plaintext outbound message (pre AES-IGE encrypt)
     "mtproto_encrypt",
 })
+
+# Substrings that mark an unlisted label as a receive-side hook (fallback only;
+# the explicit sets above always win).
+_READ_LABEL_HINTS = ("read", "recv", "receive", "decrypt")
+
+DIRECTION_READ = "read"
+DIRECTION_WRITE = "write"
+
+
+def _base_function_label(function: str) -> str:
+    """Strip a call-signature suffix ("SSL_read(ssl, buf, n)" -> "SSL_read")."""
+    return (function or "").split("(", 1)[0].strip()
+
+
+def is_read_function(function: str) -> bool:
+    """True when the datalog ``function`` label is a receive-side hook."""
+    base = _base_function_label(function)
+    if base in SSL_READ:
+        return True
+    if base in SSL_WRITE:
+        return False
+    lowered = base.lower()
+    return any(hint in lowered for hint in _READ_LABEL_HINTS)
+
+
+def direction_for_function(function: str, explicit: str | None = None) -> str:
+    """Direction ("read"/"write") of a datalog record.
+
+    An explicit ``direction`` already set by the agent (MTProto, Signal, ...)
+    wins; otherwise it is derived from the hooked function label.
+    """
+    if explicit in (DIRECTION_READ, DIRECTION_WRITE):
+        return explicit
+    return DIRECTION_READ if is_read_function(function) else DIRECTION_WRITE
 
 
 # Protocol identifiers used in ParseResult / DataCanonical

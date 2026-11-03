@@ -17,6 +17,7 @@ plus only the attributes the path touches — no device, no frida).
 from __future__ import annotations
 
 import logging
+import threading
 import types
 from unittest.mock import MagicMock
 
@@ -31,6 +32,8 @@ def _make_logger(spawn=True, pid=4242, device="dev"):
     obj._backend = MagicMock()
     obj.device = device
     obj.pid = pid
+    obj._suspended_pids = {pid}  # spawned, not yet resumed
+    obj._suspended_pids_lock = threading.Lock()
     # start_fritap_session's preamble — stubbed so nothing real happens.
     obj.connect_live = lambda: None
     obj._setup_live_scan = lambda: None

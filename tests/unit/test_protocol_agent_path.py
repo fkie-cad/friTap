@@ -28,6 +28,9 @@ class _FakeSSLLogger:
         self.use_modern = False
         _FakeSSLLogger.instances.append(self)
 
+    def set_exit_status(self, _code):
+        return False
+
     def install_signal_handler(self):
         pass
 

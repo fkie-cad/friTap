@@ -80,6 +80,18 @@ class SessionManager:
                     raise
                 self._log_spawned_process_vanished(pid, final=False)
 
+    def _register_child_handler(self, logger) -> None:
+        """Listen for gated children: those --enable_child_gating asked for and,
+        in spawn mode, the exec'd image of the target (see follow_exec_of)."""
+        if logger.enable_child_gating:
+            logger._backend.on_child_added(logger.device, logger.on_child_added)
+        elif logger.spawn:
+            try:
+                logger._backend.on_child_added(logger.device, logger.on_child_added)
+            except NotImplementedError:
+                self._logger.debug("%s backend has no child events; exec() will "
+                                   "not be followed", logger._backend.name)
+
     def _log_spawned_process_vanished(self, pid, final: bool) -> None:
         cause = (
             f"spawned process {pid} was gone before friTap could attach to it. On "
@@ -92,54 +104,73 @@ class SessionManager:
             "The %s (%d attempts). Retry when the device is less busy, or start the "
             "app first and attach to it without -s.", cause, self.SPAWN_ATTACH_ATTEMPTS)
 
-    def start_session(self, own_message_handler=None):
-        """Start a friTap capture session. Delegates to SSL_Logger internals."""
+    def _get_device_or_abort(self, logger, wanted_id, **lookup):
+        """``backend.get_device(**lookup)``, or a startup abort with the cause.
+
+        Every failure is logged, noted as the run's cause for the ``-j -``
+        stream and ends the run with exit 1 (see :meth:`_abort_startup`).
+        """
         from ..backends import BackendInvalidArgumentError, BackendNotRunningError
 
+        backend_name = logger._backend.name
+        try:
+            return logger._backend.get_device(**lookup)
+        except BackendNotRunningError as e:
+            self._abort_startup(
+                logger, e,
+                f"{backend_name} backend: server is not running. Please ensure it "
+                "is started on the device.")
+        except BackendInvalidArgumentError as e:
+            if "device not found" in str(e).lower():
+                what = f"Device with ID '{wanted_id}' not found." if wanted_id \
+                    else "No mobile device found."
+                self._abort_startup(
+                    logger, e, what,
+                    hint="Pass the device ID with -m <device-id> "
+                         "(see `adb devices` or `fritap devices`).")
+            self._abort_startup(logger, e, f"Backend error ({backend_name}): {e}")
+        except Exception as e:  # noqa: BLE001 - reported, then exit 1
+            self._abort_startup(
+                logger, e, f"Unexpected error while attaching to the device: {e}")
+
+    def _abort_startup(self, logger, error, message, hint=None):
+        """Log *message*, note it as the run's cause, and exit 1 (startup failure).
+
+        The note is what the ``-j -`` stream's closing ``error`` record carries
+        (first noted cause wins), so a consumer gets the specific reason instead
+        of the generic "see stderr" text.
+        """
+        from ..exit_codes import EXIT_RUNTIME_ERROR
+        from ..output.stdout_stream import note_runtime_error
+
+        self._logger.error(message)
+        error_type = type(getattr(error, "original_exception", None) or error).__name__
+        note_runtime_error(error_type, message, hint)
+        logger.set_exit_status(EXIT_RUNTIME_ERROR)
+        sys.exit(EXIT_RUNTIME_ERROR)
+
+    def start_session(self, own_message_handler=None):
+        """Start a friTap capture session. Delegates to SSL_Logger internals."""
         logger = self._l
+        logger.begin_startup()
 
         if logger.device_id:
-            try:
-                logger.device = logger._backend.get_device(device_id=logger.device_id)
-                self._logger.info("Successfully attached to device (ID: %s).", logger.device_id)
-            except BackendNotRunningError:
-                self._logger.error("%s backend: server is not running. Please ensure it is started on the device.", logger._backend.name)
-                sys.exit(1)
-            except BackendInvalidArgumentError as e:
-                if 'device not found' in e.args:
-                    self._logger.error("Device with ID '%s' not found.", logger.device_id)
-                else:
-                    self._logger.error("Backend error (%s): %s", logger._backend.name, e)
-                sys.exit(1)
-            except Exception as e:
-                self._logger.error("Unexpected error while attaching to the device: %s", e)
-                sys.exit(1)
+            logger.device = self._get_device_or_abort(logger, logger.device_id,
+                                                      device_id=logger.device_id)
+            self._logger.info("Successfully attached to device (ID: %s).", logger.device_id)
         elif logger.mobile:
-            try:
-                if logger.mobile is True:
-                    logger.device = logger._backend.get_device(mobile=True)
-                else:
-                    logger.device = logger._backend.get_device(mobile=logger.mobile)
-                self._logger.info("Successfully attached to the mobile device.")
-            except BackendNotRunningError:
-                self._logger.error("%s backend: server is not running. Please ensure it is started on the device.", logger._backend.name)
-                sys.exit(1)
-            except BackendInvalidArgumentError as e:
-                if 'device not found' in e.args:
-                    self._logger.error("Device with ID '%s' not found.", logger.mobile)
-                else:
-                    self._logger.error("Backend error (%s): %s", logger._backend.name, e)
-                sys.exit(1)
-            except Exception as e:
-                self._logger.error("Unexpected error while attaching to the device: %s", e)
-                sys.exit(1)
+            if logger.mobile is True:
+                logger.device = self._get_device_or_abort(logger, None, mobile=True)
+            else:
+                logger.device = self._get_device_or_abort(logger, logger.mobile,
+                                                          mobile=logger.mobile)
+            self._logger.info("Successfully attached to the mobile device.")
         elif logger.host:
             logger.device = logger._backend.get_device(host=logger.host)
         else:
             logger.device = logger._backend.get_device()
 
-        if logger.enable_child_gating:
-            logger._backend.on_child_added(logger.device, logger.on_child_added)
+        self._register_child_handler(logger)
         if logger.enable_spawn_gating or logger.spawn_gating_all:
             logger._backend.enable_spawn_gating(logger.device)
             logger._backend.on_spawn_added(logger.device, logger.on_spawn_added)
@@ -151,6 +182,7 @@ class SessionManager:
             # host's paths for a target that only exists on that device.
             if logger.mobile or logger.host or logger.device_id:
                 pid = self._spawn_and_attach_remote(logger)
+                logger._track_suspended(pid)
             else:
                 used_env = {}
                 if logger.environment_file:
@@ -167,8 +199,12 @@ class SessionManager:
                     logger.target_argv, logger.target_app, self._logger
                 )
                 pid = logger._backend.spawn_raw(logger.device, spawn_target, env=used_env)
-                time.sleep(1)
+                # pid recorded BEFORE the settle sleep (was after it): a Ctrl+C in
+                # any pre-resume wait must still find the pid to resume — see
+                # SSL_Logger._resume_suspended_pids.
                 logger.pid = pid
+                logger._track_suspended(pid)
+                time.sleep(1)
                 logger.process = logger._backend.attach(logger.device, str(pid))
         else:
             logger.process = logger._backend.attach(logger.device, logger.target_app)
@@ -187,7 +223,18 @@ class SessionManager:
                     self._logger.info(f"Suspending main thread {main_thread.id} for {logger.timeout} seconds...")
                     logger._backend.suspend_thread(logger.process, main_thread.id)
 
-        if logger.enable_child_gating:
+        # Watch the session BEFORE the agent loads: a target killed during the
+        # load (e.g. Android force-stop) is otherwise never reported — frida
+        # does not replay a 'detached' that happened before the handler was
+        # connected — and friTap waited forever on a dead session. on_detach
+        # classifies such a death as a startup failure (exit 1).
+        logger._backend.on_detached(logger.process, logger.on_detach)
+
+        if logger.spawn:
+            # Also with --enable_child_gating off: gating is how an exec() of
+            # the target (e.g. a launcher script) is caught and followed.
+            logger.follow_exec_of(logger.process)
+        elif logger.enable_child_gating:
             logger._backend.enable_child_gating(logger.process)
 
         if logger._config.backend != BackendName.FRIDA and logger._agent_script_path is not None:
@@ -205,6 +252,9 @@ class SessionManager:
             logger.script = script
         else:
             script = logger.instrument(logger.process, own_message_handler)
+        if not logger.spawn:
+            # Attach mode: the hooks are in, the capture has started.
+            logger.start_capture()
 
         # Emit session started event
         from ..events import SessionEvent
@@ -220,7 +270,6 @@ class SessionManager:
         if logger.keylog:
             self._logger.info(f'Logging keylog file to {logger.keylog}')
 
-        logger._backend.on_detached(logger.process, logger.on_detach)
         # Capture a full native crash report for a target that dies while
         # instrumented (frida's Crash carries the backtrace). Registered for
         # ATTACH mode too, not just spawn: an attached target can equally be
@@ -238,7 +287,10 @@ class SessionManager:
             self._logger.info("Timeout reached. Resuming execution...")
 
         if logger.spawn:
-            logger._backend.resume(logger.device, pid)
+            # The capture start point: a target lost before (or by) this resume
+            # is a startup failure (exit 1), after it a detach (exit 3).
+            logger.start_capture(lambda: logger._backend.resume(logger.device, pid))
+            logger._untrack_suspended(pid)
         else:
             if logger.timeout and logger.target_threads:
                 logger._backend.resume_thread(logger.process, main_thread.id)
@@ -325,15 +377,22 @@ class SessionManager:
             if signum is not None:
                 signal.signal(signum, self._on_termination_signal)
 
+    def request_graceful_stop(self):
+        """Run the Ctrl+C teardown programmatically (exit status 0).
+
+        Used by unattended stops such as ``--duration``: it is the very same
+        path a SIGINT takes, so pcap/keylog/JSON are flushed identically."""
+        self._on_termination_signal(signal.SIGINT, None)
+
     def _on_termination_signal(self, signum, frame):
         logger = self._l
         exit_status = 0 if signum == signal.SIGINT else 128 + int(signum)
         if self._exit_signal_received:
             # A second signal while the teardown is still running: the user
             # insists, so stop waiting for it.
-            os._exit(exit_status)
+            self._exit_now(exit_status)
         self._exit_signal_received = True
-        logger._exit_status = exit_status
+        logger.set_exit_status(exit_status)  # first non-zero status wins
         self._logger.info(self._termination_message(signum))
         if hasattr(logger, 'install_lsass_hook') and logger.install_lsass_hook:
             try:
@@ -360,6 +419,13 @@ class SessionManager:
         done_event = getattr(logger, "_done_event", None)
         if done_event is not None:
             done_event.wait(self.TEARDOWN_WAIT_SECONDS)
+        self._exit_now(exit_status)
+
+    def _exit_now(self, exit_status):
+        """Force the process exit; '-j -' still gets its closing records."""
+        finish = getattr(self._l, "_finish_json_stream", None)
+        if finish is not None:
+            finish()
         os._exit(exit_status)
 
     @staticmethod

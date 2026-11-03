@@ -7,7 +7,6 @@
 import { HookDefinition, ResolvedFunctions, KeylogApproach, ExtraHookDef } from "../../core/hook_definition.js";
 import { log, devlog, devlog_error, devlog_debug } from "../../util/log.js";
 import { sendKeylog, sendDatalog } from "../../shared/shared_structures.js";
-import { getPortsAndAddresses } from "../../shared/shared_functions.js";
 import { readHexFromPointer } from "../decoders/hex_utils.js";
 import { enable_default_fd, pcap_enabled, pairip_safe } from "../../fritap_agent.js";
 import { registerBlinkTarget, PAIRIP_BLINK_ENABLED } from "../../shared/pairip_blink.js";
@@ -15,6 +14,9 @@ import { createKeylogCallbackTracker } from "../../shared/keylog_callback_tracke
 import { STANDARD_SOCKET_SYMBOLS, DUMMY_SESSION_ID_OPENSSL } from "./shared_constants.js";
 import { createLifecycleHook, createBufferedClientRandomDecoder } from "./shared_factories.js";
 import { installBoringSSLSymbolHook, makeBoringSslDumpKeys, DumpKeysCb } from "../../shared/boringssl_symbol_hook.js";
+import { fdOrDeferred, recoveredFd, installSslScopeHooks } from "../../shared/socket_fd_tracker.js";
+import { buildRecordMessage } from "../../shared/record_message.js";
+import { bytesWrittenFromOutParam } from "../../shared/write_length.js";
 
 export function openSslFdDecoder(ssl: NativePointer, fns: ResolvedFunctions): number {
     if (!fns["SSL_get_fd"]) return -1;
@@ -107,6 +109,7 @@ export function createOpenSslDefinition(options?: OpenSslDefOptions): HookDefini
     def.extraHooks = [
         ...(def.extraHooks || []),
         createLifecycleHook("SSL_free", openSslFdDecoder, openSslSessionIdDecoder, openSslClientRandomDecoder),
+        ...(skipRW ? [] : [createSslFdScopeHooks()]),
     ];
 
     return def;
@@ -220,8 +223,41 @@ export function createBoringSSLSslLogSecretFallback(dumpKeys?: DumpKeysCb): Keyl
     };
 }
 
+/**
+ * SSL-scoped fd attribution for fd-less SSL objects (shared/socket_fd_tracker.ts): scopes the
+ * handshake functions so an SSL's socket fd is known before its first record, and forgets it on
+ * SSL_free. Idempotent per address, so definitions may include it more than once.
+ */
+export function createSslFdScopeHooks(): ExtraHookDef {
+    return {
+        install: (_addresses, modName, resolvedFns, _enableDefaultFd) => {
+            if (!pcap_enabled) return;
+            installSslScopeHooks(modName, ssl => openSslFdDecoder(ssl, resolvedFns));
+        },
+    };
+}
+
+// Peer/session metadata for one SSL_read_ex/SSL_write_ex record, or null when it
+// cannot be attributed (no usable fd and no --enable_default_fd, or a non-IP socket).
+function buildExMessage(
+    fd: number, isRead: boolean, ssl: NativePointer, functionName: string,
+    methodAddresses: { [fn: string]: NativePointer }, resolvedFns: ResolvedFunctions, enableDefaultFd: boolean,
+): any | null {
+    return buildRecordMessage({ fd, isRead, functionName, methodAddresses, enableDefaultFd }, () => ({
+        ssl_session_id: openSslSessionIdDecoder(ssl, resolvedFns),
+        client_random: openSslClientRandomDecoder(ssl, resolvedFns),
+    }));
+}
+
+// SSL_read_ex / SSL_write_ex plaintext hooks. These are separate entry points
+// (OpenSSL's SSL_read never calls SSL_read_ex or vice versa) and CPython's _ssl
+// uses ONLY them. An SSL object without a socket fd (SSL_get_fd() < 0, e.g. a
+// custom BIO) is attributed in onLeave via the fd-recovery tracker, after the
+// call did its own socket I/O — see fdOrDeferred in shared/socket_fd_tracker.ts.
 export function createSslReadWriteExHooks(): ExtraHookDef[] {
     return [
+        // Some platform definitions REPLACE extraHooks with this list; keep the scope hooks.
+        createSslFdScopeHooks(),
         {
             install: (addresses, modName, resolvedFns, enableDefaultFd) => {
                 if (!pcap_enabled) return;
@@ -231,17 +267,25 @@ export function createSslReadWriteExHooks(): ExtraHookDef[] {
                     Interceptor.attach(readExAddr, {
                         onEnter: function (args: any) {
                             const ssl = args[0];
-                            const fd = resolvedFns["SSL_get_fd"]?.(ssl) as number ?? -1;
-                            const message = getPortsAndAddresses(fd, true, addresses[modName], enableDefaultFd);
-                            if (message === null) return;
-                            message["ssl_session_id"] = openSslSessionIdDecoder(ssl, resolvedFns);
-                            message["client_random"] = openSslClientRandomDecoder(ssl, resolvedFns);
-                            message["function"] = "SSL_read_ex";
-                            this.message = message;
+                            const fd = fdOrDeferred(resolvedFns["SSL_get_fd"]?.(ssl) as number ?? -1, ssl);
                             this.buf = args[1];
                             this.readbytes = args[3]; // pointer to actual bytes read
+                            if (fd === null) {
+                                this.deferredSsl = ssl;
+                                return;
+                            }
+                            const message = buildExMessage(fd, true, ssl, "SSL_read_ex", addresses[modName], resolvedFns, enableDefaultFd);
+                            if (message === null) return;
+                            this.message = message;
                         },
                         onLeave: function (retval: any) {
+                            // Deferred: always close the SSL scope, even for a failed call.
+                            const recovered = this.deferredSsl ? recoveredFd(this.deferredSsl) : -1;
+                            // SSL_read_ex returns 1 on success; on failure *readbytes is not meaningful.
+                            if ((retval | 0) <= 0) return;
+                            if (this.deferredSsl) {
+                                this.message = buildExMessage(recovered, true, this.deferredSsl, "SSL_read_ex", addresses[modName], resolvedFns, enableDefaultFd);
+                            }
                             if (!this.message) return;
                             const actualBytes = this.readbytes.readU32();
                             if (actualBytes <= 0) return;
@@ -250,21 +294,37 @@ export function createSslReadWriteExHooks(): ExtraHookDef[] {
                     });
                 }
 
-                // SSL_write_ex
+                // SSL_write_ex: emitted in onLeave with *written bytes (never the requested
+                // length, which would duplicate plaintext on a partial write). The caller owns
+                // `buf` for the whole synchronous call.
                 const writeExAddr = addresses[modName]?.["SSL_write_ex"];
                 if (writeExAddr && !writeExAddr.isNull()) {
                     Interceptor.attach(writeExAddr, {
                         onEnter: function (args: any) {
                             const ssl = args[0];
-                            const fd = resolvedFns["SSL_get_fd"]?.(ssl) as number ?? -1;
-                            const message = getPortsAndAddresses(fd, false, addresses[modName], enableDefaultFd);
+                            const fd = fdOrDeferred(resolvedFns["SSL_get_fd"]?.(ssl) as number ?? -1, ssl);
+                            this.buf = args[1];
+                            this.bufLen = parseInt(args[2]);
+                            this.written = args[3];
+                            if (fd === null) {
+                                this.deferredSsl = ssl;
+                                return;
+                            }
+                            const message = buildExMessage(fd, false, ssl, "SSL_write_ex", addresses[modName], resolvedFns, enableDefaultFd);
                             if (message === null) return;
-                            message["ssl_session_id"] = openSslSessionIdDecoder(ssl, resolvedFns);
-                            message["client_random"] = openSslClientRandomDecoder(ssl, resolvedFns);
-                            message["function"] = "SSL_write_ex";
-                            const buf = args[1];
-                            const bufLen = parseInt(args[2]);
-                            sendDatalog(message, buf.readByteArray(bufLen));
+                            this.message = message;
+                        },
+                        onLeave: function (retval: any) {
+                            // Deferred: always close the SSL scope, even for a failed call.
+                            const recovered = this.deferredSsl ? recoveredFd(this.deferredSsl) : -1;
+                            // SSL_write_ex returns 1 on success; on failure *written is not meaningful.
+                            const count = bytesWrittenFromOutParam(this.bufLen, retval.toInt32(), this.written);
+                            if (count <= 0) return;
+                            if (this.deferredSsl) {
+                                this.message = buildExMessage(recovered, false, this.deferredSsl, "SSL_write_ex", addresses[modName], resolvedFns, enableDefaultFd);
+                            }
+                            if (!this.message) return;
+                            sendDatalog(this.message, this.buf.readByteArray(count));
                         },
                     });
                 }

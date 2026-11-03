@@ -26,6 +26,12 @@ if TYPE_CHECKING:
 class OutputHandler(ABC):
     """Abstract output handler that subscribes to EventBus events."""
 
+    #: True for handlers that need the decrypted read/write data events, i.e.
+    #: the agent's plaintext hooks (wire key ``pcap_enabled``). The factory ORs
+    #: this over the handlers a config selects (see
+    #: :meth:`OutputHandlerFactory.plaintext_hooks_needed`).
+    consumes_plaintext: bool = False
+
     @abstractmethod
     def setup(self, event_bus: "EventBus") -> None:
         """Subscribe to relevant events on the bus."""

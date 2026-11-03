@@ -134,8 +134,65 @@ def active_keylog_paths(base_keylog, protocol, protocol_registry, protocol_handl
     return {f.protocol: split_keylog_path(base_keylog, f.protocol) for f in active}
 
 
+def _pcap_handler_class(output_config):
+    """The -p handler class: PCAPNG for a pcapng name/format, else classic PCAP.
+
+    The filename extension wins over ``output_format``; the latter only acts as
+    a fallback for unrecognised extensions. None without -p.
+    """
+    from ..pcap_utility import is_pcapng_filename
+    from .pcap_handler import PcapOutputHandler
+    from .pcapng_handler import PcapngOutputHandler
+    pcap_name = output_config.pcap
+    if not pcap_name:
+        return None
+    if pcap_name.lower().endswith(".pcap"):
+        return PcapOutputHandler
+    if is_pcapng_filename(pcap_name) or output_config.output_format == "pcapng":
+        return PcapngOutputHandler
+    return PcapOutputHandler
+
+
+def _json_handler_class(output_config):
+    """The -j handler class: stdout JSONL stream, *.jsonl file or JSON document."""
+    if output_config.json_stream:
+        from .jsonl_stdout_handler import JsonlStdoutHandler
+        return JsonlStdoutHandler
+    if not output_config.json_output:
+        return None
+    if output_config.json_output.endswith(".jsonl"):
+        from .jsonl_handler import JsonlOutputHandler
+        return JsonlOutputHandler
+    from .json_handler import JsonOutputHandler
+    return JsonOutputHandler
+
+
+def _tap_handler_class(output_config):
+    """The --tap handler class, or None without --tap."""
+    if not output_config.tap_output:
+        return None
+    from .tap_handler import TapOutputHandler
+    return TapOutputHandler
+
+
 class OutputHandlerFactory:
     """Factory that creates output handler instances based on configuration."""
+
+    @staticmethod
+    def plaintext_hooks_needed(output_config) -> bool:
+        """Whether any selected output consumes the decrypted data events.
+
+        ORs ``consumes_plaintext`` over the -p, -j and --tap handler classes this
+        config selects, so the agent installs its plaintext read/write hooks only
+        when something will use them. Never in full-capture (-f) mode, where
+        tcpdump records the raw packets instead.
+        """
+        if output_config.full_capture:
+            return False
+        selected = (_pcap_handler_class(output_config),
+                    _json_handler_class(output_config),
+                    _tap_handler_class(output_config))
+        return any(cls is not None and cls.consumes_plaintext for cls in selected)
 
     @staticmethod
     def create_handlers(config, pcap_obj, protocol_handler, session_data, logger,
@@ -157,7 +214,6 @@ class OutputHandlerFactory:
             (handlers_list, live_info_dict) where live_info_dict has keys
             'tmpdir' and 'filename' if live mode is active, else empty dict.
         """
-        from ..pcap_utility import is_pcapng_filename
         from . import (
             ConsoleOutputHandler,
             JsonlOutputHandler,
@@ -179,18 +235,14 @@ class OutputHandlerFactory:
         # Console always active
         handlers.append(ConsoleOutputHandler(verbose=config.output.verbose))
 
-        # Filename extension wins over output_format; the latter only acts
-        # as a fallback for unrecognised extensions.
         pcap_name = config.output.pcap
-        wants_pcapng = bool(pcap_name) and (
-            is_pcapng_filename(pcap_name) or config.output.output_format == "pcapng"
-        )
+        # One pcapng decision (extension first, then --output-format) shared by
+        # the -p handler and the full-capture DSB injection below.
+        wants_pcapng = _pcap_handler_class(config.output) is PcapngOutputHandler
 
         # PCAP/PCAPNG (non-live, non-full-capture only)
         if pcap_name and not config.output.live and not config.output.full_capture:
-            if pcap_name.lower().endswith(".pcap"):
-                handlers.append(PcapOutputHandler(pcap_obj))
-            elif wants_pcapng:
+            if wants_pcapng:
                 handlers.append(PcapngOutputHandler(pcap_name, protocol_handler=protocol_handler))
             else:
                 handlers.append(PcapOutputHandler(pcap_obj))
@@ -281,16 +333,30 @@ class OutputHandlerFactory:
             live_info["memory_scan_keylog"] = ms_path
             logger.info("memory-scan keylog → %s", ms_path)
 
-        # JSON / JSONL
-        json_output = config.output.json_output
-        if json_output:
-            if json_output.endswith(".jsonl"):
-                handlers.append(JsonlOutputHandler(json_output))
-            else:
+        # JSON / JSONL / -j - stdout stream
+        json_cls = _json_handler_class(config.output)
+        if json_cls is not None:
+            from .key_material import json_key_material_enabled
+            # One policy for every JSON output: raw key material only when it
+            # was explicitly requested (-k or --json-keys), else redacted.
+            include_keys = json_key_material_enabled(config.output)
+            if json_cls is JsonOutputHandler:
                 handlers.append(JsonOutputHandler(
-                    json_output, session_info=session_data.get("session_info", {}),
+                    config.output.json_output,
+                    session_info=session_data.get("session_info", {}),
                     auxiliary=getattr(config.output, "auxiliary_session", False),
+                    include_key_material=include_keys,
                 ))
+            elif json_cls is JsonlOutputHandler:
+                handlers.append(JsonlOutputHandler(
+                    config.output.json_output, include_key_material=include_keys))
+            else:
+                handlers.append(json_cls(include_key_material=include_keys))
+
+        # --tap: write a .tap capture (flows) directly from the CLI session.
+        tap_cls = _tap_handler_class(config.output)
+        if tap_cls is not None:
+            handlers.append(tap_cls(config.output.tap_output, target=config.target or ""))
 
         # Live Wireshark modes
         if config.output.live:

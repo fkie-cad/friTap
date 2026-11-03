@@ -64,10 +64,43 @@ export class OpenSSL_From_Python_MacOS extends OpenSSL_BoringSSL {
 
         var library_method_mapping: { [key: string]: Array<string> } = {}
 
-        // the MacOS implementation needs some further improvements - currently we are not able to get the sockfd from an SSL_read/write invocation
-        library_method_mapping[`*${moduleName}*`] = ["SSL_CTX_set_keylog_callback", "SSL_CTX_new", "SSL_new", "SSL_get_SSL_CTX"]
+        // Genuine OpenSSL (Homebrew, python.org, pyenv, ...) — NOT Apple's
+        // libboringssl — so its exported SSL_get_fd is the real one and the
+        // plaintext hooks work as on Linux. (The old "currently we are not able to
+        // get the sockfd from an SSL_read/write invocation" limitation was Apple's
+        // BoringSSL, which needs BIO_get_fd — a macro, not even an export, in
+        // genuine OpenSSL; see usesBioGetFd in tls/libs/openssl_boringssl.ts.) SSL_read_ex / SSL_write_ex — the only entry
+        // points CPython's _ssl uses — are appended by the base constructor when
+        // the module exports them.
+        library_method_mapping[`*${moduleName}*`] = [
+            "SSL_CTX_set_keylog_callback", "SSL_CTX_new", "SSL_new", "SSL_get_SSL_CTX",
+            "SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session", "SSL_SESSION_get_id",
+        ]
+        library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
 
+        // The base constructor binds the genuine SSL_get_fd (this is not Apple's
+        // libboringssl); if a symbol is unresolved the module stays keys-only.
         super(moduleName, socket_library, is_base_hook, library_method_mapping);
+    }
+
+    /**
+     * SSL_read/SSL_write (curl) and SSL_read_ex/SSL_write_ex (CPython) via the
+     * base-class installers. curl >= 7.87 wraps the socket in its own BIO, so
+     * SSL_get_fd() is -1 there; those installers then recover the peer through
+     * the socket-fd tracker (shared/socket_fd_tracker.ts).
+     */
+    install_plaintext_hooks(){
+        if (!this.do_read_write_hooks) {
+            devlog(`[MacOS] ${this.module_name}: plaintext hooks unavailable, extracting keys only`);
+            return;
+        }
+        try {
+            this.install_plaintext_read_hook();
+            this.install_plaintext_write_hook();
+            this.install_extended_hooks();
+        } catch (e) {
+            devlog_error(`[MacOS] ${this.module_name}: failed to install the plaintext hooks: ${e}`);
+        }
     }
 
     install_openssl_keys_callback_hook(){
@@ -165,7 +198,9 @@ export class OpenSSL_From_Python_MacOS extends OpenSSL_BoringSSL {
             "SSL_CTX_set_keylog_callback", "SSL_CTX_new", "SSL_new", "SSL_get_SSL_CTX",
         ]);
 
+        // Keys first: a plaintext-hook failure must never cost the keylog.
         this.install_openssl_keys_callback_hook();
+        this.install_plaintext_hooks();
     }
 
 

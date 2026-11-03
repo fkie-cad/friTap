@@ -14,6 +14,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from friTap.exit_codes import EXIT_TARGET_DETACHED
+
 from tests.unit import test_memory_scan_teardown as _teardown
 from tests.unit.test_memory_scan_teardown import _FakePcap, _make_logger  # noqa: F401
 
@@ -55,7 +57,8 @@ def test_target_death_closes_the_json_handler_once(exits, reason):
     assert handler.effective_closes == 1
     assert spy.close.call_count == 1
     assert obj._done_event.is_set()
-    assert exits == [0]
+    # A target that dies on its own exits with EXIT_TARGET_DETACHED (3).
+    assert exits == [EXIT_TARGET_DETACHED]
 
 
 def test_concurrent_detach_and_scanner_end_close_once(exits):
@@ -83,7 +86,8 @@ def test_json_is_closed_even_if_an_earlier_teardown_step_raises(exits):
     obj.on_detach("process-terminated")
 
     assert handler.effective_closes == 1
-    assert exits == [0]
+    # A target that dies on its own exits with EXIT_TARGET_DETACHED (3).
+    assert exits == [EXIT_TARGET_DETACHED]
 
 
 def test_legacy_json_finalize_uses_the_streaming_writer_once(monkeypatch):

@@ -2,6 +2,7 @@ import { log, devlog } from "../util/log.js";
 import { hookRegistry, HookRegistration, RequestedProtocol, protocolLabel } from "./registry.js";
 import { Platform } from "./shared_structures.js";
 import { matchNonTLSLibrary, noteNonTLSLibrary } from "../util/non_tls_libs.js";
+import { baseKey, findLoadedModule, moduleIdentityKey, nameKey } from "./module_identity.js";
 
 interface ScanResultEntry {
     name: string;
@@ -19,17 +20,70 @@ interface ScanResultEntry {
     covered_by_sibling?: { sibling: string; reason: string };
 }
 
-/** Tracks modules already hooked — prevents double-hooking.
- *  Keys are "${moduleName}:${protocol}" to allow the same module
- *  to be hooked by different protocols (e.g. TLS and OHTTP). */
-const hookedModules: Set<string> = new Set();
+/** Tracks modules already hooked — prevents double-hooking. This is the one
+ *  guard every loader path (initial scan, dlopen/LoadLibrary hook, dependency
+ *  scan, tlsLibHunter results, Android/Wine watchers) consults.
+ *
+ *  Keyed by module IDENTITY (base address, see module_identity.ts) plus the
+ *  install tag, so one image reached under several spellings (bare name, real
+ *  path, symlinked dlopen() path) is hooked once, while different protocols /
+ *  supplementary rows on the same image still each install. Maps identity ->
+ *  install tags so an unloaded image's markers can be dropped in one step. */
+const hookedModules: Map<string, Set<string>> = new Map();
+
+let unloadObserverAttached = false;
+
+/** Drop the markers of an image the process unmapped, so a later reload is hooked again. */
+export function forgetUnloadedModule(module: { name: string; path: string; base: NativePointer | string }): void {
+    for (const key of [baseKey(module.base), nameKey(module.name), nameKey(module.path)]) {
+        if (hookedModules.delete(key)) devlog(`[hook-guard] ${module.name} unloaded; markers cleared`);
+    }
+}
+
+function ensureUnloadObserver(): void {
+    if (unloadObserverAttached) return;
+    unloadObserverAttached = true;
+    const P: any = Process as any;
+    if (typeof P.attachModuleObserver !== "function") return;
+    try {
+        P.attachModuleObserver({ onRemoved: (m: Module) => forgetUnloadedModule(m) });
+    } catch (error) {
+        devlog(`[hook-guard] module observer unavailable: ${error}`);
+    }
+}
 
 export function markModuleHooked(moduleName: string, protocol: string = "tls"): void {
-    hookedModules.add(`${moduleName}:${protocol}`);
+    ensureUnloadObserver();
+    const key = moduleIdentityKey(moduleName);
+    let tags = hookedModules.get(key);
+    if (tags === undefined) hookedModules.set(key, tags = new Set());
+    tags.add(protocol);
 }
 
 export function isModuleHooked(moduleName: string, protocol: string = "tls"): boolean {
-    return hookedModules.has(`${moduleName}:${protocol}`);
+    // The name key also covers a marker recorded before the image was resolvable.
+    for (const key of [moduleIdentityKey(moduleName), nameKey(moduleName)]) {
+        if (hookedModules.get(key)?.has(protocol)) return true;
+    }
+    return false;
+}
+
+/**
+ * The module name to hand a hook executor (and the loaders' bookkeeping) for
+ * `nameOrPath`. Executors look their image up with Process.getModuleByName,
+ * which does not follow symlinks, so a dlopen() spelling such as
+ * `/opt/homebrew/opt/openssl@3/lib/libssl.3.dylib` must become the mapped
+ * module's own name. That is `module.name` unless another loaded image shares
+ * the basename, then the unambiguous `module.path`. Strings that resolve to no
+ * Frida module (e.g. Wine PE DLLs) are returned unchanged.
+ */
+export function executorModuleName(nameOrPath: string): string {
+    const module = findLoadedModule(nameOrPath);
+    if (module === null) return nameOrPath;
+    let byName: Module | null = null;
+    try { byName = Process.findModuleByName(module.name); } catch (_) { /* ambiguous or missing */ }
+    const nameIsUnique = byName !== null && byName.base.toString() === module.base.toString();
+    return nameIsUnique ? module.name : module.path;
 }
 
 /**
@@ -102,6 +156,7 @@ export function processScanResults(
     log(`[Scanner] Processing ${entries.length} pre-scanned libraries`);
 
     for (const entry of entries) {
+        entry.name = executorModuleName(entry.name);
         // Skip already-hooked modules (for this protocol)
         if (isModuleHooked(entry.name, protocolTag)) {
             devlog(`[Scanner] ${entry.name} already hooked for ${protocolTag}, skipping`);

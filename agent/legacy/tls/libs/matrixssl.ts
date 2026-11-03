@@ -2,6 +2,7 @@ import { readAddresses, getPortsAndAddresses, resolveOffsets } from "../../../sh
 import { sendDatalog } from "../../../shared/shared_structures.js";
 import { enable_default_fd, pcap_enabled } from "../../../fritap_agent.js";
 import { log } from "../../../util/log.js";
+import { hookMatrixSslReads, hookMatrixSslWrites } from "../../../shared/matrixssl_plaintext.js";
 
 
 export class matrix_SSL {
@@ -12,6 +13,8 @@ export class matrix_SSL {
     library_method_mapping: { [key: string]: Array<string> } = {};
     addresses: { [libraryName: string]: { [functionName: string]: NativePointer } };
     module_name: string;
+    /** Socket fd of the last successful connect() (install_helper_hook); -1 until then. */
+    fd: number = -1;
 
     static matrixSslNewCLientSession: any;
     static sessionId: string;
@@ -22,7 +25,7 @@ export class matrix_SSL {
         if (typeof passed_library_method_mapping !== 'undefined') {
             this.library_method_mapping = passed_library_method_mapping;
         } else {
-            this.library_method_mapping[`*${moduleName}*`] = ["matrixSslReceivedData", "matrixSslGetWritebuf", "matrixSslGetSid", "matrixSslEncodeWritebuf"];
+            this.library_method_mapping[`*${moduleName}*`] = ["matrixSslReceivedData", "matrixSslProcessedData", "matrixSslGetWritebuf", "matrixSslGetSid", "matrixSslEncodeWritebuf"];
             this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl", "socket"];
         }
 
@@ -44,72 +47,25 @@ export class matrix_SSL {
 
     install_plaintext_read_hook() {
         if (!pcap_enabled) return;
-        var current_module_name = this.module_name;
-        var lib_addesses = this.addresses;
-
-
-        Interceptor.attach(this.addresses[this.moduleName]["matrixSslReceivedData"], {
-            onEnter: function (args) {
-                this.buffer = args[2];
-                this.len = args[3];
-                
-
-                var message = getPortsAndAddresses(this.fd as number, true, lib_addesses[current_module_name], enable_default_fd)
-                message["ssl_session_id"] = this.addresses[this.moduleName]["matrixSslGetSid"] === undefined ? matrix_SSL.sessionId : this.getSessionId(args[0]);
-                message["function"] = "matrixSslReceivedData"
-                this.message = message
-            },
-            onLeave: function (retval: any) {
-                retval |= 0 // Cast retval to 32-bit integer.
-                if (retval <= 0) {
-                    return
-                }
-
-                var data = this.buffer.readByteArray(this.len);
-                sendDatalog(this.message, data)
-
-
-            }
-
-        });
-
+        const moduleAddresses = this.addresses[this.moduleName];
+        hookMatrixSslReads(moduleAddresses["matrixSslReceivedData"], moduleAddresses["matrixSslProcessedData"],
+            (ssl, data, functionName) => this.emitRecord(true, ssl, data, functionName));
     }
-
 
     install_plaintext_write_hook() {
         if (!pcap_enabled) return;
-        var current_module_name = this.module_name;
-        var lib_addesses = this.addresses;
-        //This function is needed to extract the buffer address in which the plaintext will be stored before registring this buffer as the "sent data" buffer.
-        Interceptor.attach(this.addresses[this.moduleName]["matrixSslGetWritebuf"], {
-            onEnter: function (args) {
-                this.outBuffer = args[1];
-            },
-            onLeave: function (retval: any) {
-                retval |= 0 // Cast retval to 32-bit integer.
-                if (retval <= 0) {
-                    return
-                }
-                this.outBufferLength = retval
+        const moduleAddresses = this.addresses[this.moduleName];
+        hookMatrixSslWrites(moduleAddresses["matrixSslGetWritebuf"], moduleAddresses["matrixSslEncodeWritebuf"],
+            (ssl, data, functionName) => this.emitRecord(false, ssl, data, functionName));
+    }
 
-
-            }
-           
-        });
-
-         //This function actual encodes the plaintext. We need to hook this, because the user will fill the data out buffer between matrixSslGetWritebuf and matrixSslEncodeWritebuf call.
-         //So at the time this function is called, the buffer with the plaintext will be final 
-         Interceptor.attach(this.addresses[this.moduleName]["matrixSslEncodeWritebuf"], {
-
-            onEnter: function (args) {
-                var data = this.outBuffer.readByteArray(this.outBufferLength);
-                var message = getPortsAndAddresses(this.fd, false, lib_addesses[current_module_name], enable_default_fd)
-                message["ssl_session_id"] = this.addresses[this.moduleName]["matrixSslGetSid"] === undefined ? matrix_SSL.sessionId : this.getSessionId(args[0]);
-                message["function"] = "matrixSslEncodeWritebuf"
-                sendDatalog(message, data)
-            }
-        });
-
+    /** Send one plaintext record, attributed to the fd of the last successful connect(). */
+    private emitRecord(isRead: boolean, ssl: NativePointer, data: ArrayBuffer, functionName: string): void {
+        const message = getPortsAndAddresses(this.fd, isRead, this.addresses[this.module_name], enable_default_fd);
+        if (message === null) return;
+        message["ssl_session_id"] = this.sessionIdFor(ssl);
+        message["function"] = functionName;
+        sendDatalog(message, data);
     }
 
 
@@ -117,7 +73,8 @@ export class matrix_SSL {
         // TBD
     }
 
-    install_helper_hook(){        
+    install_helper_hook(){
+        const self = this;
     
         Interceptor.attach(this.addresses[this.moduleName]["matrixSslNewSessionId"], {
             onEnter: function (args) {
@@ -137,16 +94,22 @@ export class matrix_SSL {
 
         Interceptor.attach(this.addresses[this.moduleName]["connect"], {
             onEnter: function (args) {
+                this.sockfd = args[0].toInt32();
             },
             onLeave: function (retval: any) {
-                retval |= 0 // Cast retval to 32-bit integer.
-                if (retval <= 0) {
+                // connect() returns 0 on success; the fd is its first argument.
+                if (retval.toInt32() !== 0) {
                     return
                 }
 
-                this.fd = retval;               
+                self.fd = this.sockfd;
             }
         })
+    }
+
+    /** Session id from matrixSslGetSid when resolved, else the one install_helper_hook saved. */
+    sessionIdFor(ssl: any): string {
+        return this.addresses[this.moduleName]["matrixSslGetSid"] === undefined ? matrix_SSL.sessionId : this.getSessionId(ssl);
     }
 
     getSessionId(ssl: any){

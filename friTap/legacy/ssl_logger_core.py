@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import calendar
 import functools
 import ipaddress
 import json
@@ -22,11 +23,14 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 from ..about import __version__
-from ..backends.base import BackendName, BackendScriptLoadTimeout, ScriptRuntime
+from ..backends.base import (
+    BackendName, BackendScriptLoadTimeout, BackendTransportError, ScriptRuntime,
+)
 from ..config import FriTapConfig, effective_script_load_timeout
 from ..constants import AGENT_ABI_VERSION, SSL_READ, SSL_WRITE
 from ..events import (
     AntiTamperDetectedEvent,
+    DatalogEvent,
     DetachEvent,
     EventBus,
     HookBreadcrumbEvent,
@@ -39,6 +43,7 @@ from ..events import (
     SocketTraceEvent,
 )
 from ..fritap_utility import setup_fritap_logging, sha256_file
+from ..exit_codes import EXIT_OK, EXIT_RUNTIME_ERROR, EXIT_TARGET_DETACHED
 from ..pcap import PCAP
 from ..text_safety import safe_terminal_text
 
@@ -60,6 +65,10 @@ class _InstrumentRequest:
     # False for processes that were never Frida-suspended (the Wine process
     # watcher attaches to running processes): there is nothing to Frida-resume.
     resume: bool = True
+    # True for the spawned target's own exec'd image (child gating, origin
+    # "exec", same pid): the instrumented image replaces the main session
+    # instead of joining the capture as an extra child.
+    exec_handover: bool = False
 
 
 class TargetOS(NamedTuple):
@@ -386,6 +395,17 @@ class SSL_Logger():
         self._instrument_stop = threading.Event()
         self._instrument_thread: threading.Thread | None = None
         self._instrument_thread_lock = threading.Lock()
+        # Every pid friTap holds suspended and still owes a resume: the spawned
+        # target (until its resume) and each gated child/spawn (from the gating
+        # event until the worker, the drain or the rejection path resumes it).
+        # Teardown resumes whatever is left (see _resume_suspended_pids).
+        self._suspended_pids: set = set()
+        self._suspended_pids_lock = threading.Lock()
+        # Spawn-mode exec following (see _follow_exec_of): how many
+        # 'process-replaced' detaches and exec'd images of the target were seen.
+        self._exec_lock = threading.Lock()
+        self._exec_replaced_count = 0
+        self._exec_image_count = 0
         self.target_threads = None
         self.tmpdir = None
         self.filename = ""
@@ -494,6 +514,7 @@ class SSL_Logger():
         # subscription here is an accurate, source-agnostic "did we get keys?".
         self._captured_any_secret = False
         self._event_bus.subscribe(KeylogEvent, self._on_keylog_captured)
+        self._event_bus.subscribe(DatalogEvent, self._on_traffic_captured)
 
         # Crash attribution: remember the last hook the agent reported entering,
         # so on_detach can name it if the target dies inside a hook. Stored in
@@ -736,7 +757,17 @@ class SSL_Logger():
         """
         self._captured_any_secret = True
 
+    _captured_any_data = False
 
+    def _on_traffic_captured(self, event):
+        """Note that plaintext was captured this session (cheap, idempotent)."""
+        self._captured_any_data = True
+
+    def _capture_produced_output(self) -> bool:
+        """The capture started and already produced keys or plaintext: a target
+        that ends now did its work rather than failing to start."""
+        return self.capture_started() and (
+            getattr(self, "_captured_any_secret", False) or self._captured_any_data)
 
     def init_fritap(self):
         self.agent_script = "fritap_agent.js"
@@ -1108,6 +1139,123 @@ class SSL_Logger():
         except Exception:
             pass
 
+    # Clock slack when comparing device timestamps with the session start.
+    CRASH_EVIDENCE_CLOCK_TOLERANCE = 60.0
+    # logcat "threadtime" line: "MM-DD HH:MM:SS.mmm  PID  TID LEVEL TAG: msg".
+    _LOGCAT_THREADTIME_RE = re.compile(
+        r"^\s*(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?\s+(\d+)\s+\d+\s")
+    _TOMBSTONE_TIMESTAMP_RE = re.compile(
+        r"^Timestamp:\s*(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(?:\.\d+)?([+-]\d{4})?",
+        re.MULTILINE)
+
+    def _crash_evidence_since(self, device_clock=None) -> Optional[float]:
+        """Epoch, in the DEVICE's clock, before which device crash evidence
+        cannot belong to this run; ``None`` (no time filtering) without a
+        session start or a device clock reading.
+
+        *device_clock* is the ``(device_epoch, host_epoch)`` pair of
+        :meth:`_read_device_clock`: the device and host clocks may disagree, so
+        the host session start is shifted onto the device's timeline.
+        """
+        start = getattr(self, "_session_start_time", None)
+        if not start or device_clock is None:
+            return None
+        device_epoch, host_epoch = device_clock
+        return start + (device_epoch - host_epoch) - self.CRASH_EVIDENCE_CLOCK_TOLERANCE
+
+    @staticmethod
+    def _read_device_clock(andy):
+        """``((device_epoch, host_epoch), device_utc_offset)`` read from the
+        device, or ``(None, None)`` when its clock cannot be determined."""
+        get_clock = getattr(andy, "get_device_clock", None)
+        try:
+            host_before = time.time()
+            reading = get_clock() if get_clock is not None else None
+            host_epoch = (host_before + time.time()) / 2
+        except Exception:
+            return None, None
+        if not reading:
+            return None, None
+        device_epoch, utc_offset = reading
+        return (float(device_epoch), host_epoch), int(utc_offset)
+
+    @staticmethod
+    def _logcat_line_epoch(month, day, hour, minute, second, utc_offset,
+                           now=None) -> Optional[float]:
+        """Epoch of a year-less logcat timestamp, read as wall-clock time at
+        *utc_offset* seconds east of UTC (the DEVICE's offset). A date in the
+        future belongs to the previous year; *now* is the device's epoch."""
+        now = now if now is not None else time.time()
+        year = time.gmtime(now + utc_offset).tm_year
+        for candidate_year in (year, year - 1):
+            try:
+                stamp = calendar.timegm(
+                    (candidate_year, month, day, hour, minute, second, 0, 0, 0)) - utc_offset
+            except (OverflowError, ValueError):
+                return None
+            if stamp <= now + 86400:
+                return stamp
+        return None
+
+    @classmethod
+    def _crash_buffer_lines_for(cls, crash_buf: str, pid, since: Optional[float],
+                                utc_offset: Optional[int] = None,
+                                now: Optional[float] = None) -> str:
+        """The ``logcat -b crash`` lines that belong to *pid*'s crash in this run.
+
+        Kept: lines logged by *pid* itself (libc's "Fatal signal ...") and by the
+        crash_dump process that writes *pid*'s report (its "pid: <pid>, tid: ..."
+        header names it), and only when not older than *since* (device epoch).
+        Lines are timed with the device's *utc_offset*; without it (or without
+        *since*) only the pid filter applies. Without a pid nothing can be
+        attributed, so nothing is kept.
+        """
+        if not crash_buf or not pid:
+            return ""
+        parsed = []
+        for line in crash_buf.splitlines():
+            m = cls._LOGCAT_THREADTIME_RE.match(line)
+            if m:
+                parsed.append((line, tuple(int(g) for g in m.groups())))
+        header = re.compile(rf"\bpid:\s*{int(pid)}\b")
+        writers = {fields[5] for line, fields in parsed if header.search(line)}
+        time_filter = since is not None and utc_offset is not None
+        kept = []
+        for line, (month, day, hour, minute, second, line_pid) in parsed:
+            if line_pid != int(pid) and line_pid not in writers:
+                continue
+            if time_filter:
+                stamp = cls._logcat_line_epoch(
+                    month, day, hour, minute, second, utc_offset, now)
+                if stamp is not None and stamp < since:
+                    continue
+            kept.append(line)
+        return "\n".join(kept)
+
+    @classmethod
+    def _tombstone_predates(cls, tombstone: str, since: Optional[float],
+                            utc_offset: Optional[int] = None) -> bool:
+        """True when the tombstone's ``Timestamp:`` is older than *since*
+        (device epoch). A timestamp without its own offset is read at the
+        device's *utc_offset*; with neither, it cannot be placed: False."""
+        if since is None or not tombstone:
+            return False
+        m = cls._TOMBSTONE_TIMESTAMP_RE.search(tombstone)
+        if not m:
+            return False
+        try:
+            if m.group(2):
+                stamp = datetime.strptime(m.group(1) + m.group(2),
+                                          "%Y-%m-%d %H:%M:%S%z").timestamp()
+            elif utc_offset is not None:
+                stamp = calendar.timegm(
+                    time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")) - utc_offset
+            else:
+                return False
+        except (ValueError, OverflowError):
+            return False
+        return stamp < since
+
     def _enrich_crash_log_android(self, crash, writer):
         """Pull the on-device tombstone and ``logcat -b crash`` for the crashed
         process into the debug log, and parse the ART signal / abort message from
@@ -1142,24 +1290,34 @@ class SSL_Logger():
 
         # logcat crash buffer: holds the ART 'Fatal signal' + 'Abort message'
         # almost immediately after the crash (no tombstone-write race).
+        # Device timestamps are in the device's timezone and clock: compare in
+        # the device's own timeline (or not at all when it cannot be read).
+        device_clock, utc_offset = self._read_device_clock(andy)
+        since = self._crash_evidence_since(device_clock)
+        device_now = device_clock[0] if device_clock else None
         crash_buf = andy.get_crash_logcat()
         if crash_buf:
-            # The pid filter is only a display aid: keep the log readable by
-            # showing our process's lines. Parse the cause from the FULL buffer —
-            # the `-b crash` buffer is already crash-scoped, and the pid/tid
-            # columns overlap, so over-filtering here could drop the real
-            # 'Fatal signal' / 'Abort message' lines.
-            shown = crash_buf
-            if pid:
-                lines = [line for line in crash_buf.splitlines() if f" {pid} " in line or f"({pid})" in line]
-                shown = "\n".join(lines) or crash_buf
-            self._write_crash_section(writer, "logcat -b crash", shown)
-            s, a = self._parse_crash_cause(crash_buf, None)
+            # The crash buffer is device-wide and keeps entries for hours: only
+            # lines of OUR process (or of the crash_dump writing its report)
+            # from THIS session may name the cause, else an unrelated, older
+            # SIGSEGV of another app is reported as ours.
+            ours = self._crash_buffer_lines_for(
+                crash_buf, pid, since, utc_offset, device_now)
+            self._write_crash_section(
+                writer, "logcat -b crash", ours or (
+                    f"# no crash-buffer entries for pid {pid} since the session "
+                    "started (unrelated entries ignored)"))
+            s, a = self._parse_crash_cause(ours, None)
             sig, abort = sig or s, abort or a
 
         # newest tombstone, correlated to our process (pid / cmdline) by the
         # Android platform layer so an unrelated app's dump is not attached.
         tombstone_path, tombstone = andy.get_latest_tombstone(pid, keep)
+        if tombstone and self._tombstone_predates(tombstone, since, utc_offset):
+            self._write_crash_section(
+                writer, f"tombstone {tombstone_path}",
+                "# ignored: written before this session started")
+            tombstone = ""
         if tombstone:
             self._write_crash_section(writer, f"tombstone {tombstone_path}", tombstone)
             s, a = self._parse_crash_cause(tombstone, None)
@@ -1428,6 +1586,8 @@ class SSL_Logger():
                        if crash_evidence else None)
         headline = self._crash_headline(
             signal_name, abort_msg, crash_evidence, clean_exit, hook_module, crumb)
+        # Quoted by _report_death_before_capture as the specific reason.
+        self._termination_headline = headline
         # A clean exit is informational, not an error — and skips the crash-only
         # guidance and the "crash report" pointer emitted below. A plain
         # termination is a warning: something ended the target, no proof of a crash.
@@ -1497,7 +1657,11 @@ class SSL_Logger():
                             "docs/platforms/wine.md.")
                 else:
                     # No confirmed anti-tamper and not Wine.
-                    if plain_termination:
+                    if plain_termination and self._capture_produced_output():
+                        # A short-lived target (e.g. curl) that exited after doing
+                        # its work: nothing to fix, so no attach-mode advice.
+                        pass
+                    elif plain_termination:
                         # No crash evidence: do not guess a hook crash or PairIP.
                         self.logger.warning(
                             "  -> If nothing stopped the target externally, try starting "
@@ -1540,16 +1704,20 @@ class SSL_Logger():
                 self.logger.warning(f"Hook activity written to: {log_path}")
             elif log_path:
                 self.logger.error(f"Full crash report + hook activity written to: {log_path}")
-            try:
-                from ..events import ERROR_SEVERITY_FATAL, ErrorEvent
-                self._event_bus.emit(ErrorEvent(
-                    error=("Target process terminated" if plain_termination
-                           else "Target process crashed"),
-                    description=headline,
-                    severity=ERROR_SEVERITY_FATAL,
-                ))
-            except Exception:
-                pass
+            # Only crash evidence makes this an error. A target that was killed
+            # or simply exited is a lifecycle event: the DetachEvent emitted by
+            # on_detach (and the exit code) already carries it, so it must not
+            # also show up as a fatal agent-side `error` record.
+            if crash_evidence:
+                try:
+                    from ..events import ERROR_SEVERITY_FATAL, ErrorEvent
+                    self._event_bus.emit(ErrorEvent(
+                        error="Target process crashed",
+                        description=headline,
+                        severity=ERROR_SEVERITY_FATAL,
+                    ))
+                except Exception:
+                    pass
 
     # Native-report markers of friTap's own injected code (agent / Gum
     # trampolines): a crash with one of these on the stack happened in a hook.
@@ -1599,7 +1767,8 @@ class SSL_Logger():
             return ("Target process exited "
                     "(no crash detected; last agent stage: agent-init: complete)")
         if not crash_evidence:
-            headline = "Target process terminated (killed or exited) — no crash evidence"
+            headline = ("Target process terminated (no crash evidence; possibly "
+                        "killed/force-stopped)")
             return headline + (f" (last agent stage: {crumb})" if crumb else "")
         if hook_module:
             headline = ("Target process terminated unexpectedly — it crashed inside an "
@@ -1633,6 +1802,11 @@ class SSL_Logger():
         if reason == "application-requested":
             return
 
+        # The spawned target exec()ed: its old image's session ends here, while
+        # the new image arrives as an exec child and takes over the capture.
+        if reason == "process-replaced" and self._on_target_replaced():
+            return
+
         # A native crash inside a hook (or a native abort in the target during
         # instrumented startup) arrives as 'process-terminated'. Make it explicit
         # instead of letting it surface only as a transport error. Prefer the
@@ -1643,8 +1817,139 @@ class SSL_Logger():
             # Consumed — do not let a stale Crash leak into a later detach.
             self._pending_crash = None
 
+        phase = self._claim_detach_classification(reason)
+        if phase == self._PHASE_RESUMING:
+            # The resume is still running and needs Frida's event loop, which
+            # this callback occupies: never wait for it here. The resuming
+            # thread classifies this detach and finishes it once it returns.
+            return
+        self._finish_detach(reason, captured=phase == self._PHASE_CAPTURING)
+
+    def _finish_detach(self, reason, captured: bool) -> None:
+        """Classify a detach (exit 1 before the capture, else 3) and end the session."""
+        if not captured:
+            self._report_death_before_capture(f"detached: {reason}")
+        self._mark_unexpected_detach()
         self._event_bus.emit(DetachEvent(reason=reason))
         self._end_session(reason)
+
+    # ------------------------------------------------------------------
+    # Capture start point: separates a startup failure (exit 1) from a target
+    # that went away during the capture (exit 3)
+    # ------------------------------------------------------------------
+
+    # Capture phases. Only a session started through begin_startup() has a
+    # "before the capture" phase; every other path (API, Wine watcher, tests)
+    # counts as capturing, as before.
+    _PHASE_STARTUP = "startup"
+    _PHASE_RESUMING = "resuming"
+    _PHASE_CAPTURING = "capturing"
+    _capture_phase = _PHASE_CAPTURING
+    _death_before_capture = False
+
+    @property
+    def _capture_start_lock(self) -> threading.Lock:
+        """Per-instance lock guarding only the capture phase fields. It is never
+        held across a call into Frida (see :meth:`start_capture`). Created
+        lazily (``dict.setdefault`` is atomic) so ``SSL_Logger.__new__``
+        instances used by the tests have one too."""
+        return self.__dict__.setdefault("_capture_start_lock_obj", threading.Lock())
+
+    def begin_startup(self) -> None:
+        """Enter the startup phase: spawn/attach, agent load, hook install."""
+        with self._capture_start_lock:
+            self._capture_phase = self._PHASE_STARTUP
+            self._deferred_detach_reason = None
+
+    def start_capture(self, start=None) -> None:
+        """Run *start* (the spawned target's resume) and mark the capture as started.
+
+        The resume runs OUTSIDE the lock: it needs Frida's event loop, and a
+        detach callback arriving meanwhile runs on that loop. Such a detach
+        is only recorded (:meth:`on_detach` returns at once) and classified
+        here once the resume's outcome is known: if the resume succeeded the
+        target died during the capture (exit 3); if it raised, the startup
+        failed (exit 1) and the capture never counts as started.
+        """
+        with self._capture_start_lock:
+            self._capture_phase = self._PHASE_RESUMING
+        succeeded = False
+        try:
+            if start is not None:
+                start()
+            succeeded = True
+        finally:
+            with self._capture_start_lock:
+                self._capture_phase = (
+                    self._PHASE_CAPTURING if succeeded else self._PHASE_STARTUP)
+                deferred_reason = getattr(self, "_deferred_detach_reason", None)
+                self._deferred_detach_reason = None
+            if deferred_reason is not None:
+                self._finish_deferred_detach(deferred_reason, succeeded)
+
+    def _claim_detach_classification(self, reason) -> str:
+        """Return the capture phase a detach arrived in; during a resume, record
+        *reason* for :meth:`start_capture` to finish. Never blocks on Frida."""
+        with self._capture_start_lock:
+            if self._capture_phase == self._PHASE_RESUMING:
+                self._deferred_detach_reason = reason
+            return self._capture_phase
+
+    def _finish_deferred_detach(self, reason, captured: bool) -> None:
+        """Finish a detach recorded during the resume. The exit status is
+        decided here, synchronously, so no teardown can exit before it; the
+        teardown itself runs on its own thread, as the detach callback's would."""
+        if not captured:
+            self._report_death_before_capture(f"detached: {reason}")
+        self._mark_unexpected_detach()
+        threading.Thread(
+            target=self._finish_detach, args=(reason, True),
+            name="fritap-deferred-detach",
+        ).start()
+
+    def capture_started(self) -> bool:
+        with self._capture_start_lock:
+            return self._capture_phase == self._PHASE_CAPTURING
+
+    def _report_death_before_capture(self, cause) -> None:
+        """The target (or the connection to it) went away before the capture
+        started: a startup failure, so exit 1 — not 3, which means the target
+        went away while it was being captured."""
+        if not self.set_exit_status(EXIT_RUNTIME_ERROR):
+            return  # an earlier failure was already reported
+        self._death_before_capture = True
+        what = "spawned" if self.spawn else "attached"
+        headline = getattr(self, "_termination_headline", None)
+        if headline:
+            cause = f"{cause}; {headline}"
+        message = (
+            f"The {what} target {self.target_app} (pid {self.pid}) went away before "
+            f"the capture started ({cause}), while friTap was still preparing it "
+            "(agent load, hook install or the -t/--timeout wait, before the resume). "
+            "Nothing was captured.")
+        hint = ("Usual causes: the app was killed or force-stopped by the system "
+                "(Android kills an app that does not finish starting within ~10 s), "
+                "it exited on its own, or it crashed while being instrumented.")
+        self.logger.error("%s %s", message, hint)
+        try:
+            from ..output.stdout_stream import note_runtime_error
+            note_runtime_error("TargetDetachedBeforeCapture", message, hint)
+        except Exception:  # noqa: BLE001 - reporting must not break the detach path
+            pass
+
+    def _mark_unexpected_detach(self) -> None:
+        """Record EXIT_TARGET_DETACHED as the process exit status when the
+        target went away on its own (not during a user/--duration stop).
+
+        Stays out of the way once a teardown is running: a detach that arrives
+        because friTap itself is stopping is not "unexpected". An earlier
+        status (e.g. 128+SIGTERM) is kept by set_exit_status's first-wins rule."""
+        if getattr(self, "_cleanup_done", False):
+            return
+        session_manager = getattr(self, "_session_manager", None)
+        if getattr(session_manager, "_exit_signal_received", False):
+            return
+        self.set_exit_status(EXIT_TARGET_DETACHED)
 
     # Upper bound on how long a scanner-driven end of session may take to reach
     # the flushed state before the waiting thread gives up and lets the main
@@ -1659,7 +1964,31 @@ class SSL_Logger():
     # Process exit status used by cleanup()'s final os._exit. 0 unless a
     # termination signal other than SIGINT (e.g. the SIGTERM that
     # ScriptErrorHandler sends on an agent error) started the teardown.
+    # Written only through set_exit_status().
     _exit_status = 0
+    # Class-level (like _SESSION_END_CLAIM_LOCK): writers run on the main
+    # thread, the signal handler, Frida's detach callback and the --duration timer.
+    _EXIT_STATUS_LOCK = threading.Lock()
+
+    def set_exit_status(self, code: int) -> bool:
+        """Propose the process exit status (see ``friTap/exit_codes.py``).
+
+        Rule: **the first non-zero status wins**; later proposals never
+        override it, and ``EXIT_OK`` never overrides anything. So whichever of
+        detach (3), runtime error (1) or a non-SIGINT signal (128+signum)
+        happened first is what the process exits with — e.g. a runtime error
+        reported after the target already died stays 3, and a SIGTERM sent to
+        a session whose target already detached stays 3 as well. Ctrl+C /
+        SIGINT / ``--duration`` propose 0 and therefore keep any earlier
+        failure. Returns True when *code* became the exit status.
+        """
+        if code == EXIT_OK:
+            return False
+        with self._EXIT_STATUS_LOCK:
+            if self._exit_status != EXIT_OK:
+                return False
+            self._exit_status = code
+            return True
 
     def _claim_session_end(self) -> bool:
         """Atomically claim the end-of-session teardown. True for the first
@@ -1929,6 +2258,8 @@ class SSL_Logger():
         Pure with respect to the session: reads only ``self`` / ``self._config``
         and posts nothing, so it can be rebuilt for every script that asks.
         """
+        from ..output.factory import OutputHandlerFactory
+        from ..output.key_material import json_key_material_enabled
         return {
             'offsets': self.offsets_data,
             'patterns': self.pattern_data,
@@ -1982,13 +2313,18 @@ class SSL_Logger():
             # tcpdump/scapy thread and the in-agent plaintext datalog is discarded
             # by message_handler (`... and not full_capture`), so don't install the
             # plaintext read/write hooks at all — only the key-extraction hooks run.
-            'pcap_enabled': bool(self.pcap_name) and not self.full_capture,
+            # Wire key kept as 'pcap_enabled'; it means "install the plaintext
+            # hooks", which every handler declaring consumes_plaintext needs
+            # (-p, --tap, -j -), see OutputHandlerFactory.plaintext_hooks_needed.
+            'pcap_enabled': self._plaintext_hooks_needed(),
             # Symmetric counterpart to pcap_enabled. When the user requested only -p
             # (plaintext pcap) without -k, the agent must skip every key-extraction
             # path — otherwise it floods the channel with KeylogEvents and burns
             # the pattern-scan budget on connections we don't care about. In -f mode
             # this stays driven by -k: keys are needed to decrypt the full capture.
-            'keylog_enabled': bool(self.keylog),
+            # --json-keys also asks for keys (raw, into the -j output) without -k;
+            # same predicate the JSON handlers' redaction policy uses.
+            'keylog_enabled': json_key_material_enabled(self._config.output),
             # Generic, protocol-agnostic feature-config passthrough. Keys
             # are opt-in feature names (never a protocol literal): e.g.
             # 'scan_region' drives the public memory-scan engine
@@ -2077,8 +2413,123 @@ class SSL_Logger():
         pattern as the updated frida-python child_gating.py example
         which uses Reactor.schedule()).
         """
+        if self._is_target_exec(child):
+            self._on_target_exec_image(child)
+            return
+        if self._follow_exec and not self.enable_child_gating:
+            # Gating is on only to follow the target's exec (spawn mode): a
+            # fork/spawn child was not asked for, so it runs on untouched.
+            self.logger.debug("Resuming %s child pid %s uninstrumented",
+                              getattr(child, "origin", "?"), child.pid)
+            self._resume_off_event_thread(child.pid)
+            return
         self._enqueue_instrumentation(child.pid, "child process",
                                       getattr(child, "identifier", None))
+
+    # ------------------------------------------------------------------
+    # Spawn mode: follow the target across exec()
+    # ------------------------------------------------------------------
+    #
+    # A launcher such as Homebrew's python3 exec()s the real binary. Frida then
+    # ends the session with 'process-replaced' and, with child gating on,
+    # reports the new image as a child of origin "exec" with the SAME pid, held
+    # suspended. The new image is instrumented by the gated-child worker and
+    # becomes the main session; the outputs (keylog, pcap, JSON) never close.
+    # Both events may arrive in either order (the detach is handled on its own
+    # thread), so they are matched by count rather than by order.
+
+    # How long a 'process-replaced' waits for its exec'd image before the
+    # capture ends as "target detached" (e.g. exec into an image Frida cannot
+    # gate, such as an Apple platform binary).
+    EXEC_HANDOVER_TIMEOUT = 5.0
+    _follow_exec = False
+
+    def follow_exec_of(self, process) -> bool:
+        """Gate *process*'s children so an exec() of the spawned target is caught.
+
+        Called for the spawned target and again for every exec'd image (chained
+        exec). With --enable_child_gating a failure propagates as before;
+        otherwise gating is only a means to follow exec and a backend that
+        cannot gate simply does not follow it.
+        """
+        try:
+            self._backend.enable_child_gating(process)
+        except Exception:
+            if self.enable_child_gating:
+                raise
+            self.logger.debug("child gating unavailable; exec() will not be followed",
+                              exc_info=True)
+            return False
+        self._follow_exec = True
+        return True
+
+    def _is_target_exec(self, child) -> bool:
+        return (self._follow_exec and getattr(child, "origin", None) == "exec"
+                and self.pid is not None and child.pid == self.pid)
+
+    def _on_target_exec_image(self, child) -> None:
+        """The spawned target exec()ed: hand its new image to the worker."""
+        with self._exec_lock:
+            self._exec_image_count += 1
+        path = getattr(child, "path", None) or getattr(child, "identifier", None)
+        self.logger.info("Target pid %s exec()ed %s; following it", child.pid, path)
+        self._enqueue_instrumentation(child.pid, "exec'd image", path,
+                                      exec_handover=True)
+
+    def _on_target_replaced(self) -> bool:
+        """The old image's 'process-replaced' detach. True when it is a hand-over
+        to an exec'd image (no teardown); False when exec is not followed."""
+        if not self._follow_exec:
+            return False
+        with self._exec_lock:
+            self._exec_replaced_count += 1
+            awaiting = self._exec_replaced_count > self._exec_image_count
+        self.logger.debug("Target pid %s replaced by exec(); handing over", self.pid)
+        if awaiting:
+            timer = threading.Timer(self.EXEC_HANDOVER_TIMEOUT,
+                                    self._on_exec_handover_timeout)
+            timer.name = "fritap-exec-handover"
+            timer.daemon = True
+            timer.start()
+        return True
+
+    def _on_exec_handover_timeout(self) -> None:
+        """No exec'd image arrived for a 'process-replaced': the target is gone
+        from friTap's view, so end the capture like any other detach."""
+        with self._exec_lock:
+            missing = self._exec_replaced_count > self._exec_image_count
+        if not missing or not self.running or getattr(self, "_cleanup_done", False):
+            return
+        self.logger.error(
+            "Target pid %s exec()ed an image friTap could not follow (no exec "
+            "child within %.0fs; e.g. an Apple platform binary).",
+            self.pid, self.EXEC_HANDOVER_TIMEOUT)
+        self._mark_unexpected_detach()
+        self._event_bus.emit(DetachEvent(reason="process-replaced"))
+        self._end_session("process-replaced")
+
+    def _adopt_exec_image(self, session) -> None:
+        """Make the exec'd image the main session. Done before its agent loads,
+        so a death during the load, and its own exec, are already watched."""
+        self.follow_exec_of(session)
+        self.process = session
+        self._backend.on_detached(session, self.on_detach)
+
+    def _end_after_failed_handover(self, pid, exc) -> None:
+        """The exec'd image could not be instrumented: it now runs without
+        friTap, so the capture ends (on its own thread — the worker that calls
+        this is joined by the teardown)."""
+        if isinstance(exc, BackendTransportError):
+            # The new image died while its agent loaded: the target went away
+            # during the capture.
+            self._mark_unexpected_detach()
+        else:
+            self.logger.error(
+                "Could not instrument the exec'd image of pid %s (%s); it keeps "
+                "running uninstrumented and the capture ends here.", pid, exc)
+            self.set_exit_status(EXIT_RUNTIME_ERROR)
+        threading.Thread(target=self._end_session, args=("exec hand-over failed",),
+                         name="fritap-session-end", daemon=True).start()
 
     def _handle_child_added(self, child):
         """Forward a queued child to the instrument worker.
@@ -2100,34 +2551,53 @@ class SSL_Logger():
             self.logger.info(f"Instrumenting spawned process with pid {spawn.pid}. Name: {spawn.identifier}")
             self._enqueue_instrumentation(spawn.pid, "spawned process", spawn.identifier)
         else:
-            # Resume unrelated processes immediately to prevent them from hanging.
-            # Cheap and non-blocking, so it stays inline on the event thread —
-            # but it must not raise there, hence _resume_quietly.
+            # Resume unrelated processes immediately to prevent them from hanging
+            # (off the event thread: see _resume_off_event_thread).
             self.logger.debug(f"Skipping unrelated spawn with pid {spawn.pid}. Name: {spawn.identifier}")
-            self._resume_quietly(spawn.pid)
+            self._resume_off_event_thread(spawn.pid)
 
     # ------------------------------------------------------------------
     # Gated instrumentation worker
     # ------------------------------------------------------------------
 
-    def _enqueue_instrumentation(self, pid, label, identifier=None, resume=True):
+    def _enqueue_instrumentation(self, pid, label, identifier=None, resume=True,
+                                 exec_handover=False):
         """Hand a gated process to the serial instrument worker. ``resume=False``
-        for a process that is already running (not Frida-gated)."""
-        if not self.running:
+        for a process that is already running (not Frida-gated);
+        ``exec_handover`` for the spawned target's own exec'd image."""
+        if resume:
+            self._track_suspended(pid)
+        if not self.running or self._instrument_stop.is_set():
             # Teardown already started: instrumenting now would resurrect the
             # worker we just joined. Resume so nothing is left suspended.
-            self.logger.debug("Capture stopping — resuming %s pid %s uninstrumented",
-                              label, pid)
-            if resume:
-                self._resume_quietly(pid)
+            # ``running`` alone is not enough: the detach/cleanup teardown stops
+            # the worker FIRST and clears ``running`` only near its end, and an
+            # exec'd image (child gating, origin "exec") is reported right after
+            # the 'process-replaced' detach that starts that teardown. Instrumenting
+            # it then meant friTap os._exit()ed with the process still parked at
+            # Frida's spawn breakpoint — on macOS it died with EXC_BREAKPOINT in
+            # dyld4::RuntimeState::notifyObjCInit.
+            self._resume_rejected_gated(pid, label, resume)
             return
 
         request = _InstrumentRequest(pid=pid, label=label, identifier=identifier,
-                                     resume=resume)
-        self._start_instrument_thread()
-        try:
-            self._instrument_queue.put_nowait(request)
-        except queue.Full:
+                                     resume=resume, exec_handover=exec_handover)
+        queue_full = False
+        with self._instrument_thread_lock:
+            # Re-checked under the lock _stop_instrument_thread sets the stop
+            # under: a request is either queued before the stop (then the worker
+            # or the drain resumes it) or rejected here — never queued after the
+            # drain, and never reviving a worker the teardown already joined.
+            accepted = self.running and not self._instrument_stop.is_set()
+            if accepted:
+                self._start_instrument_thread_locked()
+                try:
+                    self._instrument_queue.put_nowait(request)
+                except queue.Full:
+                    queue_full = True
+        if not accepted:
+            self._resume_rejected_gated(pid, label, resume)
+        elif queue_full:
             # Never leave the process suspended just because we are backed up:
             # a gated app that is never resumed is killed by the OS watchdog
             # (0x8badf00d on iOS) and looks like a friTap crash.
@@ -2135,7 +2605,31 @@ class SSL_Logger():
                 "Instrumentation queue full — %s pid %s not instrumented", label, pid
             )
             if resume:
-                self._resume_quietly(pid)
+                self._resume_off_event_thread(pid)
+
+    def _resume_rejected_gated(self, pid, label, resume):
+        """Resume a gated process that arrived while the capture is stopping."""
+        self.logger.debug("Capture stopping — resuming %s pid %s uninstrumented",
+                          label, pid)
+        if resume:
+            self._resume_off_event_thread(pid)
+
+    def _resume_off_event_thread(self, pid) -> threading.Thread:
+        """Resume *pid* on a short-lived thread.
+
+        The gating callbacks run on Frida's event loop, and a synchronous
+        ``device.resume()`` there deadlocks it (verified live: a fork child
+        resumed inline from 'child-added' hung the target and every later Frida
+        call). The pid stays tracked until the resume returned, so a teardown
+        racing this thread still resumes it (a second resume is harmless).
+        """
+        def resume():
+            self._resume_quietly(pid)
+            self._untrack_suspended(pid)
+
+        worker = threading.Thread(target=resume, name="fritap-resume", daemon=True)
+        worker.start()
+        return worker
 
     def _start_instrument_thread(self):
         """Start the serial worker that instruments gated processes.
@@ -2146,14 +2640,18 @@ class SSL_Logger():
         processing (nor deadlock against it).
         """
         with self._instrument_thread_lock:
-            if self._instrument_thread is not None:
-                return
-            self._instrument_stop.clear()
-            self._instrument_thread = threading.Thread(
-                target=self._process_instrument_requests, daemon=True,
-                name="fritap-instrument",
-            )
-            self._instrument_thread.start()
+            self._start_instrument_thread_locked()
+
+    def _start_instrument_thread_locked(self):
+        """Body of :meth:`_start_instrument_thread`; caller holds the lock."""
+        if self._instrument_thread is not None:
+            return
+        self._instrument_stop.clear()
+        self._instrument_thread = threading.Thread(
+            target=self._process_instrument_requests, daemon=True,
+            name="fritap-instrument",
+        )
+        self._instrument_thread.start()
 
     def _process_instrument_requests(self):
         """Drain the instrumentation queue one process at a time."""
@@ -2180,13 +2678,61 @@ class SSL_Logger():
         """
         try:
             self.logger.info("Attached to %s with pid %s", request.label, request.pid)
-            self.instrument(
-                self._backend.attach(self.device, str(request.pid)),
-                self.own_message_handler,
-            )
+            session = self._backend.attach(self.device, str(request.pid))
+            if request.exec_handover:
+                self._adopt_exec_image(session)
+            self.instrument(session, self.own_message_handler)
+        except Exception as exc:
+            if not request.exec_handover:
+                raise
+            self._end_after_failed_handover(request.pid, exc)
         finally:
             if request.resume:
-                self._resume_quietly(request.pid)
+                self._resume_suspended(request.pid)
+
+    # ------------------------------------------------------------------
+    # Suspended-pid bookkeeping: one set, one lock, every resume path
+    # ------------------------------------------------------------------
+
+    def _track_suspended(self, pid) -> None:
+        """Record *pid* as suspended by friTap (spawned or gated, not yet resumed)."""
+        with self._suspended_pids_lock:
+            self._suspended_pids.add(pid)
+
+    def _untrack_suspended(self, pid) -> None:
+        """Forget *pid* after it was resumed by a path outside this bookkeeping."""
+        with self._suspended_pids_lock:
+            self._suspended_pids.discard(pid)
+
+    def _resume_suspended(self, pid) -> None:
+        """Resume *pid* (logging, never raising) and stop tracking it."""
+        self._untrack_suspended(pid)
+        self._resume_quietly(pid)
+
+    def _resume_suspended_pids(self) -> None:
+        """Teardown: resume every pid friTap still holds suspended.
+
+        Covers the spawned target when a Ctrl+C / SIGTERM lands before its
+        resume (agent load, the -t/--timeout wait): the signal handler runs
+        cleanup() and os._exit()s, and a Frida-spawned macOS process left at the
+        dyld breakpoint dies with EXC_BREAKPOINT/SIGTRAP, reported as the
+        target's crash. Also covers a gated process a still-busy worker has not
+        resumed: ``_stop_instrument_thread`` waits only 5 s, while one attach +
+        bounded script load can take far longer (and cannot finish at all when
+        the teardown runs on Frida's callback thread). The worker's own
+        ``finally`` may resume it as well; a second resume is harmless.
+        """
+        with self._suspended_pids_lock:
+            pids = sorted(self._suspended_pids)
+            self._suspended_pids.clear()
+        for pid in pids:
+            if pid == self.pid and not self._death_before_capture:
+                self.logger.warning(
+                    "Capture stopped before the spawned pid %s was resumed — resuming "
+                    "it uninstrumented so it is not left suspended.", pid)
+            else:
+                self.logger.debug("Resuming gated pid %s still suspended at teardown", pid)
+            self._resume_quietly(pid)
 
     def _load_script_bounded(self, script) -> None:
         """Load an agent script under the configured time bound.
@@ -2261,7 +2807,7 @@ class SSL_Logger():
             if not request.resume:
                 continue
             try:
-                self._resume_quietly(request.pid)
+                self._resume_suspended(request.pid)
                 resumed += 1
             except Exception:
                 # _resume_quietly already logs instead of propagating; this is
@@ -2279,13 +2825,16 @@ class SSL_Logger():
         it competes for the same queue, and anything it wins there is
         instrumented and resumed by ``_instrument_gated_process`` anyway.
         """
-        self._instrument_stop.set()
         with self._instrument_thread_lock:
+            # Set under the lock so _enqueue_instrumentation's locked check sees
+            # either "not stopping" (and queues before the drain) or "stopping".
+            self._instrument_stop.set()
             thread = self._instrument_thread
             self._instrument_thread = None
         if thread is not None:
             thread.join(timeout=5)
         self._drain_instrument_queue()
+        self._resume_suspended_pids()
 
     def _should_instrument_spawn(self, identifier):
         """Check if a spawned process should be instrumented based on its identifier."""
@@ -3662,7 +4211,12 @@ class SSL_Logger():
             self._start_instrument_thread()
         try:
             return self._session_manager.start_session(own_message_handler)
-        except BaseException:
+        except BaseException as exc:
+            # start_session returns right after the capture start point, so a
+            # transport error out of it is the target (or the device link)
+            # dying during startup: a runtime error, not "target detached".
+            if isinstance(exc, BackendTransportError) and not self.capture_started():
+                self._report_death_before_capture(f"transport error: {exc}")
             # start_session resumes a spawned target only after instrumentation
             # succeeds, so anything that raises in between — an agent load
             # timeout, a failed hook install, Ctrl+C during the pre-resume wait
@@ -3684,12 +4238,27 @@ class SSL_Logger():
         """
         if not self.spawn or self.pid is None or self.device is None:
             return
+        if self._death_before_capture:
+            # Already explained; the pid is most likely gone, so resume quietly.
+            self._resume_suspended(self.pid)
+            return
         self.logger.error(
             "Instrumentation failed — resuming spawned pid %s so it is not left "
             "suspended. It is now running WITHOUT friTap instrumentation; no "
             "traffic will be captured from it.", self.pid
         )
-        self._resume_quietly(self.pid)
+        self._resume_suspended(self.pid)
+
+    def stop_capture_gracefully(self) -> bool:
+        """Stop the capture exactly like Ctrl+C would (flush pcap/keylog/JSON,
+        detach, exit 0). Safe to call from any thread, e.g. a --duration timer.
+
+        Returns False (and does nothing) when a teardown is already running,
+        so a target that died first keeps its EXIT_TARGET_DETACHED status."""
+        if getattr(self, "_cleanup_done", False) or getattr(self, "_session_end_claimed", False):
+            return False
+        self._session_manager.request_graceful_stop()
+        return True
 
     def request_stop(self):
         """Signal the capture to stop. Non-blocking, safe to call from any thread."""
@@ -3971,12 +4540,40 @@ class SSL_Logger():
                 # never needs a second Ctrl+C.
                 os._exit(self._exit_status)
 
+    def _plaintext_hooks_needed(self) -> bool:
+        """Whether the agent installs its plaintext read/write hooks.
+
+        OutputHandlerFactory.plaintext_hooks_needed, unless the session's output
+        opts out (the LSASS helper of a -f full-capture run, see
+        friTap._build_lsass_config)."""
+        from ..output.factory import OutputHandlerFactory
+        output = self._config.output
+        if output.plaintext_hooks_disabled:
+            return False
+        return OutputHandlerFactory.plaintext_hooks_needed(output)
+
     def _close_output_handlers_safely(self):
         """close_output_handlers() for the exit path: idempotent, never raises."""
         try:
             self.close_output_handlers()
         except Exception as exc:  # noqa: BLE001 - must not block the exit
             self.logger.error(f"Error closing output handlers: {exc}")
+        self._finish_json_stream()
+
+    def _finish_json_stream(self):
+        """'-j -' safety net before the process exits: complete the stream
+        envelope when the JSONL handler never opened or closed it (e.g. the run
+        failed before the output handlers were set up). Never raises; a no-op
+        without '-j -', after a normal close, and for the LSASS helper session
+        (which shares, but does not own, the stream)."""
+        output = getattr(getattr(self, "_config", None), "output", None)
+        if getattr(output, "auxiliary_session", False):
+            return
+        try:
+            from ..output.stdout_stream import finish_unclosed_stream
+            finish_unclosed_stream(self._exit_status)
+        except Exception:  # noqa: BLE001 - must not block the exit
+            pass
 
     def _release_lsass_contributor(self):
         """Stop the LSASS helper session (Windows target sessions only; never raises).
@@ -4078,7 +4675,7 @@ class SSL_Logger():
         """Perform the actual teardown work. Always invoked via cleanup(), which
         guarantees the goodbye banner and a clean exit run afterward regardless
         of whether any step here raises."""
-        self._stop_instrument_thread()
+        self._stop_instrument_thread()  # also resumes every pid left suspended
         self._stop_consumer_thread()
 
         # Unload plugins
@@ -4247,7 +4844,10 @@ class SSL_Logger():
         # so it owns the final exit. TUI manages its own lifecycle (mirrors the
         # cleanup() guard), so skip there.
         if not self._tui_mode:
-            os._exit(0)
+            # _exit_status stays 0 (EXIT_OK) unless the target detached on its
+            # own (EXIT_TARGET_DETACHED) or a non-SIGINT signal stopped us.
+            self._finish_json_stream()
+            os._exit(self._exit_status)
 
     def _finish_probe_run(self) -> None:
         """Complete a --probe dry run: verdict, teardown, exit.
@@ -4331,6 +4931,8 @@ class SSL_Logger():
             self.logger.debug("Probe teardown error (ignored): %s", err)
         self._done_event.set()
         if not self._tui_mode:
+            self.set_exit_status(exit_code)
+            self._finish_json_stream()
             os._exit(exit_code)
 
     def _resolve_agent_bundle_path(self):

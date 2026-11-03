@@ -64,6 +64,21 @@ class TestGetCrashLogcat:
         assert _android(FakeADB(raises=True)).get_crash_logcat() == ""
 
 
+class TestGetDeviceClock:
+    def test_parses_epoch_and_offset(self):
+        adb = FakeADB({"date +%s%z": "1730000000+0200\n"})
+        assert _android(adb).get_device_clock() == (1730000000, 7200)
+
+    def test_negative_offset(self):
+        adb = FakeADB({"date": "1730000000-0530"})
+        assert _android(adb).get_device_clock() == (1730000000, -(5 * 3600 + 30 * 60))
+
+    def test_none_when_unparseable_or_failing(self):
+        assert _android(FakeADB({"date": "garbage"})).get_device_clock() is None
+        assert _android(FakeADB()).get_device_clock() is None
+        assert _android(FakeADB(raises=True)).get_device_clock() is None
+
+
 class TestGetLatestTombstone:
     _LISTING = "/data/tombstones/tombstone_02\n/data/tombstones/tombstone_01\n"
 

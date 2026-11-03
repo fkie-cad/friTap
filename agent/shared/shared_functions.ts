@@ -4,7 +4,7 @@ import { AF_INET, AF_INET6, AddressFamilyMapping, unwantedFDs, Platform } from "
 import { HookRegistration, HookRegistry, RequestedProtocol, protocolLabel } from "./registry.js";
 import { Java, JavaWrapper } from "./javalib.js";
 import { offsets, ohttp_enabled, selected_protocol, selected_protocols } from "./shared_structures.js";
-import { announceSiblingCoverage, isModuleHooked, isSupplementaryHookInstalled, recordHookInstalled } from "./library_scanner.js";
+import { announceSiblingCoverage, executorModuleName, isModuleHooked, isSupplementaryHookInstalled, recordHookInstalled } from "./library_scanner.js";
 import { isDeepSymbolResolutionEnabled } from "./deep_symbol_resolution.js";
 import { warnAntiTamper } from "../util/anti_tamper.js";
 import { watchFunctionEntries } from "../util/hw_breakpoint.js";
@@ -113,6 +113,7 @@ export function ssl_library_loader(platform: Platform, hookRegistry: HookRegistr
     // filtering via findAllMatchesWithCoverage below.
     const protocolTag = protocolLabel(protocol);
     for (let module_name of moduleNames) {
+        module_name = executorModuleName(module_name);
         // Anti-tamper libraries (e.g. PairIP's libpairipcore.so) detect inline
         // hooks and crash the process; warn the user and never hook/scan them.
         if (warnAntiTamper(module_name)) continue;
@@ -261,6 +262,63 @@ export interface DynamicLoaderConfig {
     moduleFromRetval?: boolean;
     /** Optional callback invoked for each matched module (e.g., Windows lsass log) */
     onMatchExtra?: (moduleName: string) => void;
+    /**
+     * If true, also hook TLS libraries a dlopen() maps as DEPENDENCIES of the image
+     * it names. The loader hook otherwise only sees the requested name: CPython's
+     * dlopen(".../_ssl.cpython-3xx-darwin.so") pulls in libssl.3.dylib, which no
+     * dlopen() call ever names, so in spawn mode it stayed unhooked (no keys, no
+     * plaintext). New images come from Process.attachModuleObserver, so a dlopen()
+     * costs no module enumeration (see newImageFeed).
+     */
+    hookDependencies?: boolean;
+}
+
+/**
+ * Names of the modules in `loaded` that `known` has not seen yet — i.e. the images a
+ * dlopen() just mapped — EXCLUDING the image the call itself requested, which the
+ * loader hook handles under its requested name (hooking it again under its module
+ * name would install every hook twice). `known` is updated in place.
+ */
+export function takeNewDependencyModules(
+    known: Set<string>,
+    loaded: ReadonlyArray<{ name: string; path: string }>,
+    requested: string | undefined,
+): string[] {
+    const fresh: string[] = [];
+    for (const module of loaded) {
+        if (known.has(module.path)) continue;
+        known.add(module.path);
+        const isRequested = requested !== undefined && (
+            requested === module.path || requested === module.name || requested.endsWith("/" + module.name)
+        );
+        if (!isRequested) fresh.push(module.name);
+    }
+    return fresh;
+}
+
+type LoadedImage = { name: string; path: string };
+
+/**
+ * Images mapped since the previous call (see DynamicLoaderConfig.hookDependencies).
+ * Event-driven via Process.attachModuleObserver: onAdded only records the image
+ * (hooking inside the loader's add notification would run before the image is
+ * initialized); the dlopen() onLeave drains the list. Older Frida without the
+ * observer falls back to a full Process.enumerateModules() per call.
+ */
+function newImageFeed(known: Set<string>): () => ReadonlyArray<LoadedImage> {
+    const P: any = Process as any;
+    if (typeof P.attachModuleObserver !== "function") {
+        return () => Process.enumerateModules();
+    }
+    const added: LoadedImage[] = [];
+    let attaching = true; // onAdded replays every already-loaded module during attach
+    P.attachModuleObserver({
+        onAdded(m: Module) { if (!attaching) added.push({ name: m.name, path: m.path }); },
+        // An unloaded image must count as new again when a later dlopen() remaps it.
+        onRemoved(m: Module) { known.delete(m.path); },
+    });
+    attaching = false;
+    return () => added.splice(0, added.length);
 }
 
 /**
@@ -327,6 +385,13 @@ export function hookDynamicLoader(
             hookAddress = Process.getModuleByName(loaderModule).getExportByName(funcName);
         }
 
+        // Paths of every image seen so far (see hookDependencies). Paths, not names:
+        // two images may share a basename.
+        const knownImages: Set<string> | null = config.hookDependencies
+            ? new Set(Process.enumerateModules().map(m => m.path))
+            : null;
+        const takeNewImages = knownImages !== null ? newImageFeed(knownImages) : null;
+
         Interceptor.attach(hookAddress, {
             onEnter: function (args) {
                 if (!config.moduleFromRetval) {
@@ -334,6 +399,14 @@ export function hookDynamicLoader(
                 }
             },
             onLeave: function (retval: any) {
+                if (takeNewImages !== null && !retval.isNull()) {
+                    const dependencies = takeNewDependencyModules(knownImages!, takeNewImages(), this.moduleName ?? undefined);
+                    if (dependencies.length > 0) {
+                        // Same registry match / dedup / anti-tamper skip as the initial scan.
+                        ssl_library_loader(config.platform, hookRegistry, dependencies, config.platformLabel, is_base_hook, protocol);
+                    }
+                }
+
                 let moduleName: string | undefined;
 
                 if (config.moduleFromRetval) {
@@ -342,7 +415,8 @@ export function hookDynamicLoader(
                     moduleName = map.findName(retval);
                     if (moduleName === null) return;
                 } else {
-                    moduleName = this.moduleName;
+                    // dlopen() spelling (possibly a symlink) → the mapped module's name.
+                    moduleName = this.moduleName == undefined ? undefined : executorModuleName(this.moduleName);
                 }
 
                 if (moduleName != undefined) {

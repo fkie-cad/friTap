@@ -3,55 +3,56 @@
 // Generic read/write hook executors that consume HookDefinition data.
 
 import { HookDefinition, ResolvedFunctions } from "../hook_definition.js";
-import { getPortsAndAddresses } from "../../shared/shared_functions.js";
 import { sendDatalog } from "../../shared/shared_structures.js";
 import { pcap_enabled } from "../../fritap_agent.js";
-import { hookBreadcrumb, devlog } from "../../util/log.js";
-import { installSocketFdTracker, recoverSocketFd } from "../../shared/socket_fd_tracker.js";
+import { hookBreadcrumb } from "../../util/log.js";
+import { fdOrDeferred, recoveredFd } from "../../shared/socket_fd_tracker.js";
+import { buildRecordMessage } from "../../shared/record_message.js";
 import { recoverTls13Secrets } from "../../shared/tls13_secret_recovery.js";
+import { bytesWrittenFromRetval } from "../../shared/write_length.js";
 
-// One-time observability: emit a single devlog the first time fd-less peer recovery
-// (the BIO-path, e.g. Conscrypt) is actually exercised, so a capture log makes it
-// obvious the recovered-fd path — not SSL_get_fd — produced the peer addresses.
-let _recoveryLogged = false;
+type RecordMessageBuilder = (sslCtx: NativePointer, fd: number) => any | null;
 
-function buildMessage(
-    sslCtx: NativePointer,
-    isRead: boolean,
+/**
+ * onEnter: the SSL object's socket fd, or null when the record must be attributed in onLeave
+ * instead (deferred fd-less recovery, see fdOrDeferred in socket_fd_tracker.ts).
+ *
+ * BIO-based TLS has no socket fd on the SSL object: Conscrypt's memory BIO, and curl >= 7.87's
+ * connection-filter BIO on genuine OpenSSL (SSL_get_fd() == -1 for every curl connection).
+ * fdOrDeferred arms the tracker LAZILY — only once SSL_get_fd()<0 was actually observed, so
+ * fd-exposing stacks never pay for its process-wide libc I/O hooks. Resolving the peer in onLeave
+ * then sees the socket I/O this very SSL call did (curl's BIO sends/receives inside it), so even
+ * a connection's first record is attributed. customAddressExtractor libs keep their own address
+ * logic and are never deferred. A deferred hook must call recoveredFd(sslCtx) on EVERY onLeave
+ * (failed calls too): it closes the SSL-scoped attribution opened here.
+ */
+function sslFdOrDeferred(sslCtx: NativePointer, def: HookDefinition, resolvedFns: ResolvedFunctions): number | null {
+    const fd = def.fdDecoder(sslCtx, resolvedFns);
+    if (fd >= 0 || def.customAddressExtractor) return fd;
+    return fdOrDeferred(fd, sslCtx);
+}
+
+/** The per-hook record-message builder: everything but the SSL object and fd is fixed at install. */
+function recordMessageBuilder(
     def: HookDefinition,
     resolvedFns: ResolvedFunctions,
     methodAddresses: { [fn: string]: NativePointer },
     enableDefaultFd: boolean,
+    isRead: boolean,
     label: string,
-): any | null {
-    let fd = def.fdDecoder(sslCtx, resolvedFns);
-    if (fd < 0) {
-        // BIO-based TLS (e.g. Conscrypt): no socket fd on the SSL object. Arm the fd-less
-        // recovery tracker LAZILY — only now that we've actually observed SSL_get_fd()<0, so
-        // non-BIO stacks never pay for the process-wide libc I/O hooks the tracker installs.
-        // Then recover the real peer via thread->socket-fd correlation. (customAddressExtractor
-        // libs keep their own logic and are unaffected.)
-        installSocketFdTracker();
-        const recovered = recoverSocketFd();
-        if (recovered >= 0) {
-            fd = recovered;
-            if (!_recoveryLogged) {
-                _recoveryLogged = true;
-                devlog("[fd-recovery] SSL object exposed no socket fd (SSL_get_fd<0); recovered peer " +
-                       "via thread->socket-fd correlation — BIO-path active (e.g. Conscrypt SSLEngine).");
-            }
-        }
-    }
-    const message = def.customAddressExtractor
-        ? def.customAddressExtractor(sslCtx, isRead, resolvedFns, enableDefaultFd)
-        : getPortsAndAddresses(fd, isRead, methodAddresses, enableDefaultFd);
-    if (message === null) return null;
-    message["ssl_session_id"] = def.sessionIdDecoder(sslCtx, resolvedFns);
-    if (def.clientRandomDecoder) {
-        message["client_random"] = def.clientRandomDecoder(sslCtx, resolvedFns);
-    }
-    message["function"] = label;
-    return message;
+): RecordMessageBuilder {
+    const extractor = def.customAddressExtractor;
+    return (sslCtx, fd) => buildRecordMessage(
+        {
+            fd, isRead, functionName: label, methodAddresses, enableDefaultFd,
+            resolvePeer: extractor ? () => extractor(sslCtx, isRead, resolvedFns, enableDefaultFd) : undefined,
+        },
+        () => {
+            const fields: { [field: string]: any } = { ssl_session_id: def.sessionIdDecoder(sslCtx, resolvedFns) };
+            if (def.clientRandomDecoder) fields["client_random"] = def.clientRandomDecoder(sslCtx, resolvedFns);
+            return fields;
+        },
+    );
 }
 
 export function installReadHook(
@@ -69,6 +70,7 @@ export function installReadHook(
     // Built once at install time (label/moduleName are constant); the hot-path
     // onEnter just hands the precomputed string to the throttled hookBreadcrumb.
     const breadcrumb = `${label} (${moduleName})`;
+    const buildMessage = recordMessageBuilder(def, resolvedFns, methodAddresses, enableDefaultFd, true, label);
 
     const hookAddr = addresses[moduleName][hook.symbol];
     if (!hookAddr || hookAddr.isNull()) return;
@@ -80,14 +82,24 @@ export function installReadHook(
             // uncatchable, so record the hook first. Throttled in hookBreadcrumb.
             hookBreadcrumb(breadcrumb);
             const sslCtx = args[hook.args.sslCtxArgIndex];
-            const message = buildMessage(sslCtx, true, def, resolvedFns, methodAddresses, enableDefaultFd, label);
+            this.buf = args[hook.args.bufferArgIndex];
+            const fd = sslFdOrDeferred(sslCtx, def, resolvedFns);
+            if (fd === null) {
+                this.deferredSsl = sslCtx;
+                return;
+            }
+            const message = buildMessage(sslCtx, fd);
             if (message === null) return;
             this.message = message;
-            this.buf = args[hook.args.bufferArgIndex];
         },
         onLeave: function (retval: any) {
+            // Deferred: always close the SSL scope, even for a failed call.
+            const recovered = this.deferredSsl ? recoveredFd(this.deferredSsl) : -1;
             retval |= 0;
             if (retval <= 0) return;
+            if (this.deferredSsl) {
+                this.message = buildMessage(this.deferredSsl, recovered);
+            }
             if (!this.message) return;
             sendDatalog(this.message, this.buf.readByteArray(retval));
         },
@@ -108,52 +120,51 @@ export function installWriteHook(
     const methodAddresses = addresses[moduleName];
     // Precomputed once (see installReadHook): keeps the hot-path onEnter allocation-free.
     const breadcrumb = `${label} (${moduleName})`;
+    const buildMessage = recordMessageBuilder(def, resolvedFns, methodAddresses, enableDefaultFd, false, label);
 
     const hookAddr = addresses[moduleName][hook.symbol];
     if (!hookAddr || hookAddr.isNull()) return;
 
-    if (hook.args.bytesTransferred === "retval") {
-        // Retval-based write: capture buffer in onEnter, read retval bytes in onLeave
-        Interceptor.attach(hookAddr, {
-            onEnter: function (args: any) {
-                hookBreadcrumb(breadcrumb);
-                const sslCtx = args[hook.args.sslCtxArgIndex];
-                // M2 spike (internally gated/one-shot): for an attached process
-                // whose handshake we missed, recover TLS 1.3 traffic secrets from
-                // the live ssl->s3 and emit them as keylog lines. No-op unless a
-                // witnessed handshake on this module has taught us the offsets.
-                recoverTls13Secrets(moduleName, sslCtx);
-                const message = buildMessage(sslCtx, false, def, resolvedFns, methodAddresses, enableDefaultFd, label);
-                if (message === null) return;
-                this.message = message;
-                this.buf = args[hook.args.bufferArgIndex];
-            },
-            onLeave: function (retval: any) {
-                retval |= 0;
-                if (retval <= 0) return;
-                if (!this.message) return;
-                sendDatalog(this.message, this.buf.readByteArray(retval));
-            },
-        });
-    } else {
-        // Arg-based write: read length from args in onEnter
-        Interceptor.attach(hookAddr, {
-            onEnter: function (args: any) {
-                hookBreadcrumb(breadcrumb);
-                const sslCtx = args[hook.args.sslCtxArgIndex];
-                // M2 spike (internally gated/one-shot): for an attached process
-                // whose handshake we missed, recover TLS 1.3 traffic secrets from
-                // the live ssl->s3 and emit them as keylog lines. No-op unless a
-                // witnessed handshake on this module has taught us the offsets.
-                recoverTls13Secrets(moduleName, sslCtx);
-                const message = buildMessage(sslCtx, false, def, resolvedFns, methodAddresses, enableDefaultFd, label);
-                if (message === null) return;
-                const buf = args[hook.args.bufferArgIndex];
-                const len = parseInt(args[hook.args.lengthArgIndex!]);
-                sendDatalog(message, buf.readByteArray(len));
-            },
-            onLeave: function (_retval: any) {
-            },
-        });
-    }
+    // Both layouts are emitted in onLeave: a "retval" layout reads retval bytes, an "arg"
+    // layout min(length arg, retval) — never the requested length, which would duplicate
+    // plaintext on a partial write (the app retries with the remainder). The caller owns
+    // the buffer for the whole synchronous call, so the onEnter pointer is still valid.
+    const lengthArgIndex = hook.args.bytesTransferred === "arg" ? hook.args.lengthArgIndex : undefined;
+    Interceptor.attach(hookAddr, {
+        onEnter: function (args: any) {
+            hookBreadcrumb(breadcrumb);
+            const sslCtx = args[hook.args.sslCtxArgIndex];
+            // M2 spike (internally gated/one-shot): for an attached process
+            // whose handshake we missed, recover TLS 1.3 traffic secrets from
+            // the live ssl->s3 and emit them as keylog lines. No-op unless a
+            // witnessed handshake on this module has taught us the offsets.
+            recoverTls13Secrets(moduleName, sslCtx);
+            this.buf = args[hook.args.bufferArgIndex];
+            if (lengthArgIndex !== undefined) this.len = parseInt(args[lengthArgIndex]);
+            const fd = sslFdOrDeferred(sslCtx, def, resolvedFns);
+            if (fd === null) {
+                // Attributed in onLeave, once this call has sent its record (see above).
+                this.deferredSsl = sslCtx;
+                return;
+            }
+            const message = buildMessage(sslCtx, fd);
+            if (message === null) return;
+            this.message = message;
+        },
+        onLeave: function (retval: any) {
+            // Deferred: always close the SSL scope, even for a failed call
+            // (e.g. SSL_ERROR_WANT_WRITE, retried by the app with the same buffer).
+            const recovered = this.deferredSsl ? recoveredFd(this.deferredSsl) : -1;
+            const returned = retval.toInt32();
+            const count = lengthArgIndex !== undefined
+                ? bytesWrittenFromRetval(this.len, returned)
+                : Math.max(returned, 0);
+            if (count <= 0) return;
+            if (this.deferredSsl) {
+                this.message = buildMessage(this.deferredSsl, recovered);
+            }
+            if (!this.message) return;
+            sendDatalog(this.message, this.buf.readByteArray(count));
+        },
+    });
 }

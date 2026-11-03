@@ -276,7 +276,7 @@ if(ObjC.available){
             }
             message["function"] = "Full_write"
             message["contentType"] = "netlog"
-            socketFDs.set(this.fd, message["dst_addr"])
+            socketFDs.set(fd, message["dst_addr"])
             send(message)
 
         }

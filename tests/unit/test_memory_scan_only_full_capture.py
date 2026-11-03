@@ -70,6 +70,9 @@ class TestConfirmFullCaptureWithoutKeylog:
         assert "memory scanner" in logger.records[0][1]
 
     def test_without_memory_scan_still_prompts(self, monkeypatch):
+        # The prompt only blocks on an interactive stdin; a non-TTY stdin
+        # (pytest's) is auto non-interactive and just warns.
+        monkeypatch.setattr(fritap_cli, "_stdin_is_interactive", lambda: True)
         calls = []
         monkeypatch.setattr("builtins.input", lambda *a: calls.append(a) or "")
         logger = RecordingLogger()
@@ -87,6 +90,9 @@ class _FakeSSLLogger:
     def __init__(self, config=None, **_kwargs):
         self.config = config
         _FakeSSLLogger.instances.append(self)
+
+    def set_exit_status(self, _code):
+        return False
 
     def install_signal_handler(self):
         pass

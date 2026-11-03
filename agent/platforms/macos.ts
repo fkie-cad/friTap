@@ -110,6 +110,11 @@ export function load_macos_hooking_agent() {
         // inside the loader hook; the OpenSSL entry's `excludePathFilter` fails
         // OPEN precisely so that degraded case still gets a hook.
         extractModulePath: true,
+        // Python's `_ssl` is also why this is needed: dlopen() names only
+        // `_ssl.cpython-3xx-darwin.so`; the libssl.3.dylib it links is mapped as a
+        // dependency and was never offered to the registry, so a spawned Homebrew /
+        // python.org / pyenv Python yielded neither keys nor plaintext.
+        hookDependencies: true,
     };
 
     // Same phase order as before, now contained + breadcrumbed + yielded. Phase 0

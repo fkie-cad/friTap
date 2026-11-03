@@ -4,6 +4,25 @@ All notable changes to friTap will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Security
+  - `-j file.json` / `-j file.jsonl` no longer write raw TLS key material by default.
+  - Keylog records in JSON are redacted to their label and public client_random unless `-k` or `--json-keys` is given.
+  - `-j -` and the file outputs now share one key-redaction policy.
+
+### Added
+  - `--json-keys` (Python API: `.json_keys()`) writes raw key material into the JSON output without `-k`.
+  - `--json-keys` turns on agent key extraction like `-k`, without writing a keylog file.
+
+### Changed
+  - Behaviour change: add `--json-keys` (or `-k`) to get the old JSON output with `key_data`.
+  - `-j file.json` / `-j file.jsonl` on their own now capture plaintext `data` events (previously only `-j -`, `-p` or `--tap` turned the plaintext hooks on).
+
+### Fixed
+  - `SSL_read_ex` records (e.g. CPython) were labelled as writes; read/write direction now comes from one shared list of hook names.
+  - A TLS 1.3 connection no longer splits into a request flow and a response flow in legacy mode when only the responses carry a session id.
+
 ## [2.6.1] - 2026-11-02
 
 ### Security

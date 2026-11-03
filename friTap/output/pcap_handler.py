@@ -17,6 +17,8 @@ if TYPE_CHECKING:
 class PcapOutputHandler(OutputHandler):
     """Writes decrypted traffic to a PCAP file."""
 
+    consumes_plaintext = True
+
     def __init__(self, pcap_obj: "PCAP") -> None:
         self._pcap = pcap_obj
         self._logger = logging.getLogger("friTap.output.pcap")

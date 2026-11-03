@@ -195,8 +195,21 @@ class FriTap:
         return self
 
     def json_output(self, path: str) -> "FriTap":
-        """Write session metadata as JSON."""
-        self._output.json_output = path
+        """Write session metadata as JSON.
+
+        Key material is redacted in the JSON unless :meth:`keylog` or
+        :meth:`json_keys` is also set.
+        """
+        self._output.set_json_target(path)
+        return self
+
+    def json_keys(self, enable: bool = True) -> "FriTap":
+        """Include raw key material (``key_data``) in the JSON output (``--json-keys``).
+
+        Without it (and without :meth:`keylog`) keylog records in the JSON are
+        redacted to their label (and public client_random) with ``"redacted": true``.
+        """
+        self._output.json_keys = enable
         return self
 
     def verbose(self, enable: bool = True) -> "FriTap":

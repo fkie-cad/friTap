@@ -30,6 +30,8 @@ def _legacy_json_writer(logger_instance):
     existing = getattr(logger_instance, "_legacy_json_stream", None)
     if existing is not None:
         return existing
+    # json_output is a file path only: -j - is normalized to
+    # OutputConfig.json_stream (the JsonlStdoutHandler), never a file here.
     if not logger_instance.json_output:
         return None
     from ..output.json_stream import acquire_json_stream_writer

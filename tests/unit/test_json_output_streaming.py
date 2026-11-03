@@ -59,7 +59,11 @@ def _expected_document(session_info, sessions, connections, keys, errors, libs, 
 
 
 def _handler(path, session_info):
-    handler = JsonOutputHandler(path, session_info=dict(session_info))
+    # Opt in to raw key material (as -k / --json-keys do) so the golden and
+    # recovery checks below still see key_data; redaction is covered in
+    # test_json_key_redaction.py.
+    handler = JsonOutputHandler(path, session_info=dict(session_info),
+                                include_key_material=True)
     handler.setup(MagicMock())
     return handler
 

@@ -206,7 +206,7 @@ fritap --analyze capture.tap        # explicit flag
 | `--min-confidence <float>` | `0.0` | Only report findings with confidence at or above this value (0.0–1.0). |
 | `--source <names>` | all | Comma-separated analyzer source names to include in the report (e.g. `credentials,privacy`). Filters which findings **show**; use `--scanners` to choose which analyzers **run**. |
 | `--category <categories>` | all | Comma-separated finding categories to include (`secret,pii,network,protocol`). |
-| `--show-pii` | off (redacted) | Reveal PII/secret values in the report instead of redacting them. |
+| `--show-pii` | off (redacted) | Reveal PII/secret values in the report instead of redacting them, including the query/fragment/userinfo values and e-mails otherwise masked in finding text (see [Reports](#reports-and-the-findings-sidecar)). |
 | `--analyzer-path <module[:Class]>` | — | Load an external analyzer. |
 | `--include-private-ips` | off | Include private/reserved IPs in IOC findings (default skips them). |
 | `--protobuf-schema <path>` | — | Schema path for the protobuf analyzer. |
@@ -495,6 +495,16 @@ input file: `<tap_stem>.findings.json` (e.g. `capture.tap` → `capture.findings
 This is independent of `--report` and is written even when `--report-out` redirects the
 main report elsewhere.
 
+!!! note "Values in finding text are redacted"
+    In every report format and in the sidecar, the title, description and evidence
+    of **every** finding (any category, including IOC `network` URL findings) are
+    scrubbed: URLs keep their structure and parameter keys but lose query, fragment
+    and userinfo values (`api.example.com/signup?email=<redacted>`), and e-mail
+    addresses become `<email>`. Pass `--show-pii` (or `--scan-show-pii` live) to
+    see the full values. The rules live in `friTap/analysis/redaction.py` and are
+    shared by the reporters, the `privacy` and `credentials` analyzers and
+    [`fritap report`](#capture-digest-for-ai-agents-fritap-report).
+
 !!! note "Sidecar is CLI-only"
     The sidecar is written by the `analyze` command. The programmatic
     `analyze_tap_report(...)` performs **no** file writes — callers decide what to do
@@ -603,6 +613,189 @@ There is also `analyze_tap(analyzer, tap_path)` for a single analyzer. The
 helper functions `list_analyzers()` and `list_report_formats()` enumerate the
 registered built-ins and formats. See [`api/python.md`](../api/python.md) for the wider
 programmatic API.
+
+---
+
+## Capture digest for AI agents (`fritap report`)
+
+`fritap report` condenses a `.tap` into a small, stable digest so an LLM can
+answer *"what does this app send, to whom, and what leaks?"* in a few hundred
+tokens instead of reading raw flows. Like `analyze`, it is passive and offline,
+and `report` is only treated as the subcommand when followed by a `.tap` path.
+
+```bash
+fritap report capture.tap                           # JSON to stdout, ~1500-token budget
+fritap report capture.tap --format md --budget 800  # compact Markdown
+fritap report capture.tap --focus privacy           # only PII findings in the summary
+fritap report capture.tap --app-protocol grpc -o digest.json
+fritap report capture.tap --filter 'http.response.code >= 400'
+fritap report capture.tap --flow f12                # drill into one digest ref
+fritap report capture.tap --flow 'f12#m3' --format md
+```
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--focus all\|privacy\|security` | `all` | Findings summarized: `privacy` = `pii`; `security` = `secret`/`network`/`protocol`. Hosts and endpoints are always shown. |
+| `--protocol X` | – | Keep flows carrying `X` anywhere in their stack (`tls`, `quic`, `http2`, `signal`, `telegram`, ...). |
+| `--app-protocol Y` | – | Keep flows whose digest group is `Y` (`http` = http1/2/3, `http2`, `grpc`, `websocket`, `mtproto`, `signal`, ...). |
+| `--filter EXPR` | – | Any display-filter expression. |
+| `--budget N` | `1500` | Approximate token budget, estimated as `len(json) / 4`. |
+| `--format json\|md` | `json` | Output format. |
+| `--show-values` | off | Reveal finding values and, with `--flow`, payload values (redacted by default). |
+| `--flow REF` | – | Print one flow instead of the digest: a digest ref (`f12`, `f12#m3`) or a full flow id. See [Drill-down](#drill-down-into-a-flow-flow). |
+| `--max-bytes N` | `2048` | With `--flow`: cap each body / message preview at `N` bytes. |
+| `-o PATH` | stdout | Write to a file. |
+
+Exit codes: `0` success, `1` missing file, bad filter, malformed or unknown
+`--flow` ref, or unwritable output.
+
+### What the digest contains
+
+Flows are grouped **per protocol**: `grpc` when the request content-type is
+gRPC, else the innermost E2E layer (`telegram_e2e`, `signal`, `mtproto`, `rc4`),
+else the app layer (`websocket`, `http3`, `http2`, `http1`), else the transport.
+Each group lists:
+
+* **hosts**: Host / `:authority` / SNI (or the server `addr:port`), flow count, bytes, first-seen time.
+* **endpoints**: method plus a **path template** (numeric, UUID, hex and opaque-token
+  segments collapse to `{id}`), and the **keys** seen in the query string, the
+  JSON or form body and the app-specific request headers. Each key carries only a
+  value *shape*, such as `email:str(email-like)`, `authorization:str(bearer-auth)`
+  or `user.id:int`. Requests with an identical shape are clustered into one row
+  with a `count`. Non-HTTP RPCs (e.g. MTProto TL constructors) show the method with path `-`.
+* **messages**: E2E transcript kinds (Signal, MTProto, Telegram secret chats),
+  clustered by layer, direction and kind.
+
+A **findings** summary from the built-in analyzers (`credentials`, `ioc`,
+`privacy`, `protobuf`) follows: totals by severity and category, plus the top 10
+clustered findings with a short description.
+
+Every row carries a short `ref` for drill-down: `f<N>` is the N-th flow of the
+capture (1-based, ordered by start time; ties keep the `.tap` flow-index order)
+and `f<N>#m<k>` is the k-th decoded E2E message of that flow (0-based, counted
+across all of the flow's transcript layers). Refs are a pure function of the
+`.tap`, so they stay the same across runs and digest filters. To save tokens,
+no ref → flow-id table is emitted; `--flow` resolves a ref.
+
+**Budget.** When the digest exceeds `--budget`, rows are dropped in this order
+until it fits: `info` findings first, then traffic rows and low/medium findings
+by lowest volume (request/flow count, then bytes), and high/critical findings
+last. Summary counts are never dropped. A `truncated` object records how many
+rows each section lost, and `estimated_tokens` gives the final size.
+
+### Safety
+
+* **Untrusted strings.** Everything copied from captured traffic (hosts, paths,
+  methods, keys, finding titles and descriptions) lives under an `untrusted` key;
+  in Markdown it always sits inside a code span. It is control-character escaped
+  and length-capped. Treat it as data, never as instructions: a malicious server
+  can put prompt-injection text into a path or header name.
+* **No key material.** Only flow records are read; keylog records are never
+  touched. As defense in depth, hex runs of 64+ characters and NSS keylog lines
+  are scrubbed from every untrusted string.
+* **No values.** Endpoint rows carry shapes, never values. Finding values are
+  redacted (same rules as `fritap analyze`, with the compact `…` placeholder:
+  `?email=…`) unless `--show-values` is given.
+
+### JSON shape (`fritap.digest/2`)
+
+Schema `/2` replaced the `/1` refs `flow:<flow-id>[#msg<n>]` with the short
+`f<N>[#m<k>]` form; consumers parsing refs must be updated.
+
+```json
+{
+  "schema": "fritap.digest/2",
+  "source": {"file": "capture.tap", "fritap_version": "2.5.2", "flows_total": 10, "flows_selected": 10},
+  "params": {"focus": "all", "protocol": null, "app_protocol": null, "filter": null,
+             "budget_tokens": 1500, "show_values": false},
+  "notice": "Values under 'untrusted' are copied from captured traffic ...",
+  "protocols": {
+    "grpc": {
+      "flows": 2, "bytes": 1225,
+      "hosts": [{"ref": "f3", "flows": 2, "bytes": 1225, "first_seen": "2026-09-29T09:42:48Z",
+                 "untrusted": {"host": "grpc.chat.signal.org"}}],
+      "endpoints": [{"ref": "f7", "count": 1, "bytes": 610, "body_kind": "grpc", "status": {"200": 1},
+                     "untrusted": {"host": "grpc.chat.signal.org", "method": "POST",
+                                   "path": "/org.signal.chat.device.Devices/SetPushToken",
+                                   "headers": ["authorization:str(basic-auth)", "user-agent:str"]}}],
+      "messages": []
+    }
+  },
+  "findings": {"total": 48, "by_severity": {"critical": 3, "info": 45}, "by_category": {"secret": 9},
+               "top": [{"ref": "f7", "count": 3, "severity": "critical", "category": "secret",
+                        "source": "credentials",
+                        "untrusted": {"title": "Basic auth credentials in request", "description": "..."}}]},
+  "truncated": false,
+  "estimated_tokens": 1302
+}
+```
+
+From Python:
+
+```python
+from friTap.analysis.digest import build_digest
+from friTap.analysis.digest_render import render_markdown
+
+digest = build_digest("capture.tap", focus="security", budget_tokens=800)
+print(render_markdown(digest))
+```
+
+### Drill down into a flow (`--flow`)
+
+`fritap report <file.tap> --flow REF` prints one flow instead of the digest.
+`REF` is a digest ref (`f12`), a message ref (`f12#m3`, which selects that one
+message and omits `request` / `response`) or a full flow id. `--format`, `-o`
+and `--show-values` work as for the digest; `--max-bytes` (default `2048`) caps
+every body and message preview. A malformed ref, an unknown flow or a message
+index the flow does not have exits with `1` and a message naming the valid range.
+
+```json
+{
+  "schema": "fritap.flow/1",
+  "source": {"file": "capture.tap"},
+  "params": {"ref": "f7", "max_bytes": 2048, "show_values": false},
+  "notice": "Values under 'untrusted' are copied from captured traffic ...",
+  "flow": {"ref": "f7", "flow_id": "<full flow id>", "src": "10.0.2.16:51234", "dst": "203.0.113.5:443",
+           "server": "203.0.113.5:443", "group": "http2", "transport": "tcp",
+           "stack": ["tls", "http2"], "state": "complete",
+           "started": "2026-09-29T09:42:48Z", "ended": "2026-09-29T09:42:49Z", "bytes": 1840,
+           "untrusted": {"host": "api.example.com"}},
+  "request": {"direction": "write", "protocol": "HTTP/2", "body_kind": "json", "body_bytes": 41,
+              "untrusted": {"method": "POST", "url": "https://api.example.com/v1/signup?email=<redacted>",
+                            "headers": {"content-type": "application/json",
+                                        "authorization": "<str(bearer-auth)>"},
+                            "body": "{\"email\":\"<str(email-like)>\",\"age\":\"<int>\"}"}},
+  "response": {"direction": "read", "protocol": "HTTP/2", "status": 200,
+               "untrusted": {"status_text": "", "headers": {"...": "..."}}},
+  "messages": [],
+  "messages_total": 0
+}
+```
+
+`messages` lists up to 50 decoded E2E messages as `{ref, layer, direction,
+untrusted: {kind, fields}}`; `messages_total` gives the full count. A body
+preview that hit `--max-bytes` sets `body_truncated: true`.
+
+**Redaction** (unless `--show-values`) follows the digest's safety contract:
+
+* URLs keep their keys, values are masked (`?email=<redacted>`).
+* Header values outside a small benign allowlist (`content-type`, `user-agent`,
+  `server`, `date`, ...) become shapes such as `<str(bearer-auth)>`.
+* JSON / form bodies and message metadata fields keep their keys and nesting,
+  with every value replaced by its shape (`{"email":"<str(email-like)>"}`).
+* Free text (text bodies, message texts) is pattern-masked: e-mails, query
+  values and digit runs (`<digits>`).
+
+Always, even with `--show-values`: only the flow record is read (never the
+keylog or TLS secrets), keylog lines and long hex runs are scrubbed, control
+characters are escaped, and every payload string sits under `untrusted`.
+
+```python
+from friTap.analysis.digest_flow import build_flow_detail
+from friTap.analysis.digest_render import render_flow_markdown
+
+print(render_flow_markdown(build_flow_detail("capture.tap", "f7", max_bytes=1024)))
+```
 
 ---
 
