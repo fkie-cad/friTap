@@ -19,7 +19,7 @@ from ..output.pcapng_blocks import (
     build_idb,
     build_shb,
 )
-from .tcp_state import TcpSessionTracker, build_framed_packet
+from .tcp_state import TcpSessionTracker, build_framed_packets
 
 if TYPE_CHECKING:
     from ..schemas.canonical import DataCanonical, KeylogCanonical, MetaCanonical
@@ -108,8 +108,14 @@ class PcapngSink:
         """Write Enhanced Packet Block using event.timestamp."""
         if not self._file:
             return
-        packet = build_framed_packet(event, self._tracker)
+        # One EPB per segment: oversized records are split to fit an IP packet,
+        # and an invalid record yields no packets (nothing is written).
         t_us = int(event.timestamp * 1_000_000)
+        for packet in build_framed_packets(event, self._tracker):
+            self._write_packet_block(packet, t_us)
+
+    def _write_packet_block(self, packet: bytes, t_us: int) -> None:
+        """Append one Enhanced Packet Block, flushing periodically."""
         self._file.write(build_epb(packet, t_us))
         self._epb_count += 1
         if self._epb_count % EPB_FLUSH_INTERVAL == 0:

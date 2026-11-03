@@ -79,6 +79,35 @@ OBF_IV_HEXLEN = 32  # 16-byte CTR counter block
 OBF_NUM_MAX = 15  # byte-phase within a 16-byte AES-CTR keystream block
 OBF_ENDPOINT_UNKNOWN = "-"
 
+# Sane range for the informational datacenter id. Production DCs are 1..5; the
+# headroom covers test/media/CDN ids. Anything outside (or non-numeric, or
+# +/-Infinity from JSON) is recorded as 0 = "unknown", like any other
+# malformed dc_id -- the auth key itself is still kept.
+DC_ID_MIN = 1
+DC_ID_MAX = 1000
+DC_ID_UNKNOWN = 0
+
+
+def _coerce_int(value) -> Optional[int]:
+    """``int(value)``, or ``None`` for anything that cannot be one.
+
+    ``OverflowError`` matters: ``float('inf')`` (JSON ``Infinity``, ``1e400``)
+    raises it, not ``ValueError``.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _coerce_dc_id(dc_id) -> int:
+    """Agent ``dc_id`` bounded to DC_ID_MIN..DC_ID_MAX, else DC_ID_UNKNOWN."""
+    dc = _coerce_int(dc_id)
+    if dc is None or not DC_ID_MIN <= dc <= DC_ID_MAX:
+        return DC_ID_UNKNOWN
+    return dc
+
+
 HEADER_COMMENT = (
     f"# friTap MTProto keylog v{VERSION} — formats:\n"
     f"#   {LABEL} <dc_id> <auth_key_id_hex16> <auth_key_hex512> <key_type>\n"
@@ -131,10 +160,7 @@ def format_line(
     except ValueError:
         return None
     kt = key_type if key_type in _VALID_KEY_TYPES else KEY_TYPE_PERM
-    try:
-        dc = int(dc_id)
-    except (TypeError, ValueError):
-        dc = 0
+    dc = _coerce_dc_id(dc_id)
     return f"{LABEL} {dc} {aid} {ak} {kt}"
 
 
@@ -299,14 +325,8 @@ def format_obf_line(
         return None
     # Byte-phase is informational-but-load-bearing; coerce like ``dc_id`` and clamp
     # into the valid 0..15 block range rather than dropping an otherwise-good key.
-    try:
-        no = int(num_out)
-    except (TypeError, ValueError):
-        no = 0
-    try:
-        ni = int(num_in)
-    except (TypeError, ValueError):
-        ni = 0
+    no = _coerce_int(num_out) or 0
+    ni = _coerce_int(num_in) or 0
     no = min(max(no, 0), OBF_NUM_MAX)
     ni = min(max(ni, 0), OBF_NUM_MAX)
     ep = (endpoint or "").strip()

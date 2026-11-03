@@ -1966,17 +1966,19 @@ def pcap_to_tap(
         # import cycle (cli imports convert_pcap_to_tap from this module).
         from .cli import (
             load_manifest,
+            manifest_ports,
             resolve_manifest_keylog_paths,
             resolve_manifest_path,
         )
 
         # Every keylog path in the manifest is resolved against the manifest's
-        # own directory (then the CWD), exactly as the CLI does.
+        # own directory (then the CWD), exactly as the CLI does; unsafe targets
+        # (FIFO/device/oversized) are dropped — see cli.resolve_manifest_path.
         manifest = resolve_manifest_keylog_paths(pcap_path, load_manifest(pcap_path))
         if manifest:
             keylog = keylog or manifest.get("keylog") or None
-            tls = tls or tuple(manifest.get("tls_ports", []))
-            quic = quic or tuple(manifest.get("quic_ports", []))
+            tls = tls or tuple(manifest_ports(manifest, "tls_ports"))
+            quic = quic or tuple(manifest_ports(manifest, "quic_ports"))
             # Mid-stream TLS 1.3 secret-bundle sidecar (flows with no ClientHello).
             # A relative manifest value is resolved against the manifest's own
             # directory (then the CWD), so the result does not depend on where

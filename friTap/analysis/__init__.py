@@ -23,6 +23,7 @@ Usage::
 from __future__ import annotations
 
 import dataclasses
+import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -31,6 +32,8 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from friTap.events import FlowEvent
     from friTap.flow.models import Flow
+
+logger = logging.getLogger("friTap.analysis")
 
 
 class Severity(str, Enum):
@@ -188,6 +191,45 @@ class BaseAnalyzer(Protocol):
         ...
 
 
+ANALYZER_ERROR_TITLE = "Analyzer error"
+
+
+def _analyzer_error_finding(analyzer_name: str, flow_id: str, exc: BaseException) -> Finding:
+    """Build the informational finding recorded when an analyzer crashes on a flow."""
+    message = str(exc)[:120]
+    return Finding(
+        severity=Severity.INFO,
+        title=ANALYZER_ERROR_TITLE,
+        description=(
+            f"Analyzer '{analyzer_name}' failed on this flow "
+            f"({type(exc).__name__}); its findings for the flow are incomplete."
+        ),
+        source=analyzer_name,
+        flow_id=flow_id,
+        confidence=1.0,
+        evidence={"error_type": type(exc).__name__, "error": message},
+        metadata={"category": "protocol", "analyzer_error": True},
+    )
+
+
+def run_analyzer_safely(analyzer: BaseAnalyzer, flow: "Flow") -> list[Finding]:
+    """Run ``analyzer.analyze_flow(flow)``, isolating any exception.
+
+    Input is attacker-controlled (decrypted traffic), so one malformed flow
+    must never abort a whole analysis run. On failure the error is logged and
+    a single INFO "Analyzer error" finding is returned instead.
+    """
+    name = str(getattr(analyzer, "name", type(analyzer).__name__))
+    flow_id = str(getattr(flow, "flow_id", "") or "")
+    try:
+        return list(analyzer.analyze_flow(flow))
+    except Exception as exc:  # noqa: BLE001 - isolation boundary by design
+        logger.warning("Analyzer %r failed on flow %s: %s: %s",
+                       name, flow_id, type(exc).__name__, str(exc)[:200])
+        logger.debug("Analyzer %r traceback for flow %s", name, flow_id, exc_info=True)
+        return [_analyzer_error_finding(name, flow_id, exc)]
+
+
 def analyze_tap(analyzer: BaseAnalyzer, tap_path: str) -> list[Finding]:
     """Run an analyzer over all flows in a .tap file.
 
@@ -208,7 +250,7 @@ def analyze_tap(analyzer: BaseAnalyzer, tap_path: str) -> list[Finding]:
         for summary in reader.read_flow_summaries():
             flow = reader.read_flow(summary.flow_id)
             if flow is not None:
-                findings.extend(analyzer.analyze_flow(flow))
+                findings.extend(run_analyzer_safely(analyzer, flow))
     return findings
 
 
@@ -233,7 +275,7 @@ def analyze_tap_multi(analyzers: list[BaseAnalyzer], tap_path: str) -> list[Find
             flow = reader.read_flow(summary.flow_id)
             if flow is not None:
                 for analyzer in analyzers:
-                    findings.extend(analyzer.analyze_flow(flow))
+                    findings.extend(run_analyzer_safely(analyzer, flow))
     return findings
 
 
@@ -267,7 +309,7 @@ class AnalyzerPlugin:
         Public entry point for callers that already hold a completed flow (e.g.
         an off-thread scan worker), so they don't reach into ``_analyzer``.
         """
-        found = self._analyzer.analyze_flow(flow)
+        found = run_analyzer_safely(self._analyzer, flow)
         self.findings.extend(found)
         return found
 
@@ -289,5 +331,6 @@ __all__ = [
     "BaseAnalyzer",
     "analyze_tap",
     "analyze_tap_multi",
+    "run_analyzer_safely",
     "AnalyzerPlugin",
 ]

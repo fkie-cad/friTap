@@ -141,7 +141,7 @@ emulator-5554	device
             ['adb', 'shell', 'id -u'], 
             capture_output=True, 
             text=True, 
-            timeout=1
+            timeout=ADB.ROOT_PROBE_TIMEOUT
         )
         
     @patch('subprocess.run')
@@ -170,7 +170,7 @@ emulator-5554	device
             ['adb', '-s', 'emulator-5554', 'shell', 'id -u'], 
             capture_output=True, 
             text=True, 
-            timeout=1
+            timeout=ADB.ROOT_PROBE_TIMEOUT
         )
 
 

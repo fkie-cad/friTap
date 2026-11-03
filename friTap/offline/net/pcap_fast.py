@@ -39,7 +39,8 @@ Deliberate differences from the scapy parser (decided, not accidental):
 * link type 14 is raw IP on every platform;
 * simple packet blocks (pcapng, no timestamp) get ``ts = 0.0`` ("unknown").
 
-Leaf module: only the stdlib and (lazily) scapy; it never imports friTap.
+Leaf module: only the stdlib, its stdlib-only sibling :mod:`.capture_validation`
+(record lengths are checked before scapy allocates them) and (lazily) scapy.
 """
 
 from __future__ import annotations
@@ -51,6 +52,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from functools import lru_cache
 from typing import Any, Callable, Iterator, Optional, Tuple
+
+from .capture_validation import capture_read_guard, validate_capture_file
 
 logger = logging.getLogger(__name__)
 
@@ -441,8 +444,14 @@ def _packet_clock(reader) -> Callable[[Any], float]:
 
 
 def _open_raw_reader(path: str):
+    """scapy's raw reader for *path*, once every record length has been validated.
+
+    Raises :class:`~friTap.offline.net.capture_validation.CaptureFormatError`
+    (a ``ValueError``) for a capture whose lengths scapy would blindly allocate.
+    """
     from scapy.utils import RawPcapReader
 
+    validate_capture_file(path)
     return RawPcapReader(path)  # falls over to RawPcapNgReader by magic
 
 
@@ -459,7 +468,7 @@ def iter_tcp_segments(
     (optional) collects the decode counters.
     """
     stats = stats if stats is not None else ParseStats()
-    with _open_raw_reader(path) as reader:
+    with capture_read_guard(path), _open_raw_reader(path) as reader:
         clock = _packet_clock(reader)
         file_linktype = getattr(reader, "linktype", None)
         for buf, meta in reader:
@@ -505,7 +514,7 @@ def first_packet_time(path: str) -> float:
     Returns ``0.0`` for a capture without records. Unreadable files raise (the
     caller decides how to degrade).
     """
-    with _open_raw_reader(path) as reader:
+    with capture_read_guard(path), _open_raw_reader(path) as reader:
         clock = _packet_clock(reader)
         for _buf, meta in reader:
             return clock(meta)

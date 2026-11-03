@@ -9,7 +9,7 @@ from friTap.events import (
     EventBus,
 )
 from friTap.flow.collector import FlowCollector
-from friTap.parsers.base import BaseParser, SafeParserAdapter
+from friTap.parsers.base import MAX_PARSER_RESETS, BaseParser, SafeParserAdapter
 
 
 def _make_event(data: bytes, **kw) -> DatalogEvent:
@@ -84,9 +84,11 @@ class TestParserFailureEmitsErrorEvent:
         conn.parser = collector._wrap_parser(_ExplodingParser(), conn)
         for _ in range(50):
             bus.emit(_make_event(b"chunk"))
-        # Adapter short-circuits; only the FIRST failure ever invoked the
-        # exploding feed. So errors length is exactly 1.
-        assert len(errors) == 1
+        # Bounded recovery: the adapter swaps in a fresh parser after each
+        # failure up to MAX_PARSER_RESETS times, then short-circuits. So the
+        # exploding feed ran (and was reported) exactly 1 + resets times.
+        assert len(errors) == 1 + MAX_PARSER_RESETS
+        assert conn.parser.disabled is True
         # And the subscriber is still alive.
         bus.emit(_make_event(b"another", direction="write"))
         assert collector.on_data in [
@@ -102,7 +104,14 @@ class TestParserFailureEmitsErrorEvent:
         flow = collector._flows[conn.active_flow_id]
         flow.detected_protocol = "HTTP/1.1"
         conn.parser = collector._wrap_parser(_ExplodingParser(), conn)
+        # Recovered failures (fresh parser instance) keep the label; only the
+        # failure that disables the adapter resets it.
+        from friTap.parsers.base import MAX_PARSER_RESETS
+        for _ in range(MAX_PARSER_RESETS):
+            bus.emit(_make_event(b"more"))
+            assert flow.detected_protocol == "HTTP/1.1"
         bus.emit(_make_event(b"more"))
+        assert conn.parser.disabled
         assert flow.detected_protocol == "unknown"
 
 

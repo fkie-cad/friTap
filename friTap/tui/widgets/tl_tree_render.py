@@ -234,8 +234,9 @@ def _node_header(writer: _TreeWriter, node: TlNode) -> str:
 
 def _gzip_header(writer: _TreeWriter, node: TlNode) -> str:
     name = f"[bold]{escape(node.name)}[/]"
-    if node.note.startswith("inflated"):
+    if node.note.startswith("inflated") and "truncated" not in node.note:
         return f"{name} [dim]({escape(node.note)})[/]"
+    # Failures and partial inflates ("... truncated") must stand out.
     return f"{name} " + writer.styled("warning", f"({escape(node.note)})")
 
 

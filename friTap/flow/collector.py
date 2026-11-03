@@ -5,6 +5,7 @@ import logging
 import re
 import threading
 import time
+from collections import OrderedDict
 from typing import TYPE_CHECKING, Callable, Optional
 
 if TYPE_CHECKING:
@@ -22,6 +23,7 @@ from friTap.events import (
     FlowEvent,
 )
 from friTap.parsers.base import (
+    MAX_PARSER_RESETS,
     BaseParser,
     ParserFailure,
     SafeParserAdapter,
@@ -33,6 +35,7 @@ from friTap.parsers.http2 import Http2Parser, is_h2_control_frame_data
 from friTap.parsers.http3 import build_h3_result_from_headers
 from friTap.parsers.registry import get_default_registry
 
+from .h2_flow import Http2StreamFlowMixin
 from .layer_pipeline import MESSAGE_TRANSPORTS, LayerPipeline
 from .models import Flow, FlowChunk, FlowEventType, FlowState
 from .quic_flow import QuicStreamFlowMixin
@@ -49,6 +52,26 @@ PARSER_DETECTION_BUFFER_SIZE = 256
 # Run periodic maintenance sweep every N data events.
 _SWEEP_INTERVAL = 500
 
+# Per-flow cap on retained payload chunk bytes. Payload comes from a possibly
+# hostile process, so one endless stream must not grow memory without bound:
+# past the cap the flow keeps counting bytes but stops retaining chunks.
+MAX_FLOW_CHUNK_BYTES = 64 * 1024 * 1024
+
+# Per-connection, per-direction cap on the raw byte buffer kept for live Signal
+# message decoding. The live decryptor re-decrypts the WHOLE buffer on every
+# event (its dedup is identity-based over a full re-decrypt), so the buffer is
+# capped and decoding stops for that direction once it is exceeded.
+MAX_SIGNAL_RAW_BYTES = 16 * 1024 * 1024
+
+# LRU caps on per-connection collector state. Connection ids come from the
+# (possibly hostile) agent -- e.g. a random client_random per event -- so within
+# the idle window ``_connections`` and the orphan-request index could otherwise
+# grow without bound. Past a cap the least-recently-used entry is evicted; an
+# evicted connection is finalized exactly like an idle one (its flows complete
+# and are emitted).
+MAX_TRACKED_CONNECTIONS = 4096
+MAX_ORPHAN_REQUESTS = 1024
+
 # Read-function names used to determine direction.
 # Superset of SSL_READ from constants — includes _ex variants and platform names.
 _READ_FUNCTIONS = SSL_READ | frozenset({
@@ -60,7 +83,7 @@ _READ_FUNCTIONS = SSL_READ | frozenset({
 _TRANSPORT_TELEGRAM_E2E = "telegram_e2e"
 
 
-class FlowCollector(QuicStreamFlowMixin):
+class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
     """Thread-safe flow collector that groups SSL events into flows."""
 
     def __init__(self, event_bus=None, show_control_frames: bool = True,
@@ -81,7 +104,9 @@ class FlowCollector(QuicStreamFlowMixin):
         # and add_synthetic_flow, so those two paths can never collide on the
         # "conn_id:N" namespace. Monotonic per conn_id; only cleared in clear().
         self._flow_seq: dict[str, int] = {}
-        self._connections: dict[str, _ConnectionState] = {}  # conn_id -> state
+        # conn_id -> state, in least-recently-used order (see
+        # MAX_TRACKED_CONNECTIONS / _touch_connection).
+        self._connections: OrderedDict[str, _ConnectionState] = OrderedDict()
         # Owns the *vertical* layer-stack structure (transport -> app -> inner).
         # Invoked at flow finalize (inside the lock, before the COMPLETE flip).
         self._pipeline = LayerPipeline()
@@ -95,8 +120,14 @@ class FlowCollector(QuicStreamFlowMixin):
         # created AFTER the session event arrived (the common handshake-before-
         # data ordering). Keyed by connection_id; cleared in _finalize_connection.
         self._session_tls: dict[str, dict] = {}  # conn_id -> {version,sni,alpn,cipher}
-        # Orphan request index: dst_key -> [(timestamp, flow_id), ...]
-        self._orphan_requests: dict[str, list[tuple[float, str]]] = {}
+        # Orphan request index: server_key -> [(timestamp, flow_id), ...], keyed
+        # by the REMOTE (server) endpoint of the request (see _orphan_key), in
+        # least-recently-appended order; capped at MAX_ORPHAN_REQUESTS entries
+        # in total (tracked by _orphan_request_total).
+        self._orphan_requests: OrderedDict[str, list[tuple[float, str]]] = OrderedDict()
+        self._orphan_request_total = 0
+        # Names of the state caps that already tripped (warned once each).
+        self._caps_warned: set[str] = set()
         # Merge targets that were already COMPLETE when an orphan response was
         # folded in (refreshed via UPDATED by flush). Reset per merge pass.
         self._stale_merge_targets: list[Flow] = []
@@ -123,6 +154,10 @@ class FlowCollector(QuicStreamFlowMixin):
         # only when requested so a non-Signal capture pays no import cost.
         self._signal_messages = signal_messages
         self._signal_decryptor = None
+        # Retained chunk bytes per flow id, and the flows that hit
+        # MAX_FLOW_CHUNK_BYTES (kept here: Flow has no truncation flag).
+        self._flow_retained_bytes: dict[str, int] = {}
+        self._truncated_flow_ids: set[str] = set()
         if signal_messages:
             try:
                 from .signal_live import LiveSignalDecryptor
@@ -149,9 +184,11 @@ class FlowCollector(QuicStreamFlowMixin):
         All parsers that get assigned to ``conn.parser`` go through this
         helper so a malformed stream can never crash the collector. When
         a connection state is supplied, the per-connection failure
-        callback also resets the active flow's ``detected_protocol`` so
-        the UI does not keep claiming HTTP/1.1 (or whatever the dead
-        parser asserted) while raw bytes are now flowing untyped. It also
+        callback also resets the active flow's ``detected_protocol`` once
+        the adapter gives up for good (its reset budget is spent), so the UI
+        does not keep claiming HTTP/1.1 (or whatever the dead parser
+        asserted) while raw bytes are now flowing untyped. A failure the
+        adapter recovers from (fresh parser instance) keeps the label. It also
         stamps the connection's transport on the parser (``flow_transport``)
         so its trailing-data detection honours that transport's rules.
         """
@@ -162,13 +199,32 @@ class FlowCollector(QuicStreamFlowMixin):
         if conn is None:
             return SafeParserAdapter(parser, on_failure=self._on_parser_failure)
 
+        adapter_ref: list[SafeParserAdapter] = []
+
         def _on_failure_with_conn(failure: ParserFailure) -> None:
             self._on_parser_failure(failure)
-            flow_id = conn.active_flow_id
-            if flow_id and flow_id in self._flows:
-                self._flows[flow_id].detected_protocol = "unknown"
+            if adapter_ref and self._parser_gives_up(adapter_ref[0]):
+                self._mark_active_flow_unknown(conn)
 
-        return SafeParserAdapter(parser, on_failure=_on_failure_with_conn)
+        adapter = SafeParserAdapter(parser, on_failure=_on_failure_with_conn)
+        adapter_ref.append(adapter)
+        return adapter
+
+    @staticmethod
+    def _parser_gives_up(adapter: SafeParserAdapter) -> bool:
+        """True when *adapter*'s current failure disables it for good.
+
+        The on_failure callback runs BEFORE the adapter swaps in a fresh parser
+        or disables itself, so the outcome is read from its reset budget: once
+        ``MAX_PARSER_RESETS`` resets are spent, this failure disables it.
+        """
+        return adapter.disabled or adapter.reset_count >= MAX_PARSER_RESETS
+
+    def _mark_active_flow_unknown(self, conn: '_ConnectionState') -> None:
+        """Label *conn*'s active flow "unknown" (its parser is gone). Under lock."""
+        flow = self._flows.get(conn.active_flow_id or "")
+        if flow is not None:
+            flow.detected_protocol = "unknown"
 
     def _on_parser_failure(self, failure: ParserFailure) -> None:
         """SafeParserAdapter callback. Stages an ErrorEvent for deferred emit.
@@ -320,11 +376,8 @@ class FlowCollector(QuicStreamFlowMixin):
         signal_events: list = []
 
         with self._lock:
-            # Get or create connection state
-            if conn_id not in self._connections:
-                self._connections[conn_id] = self._new_connection_state(conn_id, event)
-
-            conn = self._connections[conn_id]
+            # Get or create connection state (LRU-capped)
+            conn = self._touch_connection(conn_id, event, pending)
 
             # Time-gap heuristic: if idle too long, reset connection state
             if self._is_idle_gap(conn, event.timestamp):
@@ -373,9 +426,8 @@ class FlowCollector(QuicStreamFlowMixin):
                 conn.pending_bytes += len(event.data)
 
                 try:
-                    registry = get_default_registry()
                     combined = b"".join(c.data for c in conn.pending_chunks)
-                    detected = registry.detect(combined, transport=conn.transport)
+                    detected = self._detect_parser(conn, combined)
                 except Exception:
                     logger.debug("Parser detection failed", exc_info=True)
                     detected = HexdumpParser()
@@ -387,6 +439,10 @@ class FlowCollector(QuicStreamFlowMixin):
                     # Commit to parser and feed all buffered chunks
                     conn.parser = self._wrap_parser(detected, conn)
                     for pending_chunk in conn.pending_chunks:
+                        if self._is_h2_connection(conn):
+                            # HTTP/2: each stream's flow gets its own frames.
+                            self._process_h2_chunk(conn, pending_chunk, event, pending)
+                            continue
                         results = conn.parser.feed(pending_chunk.data, pending_chunk.direction)
                         results = self._filter_control_frames(results)
                         if results:
@@ -418,37 +474,11 @@ class FlowCollector(QuicStreamFlowMixin):
                 # Parser already committed — try upgrade if on fallback
                 if isinstance(unwrap_parser(conn.parser), HexdumpParser):
                     self._try_parser_upgrade(conn, event.data)
-
-                # Feed directly. For QUIC the agent supplies a real stream id;
-                # remap it onto a dense positive id so HTTP/3 multiplexing works
-                # (and never collides with the stream_id == 0 "ghost" sentinel).
-                qsid = self._quic_stream_id(event)
-                feed_sid = conn.map_qsid(qsid) if qsid is not None else None
-                results = conn.parser.feed(event.data, direction, stream_id=feed_sid)
-                if conn.protocol_stamp_pending:
-                    conn.protocol_stamp_pending = not self._stamp_detected_protocol(conn)
-
-                if results:
-                    results = self._filter_control_frames(results)
-                    flow = None
-                    for result in results:
-                        flow = self._create_or_update_flow(conn, chunk, result, event, pending)
-                        self._append_progress(pending, flow)
-                    # Propagate trailing data to flow
-                    if flow is not None:
-                        self._propagate_trailing_data(conn.parser, flow)
-                    # Protocol upgrade handoff (e.g., HTTP/1→WebSocket after 101)
-                    self._check_parser_upgrade(conn)
+                if self._is_h2_connection(conn):
+                    # HTTP/2: each stream's flow gets exactly its own frames.
+                    self._process_h2_chunk(conn, chunk, event, pending)
                 else:
-                    if (not self._show_control_frames
-                            and isinstance(unwrap_parser(conn.parser), Http2Parser)
-                            and is_h2_control_frame_data(event.data)):
-                        pass
-                    else:
-                        flow = self._get_or_create_active_flow(conn, event, pending)
-                        self._append_chunk(flow, chunk)
-                        self._propagate_trailing_data(conn.parser, flow)
-                        self._append_progress(pending, flow)
+                    self._process_committed_chunk(conn, chunk, event, direction, pending)
 
             # Live Signal message decoding (opt-in). Runs after the normal flow
             # processing so it can attach to the connection's active flow.
@@ -466,6 +496,45 @@ class FlowCollector(QuicStreamFlowMixin):
         self._emit_errors(errors_to_emit)
         self._emit_message_events(signal_events)
 
+    def _process_committed_chunk(self, conn: '_ConnectionState', chunk: FlowChunk,
+                                 event, direction: str, pending: list) -> None:
+        """Feed *chunk* to the committed parser and place it whole. Under lock.
+
+        The generic (non-HTTP/2) path: the record goes to every flow a result
+        touched, else to the connection's active flow. HTTP/2 uses
+        :meth:`_process_h2_chunk` instead, unless its parser failed.
+        """
+        # Feed directly. For QUIC the agent supplies a real stream id;
+        # remap it onto a dense positive id so HTTP/3 multiplexing works
+        # (and never collides with the stream_id == 0 "ghost" sentinel).
+        qsid = self._quic_stream_id(event)
+        feed_sid = conn.map_qsid(qsid) if qsid is not None else None
+        results = conn.parser.feed(event.data, direction, stream_id=feed_sid)
+        if conn.protocol_stamp_pending:
+            conn.protocol_stamp_pending = not self._stamp_detected_protocol(conn)
+
+        if results:
+            results = self._filter_control_frames(results)
+            flow = None
+            for result in results:
+                flow = self._create_or_update_flow(conn, chunk, result, event, pending)
+                self._append_progress(pending, flow)
+            # Propagate trailing data to flow
+            if flow is not None:
+                self._propagate_trailing_data(conn.parser, flow)
+            # Protocol upgrade handoff (e.g., HTTP/1→WebSocket after 101)
+            self._check_parser_upgrade(conn)
+        else:
+            if (not self._show_control_frames
+                    and isinstance(unwrap_parser(conn.parser), Http2Parser)
+                    and is_h2_control_frame_data(event.data)):
+                pass
+            else:
+                flow = self._get_or_create_active_flow(conn, event, pending)
+                self._append_chunk(flow, chunk)
+                self._propagate_trailing_data(conn.parser, flow)
+                self._append_progress(pending, flow)
+
     def _stamp_detected_protocol(self, conn: '_ConnectionState') -> bool:
         """Stamp the parser's PROTOCOL on the active flow if it recognized any.
 
@@ -473,10 +542,20 @@ class FlowCollector(QuicStreamFlowMixin):
         already carries a protocol); False while it is still pending.
         """
         active = self._flows.get(conn.active_flow_id) if conn.active_flow_id else None
-        if active is None or not conn.parser.recognized_any():
+        if active is None:
             return False
-        if not active.detected_protocol:
-            active.detected_protocol = conn.parser.PROTOCOL
+        return self._stamp_protocol_on(active, conn)
+
+    @staticmethod
+    def _stamp_protocol_on(flow: Flow, conn: '_ConnectionState') -> bool:
+        """Fill *flow*'s empty ``detected_protocol`` from *conn*'s parser.
+
+        Returns False while the parser has not recognized anything yet.
+        """
+        if conn.parser is None or not conn.parser.recognized_any():
+            return False
+        if not flow.detected_protocol:
+            flow.detected_protocol = conn.parser.PROTOCOL
         return True
 
     @staticmethod
@@ -552,9 +631,8 @@ class FlowCollector(QuicStreamFlowMixin):
         if not data:
             return
         # Accumulate even before keys arrive so history is intact once they do.
-        buf = conn.signal_raw.setdefault(direction, bytearray())
-        buf.extend(data)
-        if not decryptor.has_keys:
+        buf = self._extend_signal_buffer(conn, direction, data)
+        if buf is None or not decryptor.has_keys:
             return
 
         # id(conn) disambiguates a reset connection (fresh state, empty buffer)
@@ -576,6 +654,28 @@ class FlowCollector(QuicStreamFlowMixin):
             self._attach_signal_messages(flow, new_msgs)
         for msg in new_msgs:
             out_events.append(self._build_message_event(msg))
+
+    @staticmethod
+    def _extend_signal_buffer(conn, direction: str, data: bytes) -> Optional[bytearray]:
+        """Append *data* to the live Signal buffer, or ``None`` once it is capped.
+
+        The live decryptor needs the whole per-direction stream and re-decrypts
+        it on every event, so an unbounded buffer is both a memory and an O(n²)
+        CPU hazard. Past :data:`MAX_SIGNAL_RAW_BYTES` the buffer is released and
+        decoding stops for that connection direction (logged once).
+        """
+        if direction in conn.signal_capped:
+            return None
+        buf = conn.signal_raw.setdefault(direction, bytearray())
+        if len(buf) + len(data) > MAX_SIGNAL_RAW_BYTES:
+            conn.signal_capped.add(direction)
+            conn.signal_raw[direction] = bytearray()
+            logger.warning(
+                "Live Signal decoding stopped for %s (%s): stream exceeded %d bytes",
+                conn.conn_id, direction, MAX_SIGNAL_RAW_BYTES)
+            return None
+        buf.extend(data)
+        return buf
 
     def _attach_signal_messages(self, flow, msgs) -> None:
         """Append decrypted Signal messages onto *flow*'s SignalLayer (live).
@@ -853,8 +953,19 @@ class FlowCollector(QuicStreamFlowMixin):
             self._flow_seq.clear()
             self._connections.clear()
             self._h2_stream_flows.clear()
-            self._orphan_requests.clear()
+            self._clear_orphan_requests()
             self._session_tls.clear()
+            self._flow_retained_bytes.clear()
+            self._truncated_flow_ids.clear()
+
+    def is_flow_truncated(self, flow_id: str) -> bool:
+        """True when *flow_id* exceeded :data:`MAX_FLOW_CHUNK_BYTES`.
+
+        Such a flow keeps counting its bytes (``total_bytes``) but no longer
+        retains payload chunks past the cap.
+        """
+        with self._lock:
+            return flow_id in self._truncated_flow_ids
 
     def add_synthetic_flow(
         self,
@@ -1013,7 +1124,7 @@ class FlowCollector(QuicStreamFlowMixin):
                     self._commit_pending(conn)
 
                 if conn.parser:
-                    self._flush_parser_to_flow(conn)
+                    self._flush_parser_to_flow(conn, completed_events)
 
             # Merge orphan request-only + response-only flows by destination
             removed_flows = self._merge_remaining_orphans()
@@ -1032,7 +1143,7 @@ class FlowCollector(QuicStreamFlowMixin):
                          else time.time())
                 self._complete_flow(flow, ended, completed_events)
 
-            self._orphan_requests.clear()
+            self._clear_orphan_requests()
             errors_to_emit = self._drain_pending_errors()
 
         # Notify about removed flows (outside lock)
@@ -1107,6 +1218,8 @@ class FlowCollector(QuicStreamFlowMixin):
             req_flow.response = resp_flow.response
             req_flow.chunks.extend(resp_flow.chunks)
             req_flow._total_bytes += resp_flow._total_bytes
+            self._merge_retained_bytes(req_fid, resp_fid)
+            req_flow.truncated = req_flow.truncated or resp_flow.truncated
             if resp_flow.ended > req_flow.ended:
                 req_flow.ended = resp_flow.ended
             del self._flows[resp_fid]
@@ -1156,9 +1269,10 @@ class FlowCollector(QuicStreamFlowMixin):
             self._commit_pending(conn)
 
         if conn.parser:
-            self._flush_parser_to_flow(conn)
+            self._flush_parser_to_flow(conn, pending)
         if conn.active_flow_id and conn.active_flow_id in self._flows:
             self._complete_flow(self._flows[conn.active_flow_id], ended, pending)
+        self._complete_h2_side_flows(conn, ended, pending)
 
         # Clean up H2 stream index entries for this connection
         stale_streams = [key for key in self._h2_stream_flows
@@ -1179,16 +1293,10 @@ class FlowCollector(QuicStreamFlowMixin):
 
         # 1. Sweep orphan requests: prune entries older than IDLE_THRESHOLD
         #    or referencing flows that no longer exist
-        stale_keys = []
-        for dst_key, candidates in self._orphan_requests.items():
+        for key, candidates in list(self._orphan_requests.items()):
             valid = [(ts, fid) for ts, fid in candidates
                      if (now - ts) <= IDLE_THRESHOLD and fid in self._flows]
-            if valid:
-                candidates[:] = valid
-            else:
-                stale_keys.append(dst_key)
-        for k in stale_keys:
-            del self._orphan_requests[k]
+            self._replace_orphan_candidates(key, valid)
 
         # 2. Sweep H2 stream index: remove entries for finalized connections
         #    or completed/missing flows
@@ -1250,12 +1358,51 @@ class FlowCollector(QuicStreamFlowMixin):
             return results
         return [r for r in results if not r.is_control_frame]
 
-    @staticmethod
-    def _append_chunk(flow: Flow, chunk: FlowChunk) -> None:
-        """Append a chunk to a flow and update the cached byte total."""
-        flow.chunks.append(chunk)
+    def _append_chunk(self, flow: Flow, chunk: Optional[FlowChunk]) -> None:
+        """Append a chunk to a flow and update the cached byte total.
+
+        The byte total always grows; the chunk itself is retained only while
+        the flow stays within :data:`MAX_FLOW_CHUNK_BYTES` (see
+        :meth:`_retain_chunk_bytes`). ``None`` (no bytes for this flow, e.g.
+        an HTTP/2 result whose frames were already attached) is a no-op.
+        """
+        if chunk is None:
+            return
         flow._total_bytes += len(chunk.data)
+        if not self._retain_chunk_bytes(flow, len(chunk.data)):
+            return
+        flow.chunks.append(chunk)
         flow.invalidate_body_cache()
+
+    def _retain_chunk_bytes(self, flow: Flow, size: int) -> bool:
+        """Account *size* retained bytes to *flow*; ``False`` once over the cap.
+
+        The first refusal marks the flow truncated (``flow.truncated`` and
+        :meth:`is_flow_truncated`) and logs a warning; later chunks of that flow are dropped silently.
+        """
+        flow_id = flow.flow_id
+        if flow_id in self._truncated_flow_ids:
+            return False
+        retained = self._flow_retained_bytes.get(flow_id, 0) + size
+        if retained > MAX_FLOW_CHUNK_BYTES:
+            self._truncated_flow_ids.add(flow_id)
+            flow.truncated = True
+            logger.warning(
+                "Flow %s exceeded %d retained bytes; further payload is counted "
+                "but not retained", flow_id, MAX_FLOW_CHUNK_BYTES)
+            return False
+        self._flow_retained_bytes[flow_id] = retained
+        return True
+
+    def _merge_retained_bytes(self, into_flow_id: str, from_flow_id: str) -> None:
+        """Fold *from_flow_id*'s retained-byte/truncation state into *into_flow_id*."""
+        moved = self._flow_retained_bytes.pop(from_flow_id, 0)
+        if moved:
+            self._flow_retained_bytes[into_flow_id] = (
+                self._flow_retained_bytes.get(into_flow_id, 0) + moved)
+        if from_flow_id in self._truncated_flow_ids:
+            self._truncated_flow_ids.discard(from_flow_id)
+            self._truncated_flow_ids.add(into_flow_id)
 
     def _attach_response(self, flow: Flow, result, chunk: FlowChunk,
                           timestamp: float, pending: list) -> None:
@@ -1283,7 +1430,6 @@ class FlowCollector(QuicStreamFlowMixin):
         has uncommitted pending_chunks.  Must be called under lock.
         """
         try:
-            registry = get_default_registry()
             # Only concatenate enough bytes for detection (parsers only check first bytes)
             prefix = bytearray()
             for c in conn.pending_chunks:
@@ -1291,7 +1437,7 @@ class FlowCollector(QuicStreamFlowMixin):
                 if len(prefix) >= PARSER_DETECTION_BUFFER_SIZE:
                     break
             conn.parser = self._wrap_parser(
-                registry.detect(bytes(prefix), transport=conn.transport), conn)
+                self._detect_parser(conn, bytes(prefix)), conn)
         except Exception:
             conn.parser = self._wrap_parser(HexdumpParser(), conn)
 
@@ -1317,15 +1463,18 @@ class FlowCollector(QuicStreamFlowMixin):
         conn.pending_chunks = []
         conn.pending_bytes = 0
 
-    def _flush_parser_to_flow(self, conn: '_ConnectionState') -> None:
+    def _flush_parser_to_flow(self, conn: '_ConnectionState',
+                              pending: Optional[list] = None) -> None:
         """Flush the committed parser and assign results to the active flow.
 
+        *pending* collects events of flows opened for HTTP/2 leftovers.
         Must be called under lock.
         """
         try:
             results = conn.parser.flush()
         except Exception:
             return
+        self._attach_h2_leftovers(conn, pending)
         if not conn.active_flow_id or conn.active_flow_id not in self._flows:
             return
         flow = self._flows[conn.active_flow_id]
@@ -1396,6 +1545,11 @@ class FlowCollector(QuicStreamFlowMixin):
                     "Trailing-data feed after upgrade raised", exc_info=True
                 )
 
+    def _detect_parser(self, conn: '_ConnectionState', data: bytes) -> BaseParser:
+        """Sniff *data* for *conn*'s transport (HTTP/3 vetoed on unframeable bytes)."""
+        detected = get_default_registry().detect(data, transport=conn.transport)
+        return self._screen_h3_detection(detected, data, conn.transport)
+
     def _try_parser_upgrade(self, conn: '_ConnectionState', data: bytes) -> bool:
         """Attempt to upgrade from HexdumpParser if data starts a known protocol.
 
@@ -1407,8 +1561,7 @@ class FlowCollector(QuicStreamFlowMixin):
         if self._is_pinned_transport(conn):
             return False
         try:
-            registry = get_default_registry()
-            detected = registry.detect(data, transport=conn.transport)
+            detected = self._detect_parser(conn, data)
         except Exception:
             return False
         if isinstance(detected, HexdumpParser):
@@ -1463,11 +1616,10 @@ class FlowCollector(QuicStreamFlowMixin):
             # Index by HTTP/2 stream_id for response correlation
             if stream_id > 0:
                 self._h2_stream_flows[(conn.conn_id, stream_id)] = flow.flow_id
-            # Register in orphan index for destination-keyed matching
-            dst_key = f"{event.dst_addr}:{event.dst_port}"
-            self._orphan_requests.setdefault(dst_key, []).append(
-                (event.timestamp, flow.flow_id)
-            )
+            # Register in orphan index for server-keyed matching
+            self._register_orphan_request(
+                self._orphan_key(event, chunk.direction),
+                event.timestamp, flow.flow_id)
             pending.append((FlowEventType.CREATED, flow))
             return flow
         else:
@@ -1500,7 +1652,7 @@ class FlowCollector(QuicStreamFlowMixin):
                 return active
             else:
                 # Response without an active request flow — try orphan index match
-                matched = self._match_orphan_request(event)
+                matched = self._match_orphan_request(event, chunk.direction)
                 if matched:
                     self._attach_response(matched, result, chunk, event.timestamp, pending)
                     return matched
@@ -1550,26 +1702,114 @@ class FlowCollector(QuicStreamFlowMixin):
         return (event.src_addr, event.src_port,
                 event.dst_addr, event.dst_port)
 
-    def _match_orphan_request(self, event) -> Optional[Flow]:
-        """Find a recent request-only flow to the same destination."""
-        dst_key = f"{event.dst_addr}:{event.dst_port}"
-        candidates = self._orphan_requests.get(dst_key)
+    @classmethod
+    def _orphan_key(cls, event, direction: str = "") -> str:
+        """``host:port`` of the REMOTE (server) endpoint of *event*.
+
+        Requests and responses are keyed by the server they talk to. A read
+        travels server -> device, so its raw ``dst`` is the device's own
+        address; keying on it would let one UDP socket shared by several QUIC
+        servers attach server A's datagram to server B's leftover request.
+        """
+        _src_addr, _src_port, addr, port = cls._oriented_endpoints(event, direction)
+        return f"{addr}:{port}"
+
+    def _match_orphan_request(self, event, direction: str = "") -> Optional[Flow]:
+        """Find a recent request-only flow to the same server endpoint."""
+        key = self._orphan_key(event, direction)
+        candidates = self._orphan_requests.get(key)
         if not candidates:
             return None
         now = event.timestamp
         # Prune stale entries (always, not only when matched)
         valid = [(ts, fid) for ts, fid in candidates
                  if (now - ts) <= IDLE_THRESHOLD and fid in self._flows]
-        candidates[:] = valid
+        self._replace_orphan_candidates(key, valid)
         if not valid:
             return None
         # Pick the closest in time
         _, flow_id = min(valid, key=lambda x: abs(now - x[0]))
         flow = self._flows.get(flow_id)
         if flow and flow.request is not None and flow.response is None:
-            candidates[:] = [(ts, fid) for ts, fid in candidates if fid != flow_id]
+            self._replace_orphan_candidates(
+                key, [(ts, fid) for ts, fid in valid if fid != flow_id])
             return flow
         return None
+
+    # ------------------------------------------------------------------
+    # Bounded state (LRU caps)
+    # ------------------------------------------------------------------
+
+    def _register_orphan_request(self, key: str, timestamp: float,
+                                 flow_id: str) -> None:
+        """Index a request-only flow under its server *key*. Under lock."""
+        self._orphan_requests.setdefault(key, []).append((timestamp, flow_id))
+        self._orphan_requests.move_to_end(key)
+        self._orphan_request_total += 1
+        while self._orphan_request_total > MAX_ORPHAN_REQUESTS:
+            self._evict_oldest_orphan_request()
+
+    def _evict_oldest_orphan_request(self) -> None:
+        """Drop the oldest entry of the least-recently-used key. Under lock.
+
+        Only the index entry goes; the request flow itself stays on its
+        connection and is still paired by the flush-time orphan merge.
+        """
+        key, candidates = next(iter(self._orphan_requests.items()))
+        self._warn_cap_once("orphan requests", MAX_ORPHAN_REQUESTS)
+        self._replace_orphan_candidates(key, candidates[1:])
+
+    def _replace_orphan_candidates(self, key: str, candidates: list) -> None:
+        """Set *key*'s orphan entries (dropping an empty key), keeping the total."""
+        old = self._orphan_requests.get(key)
+        self._orphan_request_total += len(candidates) - (len(old) if old else 0)
+        if candidates:
+            if old is None:
+                self._orphan_requests[key] = candidates
+            else:
+                old[:] = candidates
+        elif old is not None:
+            del self._orphan_requests[key]
+
+    def _clear_orphan_requests(self) -> None:
+        """Drop the whole orphan index. Under lock."""
+        self._orphan_requests.clear()
+        self._orphan_request_total = 0
+
+    def _touch_connection(self, conn_id: str, event, pending: list) -> '_ConnectionState':
+        """Return *conn_id*'s state (created if new), marked most recently used.
+
+        Creating a connection past MAX_TRACKED_CONNECTIONS evicts the least
+        recently used one. Under lock.
+        """
+        conn = self._connections.get(conn_id)
+        if conn is not None:
+            self._connections.move_to_end(conn_id)
+            return conn
+        conn = self._new_connection_state(conn_id, event)
+        self._connections[conn_id] = conn
+        while len(self._connections) > MAX_TRACKED_CONNECTIONS:
+            self._evict_oldest_connection(pending)
+        return conn
+
+    def _evict_oldest_connection(self, pending: list) -> None:
+        """Finalize and forget the least recently used connection. Under lock.
+
+        Mirrors the idle sweep: the connection's flows are completed (and
+        their COMPLETED events queued on *pending*) before its state goes.
+        """
+        _conn_id, conn = self._connections.popitem(last=False)
+        self._warn_cap_once("connections", MAX_TRACKED_CONNECTIONS)
+        self._finalize_connection(conn, conn.last_activity or self._now(), pending)
+
+    def _warn_cap_once(self, what: str, cap: int) -> None:
+        """Log one warning the first time the *what* cap trips."""
+        if what in self._caps_warned:
+            return
+        self._caps_warned.add(what)
+        logger.warning(
+            "Flow collector tracks more than %d %s; evicting the least "
+            "recently used (possible connection-id flood)", cap, what)
 
     def _get_or_create_active_flow(self, conn, event, pending):
         """Get current active flow or create a new one."""
@@ -1748,6 +1988,8 @@ class _ConnectionState:
         # the full per-direction WebSocket/HTTP-2 byte stream (it does its own
         # de-framing), which the parser-oriented flow chunks do not preserve.
         self.signal_raw: dict[str, bytearray] = {"read": bytearray(), "write": bytearray()}
+        # Directions whose signal_raw exceeded MAX_SIGNAL_RAW_BYTES (decoding off).
+        self.signal_capped: set[str] = set()
         # Map a real (QUIC) stream id -> a dense, strictly-positive synthetic
         # id. The collector treats stream_id == 0 as "no stream / ghost", but
         # QUIC's first client bidi stream is legitimately 0, so we remap real
@@ -1761,6 +2003,15 @@ class _ConnectionState:
         self.h3_control_flow_id: Optional[str] = None
         self.quic_stream_flows: dict[int, str] = {}
         self.quic_last_event = None
+        # HTTP/2 plumbing (see Http2StreamFlowMixin): stream id -> flow_id
+        # routes (LRU, outlive the flow's completion), the newest control-frame
+        # flow, and the newest record per direction (stamps flush leftovers).
+        self.h2_stream_flows: OrderedDict[int, str] = OrderedDict()
+        self.h2_control_flow_id: Optional[str] = None
+        self.h2_last_chunk: dict[str, FlowChunk] = {}
+        # Fresh flows opened for late stream payload (not the active flow);
+        # completed with the control flow when the connection is finalized.
+        self.h2_late_stream_flow_ids: list[str] = []
 
     def map_qsid(self, real_qsid: int) -> int:
         """Return the dense positive synthetic id for a real QUIC stream id."""

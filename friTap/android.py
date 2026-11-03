@@ -5,12 +5,21 @@ import os
 import re
 import shlex
 import subprocess
+import time
+from enum import Enum
 from functools import cached_property, wraps
 from os.path import exists as file_exists
 
 from .backends import BackendInvalidArgumentError, get_backend
 from .constants import build_capture_bpf
 from .fritap_utility import Failure
+
+
+class RootState(Enum):
+    """Outcome of the device root check. UNKNOWN means the probe timed out."""
+    ROOTED = "rooted"
+    NOT_ROOTED = "not rooted"
+    UNKNOWN = "unknown"
 
 
 class Android:
@@ -22,6 +31,8 @@ class Android:
     }
     dst_path = "/data/local/tmp/"
     pcap_name = ""
+    # Device pid of the tcpdump friTap started (read from its pidfile).
+    tcpdump_pid = None
 
     def __init__(self,  device_id=None):
         self.device_id = device_id
@@ -58,6 +69,12 @@ class Android:
 
     def adb_check_root(self):
         return self.adb.is_rooted
+
+    @property
+    def root_state(self):
+        """Tri-state root check result (see :class:`RootState`)."""
+        return self.adb.root_state or (
+            RootState.ROOTED if self.adb.is_rooted else RootState.NOT_ROOTED)
 
     def _adb_push_file(self, src_file,dst):
         return self.adb.run('push', src_file, dst, timeout=30)
@@ -142,7 +159,7 @@ class Android:
         return True
             
     @assure_android
-    def pull_pcap_from_device(self, dest_dir="."):
+    def pull_pcap_from_device(self, dest_dir=".", local_path=None):
         """Pull the on-device tcpdump capture to ``dest_dir``.
 
         ``dest_dir`` must be the directory that holds the host-side output pcap,
@@ -151,22 +168,145 @@ class Android:
         when the output pcap lives in the current working directory; callers
         with an output path elsewhere (e.g. an absolute path) must pass the
         output directory or the pulled capture is silently dropped.
+
+        ``local_path`` names the pulled file explicitly; it is needed when the
+        device file carries a per-run unique name that differs from the local
+        temp capture name.
+
+        Returns the local path of the pulled file, or ``None`` if the pull failed.
         """
         pcap_path = self.dst_path + self.pcap_name
-        return_Value = self._adb_pull_file(pcap_path, dest_dir or ".")
-        self.logger.info(f"pulling capture from device: {return_Value.stdout.strip()}")
+        target = local_path or os.path.join(dest_dir or ".", self.pcap_name)
+        return_Value = self._adb_pull_file(pcap_path, target)
+        # adb reports the pull summary on stderr (stdout stays empty).
+        summary = (return_Value.stdout or return_Value.stderr or "").strip()
+        self.logger.info(f"pulling capture from device: {summary}")
         self.logger.debug("---------------------------------\n%s", return_Value)
         if return_Value.returncode !=0:
             self.logger.error(f"error pulling pcap ({pcap_path}) from android device")
+            return None
+        return target
+
+    def _capture_pidfile(self):
+        """Device path of the pidfile next to the tcpdump temp capture."""
+        return f"{self.dst_path}{self.pcap_name}.pid"
+
+    def remove_device_capture(self):
+        """Delete the on-device tcpdump temp file and its pidfile (best effort, never raises)."""
+        if not self.pcap_name:
+            return
+        try:
+            self.adb.shell(
+                f'rm -f "{self.dst_path}{self.pcap_name}" "{self._capture_pidfile()}"',
+                timeout=10)
+        except Exception as exc:
+            self.logger.debug("could not remove %s%s from the device: %s",
+                              self.dst_path, self.pcap_name, exc)
+
+    # Teardown adb calls run while the device may still be busy (the target,
+    # frida-server and tcpdump all compete for the CPU), so they get a generous
+    # timeout and several attempts instead of the 5-10 s used elsewhere.
+    TEARDOWN_ADB_TIMEOUT = 20
+    TEARDOWN_STOP_ATTEMPTS = 3
+
+    def stop_tcpdump_gracefully(self, capture_process, grace_seconds=1.0):
+        """Stop the device tcpdump so it flushes its pcap, then reap the adb client.
+
+        Killing the local ``adb shell`` client does NOT stop the remote
+        tcpdump, so it is signalled by pid: SIGINT first (tcpdump writes out its
+        buffer and exits), SIGKILL on later attempts. Only the tcpdump friTap
+        started (pid from its pidfile) is signalled, so a concurrent capture of
+        another friTap run survives; every tcpdump is stopped only when that
+        pid is unknown. A lookup that times out is retried rather than read as
+        "already stopped". Never raises.
+        """
+        list_pids = self._capture_pid_lister()
+        signal_name = "INT"
+        for _attempt in range(self.TEARDOWN_STOP_ATTEMPTS):
+            pids = list_pids()
+            if pids == []:
+                break
+            if pids:
+                self._signal_pids(pids, signal_name)
+                signal_name = "KILL"  # it had its chance to flush
+                time.sleep(grace_seconds)
+        else:
+            if list_pids() != []:
+                self.logger.warning(
+                    "tcpdump may still be running on the device; stop it with: "
+                    "adb shell su 0 kill %s",
+                    self.tcpdump_pid if self.tcpdump_pid is not None else "$(pidof tcpdump)")
+        self._reap_local_process(capture_process)
+
+    def _capture_pid_lister(self):
+        """Callable returning the pids to stop: friTap's own tcpdump, else all of them."""
+        pid = self._recorded_tcpdump_pid()
+        if pid is not None:
+            return lambda: self._recorded_pid_state(pid)
+        self.logger.warning(
+            "pid of friTap's device tcpdump is unknown; stopping every tcpdump "
+            "process on the device")
+        return self._tcpdump_pids_or_none
+
+    def _recorded_tcpdump_pid(self):
+        """Pid written to the capture pidfile at launch, or ``None`` if unavailable."""
+        if self.tcpdump_pid is None and self.pcap_name:
+            try:
+                out = self.adb.shell(f'cat "{self._capture_pidfile()}"',
+                                     timeout=self.TEARDOWN_ADB_TIMEOUT).stdout or ""
+            except Exception as exc:
+                self.logger.debug("could not read the tcpdump pidfile: %s", exc)
+                return None
+            out = out.strip()
+            self.tcpdump_pid = int(out) if out.isdigit() else None
+        return self.tcpdump_pid
+
+    def _recorded_pid_state(self, pid):
+        """``[pid]`` while it is still a tcpdump, ``[]`` once gone, ``None`` if unknown."""
+        try:
+            result = self.adb.shell(f"cat /proc/{int(pid)}/comm",
+                                    timeout=self.TEARDOWN_ADB_TIMEOUT)
+        except Exception as exc:
+            self.logger.debug("could not check tcpdump pid %s: %s", pid, exc)
+            return None
+        # A recycled pid running something else counts as gone.
+        return [pid] if "tcpdump" in (result.stdout or "") else []
+
+    def _tcpdump_pids_or_none(self):
+        """Pids of the device tcpdump, ``[]`` if none, ``None`` if unknown (timeout)."""
+        try:
+            return self.get_pids(self.tcpdump_cmd, timeout=self.TEARDOWN_ADB_TIMEOUT)
+        except Exception as exc:
+            self.logger.debug("could not list tcpdump processes: %s", exc)
+            return None
+
+    def _signal_pids(self, pids, signal_name):
+        pids_str = " ".join(map(str, pids))
+        try:
+            self.adb.shell(f"kill -{signal_name} {pids_str}", timeout=self.TEARDOWN_ADB_TIMEOUT)
+            self.logger.debug("Sent SIG%s to tcpdump PID(s): %s", signal_name, pids_str)
+        except Exception as exc:
+            self.logger.debug("kill -%s %s failed: %s", signal_name, pids_str, exc)
+
+    def _reap_local_process(self, process, timeout=5):
+        if process is None or process == -1:
+            return
+        try:
+            process.terminate()
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+        except Exception as exc:
+            self.logger.debug("Exception while reaping the adb tcpdump client: %s", exc)
 
     def get_pid(self, process_name):
         pids = self.get_pids(process_name)
         if pids:
             return pids[0]
 
-    def get_pids(self, process_name):
+    def get_pids(self, process_name, timeout=10):
         try:
-            pid_result =self.adb.shell(f'pidof -x "{process_name}"', timeout=10).stdout
+            pid_result =self.adb.shell(f'pidof -x "{process_name}"', timeout=timeout).stdout
             pids = pid_result.strip().split()
 
             if not pids:
@@ -278,13 +418,25 @@ class Android:
 
     @assure_android
     def run_tcpdump_capture(self, pcap_name, include_loopback=False, filter_infrastructure=True):
+        """Start tcpdump on the device writing ``dst_path + pcap_name``.
+
+        The command runs as ``sh -c 'echo $$ > <pidfile>; exec tcpdump ...'``:
+        ``exec`` keeps the shell's pid, so the pidfile holds tcpdump's own pid
+        and the teardown can stop exactly this capture.
+        """
         self.pcap_name = pcap_name
+        self.tcpdump_pid = None
         bpf = build_capture_bpf(filter_infrastructure=filter_infrastructure,
                                 include_loopback=include_loopback)
         tcpdump_cmd = f'{self.tcpdump_path} -U -i any -s 0 -w {self.dst_path}{pcap_name}'
         if bpf:
             tcpdump_cmd += f' "{bpf}"'
-        return self.adb.shell(tcpdump_cmd, background=True)
+        return self.adb.shell(self._with_pidfile(tcpdump_cmd), background=True)
+
+    def _with_pidfile(self, cmd):
+        """Wrap *cmd* so the device writes its pid to the capture pidfile first."""
+        script = f'echo $$ > "{self._capture_pidfile()}"; exec {cmd}'
+        return f"sh -c {shlex.quote(script)}"
 
     def start_tcpdump(self, pcap_name):
         return self.run_tcpdump_capture(pcap_name)
@@ -345,9 +497,58 @@ class ADB:
             args_list = stringify_list(args)
             self.logger.debug(msg, args_list)
 
+    # Root probing. `su 0 id -u` routinely takes >1 s while Frida is attaching
+    # (frida-server, adbd and su all compete for the CPU), so the probe gets a
+    # realistic timeout plus one retry, and a probe that never answers yields
+    # RootState.UNKNOWN instead of being mistaken for "not rooted".
+    ROOT_PROBE_TIMEOUT = 5
+    ROOT_PROBE_ATTEMPTS = 2
+    # Elevators that run commands through `su` (see _resolve_unknown_root).
+    uses_su = False
+    # Set by find(); a directly constructed ADB is a plain, verified-unrooted one.
+    root_state = None
+
     @property
     def is_rooted(self):
         return type(self) is not ADB
+
+    def probe_uid(self, timeout=None, attempts=None):
+        """Return the uid `id -u` reports through this elevator.
+
+        Returns ``None`` when every attempt timed out (state unknown). Raises
+        ``ValueError`` when the command answered but not with a uid, e.g. a
+        missing `su` binary or an `su` that rejects this elevator's syntax.
+        """
+        timeout = timeout or self.ROOT_PROBE_TIMEOUT
+        attempts = attempts or self.ROOT_PROBE_ATTEMPTS
+        for attempt in range(1, attempts + 1):
+            try:
+                result = self.shell('id -u', timeout=timeout)
+            except subprocess.TimeoutExpired:
+                self.logger.debug("%s: `id -u` timed out after %ss (attempt %d/%d)",
+                                  type(self).__name__, timeout, attempt, attempts)
+                continue
+            return int(result.stdout)
+        return None
+
+    @classmethod
+    def probe_root(cls, device_id=None):
+        """Classify this elevator as ROOTED, NOT_ROOTED or UNKNOWN (timed out)."""
+        try:
+            uid = cls(device_id=device_id).probe_uid()
+        except ValueError:
+            return RootState.NOT_ROOTED
+        if uid is None:
+            return RootState.UNKNOWN
+        return RootState.ROOTED if uid == 0 else RootState.NOT_ROOTED
+
+    def su_available(self):
+        """True when an `su` binary is on the device's PATH (never raises)."""
+        try:
+            result = self.shell('command -v su', timeout=self.ROOT_PROBE_TIMEOUT)
+        except (subprocess.TimeoutExpired, OSError):
+            return False
+        return result.returncode == 0 and bool((result.stdout or "").strip())
 
     def _elevator(self, cmd):
         # Base (non-rooted) ADB: run the command as the plain shell user.
@@ -418,17 +619,77 @@ class ADB:
 
     @staticmethod
     def find(device_id=None):
-        for adb in ADB.__subclasses__() + [ADB]:
-            try:
-                return adb.detect(device_id=device_id)
-            except (ValueError, subprocess.TimeoutExpired):
-                continue
-        raise Failure("[-] No ADB: there seems to be no adb and/or connection available")
+        """Return the best ADB transport for the device, tagged with its root state.
+
+        Each root elevator is probed in turn; the first that yields uid 0 wins.
+        A probe that keeps timing out is never read as "not rooted": if no
+        elevator answered with root but at least one timed out, the decision is
+        handed to :meth:`_resolve_unknown_root`.
+        """
+        timed_out = []
+        for candidate in ADB.__subclasses__():
+            state = candidate.probe_root(device_id=device_id)
+            if state is RootState.ROOTED:
+                return candidate._tagged(device_id, RootState.ROOTED)
+            if state is RootState.UNKNOWN:
+                timed_out.append(candidate)
+        if timed_out:
+            return ADB._resolve_unknown_root(device_id, timed_out)
+        return ADB._verified_plain_adb(device_id)
+
+    @classmethod
+    def _tagged(cls, device_id, root_state):
+        adb = cls(device_id=device_id)
+        adb.root_state = root_state
+        return adb
+
+    @staticmethod
+    def _verified_plain_adb(device_id):
+        """The plain transport, after checking that `adb shell` answers at all."""
+        try:
+            uid = ADB(device_id=device_id).probe_uid()
+        except (ValueError, OSError):
+            uid = None
+        if uid is None:
+            raise Failure("[-] No ADB: there seems to be no adb and/or connection available")
+        if uid == 0:  # the earlier plain probe only timed out; adbd runs as root
+            return RootADB._tagged(device_id, RootState.ROOTED)
+        return ADB._tagged(device_id, RootState.NOT_ROOTED)
+
+    @staticmethod
+    def _resolve_unknown_root(device_id, timed_out):
+        """Pick a transport when the root probe timed out (device under load).
+
+        With `su` present, assume root and use the su elevator that timed out:
+        a busy device is far more likely than an `su` that hangs forever, and
+        concluding "unrooted" would silently drop the full capture. Without
+        `su`, fall back to the plain transport with an explicit explanation.
+        """
+        su_elevators = [candidate for candidate in timed_out if candidate.uses_su]
+        if not su_elevators:
+            # Every su variant answered "no root"; only the plain probe was slow.
+            return ADB._verified_plain_adb(device_id)
+        plain = ADB._tagged(device_id, RootState.UNKNOWN)
+        if plain.su_available():
+            plain.logger.warning(
+                "Root check timed out twice (`su` did not answer within %ss; the "
+                "device is probably busy). `su` is present, so friTap assumes root "
+                "and continues with the su-based path.", ADB.ROOT_PROBE_TIMEOUT)
+            return su_elevators[0]._tagged(device_id, RootState.UNKNOWN)
+        plain.logger.warning(
+            "Could not determine whether the device is rooted: the root check "
+            "timed out and no `su` binary was found. Root-only features such as "
+            "full packet capture (-f) are unavailable; run `adb root` or retry "
+            "when the device is less busy.")
+        return plain
 
     @classmethod
     def detect(cls, device_id=None):
         adb = cls(device_id=device_id)
-        uid = int(adb.shell('id -u', timeout=1).stdout) # may raise, that's ok
+        uid = adb.probe_uid()  # ValueError on a non-numeric answer, that's ok
+        if uid is None:
+            raise subprocess.TimeoutExpired(adb._adb_cmd('shell', 'id -u'),
+                                            adb.ROOT_PROBE_TIMEOUT)
         if (uid == 0) == adb.is_rooted:
             return adb
         raise ValueError
@@ -439,10 +700,14 @@ class RootADB(ADB):
         return cmd
 
 class SuADB(ADB):
+    uses_su = True
+
     def _elevator(self, cmd):
         return f'su 0 {cmd}'
 
 class MagiskADB(ADB):
+    uses_su = True
+
     def _elevator(self, cmd):
         # Return single string: 'su -c '<cmd>''
         # The command must be quoted for su -c to handle it as a single argument

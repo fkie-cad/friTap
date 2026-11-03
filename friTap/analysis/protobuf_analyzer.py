@@ -16,12 +16,14 @@ from typing import TYPE_CHECKING
 from friTap.analysis import Finding, Severity
 from friTap.parsers.protobuf import (
     decode_raw,
+    decode_raw_lenient,
     extract_grpc_messages,
-    format_message,
     is_grpc_content_type,
     is_likely_protobuf,
     is_protobuf_content_type,
 )
+from friTap.parsers.protobuf.grpc import MAX_GRPC_FRAMES_PER_BODY
+from friTap.parsers.protobuf.wire import format_message_bounded
 
 if TYPE_CHECKING:
     from friTap.flow.models import Flow
@@ -33,6 +35,11 @@ logger = logging.getLogger("friTap.analysis.protobuf")
 _MAX_NORMAL_FIELD_NUMBER = 1000
 _MAX_NORMAL_NESTING_DEPTH = 10
 _MAX_NORMAL_FIELD_SIZE = 1_048_576  # 1 MB
+
+# Resource caps for attacker-controlled bodies
+MAX_ANALYSIS_INPUT = 256 * 1024  # bytes of protobuf analyzed per body
+MAX_FORMATTED_CHARS = 2000  # formatted text kept in evidence
+MAX_EVIDENCE_FIELDS = 100  # top-level fields listed in evidence
 
 
 def _extract_grpc_method(flow: "Flow") -> str:
@@ -53,12 +60,46 @@ def _max_nesting_depth(msg: "ProtobufMessage", current: int = 0) -> int:
     return max_depth
 
 
-def _collect_field_info(msg: "ProtobufMessage") -> list[dict]:
-    """Collect field numbers and wire types from the top-level message."""
+def _collect_field_info(
+    msg: "ProtobufMessage", limit: int = MAX_EVIDENCE_FIELDS,
+) -> list[dict]:
+    """Collect field numbers and wire types of the first *limit* top-level fields."""
     return [
         {"field_number": f.field_number, "wire_type": f.wire_type.name}
-        for f in msg.fields
+        for f in msg.fields[:limit]
     ]
+
+
+def _budgeted_messages(messages: list[bytes]) -> list[tuple[bytes, int]]:
+    """Pair each gRPC message with the bytes of it that fit the input budget.
+
+    At most :data:`MAX_GRPC_FRAMES_PER_BODY` messages are kept and their
+    combined analyzed size stays within :data:`MAX_ANALYSIS_INPUT`. Returns
+    ``(message_bytes, analyze_limit)`` pairs; *analyze_limit* is the number
+    of leading bytes that may be decoded.
+    """
+    budgeted: list[tuple[bytes, int]] = []
+    remaining = MAX_ANALYSIS_INPUT
+    for msg_bytes in messages[:MAX_GRPC_FRAMES_PER_BODY]:
+        if remaining <= 0:
+            break
+        limit = min(len(msg_bytes), remaining)
+        budgeted.append((msg_bytes, limit))
+        remaining -= limit
+    return budgeted
+
+
+def _decode_capped(data: bytes, limit: int) -> tuple["ProtobufMessage", bool]:
+    """Decode at most *limit* leading bytes of *data*: ``(message, input_truncated)``.
+
+    Within the cap the strict decoder runs (raising on malformed input, as
+    before); beyond it the cut-off tail is expected, so the lenient decoder
+    keeps the fields decoded before it.
+    """
+    if len(data) <= limit:
+        return decode_raw(data), False
+    msg, _error = decode_raw_lenient(data[:limit])
+    return msg, True
 
 
 def _check_unusual_fields(
@@ -190,8 +231,10 @@ class ProtobufAnalyzer:
                     },
                 ))
                 return
-            for msg_bytes in messages:
-                self._decode_and_report(msg_bytes, direction, content_type, flow, findings)
+            for msg_bytes, limit in _budgeted_messages(messages):
+                self._decode_and_report(
+                    msg_bytes, direction, content_type, flow, findings, limit=limit,
+                )
             return
 
         # For non-gRPC, check content-type or heuristic detection
@@ -223,10 +266,14 @@ class ProtobufAnalyzer:
         content_type: str,
         flow: "Flow",
         findings: list[Finding],
+        limit: int = MAX_ANALYSIS_INPUT,
     ) -> None:
-        """Attempt to decode protobuf data and produce findings."""
+        """Attempt to decode protobuf data and produce findings.
+
+        At most *limit* (<= :data:`MAX_ANALYSIS_INPUT`) leading bytes are decoded.
+        """
         try:
-            msg = decode_raw(data)
+            msg, input_truncated = _decode_capped(data, min(limit, MAX_ANALYSIS_INPUT))
         except (ValueError, IndexError):
             findings.append(Finding(
                 severity=Severity.LOW,
@@ -245,7 +292,8 @@ class ProtobufAnalyzer:
         if not msg.fields:
             return
 
-        formatted = format_message(msg)
+        # Bounded formatting: never build the full text of a huge message.
+        formatted = format_message_bounded(msg, MAX_FORMATTED_CHARS)
         fields = _collect_field_info(msg)
 
         findings.append(Finding(
@@ -258,9 +306,11 @@ class ProtobufAnalyzer:
                 "type": "protobuf_decoded",
                 "direction": direction,
                 "fields": fields,
-                "formatted": formatted[:2000],  # cap for very large messages
+                "fields_total": len(msg.fields),
+                "formatted": formatted[:MAX_FORMATTED_CHARS],  # cap for very large messages
                 "content_type": content_type,
                 "size": len(data),
+                "truncated": input_truncated or msg.truncated,
             },
         ))
 

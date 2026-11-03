@@ -23,6 +23,7 @@ import threading
 import time
 from typing import IO, TYPE_CHECKING, List, Optional
 
+from friTap.binary_bounds import BoundsError, check_length
 from friTap.constants import build_capture_bpf
 
 from .base import OutputHandler
@@ -39,6 +40,11 @@ LINKTYPE_ETHERNET = 1
 # Pcap magic for parsing tcpdump output
 PCAP_MAGIC_LE = 0xA1B2C3D4
 PCAP_MAGIC_BE = 0xD4C3B2A1
+
+# Largest record accepted from the capture stream, whatever its snaplen says:
+# Wireshark's WTAP_MAX_PACKET_SIZE_STANDARD, also tcpdump's ``-s 0`` snaplen.
+MAX_STREAM_RECORD = 262144
+_PCAP_SNAPLEN_OFFSET = 16       # within the 24-byte global header
 
 
 class LiveAutoDecryptHandler(OutputHandler):
@@ -377,10 +383,26 @@ class LiveAutoDecryptHandler(OutputHandler):
             return
 
         link_type = struct.unpack(f"{endian}I", header[20:24])[0]
+        record_limit = self._stream_record_limit(header, endian)
         self._write_idb(link_type)
         self._logger.info("Capture started (link type %d)", link_type)
 
-        # Read pcap records
+        try:
+            self._copy_pcap_records(stream, endian, record_limit)
+        except BoundsError as exc:
+            self._logger.error(
+                "Live auto-decrypt: corrupt pcap stream from the capture source "
+                "(%s); stopping the auto-decrypt stream", exc)
+            self._stop_stream()
+
+    @staticmethod
+    def _stream_record_limit(header: bytes, endian: str) -> int:
+        """Max ``incl_len``: the global-header snaplen, capped at MAX_STREAM_RECORD."""
+        snaplen = struct.unpack_from(f"{endian}I", header, _PCAP_SNAPLEN_OFFSET)[0]
+        return min(snaplen, MAX_STREAM_RECORD) if snaplen else MAX_STREAM_RECORD
+
+    def _copy_pcap_records(self, stream: IO, endian: str, record_limit: int) -> None:
+        """Copy pcap records to EPBs until EOF or stop; BoundsError on a bad length."""
         while not self._stop_event.is_set():
             rec_header = self._read_exact(stream, 16)
             if not rec_header:
@@ -389,6 +411,9 @@ class LiveAutoDecryptHandler(OutputHandler):
             ts_sec, ts_usec, incl_len, _orig_len = struct.unpack(
                 f"{endian}IIII", rec_header
             )
+            # incl_len comes from the device/tcpdump stream: validate it
+            # before it sizes a read.
+            check_length(incl_len, "pcap record incl_len", record_limit)
             packet_data = self._read_exact(stream, incl_len)
             if not packet_data:
                 break
@@ -396,37 +421,51 @@ class LiveAutoDecryptHandler(OutputHandler):
             ts_us = ts_sec * 1_000_000 + ts_usec
             self._write_epb(packet_data, ts_us=ts_us)
 
+    def _stop_stream(self) -> None:
+        """End the auto-decrypt stream: stop flag plus the capture subprocess."""
+        self._stop_event.set()
+        self._stop_subprocess()
+
     @staticmethod
     def _read_exact(stream: IO, n: int) -> Optional[bytes]:
-        """Read exactly n bytes from stream, or return None on EOF."""
-        buf = b""
+        """Read exactly n bytes from stream, or return None on EOF.
+
+        Accumulates into a bytearray (linear, unlike ``bytes +=``); callers
+        bound *n* before calling.
+        """
+        buf = bytearray()
         while len(buf) < n:
             chunk = stream.read(n - len(buf))
             if not chunk:
                 return None
             buf += chunk
-        return buf
+        return bytes(buf)
 
     # ------------------------------------------------------------------
     # Cleanup
     # ------------------------------------------------------------------
+
+    def _stop_subprocess(self) -> None:
+        """Terminate (then kill) the capture subprocess, if any. Idempotent."""
+        process, self._subprocess = self._subprocess, None
+        if not process:
+            return
+        try:
+            process.terminate()
+            process.wait(timeout=3)
+        except Exception:
+            try:
+                process.kill()
+                process.wait()
+            except Exception:
+                pass
 
     def close(self) -> None:
         """Stop capture, clean up resources."""
         self._stop_event.set()
 
         # Stop subprocess
-        if self._subprocess:
-            try:
-                self._subprocess.terminate()
-                self._subprocess.wait(timeout=3)
-            except Exception:
-                try:
-                    self._subprocess.kill()
-                    self._subprocess.wait()
-                except Exception:
-                    pass
-            self._subprocess = None
+        self._stop_subprocess()
 
         # Wait for capture thread
         if self._capture_thread and self._capture_thread.is_alive():

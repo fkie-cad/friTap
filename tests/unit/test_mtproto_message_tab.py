@@ -449,3 +449,20 @@ def test_fixture_mtproto_message_tab_renders_bodies():
     assert "Not a Signal flow" not in blob
     assert "MTProto · cloud" in blob
     assert "fritapP3CLOUD2026FRESH" in blob
+
+
+def test_raw_layer_view_shows_escaped_message_note():
+    """A per-message parser ``note`` (only present when set) is rendered, escaped."""
+    from friTap.tui.widgets.flow_detail import FlowDetailWidget
+    w = FlowDetailWidget.__new__(FlowDetailWidget)
+    layer = MtprotoLayer(transport="abridged")
+    layer.messages = [
+        {"direction": "read", "kind": "rpc", "body": "", "method": "users.getUsers",
+         "note": "gzip_packed truncated (partial inflate) [/]\x1b"},
+        {"direction": "read", "kind": "rpc", "body": "", "method": "help.getConfig"},
+    ]
+    log = _FakeLog()
+    w._render_layer_parsed(log, layer, 0)
+    blob = "\n".join(log.lines)
+    assert "note: gzip_packed truncated (partial inflate) [/]\\x1b" in blob
+    assert blob.count("note:") == 1

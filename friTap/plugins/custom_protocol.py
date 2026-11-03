@@ -20,6 +20,12 @@ from abc import abstractmethod
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 from ..events import ConsoleEvent, DatalogEvent, ErrorEvent, KeylogEvent
+from ..output.keylog_format import (
+    is_safe_keylog_label,
+    is_safe_keylog_line,
+    is_secret_field,
+    warn_dropped_keylog_line,
+)
 from .script_plugin import ScriptPlugin
 
 if TYPE_CHECKING:
@@ -312,15 +318,36 @@ class CustomProtocolPlugin(ScriptPlugin):
     # ------------------------------------------------------------------
 
     def emit_key(self, label: str, key_hex: str) -> None:
-        """Manually emit a KeylogEvent."""
+        """Manually emit a KeylogEvent.
+
+        *label* and *key_hex* usually come from the (untrusted) generated agent
+        script, so they are validated first: the label must be a keylog label
+        (``[A-Za-z0-9_-]{1,64}``) and the secret hex or base64 without control
+        characters. An invalid pair, or a template result that is not a single
+        safe line, is dropped with a rate-limited warning.
+        """
         if self._session is None:
             logger.warning("Plugin %s: emit_key called before on_load", self.name)
             return
-        formatted = self.format_template.format(label=label, secret=key_hex, secret_base64=key_hex)
+        formatted = self._format_key_line(label, key_hex)
+        if formatted is None:
+            return
         self._session.lifecycle_bus.emit(KeylogEvent(
             key_data=formatted,
             protocol=self.name,
         ))
+
+    def _format_key_line(self, label, key_hex) -> Optional[str]:
+        """The ``format_template`` line for a validated pair, else ``None``."""
+        if not is_safe_keylog_label(label) or not is_secret_field(key_hex, allow_base64=True):
+            warn_dropped_keylog_line(f"plugin {self.name}: invalid label or secret")
+            return None
+        formatted = self.format_template.format(
+            label=label, secret=key_hex, secret_base64=key_hex)
+        if not is_safe_keylog_line(formatted):
+            warn_dropped_keylog_line(f"plugin {self.name}: unsafe formatted line")
+            return None
+        return formatted
 
     def emit_data(self, data_bytes: bytes, direction: str, function: str = "") -> None:
         """Manually emit a DatalogEvent."""

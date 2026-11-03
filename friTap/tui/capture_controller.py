@@ -1266,8 +1266,8 @@ class CaptureController:
         if state.pcap_path:
             size = _get_file_size(state.pcap_path)
             if size is None:
-                dirname, basename = os.path.split(state.pcap_path)
-                size = _get_file_size(os.path.join(dirname, f"_{basename}"))
+                from friTap.pcap import temp_capture_path
+                size = _get_file_size(temp_capture_path(state.pcap_path))
             if size is not None:
                 stats["PCAP"] = format_byte_size(size)
         return stats
@@ -1457,8 +1457,8 @@ class CaptureController:
         if pcap_expected:
             pcap_check_path = decrypt_pcap
             if not os.path.isfile(pcap_check_path):
-                _d, _b = os.path.split(decrypt_pcap)
-                _alt = os.path.join(_d, f"_{_b}")
+                from friTap.pcap import temp_capture_path
+                _alt = temp_capture_path(decrypt_pcap)
                 if os.path.isfile(_alt):
                     pcap_check_path = _alt
             pcap_has_packets = (

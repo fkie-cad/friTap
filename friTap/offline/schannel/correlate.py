@@ -290,13 +290,23 @@ def run_fields_pass(tshark_bin: str, pcap: str, display_filter: str,
                     fields: Iterable[str], *, keylog: str | None = None) -> str:
     """Run one hermetic ``-T fields`` tshark pass and return its raw stdout.
 
-    Reuses :func:`friTap.offline.tshark._run_capture` (hermetic env) and the same
-    ``-o tls.keylog_file`` mechanism the rest of the offline pipeline uses, rather
-    than inventing a fresh tshark invocation.
-    """
-    from friTap.offline.tshark import _run_capture
+    Reuses :func:`friTap.offline.tshark._run_capture` (hermetic env, time budget,
+    output cap) and the same ``-o tls.keylog_file`` mechanism the rest of the
+    offline pipeline uses, rather than inventing a fresh tshark invocation.
 
-    cmd = [tshark_bin, "-r", pcap]
+    A tshark failure yields ``""`` (no rows), except a run stopped by a friTap
+    run limit (:class:`~friTap.offline.tshark.TsharkLimitError`, e.g. a
+    timeout): that propagates, because the capture itself stalls tshark and
+    every further pass over it (trial decryption runs one per secret) would
+    wait out the same budget again.
+    """
+    from friTap.offline.tshark import (
+        TsharkLimitError,
+        _run_capture,
+        no_body_decompression_opts,
+    )
+
+    cmd = [tshark_bin, "-r", pcap, *no_body_decompression_opts(tshark_bin)]
     if keylog:
         cmd += ["-o", f"tls.keylog_file:{keylog}",
                 "-o", "tls.ignore_ssl_mac_failed:FALSE"]
@@ -305,6 +315,8 @@ def run_fields_pass(tshark_bin: str, pcap: str, display_filter: str,
         cmd += ["-e", field_name]
     try:
         return _run_capture(cmd)
+    except TsharkLimitError:
+        raise
     except Exception:  # noqa: BLE001 - a tshark failure yields "no rows", not a crash
         logger.debug("tshark fields pass failed (filter %r)", display_filter, exc_info=True)
         return ""

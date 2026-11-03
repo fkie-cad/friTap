@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from typing import TYPE_CHECKING
@@ -40,6 +41,13 @@ from friTap.tui.modals.body_processing_modal import (
 from friTap.tui.themes import c
 from friTap.tui.widgets import telegram_panes
 from friTap.tui.widgets.tl_tree_render import local_datetime, local_time
+from friTap.tui.widgets.wire_text import (
+    TEXT_RENDER_LIMIT,
+    safe_static_text,
+    safe_wire_text,
+    visible_controls,
+    write_capped_text,
+)
 
 from ..modals.alert_modal import AlertModal
 
@@ -87,6 +95,46 @@ def format_hexdump_lines(
         else:
             lines.append(f"{display_offset:08x}  {hex_part}  {ascii_part}")
     return lines
+
+
+_log = logging.getLogger(__name__)
+
+# Wire-derived text helpers (see friTap.tui.widgets.wire_text).
+_visible_controls = visible_controls
+_safe_wire_text = safe_wire_text
+
+
+#: Highest `` (n)`` suffix tried before giving up on finding a free save name.
+_MAX_SAVE_SUFFIX = 9999
+
+
+def _candidate_save_names(filename: str):
+    """``name.ext``, then ``name (1).ext``, ``name (2).ext``, ..."""
+    yield filename
+    stem, ext = os.path.splitext(filename)
+    for n in range(1, _MAX_SAVE_SUFFIX + 1):
+        yield f"{stem} ({n}){ext}"
+
+
+def save_without_overwrite(directory: str, filename: str, data: bytes) -> str:
+    """Write *data* to a new file in *directory*; never replace an existing one.
+
+    *filename* may come from a server ``Content-Disposition`` header, so an
+    existing file (or symlink) of that name is left untouched and a
+    `` (n)`` suffix is added instead. ``O_EXCL`` makes the check atomic.
+    Returns the path written; raises ``FileExistsError`` if no name is free.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    for name in _candidate_save_names(filename):
+        path = os.path.join(directory, name)
+        try:
+            fd = os.open(path, flags, 0o666)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        return path
+    raise FileExistsError(f"no free file name for {filename!r} in {directory}")
 
 
 def _get_header(headers: dict, name: str) -> str:
@@ -313,7 +361,7 @@ if TEXTUAL_AVAILABLE:
                 self._skip_tab_event = True
                 self._auto_select_tab(self._tabs, flow)
                 self._skip_tab_event = False
-                self._render_tab(flow, self._tabs.active)
+                self._render_tab_safely(flow, self._tabs.active)
             except Exception:
                 self._skip_tab_event = False
 
@@ -324,16 +372,7 @@ if TEXTUAL_AVAILABLE:
             so Textual has completed layout and scroll positions stick.
             """
             try:
-                active = self._tabs.active
-                log_map = {
-                    _TAB_REQUEST: self._request_log,
-                    _TAB_RESPONSE: self._response_log,
-                    _TAB_DETAIL: self._detail_log,
-                    _TAB_MESSAGE: self._message_log,
-                    _TAB_LAYERS: self._layers_log,
-                    **self._byte_logs,
-                }
-                log = log_map.get(active)
+                log = self._log_for_tab(self._tabs.active)
                 if log:
                     log.scroll_home(animate=False)
             except Exception:
@@ -396,7 +435,7 @@ if TEXTUAL_AVAILABLE:
             self._update_header(flow)
             try:
                 self._update_tab_labels(self._tabs, flow)
-                self._render_tab(flow, self._tabs.active)
+                self._render_tab_safely(flow, self._tabs.active)
             except Exception:
                 self.show_flow(flow)
 
@@ -404,7 +443,43 @@ if TEXTUAL_AVAILABLE:
             """Re-render the newly visible tab to ensure fresh content."""
             if self._skip_tab_event or self._current_flow is None:
                 return
-            self._render_tab(self._current_flow, event.pane.id)
+            self._render_tab_safely(self._current_flow, event.pane.id)
+
+        def _render_tab_safely(self, flow: "Flow", tab_id: str) -> None:
+            """Render *tab_id*; a render failure shows an error line instead of crashing.
+
+            Rendered content is derived from captured (attacker-controlled)
+            traffic, so an unexpected parse/markup error must never propagate
+            into Textual's event loop and end a live capture.
+            """
+            try:
+                self._render_tab(flow, tab_id)
+            except Exception as exc:
+                _log.exception("flow detail: rendering tab %s failed", tab_id)
+                self._write_render_error(tab_id, exc)
+
+        def _log_for_tab(self, tab_id: str):
+            """The RichLog backing *tab_id*, or None for plugin/unknown tabs."""
+            log_map = {
+                _TAB_REQUEST: self._request_log,
+                _TAB_RESPONSE: self._response_log,
+                _TAB_DETAIL: self._detail_log,
+                _TAB_MESSAGE: getattr(self, "_message_log", None),
+                _TAB_LAYERS: getattr(self, "_layers_log", None),
+                **getattr(self, "_byte_logs", {}),
+            }
+            return log_map.get(tab_id)
+
+        def _write_render_error(self, tab_id: str, exc: Exception) -> None:
+            """Show a render failure as an escaped error line on the tab's log."""
+            log = self._log_for_tab(tab_id)
+            if log is None:
+                return
+            try:
+                log.write(f"[bold {c('error')}]\u26a0 Could not render this view: "
+                          f"{_markup_escape(f'{type(exc).__name__}: {exc}')}[/]")
+            except Exception:
+                _log.exception("flow detail: writing the render error failed")
 
         # ----------------------------------------------------------
         # Per-layer decrypted byte tabs (Wireshark-style)
@@ -602,9 +677,12 @@ if TEXTUAL_AVAILABLE:
                 self._raw_response = not self._raw_response
             else:
                 return
-            self._update_header(self._current_flow)
-            self._update_tab_labels(self._tabs, self._current_flow)
-            self._render_tab(self._current_flow, active)
+            try:
+                self._update_header(self._current_flow)
+                self._update_tab_labels(self._tabs, self._current_flow)
+            except Exception:
+                _log.exception("flow detail: header update failed")
+            self._render_tab_safely(self._current_flow, active)
 
         def _on_layers_tab(self) -> bool:
             """True when a flow is loaded and the active tab is the Layers tab."""
@@ -913,10 +991,8 @@ if TEXTUAL_AVAILABLE:
                 filename = f"body_{direction}.bin"
             filename = sanitize_filename(filename)
 
-            save_path = os.path.join(os.getcwd(), filename)
             try:
-                with open(save_path, "wb") as f:
-                    f.write(body)
+                save_path = save_without_overwrite(os.getcwd(), filename, body)
                 size_str = format_byte_size(len(body))
                 self.app.notify(f"Saved {size_str} to {save_path}")
             except OSError as e:
@@ -950,8 +1026,8 @@ if TEXTUAL_AVAILABLE:
         def _update_header(self, flow: "Flow") -> None:
             header = self._header_widget
             ts = datetime.fromtimestamp(flow.started).strftime("%H:%M:%S.%f")[:-3]
-            method = flow.display_method or "-"
-            host = flow.display_host or "-"
+            method = safe_static_text(flow.display_method or "-")
+            host = safe_static_text(flow.display_host or "-")
             status_part = self._header_status_part(flow)
             proto = self._layered_detail_protocol(flow)
             if not proto:
@@ -1027,7 +1103,7 @@ if TEXTUAL_AVAILABLE:
             if not status and FlowDetailWidget._has_inner_e2e_layer(flow):
                 return ""  # opaque inner-cipher payload: no HTTP-style status
             status = status or "pending"
-            return f"[dim]>[/] {_markup_escape(status)}  "
+            return f"[dim]>[/] {safe_static_text(status)}  "
 
         def _render_raw_hex(self, log: RichLog, flow: "Flow", direction: str, label: str) -> None:
             """Render full raw hexdump for a direction, bypassing all parsing.
@@ -1241,6 +1317,17 @@ if TEXTUAL_AVAILABLE:
             for name, value in rows:
                 log.write(f"[bold]{_markup_escape(str(name))}:[/] {_markup_escape(str(value))}")
 
+        @staticmethod
+        def _wire_line(*parts) -> str:
+            """Space-joined request/status line with every wire-derived part escaped."""
+            return " ".join(_safe_wire_text(p) for p in parts if p not in (None, ""))
+
+        @staticmethod
+        def _write_wire_headers(log: RichLog, headers: dict) -> None:
+            """Write parsed HTTP headers as ``name: value`` rows, escaped for markup."""
+            for name, value in headers.items():
+                log.write(f"[bold]{_safe_wire_text(name)}:[/] {_safe_wire_text(value)}")
+
         def _render_unparsed_side(self, log: RichLog, flow: "Flow", direction: str,
                                   label: str) -> None:
             """A side without an HTTP parse: the pinned-TL message pane, else raw bytes.
@@ -1306,21 +1393,20 @@ if TEXTUAL_AVAILABLE:
             # Segment header when trailing data forms a second segment
             if flow.trailing_bytes is not None:
                 proto_label = getattr(req, 'protocol', '') or flow.display_protocol
-                log.write(f"[bold {c('accent')}]SEGMENT 1  {proto_label}[/]")
+                log.write(f"[bold {c('accent')}]SEGMENT 1  {_safe_wire_text(proto_label)}[/]")
                 log.write(f"[bold {c('accent')}]{'═' * 60}[/]")
 
             # Request line
             if hasattr(req, 'method') and req.method:
                 version = getattr(req, 'protocol', 'HTTP/1.1')
                 url = getattr(req, 'url', '/')
-                log.write(f"[bold {c('primary')}]{req.method} {url} {version}[/]")
+                log.write(f"[bold {c('primary')}]{self._wire_line(req.method, url, version)}[/]")
 
             # Headers
             headers = getattr(req, 'headers', {})
             if headers:
                 log.write("")
-                for name, value in headers.items():
-                    log.write(f"[bold]{name}:[/] {value}")
+                self._write_wire_headers(log, headers)
 
             # Body
             body = req.body if req.body else flow.reconstruct_body("write")
@@ -1371,7 +1457,7 @@ if TEXTUAL_AVAILABLE:
             # Segment header when read-direction trailing data forms a second segment
             if getattr(flow, "response_trailing_bytes", None) is not None:
                 proto_label = getattr(resp, 'protocol', '') or flow.display_protocol
-                log.write(f"[bold {c('accent')}]SEGMENT 1  {proto_label}[/]")
+                log.write(f"[bold {c('accent')}]SEGMENT 1  {_safe_wire_text(proto_label)}[/]")
                 log.write(f"[bold {c('accent')}]{'═' * 60}[/]")
 
             # Status line
@@ -1385,14 +1471,13 @@ if TEXTUAL_AVAILABLE:
                     color = c('warning')
                 else:
                     color = c('error')
-                log.write(f"[bold {color}]{version} {code} {status_text}[/]")
+                log.write(f"[bold {color}]{self._wire_line(version, code, status_text)}[/]")
 
             # Headers
             headers = getattr(resp, 'headers', {})
             if headers:
                 log.write("")
-                for name, value in headers.items():
-                    log.write(f"[bold]{name}:[/] {value}")
+                self._write_wire_headers(log, headers)
 
             # Body
             body = resp.body if resp.body else flow.reconstruct_body("read")
@@ -2646,7 +2731,7 @@ if TEXTUAL_AVAILABLE:
                 tags.append("metadata-only")
             marker = "▸ " if idx == self._current_layer_idx else "  "
             log.write(
-                f"[bold {c('accent')}]{marker}{self._tree_prefix(depth)}[{depth}] {name}[/] "
+                f"[bold {c('accent')}]{marker}{self._tree_prefix(depth)}[{depth}] {self._esc(name)}[/] "
                 f"[dim]({', '.join(tags)})[/]"
             )
 
@@ -2720,6 +2805,7 @@ if TEXTUAL_AVAILABLE:
                         if k == "type":
                             continue
                         log.write(f"      [dim]{self._esc(k)}: {self._esc(v)}[/]")
+                self._write_message_note(log, entry)
 
                 if body:
                     self._write_text_body(
@@ -2735,6 +2821,17 @@ if TEXTUAL_AVAILABLE:
                     flag_bits.append("reaction")
                 if flag_bits:
                     log.write(f"    [dim]• {', '.join(flag_bits)}[/]")
+
+        @staticmethod
+        def _write_message_note(log: RichLog, entry) -> None:
+            """Show a per-message parser ``note`` (e.g. a truncated gzip_packed body).
+
+            Offline MTProto message dicts carry ``note`` only when set; it is
+            wire-adjacent text, so it goes through :func:`safe_wire_text`.
+            """
+            note = entry.get("note") or ""
+            if note:
+                log.write(f"      [{c('warning')}]note: {_safe_wire_text(note)}[/]")
 
         def _render_layer_metadata(self, log: RichLog, layer, name: str) -> None:
             """Render typed metadata fields for a layer (indented)."""
@@ -2760,7 +2857,7 @@ if TEXTUAL_AVAILABLE:
                 # rc4 ``records`` get their own renderer (_render_layer_records).
                 if key == "records" and isinstance(value, list):
                     continue
-                log.write(f"    [bold]{key}:[/] {value}")
+                log.write(f"    [bold]{self._esc(key)}:[/] {self._esc(value)}")
                 wrote_any = True
             if not wrote_any:
                 log.write("    [dim]no metadata[/]")
@@ -2857,7 +2954,7 @@ if TEXTUAL_AVAILABLE:
             proto_label = trailing_protocol or "unknown"
             log.write(
                 f"[bold {c('warning')}]SEGMENT 2  "
-                f"[{c('accent')}]{proto_label}[/]  "
+                f"[{c('accent')}]{_safe_wire_text(proto_label)}[/]  "
                 f"[dim]({len(tb):,} bytes trailing)[/]"
             )
             log.write(f"[bold {c('warning')}]{'═' * 60}[/]")
@@ -2867,16 +2964,15 @@ if TEXTUAL_AVAILABLE:
                 if sp.method:
                     url = getattr(sp, 'url', '') or ''
                     version = getattr(sp, 'protocol', '')
-                    log.write(f"[bold {c('primary')}]{sp.method} {url} {version}[/]")
+                    log.write(f"[bold {c('primary')}]{self._wire_line(sp.method, url, version)}[/]")
                 elif sp.status_code:
                     version = getattr(sp, 'protocol', 'HTTP/1.1')
-                    log.write(f"[bold]{version} {sp.status_code} {sp.status_text}[/]")
+                    log.write(f"[bold]{self._wire_line(version, sp.status_code, sp.status_text)}[/]")
                 # Headers
                 headers = getattr(sp, 'headers', {})
                 if headers:
                     log.write("")
-                    for name, value in headers.items():
-                        log.write(f"[bold]{name}:[/] {value}")
+                    self._write_wire_headers(log, headers)
                 # Body
                 body = sp.body
                 if body:
@@ -2888,7 +2984,7 @@ if TEXTUAL_AVAILABLE:
                         text = body.decode("utf-8", errors="replace")
                         if len(text) > 2048:
                             text = text[:2048] + "\n... (truncated)"
-                        log.write(text)
+                        log.write(_markup_escape(text))
                     else:
                         self._write_hexdump(log, body[:self._TRAILING_HEX_LIMIT])
             elif self._processing_applies_to(1):
@@ -2978,22 +3074,39 @@ if TEXTUAL_AVAILABLE:
             processing = self._active_processing
             return getattr(processing, "protobuf_config", None) or ProtobufConfig()
 
-        @staticmethod
-        def _decode_json(log: RichLog, body: bytes, _headers: dict) -> None:
-            try:
-                parsed = json.loads(body)
-                formatted = json.dumps(parsed, indent=2)
+        # Instance methods: the _DECODERS dispatch calls ``fn(self, log, body, headers)``.
+        def _decode_json(self, log: RichLog, body: bytes, _headers: dict) -> None:
+            formatted = self._pretty_json(body)
+            if formatted is not None:
                 log.write(_markup_escape(formatted))
-            except (json.JSONDecodeError, UnicodeDecodeError):
+                return
+            if len(body) > self._TEXT_RENDER_LIMIT:
+                log.write("[dim yellow]JSON too large to pretty-print (raw text shown)[/]")
+            else:
                 log.write("[dim yellow]Not valid JSON[/]")
-                log.write(_markup_escape(body.decode("utf-8", errors="replace")))
+            self._write_text_body(log, body, errors="replace")
+
+        def _pretty_json(self, body: bytes) -> str | None:
+            """Indented JSON for *body*, or None when invalid, too deep or too large.
+
+            Bodies above :attr:`_TEXT_RENDER_LIMIT` are never parsed: the
+            ``loads``/``dumps(indent=2)`` round trip would run unbounded on the
+            UI thread. Deeply nested input raises ``RecursionError``; it falls
+            back to raw text like any other undecodable body.
+            """
+            if len(body) > self._TEXT_RENDER_LIMIT:
+                return None
+            try:
+                return json.dumps(json.loads(body), indent=2)
+            except (ValueError, UnicodeDecodeError, RecursionError):
+                return None
 
         def _decode_base64(self, log: RichLog, body: bytes, _headers: dict) -> None:
             import base64 as b64mod
             try:
                 decoded_bytes = b64mod.b64decode(body)
                 if _is_text(decoded_bytes):
-                    log.write(_markup_escape(decoded_bytes.decode("utf-8")))
+                    self._write_text_body(log, decoded_bytes, errors="replace")
                 else:
                     self._write_hexdump(log, decoded_bytes)
             except Exception:
@@ -3003,9 +3116,8 @@ if TEXTUAL_AVAILABLE:
         def _decode_hex(self, log: RichLog, body: bytes, _headers: dict) -> None:
             self._write_hexdump(log, body)
 
-        @staticmethod
-        def _decode_raw_utf8(log: RichLog, body: bytes, _headers: dict) -> None:
-            log.write(_markup_escape(body.decode("utf-8", errors="replace")))
+        def _decode_raw_utf8(self, log: RichLog, body: bytes, _headers: dict) -> None:
+            self._write_text_body(log, body, errors="replace")
 
         def _tl_domain(self) -> str:
             """TL schema domain of the current flow: Secret-Chat or MTProto."""
@@ -3039,13 +3151,13 @@ if TEXTUAL_AVAILABLE:
                 log.write(f"[bold {c('primary')}]HTTP/2 Connection Control[/]")
 
             log.write(f"[bold {c('accent')}]{'═' * 40}[/]")
-            log.write(f"[bold]Frame:[/] {_markup_escape(str(req.method))}")
+            log.write(f"[bold]Frame:[/] {_safe_wire_text(req.method)}")
             log.write("")
 
             headers = req.headers if req.headers else {}
             if headers:
                 for name, value in headers.items():
-                    log.write(f"  [bold]{_markup_escape(str(name))}:[/]  {_markup_escape(str(value))}")
+                    log.write(f"  [bold]{_safe_wire_text(name)}:[/]  {_safe_wire_text(value)}")
 
         def _render_incomplete_h2_note(self, log: RichLog, raw: bytes) -> None:
             """Show informational note for incomplete HTTP/2 frames."""
@@ -3137,10 +3249,14 @@ if TEXTUAL_AVAILABLE:
             content_encoding = _get_header(headers, "content-encoding")
             if content_encoding:
                 try:
-                    from friTap.parsers.decompress import decompress_body
-                    body, err = decompress_body(body, content_encoding)
+                    from friTap.parsers.decompress import (
+                        MAX_AUTO_DECOMPRESS,
+                        decompress_body,
+                    )
+                    body, err = decompress_body(
+                        body, content_encoding, max_out=MAX_AUTO_DECOMPRESS)
                     if err:
-                        log.write(f"[dim yellow]Decompression note: {err}[/]")
+                        log.write(f"[dim yellow]Decompression note: {_markup_escape(err)}[/]")
                 except ImportError:
                     pass
 
@@ -3150,12 +3266,10 @@ if TEXTUAL_AVAILABLE:
             self._render_ohttp_banner(log, content_type)
 
             if "application/json" in content_type or "text/json" in content_type:
-                try:
-                    parsed = json.loads(body)
-                    log.write(_markup_escape(json.dumps(parsed, indent=2)))
+                formatted = self._pretty_json(body)
+                if formatted is not None:
+                    log.write(_markup_escape(formatted))
                     return
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    pass
 
             if ("text/" in content_type
                     or "application/xml" in content_type
@@ -3210,22 +3324,17 @@ if TEXTUAL_AVAILABLE:
         # Render caps to prevent the TUI from freezing on large bodies.
         # Full data is still in Flow.chunks and PCAP.
         _HEXDUMP_RENDER_LIMIT = 64 * 1024   # 64 KB
-        _TEXT_RENDER_LIMIT = 256 * 1024      # 256 KB
+        _TEXT_RENDER_LIMIT = TEXT_RENDER_LIMIT  # 256 KB
 
         def _write_text_body(self, log: RichLog, body: bytes, errors: str = "strict") -> None:
             """Write text body with render-limit truncation.
 
             The RichLog has ``markup=True``, so a literal ``[`` in the decoded body
             (e.g. JSON, a chat message, a path) would be parsed as Rich markup and
-            can raise ``MarkupError`` on an unbalanced tag. Escape it.
+            can raise ``MarkupError`` on an unbalanced tag. Escape it. Delegates to
+            :func:`friTap.tui.widgets.wire_text.write_capped_text`.
             """
-            limit = self._TEXT_RENDER_LIMIT
-            log.write(body[:limit].decode("utf-8", errors=errors).replace("[", r"\["))
-            if len(body) > limit:
-                log.write(
-                    f"[dim italic]... {len(body) - limit:,} more bytes truncated "
-                    f"({len(body):,} total)[/]"
-                )
+            write_capped_text(log, body, self._TEXT_RENDER_LIMIT, errors)
 
         def _write_hexdump(
             self, log: RichLog, data: bytes,

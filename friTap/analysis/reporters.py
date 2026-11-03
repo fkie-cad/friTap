@@ -17,11 +17,83 @@ Usage::
 from __future__ import annotations
 
 import csv
+import html
 import io
 import json
+import re
 from typing import Any, Protocol, runtime_checkable
 
 from friTap.analysis import Finding, Severity
+
+# ---------------------------------------------------------------------------
+# Output sanitisation (finding text is attacker-controlled)
+# ---------------------------------------------------------------------------
+
+# C0 controls, DEL and C1 controls. Tab/newline are excluded here and handled
+# per call site, since some formats need them structurally.
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+_NEWLINES_RE = re.compile(r"\r\n|[\r\n]")
+# Spreadsheet formula triggers (CSV injection, CWE-1236).
+_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+# Markdown-significant characters escaped with a backslash.
+_MARKDOWN_SPECIAL_RE = re.compile(r"([\\`*_\[\]()#|~!])")
+_BACKTICK_RUN_RE = re.compile(r"`+")
+
+
+def _escape_control_chars(text: str, *, keep_tab: bool = True, keep_newline: bool = True) -> str:
+    """Replace C0/C1 control characters in *text* with visible ``\\xNN`` escapes."""
+    text = _CONTROL_CHARS_RE.sub(lambda m: f"\\x{ord(m.group(0)):02x}", text)
+    if not keep_tab:
+        text = text.replace("\t", "\\x09")
+    if not keep_newline:
+        text = text.replace("\n", "\\x0a")
+    return text
+
+
+def _sanitize_text(value: Any, *, single_line: bool = False) -> str:
+    """Single sanitiser for attacker-controlled text in text reporters.
+
+    Escapes control characters; with *single_line* newlines collapse to a
+    space and tabs are escaped (for titles and table cells).
+    """
+    text = value if isinstance(value, str) else str(value)
+    if single_line:
+        text = _NEWLINES_RE.sub(" ", text)
+        return _escape_control_chars(text, keep_tab=False, keep_newline=False)
+    return _escape_control_chars(text)
+
+
+def _csv_cell(value: Any) -> Any:
+    """Neutralise CSV formula injection and control characters in one cell."""
+    if not isinstance(value, str):
+        return value
+    prefix = "'" if value.startswith(_FORMULA_PREFIXES) else ""
+    return prefix + _sanitize_text(value)
+
+
+def _markdown_text(value: Any, *, single_line: bool = False) -> str:
+    """Escape *value* for Markdown prose (HTML entities + Markdown specials)."""
+    text = _sanitize_text(value, single_line=single_line)
+    text = html.escape(text, quote=False)
+    return _MARKDOWN_SPECIAL_RE.sub(r"\\\1", text)
+
+
+def _longest_backtick_run(text: str) -> int:
+    return max((len(m) for m in _BACKTICK_RUN_RE.findall(text)), default=0)
+
+
+def _markdown_code_span(value: Any) -> str:
+    """Wrap *value* in an inline code span that its backticks cannot close."""
+    text = _sanitize_text(value, single_line=True)
+    fence = "`" * (_longest_backtick_run(text) + 1)
+    pad = " " if text.startswith("`") or text.endswith("`") else ""
+    return f"{fence}{pad}{text}{pad}{fence}"
+
+
+def _markdown_code_block(body: str, info: str = "") -> list[str]:
+    """Return fenced-code-block lines whose fence outlasts any backtick run."""
+    fence = "`" * max(3, _longest_backtick_run(body) + 1)
+    return [f"{fence}{info}", body, fence]
 
 
 def _count_by_severity(findings: list[Finding]) -> dict[str, int]:
@@ -196,12 +268,12 @@ class CsvReporter:
         for f in findings:
             writer.writerow({
                 "severity": f.severity.value,
-                "title": f.title,
-                "source": f.source,
-                "category": f.category or "",
-                "flow_id": f.flow_id,
+                "title": _csv_cell(f.title),
+                "source": _csv_cell(f.source),
+                "category": _csv_cell(f.category or ""),
+                "flow_id": _csv_cell(f.flow_id),
                 "confidence": f.confidence,
-                "description": f.description,
+                "description": _csv_cell(f.description),
             })
 
         return output.getvalue()
@@ -222,9 +294,10 @@ class MarkdownReporter:
 
         if meta:
             if "tap_file" in meta:
-                lines.append(f"**Capture:** `{meta['tap_file']}`\n")
+                lines.append(f"**Capture:** {_markdown_code_span(meta['tap_file'])}\n")
             if "analyzers" in meta:
-                lines.append(f"**Analyzers:** {', '.join(meta['analyzers'])}\n")
+                analyzers = ", ".join(_markdown_text(a, single_line=True) for a in meta["analyzers"])
+                lines.append(f"**Analyzers:** {analyzers}\n")
 
         lines.append("## Summary\n")
         severity_counts = _count_by_severity(findings)
@@ -245,22 +318,25 @@ class MarkdownReporter:
 
             for f in sev_findings:
                 confidence_str = f" (confidence: {f.confidence:.0%})" if f.confidence < 1.0 else ""
-                lines.append(f"### {f.title}{confidence_str}\n")
-                lines.append(f"{f.description}\n")
+                title = _markdown_text(f.title, single_line=True)
+                lines.append(f"### {title}{confidence_str}\n")
+                lines.append(f"{_markdown_text(f.description)}\n")
 
                 if f.flow_id:
-                    lines.append(f"- **Flow:** `{f.flow_id}`")
-                lines.append(f"- **Source:** {f.source}")
+                    lines.append(f"- **Flow:** {_markdown_code_span(f.flow_id)}")
+                lines.append(f"- **Source:** {_markdown_text(f.source, single_line=True)}")
                 if f.category:
-                    lines.append(f"- **Category:** {f.category}")
+                    lines.append(f"- **Category:** {_markdown_text(f.category, single_line=True)}")
                 if f.metadata.get("compliance"):
-                    lines.append(f"- **Compliance:** {', '.join(f.metadata['compliance'])}")
+                    compliance = ", ".join(
+                        _markdown_text(c, single_line=True) for c in f.metadata["compliance"]
+                    )
+                    lines.append(f"- **Compliance:** {compliance}")
 
                 if self._include_evidence and f.evidence:
                     lines.append("\n**Evidence:**")
-                    lines.append("```json")
-                    lines.append(json.dumps(f.evidence, indent=2, default=str))
-                    lines.append("```")
+                    evidence = json.dumps(f.evidence, indent=2, default=str)
+                    lines.extend(_markdown_code_block(evidence, "json"))
 
                 lines.append("")
 
@@ -279,15 +355,16 @@ class TableReporter:
             return "No findings.\n"
 
         lines: list[str] = []
+        rows = [self._sanitized_row(f) for f in findings]
 
         # Compute column widths
         sev_w = max(len(f.severity.value) for f in findings)
         sev_w = max(sev_w, 8)
-        src_w = max(len(f.source) for f in findings)
+        src_w = max(len(r["source"]) for r in rows)
         src_w = max(src_w, 6)
-        cat_w = max((len(f.category or "-") for f in findings), default=8)
+        cat_w = max((len(r["category"]) for r in rows), default=8)
         cat_w = max(cat_w, 8)
-        title_w = min(max(len(f.title) for f in findings), 60)
+        title_w = min(max(len(r["title"]) for r in rows), 60)
         title_w = max(title_w, 5)
 
         header = (
@@ -300,12 +377,12 @@ class TableReporter:
         lines.append(header)
         lines.append(sep)
 
-        for f in findings:
-            cat = f.category or "-"
-            title = f.title[:title_w]
-            desc = f.description[:80]
+        for f, row in zip(findings, rows):
+            cat = row["category"]
+            title = row["title"][:title_w]
+            desc = row["description"][:80]
             lines.append(
-                f"{f.severity.value:<{sev_w}}  {f.source:<{src_w}}  {cat:<{cat_w}}  "
+                f"{f.severity.value:<{sev_w}}  {row['source']:<{src_w}}  {cat:<{cat_w}}  "
                 f"{title:<{title_w}}  {desc}"
             )
 
@@ -316,6 +393,16 @@ class TableReporter:
         lines.append(f"\nTotal: {len(findings)} findings ({', '.join(summary_parts)})")
 
         return "\n".join(lines)
+
+    @staticmethod
+    def _sanitized_row(finding: Finding) -> dict[str, str]:
+        """Single-line, control-char-escaped text cells for one finding."""
+        return {
+            "source": _sanitize_text(finding.source, single_line=True),
+            "category": _sanitize_text(finding.category or "-", single_line=True),
+            "title": _sanitize_text(finding.title, single_line=True),
+            "description": _sanitize_text(finding.description, single_line=True),
+        }
 
 
 __all__ = [

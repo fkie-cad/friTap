@@ -178,6 +178,15 @@ generic `blob_offset`/`blob_len` pair:
     Bodies that are *not* recoverable from chunks (e.g. WebSocket payloads, OHTTP
     inner messages, trailing data) are still stored as blobs as before.
 
+### Optional `truncated` flag
+
+The JSON metadata carries `"truncated": true` when the flow exceeded the
+collector's per-flow retained-payload cap (`MAX_FLOW_CHUNK_BYTES`, 64 MiB, in
+`friTap/flow/collector.py`). The flow's byte total keeps counting, but chunks
+past the cap were not retained, so the stored chunks and bodies are incomplete.
+The key is additive and **written only when true**: an absent key means
+`false`, and older readers ignore it. On read it sets `Flow.truncated`.
+
 !!! danger "Findings are NOT inline in FLOW records"
     Analysis findings are deliberately **not** embedded in the FLOW payload. They
     are persisted as separate `REC_FINDING` records keyed by `flow_id`. This keeps
@@ -306,6 +315,23 @@ readable:
 - Records with a CRC mismatch or undecodable payload are **skipped** (logged at
   debug level), not fatal.
 - A truncated payload at EOF simply ends the scan.
+
+### Record payload limit
+
+Before reading a record payload, the reader checks the envelope's
+`payload_len` against two bounds, so a corrupt or crafted u32 length never
+triggers a multi-GiB allocation:
+
+- `MAX_RECORD_PAYLOAD` (1 GiB, in `friTap/flow/tap_reader.py`). The writer never
+  comes close (a flow's retained chunks are capped at 64 MiB), so a record
+  claiming more is treated as **corrupt**.
+- The bytes left in the file. A length that runs past EOF is rejected before
+  anything is read.
+
+A record that fails either check raises `BoundsError` (a `ValueError`)
+internally. During a linear scan this ends the scan at that offset, like a
+truncated payload at EOF; when a single record is loaded by offset, the
+record is treated as unreadable.
 
 !!! tip "Partial captures still open"
     Because the index is optional and the scan is sync-marker driven, a capture

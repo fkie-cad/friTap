@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
+import atexit
 import logging
 import ntpath
 import os
 import random
+import re
+import secrets
 import struct
-import subprocess
 import time
 import traceback
 import warnings
-from threading import Event, Thread
+from threading import Event, RLock, Thread
 
 import psutil
 
@@ -16,6 +18,14 @@ from friTap.constants import build_capture_bpf
 
 from .android import Android
 from .pcap_utility import is_pcapng_filename
+from .sinks.tcp_state import (
+    InvalidEndpointError,
+    ipv4_address_int,
+    max_segment_payload,
+    split_payload,
+    validate_port,
+    warn_dropped_record,
+)
 
 # scapy emits "WARNING: No libpcap provider available ! pcap won't be used" from
 # logging.getLogger("scapy.loading") at IMPORT time (scapy/config.py,
@@ -181,6 +191,117 @@ def _write_pcap_record(pcap_file, fields, data) -> None:
     pcap_file.write(header + data)
 
 
+# --- Synthetic IP/TCP/UDP records for the plaintext (-p) pcap -------------
+# Checksums are zero (valid for synthetic pcap data); TCP flags are PSH+ACK.
+
+def _pcap_record_fields(t, frame_length):
+    return (
+        ("=I", int(t)),                         # Timestamp seconds
+        ("=I", int(t * 1000000) % 1000000),     # Timestamp microseconds
+        ("=I", frame_length),                   # Number of octets saved
+        ("=i", frame_length))                   # Actual length of packet
+
+
+def _ipv4_header_fields(total_length, protocol, src_addr, dst_addr):
+    return (
+        (">B", 0x45),               # Version and Header Length
+        (">B", 0),                  # Type of Service
+        (">H", total_length),       # Total Length
+        (">H", 0),                  # Identification
+        (">H", 0x4000),             # Flags and Fragment Offset
+        (">B", 0xFF),               # Time to Live
+        (">B", protocol),           # Protocol
+        (">H", 0),                  # Header Checksum
+        (">I", src_addr),           # Source Address
+        (">I", dst_addr))           # Destination Address
+
+
+def _ipv6_header_fields(payload_length, next_header, src_addr, dst_addr):
+    return (
+        (">I", 0x60000000),                 # Version, traffic class and Flow label
+        (">H", payload_length),             # Payload length
+        (">B", next_header),                # Next Header
+        (">B", 0xFF),                       # Hop limit
+        (">16s", _ipv6_bytes(src_addr)),    # Source Address
+        (">16s", _ipv6_bytes(dst_addr)))    # Destination Address
+
+
+def _tcp_header_fields(src_port, dst_port, seq, ack):
+    return (
+        (">H", src_port),           # Source Port
+        (">H", dst_port),           # Destination Port
+        (">I", seq),                # Sequence Number
+        (">I", ack),                # Acknowledgment Number
+        (">H", 0x5018),             # Header Length and Flags
+        (">H", 0xFFFF),             # Window Size
+        (">H", 0),                  # Checksum
+        (">H", 0))                  # Urgent Pointer
+
+
+def _udp_header_fields(src_port, dst_port, udp_length):
+    return (
+        (">H", src_port),           # Source Port
+        (">H", dst_port),           # Destination Port
+        (">H", udp_length),         # UDP Length
+        (">H", 0))                  # Checksum
+
+
+def _write_ip_record(pcap_file, ss_family, t, protocol, src_addr, dst_addr,
+                     transport_fields, l4_length, segment):
+    """Write one IPv4/IPv6 record whose transport part is *l4_length* bytes."""
+    if ss_family == "AF_INET":
+        ip_length = 20 + l4_length
+        ip_fields = _ipv4_header_fields(ip_length, protocol, src_addr, dst_addr)
+    else:
+        ip_length = 40 + l4_length
+        ip_fields = _ipv6_header_fields(l4_length, protocol, src_addr, dst_addr)
+    _write_pcap_record(pcap_file, _pcap_record_fields(t, ip_length)
+                       + ip_fields + transport_fields, segment)
+
+
+def _write_tcp_segment(pcap_file, ss_family, t, src_addr, src_port,
+                       dst_addr, dst_port, seq, ack, segment):
+    tcp_fields = _tcp_header_fields(src_port, dst_port, seq, ack)
+    _write_ip_record(pcap_file, ss_family, t, 6, src_addr, dst_addr,
+                     tcp_fields, 20 + len(segment), segment)
+
+
+def _write_udp_datagram(pcap_file, ss_family, t, src_addr, src_port,
+                        dst_addr, dst_port, segment):
+    udp_fields = _udp_header_fields(src_port, dst_port, 8 + len(segment))
+    _write_ip_record(pcap_file, ss_family, t, 17, src_addr, dst_addr,
+                     udp_fields, 8 + len(segment), segment)
+
+
+def _validate_capture(path):
+    """Reject a capture whose record lengths scapy would trust blindly.
+
+    Imported here: friTap.offline's package __init__ imports pcap_to_tap,
+    which would make a module-level import circular.
+    """
+    from .offline.net.capture_validation import validate_capture_file
+    validate_capture_file(path)
+
+
+def _endpoints_packable(ss_family, src_addr, src_port, dst_addr, dst_port, logger):
+    """Whether the ports (and IPv4 addresses) fit their header fields.
+
+    Values come from agent messages; an out-of-range port or IPv4 int drops
+    the record with a once-per-kind warning instead of raising struct.error.
+    IPv6 addresses are always packable (see _ipv6_bytes).
+    """
+    try:
+        validate_port(src_port)
+        validate_port(dst_port)
+        if ss_family != "AF_INET6":
+            ipv4_address_int(src_addr)
+            ipv4_address_int(dst_addr)
+    except InvalidEndpointError as exc:
+        warn_dropped_record(exc.kind, logger)
+        return False
+    return True
+
+
 def terminate_lingering_processes(parent_pid):
     logger = logging.getLogger('friTap')
     parent = psutil.Process(parent_pid)
@@ -227,7 +348,54 @@ def _existing_keylog_files(mapping, not_before=None) -> dict:
             if path and os.path.isfile(path) and _written_this_session(path, not_before)}
 
 
+# The full capture is written to a temp file next to the requested output and
+# only renamed/converted to the final name when the capture is finalized; on
+# Android the device-side tcpdump file carries the same basename.
+TEMP_CAPTURE_PREFIX = "_"
+
+
+def temp_capture_basename(pcap_file_name) -> str:
+    """Basename of the temp capture for *pcap_file_name* (``cap.pcap`` -> ``_cap.pcap``)."""
+    head, tail = os.path.split(pcap_file_name)
+    return TEMP_CAPTURE_PREFIX + (tail or os.path.basename(head))
+
+
+def temp_capture_path(pcap_file_name) -> str:
+    """Temp capture path next to *pcap_file_name*: ``dirname/_basename``.
+
+    The prefix goes on the basename only -- prefixing the whole path turned
+    ``/tmp/cap.pcap`` into the bogus ``_/tmp/cap.pcap``.
+    """
+    head = os.path.split(pcap_file_name)[0]
+    base = temp_capture_basename(pcap_file_name)
+    return os.path.join(head, base) if head else base
+
+
+_UNSAFE_DEVICE_NAME_CHARS = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def device_capture_basename(pcap_file_name) -> str:
+    """Per-run unique name of the on-device tcpdump file for *pcap_file_name*.
+
+    ``cap.pcap`` -> ``_cap.<host pid>-<random>.pcap``: two friTap runs with the
+    same ``-p`` basename must not share (and truncate / delete) one device
+    file. Shell-unsafe characters become ``_``. Pass the result to
+    ``Android.run_tcpdump_capture`` once; the Android instance keeps it for
+    the pull and the removal.
+    """
+    root, ext = os.path.splitext(temp_capture_basename(pcap_file_name))
+    unique = f"{root}.{os.getpid()}-{secrets.token_hex(3)}{ext}"
+    return _UNSAFE_DEVICE_NAME_CHARS.sub("_", unique)
+
+
 class PCAP:
+
+    # On-device capture teardown state (see stop_device_capture). Class-level
+    # defaults so instances built without __init__ (tests) still work; __init__
+    # gives every real instance its own lock.
+    _device_capture_lock = RLock()
+    _device_capture_stopped = False
+    _device_capture_result = None
 
     def __init__(self,pcap_file_name,SSL_READ,SSL_WRITE, doFullCapture, isMobile, print_debug_infos=False,
                  owner_capture=False, owner_capture_opts=None, target_package=None, target_pid=None,
@@ -308,6 +476,7 @@ class PCAP:
         # as the authoritative source when building the manifest so the reader
         # cannot diverge from the writer's CWD-literal fallback. None until set.
         self._tls_midstream_secrets_path = None
+        self._device_capture_lock = RLock()
 
         if doFullCapture:
             if isMobile:
@@ -392,6 +561,66 @@ class PCAP:
             except Exception:
                 pass
 
+    def stop_device_capture(self):
+        """Stop the on-device tcpdump, pull its pcap and delete the device file.
+
+        Idempotent and thread-safe: SIGINT, SIGTERM, target death, script
+        errors, normal exit and the atexit safety net may all call it, but the
+        teardown runs exactly once; later callers wait for it and get the same
+        result. Returns the local temp capture path (the file the finalize step
+        reads), or ``None`` when no device capture was ever started.
+        """
+        with self._device_capture_lock:
+            if not self._device_capture_stopped:
+                self._device_capture_stopped = True
+                try:
+                    self._device_capture_result = self._teardown_device_capture()
+                except Exception as exc:  # teardown must never break the exit path
+                    self.logger.error(f"Error tearing down the device capture: {exc}")
+            return self._device_capture_result
+
+    def _teardown_device_capture(self):
+        # No need to wait for a still-starting capture thread: it launches
+        # tcpdump under _device_capture_lock (held by our caller) and skips the
+        # launch once _device_capture_stopped is set, so the process handle
+        # read here is final.
+        thread = getattr(self, "full_capture_thread", None)
+        if thread is None or getattr(self, "android_Instance", None) is None:
+            return None
+        process = getattr(thread, "android_capture_process", -1)
+        if process == -1:
+            self.logger.info("Full capture was not started on the device; nothing to pull.")
+            return None
+        android = self.android_Instance
+        android.stop_tcpdump_gracefully(process)
+        try:
+            pulled = android.pull_pcap_from_device(
+                os.path.dirname(self.pcap_file_name) or ".",
+                local_path=temp_capture_path(self.pcap_file_name))
+        except Exception as exc:
+            self.logger.error(f"Error pulling the device capture: {exc}")
+            pulled = None
+        android.remove_device_capture()
+        return temp_capture_path(self.pcap_file_name) if pulled else None
+
+    def _log_root_unavailable(self):
+        """Explain why the Android full capture cannot run (unrooted vs. unknown)."""
+        from .android import RootState
+        try:
+            state = self.android_Instance.root_state
+        except Exception:
+            state = RootState.NOT_ROOTED
+        if state is RootState.UNKNOWN:
+            self.logger.error(
+                "Full packet capture (-f) skipped: friTap could not determine whether "
+                "the device is rooted (the root check timed out and no `su` was found). "
+                "Plaintext/keylog capture is unaffected.")
+            return
+        self.logger.error(
+            "Full packet capture (-f) on Android requires a rooted device "
+            "(tcpdump must run as root). Continuing without full capture; "
+            "plaintext/keylog capture is unaffected.")
+
     def get_instance_of_FullCaptureThread(self):
 
         pcap_class = self
@@ -428,7 +657,7 @@ class PCAP:
             
             
             def _get_tmp_pcap_name(self):
-                return self._get_pcap_dir_path()+"_"+self._get_pcap_base_name()
+                return temp_capture_path(self.pcap_file_name)
                 
             
             def write_packet_to_pcap(self,packet):
@@ -644,13 +873,10 @@ class PCAP:
                 #if self.android_capture_process and self.android_capture_process.poll() in {None, -2, -15}:
                 if self.is_Mobile and pcap_class.android_Instance.is_Android:
                     if self.android_capture_process != -1 and self.android_capture_process.poll() is None:
-                        pcap_class.android_Instance.send_ctrlC_over_adb()
-                        self.android_capture_process.terminate()
-                        try:
-                            self.android_capture_process.wait(timeout=2)  # Wait for graceful termination
-                        except subprocess.TimeoutExpired:
-                            pcap_class.logger.error("Android capture thread did not terminate. Forcing kill.")
-                            self.android_capture_process.kill()
+                        # The one idempotent device teardown: stop tcpdump by
+                        # pid (terminating the local adb client alone leaves it
+                        # running), pull the pcap, delete the device file.
+                        pcap_class.stop_device_capture()
 
                 super().join(timeout)
             
@@ -666,10 +892,7 @@ class PCAP:
             def full_mobile_capture(self):
                 if pcap_class.android_Instance.is_Android:
                     if not pcap_class.android_Instance.adb_check_root():
-                        pcap_class.logger.error(
-                            "Full packet capture (-f) on Android requires a rooted device "
-                            "(tcpdump must run as root). Continuing without full capture; "
-                            "plaintext/keylog capture is unaffected.")
+                        pcap_class._log_root_unavailable()
                         return -1
 
                     if getattr(pcap_class, "owner_capture", False):
@@ -697,10 +920,20 @@ class PCAP:
 
                     if not pcap_class.android_Instance.is_tcpdump_available:
                         pcap_class.android_Instance.install_tcpdump()
-                    self.android_capture_process = pcap_class.android_Instance.run_tcpdump_capture(
-                        "_"+self._get_pcap_base_name(),
-                        include_loopback=getattr(pcap_class, "include_loopback", False),
-                        filter_infrastructure=getattr(pcap_class, "filter_infrastructure", True))
+                    # Start under the teardown lock: either tcpdump is running
+                    # before stop_device_capture() looks, or the teardown already
+                    # happened and tcpdump must not start at all (it would leak).
+                    with pcap_class._device_capture_lock:
+                        if pcap_class._device_capture_stopped:
+                            pcap_class.logger.info(
+                                "full capture: session already ending; not starting tcpdump")
+                            return -1
+                        self.android_capture_process = pcap_class.android_Instance.run_tcpdump_capture(
+                            device_capture_basename(self.pcap_file_name),
+                            include_loopback=getattr(pcap_class, "include_loopback", False),
+                            filter_infrastructure=getattr(pcap_class, "filter_infrastructure", True))
+                    # Safety net for exits that bypass friTap's own teardown.
+                    atexit.register(pcap_class.stop_device_capture)
 
                     pcap_class.logger.info("doing full capture on Android")
                     return self.android_capture_process
@@ -772,6 +1005,10 @@ class PCAP:
         if not isinstance(dst_port, int):
             dst_port = 0
 
+        if not _endpoints_packable(ss_family, src_addr, src_port,
+                                   dst_addr, dst_port, self.logger):
+            return
+
         # Record the server-side port for the manifest. On a read the server is
         # the source; on a write it is the destination.
         self._record_server_port(transport, function, src_port, dst_port)
@@ -781,7 +1018,12 @@ class PCAP:
                 ss_family, src_addr, src_port, dst_addr, dst_port, data, t)
             return
 
-        if function in self.SSL_READ:
+        if ss_family not in ("AF_INET", "AF_INET6"):
+            self.logger.warning("Packet has unknown/unsupported family!")
+            return
+
+        is_read = function in self.SSL_READ
+        if is_read:
             session_unique_key = str(src_addr) + str(src_port) + \
                 str(dst_addr) + str(dst_port)
         else:
@@ -792,93 +1034,18 @@ class PCAP:
             self.ssl_sessions[session_unique_key] = (random.randint(0, 0xFFFFFFFF),
                                                 random.randint(0, 0xFFFFFFFF))
 
+        # Payloads larger than one IP packet are split into several segments;
+        # each one advances the sequence number of its direction, so the
+        # segments are contiguous and reassemble to the original bytes.
         client_sent, server_sent = self.ssl_sessions[session_unique_key]
-
-        if function in self.SSL_READ:
-            seq, ack = (server_sent, client_sent)
-        else:
-            seq, ack = (client_sent, server_sent)
-        if ss_family == "AF_INET":
-            _write_pcap_record(self.pcap_file, (
-                # PCAP record (packet) header
-                # Timestamp seconds
-                ("=I", int(t)),
-                # Timestamp microseconds
-                ("=I", int(t * 1000000) % 1000000),
-                # Number of octets saved
-                ("=I", 40 + len(data)),
-                # Actual length of packet
-                ("=i", 40 + len(data)),
-                # IPv4 header
-                # Version and Header Length
-                (">B", 0x45),
-                # Type of Service
-                (">B", 0),
-                # Total Length
-                (">H", 40 + len(data)),
-                # Identification
-                (">H", 0),
-                # Flags and Fragment Offset
-                (">H", 0x4000),
-                # Time to Live
-                (">B", 0xFF),
-                # Protocol
-                (">B", 6),
-                # Header Checksum
-                (">H", 0),
-                (">I", src_addr),                 # Source Address
-                (">I", dst_addr),                 # Destination Address
-                # TCP header
-                (">H", src_port),                 # Source Port
-                (">H", dst_port),                 # Destination Port
-                (">I", seq),                      # Sequence Number
-                (">I", ack),                      # Acknowledgment Number
-                (">H", 0x5018),                   # Header Length and Flags
-                (">H", 0xFFFF),                   # Window Size
-                (">H", 0),                        # Checksum
-                    (">H", 0)), data)                 # Urgent Pointer
-
-        elif ss_family == "AF_INET6":
-            _write_pcap_record(self.pcap_file, (
-                # PCAP record (packet) header
-                # Timestamp seconds
-                ("=I", int(t)),
-                # Timestamp microseconds
-                ("=I", int(t * 1000000) % 1000000),
-                # Number of octets saved
-                ("=I", 60 + len(data)),
-                # Actual length of packet
-                ("=i", 60 + len(data)),
-                # IPv6 header
-                # Version, traffic class and Flow label
-                (">I", 0x60000000),
-                # Payload length
-                (">H", 20 + len(data)),
-                # Next Header
-                (">B", 6),
-                # Hop limit
-                (">B", 0xFF),
-                # Source Address
-                (">16s", _ipv6_bytes(src_addr)),
-                # Destination Address
-                (">16s", _ipv6_bytes(dst_addr)),
-                # TCP header
-                (">H", src_port),                 # Source Port
-                (">H", dst_port),                 # Destination Port
-                (">I", seq),                      # Sequence Number
-                (">I", ack),                      # Acknowledgment Number
-                (">H", 0x5018),                   # Header Length and Flags
-                (">H", 0xFFFF),                   # Window Size
-                (">H", 0),                        # Checksum
-                    (">H", 0)), data)                 # Urgent Pointer
-
-        else:
-            self.logger.warning("Packet has unknown/unsupported family!")
-
-        if function in self.SSL_READ:
-            server_sent += len(data)
-        else:
-            client_sent += len(data)
+        for segment in split_payload(data, max_segment_payload(ss_family, "tcp")):
+            seq, ack = (server_sent, client_sent) if is_read else (client_sent, server_sent)
+            _write_tcp_segment(self.pcap_file, ss_family, t, src_addr, src_port,
+                               dst_addr, dst_port, seq, ack, segment)
+            if is_read:
+                server_sent = (server_sent + len(segment)) & 0xFFFFFFFF
+            else:
+                client_sent = (client_sent + len(segment)) & 0xFFFFFFFF
         self.ssl_sessions[session_unique_key] = (client_sent, server_sent)
 
 
@@ -888,76 +1055,15 @@ class PCAP:
 
         Used for QUIC plaintext, which rides on UDP (protocol 17). Unlike the
         TCP path there is no seq/ack and no ssl_sessions bookkeeping — UDP is
-        connectionless, so each datagram stands alone.
+        connectionless, so each datagram stands alone. A payload larger than
+        one IP packet is written as several datagrams.
         """
-        if ss_family == "AF_INET":
-            _write_pcap_record(self.pcap_file, (
-                # PCAP record (packet) header
-                # Timestamp seconds
-                ("=I", int(t)),
-                # Timestamp microseconds
-                ("=I", int(t * 1000000) % 1000000),
-                # Number of octets saved
-                ("=I", 28 + len(data)),
-                # Actual length of packet
-                ("=i", 28 + len(data)),
-                # IPv4 header
-                # Version and Header Length
-                (">B", 0x45),
-                # Type of Service
-                (">B", 0),
-                # Total Length
-                (">H", 28 + len(data)),
-                # Identification
-                (">H", 0),
-                # Flags and Fragment Offset
-                (">H", 0x4000),
-                # Time to Live
-                (">B", 0xFF),
-                # Protocol
-                (">B", 17),
-                # Header Checksum
-                (">H", 0),
-                (">I", src_addr),                 # Source Address
-                (">I", dst_addr),                 # Destination Address
-                # UDP header
-                (">H", src_port),                 # Source Port
-                (">H", dst_port),                 # Destination Port
-                (">H", 8 + len(data)),            # UDP Length
-                    (">H", 0)), data)                 # Checksum
-
-        elif ss_family == "AF_INET6":
-            _write_pcap_record(self.pcap_file, (
-                # PCAP record (packet) header
-                # Timestamp seconds
-                ("=I", int(t)),
-                # Timestamp microseconds
-                ("=I", int(t * 1000000) % 1000000),
-                # Number of octets saved
-                ("=I", 48 + len(data)),
-                # Actual length of packet
-                ("=i", 48 + len(data)),
-                # IPv6 header
-                # Version, traffic class and Flow label
-                (">I", 0x60000000),
-                # Payload length
-                (">H", 8 + len(data)),
-                # Next Header
-                (">B", 17),
-                # Hop limit
-                (">B", 0xFF),
-                # Source Address
-                (">16s", _ipv6_bytes(src_addr)),
-                # Destination Address
-                (">16s", _ipv6_bytes(dst_addr)),
-                # UDP header
-                (">H", src_port),                 # Source Port
-                (">H", dst_port),                 # Destination Port
-                (">H", 8 + len(data)),            # UDP Length
-                    (">H", 0)), data)                 # Checksum
-
-        else:
+        if ss_family not in ("AF_INET", "AF_INET6"):
             self.logger.warning("Packet has unknown/unsupported family!")
+            return
+        for segment in split_payload(data, max_segment_payload(ss_family, "udp")):
+            _write_udp_datagram(self.pcap_file, ss_family, t, src_addr, src_port,
+                                dst_addr, dst_port, segment)
 
 
     # creating a filter for scapy or wiresharks display filter depending on the provided socket_trace_set which looks like
@@ -1002,9 +1108,7 @@ class PCAP:
         For ``capture.pcapng`` → ``_capture.pcapng``; for
         ``/tmp/capture.pcapng`` → ``/tmp/_capture.pcapng``.
         """
-        head, tail = os.path.split(self.pcap_file_name)
-        base = tail or os.path.basename(head)
-        return os.path.join(head, "_" + base) if head else "_" + base
+        return temp_capture_path(self.pcap_file_name)
 
     @staticmethod
     def _write_minimal_pcapng_with_keys(output_pcapng, formatted_keys, link_type=1):
@@ -1054,6 +1158,7 @@ class PCAP:
             return
 
         try:
+            _validate_capture(source_pcap)
             with PcapReader(source_pcap) as reader:
                 linktype = reader.linktype
                 with open(output_pcapng, "wb") as fh:
@@ -1069,12 +1174,14 @@ class PCAP:
                     for pkt in packets:
                         t_us = int(float(pkt.time) * 1_000_000)
                         fh.write(build_epb(bytes(pkt), t_us))
-        except (EOFError, struct.error, Scapy_Exception) as exc:
-            # Truncated/corrupt source: log the path so the user can
+        except (EOFError, struct.error, Scapy_Exception, ValueError, MemoryError) as exc:
+            # Truncated/corrupt source (ValueError covers CaptureFormatError
+            # from the length pre-check): log the path so the user can
             # inspect, but still produce a usable output with the keys.
             self.logger.error(
-                "PCAPNG finalization failed reading %s: %s — emitting keys-only output",
-                source_pcap, exc,
+                "PCAPNG finalization failed reading %s: malformed or truncated "
+                "capture (%s: %s) — emitting keys-only output",
+                source_pcap, type(exc).__name__, exc,
             )
             self._write_minimal_pcapng_with_keys(output_pcapng, formatted_keys)
 
@@ -1092,9 +1199,25 @@ class PCAP:
                 source_pcap, self.pcap_file_name, formatted_keys, bpf_filter,
             )
         elif bpf_filter:
-            wrpcap(self.pcap_file_name, sniff(offline=source_pcap, filter=bpf_filter))
+            self._write_filtered_pcap(source_pcap, bpf_filter)
         else:
             os.replace(source_pcap, self.pcap_file_name)
+
+    def _write_filtered_pcap(self, source_pcap, bpf_filter):
+        """Write the BPF-filtered packets of *source_pcap* as the final classic pcap.
+
+        A malformed temp capture is left in place (nothing is lost) and
+        reported instead of raising out of the finalize step.
+        """
+        try:
+            _validate_capture(source_pcap)
+            wrpcap(self.pcap_file_name, sniff(offline=source_pcap, filter=bpf_filter))
+        except (EOFError, struct.error, Scapy_Exception, ValueError, MemoryError) as exc:
+            self.logger.error(
+                "Full-capture finalization failed reading %s: malformed or "
+                "truncated capture (%s: %s); the unfiltered temp capture is kept",
+                source_pcap, type(exc).__name__, exc,
+            )
 
     def _record_server_port(self, transport, function, src_port, dst_port):
         """Record the distinct server (destination) port for the manifest.
@@ -1453,7 +1576,16 @@ class PCAP:
         manifest's TLS/QUIC port sets so the offline pipeline's custom-port
         zero-config (Decode-As) still works even though pure ``--full_capture``
         never exercises the plaintext-logging path that normally records ports.
+
+        A capture that never started (unrooted device, failed spawn before
+        tcpdump ran) leaves no temp file; that is reported as information and
+        nothing is written, not as an errno failure.
         """
+        if not os.path.exists(self._temp_pcap_path()):
+            self.logger.info(
+                f"No full-capture data to finalize ({self._temp_pcap_path()} does not "
+                f"exist; the capture never started), so {self.pcap_file_name} was not written.")
+            return
         try:
             self._emit_final(self._temp_pcap_path(), formatted_keys, bpf_filter=None)
         except Exception as e:

@@ -7,14 +7,24 @@ when QUIC hooks are active. It parses:
 - SETTINGS frames (0x04): connection settings
 - GOAWAY frames (0x07): graceful shutdown
 - Other frame types are skipped
+
+Input is attacker-controlled, so memory is bounded: DATA payloads are counted
+and never buffered, other buffered frames have per-type size caps, unknown
+frames are skipped by counting, and per-connection stream state is capped.
 """
 
-from friTap.constants import PROTOCOL_HTTP3
+import logging
+from collections import OrderedDict
+from typing import NamedTuple, Optional
 
-from .base import BaseParser, ParseResult, accumulate_body, apply_http2_headers
+from friTap.constants import PROTOCOL_HTTP3
+from friTap.decoder_isolation import HeaderListTooLarge, close_isolated_decoder
+
+from .base import BaseParser, ParseResult, apply_http2_headers
 from .h3_streams import (
     KIND_CONTROL,
     KIND_PUSH,
+    KIND_QPACK_DECODER,
     KIND_QPACK_ENCODER,
     KIND_REQUEST,
     SIDE_CLIENT,
@@ -28,8 +38,16 @@ from .h3_streams import (
     settings_to_headers,
 )
 from .http2 import H2_URL_CONNECTION_CONTROL
-from .qpack_context import QpackDecoderContext
+from .qpack_context import (
+    ERROR_HEADER_LIST_TOO_LARGE,
+    QpackDecoderContext,
+    check_block,
+    header_list_too_large,
+    new_qpack_decoder,
+)
 from .varint import decode_quic_varint
+
+logger = logging.getLogger(__name__)
 
 # Try to import pylsqpack for QPACK header decompression
 _qpack_available = False
@@ -55,8 +73,32 @@ _KNOWN_FRAME_TYPES = frozenset({
     _FRAME_MAX_PUSH_ID,
 })
 
-# Maximum reasonable frame length for detection (16MB)
+# Maximum reasonable frame length for detection (16MB); also the cap on
+# unknown/reserved frames, which are skipped by counting.
 _MAX_FRAME_LENGTH = 16 * 1024 * 1024
+
+# Buffering caps per frame type. DATA is counted, never buffered; types not
+# listed here are skipped by counting (up to _MAX_FRAME_LENGTH).
+MAX_HEADERS_FRAME = 256 * 1024
+MAX_CONTROL_FRAME = 4 * 1024
+_BUFFERED_FRAME_LIMITS = {
+    _FRAME_HEADERS: MAX_HEADERS_FRAME,
+    _FRAME_PUSH_PROMISE: MAX_HEADERS_FRAME,
+    _FRAME_CANCEL_PUSH: MAX_CONTROL_FRAME,
+    _FRAME_SETTINGS: MAX_CONTROL_FRAME,
+    _FRAME_GOAWAY: MAX_CONTROL_FRAME,
+    _FRAME_MAX_PUSH_ID: MAX_CONTROL_FRAME,
+}
+# A frame header is at most two 8-byte varints
+_MAX_FRAME_HEADER = 16
+
+ERROR_FRAME_TOO_LARGE = "h3-frame-too-large"
+
+# Per-connection state caps
+MAX_ACTIVE_STREAMS = 1024        # per direction
+MAX_FRAME_READERS = 2 * MAX_ACTIVE_STREAMS
+MAX_UNI_STREAMS = 1024
+MAX_FINISHED_STREAMS = 4096
 
 
 def _read_frame(buf, offset: int):
@@ -75,6 +117,154 @@ def _read_frame(buf, offset: int):
     if len(buf) < payload_end:
         return None
     return frame_type, payload_start, payload_end
+
+
+class H3FrameEvent(NamedTuple):
+    """One parsed frame (or, for DATA, one counted run of payload bytes)."""
+
+    frame_type: int
+    payload: bytes  # empty for DATA: its bytes are counted, not kept
+    size: int       # payload bytes this event accounts for
+
+
+_READ_HEADER, _READ_DATA, _READ_BUFFERED, _READ_SKIP = range(4)
+
+
+class _H3FrameReader:
+    """Incremental HTTP/3 frame reader with bounded memory.
+
+    Only a frame header and the payload of a capped frame type are ever
+    buffered. A frame over its cap sets ``error``; later input is ignored.
+    """
+
+    __slots__ = ("header", "payload", "frame_type", "remaining", "mode",
+                 "error", "reported")
+
+    def __init__(self) -> None:
+        self.header = bytearray()
+        self.payload = bytearray()
+        self.frame_type = 0
+        self.remaining = 0
+        self.mode = _READ_HEADER
+        self.error = ""
+        self.reported = False  # error already surfaced by the owner
+
+    def feed(self, data) -> list[H3FrameEvent]:
+        """Consume *data*; return the frame events it completes."""
+        events: list[H3FrameEvent] = []
+        view = memoryview(data)
+        while view and not self.error:
+            if self.mode == _READ_HEADER:
+                view = self._read_header(view, events)
+            else:
+                view = self._read_payload(view, events)
+        return events
+
+    def _read_header(self, view: memoryview, events: list) -> memoryview:
+        """Complete the frame header from *view*; return the rest of *view*."""
+        have = len(self.header)
+        trial = self.header + view[:_MAX_FRAME_HEADER - have]
+        try:
+            frame_type, type_len = decode_quic_varint(trial, 0)
+            length, len_len = decode_quic_varint(trial, type_len)
+        except (ValueError, IndexError):
+            self.header = trial  # header incomplete: all of *view* was used
+            return view[len(view):]
+        self.header.clear()
+        self._start_frame(frame_type, length, events)
+        return view[type_len + len_len - have:]
+
+    def _start_frame(self, frame_type: int, length: int, events: list) -> None:
+        """Pick how the payload of a new frame is consumed."""
+        self.frame_type, self.remaining = frame_type, length
+        limit = _BUFFERED_FRAME_LIMITS.get(frame_type, _MAX_FRAME_LENGTH)
+        if frame_type != _FRAME_DATA and length > limit:
+            self.error = ERROR_FRAME_TOO_LARGE
+            return
+        if frame_type == _FRAME_DATA:
+            self.mode = _READ_DATA
+        elif frame_type in _BUFFERED_FRAME_LIMITS:
+            self.mode = _READ_BUFFERED
+        else:
+            self.mode = _READ_SKIP
+        if length == 0:
+            if self.mode == _READ_DATA:
+                events.append(H3FrameEvent(_FRAME_DATA, b"", 0))
+            self._end_frame(events)
+
+    def _read_payload(self, view: memoryview, events: list) -> memoryview:
+        """Count, buffer or skip payload bytes of the current frame."""
+        used = min(self.remaining, len(view))
+        self.remaining -= used
+        if self.mode == _READ_DATA:
+            events.append(H3FrameEvent(_FRAME_DATA, b"", used))
+        elif self.mode == _READ_BUFFERED:
+            self.payload += view[:used]
+        if self.remaining == 0:
+            self._end_frame(events)
+        return view[used:]
+
+    def _end_frame(self, events: list) -> None:
+        """Emit a finished buffered frame; then await the next header."""
+        if self.mode == _READ_BUFFERED:
+            payload = bytes(self.payload)
+            events.append(H3FrameEvent(self.frame_type, payload, len(payload)))
+            self.payload = bytearray()
+        self.mode = _READ_HEADER
+
+
+class _FinishedStreams:
+    """Bounded record of retired stream ids.
+
+    Keeps the most recent ids exactly; when one is evicted, every id of the
+    same stream type (low two id bits) up to it counts as finished as well.
+    """
+
+    def __init__(self, cap: int = MAX_FINISHED_STREAMS) -> None:
+        self._recent: OrderedDict[int, None] = OrderedDict()
+        self._floor: dict[int, int] = {}
+        self._cap = cap
+
+    def add(self, stream_id: int) -> None:
+        self._recent[stream_id] = None
+        self._recent.move_to_end(stream_id)
+        while len(self._recent) > self._cap:
+            old, _ = self._recent.popitem(last=False)
+            kind = old & 0x3
+            self._floor[kind] = max(self._floor.get(kind, -1), old)
+
+    def __contains__(self, stream_id: int) -> bool:
+        return (stream_id in self._recent
+                or stream_id <= self._floor.get(stream_id & 0x3, -1))
+
+    def __len__(self) -> int:
+        return len(self._recent)
+
+
+def _is_ascii_digits(value: str) -> bool:
+    """True for a non-empty run of ASCII 0-9 (no sign, space or '_')."""
+    return value.isascii() and value.isdigit()
+
+
+def parse_content_length(value: Optional[str]) -> Optional[int]:
+    """Strictly parse a content-length value; None when absent/invalid."""
+    if value is None:
+        return None
+    value = value.strip()
+    return int(value) if _is_ascii_digits(value) else None
+
+
+def is_valid_status(value: str) -> bool:
+    """True for an HTTP status of exactly three ASCII digits."""
+    return len(value) == 3 and _is_ascii_digits(value)
+
+
+def apply_h3_headers(stream, headers: list) -> None:
+    """apply_http2_headers plus strict ``:status`` validation."""
+    apply_http2_headers(stream, headers)
+    status = stream.headers.get(":status")
+    if status is not None and not is_valid_status(status):
+        stream.status_code = 0
 
 
 def iter_h3_data_frames(buf):
@@ -100,14 +290,14 @@ _DEFAULT_CLIENT_DIRECTION = "write"
 # Responses that never carry a body (RFC 9110 6.4.1)
 _BODYLESS_STATUSES = frozenset({204, 304})
 
-# Cap on buffered QPACK encoder-stream bytes per side (consumed by Phase Q5)
-_MAX_ENCODER_BUFFER = 1024 * 1024
-
 # SETTINGS identifiers that size a QPACK dynamic table (RFC 9204 5)
 _SETTINGS_QPACK_MAX_TABLE_CAPACITY = 0x01
 _SETTINGS_QPACK_BLOCKED_STREAMS = 0x07
 
 _OTHER_SIDE = {SIDE_CLIENT: SIDE_SERVER, SIDE_SERVER: SIDE_CLIENT}
+
+# Unidirectional streams a connection cannot lose (evicted last)
+_CRITICAL_UNI_KINDS = frozenset({KIND_CONTROL, KIND_QPACK_ENCODER, KIND_QPACK_DECODER})
 
 
 class _H3StreamState:
@@ -115,7 +305,7 @@ class _H3StreamState:
     __slots__ = (
         "stream_id", "headers", "body_size", "is_request",
         "method", "url", "host", "status_code", "status_text",
-        "content_encoding", "content_type", "headers_received",
+        "content_encoding", "content_type", "headers_received", "error",
     )
 
     def __init__(self, stream_id: int = 0) -> None:
@@ -131,6 +321,7 @@ class _H3StreamState:
         self.content_encoding: str = ""
         self.content_type: str = ""
         self.headers_received: bool = False
+        self.error: str = ""
 
 
 class Http3Parser(BaseParser):
@@ -152,25 +343,38 @@ class Http3Parser(BaseParser):
     EXCLUSIVE_TRANSPORTS = TRANSPORTS
 
     def __init__(self) -> None:
-        self._buffers: dict[str, bytearray] = {}  # per-direction buffers
-        self._active_streams: dict[str, dict[int, _H3StreamState]] = {}  # direction -> {stream_id: state}
+        # Frame readers keyed by direction (non-muxed) or "direction:stream_id"
+        # (LRU, capped at MAX_FRAME_READERS)
+        self._buffers: OrderedDict[str, _H3FrameReader] = OrderedDict()
+        # direction -> {stream_id: state} (LRU, capped at MAX_ACTIVE_STREAMS)
+        self._active_streams: dict[str, OrderedDict[int, _H3StreamState]] = {}
         self._current_stream: dict[str, int] = {}  # direction -> current active stream_id (for non-muxed mode)
         self._stream_counter: int = 0
         # Muxed (real QUIC stream id) mode state
-        self._uni_streams: dict[int, UniStreamState] = {}
+        self._uni_streams: OrderedDict[int, UniStreamState] = OrderedDict()
+        self._uni_readers: dict[int, _H3FrameReader] = {}  # control streams
         self._client_direction: str | None = None
         self._client_direction_certain: bool = False
         self._peer_settings: dict[str, dict[int, int]] = {}
+        # Kept for compatibility; encoder bytes are no longer copied here.
         self._encoder_bytes: dict[str, bytearray] = {}
-        self._finished_streams: set[int] = set()
+        self._finished_streams = _FinishedStreams()
+        # Results of streams evicted by a state cap, returned by the next
+        # feed()/flush()
+        self._evicted_results: list[ParseResult] = []
         # Muxed mode QPACK: one decoding context per ENCODER side, and the
         # direction of every header block waiting in a context.
         self._qpack_ctx = self._new_qpack_contexts()
         self._waiting_blocks: dict[tuple[str, int], str] = {}
-        if _qpack_available:
-            self._qpack_decoder = pylsqpack.Decoder(4096, 16)
-        else:
-            self._qpack_decoder = None
+        # Non-muxed mode never sees encoder streams: static table only, so
+        # dynamic references fail fast instead of blocking forever.
+        self._qpack_decoder = self._new_static_decoder()
+
+    @staticmethod
+    def _new_static_decoder():
+        """A static-table-only QPACK decoder, or None without pylsqpack
+        (worker-side when decoder isolation is on)."""
+        return new_qpack_decoder(0, 0) if _qpack_available else None
 
     @classmethod
     def _new_qpack_contexts(cls) -> dict[str, QpackDecoderContext] | None:
@@ -218,24 +422,44 @@ class Http3Parser(BaseParser):
         non-muxed behavior (a single current stream per direction).
         """
         if stream_id is not None:
-            return self._feed_muxed(data, direction, stream_id)
-        buf_key = direction if stream_id is None else f"{direction}:{stream_id}"
-        if buf_key not in self._buffers:
-            self._buffers[buf_key] = bytearray()
-        buf = self._buffers[buf_key]
-        buf.extend(data)
+            results = self._feed_muxed(data, direction, stream_id)
+        else:
+            results = self._feed_plain(data, direction)
+        return self._take_evicted_results() + results
+
+    def _feed_plain(self, data: bytes, direction: str) -> list[ParseResult]:
+        """Non-muxed mode: one frame sequence per direction."""
+        reader = self._reader_for(direction)
         results: list[ParseResult] = []
-
         # Complete frames only; a trailing partial frame waits for more data.
-        for frame_type, payload in self._drain_frames(buf):
-            self._process_frame(frame_type, payload, direction, results, stream_id)
+        for event in reader.feed(data):
+            self._process_frame(event.frame_type, event.payload, direction,
+                                results, None, size=event.size)
+        if reader.error and not reader.reported:
+            reader.reported = True
+            results.extend(self._plain_stream_error(direction, reader.error))
+        return results
 
+    def _plain_stream_error(self, direction: str, error: str) -> list[ParseResult]:
+        """Report the current non-muxed message of *direction* as broken."""
+        logger.debug("HTTP/3 %s frame stream dropped: %s", direction, error)
+        sid = self._current_stream.get(direction)
+        stream = self._active_streams.get(direction, {}).pop(sid, None)
+        self._current_stream.pop(direction, None)
+        if stream is None or not (stream.headers_received or stream.body_size):
+            return []
+        stream.error = error
+        return [self._build_result(stream, is_complete=False)]
+
+    def _take_evicted_results(self) -> list[ParseResult]:
+        """Hand out (and forget) results of streams evicted by a cap."""
+        results, self._evicted_results = self._evicted_results, []
         return results
 
     def flush(self) -> list[ParseResult]:
         """Return partial streams as incomplete results."""
         self._apply_blocked_fallbacks()
-        results: list[ParseResult] = []
+        results: list[ParseResult] = self._take_evicted_results()
         for streams in self._active_streams.values():
             for stream in streams.values():
                 if stream.headers_received or stream.body_size:
@@ -244,7 +468,20 @@ class Http3Parser(BaseParser):
         self._active_streams.clear()
         self._current_stream.clear()
         self._buffers.clear()
+        self._release_isolated_qpack()
         return results
+
+    def _release_isolated_qpack(self) -> None:
+        """Free worker-side QPACK decoders (decoder isolation) at flush.
+
+        The stateless static decoder is replaced by a fresh lazy one; the
+        muxed contexts poison themselves (their tables cannot be rebuilt).
+        In-process decoders are untouched.
+        """
+        if close_isolated_decoder(self._qpack_decoder):
+            self._qpack_decoder = self._new_static_decoder()
+        for ctx in (self._qpack_ctx or {}).values():
+            ctx.release()
 
     # ------------------------------------------------------------------
     # Muxed mode: real QUIC stream ids (RFC 9114 stream model)
@@ -294,25 +531,14 @@ class Http3Parser(BaseParser):
         """``"client"`` or ``"server"`` for a direction label."""
         return SIDE_CLIENT if direction == self.client_direction else SIDE_SERVER
 
-    @staticmethod
-    def _drain_frames(buf: bytearray):
-        """Yield ``(frame_type, payload)`` for every complete frame in *buf*,
-        removing it; a trailing partial frame stays buffered."""
-        while buf:
-            frame = _read_frame(buf, 0)
-            if frame is None:
-                return
-            frame_type, payload_start, total = frame
-            payload = bytes(buf[payload_start:total])
-            del buf[:total]
-            yield frame_type, payload
-
     # -- unidirectional streams ------------------------------------------
 
     def _feed_uni(self, stream_id: int, data: bytes,
                   direction: str) -> list[ParseResult]:
         """Consume a unidirectional stream chunk according to its type."""
-        state = self._uni_streams.setdefault(stream_id, UniStreamState())
+        if stream_id in self._finished_streams and stream_id not in self._uni_streams:
+            return []  # evicted stream: its bytes can no longer be framed
+        state = self._uni_state(stream_id)
         state.buf.extend(data)
         if not self._read_uni_prefix(state):
             return []
@@ -327,6 +553,30 @@ class Http3Parser(BaseParser):
             return self._feed_push(stream_id, state, direction)
         state.buf.clear()  # decoder/grease streams are ignored
         return []
+
+    def _uni_state(self, stream_id: int) -> UniStreamState:
+        """Get (LRU-touch) or create the state of a unidirectional stream."""
+        state = self._uni_streams.get(stream_id)
+        if state is not None:
+            self._uni_streams.move_to_end(stream_id)
+            return state
+        if len(self._uni_streams) >= MAX_UNI_STREAMS:
+            self._evict_uni_stream()
+        state = self._uni_streams[stream_id] = UniStreamState()
+        return state
+
+    def _evict_uni_stream(self) -> None:
+        """Forget the least recently used non-critical unidirectional stream
+        (control and QPACK streams are kept while anything else remains)."""
+        victim = next((sid for sid, state in self._uni_streams.items()
+                       if kind_for_uni_type(state.stype) not in _CRITICAL_UNI_KINDS),
+                      next(iter(self._uni_streams)))
+        state = self._uni_streams.pop(victim)
+        self._uni_readers.pop(victim, None)
+        if kind_for_uni_type(state.stype) == KIND_PUSH:
+            self._evict_stream(victim)
+        else:
+            self._finished_streams.add(victim)
 
     @staticmethod
     def _read_uni_prefix(state: UniStreamState) -> bool:
@@ -350,9 +600,16 @@ class Http3Parser(BaseParser):
         """Parse control-stream frames; the first SETTINGS yields one result.
 
         GOAWAY, MAX_PUSH_ID, CANCEL_PUSH and unknown frames are consumed.
+        An oversized frame stops the parsing of the control stream.
         """
+        reader = self._uni_readers.setdefault(stream_id, _H3FrameReader())
+        events = reader.feed(bytes(state.buf))
+        state.buf.clear()
+        if reader.error and not reader.reported:
+            reader.reported = True
+            logger.debug("HTTP/3 control stream %s dropped: %s", stream_id, reader.error)
         results: list[ParseResult] = []
-        for frame_type, payload in self._drain_frames(state.buf):
+        for frame_type, payload, _size in events:
             if frame_type != _FRAME_SETTINGS or state.settings_seen:
                 continue
             state.settings_seen = True
@@ -368,8 +625,8 @@ class Http3Parser(BaseParser):
 
         Returns results of request/response streams the inserts unblocked.
         """
-        buffered = self._encoder_bytes.setdefault(side, bytearray())
-        accumulate_body(buffered, data, _MAX_ENCODER_BUFFER)
+        # The bytes are no longer copied: the QPACK context consumes them.
+        self._encoder_bytes.setdefault(side, bytearray())
         if self._qpack_ctx is None:
             return []
         return self._resume_blocks(side, self._qpack_ctx[side].feed_encoder(data))
@@ -395,9 +652,11 @@ class Http3Parser(BaseParser):
         for stream_id in stream_ids:
             direction = self._waiting_blocks.pop((side, stream_id), None)
             headers = self._qpack_ctx[side].resume(stream_id)
-            if direction is None or stream_id in self._finished_streams:
+            error = self._qpack_ctx[side].take_error(stream_id)
+            if direction is None or self._is_finished(stream_id):
                 continue
             stream = self._get_stream(direction, stream_id)
+            stream.error = error or stream.error
             self._apply_header_pairs(stream, self._to_str_pairs(headers), direction)
             results.append(self._message_result(stream_id, direction))
             if side == SIDE_CLIENT:
@@ -411,7 +670,7 @@ class Http3Parser(BaseParser):
         for side, ctx in self._qpack_ctx.items():
             for stream_id, block in ctx.drain_fallback().items():
                 direction = self._waiting_blocks.pop((side, stream_id), None)
-                if direction is None or stream_id in self._finished_streams:
+                if direction is None or self._is_finished(stream_id):
                     continue
                 stream = self._get_stream(direction, stream_id)
                 self._apply_header_pairs(stream, self._scan_raw_headers(block), direction)
@@ -444,21 +703,70 @@ class Http3Parser(BaseParser):
                    direction: str) -> list[ParseResult]:
         """Parse a request-stream chunk -> at most one result for the stream."""
         buf_key = f"{direction}:{stream_id}"
-        if stream_id in self._finished_streams:
+        if self._is_finished(stream_id):
             self._buffers.pop(buf_key, None)
             return []  # late bytes of a completed exchange
-        buf = self._buffers.setdefault(buf_key, bytearray())
-        buf.extend(data)
+        reader = self._reader_for(buf_key)
         dirty = False
-        for frame_type, payload in self._drain_frames(buf):
-            dirty |= self._apply_message_frame(stream_id, direction, frame_type, payload)
+        for event in reader.feed(data):
+            dirty |= self._apply_message_frame(stream_id, direction, event.frame_type,
+                                               event.payload, event.size)
+        if reader.error:
+            return self._drop_stream(stream_id, reader.error)
         if not dirty:
             return []
         return [self._message_result(stream_id, direction)]
 
+    def _reader_for(self, buf_key: str) -> _H3FrameReader:
+        """Get (LRU-touch) or create the frame reader for *buf_key*."""
+        reader = self._buffers.get(buf_key)
+        if reader is not None:
+            self._buffers.move_to_end(buf_key)
+            return reader
+        if len(self._buffers) >= MAX_FRAME_READERS:
+            self._evict_reader()
+        reader = self._buffers[buf_key] = _H3FrameReader()
+        return reader
+
+    def _evict_reader(self) -> None:
+        """Drop the least recently used reader and retire its stream."""
+        old_key = next(iter(self._buffers))
+        self._buffers.pop(old_key)
+        _direction, _, sid = old_key.partition(":")
+        if sid:
+            self._evict_stream(int(sid))
+
+    def _evict_stream(self, stream_id: int) -> None:
+        """Retire a stream pushed out by a state cap; queue its partial results."""
+        logger.debug("HTTP/3 stream %s evicted (state cap)", stream_id)
+        self._evicted_results.extend(self._incomplete_results(stream_id))
+        self._finish_stream(stream_id)
+
+    def _drop_stream(self, stream_id: int, error: str) -> list[ParseResult]:
+        """Retire a stream that violated a frame limit -> its partial results."""
+        logger.debug("HTTP/3 stream %s dropped: %s", stream_id, error)
+        results = self._incomplete_results(stream_id, error)
+        self._finish_stream(stream_id)
+        return results
+
+    def _incomplete_results(self, stream_id: int, error: str = "") -> list[ParseResult]:
+        """Incomplete results for every direction's state of *stream_id*."""
+        results: list[ParseResult] = []
+        for streams in self._active_streams.values():
+            stream = streams.get(stream_id)
+            if stream is None or not (stream.headers_received or stream.body_size):
+                continue
+            stream.error = error or stream.error
+            results.append(self._build_result(stream, is_complete=False))
+        return results
+
     def _apply_message_frame(self, stream_id: int, direction: str,
-                             frame_type: int, payload: bytes) -> bool:
-        """Apply a HEADERS/DATA frame; True when the message state changed."""
+                             frame_type: int, payload: bytes,
+                             size: Optional[int] = None) -> bool:
+        """Apply a HEADERS/DATA frame; True when the message state changed.
+
+        *size* is the DATA byte count (the payload itself is not kept).
+        """
         if frame_type == _FRAME_HEADERS:
             stream = self._get_stream(direction, stream_id)
             self._start_header_block(stream)
@@ -469,7 +777,7 @@ class Http3Parser(BaseParser):
             return self._decode_muxed_block(stream, payload, direction)
         if frame_type == _FRAME_DATA:
             stream = self._get_stream(direction, stream_id)
-            stream.body_size += len(payload)
+            stream.body_size += len(payload) if size is None else size
             return stream.headers_received
         return False  # PUSH_PROMISE, reserved and unknown frames
 
@@ -482,6 +790,7 @@ class Http3Parser(BaseParser):
         """
         side = self._side_of(direction)
         decoded = self._qpack_ctx[side].decode(stream.stream_id, payload)
+        stream.error = self._qpack_ctx[side].take_error(stream.stream_id) or stream.error
         if decoded is None:
             self._waiting_blocks[(side, stream.stream_id)] = direction
             return False
@@ -491,7 +800,7 @@ class Http3Parser(BaseParser):
     def _apply_header_pairs(self, stream: _H3StreamState, headers: list,
                             direction: str) -> None:
         """Apply decoded (name, value) pairs; infer the role if no pseudo-header."""
-        apply_http2_headers(stream, headers)
+        apply_h3_headers(stream, headers)
         if not stream.method and not stream.status_code:
             stream.is_request = (direction == self.client_direction)
         stream.headers_received = True
@@ -563,11 +872,18 @@ class Http3Parser(BaseParser):
     @staticmethod
     def _content_length(stream: _H3StreamState) -> int | None:
         """The message's content-length header, or None when absent/invalid."""
-        value = stream.headers.get("content-length")
-        try:
-            return int(value) if value is not None else None
-        except ValueError:
-            return None
+        return parse_content_length(stream.headers.get("content-length"))
+
+    def _is_finished(self, stream_id: int) -> bool:
+        """True for a retired exchange. A stream that still has live state
+        is never retired by the finished-set's bounded id floor."""
+        return stream_id in self._finished_streams and not self._has_state(stream_id)
+
+    def _has_state(self, stream_id: int) -> bool:
+        """True while *stream_id* has a frame reader or message state."""
+        if any(f"{d}:{stream_id}" in self._buffers for d in _OPPOSITE_DIRECTION):
+            return True
+        return any(stream_id in streams for streams in self._active_streams.values())
 
     def _finish_stream(self, stream_id: int) -> None:
         """Forget a completed exchange; later bytes of it are ignored."""
@@ -583,13 +899,14 @@ class Http3Parser(BaseParser):
         Uses stream_id if provided (future QUIC hooks). Otherwise uses
         the current active stream for the direction (non-muxed mode).
         """
-        if direction not in self._active_streams:
-            self._active_streams[direction] = {}
-        streams = self._active_streams[direction]
+        streams = self._streams_for(direction)
 
         if stream_id is not None:
-            if stream_id not in streams:
-                streams[stream_id] = _H3StreamState(stream_id)
+            if stream_id in streams:
+                streams.move_to_end(stream_id)
+                return streams[stream_id]
+            self._make_room(streams)
+            streams[stream_id] = _H3StreamState(stream_id)
             return streams[stream_id]
 
         # Non-muxed mode: use current active stream for this direction
@@ -598,16 +915,30 @@ class Http3Parser(BaseParser):
             return streams[sid]
 
         # Create new stream
+        self._make_room(streams)
         self._stream_counter += 1
         sid = self._stream_counter
         self._current_stream[direction] = sid
         streams[sid] = _H3StreamState(sid)
         return streams[sid]
 
+    def _streams_for(self, direction: str) -> OrderedDict:
+        """The (LRU-ordered) stream states of *direction*."""
+        streams = self._active_streams.get(direction)
+        if streams is None:
+            streams = self._active_streams[direction] = OrderedDict()
+        return streams
+
+    def _make_room(self, streams: OrderedDict) -> None:
+        """Evict the least recently used stream when *streams* is full."""
+        if len(streams) >= MAX_ACTIVE_STREAMS:
+            self._evict_stream(next(iter(streams)))
+
     def _process_frame(self, frame_type: int, payload: bytes,
                        direction: str, results: list[ParseResult],
-                       stream_id: int | None = None) -> None:
-        """Process a single HTTP/3 frame."""
+                       stream_id: int | None = None,
+                       size: Optional[int] = None) -> None:
+        """Process a single HTTP/3 frame (*size*: DATA byte count)."""
         if frame_type == _FRAME_HEADERS:
             stream = self._get_stream(direction, stream_id)
             # Non-muxed mode: a second HEADERS frame means a new message —
@@ -624,9 +955,7 @@ class Http3Parser(BaseParser):
                 sid = self._stream_counter
                 self._current_stream[direction] = sid
                 stream = _H3StreamState(sid)
-                if direction not in self._active_streams:
-                    self._active_streams[direction] = {}
-                self._active_streams[direction][sid] = stream
+                self._streams_for(direction)[sid] = stream
 
             self._decode_headers(stream, payload, direction)
             stream.headers_received = True
@@ -637,7 +966,7 @@ class Http3Parser(BaseParser):
 
         elif frame_type == _FRAME_DATA:
             stream = self._get_stream(direction, stream_id)
-            stream.body_size += len(payload)
+            stream.body_size += len(payload) if size is None else size
 
         elif frame_type == _FRAME_GOAWAY:
             # Flush all active streams
@@ -656,24 +985,43 @@ class Http3Parser(BaseParser):
         """Decode QPACK-compressed headers."""
         headers = []
         if self._qpack_decoder is not None:
-            try:
-                # pylsqpack returns (decoder_stream_bytes, headers)
-                _control, decoded = self._qpack_decoder.feed_header(stream.stream_id, payload)
-                headers = self._to_str_pairs(decoded)
-            except pylsqpack.StreamBlocked:
-                # Needs dynamic-table inserts we have not seen: raw-scan for now
-                headers = self._scan_raw_headers(payload)
-            except Exception:
-                # QPACK decoding failed, try raw scanning
-                headers = self._scan_raw_headers(payload)
+            headers = self._decode_static_block(stream, payload)
         else:
             headers = self._scan_raw_headers(payload)
 
-        apply_http2_headers(stream, headers)
+        apply_h3_headers(stream, headers)
 
         # If no pseudo-headers found, infer from direction
         if not stream.method and not stream.status_code:
             stream.is_request = (direction == client_direction)
+
+    def _decode_static_block(self, stream: _H3StreamState,
+                             payload: bytes) -> list[tuple[str, str]]:
+        """Non-muxed decode (static table only); raw-scan when it fails or
+        exceeds the header-bomb bounds (recorded in ``stream.error``)."""
+        rejection = check_block(payload, 0)
+        if rejection:
+            stream.error = rejection
+            return self._scan_raw_headers(payload)
+        try:
+            # pylsqpack returns (decoder_stream_bytes, headers)
+            _control, decoded = self._qpack_decoder.feed_header(stream.stream_id, payload)
+        except pylsqpack.StreamBlocked:
+            # Needs dynamic-table inserts we have not seen: raw-scan for now
+            return self._scan_raw_headers(payload)
+        except HeaderListTooLarge:
+            # Isolated decoder withheld an over-cap list (same as the check below)
+            stream.error = ERROR_HEADER_LIST_TOO_LARGE
+            return self._scan_raw_headers(payload)
+        except Exception:
+            # QPACK decoding failed (e.g. a dynamic reference): raw-scan, and
+            # start a clean decoder since a failed block may leave state behind
+            self._qpack_decoder = self._new_static_decoder()
+            return self._scan_raw_headers(payload)
+        if header_list_too_large(decoded):
+            stream.error = ERROR_HEADER_LIST_TOO_LARGE
+            return self._scan_raw_headers(payload)
+        return self._to_str_pairs(decoded)
 
     @staticmethod
     def _to_str_pairs(decoded) -> list[tuple[str, str]]:
@@ -726,6 +1074,7 @@ class Http3Parser(BaseParser):
             content_encoding=stream.content_encoding,
             content_type=stream.content_type,
             stream_id=stream.stream_id,
+            error=stream.error,
         )
 
 
@@ -745,7 +1094,7 @@ def build_h3_result_from_headers(
     """
     stream = _H3StreamState(stream_id)
     stream.body_size = body_size
-    apply_http2_headers(stream, [(n, v) for n, v in headers])
+    apply_h3_headers(stream, [(n, v) for n, v in headers])
     if not stream.method and not stream.status_code:
         # No pseudo-headers present — infer direction ("write" == request).
         stream.is_request = (direction == "write")

@@ -27,6 +27,7 @@ from friTap.constants import (
 from friTap.filter.content_index import FlowContentIndex
 from friTap.filter.layer_fields import filter_attrs_key
 from friTap.tui.themes import c
+from friTap.tui.widgets.wire_text import safe_wire_text
 
 
 def layer_signature(flow: object) -> tuple:
@@ -361,6 +362,7 @@ if TEXTUAL_AVAILABLE:
         def _format_method(flow) -> str:
             """Format method column, appending protocol badge if trailing data exists."""
             method, badge = FlowListWidget._method_parts(flow)
+            method = safe_wire_text(method)  # wire-derived; DataTable cells parse markup
             if badge:
                 return f"{method} [{c('warning')}]{badge}[/]"
             return method
@@ -381,7 +383,7 @@ if TEXTUAL_AVAILABLE:
                 ts,
                 self._format_proto(flow),
                 self._format_method(flow),
-                flow.display_connection or "-",
+                safe_wire_text(flow.display_connection or "-"),
                 self._format_status(flow),
                 flow.display_size,
                 self._format_duration(flow),
@@ -415,7 +417,7 @@ if TEXTUAL_AVAILABLE:
                 new_vals = [
                     self._format_proto(flow),
                     self._format_method(flow),
-                    flow.display_connection or "-",
+                    safe_wire_text(flow.display_connection or "-"),
                     self._format_status(flow),
                     flow.display_size,
                     self._format_duration(flow),
@@ -520,6 +522,7 @@ if TEXTUAL_AVAILABLE:
             status = flow.display_status
             if not status:
                 return "..."
+            status = safe_wire_text(status)  # carries the server's reason phrase
             code = 0
             try:
                 code = int(status.split()[0])

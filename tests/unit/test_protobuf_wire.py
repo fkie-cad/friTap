@@ -45,11 +45,18 @@ def test_decode_raw_raises_on_malformed(data, message):
 
 
 def test_decode_raw_depth_limit_propagates():
+    """Hitting the depth limit keeps the deepest field as raw bytes (WP7).
+
+    Formerly the limit raised and aborted the whole decode; attacker-controlled
+    deep nesting must now degrade gracefully instead.
+    """
     nested = b"\x08\x01"
     for _ in range(5):
         nested = b"\x0a" + bytes([len(nested)]) + nested
-    with pytest.raises(ValueError, match="nesting depth"):
-        decode_raw(nested, max_depth=3)
+    msg = decode_raw(nested, max_depth=3)
+    deepest = msg.fields[0].sub_message.fields[0].sub_message.fields[0]
+    assert deepest.sub_message is None
+    assert deepest.length_delimited
 
 
 def test_decode_raw_skips_groups():

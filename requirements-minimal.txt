@@ -15,4 +15,4 @@ h11
 hpack
 pylsqpack
 zstandard>=0.19
-brotli>=1.0
+brotli>=1.2.1

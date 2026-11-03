@@ -33,6 +33,11 @@ AUTH_KEY_ID_LEN = 8
 MSG_KEY_LEN = 16
 OUTER_HEADER_LEN = AUTH_KEY_ID_LEN + MSG_KEY_LEN  # 24: auth_key_id(8) + msg_key(16)
 
+#: Largest outer record we decrypt. MTProto payloads are far smaller; the
+#: transport length header is peer-controlled and could otherwise make us
+#: AES-decrypt (and hash) gigabytes for a single forged frame.
+MAX_RECORD_LEN = 16 * 1024 * 1024
+
 # Envelope field offsets inside the decrypted plaintext.
 _ENVELOPE_PREFIX = 32  # salt(8)+session_id(8)+msg_id(8)+seq_no(4)+msg_len(4)
 _MIN_PADDING = 12
@@ -44,6 +49,7 @@ _MIN_PADDING = 12
 
 _ECB_ENCRYPT = None  # type: ignore[var-annotated]
 _ECB_DECRYPT = None  # type: ignore[var-annotated]
+_ECB_CIPHER = None  # type: ignore[var-annotated]  # key -> reusable AES-ECB Cipher
 _TGCRYPTO = None  # type: ignore[var-annotated]
 _BACKEND_RESOLVED = False
 
@@ -57,7 +63,7 @@ def _resolve_backend() -> None:
     it cannot do the transport CTR and therefore cannot substitute for
     ``cryptography``.
     """
-    global _ECB_ENCRYPT, _ECB_DECRYPT, _TGCRYPTO, _BACKEND_RESOLVED
+    global _ECB_ENCRYPT, _ECB_DECRYPT, _ECB_CIPHER, _TGCRYPTO, _BACKEND_RESOLVED
     if _BACKEND_RESOLVED:
         return
 
@@ -83,11 +89,16 @@ def _resolve_backend() -> None:
             dec = Cipher(algorithms.AES(key), modes.ECB()).decryptor()
             return dec.update(data) + dec.finalize()
 
+        def _ecb_cipher(key: bytes):
+            return Cipher(algorithms.AES(key), modes.ECB())
+
         _ECB_ENCRYPT = _ecb_encrypt
         _ECB_DECRYPT = _ecb_decrypt
+        _ECB_CIPHER = _ecb_cipher
     except ImportError:
         _ECB_ENCRYPT = None
         _ECB_DECRYPT = None
+        _ECB_CIPHER = None
 
     _BACKEND_RESOLVED = True
 
@@ -123,26 +134,54 @@ def _xor(a: bytes, b: bytes) -> bytes:
     return bytes(x ^ y for x, y in zip(a, b))
 
 
-def aes_ige_decrypt(key: bytes, iv: bytes, data: bytes) -> bytes:
-    """AES-256 IGE decrypt. ``iv`` is 32 bytes (iv1||iv2); ``data`` len % 16 == 0."""
+def _check_ige_args(iv: bytes, data: bytes) -> None:
     if len(iv) != 32:
         raise MtprotoCryptoError("IGE IV must be 32 bytes")
     if len(data) % AES_BLOCK != 0:
         raise MtprotoCryptoError("IGE data length must be a multiple of 16")
+
+
+def _ecb_block_fn(key: bytes, encrypt: bool):
+    """One reusable single-block AES-ECB function for a whole IGE run.
+
+    A single cipher context per record instead of one per 16-byte block; falls
+    back to the per-call ECB helpers when only those are available.
+    """
+    if _ECB_CIPHER is not None:
+        cipher = _ECB_CIPHER(key)
+        return (cipher.encryptor() if encrypt else cipher.decryptor()).update
+    ecb = _ECB_ENCRYPT if encrypt else _ECB_DECRYPT
+    return lambda block: ecb(key, block)  # type: ignore[misc]
+
+
+def _ige_blocks(key: bytes, iv: bytes, data: bytes, encrypt: bool) -> bytes:
+    """Pure-Python AES-256-IGE over *data* (int-wide XOR per 16-byte block).
+
+    decrypt: p = D(c ^ iv2) ^ iv1;  encrypt: c = E(p ^ iv1) ^ iv2;
+    then (iv1, iv2) = (c, p) for the next block.
+    """
+    block_fn = _ecb_block_fn(key, encrypt)
+    to_int, size = int.from_bytes, AES_BLOCK
+    iv1, iv2 = to_int(iv[:size], "big"), to_int(iv[size:], "big")
+    pre, post = (iv1, iv2) if encrypt else (iv2, iv1)
+    out = bytearray(len(data))
+    for i in range(0, len(data), size):
+        word = to_int(data[i:i + size], "big")
+        result = to_int(block_fn((word ^ pre).to_bytes(size, "big")), "big") ^ post
+        out[i:i + size] = result.to_bytes(size, "big")
+        c, p = (result, word) if encrypt else (word, result)
+        pre, post = (c, p) if encrypt else (p, c)
+    return bytes(out)
+
+
+def aes_ige_decrypt(key: bytes, iv: bytes, data: bytes) -> bytes:
+    """AES-256 IGE decrypt. ``iv`` is 32 bytes (iv1||iv2); ``data`` len % 16 == 0."""
+    _check_ige_args(iv, data)
     _require_backend()
 
     if _TGCRYPTO is not None:
         return _TGCRYPTO.ige256_decrypt(data, key, iv)
-
-    iv1, iv2 = iv[:AES_BLOCK], iv[AES_BLOCK:]
-    out = bytearray()
-    for i in range(0, len(data), AES_BLOCK):
-        c = data[i : i + AES_BLOCK]
-        d = _ECB_DECRYPT(key, _xor(c, iv2))  # type: ignore[misc]
-        p = _xor(d, iv1)
-        out += p
-        iv1, iv2 = c, p
-    return bytes(out)
+    return _ige_blocks(key, iv, data, encrypt=False)
 
 
 def aes_ige_encrypt(key: bytes, iv: bytes, data: bytes) -> bytes:
@@ -150,23 +189,12 @@ def aes_ige_encrypt(key: bytes, iv: bytes, data: bytes) -> bytes:
 
     Used to build golden test vectors (and never on a real capture path).
     """
-    if len(iv) != 32:
-        raise MtprotoCryptoError("IGE IV must be 32 bytes")
-    if len(data) % AES_BLOCK != 0:
-        raise MtprotoCryptoError("IGE data length must be a multiple of 16")
+    _check_ige_args(iv, data)
     _require_backend()
 
     if _TGCRYPTO is not None:
         return _TGCRYPTO.ige256_encrypt(data, key, iv)
-
-    iv1, iv2 = iv[:AES_BLOCK], iv[AES_BLOCK:]
-    out = bytearray()
-    for i in range(0, len(data), AES_BLOCK):
-        p = data[i : i + AES_BLOCK]
-        c = _xor(_ECB_ENCRYPT(key, _xor(p, iv1)), iv2)  # type: ignore[misc]
-        out += c
-        iv1, iv2 = c, p
-    return bytes(out)
+    return _ige_blocks(key, iv, data, encrypt=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -262,6 +290,8 @@ def decrypt_record(
     """
     if len(outer) < OUTER_HEADER_LEN + AES_BLOCK:
         raise MtprotoCryptoError("record too short")
+    if len(outer) > MAX_RECORD_LEN:
+        raise MtprotoCryptoError(f"record exceeds {MAX_RECORD_LEN} B")
     auth_key_id = outer[0:AUTH_KEY_ID_LEN]
     msg_key = outer[AUTH_KEY_ID_LEN:OUTER_HEADER_LEN]
     enc = outer[OUTER_HEADER_LEN:]
@@ -343,9 +373,8 @@ def compute_secret_chat_fingerprint(shared_key: bytes) -> bytes:
     Identical algorithm to :func:`compute_auth_key_id`; aliased so the secret-chat
     code reads in its own terms while sharing the single SHA1 implementation.
     """
-    assert len(shared_key) == SECRET_CHAT_KEY_LEN, (
-        f"shared_key must be {SECRET_CHAT_KEY_LEN} bytes"
-    )
+    if len(shared_key) != SECRET_CHAT_KEY_LEN:
+        raise ValueError(f"shared_key must be {SECRET_CHAT_KEY_LEN} bytes")
     return compute_auth_key_id(shared_key)
 
 

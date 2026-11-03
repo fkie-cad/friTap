@@ -168,3 +168,29 @@ def test_router_emits_mtproto_keylog_event():
     assert ev.payload["key_type"] == "temp"
     # and the formatter turns it into the canonical line
     assert MtprotoKeylogFormatter().format(ev) == [f"{spec.LABEL} 2 {_AID} {_AK} temp"]
+
+
+# --- dc_id overflow / bounds (JSON Infinity, 1e400) -------------------------
+import math  # noqa: E402
+
+
+@pytest.mark.parametrize("dc_id", [math.inf, -math.inf, float("1e400"), math.nan,
+                                   10 ** 30, 0, -2, 1001, "Infinity", None, object()])
+def test_mtproto_keylog_bad_dc_id_does_not_raise(dc_id):
+    line = spec.format_line(dc_id=dc_id, auth_key_id=_AID, auth_key=_AK)
+    assert line is not None
+    assert line.split()[1] == "0"
+    assert spec.parse_line(line).dc_id == 0
+
+
+@pytest.mark.parametrize("dc_id", [1, 5, 1000, 2.0, "4"])
+def test_mtproto_keylog_dc_id_in_range_kept(dc_id):
+    line = spec.format_line(dc_id=dc_id, auth_key_id=_AID, auth_key=_AK)
+    assert line.split()[1] == str(int(dc_id))
+
+
+def test_mtproto_keylog_obf_num_infinity_does_not_raise():
+    line = spec.format_obf_line(key_out="a" * 64, iv_out="b" * 32, key_in="c" * 64,
+                                iv_in="d" * 32, num_out=math.inf, num_in=float("-1e400"))
+    assert line is not None
+    assert line.split()[5:7] == ["0", "0"]

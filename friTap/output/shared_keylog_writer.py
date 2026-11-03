@@ -25,6 +25,8 @@ import os
 import threading
 from typing import IO, Dict, Iterable, Optional, Set, Tuple
 
+from .keylog_format import filter_safe_keylog_lines
+
 
 def normalize_keylog_path(path: str) -> str:
     """Return the registry key for *path* (absolute, symlink-resolved, case-normalized)."""
@@ -67,12 +69,15 @@ class SharedKeylogWriter:
         """Write *lines* atomically w.r.t. other writers, then flush.
 
         Returns ``False`` (writing nothing) when the file is already closed.
-        Raises ``OSError`` on I/O errors.
+        Raises ``OSError`` on I/O errors. Lines that are not a single safe
+        keylog line (CR/LF/NUL/control characters, non-``str``) are dropped —
+        the last line of defense against agent-injected keylog lines.
         """
+        safe_lines = filter_safe_keylog_lines(lines)
         with self._lock:
             if self._file is None:
                 return False
-            for line in lines:
+            for line in safe_lines:
                 self._file.write(line + "\n")
             self._file.flush()
             return True

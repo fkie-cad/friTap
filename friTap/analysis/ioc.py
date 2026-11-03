@@ -18,6 +18,7 @@ import re
 from typing import TYPE_CHECKING
 
 from friTap.analysis import Finding, Severity
+from friTap.analysis._limits import bounded_text, cap_findings, clip
 
 if TYPE_CHECKING:
     from friTap.flow.models import Flow
@@ -29,8 +30,10 @@ _IPV4_PATTERN = re.compile(
     r"(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b"
 )
 
+# Quantifiers are bounded (RFC 5321: local part <= 64, domain <= 253 chars)
+# so attacker-controlled runs cannot trigger super-linear backtracking.
 _EMAIL_PATTERN = re.compile(
-    r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
+    r"\b[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,189}\.[A-Za-z]{2,63}\b"
 )
 
 _DOMAIN_LABEL_RE = re.compile(r"^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$")
@@ -75,6 +78,7 @@ class IocAnalyzer:
         self._extract_url_ioc(flow, findings)
         self._extract_body_hashes(flow, resp_body, findings)
         self._extract_body_iocs(flow, resp_body, findings)
+        findings = cap_findings(findings, self.name, flow.flow_id)
         return [self._categorize(f) for f in findings]
 
     @staticmethod
@@ -99,7 +103,7 @@ class IocAnalyzer:
                 if self._include_private_ips or not _is_private_ip(flow.dst_addr):
                     findings.append(Finding(
                         severity=Severity.INFO,
-                        title=f"Destination IP: {flow.dst_addr}",
+                        title=f"Destination IP: {clip(flow.dst_addr)}",
                         description=f"Connection to {flow.dst_addr}:{flow.dst_port}",
                         source=self.name,
                         flow_id=flow.flow_id,
@@ -122,7 +126,7 @@ class IocAnalyzer:
                 if _is_valid_domain(clean_host):
                     findings.append(Finding(
                         severity=Severity.INFO,
-                        title=f"Domain: {clean_host}",
+                        title=f"Domain: {clip(clean_host)}",
                         description=f"HTTP request to domain {clean_host}",
                         source=self.name,
                         flow_id=flow.flow_id,
@@ -172,8 +176,8 @@ class IocAnalyzer:
             if server:
                 findings.append(Finding(
                     severity=Severity.INFO,
-                    title=f"Server: {server}",
-                    description=f"Server software identified: {server}",
+                    title=f"Server: {clip(server)}",
+                    description=f"Server software identified: {clip(server)}",
                     source=self.name,
                     flow_id=flow.flow_id,
                     evidence={
@@ -208,7 +212,7 @@ class IocAnalyzer:
                     if _is_valid_domain(cookie_domain):
                         findings.append(Finding(
                             severity=Severity.INFO,
-                            title=f"Cookie domain: {cookie_domain}",
+                            title=f"Cookie domain: {clip(cookie_domain)}",
                             description=f"Set-Cookie with domain={cookie_domain}",
                             source=self.name,
                             flow_id=flow.flow_id,
@@ -232,8 +236,8 @@ class IocAnalyzer:
             full_url = f"https://{host}{url}"
             findings.append(Finding(
                 severity=Severity.INFO,
-                title=f"{method} {host}{url[:60]}",
-                description=f"HTTP request: {method} {full_url}",
+                title=clip(f"{clip(method, 64)} {clip(host, 64)}{url[:60]}"),
+                description=f"HTTP request: {clip(method, 64)} {clip(full_url)}",
                 source=self.name,
                 flow_id=flow.flow_id,
                 evidence={
@@ -277,7 +281,7 @@ class IocAnalyzer:
         if not any(t in content_type for t in ("json", "text", "html", "xml", "javascript")):
             return
 
-        text = body.decode("utf-8", errors="replace")
+        text = bounded_text(body)
         seen_ips: set[str] = set()
         for match in _IPV4_PATTERN.finditer(text):
             ip = match.group(0)
@@ -300,13 +304,14 @@ class IocAnalyzer:
 
         # Extract emails from response body
         seen_emails: set[str] = set()
-        for match in _EMAIL_PATTERN.finditer(text):
+        # Cheap '@' prefilter skips the regex entirely for email-free bodies.
+        for match in (_EMAIL_PATTERN.finditer(text) if "@" in text else ()):
             email = match.group(0)
             if email not in seen_emails:
                 seen_emails.add(email)
                 findings.append(Finding(
                     severity=Severity.LOW,
-                    title=f"Email in response: {email}",
+                    title=f"Email in response: {clip(email)}",
                     description=f"Email address found in response from {flow.display_host}",
                     source=self.name,
                     flow_id=flow.flow_id,

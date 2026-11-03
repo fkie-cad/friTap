@@ -16,12 +16,15 @@ Usage::
 """
 
 from .base import BaseFridaServerManager, LocalUnixServerManager
+from .download import ServerDownloadError, ServerVerificationError
 from .factory import get_server_manager
 from .probe import ServerState, is_attach_capable, probe_frida_server
 
 __all__ = [
     "BaseFridaServerManager",
     "LocalUnixServerManager",
+    "ServerDownloadError",
+    "ServerVerificationError",
     "ServerState",
     "get_server_manager",
     "is_attach_capable",

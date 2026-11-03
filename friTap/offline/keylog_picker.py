@@ -23,11 +23,14 @@ import os
 import tempfile
 from typing import Callable, Dict, List, Mapping, NamedTuple, Optional, Sequence
 
+from friTap.offline.keylog_io import iter_bounded_lines
+from friTap.offline.keylog_paths import is_bounded_regular_file, is_safe_protocol_name
 from friTap.offline.registry import (
     OfflineDecryptorEntry,
     OfflineDecryptorRegistry,
     get_offline_decryptor_registry,
 )
+from friTap.output.keylog_format import is_valid_keylog_line_for
 from friTap.protocols.registry import CUSTOM_GROUP
 
 logger = logging.getLogger(__name__)
@@ -183,11 +186,17 @@ def _read_keylog_sections(path: str) -> tuple[List[str], List[str]]:
 
     ``comment_lines`` are the ``#``-prefixed header lines; ``key_lines`` are the
     non-blank, non-comment lines (the actual secrets). Order is preserved.
+    Over-long lines are skipped (:func:`~friTap.offline.keylog_io.iter_bounded_lines`).
+
+    Raises :class:`OSError` for anything that is not a bounded regular file
+    (a FIFO would block forever, a device or huge file would exhaust memory).
     """
+    if not is_bounded_regular_file(path):
+        raise OSError(f"not a regular keylog file of bounded size: {path!r}")
     comments: List[str] = []
     keys: List[str] = []
     with open(path, "r", encoding="utf-8", errors="replace") as fh:
-        for raw in fh:
+        for raw in iter_bounded_lines(fh):
             stripped = raw.strip()
             if not stripped:
                 continue
@@ -218,6 +227,43 @@ def count_distinct_keys(paths: Sequence[str]) -> int:
     return len(seen_keys)
 
 
+def _read_valid_key_lines(path: str, protocol: str) -> tuple[List[str], int]:
+    """``(valid_key_lines, dropped_count)`` read from keylog *path* for *protocol*.
+
+    Only lines that are well-formed keylog lines for *protocol* are kept
+    (:func:`~friTap.output.keylog_format.is_valid_keylog_line_for`); ``#``
+    comments and every other line are counted as dropped. Raises ``OSError``
+    like :func:`_read_keylog_sections`.
+    """
+    comments, keys = _read_keylog_sections(path)
+    valid = [key for key in keys if is_valid_keylog_line_for(protocol, key)]
+    return valid, len(comments) + len(keys) - len(valid)
+
+
+def _union_valid_key_lines(paths: Sequence[str], protocol: str) -> tuple[Optional[List[str]], int]:
+    """De-duplicated (first-seen order) valid key lines across *paths*.
+
+    Returns ``(None, dropped)`` when no input was readable at all.
+    """
+    key_lines: List[str] = []
+    seen_keys: set = set()
+    dropped = 0
+    read_any = False
+    for path in paths:
+        try:
+            keys, path_dropped = _read_valid_key_lines(path, protocol)
+        except OSError:
+            logger.debug("Could not read keylog %r for merge", path, exc_info=True)
+            continue
+        read_any = True
+        dropped += path_dropped
+        for key in keys:
+            if key not in seen_keys:
+                seen_keys.add(key)
+                key_lines.append(key)
+    return (key_lines if read_any else None), dropped
+
+
 def merge_keylogs(
     paths: Sequence[str],
     protocol: str,
@@ -225,50 +271,44 @@ def merge_keylogs(
 ) -> Optional[MergedKeylog]:
     """Merge same-protocol keylog *paths* into ONE combined keylog file.
 
-    Produces the UNION of the de-duplicated, non-comment key lines from every
-    readable input (first-seen order preserved), keeping a single header/comment
-    block (the union of the inputs' ``#`` comment lines). For an MTProto keylog
-    this keeps every distinct ``MTPROTO_AUTH_KEY`` / ``MTPROTO_E2E_KEY`` /
-    ``MTPROTO_OBF_KEY`` line, so an E2E-only file merged with an
-    auth+E2E+OBF file yields one file carrying all three key types.
+    Produces the UNION of the de-duplicated key lines from every readable input
+    (first-seen order preserved). For an MTProto keylog this keeps every
+    distinct ``MTPROTO_AUTH_KEY`` / ``MTPROTO_E2E_KEY`` / ``MTPROTO_OBF_KEY``
+    line, so an E2E-only file merged with an auth+E2E+OBF file yields one file
+    carrying all three key types.
+
+    The inputs may be named by an untrusted capture manifest, so only
+    well-formed keylog lines for *protocol* are copied (NSS lines for ``tls``,
+    ``LABEL <hex|decimal|base64> ...`` otherwise — see
+    :func:`~friTap.output.keylog_format.is_valid_keylog_line_for`). ``#``
+    comment lines and anything else are dropped (counted, one warning), so an
+    arbitrary file such as a private key contributes zero lines. No comment
+    header is written (the Signal dissector does not skip ``#`` lines).
 
     The result is written to *out_dir* (default: the system temp dir) as
     ``<stem>.merged.<proto>.keylog`` and returned as a :class:`MergedKeylog`.
 
     Total: returns ``None`` (never raises) when nothing readable is found or the
-    write fails, so the caller can fall back to its previous behavior.
+    write fails, so the caller can fall back to its previous behavior. A
+    *protocol* that is not ``^[a-z0-9_]+$`` is refused (``None``): it becomes
+    part of the output file name.
     """
+    if not is_safe_protocol_name(protocol):
+        logger.warning("Refusing to merge keylogs for unsafe protocol name %r", protocol)
+        return None
     try:
         readable = [p for p in paths if p]
-        comment_lines: List[str] = []
-        key_lines: List[str] = []
-        seen_comments: set = set()
-        seen_keys: set = set()
-        read_any = False
-        for path in readable:
-            try:
-                comments, keys = _read_keylog_sections(path)
-            except OSError:
-                logger.debug("Could not read keylog %r for merge", path, exc_info=True)
-                continue
-            read_any = True
-            for comment in comments:
-                if comment not in seen_comments:
-                    seen_comments.add(comment)
-                    comment_lines.append(comment)
-            for key in keys:
-                if key not in seen_keys:
-                    seen_keys.add(key)
-                    key_lines.append(key)
-        if not read_any:
+        key_lines, dropped = _union_valid_key_lines(readable, protocol)
+        if key_lines is None:
             return None
+        if dropped:
+            logger.warning(
+                "Keylog merge (%s): skipped %d comment/non-keylog line(s)", protocol, dropped)
 
         target_dir = out_dir or tempfile.gettempdir()
         os.makedirs(target_dir, exist_ok=True)
         out_path = os.path.join(target_dir, _merged_output_name(readable[0], protocol))
         with open(out_path, "w", encoding="utf-8") as fh:
-            for comment in comment_lines:
-                fh.write(comment + "\n")
             for key in key_lines:
                 fh.write(key + "\n")
         return MergedKeylog(out_path, len(key_lines))
@@ -296,7 +336,7 @@ def merge_memory_scan_sidecars(
     previous keylog. Never raises (see :func:`merge_keylogs`).
     """
     def _merge(protocol: str, sidecar: Optional[str]) -> None:
-        if not sidecar or not os.path.isfile(sidecar):
+        if not sidecar or not is_bounded_regular_file(sidecar):
             return
         paths = [p for p in (current_keylog(protocol), sidecar) if p]
         merged = merge_keylogs(paths, protocol, out_dir=out_dir)

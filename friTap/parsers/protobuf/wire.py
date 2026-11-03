@@ -17,13 +17,20 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Optional
+from typing import Iterator, Optional
 
 _TEXT_PREFIXES = (
     b"HTTP/", b"GET ", b"POST ", b"PUT ", b"DELETE ", b"PATCH ", b"HEAD ",
     b"OPTIONS ", b"CONNECT ", b"{", b"[", b"<", b"<!DOCTYPE", b"<?XML",
 )
 _TEXT_PREFIXES_UPPER = tuple(p.upper() for p in _TEXT_PREFIXES)
+
+#: Upper bound on fields decoded by one top-level decode (all nesting levels,
+#: including discarded sub-message attempts). Bounds work on hostile input.
+MAX_FIELDS_PER_DECODE = 10_000
+
+#: Note reported when :data:`MAX_FIELDS_PER_DECODE` stopped a decode early.
+FIELD_LIMIT_NOTE = f"field limit ({MAX_FIELDS_PER_DECODE}) reached; remaining fields not decoded"
 
 
 class WireType(IntEnum):
@@ -52,8 +59,33 @@ class ProtobufField:
 
 @dataclass
 class ProtobufMessage:
-    """A decoded protobuf message (tree of fields)."""
+    """A decoded protobuf message (tree of fields).
+
+    ``truncated`` is set when :data:`MAX_FIELDS_PER_DECODE` stopped decoding
+    before the end of the buffer.
+    """
     fields: list[ProtobufField] = field(default_factory=list)
+    truncated: bool = False
+
+
+class _FieldBudget:
+    """Field allowance shared by every level of one top-level decode."""
+
+    __slots__ = ("remaining",)
+
+    def __init__(self, limit: int = MAX_FIELDS_PER_DECODE) -> None:
+        self.remaining = limit
+
+    @property
+    def exhausted(self) -> bool:
+        return self.remaining <= 0
+
+    def take(self) -> bool:
+        """Consume one field; False once the allowance is used up."""
+        if self.remaining <= 0:
+            return False
+        self.remaining -= 1
+        return True
 
 
 def decode_varint(data: bytes, offset: int) -> tuple[int, int]:
@@ -89,27 +121,26 @@ def _zigzag_decode(value: int) -> int:
     return (value >> 1) ^ -(value & 1)
 
 
-def _try_decode_submessage(data: bytes, max_depth: int) -> Optional[ProtobufMessage]:
+def _try_decode_submessage(
+    data: bytes, max_depth: int, budget: Optional[_FieldBudget] = None,
+) -> Optional[ProtobufMessage]:
     """Attempt to parse *data* as a nested protobuf message.
 
-    Returns ``None`` if the data does not look like valid protobuf.
-    Raises ``ValueError`` if *max_depth* is exceeded (propagated to caller).
+    Returns ``None`` if the data does not look like valid protobuf, if the
+    nesting depth limit is reached (the caller keeps the field as raw bytes)
+    or if the shared field *budget* ran out during the attempt.
     """
-    if not data:
+    if not data or max_depth <= 0:
         return None
-    if max_depth <= 0:
-        raise ValueError("maximum nesting depth exceeded")
+    if budget is not None and budget.exhausted:
+        return None
     try:
-        msg = _decode_raw_impl(data, max_depth)
-        if not msg.fields:
-            return None
-        return msg
-    except ValueError as exc:
-        if "nesting depth" in str(exc):
-            raise  # propagate depth limit errors
+        msg = _decode_raw_impl(data, max_depth, budget)
+    except (ValueError, IndexError):
         return None
-    except IndexError:
+    if not msg.fields or msg.truncated:
         return None
+    return msg
 
 
 def _looks_like_utf8_string(data: bytes) -> bool:
@@ -150,15 +181,24 @@ def _try_decode_packed_varints(data: bytes) -> Optional[list[int]]:
     return values
 
 
-def _decode_raw_impl(data: bytes, max_depth: int) -> ProtobufMessage:
-    """Internal recursive decoder."""
+def _decode_raw_impl(
+    data: bytes, max_depth: int, budget: Optional[_FieldBudget] = None,
+) -> ProtobufMessage:
+    """Internal recursive decoder.
+
+    Stops early (``truncated=True``) once the shared field *budget* is spent.
+    """
     if max_depth <= 0:
         raise ValueError("maximum nesting depth exceeded")
+    if budget is None:
+        budget = _FieldBudget()
 
     fields: list[ProtobufField] = []
     offset = 0
     while offset < len(data):
-        pf, offset = _decode_field_at(data, offset, max_depth)
+        if not budget.take():
+            return ProtobufMessage(fields=fields, truncated=True)
+        pf, offset = _decode_field_at(data, offset, max_depth, budget)
         if pf is not None:
             fields.append(pf)
 
@@ -167,6 +207,7 @@ def _decode_raw_impl(data: bytes, max_depth: int) -> ProtobufMessage:
 
 def _decode_field_at(
     data: bytes, offset: int, max_depth: int,
+    budget: Optional[_FieldBudget] = None,
 ) -> tuple[Optional[ProtobufField], int]:
     """Decode the one field whose tag starts at *offset*.
 
@@ -227,7 +268,7 @@ def _decode_field_at(
         pf.raw_value = payload
         offset += payload_len
 
-        sub = _try_decode_submessage(payload, max_depth - 1)
+        sub = _try_decode_submessage(payload, max_depth - 1, budget)
         if sub is not None:
             pf.sub_message = sub
         else:
@@ -288,8 +329,12 @@ def decode_raw(data: bytes, max_depth: int = 16) -> ProtobufMessage:
     Returns:
         A :class:`ProtobufMessage` tree.
 
+    Fields nested deeper than *max_depth* are kept as raw bytes, and decoding
+    stops gracefully after :data:`MAX_FIELDS_PER_DECODE` fields (the result
+    then has ``truncated=True``).
+
     Raises:
-        ValueError: If the data is malformed.
+        ValueError: If the data is malformed (or *max_depth* is not positive).
     """
     if not data:
         return ProtobufMessage()
@@ -307,15 +352,18 @@ def decode_raw_lenient(
     Returns:
         ``(message, error)``: the top-level fields decoded up to the first
         problem, and an empty string or a description of where decoding
-        stopped.
+        stopped (:data:`FIELD_LIMIT_NOTE` when the field cap was reached).
     """
     fields: list[ProtobufField] = []
     offset = 0
+    budget = _FieldBudget()
     if data and max_depth <= 0:
         return ProtobufMessage(), "maximum nesting depth exceeded"
     while offset < len(data):
+        if not budget.take():
+            return ProtobufMessage(fields=fields, truncated=True), FIELD_LIMIT_NOTE
         try:
-            pf, offset = _decode_field_at(data, offset, max_depth)
+            pf, offset = _decode_field_at(data, offset, max_depth, budget)
         except (ValueError, IndexError) as exc:
             return ProtobufMessage(fields=fields), f"decoding stopped at offset {offset}: {exc}"
         if pf is not None:
@@ -341,50 +389,84 @@ def format_message(msg: ProtobufMessage, indent: int = 0) -> str:
 
     Output resembles ``protoc --decode_raw``.
     """
-    lines: list[str] = []
+    return "\n".join(iter_message_lines(msg, indent))
+
+
+def format_message_bounded(msg: ProtobufMessage, max_chars: int) -> str:
+    """Like :func:`format_message`, but stop once *max_chars* are produced.
+
+    Lines are generated lazily, so a huge message is never fully formatted;
+    the result is at most *max_chars* characters long.
+    """
+    parts: list[str] = []
+    produced = 0
+    for line in iter_message_lines(msg):
+        if parts:
+            parts.append("\n")
+            produced += 1
+        parts.append(line)
+        produced += len(line)
+        if produced >= max_chars:
+            break
+    return "".join(parts)[:max_chars]
+
+
+def iter_message_lines(msg: ProtobufMessage, indent: int = 0) -> Iterator[str]:
+    """Yield the lines of :func:`format_message` one at a time."""
     prefix = "  " * indent
-
     for f in msg.fields:
-        if f.wire_type == WireType.VARINT and f.varint is not None:
-            zigzag = _zigzag_decode(f.varint)
-            if zigzag != f.varint and zigzag < 0:
-                lines.append(f"{prefix}{f.field_number}: {f.varint} (signed: {zigzag})")
-            else:
-                lines.append(f"{prefix}{f.field_number}: {f.varint}")
+        yield from _iter_field_lines(f, prefix, indent)
 
-        elif f.wire_type == WireType.FIXED64 and f.fixed64 is not None:
-            as_double = struct.unpack("<d", f.fixed64)[0]
-            as_uint64 = struct.unpack("<Q", f.fixed64)[0]
-            as_int64 = struct.unpack("<q", f.fixed64)[0]
-            lines.append(
-                f"{prefix}{f.field_number}: 0x{f.fixed64.hex()} "
-                f"(uint64: {as_uint64}, int64: {as_int64}, double: {as_double})"
-            )
 
-        elif f.wire_type == WireType.FIXED32 and f.fixed32 is not None:
-            as_float = struct.unpack("<f", f.fixed32)[0]
-            as_uint32 = struct.unpack("<I", f.fixed32)[0]
-            as_int32 = struct.unpack("<i", f.fixed32)[0]
-            lines.append(
-                f"{prefix}{f.field_number}: 0x{f.fixed32.hex()} "
-                f"(uint32: {as_uint32}, int32: {as_int32}, float: {as_float})"
-            )
+def _iter_field_lines(f: ProtobufField, prefix: str, indent: int) -> Iterator[str]:
+    """Yield the formatted line(s) of one field (several for a sub-message)."""
+    if f.wire_type == WireType.VARINT and f.varint is not None:
+        yield _format_varint_line(f, prefix)
 
-        elif f.wire_type == WireType.LENGTH_DELIMITED:
-            if f.sub_message is not None:
-                lines.append(f"{prefix}{f.field_number} {{")
-                lines.append(format_message(f.sub_message, indent + 1))
-                lines.append(f"{prefix}}}")
-            elif f.packed_varints is not None:
-                vals = ", ".join(str(v) for v in f.packed_varints)
-                lines.append(f"{prefix}{f.field_number}: [packed] [{vals}]")
-            elif f.length_delimited is not None:
-                lines.append(
-                    f"{prefix}{f.field_number}: "
-                    f"{_format_bytes_as_string_or_hex(f.length_delimited)}"
-                )
+    elif f.wire_type == WireType.FIXED64 and f.fixed64 is not None:
+        as_double = struct.unpack("<d", f.fixed64)[0]
+        as_uint64 = struct.unpack("<Q", f.fixed64)[0]
+        as_int64 = struct.unpack("<q", f.fixed64)[0]
+        yield (
+            f"{prefix}{f.field_number}: 0x{f.fixed64.hex()} "
+            f"(uint64: {as_uint64}, int64: {as_int64}, double: {as_double})"
+        )
 
-    return "\n".join(lines)
+    elif f.wire_type == WireType.FIXED32 and f.fixed32 is not None:
+        as_float = struct.unpack("<f", f.fixed32)[0]
+        as_uint32 = struct.unpack("<I", f.fixed32)[0]
+        as_int32 = struct.unpack("<i", f.fixed32)[0]
+        yield (
+            f"{prefix}{f.field_number}: 0x{f.fixed32.hex()} "
+            f"(uint32: {as_uint32}, int32: {as_int32}, float: {as_float})"
+        )
+
+    elif f.wire_type == WireType.LENGTH_DELIMITED:
+        yield from _iter_length_delimited_lines(f, prefix, indent)
+
+
+def _format_varint_line(f: ProtobufField, prefix: str) -> str:
+    zigzag = _zigzag_decode(f.varint)
+    if zigzag != f.varint and zigzag < 0:
+        return f"{prefix}{f.field_number}: {f.varint} (signed: {zigzag})"
+    return f"{prefix}{f.field_number}: {f.varint}"
+
+
+def _iter_length_delimited_lines(
+    f: ProtobufField, prefix: str, indent: int,
+) -> Iterator[str]:
+    if f.sub_message is not None:
+        yield f"{prefix}{f.field_number} {{"
+        yield from iter_message_lines(f.sub_message, indent + 1)
+        yield f"{prefix}}}"
+    elif f.packed_varints is not None:
+        vals = ", ".join(str(v) for v in f.packed_varints)
+        yield f"{prefix}{f.field_number}: [packed] [{vals}]"
+    elif f.length_delimited is not None:
+        yield (
+            f"{prefix}{f.field_number}: "
+            f"{_format_bytes_as_string_or_hex(f.length_delimited)}"
+        )
 
 
 def is_likely_protobuf(data: bytes) -> bool:
@@ -417,7 +499,8 @@ def is_likely_protobuf(data: bytes) -> bool:
             return False
         if wire_type_val > 5:
             return False
-        # Try parsing at least the first few fields
+        # Try parsing at least the first few fields; fields nested deeper
+        # than 4 levels are kept raw (not rejected) by the depth limit.
         msg = _decode_raw_impl(data[:min(len(data), 512)], max_depth=4)
         return len(msg.fields) >= 1
     except (ValueError, IndexError):

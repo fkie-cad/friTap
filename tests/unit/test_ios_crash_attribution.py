@@ -462,10 +462,12 @@ class TestNonIosGuidanceUnchangedByTheHoist:
     non-iOS branch (Android hypothesis, Wine hints, anti-tamper)."""
 
     def test_android_spawn_guidance_is_verbatim(self, caplog):
+        # The PairIP hypothesis needs crash evidence (a frida Crash) -- a bare
+        # 'process-terminated' is reported neutrally (see test_crash_attribution).
         obj = _make_logger(os_id="android", spawn=True)
         obj._android_target_cached = True
         with caplog.at_level(logging.ERROR):
-            obj._report_target_crash("process-terminated", None)
+            obj._report_target_crash("process-terminated", FakeCrash())
         text = caplog.text
         assert ("This may be an anti-tamper protection (e.g. Google PairIP / "
                 "libpairipcore.so) self-destructing in response to friTap's hooks "

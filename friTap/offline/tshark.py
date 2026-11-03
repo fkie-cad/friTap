@@ -27,8 +27,11 @@ tell the consumers which rows are theirs, and the metadata accumulators
 from __future__ import annotations
 
 import atexit
+import contextlib
+import functools
 import json
 import logging
+import math
 import os
 import shutil
 import subprocess
@@ -223,6 +226,37 @@ class TsharkNotFoundError(RuntimeError):
     every tshark invocation resolves the binary through ``find_tshark``, this
     exception surfaces at every call site.
     """
+
+
+class TsharkLimitError(RuntimeError):
+    """A tshark run was stopped for exceeding a friTap run limit.
+
+    Base of :class:`TsharkTimeoutError` and :class:`TsharkOutputLimitError`. It
+    subclasses ``RuntimeError`` so every existing tshark-failure handler treats
+    a stopped run like any other failed one (partial results are kept the same
+    way); front-ends catch it to print its one-line message without a traceback.
+    """
+
+
+class TsharkTimeoutError(TsharkLimitError):
+    """tshark outlived its time budget (:func:`tshark_timeout_for`) and was stopped.
+
+    ``timeout`` holds the budget in seconds. A malformed capture can drive a
+    Wireshark dissector into an endless loop; without the budget friTap would
+    wait for it forever.
+    """
+
+    timeout: float | None = None
+
+
+class TsharkOutputLimitError(TsharkLimitError):
+    """A buffered tshark run printed more than :func:`tshark_max_output_bytes`.
+
+    ``limit`` holds the cap in bytes. The run is stopped before its output can
+    exhaust memory.
+    """
+
+    limit: int | None = None
 
 
 # tshark releases below this version use older/unstable QUIC field names.
@@ -713,7 +747,7 @@ def extract_ssh_connections(
     to the pure :func:`parse_ssh_fields`. Returns one dict per SSH connection
     (empty list when the capture carries no SSH).
     """
-    cmd = [tshark_bin, "-r", pcap]
+    cmd = [tshark_bin, "-r", pcap, *no_body_decompression_opts(tshark_bin)]
     cmd += _heuristic_flags(heuristic)
     cmd += ["-Y", "ssh", "-T", "fields", "-E", "separator=\t"]
     for field_name in _SSH_FIELDS:
@@ -923,16 +957,28 @@ def _remove_quietly(path: str) -> None:
         pass
 
 
+def _run_probe(argv: Sequence[str]) -> str:
+    """stdout of a tiny tshark probe (``--version``, ``-G defaultprefs``).
+
+    Probes print a few KiB and finish in well under a second, so they get the
+    short fixed :data:`TSHARK_PROBE_TIMEOUT` rather than the size-scaled budget
+    of a capture run (and ignore ``$FRITAP_TSHARK_TIMEOUT``). On a timeout
+    ``subprocess.run`` kills the probe and raises ``TimeoutExpired``; callers
+    treat every failure as "unknown".
+    """
+    return subprocess.run(
+        list(argv),
+        capture_output=True,
+        timeout=TSHARK_PROBE_TIMEOUT,
+        env=_hermetic_env(),
+        **_TSHARK_TEXT_IO,
+    ).stdout or ""
+
+
 def _query_tshark_version(path: str) -> tuple[int, ...]:
     """Run ``tshark --version`` and parse it; ``()`` on any failure."""
     try:
-        out = subprocess.run(
-            [path, "--version"],
-            capture_output=True,
-            timeout=15,
-            env=_hermetic_env(),
-            **_TSHARK_TEXT_IO,
-        ).stdout
+        out = _run_probe([path, "--version"])
     except Exception:
         logger.debug("Could not run 'tshark --version'", exc_info=True)
         return ()
@@ -1414,6 +1460,63 @@ def _decode_as_flags(
     return flags
 
 
+# Wireshark preferences that make a dissector decompress HTTP-style bodies
+# (gzip/deflate/brotli/zstd). Turned off for every friTap tshark run so a distro
+# tshark linked against an unpatched libbrotli (CVE-2026-111497) never decodes
+# attacker-controlled bodies; friTap decodes bodies itself. tshark exits on an
+# unknown ``-o`` preference, so only the ones this binary reports are used.
+_BODY_DECOMPRESSION_PREFS = (
+    "http.decompress_body",
+    "http2.decompress_body",
+    "http3.decompress_body",
+    "spdy.decompress_body",
+    "websocket.decompress",
+    "ws.decompress",
+    "mime_multipart.uncompress_data",
+)
+
+
+@functools.lru_cache(maxsize=None)
+def _supported_body_decompression_prefs(tshark_path: str) -> tuple[str, ...]:
+    """The :data:`_BODY_DECOMPRESSION_PREFS` *tshark_path* knows (``-G defaultprefs``).
+
+    Cached per tshark path. Returns ``()`` when the probe fails (an unknown
+    ``-o`` would make tshark exit, so nothing is added then).
+    """
+    try:
+        out = _run_probe([tshark_path, "-G", "defaultprefs"])
+    except Exception:
+        logger.debug("Could not probe tshark preferences", exc_info=True)
+        return ()
+    known = {line.lstrip("#").split(":", 1)[0].strip()
+             for line in out.splitlines() if ":" in line}
+    return tuple(p for p in _BODY_DECOMPRESSION_PREFS if p in known)
+
+
+def no_body_decompression_opts(tshark_path: str = "tshark") -> list[str]:
+    """``-o <pref>:FALSE`` flags disabling tshark's body decompression."""
+    opts: list[str] = []
+    for pref in _supported_body_decompression_prefs(tshark_path):
+        opts += ["-o", f"{pref}:FALSE"]
+    return opts
+
+
+def with_no_body_decompression(cmd: Sequence[str]) -> list[str]:
+    """*cmd* with :func:`no_body_decompression_opts` inserted after argv[0].
+
+    Idempotent: a *cmd* already carrying the flags is returned unchanged. The
+    `-T ek` builders emit a literal ``"tshark"`` placeholder that callers
+    replace, so the runners apply this once the real binary is known.
+    """
+    argv = list(cmd)
+    if not argv:
+        return argv
+    opts = no_body_decompression_opts(argv[0])
+    if not opts or all(flag in argv for flag in opts[1::2]):
+        return argv
+    return [argv[0], *opts, *argv[1:]]
+
+
 def list_tls_streams(
     tshark_bin: str,
     pcap: str,
@@ -1430,7 +1533,7 @@ def list_tls_streams(
     time to :func:`follow_tls_stream`. When *heuristic* is True, TCP
     heuristic-first dissection is enabled so TLS on unconfigured ports is found.
     """
-    cmd = [tshark_bin, "-r", pcap]
+    cmd = [tshark_bin, "-r", pcap, *no_body_decompression_opts(tshark_bin)]
     cmd += _heuristic_flags(heuristic)
     if keylog:
         cmd += ["-o", f"tls.keylog_file:{keylog}"]
@@ -1471,7 +1574,7 @@ def follow_tls_stream(
         order, where direction is ``"write"`` for client->server bytes and
         ``"read"`` for server->client bytes.
     """
-    cmd = [tshark_bin, "-r", pcap]
+    cmd = [tshark_bin, "-r", pcap, *no_body_decompression_opts(tshark_bin)]
     cmd += _heuristic_flags(heuristic)
     if keylog:
         cmd += ["-o", f"tls.keylog_file:{keylog}"]
@@ -1612,6 +1715,293 @@ def _server_node_index(
     return 0 if node0[1] <= node1[1] else 1
 
 
+# ---------------------------------------------------------------------------
+# tshark run limits (time budget, buffered-output cap)
+# ---------------------------------------------------------------------------
+
+# Total runtime budget of ONE tshark run, in seconds. Unset: size-scaled (see
+# tshark_timeout_for); "0" or "none": no limit; anything invalid is ignored.
+TSHARK_TIMEOUT_ENV = "FRITAP_TSHARK_TIMEOUT"
+# Cap on the stdout one BUFFERED tshark run may produce: bytes, optionally with
+# a binary K/M/G/T suffix ("8G"); "0" or "none": no cap.
+TSHARK_MAX_OUTPUT_ENV = "FRITAP_TSHARK_MAX_OUTPUT"
+
+# Default budget: max(600 s, 10 s per MiB of capture). tshark dissects captures
+# at several MB/s (and friTap consumes the -T ek stream at a comparable rate),
+# so 10 s/MiB is a 100x+ margin for a legitimately slow run, and the 10-minute
+# floor covers start-up, keylog loading and small-but-dense captures. A 1 GiB
+# capture gets ~2.8 h. What it does end is a dissector stuck in a loop forever.
+_MIN_TSHARK_TIMEOUT = 600.0
+_TSHARK_SECONDS_PER_MIB = 10.0
+_MIB = 1024 * 1024
+# Fixed budget of the tiny ``--version`` / ``-G defaultprefs`` probes.
+TSHARK_PROBE_TIMEOUT = 30.0
+# How long a tshark that is being stopped gets after SIGTERM before SIGKILL.
+_TSHARK_KILL_GRACE = 5.0
+
+# Default cap on a buffered run's stdout. Buffered outputs are small (stream
+# lists, one followed stream, -T fields passes); 4 GiB only stops a runaway.
+_DEFAULT_MAX_TSHARK_OUTPUT = 4 * 1024 ** 3
+_TSHARK_READ_CHUNK = _MIB
+
+_LIMIT_DISABLED_VALUES = frozenset({"0", "none"})
+_BYTE_SIZE_SUFFIXES = {"k": 1024, "m": 1024 ** 2, "g": 1024 ** 3, "t": 1024 ** 4}
+# Marks "no usable environment override" (unset, or invalid and ignored).
+_NO_OVERRIDE = object()
+# (env var, raw value) pairs already warned about, so a bad value logs once
+# per process rather than once per tshark run.
+_WARNED_ENV_VALUES: set[tuple[str, str]] = set()
+
+
+def tshark_timeout_for(path_or_paths) -> float | None:
+    """Seconds one tshark run over *path_or_paths* may take; ``None`` = no limit.
+
+    ``$FRITAP_TSHARK_TIMEOUT`` wins when it holds a valid value: seconds (a
+    fixed budget, not size-scaled), or ``0`` / ``none`` to disable the limit.
+    An invalid value is ignored with a warning. Otherwise the budget scales
+    with the inputs' total size: ``max(600, 10 * size_MiB)`` seconds. Inputs
+    that cannot be stat'ed (or ``None``) count as empty.
+
+    The budget covers the whole run, including time the consumer of a
+    streaming run spends between rows.
+    """
+    override = _env_limit(TSHARK_TIMEOUT_ENV, _parse_seconds)
+    if override is not _NO_OVERRIDE:
+        return override
+    size_mib = _total_size(path_or_paths) / _MIB
+    return max(_MIN_TSHARK_TIMEOUT, _TSHARK_SECONDS_PER_MIB * size_mib)
+
+
+def tshark_max_output_bytes() -> int | None:
+    """Most stdout bytes one buffered tshark run may produce; ``None`` = no cap.
+
+    ``$FRITAP_TSHARK_MAX_OUTPUT`` (bytes, ``512M``, ``8G``; ``0`` / ``none``
+    disables the cap) wins when valid; the default is 4 GiB.
+    """
+    override = _env_limit(TSHARK_MAX_OUTPUT_ENV, _parse_byte_size)
+    return _DEFAULT_MAX_TSHARK_OUTPUT if override is _NO_OVERRIDE else override
+
+
+def _env_limit(env_var: str, parse: Callable[[str], float]):
+    """*env_var* parsed by *parse*: ``None`` when it disables the limit.
+
+    Returns :data:`_NO_OVERRIDE` when the variable is unset/blank or invalid
+    (an invalid value is warned about once).
+    """
+    raw = os.environ.get(env_var, "").strip()
+    if not raw:
+        return _NO_OVERRIDE
+    if raw.lower() in _LIMIT_DISABLED_VALUES:
+        return None
+    try:
+        value = parse(raw)
+    except ValueError:
+        _warn_invalid_env_once(env_var, raw)
+        return _NO_OVERRIDE
+    return None if value == 0 else value
+
+
+def _warn_invalid_env_once(env_var: str, raw: str) -> None:
+    """Warn (once per value) that *env_var* holds an unusable *raw* value."""
+    if (env_var, raw) in _WARNED_ENV_VALUES:
+        return
+    _WARNED_ENV_VALUES.add((env_var, raw))
+    logger.warning("Ignoring invalid %s=%r; using the default limit "
+                   "(set it to 0 or 'none' to disable the limit).", env_var, raw)
+
+
+def _parse_seconds(raw: str) -> float:
+    """A non-negative, finite number of seconds; ``ValueError`` otherwise."""
+    seconds = float(raw)
+    if not math.isfinite(seconds) or seconds < 0:
+        raise ValueError(raw)
+    return seconds
+
+
+def _parse_byte_size(raw: str) -> int:
+    """``"4294967296"``, ``"512M"``, ``"8G"``, ``"8GiB"`` -> bytes (binary units)."""
+    text = raw.lower().removesuffix("ib").removesuffix("b")
+    multiplier = _BYTE_SIZE_SUFFIXES.get(text[-1:], 1)
+    if multiplier != 1:
+        text = text[:-1]
+    value = float(text)
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(raw)
+    return int(value * multiplier)
+
+
+def _total_size(path_or_paths) -> int:
+    """Summed size in bytes of the existing files among *path_or_paths*."""
+    if path_or_paths is None:
+        return 0
+    if isinstance(path_or_paths, (str, bytes, os.PathLike)):
+        path_or_paths = [path_or_paths]
+    total = 0
+    for path in path_or_paths:
+        try:
+            total += os.path.getsize(path)
+        except (OSError, TypeError, ValueError):
+            continue
+    return total
+
+
+def _capture_inputs(argv: Sequence[str]) -> list[str]:
+    """The files *argv* reads with ``-r`` (what the time budget scales with)."""
+    return [argv[i + 1] for i in range(len(argv) - 1) if argv[i] == "-r"]
+
+
+def _format_seconds(seconds: float) -> str:
+    """``600.0`` -> ``"600"``, ``0.5`` -> ``"0.5"``."""
+    return f"{seconds:.1f}".rstrip("0").rstrip(".")
+
+
+def _tshark_timeout_error(timeout: float, capture: str | None) -> TsharkTimeoutError:
+    """The one-line :class:`TsharkTimeoutError` for a run stopped after *timeout* s."""
+    on_capture = f" on {capture}" if capture else ""
+    error = TsharkTimeoutError(
+        f"tshark did not finish within {_format_seconds(timeout)} s{on_capture} "
+        f"and was stopped (a malformed capture can loop a Wireshark dissector "
+        f"forever); set {TSHARK_TIMEOUT_ENV}=<seconds> to allow longer runs "
+        f"or {TSHARK_TIMEOUT_ENV}=0 to disable the limit.")
+    error.timeout = timeout
+    return error
+
+
+def _tshark_output_limit_error(limit: int) -> TsharkOutputLimitError:
+    """The one-line :class:`TsharkOutputLimitError` for a run past *limit* bytes."""
+    error = TsharkOutputLimitError(
+        f"tshark printed more than {limit} bytes of output and was stopped "
+        f"before it exhausted memory; set {TSHARK_MAX_OUTPUT_ENV}=<bytes, e.g. 8G> "
+        f"to raise the cap or {TSHARK_MAX_OUTPUT_ENV}=0 to disable it.")
+    error.limit = limit
+    return error
+
+
+class _Watchdog:
+    """Stops a tshark process that outlives its time budget.
+
+    A daemon ``threading.Timer`` fires after *timeout* seconds, terminates the
+    process and kills it when it is still alive :data:`_TSHARK_KILL_GRACE`
+    seconds later. The process dying closes its pipes, so a reader blocked on
+    stdout sees EOF and the owner reaps the process as usual; :attr:`fired`
+    then tells a timeout from an ordinary failure. It never touches the pipes
+    itself (they belong to the reading thread). ``timeout=None`` arms nothing.
+    Always :meth:`cancel` it once the process is reaped.
+    """
+
+    def __init__(self, proc, timeout: float | None) -> None:
+        self.timeout = timeout
+        self.fired = False
+        self._proc = proc
+        self._timer: threading.Timer | None = None
+        if timeout is not None:
+            self._timer = threading.Timer(timeout, self._expire)
+            self._timer.name = "tshark-watchdog"
+            self._timer.daemon = True
+            self._timer.start()
+
+    def _expire(self) -> None:
+        """Timer thread: stop the process unless it already exited on its own."""
+        if self._proc.poll() is not None:
+            return
+        self.fired = True
+        logger.debug("tshark exceeded its %s s budget; stopping it",
+                     _format_seconds(self.timeout))
+        try:
+            _terminate_then_kill(self._proc)
+        except Exception:  # noqa: BLE001 - never die noisily on the timer thread
+            logger.debug("Could not stop the timed-out tshark", exc_info=True)
+
+    def cancel(self) -> None:
+        """Disarm the timer and wait out a firing one, so no thread outlives the run."""
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer.join()
+
+
+@dataclass
+class _TsharkRun:
+    """One spawned tshark: the process, its stderr summary and its watchdog.
+
+    The owner sets :attr:`completed` once it read stdout to EOF;
+    :attr:`returncode` is filled in when the process has been reaped.
+    """
+
+    proc: subprocess.Popen
+    stderr: _StderrSummary
+    watchdog: _Watchdog
+    capture: str | None
+    completed: bool = False
+    returncode: int | None = None
+
+    def raise_if_timed_out(self) -> None:
+        """Raise :class:`TsharkTimeoutError` when the watchdog stopped the run."""
+        if self.watchdog.fired:
+            raise _tshark_timeout_error(self.watchdog.timeout, self.capture)
+
+
+@contextlib.contextmanager
+def _tshark_process(cmd: Sequence[str], *, text: bool) -> Iterator[_TsharkRun]:
+    """Spawn tshark for *cmd* under the shared time budget and always reap it.
+
+    stderr is drained on a thread (:func:`_start_stderr_drain`) and a
+    :class:`_Watchdog` enforces the :func:`tshark_timeout_for` budget of the
+    ``-r`` capture. stdout is text (UTF-8, ``errors="replace"``) when *text*,
+    else bytes. Unless the caller marked the run completed (stdout read to
+    EOF) — it stopped early or raised — tshark is stopped
+    (:func:`_stop_process`). In every case the process is waited for, the
+    watchdog disarmed and the drain joined before the block exits, so no
+    process or thread outlives it.
+    """
+    argv = with_no_body_decompression(cmd)
+    inputs = _capture_inputs(argv)
+    timeout = tshark_timeout_for(inputs)
+    proc = subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=_hermetic_env(),
+        **(_TSHARK_TEXT_IO if text else {}),
+    )
+    stderr = _StderrSummary()
+    drain = _start_stderr_drain(proc, stderr.add)
+    run = _TsharkRun(proc, stderr, _Watchdog(proc, timeout),
+                     inputs[0] if inputs else None)
+    try:
+        yield run
+    finally:
+        try:
+            if not run.completed:
+                _stop_process(proc)
+            run.returncode = proc.wait()
+        finally:
+            run.watchdog.cancel()
+            if drain is not None:
+                drain.join(timeout=_TSHARK_KILL_GRACE)
+
+
+def _read_capped(stream, limit: int | None) -> bytearray:
+    """Read binary *stream* to EOF, keeping at most *limit* bytes (``None``: all).
+
+    Raises :class:`TsharkOutputLimitError` as soon as the output would exceed
+    *limit*, before buffering the excess.
+    """
+    buffer = bytearray()
+    while True:
+        chunk = stream.read(_TSHARK_READ_CHUNK)
+        if not chunk:
+            return buffer
+        if limit is not None and len(buffer) + len(chunk) > limit:
+            raise _tshark_output_limit_error(limit)
+        buffer += chunk
+
+
+def _decode_tshark_text(data: bytes | bytearray) -> str:
+    """*data* decoded like a text-mode pipe: UTF-8 with replacement, universal newlines."""
+    text = data.decode(_TSHARK_TEXT_IO["encoding"], _TSHARK_TEXT_IO["errors"])
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 # How many stderr lines a tshark failure message keeps: the last lines, plus
 # every ``tshark:``-prefixed line (the actual error) that scrolled out of them.
 _STDERR_TAIL_LINES = 20
@@ -1674,18 +2064,28 @@ def _tshark_failure(returncode: int, stderr: _StderrSummary) -> RuntimeError:
 def _run_capture(cmd: Sequence[str]) -> str:
     """Run *cmd* and return its stdout, raising on a non-zero exit.
 
-    Used for the small fixed-size outputs (stream lists, single-stream follow);
-    the streaming ``-T ek`` path uses :func:`stream_packets` instead.
+    Used for the small fixed-size outputs (stream lists, single-stream follow,
+    ``-T fields`` passes); the streaming ``-T ek`` path uses
+    :func:`stream_packets` instead.
+
+    The output stays buffered on purpose: every caller needs it whole —
+    :func:`follow_tls_stream` resolves the ``Node`` header lines against all of
+    the stream's segments, and :func:`friTap.offline.schannel.correlate.
+    run_fields_pass` returns the raw text to its parsers — and it is small for
+    a real capture (one line per matching packet, or one TLS stream). A
+    runaway tshark is stopped instead of exhausting memory: past
+    :func:`tshark_max_output_bytes` it raises :class:`TsharkOutputLimitError`.
+    The run is bounded by :func:`tshark_timeout_for` like every capture run
+    (:class:`TsharkTimeoutError`). stdout is read in bounded chunks (which
+    ``communicate()`` cannot cap) and decoded like the former text-mode pipe.
     """
-    proc = subprocess.run(
-        list(cmd),
-        capture_output=True,
-        env=_hermetic_env(),
-        **_TSHARK_TEXT_IO,
-    )
-    if proc.returncode != 0:
-        raise _tshark_failure(proc.returncode, _summarize_stderr(proc.stderr or ""))
-    return proc.stdout
+    with _tshark_process(cmd, text=False) as run:
+        output = _read_capped(run.proc.stdout, tshark_max_output_bytes())
+        run.completed = True
+    run.raise_if_timed_out()
+    if run.returncode != 0:
+        raise _tshark_failure(run.returncode, run.stderr)
+    return _decode_tshark_text(output)
 
 
 def stream_packets(cmd: Sequence[str]) -> Iterator[dict]:
@@ -1705,46 +2105,37 @@ def stream_packets(cmd: Sequence[str]) -> Iterator[dict]:
     raises), tshark's stdout is closed and the process terminated (killed
     after 5 s), so it is always reaped.
 
+    The run is bounded by :func:`tshark_timeout_for` (the ``-r`` capture's
+    size-scaled budget, which also covers the time the consumer spends between
+    rows): a watchdog stops tshark once it is exceeded, the rows already in the
+    pipe are still yielded, and then :class:`TsharkTimeoutError` is raised.
+
     A capture cut short in the middle of its last packet makes tshark exit
     non-zero after dissecting every complete packet; when packets were yielded
     that is logged as a warning instead of raised, so the readable part still
     converts.
 
     Raises:
+        TsharkTimeoutError: When the run exceeded its time budget (also for a
+            truncated capture). Not raised when the consumer stopped early.
         RuntimeError: When tshark completes with a non-zero exit, with its
             ``tshark:`` error lines and a tail of stderr. Not raised when the
             consumer stopped early, nor for a truncated capture that yielded
             packets.
     """
-    proc = subprocess.Popen(
-        list(cmd),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=_hermetic_env(),
-        **_TSHARK_TEXT_IO,
-    )
-
-    stderr = _StderrSummary()
-    drain = _start_stderr_drain(proc, stderr.add)
-    assert proc.stdout is not None
-    completed = False
     yielded = 0
-    try:
-        for line in proc.stdout:
+    with _tshark_process(cmd, text=True) as run:
+        assert run.proc.stdout is not None
+        for line in run.proc.stdout:
             obj = _ek_source_object(line)
             if obj is not None:
                 yielded += 1
                 yield obj
-        completed = True
-    finally:
-        if not completed:
-            _stop_process(proc)
-        returncode = proc.wait()
-        if drain is not None:
-            drain.join(timeout=5)
+        run.completed = True
 
-    if completed and returncode != 0:
-        _raise_unless_truncated_capture(returncode, stderr, yielded)
+    run.raise_if_timed_out()
+    if run.returncode != 0:
+        _raise_unless_truncated_capture(run.returncode, run.stderr, yielded)
 
 
 def _raise_unless_truncated_capture(returncode: int, stderr: _StderrSummary,
@@ -1831,12 +2222,21 @@ def _stop_process(proc) -> None:
     poll = getattr(proc, "poll", None)
     if poll is not None and poll() is not None:
         return  # already exited
+    _terminate_then_kill(proc)
+
+
+def _terminate_then_kill(proc) -> None:
+    """Terminate *proc*; kill it when still alive after :data:`_TSHARK_KILL_GRACE` s.
+
+    Leaves the pipes alone (the reader may still be draining them) and does not
+    reap a killed process: its owner waits for it.
+    """
     terminate = getattr(proc, "terminate", None)
     if terminate is None:
         return
     try:
         terminate()
-        proc.wait(timeout=5)
+        proc.wait(timeout=_TSHARK_KILL_GRACE)
     except subprocess.TimeoutExpired:
         proc.kill()
     except OSError:

@@ -4,6 +4,58 @@ All notable changes to friTap will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.6.1] - 2026-11-02
+
+### Security
+  - Require `brotli>=1.2.1` and skip `br` bodies on vulnerable versions (CVE-2026-111497).
+  - `FRITAP_ALLOW_UNPATCHED_BROTLI=1` re-enables `br` for distro builds with a backported fix.
+  - tshark runs now disable HTTP and WebSocket body decompression.
+  - New `--isolate-decoders` runs brotli, zstd, zlib and QPACK decoding in a sandboxed worker.
+  - frida-server downloads are checked against GitHub's SHA-256 digest and fail closed.
+  - Keylog merges and repairs copy only valid keylog lines.
+  - Agent keylog lines containing control characters are dropped.
+  - Agent text is escaped before it reaches the terminal.
+  - Agent address fields are validated before use in capture filters.
+  - Debug blob dumps go to a capped, dedicated directory.
+
+### Fixed
+  - HTTP/2 bodies are no longer lost when DATA frames span TLS records.
+  - The first HTTP/2 response on a connection is no longer replaced by SETTINGS.
+  - QUIC responses are no longer attributed to another server's flow.
+  - Android spawn retries when the app is killed during a slow attach.
+  - A slow device is no longer reported as unrooted.
+  - friTap no longer hangs when the target process dies.
+  - Device tcpdump is stopped on every exit path, and only friTap's own instance.
+  - `session.json` is written crash-safe and is never left empty.
+  - Non-fatal agent script errors no longer terminate friTap.
+  - Plain target kills are no longer blamed on instrumented hooks.
+  - Exceptions in the agent's deferred Java hooks are now caught.
+  - A zero-length HTTP/1 chunk no longer hangs the parser.
+  - HTTP/1 parsing resumes after protocol errors and `Connection: close`.
+  - A non-UTF-8 HTTP/2 header no longer blinds the connection.
+  - Markup in captured headers can no longer crash or blank the TUI.
+  - One failing analyzer no longer aborts `--analyze`.
+  - Records over 64 KiB are split instead of dropped from `-p` pcaps.
+  - Device capture files are now unique per run.
+
+### Changed
+  - QPACK header blocks are size-checked before decoding.
+  - HTTP/2 header blocks, streams and frames are capped.
+  - HTTP/3 DATA frames are counted instead of buffered.
+  - WebSocket deflate output is capped per message and per connection.
+  - Automatic body decompression is capped at 16 MiB.
+  - MTProto parsing has work and inflate budgets.
+  - Analyzer scans and findings per flow are capped.
+  - Markdown and CSV reports escape captured text.
+  - `.tap`, pcap, pcapng and minidump readers validate length fields.
+  - tshark runs have a size-scaled timeout (`FRITAP_TSHARK_TIMEOUT`).
+  - Mid-stream TLS recovery has a trial budget.
+  - Collector connections, queues and buffers are bounded.
+  - Parsers recover up to three times before being disabled.
+  - BHTTP now parses indeterminate-length messages with bounds checks.
+  - Truncated gzip streams are flagged with a note.
+  - Offline commands start faster by loading pydantic lazily.
+
 ## [2.5.8] - 2026-10-25
 
 ### Added

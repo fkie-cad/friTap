@@ -745,6 +745,17 @@ def _maybe_prepend_wine(parsed, logger):
     )
 
 
+def _apply_decoder_isolation_flag(parsed):
+    """--isolate-decoders: switch isolation on here and for child processes."""
+    if not getattr(parsed, "isolate_decoders", False):
+        return
+    import os
+
+    from .decoder_isolation import ISOLATE_DECODERS_ENV, enable_decoder_isolation
+    enable_decoder_isolation()
+    os.environ[ISOLATE_DECODERS_ENV] = "1"
+
+
 def cli():
     # Initial setup - will be reconfigured after parsing arguments
     logger = logging.getLogger('friTap')
@@ -1157,7 +1168,14 @@ Offline (read / analyze .tap):
                            "a library scan (--library-scan) or a key-region "
                            "scan (--scan-keys-region) is requested, since those scan inside "
                            "the agent's startup.")
+    args.add_argument("--isolate-decoders", required=False, action="store_true",
+                      default=False, dest="isolate_decoders",
+                      help="Run the native body decompressors (gzip/deflate, brotli, zstd) "
+                           "in a separate, restricted worker process, so a decoder exploit "
+                           "triggered by captured (attacker-controlled) traffic cannot reach "
+                           "the friTap process. Same as FRITAP_ISOLATE_DECODERS=1.")
     parsed = parser.parse_args(_normalize_bare_wine_flag(sys.argv[1:]))
+    _apply_decoder_isolation_flag(parsed)
 
     # Resolve --backend: None means the user did not pass it, so record that
     # (explicitness drives Wine-route precedence) and fall back to the default.
@@ -1714,7 +1732,23 @@ def _dispatch_special_mode(argv):
     return None
 
 
+_BROTLI_WARNING_EMITTED = False
+
+
+def _warn_if_vulnerable_brotli():
+    """Log the brotli CVE-2026-111497 warning once per process (if it applies)."""
+    global _BROTLI_WARNING_EMITTED
+    if _BROTLI_WARNING_EMITTED:
+        return
+    _BROTLI_WARNING_EMITTED = True
+    from .parsers.decompress import brotli_security_warning
+    warning = brotli_security_warning()
+    if warning:
+        logging.getLogger('friTap').warning(warning)
+
+
 def main():
+    _warn_if_vulnerable_brotli()
     # Handle sub-commands before argparse via the centralized dispatcher.
     mode = _dispatch_special_mode(sys.argv)
 

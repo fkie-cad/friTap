@@ -23,12 +23,14 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from itertools import islice
 from typing import AbstractSet, Callable, Dict, Iterable, List, Optional, Tuple
 
 from friTap.offline.keylog_coverage import (
     is_nss_tls_label,
     keylog_client_randoms,
 )
+from friTap.offline.keylog_io import iter_bounded_lines
 from friTap.offline.keylog_paths import canonical_keylog_path
 from friTap.offline.keylog_picker import CUSTOM_PICKER_NAME, TLS_PICKER_NAME
 from friTap.offline.schannel.unpaired import SIDECAR_KINDS
@@ -388,20 +390,42 @@ def _protocol_for_line(line: str) -> Optional[str]:
     return None
 
 
+class _CharLimitedReader:
+    """``readline`` over a text handle that stops after *limit* characters in total."""
+
+    def __init__(self, fh, limit: int):
+        self._fh = fh
+        self._remaining = limit
+        self.name = getattr(fh, "name", "")
+
+    def readline(self, size: int = -1) -> str:
+        """Like ``fh.readline(size)``, but ``""`` once the total limit is used up."""
+        if self._remaining <= 0:
+            return ""
+        want = self._remaining if size < 0 else min(size, self._remaining)
+        line = self._fh.readline(want)
+        self._remaining -= len(line)
+        return line
+
+
 def _record_lines(path: str, max_lines: int) -> List[str]:
     """Up to *max_lines* non-blank, non-comment lines from *path* (bounded read:
-    at most ``4 * max_lines`` physical lines of ``_MAX_LINE_CHARS`` each)."""
+    at most ``4 * max_lines`` physical lines of ``_MAX_LINE_CHARS`` each; an
+    over-long line is skipped, see :func:`iter_bounded_lines`)."""
+    max_physical = max_lines * 4
     lines: List[str] = []
     with open(path, "r", encoding="utf-8", errors="replace") as fh:
-        for _ in range(max_lines * 4):
-            raw = fh.readline(_MAX_LINE_CHARS)
-            if not raw:
-                break
+        # Cap the total read too: draining one newline-free giant "line" must not
+        # walk the whole file just to sniff its first records.
+        head = _CharLimitedReader(fh, max_physical * (_MAX_LINE_CHARS + 1))
+        physical = iter_bounded_lines(head, _MAX_LINE_CHARS, source=path)
+        for raw in islice(physical, max_physical):
             stripped = raw.strip()
             if stripped and not stripped.startswith("#"):
                 lines.append(stripped)
             if len(lines) >= max_lines:
                 break
+        physical.close()  # report any skipped over-long lines now
     return lines
 
 

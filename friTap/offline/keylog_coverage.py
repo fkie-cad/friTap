@@ -511,10 +511,45 @@ def _default_repaired_path(keylog: str) -> str:
     return os.path.join(os.path.dirname(keylog), f"{stem}.repaired.keylog")
 
 
+_TLS_PROTOCOL = "tls"
+
+
+def _not_repairable(keylog: str) -> Optional[RepairResult]:
+    """A no-hit result when *keylog* is not a bounded regular file, else ``None``.
+
+    Checked before anything reads the keylog: a FIFO would block forever and a
+    device or huge file would exhaust memory (see
+    :func:`~friTap.offline.keylog_paths.is_bounded_regular_file`).
+    """
+    from friTap.offline.keylog_paths import is_bounded_regular_file
+
+    if is_bounded_regular_file(keylog):
+        return None
+    return RepairResult(None, 0, 0, "The keylog is not a regular file of bounded size.")
+
+
+def _original_keylog_lines(keylog: str) -> List[str]:
+    """The valid NSS keylog lines of *keylog* to carry into a rewritten copy.
+
+    The keylog may be named by an untrusted capture manifest, so — like
+    :func:`~friTap.offline.keylog_picker.merge_keylogs` — only well-formed TLS
+    keylog lines are copied (stripped, file order, over-long lines skipped);
+    ``#`` comments and every other line are dropped, counted and reported in one
+    warning, so an arbitrary file such as a private key contributes zero lines.
+    Raises :class:`OSError` for anything that is not a bounded regular file.
+    """
+    from friTap.offline.keylog_picker import _read_valid_key_lines
+
+    lines, dropped = _read_valid_key_lines(keylog, _TLS_PROTOCOL)
+    if dropped:
+        logger.warning("Keylog rewrite: skipped %d comment/non-keylog line(s) of %s",
+                       dropped, keylog)
+    return lines
+
+
 def _write_repaired(keylog: str, new_lines: List[str], out_path: str) -> None:
-    """Write the original keylog lines plus *new_lines* (LF endings) to *out_path*."""
-    with open(keylog, "r", encoding="utf-8", errors="replace") as fh:
-        original = [line.rstrip("\r\n") for line in fh]
+    """Write the valid original keylog lines plus *new_lines* (LF endings) to *out_path*."""
+    original = _original_keylog_lines(keylog)
     with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("".join(f"{line}\n" for line in original + new_lines))
 
@@ -530,9 +565,14 @@ def repair_keylog(
     """Re-pair the secrets of keylog sessions missing from *pcap* by trial decryption.
 
     On any hit, ``<stem>.repaired.keylog`` (or *out_path*) is written with the
-    original lines plus the re-paired ones. *progress*, when given, receives a
-    short status string before the (potentially slow) tshark trials start.
+    original valid keylog lines (comments and non-keylog lines dropped, see
+    :func:`_original_keylog_lines`) plus the re-paired ones. *progress*, when
+    given, receives a short status string before the (potentially slow) tshark
+    trials start. A *keylog* that is not a bounded regular file is not read.
     """
+    refused = _not_repairable(keylog)
+    if refused is not None:
+        return refused
     if capture is None:
         capture = read_capture_handshakes(tshark_bin, pcap)
     known = keylog_secrets(keylog)
@@ -675,13 +715,13 @@ def _write_relabeled(keylog: str, corrected: List[str], out_path: str) -> None:
     An original NSS TLS line is dropped when its secret was authoritatively placed
     by trial decryption (so a swapped/``???`` line is replaced, not duplicated) or
     when its client_random is not valid hex (a ``???`` line trial decryption could
-    not place — foreign noise). Every other line (a valid session outside this
-    capture, a comment) is preserved. De-duplicated (case-insensitively on content),
-    order preserved.
+    not place — foreign noise). Every other valid keylog line (e.g. a session
+    outside this capture) is preserved; comments and non-keylog lines are dropped
+    (see :func:`_original_keylog_lines`). De-duplicated (case-insensitively on
+    content), order preserved.
     """
     placed = {c.split()[-1].lower() for c in corrected if len(c.split()) == 3}
-    with open(keylog, "r", encoding="utf-8", errors="replace") as fh:
-        original = [ln.rstrip("\r\n") for ln in fh]
+    original = _original_keylog_lines(keylog)
     kept: List[str] = []
     for ln in original:
         triple = _line_nss_triple(ln)
@@ -727,8 +767,12 @@ def relabel_keylog(
     problem (logs and returns a no-hit ``RepairResult``).
 
     Superset of :func:`repair_keylog`: it also re-pairs orphan sessions, but in
-    addition relabels in-capture sessions and ingests ``???`` lines.
+    addition relabels in-capture sessions and ingests ``???`` lines. Like it, only
+    valid keylog lines are copied and a non-regular / oversized *keylog* is not read.
     """
+    refused = _not_repairable(keylog)
+    if refused is not None:
+        return refused
     masters, records = _relabel_inputs(keylog, max_bytes)
     tried = len(masters) + len({r["secret"] for r in records})
     if tried == 0:

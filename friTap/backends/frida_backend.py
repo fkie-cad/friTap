@@ -256,6 +256,23 @@ def _wrap_frida_errors(
     return decorate(func)
 
 
+def _off_frida_main_loop(callback: Callable, thread_name: str) -> Callable:
+    """Wrap a Frida signal handler so it runs on its own daemon thread.
+
+    Frida delivers signals such as ``detached`` on its main-loop thread, and
+    every synchronous Frida call (``query_system_parameters``, script unload,
+    ``detach``) waits for that same loop to deliver its reply. A handler that
+    makes such a call inline therefore deadlocks Frida forever: the target-death
+    teardown (crash report, pcap finalize, device tcpdump stop) never runs and
+    friTap hangs until Ctrl+C. Handing the work to a thread lets the loop keep
+    running while the handler does its blocking work.
+    """
+    @functools.wraps(callback)
+    def handler(*args: Any) -> None:
+        threading.Thread(target=callback, args=args, name=thread_name, daemon=True).start()
+    return handler
+
+
 def _is_transient_attach_error(exc: BaseException) -> bool:
     """Return True if ``exc`` is a transient Frida attach failure worth retrying.
 
@@ -388,7 +405,7 @@ class FridaBackend(Backend):
         return device.spawn(target, **options)
 
     def on_detached(self, process: Any, callback: Callable) -> None:
-        process.on('detached', callback)
+        process.on('detached', _off_frida_main_loop(callback, "fritap-detach"))
 
     def on_process_crashed(self, device: Any, callback: Callable) -> None:
         device.on('process-crashed', callback)

@@ -1707,19 +1707,20 @@
    },
    {
     "chunks": {
-     "count": 1,
+     "count": 2,
      "sha256": [
-      "3cead54e17e9ce89d8df9b5574c4a609c45e40d80e4128269fefde8565edcea7"
+      "3cead54e17e9ce89d8df9b5574c4a609c45e40d80e4128269fefde8565edcea7",
+      "6a9dc8b1d287bbec061d145276b61334c012e7e36e10536ec478240e605bfcaf"
      ]
     },
     "findings": [],
     "flow": {
      "connection_id": "net:192.168.0.193:39130-54.225.197.162:443",
-     "detected_protocol": "",
+     "detected_protocol": "HTTP/2",
      "dst_addr": "54.225.197.162",
      "dst_port": 443,
-     "duration": 0.0,
-     "ended": 1781021965.842327,
+     "duration": 0.19881892204284668,
+     "ended": 1781021966.041146,
      "findings": [],
      "flow_id": "net:192.168.0.193:39130-54.225.197.162:443:1",
      "layers": [
@@ -1748,7 +1749,30 @@
       "stream_id": 0,
       "url": "connection-setup"
      },
-     "response": null,
+     "response": {
+      "body_size": 0,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {
+       "0x8": "1",
+       "INITIAL_WINDOW_SIZE": "65536",
+       "MAX_CONCURRENT_STREAMS": "100",
+       "MAX_FRAME_SIZE": "65536",
+       "SETTINGS": "ACK",
+       "WINDOW_UPDATE": "2147418356"
+      },
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": true,
+      "is_request": false,
+      "method": "SETTINGS",
+      "protocol": "HTTP/2",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": "connection-control"
+     },
      "src_addr": "192.168.0.193",
      "src_port": 39130,
      "ssl_session_id": "",
@@ -1757,7 +1781,7 @@
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "",
-     "total_bytes": 13,
+     "total_bytes": 68,
      "transport": "tls"
     },
     "layers": [
@@ -1794,14 +1818,39 @@
      "stream_id": 0,
      "url": "connection-setup"
     },
-    "response": null,
+    "response": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 0,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {
+      "0x8": "1",
+      "INITIAL_WINDOW_SIZE": "65536",
+      "MAX_CONCURRENT_STREAMS": "100",
+      "MAX_FRAME_SIZE": "65536",
+      "SETTINGS": "ACK",
+      "WINDOW_UPDATE": "2147418356"
+     },
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": true,
+     "is_request": false,
+     "method": "SETTINGS",
+     "protocol": "HTTP/2",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": "connection-control"
+    },
     "summary": {
      "connection_id": "net:192.168.0.193:39130-54.225.197.162:443",
-     "detected_protocol": "",
+     "detected_protocol": "HTTP/2",
      "dst_addr": "54.225.197.162",
      "dst_port": 443,
-     "duration": 0.0,
-     "ended": 1781021965.842327,
+     "duration": 0.19881892204284668,
+     "ended": 1781021966.041146,
      "finding_count": 0,
      "flow_id": "net:192.168.0.193:39130-54.225.197.162:443:1",
      "flow_method": "",
@@ -1822,7 +1871,7 @@
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "",
-     "total_bytes": 13,
+     "total_bytes": 68,
      "transport": "tls",
      "url": "connection-setup"
     },
@@ -1840,18 +1889,18 @@
      "count": 3,
      "sha256": [
       "9c1ee68e0326b08aab72c55dd7e63e184172f5bfa5dd0edcde72e2955a639af9",
-      "9c1ee68e0326b08aab72c55dd7e63e184172f5bfa5dd0edcde72e2955a639af9",
-      "b5544de3dec816d11eb8ba5969d31e799778a2ffc03719ae1daa6607cebcc663"
+      "6a972a14047c4e496ac8dbba68e8a68ae3caba05933c80df5174b6056998e5ea",
+      "e62cc348c23d8092452a6bf126a3bda6ce1839a715323eef6ae6327885cbff5a"
      ]
     },
     "findings": [],
     "flow": {
      "connection_id": "net:192.168.0.193:39130-54.225.197.162:443",
-     "detected_protocol": "",
+     "detected_protocol": "HTTP/2",
      "dst_addr": "54.225.197.162",
      "dst_port": 443,
-     "duration": 0.1789560317993164,
-     "ended": 1781021966.041146,
+     "duration": 0.19579410552978516,
+     "ended": 1781021966.057984,
      "findings": [],
      "flow_id": "net:192.168.0.193:39130-54.225.197.162:443:2",
      "layers": [
@@ -1894,28 +1943,28 @@
       "url": "/sdk/metrics"
      },
      "response": {
-      "body_size": 0,
+      "body_size": 23,
       "content_encoding": "",
-      "content_type": "",
+      "content_type": "application/json; charset=utf-8",
       "error": "",
       "headers": {
-       "0x8": "1",
-       "INITIAL_WINDOW_SIZE": "65536",
-       "MAX_CONCURRENT_STREAMS": "100",
-       "MAX_FRAME_SIZE": "65536",
-       "SETTINGS": "ACK",
-       "WINDOW_UPDATE": "2147418356"
+       ":status": "200",
+       "content-length": "23",
+       "content-type": "application/json; charset=utf-8",
+       "date": "Tue, 09 Jun 2026 16:19:26 GMT",
+       "scrat-version": "v0.267.0",
+       "vungle-build-rev": "8fe0cbbd135a46f335d8d66c784f77ab1ac92ebe"
       },
       "host": "",
       "is_complete": true,
-      "is_control_frame": true,
+      "is_control_frame": false,
       "is_request": false,
-      "method": "SETTINGS",
+      "method": "",
       "protocol": "HTTP/2",
-      "status_code": 0,
+      "status_code": 200,
       "status_text": "",
-      "stream_id": 0,
-      "url": "connection-control"
+      "stream_id": 3,
+      "url": ""
      },
      "src_addr": "192.168.0.193",
      "src_port": 39130,
@@ -1925,7 +1974,7 @@
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "",
-     "total_bytes": 1496,
+     "total_bytes": 920,
      "transport": "tls"
     },
     "layers": [
@@ -1977,37 +2026,37 @@
     },
     "response": {
      "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-     "body_size": 0,
+     "body_size": 23,
      "content_encoding": "",
-     "content_type": "",
+     "content_type": "application/json; charset=utf-8",
      "error": "",
      "headers": {
-      "0x8": "1",
-      "INITIAL_WINDOW_SIZE": "65536",
-      "MAX_CONCURRENT_STREAMS": "100",
-      "MAX_FRAME_SIZE": "65536",
-      "SETTINGS": "ACK",
-      "WINDOW_UPDATE": "2147418356"
+      ":status": "200",
+      "content-length": "23",
+      "content-type": "application/json; charset=utf-8",
+      "date": "Tue, 09 Jun 2026 16:19:26 GMT",
+      "scrat-version": "v0.267.0",
+      "vungle-build-rev": "8fe0cbbd135a46f335d8d66c784f77ab1ac92ebe"
      },
      "host": "",
      "is_complete": true,
-     "is_control_frame": true,
+     "is_control_frame": false,
      "is_request": false,
-     "method": "SETTINGS",
+     "method": "",
      "protocol": "HTTP/2",
      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-     "status_code": 0,
+     "status_code": 200,
      "status_text": "",
-     "stream_id": 0,
-     "url": "connection-control"
+     "stream_id": 3,
+     "url": ""
     },
     "summary": {
      "connection_id": "net:192.168.0.193:39130-54.225.197.162:443",
-     "detected_protocol": "",
+     "detected_protocol": "HTTP/2",
      "dst_addr": "54.225.197.162",
      "dst_port": 443,
-     "duration": 0.1789560317993164,
-     "ended": 1781021966.041146,
+     "duration": 0.19579410552978516,
+     "ended": 1781021966.057984,
      "finding_count": 0,
      "flow_id": "net:192.168.0.193:39130-54.225.197.162:443:2",
      "flow_method": "",
@@ -2024,11 +2073,11 @@
      "ssl_session_id": "",
      "started": 1781021965.86219,
      "state": "complete",
-     "status_code": 0,
+     "status_code": 200,
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "",
-     "total_bytes": 1496,
+     "total_bytes": 920,
      "transport": "tls",
      "url": "/sdk/metrics"
     },

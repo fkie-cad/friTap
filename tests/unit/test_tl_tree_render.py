@@ -297,3 +297,17 @@ def test_render_refs_tolerates_missing_keys_and_no_resolver():
     text = joined(render_refs({"answered_by": [{"flow_id": 3, "method": "rpc_result"}], "acked_by": []}))
     assert "answered by          → rpc_result" in text
     assert "acked by" not in text
+
+
+def test_truncated_gzip_inflate_note_uses_warning_style():
+    inner = pong(msg_id=1, ping_id=2) * 50
+    packed = gzip.compress(inner)[:-8]  # drop the trailer: partial inflate
+    lines = render(u32(GZIP_PACKED) + tl_bytes(packed))
+    assert "gzip_packed truncated (partial inflate)" in lines[0]
+    assert "[yellow](inflated " in lines[0]
+    assert "[dim](inflated" not in lines[0]
+
+
+def test_complete_gzip_inflate_note_stays_dim():
+    data = rpc_result(MSG_ID, gzip_packed(pong(msg_id=1, ping_id=2)))
+    assert any("[dim](inflated " in line for line in render(data))

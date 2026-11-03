@@ -774,6 +774,88 @@ fritap --debug-log ./run.log -v target          # persist session-level log
 
 ---
 
+### Security
+
+#### `--isolate-decoders`
+Decode compressed bodies (gzip/deflate, brotli, zstd), WebSocket
+permessage-deflate messages and HTTP/3 QPACK header blocks in a separate,
+restricted worker process instead of inside friTap. **Default off**: decoding stays
+in-process exactly as before. `FRITAP_ISOLATE_DECODERS=1` does the same and also
+covers the TUI, `--from-pcap` and replay, which take no capture flags.
+
+Why: zlib, brotli and zstd are C decoders, and the bodies friTap decodes come
+from the traffic it captures, e.g. a malware C2 response. One decoder memory bug
+(such as the brotli heap overflow CVE-2026-111497) is enough to take over the
+process that decodes. Without isolation that is the friTap process, which holds
+the Frida session and the keys and often runs as root. With isolation it is a
+throwaway worker.
+
+```bash
+sudo fritap --isolate-decoders -k keys.log -p capture.pcap com.example.app
+FRITAP_ISOLATE_DECODERS=1 fritap      # TUI
+```
+
+How it works:
+
+- **Worker.** One worker process, started on first use with the `multiprocessing`
+  *spawn* method (never fork; friTap runs Frida threads). It loads only the
+  stdlib, zlib/brotli/zstandard/pylsqpack, friTap's in-process decoder functions
+  (`friTap/parsers/decompress.py`) and the QPACK wrapper
+  (`friTap/decoder_isolation/qpack_kind.py`), both loaded by file path. It does
+  not load Frida or the rest of friTap.
+- **Stateful decoders.** Decoders that keep state between calls live in the
+  worker as *contexts* (at most 4096 per worker): one zlib inflater per
+  WebSocket direction (context takeover) and one pylsqpack decoder per QPACK
+  dynamic table, plus the static-table decoders. They are created on first use,
+  freed when the parser is flushed or garbage collected, and lost when the worker
+  restarts. All limits stay in friTap: the per-message and per-connection
+  WebSocket inflate budgets, the QPACK table-capacity and blocked-stream clamps,
+  the header-block size bound and the header-list caps (512 fields / 256 KiB).
+  Decoded header lists come back in a compact length-prefixed encoding that
+  friTap checks strictly: lengths, field count, total size, no trailing bytes.
+  A violation counts as an invalid reply. When a context is lost (crash,
+  timeout, invalid reply, restart, context cap), the WebSocket direction stops
+  decompressing with the error `permessage-deflate decoder context lost;
+  decompression disabled`, because the compression history is gone. The QPACK
+  context is treated like an encoder-stream error: its header blocks are
+  raw-scanned for pseudo-headers, static-only blocks still decode, and new
+  connections decode normally.
+- **Protocol.** Length-prefixed binary frames: a fixed `struct` header (magic,
+  version, op, status, flags, request id, handle, two integer args, text and
+  data lengths) followed by raw bytes. friTap never unpickles or evaluates
+  anything the worker sends. It checks every field: lengths against caps (data
+  against the caller's `max_out`), status against the statuses allowed for the
+  op, and the request id and op echo. Error text from the worker is length-capped,
+  decoded with `errors="replace"`, and has control and bidi characters escaped.
+- **Supervision.** Each request has a timeout of 10 s plus extra time that grows
+  with input and output size (`FRITAP_DECODER_TIMEOUT` overrides the 10 s). A
+  crash, timeout or invalid reply kills and reaps the worker, and the caller gets
+  an ordinary decompress error. friTap logs the event as a **possible exploit
+  attempt** and copies the input (up to 16 MiB) to
+  `<user log dir>/friTap/decoder_crashes/` (at most 20 files; set
+  `FRITAP_DECODER_QUARANTINE_DIR` to use another directory). The next request
+  starts a new worker. After more than 5 failures within 60 s, decoding is turned
+  off for 60 s ("decoder worker disabled after repeated crashes"). friTap never
+  falls back to decoding in-process.
+- **Hardening inside the worker** (best effort):
+
+  | OS | What the worker gets |
+  |----|----------------------|
+  | all POSIX | inherited fds closed, stdin/stdout to `/dev/null`; as root: switches to `SUDO_UID`/`SUDO_GID`, or to `nobody` when those are unset; `RLIMIT_CORE=0`, `RLIMIT_NOFILE=64`, `RLIMIT_FSIZE=0`, `RLIMIT_NPROC=0` (when not root); `nice(10)` |
+  | Linux | also `RLIMIT_AS=2 GiB`, `PR_SET_NO_NEW_PRIVS`, `PR_SET_PDEATHSIG(SIGKILL)`, and an empty network namespace (`unshare(CLONE_NEWNET)`) when started as root |
+  | macOS | also the built-in `pure-computation` sandbox (no file access, network or new processes). macOS does not enforce `RLIMIT_AS` |
+  | Windows | process separation only |
+
+- **Cost.** The worker starts in about 60 ms, once. Each call adds about 35 µs
+  for small bodies and about 1.2 ms for a 1 MiB body (the data passes through a
+  pipe). A 1 KiB WebSocket message goes from about 5 µs to about 55 µs, and a
+  QPACK header block from about 7 µs to about 75 µs.
+
+The brotli CVE guard still runs in friTap before anything reaches the worker,
+and the worker runs it again.
+
+---
+
 ### Miscellaneous and experimental
 
 #### `--modern` (EXPERIMENTAL)

@@ -1,6 +1,7 @@
 """HTTP/2 frame-level parser with HPACK decompression via hpack library."""
 
 import logging
+from collections import OrderedDict
 
 _log = logging.getLogger(__name__)
 
@@ -59,6 +60,48 @@ _MAX_VALID_FRAME_TYPE = 0x09
 _HEADERS_PRIORITY_LEN = 5      # 4-byte stream dependency + 1-byte weight
 _PUSH_PROMISE_PREFIX_LEN = 4   # R bit + 31-bit promised stream id
 
+# --- Hardening limits (parsed bytes are attacker-controlled) ---
+# Cap on an accumulated (HEADERS/PUSH_PROMISE + CONTINUATION) header block. A
+# CONTINUATION flood beyond this poisons the direction (the HPACK table cannot
+# stay in sync without decoding the block) and frees the buffer.
+_MAX_HEADER_BLOCK_SIZE = 256 * 1024
+# Explicit decompressed-size cap for a single header list (hpack Decoder).
+_MAX_HEADER_LIST_SIZE = 65536
+# Upper bound on a peer-advertised SETTINGS_HEADER_TABLE_SIZE we honor.
+_MAX_HEADER_TABLE_SIZE = 1024 * 1024
+# Cap on concurrently-open stream states per direction; the oldest is evicted.
+_MAX_OPEN_STREAMS = 1024
+# Caps on the merged header fields of one stream across repeated HEADERS
+# blocks (initial headers + trailers), so intermediate copies stay bounded.
+_MAX_STREAM_HEADER_FIELDS = 512
+_MAX_STREAM_HEADER_BYTES = 256 * 1024
+# RFC 7541 §4.1 per-entry overhead used when sizing header fields.
+_HEADER_FIELD_OVERHEAD = 32
+# RFC 7540 §6.5.2 SETTINGS_MAX_FRAME_SIZE bounds.
+_DEFAULT_MAX_FRAME_SIZE = 16384
+_MAX_ALLOWED_FRAME_SIZE = 16777215
+
+# SETTINGS parameter ids we act on (RFC 7540 §6.5.2).
+_SETTINGS_HEADER_TABLE_SIZE = 0x1
+_SETTINGS_MAX_FRAME_SIZE = 0x5
+_FLAG_ACK = 0x01
+
+# Frame types that may create per-stream state for a new stream id. Other
+# stream-level frames (PRIORITY, WINDOW_UPDATE, RST_STREAM, ...) never do, so a
+# flood of them on fresh ids allocates nothing. CONTINUATION is kept so a stray
+# one is still surfaced as a protocol error (#39).
+_STREAM_CREATING_FRAMES = frozenset({
+    _FRAME_HEADERS, _FRAME_DATA, _FRAME_PUSH_PROMISE, _FRAME_CONTINUATION,
+})
+
+# Frames whose payload carries an HPACK header-block fragment.
+_HEADER_BLOCK_FRAMES = frozenset({
+    _FRAME_HEADERS, _FRAME_PUSH_PROMISE, _FRAME_CONTINUATION,
+})
+
+# The peer direction whose encoder a direction's SETTINGS constrain.
+_OPPOSITE_DIRECTION = {"read": "write", "write": "read"}
+
 # Sentinel URLs for control-frame ParseResults (shared with TUI rendering)
 H2_URL_CONNECTION_SETUP = "connection-setup"
 H2_URL_CONNECTION_CONTROL = "connection-control"
@@ -93,6 +136,22 @@ _GOAWAY_ERRORS: dict[int, str] = {
     0xc: "INADEQUATE_SECURITY",
     0xd: "HTTP_1_1_REQUIRED",
 }
+
+
+def decode_header_text(raw) -> str:
+    """Decode a raw header name/value to text.
+
+    UTF-8 (identical to hpack's own decoding) with a per-field latin-1
+    fallback for non-UTF-8 bytes; a ``str`` is returned unchanged. Shared by
+    every parser that must render header fields exactly as HTTP/2 does.
+    """
+    if isinstance(raw, str):
+        return raw
+    data = bytes(raw)
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode("latin-1")
 
 
 def is_h2_control_frame_data(data: bytes) -> bool:
@@ -134,6 +193,7 @@ class _StreamState:
         "awaiting_continuation", "pending_push_promise", "error",
         "push_header_bytes", "headers_awaiting_continuation",
         "push_awaiting_continuation", "pending_end_stream",
+        "header_block_invalid", "header_blocks_decoded", "header_list_bytes",
     )
 
     def __init__(self, stream_id: int) -> None:
@@ -180,6 +240,15 @@ class _StreamState:
         # Set to "hpack-desync" when this stream's headers could not be
         # decoded; consumers use it to tell "undecodable" from a real status.
         self.error: str = ""
+        # True once the real-HEADERS block currently being accumulated was
+        # rejected (oversize / invalid padding); its decode is skipped so the
+        # specific error is not overwritten by "hpack-desync".
+        self.header_block_invalid: bool = False
+        # Number of real HEADERS blocks decoded so far; a block after the first
+        # one (typically END_STREAM trailers) is also kept in ``trailers``.
+        self.header_blocks_decoded: int = 0
+        # Running size of the fields merged into ``headers`` (capped).
+        self.header_list_bytes: int = 0
 
 
 class Http2Parser(BaseParser):
@@ -199,21 +268,175 @@ class Http2Parser(BaseParser):
         # Per-direction state: separate HPACK contexts, buffers, and streams
         self._decoders: dict[str, HpackDecoder] = {}
         self._buffers: dict[str, bytearray] = {}
-        self._streams: dict[str, dict[int, _StreamState]] = {}
+        # Insertion-ordered so the oldest open stream can be evicted once a
+        # direction exceeds ``_MAX_OPEN_STREAMS``.
+        self._streams: dict[str, OrderedDict[int, _StreamState]] = {}
         self._preface_seen: dict[str, bool] = {}
         # Once a direction's HPACK decoder hits an unrecoverable desync it is
         # poisoned: HPACK is stateful and cannot resync after a missed dynamic-
         # table insertion, so every later decode on that direction would fail.
         self._decoder_failed: dict[str, bool] = {}
+        # Peer-advertised SETTINGS_MAX_FRAME_SIZE bounding the frames *sent by*
+        # each direction; absent until observed.
+        self._max_frame_size: dict[str, int] = {}
+        # Payload bytes of an oversize frame still to be skipped, per
+        # direction. They are counted off as they arrive, never buffered.
+        self._skip_remaining: dict[str, int] = {}
+        # Opt-in ``(direction, stream_id, raw_frame)`` log of every consumed
+        # frame (see enable_frame_log); None while disabled.
+        self._frame_log: list[tuple[str, int, bytes]] | None = None
+        # Per direction: frames of a header block still awaiting END_HEADERS,
+        # logged together once the block closes (see _log_frame).
+        self._held_block: dict[str, list[tuple[str, int, bytes]]] = {}
+        self._held_block_bytes: dict[str, int] = {}
+
+    @staticmethod
+    def _new_decoder():
+        """Create an HPACK decoder with an explicit header-list size cap."""
+        if not _hpack_available:
+            return None
+        return HpackDecoder(max_header_list_size=_MAX_HEADER_LIST_SIZE)
 
     def _ensure_direction(self, direction: str) -> None:
         """Lazily initialize per-direction state."""
         if direction not in self._decoders:
-            self._decoders[direction] = HpackDecoder() if _hpack_available else None
+            self._decoders[direction] = self._new_decoder()
             self._buffers[direction] = bytearray()
-            self._streams[direction] = {}
+            self._streams[direction] = OrderedDict()
             self._preface_seen[direction] = False
             self._decoder_failed[direction] = False
+            self._skip_remaining[direction] = 0
+            self._held_block[direction] = []
+            self._held_block_bytes[direction] = 0
+
+    # --- Frame log (per-frame byte attribution for the flow collector) -----
+
+    def enable_frame_log(self) -> None:
+        """Start recording the raw bytes of every frame this parser consumes.
+
+        The flow collector uses it to hand each HTTP/2 stream's flow exactly
+        its own frames. Off by default, so other users retain nothing extra.
+        """
+        if self._frame_log is None:
+            self._frame_log = []
+
+    def take_frame_log(self) -> list[tuple[str, int, bytes]]:
+        """Return and clear the ``(direction, stream_id, raw_frame)`` log.
+
+        Entries are complete frames (9-byte header included) in wire order;
+        the connection preface is reported on stream 0. A header block
+        (HEADERS/PUSH_PROMISE plus CONTINUATIONs) is reported as a whole once
+        END_HEADERS arrives, i.e. in the same feed as the result it produces.
+        Oversize frames are skipped unbuffered and so never reported.
+        :meth:`flush` adds whatever was still held or partially buffered.
+        """
+        log = self._frame_log
+        if not log:
+            return []
+        self._frame_log = []
+        return log
+
+    @staticmethod
+    def _opens_header_block(frame_type: int, flags: int) -> bool:
+        """True for a header-block frame that is not the block's last one."""
+        return frame_type in _HEADER_BLOCK_FRAMES and not flags & _FLAG_END_HEADERS
+
+    def _log_frame(self, direction: str, stream_id: int, raw: bytes,
+                   holds_block: bool = False) -> None:
+        """Append *raw* to the frame log; no-op while the log is disabled.
+
+        Frames of a still-open header block (*holds_block*) are held back
+        and released together with the frame that closes the block. The
+        hold is capped at ``_MAX_HEADER_BLOCK_SIZE`` (the parser rejects such
+        a block anyway), so a CONTINUATION flood cannot grow it unbounded.
+        """
+        if self._frame_log is None:
+            return
+        held = self._held_block[direction]
+        held.append((direction, stream_id, raw))
+        self._held_block_bytes[direction] += len(raw)
+        if holds_block and self._held_block_bytes[direction] <= _MAX_HEADER_BLOCK_SIZE:
+            return
+        self._release_held_block(direction)
+
+    def _release_held_block(self, direction: str) -> None:
+        """Move *direction*'s held header-block frames into the frame log."""
+        self._frame_log.extend(self._held_block[direction])
+        self._held_block[direction].clear()
+        self._held_block_bytes[direction] = 0
+
+    def _log_unframed(self) -> None:
+        """At flush: log held header blocks and partially buffered frames."""
+        if self._frame_log is None:
+            return
+        for direction, buf in self._buffers.items():
+            self._release_held_block(direction)
+            if buf:
+                self._frame_log.append(
+                    (direction, self._leftover_stream_id(buf), bytes(buf)))
+
+    @staticmethod
+    def _leftover_stream_id(buf: bytearray) -> int:
+        """Stream id of a partially buffered frame (0 without a full header)."""
+        if len(buf) < _FRAME_HEADER_SIZE:
+            return 0
+        return unpack_frame_header(buf)[3]
+
+    def _pop_frame(self, buf: bytearray, total: int, direction: str,
+                   stream_id: int, frame_type: int, flags: int) -> bytes:
+        """Remove one complete frame from *buf*, log it, return its payload."""
+        if self._frame_log is None:
+            payload = bytes(buf[_FRAME_HEADER_SIZE:total])
+        else:
+            raw = bytes(buf[:total])
+            payload = raw[_FRAME_HEADER_SIZE:]
+            self._log_frame(direction, stream_id, raw,
+                            self._opens_header_block(frame_type, flags))
+        del buf[:total]
+        return payload
+
+    # --- Oversize-frame skipping (counted, never buffered) -----------------
+
+    def _skip_incoming(self, direction: str, data: bytes):
+        """Drop the still-to-skip oversize payload from the head of *data*.
+
+        Returns the remainder as a zero-copy view. Only reached while the
+        direction's buffer is empty: a pending skip drains it completely.
+        """
+        remaining = self._skip_remaining[direction]
+        if not remaining:
+            return data
+        skipped = min(remaining, len(data))
+        self._skip_remaining[direction] = remaining - skipped
+        return memoryview(data)[skipped:]
+
+    def _skip_buffered(self, direction: str, buf: bytearray) -> bool:
+        """Drop still-to-skip oversize payload bytes from *buf*.
+
+        Returns True once nothing is left to skip (parsing may continue).
+        """
+        remaining = self._skip_remaining[direction]
+        if remaining:
+            skipped = min(remaining, len(buf))
+            del buf[:skipped]
+            remaining -= skipped
+            self._skip_remaining[direction] = remaining
+        return remaining == 0
+
+    def _begin_oversize_skip(
+        self, streams: OrderedDict, buf: bytearray, header: tuple[int, int, int, int],
+        direction: str,
+    ) -> None:
+        """Start skipping an oversize frame: drop its header, count its payload.
+
+        A known frame type keeps the ``frame-too-large`` / poisoning handling;
+        an unknown type is skipped silently, as unknown types always were.
+        """
+        length, frame_type, _flags, stream_id = header
+        if frame_type <= _MAX_VALID_FRAME_TYPE:
+            self._handle_oversize_frame(streams, stream_id, frame_type, length, direction)
+        del buf[:_FRAME_HEADER_SIZE]
+        self._skip_remaining[direction] = length
 
     def can_parse(self, data: bytes) -> bool:
         """Detect HTTP/2 connection preface or valid frame header.
@@ -273,7 +496,7 @@ class Http2Parser(BaseParser):
         """
         self._ensure_direction(direction)
         buf = self._buffers[direction]
-        buf += data
+        buf += self._skip_incoming(direction, data)
         streams = self._streams[direction]
         decoder = self._decoders[direction]
         results: list[ParseResult] = []
@@ -284,21 +507,28 @@ class Http2Parser(BaseParser):
             if buf.startswith(_CONNECTION_PREFACE):
                 del buf[:len(_CONNECTION_PREFACE)]
                 self._preface_seen[direction] = True
+                self._log_frame(direction, 0, _CONNECTION_PREFACE)
             elif _CONNECTION_PREFACE[:len(buf)] == buf:
                 # Buffer is a prefix of the connection preface — wait for more data
                 return results
 
-        while len(buf) >= _FRAME_HEADER_SIZE:
-            length, frame_type, flags, stream_id = self._parse_frame_header(
-                buf[:_FRAME_HEADER_SIZE]
-            )
+        while self._skip_buffered(direction, buf) and len(buf) >= _FRAME_HEADER_SIZE:
+            header = self._parse_frame_header(buf[:_FRAME_HEADER_SIZE])
+            length, frame_type, flags, stream_id = header
+
+            # A frame above the peer's SETTINGS_MAX_FRAME_SIZE is skipped by
+            # counting its payload off as it arrives — never buffered (it may
+            # announce up to 16 MiB).
+            if self._is_oversize_frame(direction, length):
+                self._begin_oversize_skip(streams, buf, header, direction)
+                continue
 
             total_frame_size = _FRAME_HEADER_SIZE + length
             if len(buf) < total_frame_size:
                 break
 
-            payload = bytes(buf[_FRAME_HEADER_SIZE:total_frame_size])
-            del buf[:total_frame_size]
+            payload = self._pop_frame(
+                buf, total_frame_size, direction, stream_id, frame_type, flags)
 
             if frame_type > _MAX_VALID_FRAME_TYPE:
                 continue
@@ -306,13 +536,22 @@ class Http2Parser(BaseParser):
             # Collect connection-level frames (stream_id == 0)
             if stream_id == 0:
                 control_frames.append((frame_type, flags, payload))
+                if frame_type == _FRAME_SETTINGS:
+                    self._apply_peer_settings(direction, flags, payload)
                 continue
 
             if frame_type == _FRAME_RST_STREAM:
                 streams.pop(stream_id, None)
                 continue
 
-            stream = self._get_stream(streams, stream_id, direction)
+            # PRIORITY / WINDOW_UPDATE / ... carry nothing we track per stream;
+            # never allocate state for them (flood on fresh ids, #4).
+            if frame_type not in _STREAM_CREATING_FRAMES:
+                continue
+
+            stream = self._get_or_create_stream(
+                streams, stream_id, direction, results
+            )
 
             # Whether this frame is allowed to honor an END_STREAM flag and
             # finalize the parent request/response stream (#15). A PUSH_PROMISE
@@ -321,10 +560,15 @@ class Http2Parser(BaseParser):
             finalizes_parent = False
 
             if frame_type == _FRAME_HEADERS:
-                header_payload = self._strip_padded_frame(
-                    payload, flags, self._headers_prefix_len(flags)
-                )
-                stream.header_bytes += header_payload
+                prefix_len = self._headers_prefix_len(flags)
+                if self._padded_frame_is_valid(payload, flags, prefix_len):
+                    self._append_header_fragment(
+                        stream,
+                        self._strip_padded_frame(payload, flags, prefix_len),
+                        direction,
+                    )
+                else:
+                    self._reject_header_block(stream, direction, "invalid-padding")
                 if flags & _FLAG_END_HEADERS:
                     self._finalize_headers(stream, decoder, flags, direction, results)
                     finalizes_parent = True
@@ -345,9 +589,18 @@ class Http2Parser(BaseParser):
                 # It is accumulated in a SEPARATE buffer (#45) so it can never
                 # corrupt a concurrently half-buffered real HEADERS block, and
                 # it never finalizes the parent stream (#15).
-                stream.push_header_bytes += self._strip_padded_frame(
+                if self._padded_frame_is_valid(
                     payload, flags, _PUSH_PROMISE_PREFIX_LEN
-                )
+                ):
+                    self._append_push_fragment(
+                        stream,
+                        self._strip_padded_frame(
+                            payload, flags, _PUSH_PROMISE_PREFIX_LEN
+                        ),
+                        direction,
+                    )
+                else:
+                    self._reject_push_block(stream, direction, "invalid-padding")
                 stream.pending_push_promise = True
                 if flags & _FLAG_END_HEADERS:
                     self._finalize_push_promise(stream, decoder, direction)
@@ -362,11 +615,11 @@ class Http2Parser(BaseParser):
                 # CONTINUATION with neither block open is a protocol error —
                 # surface it instead of silently appending into a buffer.
                 if stream.push_awaiting_continuation:
-                    stream.push_header_bytes += payload
+                    self._append_push_fragment(stream, payload, direction)
                     if flags & _FLAG_END_HEADERS:
                         self._finalize_push_promise(stream, decoder, direction)
                 elif stream.headers_awaiting_continuation:
-                    stream.header_bytes += payload
+                    self._append_header_fragment(stream, payload, direction)
                     if flags & _FLAG_END_HEADERS:
                         self._finalize_headers(stream, decoder, flags, direction, results)
                         finalizes_parent = True
@@ -379,6 +632,9 @@ class Http2Parser(BaseParser):
                     )
 
             elif frame_type == _FRAME_DATA:
+                if not self._data_padding_is_valid(payload, flags):
+                    # Body accounting only; the HPACK table is unaffected.
+                    stream.error = stream.error or "invalid-padding"
                 actual_data = self._strip_padding(payload, flags)
                 stream.body_size += len(actual_data)
                 finalizes_parent = True
@@ -422,8 +678,11 @@ class Http2Parser(BaseParser):
                 result = self._build_result(stream, is_complete=False)
                 results.append(result)
             streams.clear()
+        self._log_unframed()
         for buf in self._buffers.values():
             buf.clear()
+        for direction in self._skip_remaining:
+            self._skip_remaining[direction] = 0
         return results
 
     @staticmethod
@@ -445,6 +704,150 @@ class Http2Parser(BaseParser):
             stream.is_request = (direction == "write")
             streams[stream_id] = stream
         return streams[stream_id]
+
+    def _get_or_create_stream(
+        self, streams: OrderedDict, stream_id: int, direction: str,
+        results: list[ParseResult],
+    ) -> _StreamState:
+        """``_get_stream`` that first evicts the oldest streams when creating
+        a new one would exceed ``_MAX_OPEN_STREAMS`` (#4)."""
+        if stream_id not in streams:
+            self._evict_oldest_streams(streams, direction, results)
+        return self._get_stream(streams, stream_id, direction)
+
+    def _evict_oldest_streams(
+        self, streams: OrderedDict, direction: str, results: list[ParseResult],
+    ) -> None:
+        """Evict the oldest open streams, surfacing each as an incomplete result
+        (same shape as flush()). Evicting a stream mid header block loses that
+        block, so the direction's HPACK context is poisoned."""
+        while len(streams) >= _MAX_OPEN_STREAMS:
+            _, evicted = streams.popitem(last=False)
+            if evicted.awaiting_continuation:
+                self._poison_direction(
+                    direction, evicted.stream_id, "stream evicted mid header block"
+                )
+            if not evicted.error:
+                evicted.error = "stream-evicted"
+            results.append(self._build_result(evicted, is_complete=False))
+
+    # --- Hardening helpers -------------------------------------------------
+
+    def _poison_direction(self, direction: str, stream_id: int, reason: str) -> None:
+        """Mark ``direction``'s HPACK context as unrecoverably desynced."""
+        if not self._decoder_failed.get(direction):
+            _log.warning(
+                "HTTP/2 %s on stream %d (%s) — HPACK decoder poisoned",
+                reason, stream_id, direction,
+            )
+        self._decoder_failed[direction] = True
+
+    @staticmethod
+    def _exceeds_block_cap(buffer: bytearray, fragment: bytes) -> bool:
+        return len(buffer) + len(fragment) > _MAX_HEADER_BLOCK_SIZE
+
+    def _reject_header_block(
+        self, stream: _StreamState, direction: str, error: str,
+    ) -> None:
+        """Drop the real-HEADERS block being accumulated, stamp ``error`` and
+        poison the direction (the block can never reach the decoder)."""
+        stream.header_bytes = bytearray()
+        stream.header_block_invalid = True
+        stream.error = error
+        self._poison_direction(direction, stream.stream_id, error)
+
+    def _reject_push_block(
+        self, stream: _StreamState, direction: str, reason: str,
+    ) -> None:
+        """Drop a PUSH_PROMISE block and poison the direction. The parent
+        stream's ``error`` is left untouched (#16)."""
+        stream.push_header_bytes = bytearray()
+        self._poison_direction(direction, stream.stream_id, f"PUSH_PROMISE {reason}")
+
+    def _append_header_fragment(
+        self, stream: _StreamState, fragment: bytes, direction: str,
+    ) -> None:
+        """Append a real-HEADERS fragment, enforcing ``_MAX_HEADER_BLOCK_SIZE``.
+        Nothing is buffered once the block or the direction is unusable."""
+        if stream.header_block_invalid or self._decoder_failed.get(direction):
+            return
+        if self._exceeds_block_cap(stream.header_bytes, fragment):
+            self._reject_header_block(stream, direction, "header-block-too-large")
+            return
+        stream.header_bytes += fragment
+
+    def _append_push_fragment(
+        self, stream: _StreamState, fragment: bytes, direction: str,
+    ) -> None:
+        """Append a PUSH_PROMISE fragment, enforcing ``_MAX_HEADER_BLOCK_SIZE``."""
+        if self._decoder_failed.get(direction):
+            return
+        if self._exceeds_block_cap(stream.push_header_bytes, fragment):
+            self._reject_push_block(stream, direction, "header-block-too-large")
+            return
+        stream.push_header_bytes += fragment
+
+    def _apply_peer_settings(self, direction: str, flags: int, payload: bytes) -> None:
+        """Track SETTINGS sent by ``direction``. They constrain the *opposite*
+        direction's encoder/frames, so they are applied to that direction."""
+        peer = _OPPOSITE_DIRECTION.get(direction)
+        if peer is None or flags & _FLAG_ACK:
+            return
+        self._ensure_direction(peer)
+        for i in range(0, len(payload) - 5, 6):
+            param_id = int.from_bytes(payload[i:i + 2], "big")
+            value = int.from_bytes(payload[i + 2:i + 6], "big")
+            if param_id == _SETTINGS_HEADER_TABLE_SIZE:
+                self._set_peer_table_size(peer, value)
+            elif param_id == _SETTINGS_MAX_FRAME_SIZE:
+                self._set_peer_max_frame_size(peer, value)
+
+    def _set_peer_table_size(self, peer: str, value: int) -> None:
+        """Allow ``peer``'s encoder a dynamic table up to ``value`` (capped).
+
+        As a passive observer we never drop the limit below the table size
+        currently in use: the encoder only has to shrink after the SETTINGS
+        ACK, so lowering it eagerly would falsely poison the direction.
+        """
+        decoder = self._decoders.get(peer)
+        if decoder is None:
+            return
+        allowed = min(value, _MAX_HEADER_TABLE_SIZE)
+        decoder.max_allowed_table_size = max(allowed, decoder.header_table_size)
+
+    def _set_peer_max_frame_size(self, peer: str, value: int) -> None:
+        if _DEFAULT_MAX_FRAME_SIZE <= value <= _MAX_ALLOWED_FRAME_SIZE:
+            self._max_frame_size[peer] = value
+
+    def _frame_size_limit(self, direction: str) -> int | None:
+        """Max frame size ``direction`` may send, or None when unknown.
+
+        The RFC default (16384) is only assumed for server->client frames once
+        the client connection preface was seen (we then observe its SETTINGS).
+        """
+        limit = self._max_frame_size.get(direction)
+        if limit is None and direction == "read" and self._preface_seen.get("write"):
+            limit = _DEFAULT_MAX_FRAME_SIZE
+        return limit
+
+    def _is_oversize_frame(self, direction: str, length: int) -> bool:
+        limit = self._frame_size_limit(direction)
+        return limit is not None and length > limit
+
+    def _handle_oversize_frame(
+        self, streams: OrderedDict, stream_id: int, frame_type: int,
+        length: int, direction: str,
+    ) -> None:
+        """Skip a frame larger than the peer's SETTINGS_MAX_FRAME_SIZE. A
+        header-carrying one desyncs HPACK, so the direction is poisoned."""
+        stream = streams.get(stream_id)
+        if stream is not None:
+            stream.error = "frame-too-large"
+        if frame_type in _HEADER_BLOCK_FRAMES:
+            self._poison_direction(
+                direction, stream_id,
+                f"frame of {length} bytes exceeds SETTINGS_MAX_FRAME_SIZE",
+            )
 
     @staticmethod
     def _parse_frame_header(header: bytes) -> tuple[int, int, int, int]:
@@ -506,6 +909,23 @@ class Http2Parser(BaseParser):
             return b""
 
         return payload[offset:end]
+
+    @staticmethod
+    def _padded_frame_is_valid(payload: bytes, flags: int, prefix_len: int) -> bool:
+        """True when a HEADERS/PUSH_PROMISE payload can hold its pad-length
+        octet, fixed prefix and padding (RFC 7540 §6.1/§6.2/§6.6)."""
+        pad_field = 1 if flags & _FLAG_PADDED else 0
+        if len(payload) < pad_field + prefix_len:
+            return False
+        pad_length = payload[0] if pad_field else 0
+        return pad_length <= len(payload) - pad_field - prefix_len
+
+    @staticmethod
+    def _data_padding_is_valid(payload: bytes, flags: int) -> bool:
+        """RFC 7540 §6.1: padding must be shorter than the frame payload."""
+        if not flags & _FLAG_PADDED:
+            return True
+        return len(payload) >= 1 and payload[0] < len(payload)
 
     @staticmethod
     def _strip_padding(payload: bytes, flags: int) -> bytes:
@@ -580,11 +1000,52 @@ class Http2Parser(BaseParser):
         """Decode HPACK-encoded headers and apply them to the stream."""
         block = bytes(stream.header_bytes)
         stream.header_bytes = bytearray()
+        if stream.header_block_invalid:
+            # Block was rejected (oversize / invalid padding): its specific
+            # error is already recorded and the direction poisoned.
+            stream.header_block_invalid = False
+            return
         headers = self._run_hpack(stream, decoder, direction, block,
                                   stamp_error=True)
         if headers is None:
             return
-        apply_http2_headers(stream, headers)
+        self._apply_decoded_headers(stream, headers)
+
+    def _apply_decoded_headers(
+        self, stream: _StreamState, headers: list[tuple[str, str]],
+    ) -> None:
+        """Merge a decoded block into the stream (as before), within the
+        per-stream field caps. Blocks after the first are also kept in
+        ``trailers`` (#5)."""
+        admitted = self._admit_header_fields(stream, headers)
+        if stream.header_blocks_decoded > 0:
+            stream.trailers.update(admitted)
+        stream.header_blocks_decoded += 1
+        apply_http2_headers(stream, admitted)
+
+    @staticmethod
+    def _admit_header_fields(
+        stream: _StreamState, headers: list[tuple[str, str]],
+    ) -> list[tuple[str, str]]:
+        """Return the fields that fit the stream's header count/byte caps;
+        flag the stream ``header-list-too-large`` when any are dropped."""
+        admitted: list[tuple[str, str]] = []
+        new_names: set[str] = set()
+        truncated = False
+        for name, value in headers:
+            size = len(name) + len(value) + _HEADER_FIELD_OVERHEAD
+            is_new = name not in stream.headers and name not in new_names
+            too_many = is_new and len(stream.headers) + len(new_names) >= _MAX_STREAM_HEADER_FIELDS
+            if too_many or stream.header_list_bytes + size > _MAX_STREAM_HEADER_BYTES:
+                truncated = True
+                continue
+            if is_new:
+                new_names.add(name)
+            stream.header_list_bytes += size
+            admitted.append((name, value))
+        if truncated and not stream.error:
+            stream.error = "header-list-too-large"
+        return admitted
 
     def _run_hpack(
         self, stream: _StreamState, decoder: HpackDecoder, direction: str,
@@ -611,7 +1072,9 @@ class Http2Parser(BaseParser):
             return None
 
         try:
-            decoded = decoder.decode(block)
+            # raw=True: a non-UTF-8 byte must not raise *after* the dynamic
+            # table was updated (that poisoned the direction for good).
+            decoded = decoder.decode(block, raw=True)
         except HPACKDecodingError as e:
             _log.warning(
                 "HPACK decoding failed for stream %d on %s: %s — decoder "
@@ -625,12 +1088,13 @@ class Http2Parser(BaseParser):
 
         headers = []
         for name, value in decoded:
-            if isinstance(name, bytes):
-                name = name.decode("latin-1", errors="replace")
-            if isinstance(value, bytes):
-                value = value.decode("latin-1", errors="replace")
-            headers.append((name, value))
+            headers.append((self._header_text(name), self._header_text(value)))
         return headers
+
+    @staticmethod
+    def _header_text(field) -> str:
+        """Decode a raw header name/value; see :func:`decode_header_text`."""
+        return decode_header_text(field)
 
     @staticmethod
     def _build_result(

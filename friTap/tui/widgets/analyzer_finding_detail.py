@@ -37,6 +37,7 @@ except ImportError:
 
 from friTap.analysis import EVIDENCE_VALUE_KEYS, primary_evidence_value
 from friTap.tui.themes import c
+from friTap.tui.widgets.wire_text import safe_static_text
 
 # Evidence keys worth surfacing as context (not the raw value).
 _CONTEXT_KEYS = ("location", "header", "field", "type", "host", "url", "content_type", "cwe")
@@ -70,8 +71,18 @@ def _try_base64(value: str) -> str | None:
 
 
 def _esc(value) -> str:
-    """Escape Rich markup brackets in dynamic text so it renders literally."""
-    return str(value).replace("[", "\\[")
+    """Dynamic *value* made safe for this widget's ``Static`` (Textual) markup.
+
+    Delegates to :func:`safe_static_text`: escapes every ``[``, shows control
+    characters as visible escapes and pads a trailing backslash so it cannot
+    swallow the ``[`` of the caller's closing tag.
+    """
+    return safe_static_text(value)
+
+
+def _esc_lines(text) -> list[str]:
+    """Each line of multi-line *text* escaped with :func:`_esc`, line breaks kept."""
+    return [_esc(line) for line in str(text).splitlines()]
 
 
 if TEXTUAL_AVAILABLE:
@@ -176,7 +187,7 @@ if TEXTUAL_AVAILABLE:
             f = self._finding
             lines: list[str] = []
             if f.description:
-                lines.append(_esc(f.description))
+                lines.extend(_esc_lines(f.description))
                 lines.append("")
 
             primary = self._primary_value()
@@ -268,7 +279,7 @@ if TEXTUAL_AVAILABLE:
                 try:
                     text = body[:512].decode("utf-8", errors="replace")
                     lines.append("[bold]Request body (preview)[/]")
-                    lines.append(_esc(text))
+                    lines.extend(_esc_lines(text))
                 except Exception:
                     pass
             return lines

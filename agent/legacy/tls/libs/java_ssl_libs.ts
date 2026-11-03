@@ -9,6 +9,11 @@ export class SSL_Java {
         if (Java.available) {
             setTimeout(function () {
                 Java.perform(function () {
+                  // This callback runs on a later tick (setTimeout + Java.perform), so the
+                  // android.ts per-phase try/catch cannot see its exceptions. Uncaught, one
+                  // becomes a script "error" message and the host SIGTERMs itself and
+                  // detaches mid-install, which can crash the target. Contain it here.
+                  try {
 
                     //Conscrypt needs early instrumentation as we block the provider installation
                     var Security = Java.use("java.security.Security");
@@ -84,6 +89,9 @@ export class SSL_Java {
                             return this.addProvider(provider)
                         }
                     }
+                  } catch (e) {
+                    devlog(`[java] provider hook install failed, skipping Java TLS provider hooks: ${e}`);
+                  }
                 })
             }, 0);
         }

@@ -34,7 +34,7 @@ def test_fingerprint_is_low64_of_sha1():
 
 
 def test_fingerprint_rejects_wrong_length():
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         crypto.compute_secret_chat_fingerprint(os.urandom(64))
 
 

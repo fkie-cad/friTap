@@ -4,27 +4,41 @@
 Base class for cross-platform frida-server management.
 
 Provides shared download/decompression logic and defines the interface
-that platform-specific managers must implement.
+that platform-specific managers must implement. Downloads are verified
+against GitHub's release-asset SHA-256 digest and fail closed (see
+:mod:`friTap.server_manager.download`).
 """
 
 from __future__ import annotations
 
 import logging
-import lzma
 import shutil
 import subprocess
 import tempfile
 import time
-import urllib.request
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Tuple
 
 from friTap.fritap_utility import sha256_file
 
+from .download import (
+    ALLOW_UNVERIFIED_ENV,
+    ServerDownloadError,
+    ServerVerificationError,
+    allow_unverified_from_env,
+    asset_download_url,
+    decompress_xz_bounded,
+    download_verified,
+    enforce_digest,
+    fetch_asset_sha256,
+    open_url,
+    read_capped,
+)
 from .probe import ServerState, is_attach_capable, probe_frida_server
 
 READINESS_POLL_INTERVAL = 0.5
+MAX_CHECKSUM_FILE_BYTES = 4096
 
 
 class BaseFridaServerManager(ABC):
@@ -133,41 +147,58 @@ class BaseFridaServerManager(ABC):
     # Shared logic — download & decompress
     # ------------------------------------------------------------------
 
-    def _verify_download_hash(self, file_path: str, expected_url: Optional[str] = None) -> bool:
-        """Verify SHA256 hash of a downloaded file.
+    def _verify_download_hash(
+        self,
+        file_path: str,
+        expected_url: Optional[str] = None,
+        *,
+        expected_sha256: Optional[str] = None,
+    ) -> bool:
+        """Verify the SHA256 hash of a downloaded file. Fails closed.
 
         Args:
             file_path: Path to the downloaded file.
-            expected_url: Optional URL to fetch expected hash from.
+            expected_url: Optional URL of a checksum file (``"<hex> [name]"``).
+            expected_sha256: Expected hex digest; takes precedence over *expected_url*.
 
         Returns:
-            True if verification passed or was skipped, False if mismatch.
+            True if the hash matched, or no expected hash was available and
+            ``FRITAP_ALLOW_UNVERIFIED_SERVER=1`` is set. False otherwise; the
+            file is then deleted.
         """
-        # Compute hash of downloaded file
         computed_hash = sha256_file(file_path)
         self._logger.info("Downloaded file SHA256: %s", computed_hash)
-
-        if expected_url:
-            try:
-                req = urllib.request.Request(expected_url)
-                req.add_header("User-Agent", "friTap")
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    expected_hash = resp.read().decode().strip().split()[0]
-                if computed_hash != expected_hash:
-                    self._logger.error(
-                        "Hash mismatch! Expected %s, got %s",
-                        expected_hash, computed_hash,
-                    )
-                    return False
-                self._logger.info("Hash verification passed")
-            except Exception as e:
-                self._logger.warning("Could not verify download hash: %s", e)
-        else:
-            self._logger.warning(
-                "No checksum URL provided; skipping hash verification. "
-                "Manual verification hash: %s", computed_hash,
-            )
+        expected = expected_sha256 or self._fetch_checksum_file(expected_url)
+        try:
+            enforce_digest(Path(file_path).name, expected, computed_hash, allow_unverified_from_env())
+        except ServerVerificationError as exc:
+            self._logger.error("%s", exc)
+            Path(file_path).unlink(missing_ok=True)
+            return False
         return True
+
+    def _fetch_checksum_file(self, url: Optional[str]) -> Optional[str]:
+        """First token of the checksum file at *url*, or None if unavailable."""
+        if not url:
+            return None
+        try:
+            with open_url(url) as resp:
+                body = read_capped(resp, MAX_CHECKSUM_FILE_BYTES, "checksum file")
+            return body.decode().strip().split()[0]
+        except (OSError, ValueError, IndexError, ServerDownloadError) as exc:
+            self._logger.warning("Could not fetch checksum from %s: %s", url, exc)
+            return None
+
+    def _expected_sha256(self, filename: str) -> Tuple[Optional[str], str]:
+        """Return (GitHub's digest for *filename* or None, why it may be missing)."""
+        try:
+            digest = fetch_asset_sha256(self._frida_version, filename)
+        except (OSError, ValueError) as exc:
+            self._logger.warning(
+                "Could not fetch frida %s release metadata: %s", self._frida_version, exc,
+            )
+            return None, f"release metadata unavailable ({exc})"
+        return digest, "GitHub publishes no sha256 digest for this asset"
 
     def download_server(
         self,
@@ -182,12 +213,16 @@ class BaseFridaServerManager(ABC):
 
         Returns:
             Path to the decompressed frida-server binary in a temp directory.
+
+        Raises:
+            ServerVerificationError: The SHA-256 digest GitHub records for the
+                asset is missing or does not match (nothing is kept). Set
+                ``FRITAP_ALLOW_UNVERIFIED_SERVER=1`` to accept a missing digest
+                (frida releases published before June 2025).
+            ServerDownloadError: Size cap exceeded or asset not in the release.
         """
         filename = f"frida-server-{self._frida_version}-{self.platform_name}-{arch}.xz"
-        url = (
-            f"https://github.com/frida/frida/releases/download/"
-            f"{self._frida_version}/{filename}"
-        )
+        url = asset_download_url(self._frida_version, filename)
 
         self._logger.info("Downloading %s", url)
         if callback:
@@ -198,41 +233,57 @@ class BaseFridaServerManager(ABC):
         binary_path = tmp_dir / f"frida-server-{self._frida_version}-{self.platform_name}-{arch}"
 
         try:
-            urllib.request.urlretrieve(url, str(xz_path))
+            self._download_verified(url, xz_path, callback)
+            self._decompress(xz_path, binary_path, callback)
+        except Exception:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise
+
+        if callback:
+            callback("Download complete.")
+
+        return binary_path
+
+    def _download_verified(
+        self,
+        url: str,
+        xz_path: Path,
+        callback: Optional[Callable[[str], None]],
+    ) -> None:
+        """Stream *url* to *xz_path*; raise unless GitHub's digest for it matches."""
+        try:
+            expected, reason = self._expected_sha256(xz_path.name)
+            allow_unverified = allow_unverified_from_env()
+            if expected is None and allow_unverified and callback:
+                callback(
+                    f"WARNING: {xz_path.name} cannot be verified ({reason}); "
+                    f"installing anyway because {ALLOW_UNVERIFIED_ENV}=1"
+                )
+            download_verified(url, xz_path, expected, allow_unverified, reason)
         except Exception as exc:
             self._logger.error("Download failed: %s", exc)
             if callback:
                 callback(f"Download failed: {exc}")
             raise
 
-        # Verify download integrity via SHA256 hash
-        checksum_url = (
-            f"https://github.com/frida/frida/releases/download/"
-            f"{self._frida_version}/{filename}.sha256"
-        )
-        if not self._verify_download_hash(str(xz_path), checksum_url):
-            raise RuntimeError(
-                f"SHA256 hash verification failed for {filename}. "
-                "The downloaded file may be corrupted or tampered with."
-            )
-
+    def _decompress(
+        self,
+        xz_path: Path,
+        binary_path: Path,
+        callback: Optional[Callable[[str], None]],
+    ) -> None:
+        """Bounded xz decompression to an executable *binary_path*; drops the .xz."""
         if callback:
             callback("Decompressing...")
 
         self._logger.info("Decompressing %s", xz_path)
-        with lzma.open(xz_path) as compressed:
-            binary_path.write_bytes(compressed.read())
+        decompress_xz_bounded(xz_path, binary_path)
 
         # Make executable
         binary_path.chmod(0o755)
 
         # Clean up .xz
         xz_path.unlink()
-
-        if callback:
-            callback("Download complete.")
-
-        return binary_path
 
     def install(
         self,

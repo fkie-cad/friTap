@@ -27,6 +27,7 @@ from typing import Callable, NamedTuple, Optional
 
 from .grpc import (
     GrpcFrame,
+    InflateBudget,
     decompress_grpc_payload,
     is_grpc_content_type,
     split_grpc_frames_lenient,
@@ -237,16 +238,22 @@ def _split_payloads(
     view.framing = "grpc"
     if error:
         view.notes.append(error)
-    return [_grpc_payload(frame, grpc_encoding) for frame in frames]
+    budget = InflateBudget()  # one decompression allowance for the whole body
+    return [_grpc_payload(frame, grpc_encoding, budget) for frame in frames]
 
 
-def _grpc_payload(frame: GrpcFrame, grpc_encoding: str) -> _Payload:
-    """A gRPC frame as a payload, decompressed when its flag says so."""
+def _grpc_payload(
+    frame: GrpcFrame, grpc_encoding: str, budget: Optional[InflateBudget] = None,
+) -> _Payload:
+    """A gRPC frame as a payload, decompressed when its flag says so.
+
+    Decompressed output is charged to the body's shared *budget*.
+    """
     payload = _Payload(frame.payload, compressed=frame.compressed,
                        truncated=frame.truncated, size=len(frame.payload))
     if not frame.compressed:
         return payload
-    payload.data, note = decompress_grpc_payload(frame.payload, grpc_encoding)
+    payload.data, note = decompress_grpc_payload(frame.payload, grpc_encoding, budget)
     if payload.data is None:
         payload.error = note
     elif note:

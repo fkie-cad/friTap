@@ -32,12 +32,17 @@ import zlib
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-from friTap.parsers.decompress import InflateLimitError, inflate_bounded
+from friTap.parsers.decompress import (  # noqa: F401  (inflate_bounded: re-export)
+    InflateLimitError,
+    inflate_bounded,
+    inflate_bounded_checked,
+)
 
 from .tl.decoder import (
     BOOL_FALSE_ID,
     BOOL_TRUE_ID,
     GZIP_PACKED_ID,
+    GZIP_TRUNCATED_NOTE,
     MAX_INFLATE,
     MSG_CONTAINER_ID,
     RPC_RESULT_ID,
@@ -284,39 +289,94 @@ class ParsedMtprotoMessage:
     # TL ``out`` flag: the local user authored the message. Set even when it
     # arrives in a server->client echo (e.g. ``updateNewMessage``).
     outgoing: bool = False
+    # Analyst-facing caveat, e.g. :data:`~.tl.decoder.GZIP_TRUNCATED_NOTE` when
+    # the item was decoded from a truncated gzip_packed body; "" when none.
+    note: str = ""
+
+
+def _add_note(items: List[ParsedMtprotoMessage], note: str) -> None:
+    """Append *note* to every item's ``note`` (``"; "``-joined, never twice)."""
+    for item in items:
+        if not item.note:
+            item.note = note
+        elif note not in item.note:
+            item.note = f"{item.note}; {note}"
+
+
+class _ParseBudget:
+    """Per-message work and inflate budget shared by every reader of one parse.
+
+    A hostile record can be crafted so the tolerant hand path does superlinear
+    work (Vector ctor ids at every offset, nested wrappers, gzip_packed bombs).
+    One budget object is threaded through all sub-readers of a single
+    :func:`parse_mtproto_message` call so the total cost stays bounded no
+    matter how the payload nests.
+    """
+
+    __slots__ = ("work_left", "inflate_left", "gzip_depth", "gzip_truncated")
+
+    def __init__(self) -> None:
+        self.work_left = _MAX_PARSE_WORK
+        self.inflate_left = _MAX_INFLATE_TOTAL
+        self.gzip_depth = 0
+        # gzip_packed bodies of this parse whose gzip stream was truncated.
+        self.gzip_truncated = 0
+
+    @property
+    def exhausted(self) -> bool:
+        return self.work_left <= 0
+
+    def charge(self, units: int = 1) -> None:
+        """Account *units* of work; raise :class:`_BudgetExceeded` when spent."""
+        self.work_left -= units
+        if self.work_left < 0:
+            raise _BudgetExceeded("per-message TL parse budget exhausted")
 
 
 class _Reader:
-    """Exception-safe little-endian TL reader.
+    """Exception-safe little-endian TL reader over ``data[pos:end]``.
 
     Every accessor raises :class:`_TLError` on truncation; callers catch it and
-    degrade to ``kind="unparsed"`` rather than letting it escape.
+    degrade to ``kind="unparsed"`` rather than letting it escape. Sub-readers
+    share the parent's buffer (offset-bounded, no copy) and its
+    :class:`_ParseBudget`.
     """
 
-    def __init__(self, data: bytes) -> None:
+    def __init__(self, data: bytes, pos: int = 0, end: Optional[int] = None,
+                 budget: Optional["_ParseBudget"] = None) -> None:
         self._data = data
-        self._pos = 0
+        self._pos = pos
+        self._end = len(data) if end is None else end
+        self.budget = budget if budget is not None else _ParseBudget()
+
+    def sub(self, pos: int, end: Optional[int] = None) -> "_Reader":
+        """A reader over ``data[pos:end]`` sharing this reader's buffer and budget."""
+        return _Reader(self._data, pos, self._end if end is None else end, self.budget)
 
     @property
     def remaining(self) -> int:
-        return len(self._data) - self._pos
+        return self._end - self._pos
 
     @property
     def pos(self) -> int:
         return self._pos
 
+    @property
+    def end(self) -> int:
+        return self._end
+
     def seek(self, pos: int) -> None:
         self._pos = pos
 
     def _take(self, n: int) -> bytes:
-        if n < 0 or self._pos + n > len(self._data):
+        if n < 0 or self._pos + n > self._end:
             raise _TLError("read past end of TL buffer")
         chunk = self._data[self._pos:self._pos + n]
         self._pos += n
         return chunk
 
     def peek_uint32(self) -> int:
-        if self._pos + 4 > len(self._data):
+        if self._pos + 4 > self._end:
             raise _TLError("peek past end of TL buffer")
         return struct.unpack_from("<I", self._data, self._pos)[0]
 
@@ -330,10 +390,12 @@ class _Reader:
         return struct.unpack_from("<q", self._take(8))[0]
 
     def skip(self, n: int) -> None:
-        self._take(n)
+        if n < 0 or self._pos + n > self._end:
+            raise _TLError("read past end of TL buffer")
+        self._pos += n
 
-    def tl_bytes(self) -> bytes:
-        """Read a TL string/bytes value (the length-prefixed, padded form)."""
+    def _tl_bytes_span(self) -> tuple:
+        """``(start, length)`` of a TL string/bytes value; cursor moves past it."""
         first = self._take(1)[0]
         if first < 254:
             length = first
@@ -341,11 +403,15 @@ class _Reader:
         else:
             length = int.from_bytes(self._take(3), "little")
             header = 4
-        data = self._take(length)
+        start = self._pos
         # Pad so (header + length) is a multiple of 4.
-        pad = (-(header + length)) % 4
-        self._take(pad)
-        return data
+        self.skip(length + (-(header + length)) % 4)
+        return start, length
+
+    def tl_bytes(self) -> bytes:
+        """Read a TL string/bytes value (the length-prefixed, padded form)."""
+        start, length = self._tl_bytes_span()
+        return self._data[start:start + length]
 
     def tl_string(self) -> str:
         return self.tl_bytes().decode("utf-8", "replace")
@@ -355,22 +421,34 @@ class _TLError(Exception):
     """Internal truncation/format error; never escapes the public parsers."""
 
 
+class _BudgetExceeded(_TLError):
+    """The per-message work budget is spent; parsing winds down cleanly."""
+
+
 # --------------------------------------------------------------------------- #
 # Peer / reply-to skipping helpers
 # --------------------------------------------------------------------------- #
 
-def _skip_input_peer(reader: _Reader) -> None:
+# Max nesting of the recursive ``inputPeer*FromMessage`` variants. Real peers
+# nest once; a hostile chain must not recurse until the interpreter limit.
+_MAX_INPUT_PEER_DEPTH = 3
+
+
+def _skip_input_peer(reader: _Reader, depth: int = 0) -> None:
     """Consume one ``InputPeer`` from *reader*.
 
-    Raises :class:`_TLError` for an unknown constructor so the caller can bail
+    Raises :class:`_TLError` for an unknown constructor (or a FromMessage chain
+    nested deeper than :data:`_MAX_INPUT_PEER_DEPTH`) so the caller can bail
     out of structured parsing for that record (per spec).
     """
+    if depth > _MAX_INPUT_PEER_DEPTH:
+        raise _TLError("InputPeer nested too deep")
     ctor = reader.uint32()
     if ctor in _INPUT_PEER_FIXED_LEN:
         reader.skip(_INPUT_PEER_FIXED_LEN[ctor])
         return
     if ctor in (_INPUT_PEER_USER_FROM_MSG, _INPUT_PEER_CHANNEL_FROM_MSG):
-        _skip_input_peer(reader)   # peer:InputPeer
+        _skip_input_peer(reader, depth + 1)   # peer:InputPeer
         reader.int32()             # msg_id:int
         reader.int64()             # user_id / channel_id:long
         return
@@ -874,6 +952,17 @@ _MAX_TL_COUNT = 100_000
 # guard; see :data:`~.tl.decoder.MAX_INFLATE`).
 _MAX_GZIP_INFLATE = MAX_INFLATE
 
+# Total inflated bytes across ALL gzip_packed bodies of one message: vectors,
+# containers and nesting would otherwise multiply the per-body cap.
+_MAX_INFLATE_TOTAL = 2 * MAX_INFLATE
+
+# gzip_packed nested inside gzip_packed is legal but never deeper than this.
+_MAX_GZIP_DEPTH = 2
+
+# Per-message work budget (objects dispatched + Vector candidates probed). Far
+# above any real record, it caps the tolerant hand path on hostile payloads.
+_MAX_PARSE_WORK = 200_000
+
 
 def _parse_typed_vector(
     reader: _Reader, out: List[ParsedMtprotoMessage], depth: int,
@@ -889,7 +978,7 @@ def _parse_typed_vector(
     if count < 0 or count > _MAX_TL_COUNT:
         raise _TLError("implausible vector count")
     for _ in range(count):
-        if reader.remaining < 4:
+        if reader.remaining < 4 or reader.budget.exhausted:
             break
         elem_ctor = reader.uint32()
         try:
@@ -924,17 +1013,10 @@ def _dispatch_object(
     """
     if depth > 16:
         raise _TLError("TL recursion too deep")
+    reader.budget.charge()
 
     if ctor == _MSG_CONTAINER:
-        count = reader.int32()
-        if count < 0 or count > _MAX_TL_COUNT:
-            raise _TLError("implausible msg_container count")
-        for _ in range(count):
-            reader.int64()                  # msg_id:long
-            reader.int32()                  # seqno:int
-            length = reader.int32()         # len:int
-            body = reader._take(length)     # body (raw TL object)
-            _parse_into(body, out, depth + 1)
+        _parse_container(reader, out, depth)
         return
 
     if ctor == _RPC_RESULT:
@@ -943,21 +1025,7 @@ def _dispatch_object(
         return
 
     if ctor == _GZIP_PACKED:
-        packed = reader.tl_bytes()
-        # Bounded inflate: decompress at most _MAX_GZIP_INFLATE bytes. If the
-        # decompressor still has unconsumed input, the output would exceed the
-        # cap, so this is a (possibly malicious) oversized/bomb payload — reject
-        # rather than inflating it unbounded into memory.
-        try:
-            # Auto-detects the zlib *or* gzip header (Telegram sends real gzip).
-            inflated = inflate_bounded(packed, _MAX_GZIP_INFLATE)
-        except InflateLimitError:
-            raise _TLError(
-                f"gzip_packed inflate exceeds {_MAX_GZIP_INFLATE} bytes"
-            ) from None
-        except zlib.error as exc:
-            raise _TLError("gzip_packed inflate failed") from exc
-        _parse_into(inflated, out, depth + 1)
+        _parse_gzip_packed(reader, out, depth)
         return
 
     if ctor == _INVOKE_WITH_LAYER:
@@ -1028,6 +1096,75 @@ def _dispatch_object(
     raise _TLError(f"no message in constructor 0x{ctor:08x}")
 
 
+def _parse_container(
+    reader: _Reader, out: List[ParsedMtprotoMessage], depth: int,
+) -> None:
+    """msg_container body (ctor consumed): count × {msg_id, seqno, len, body}.
+
+    Each child body is parsed through an offset-bounded sub-reader (no copy).
+    """
+    count = reader.int32()
+    if count < 0 or count > _MAX_TL_COUNT:
+        raise _TLError("implausible msg_container count")
+    for _ in range(count):
+        reader.int64()                      # msg_id:long
+        reader.int32()                      # seqno:int
+        length = reader.int32()             # len:int
+        start = reader.pos
+        reader.skip(length)                 # body (raw TL object)
+        _parse_region(reader.sub(start, start + length), out, depth + 1)
+
+
+def _inflate_gzip_packed(reader: _Reader, packed: bytes) -> tuple[bytes, bool]:
+    """Bounded inflate of one gzip_packed body: ``(inflated, complete)``.
+
+    Decompresses at most ``min(_MAX_GZIP_INFLATE, budget left)`` bytes; a body
+    that would exceed it is a (possibly malicious) oversized/bomb payload and
+    is rejected rather than inflated unbounded into memory. *complete* is
+    False for a truncated gzip stream (*inflated* is then the partial output).
+    """
+    budget = reader.budget
+    limit = min(_MAX_GZIP_INFLATE, budget.inflate_left)
+    if limit <= 0:
+        raise _TLError("gzip_packed total inflate budget exhausted")
+    try:
+        # Auto-detects the zlib *or* gzip header (Telegram sends real gzip).
+        inflated, complete = inflate_bounded_checked(packed, limit)
+    except InflateLimitError:
+        # The rejected attempt still inflated *limit* bytes: charge them, so a
+        # stream of oversized bodies cannot re-burn the same work forever.
+        budget.inflate_left -= limit
+        raise _TLError(f"gzip_packed inflate exceeds {limit} bytes") from None
+    except zlib.error as exc:
+        raise _TLError("gzip_packed inflate failed") from exc
+    budget.inflate_left -= len(inflated)
+    return inflated, complete
+
+
+def _parse_gzip_packed(
+    reader: _Reader, out: List[ParsedMtprotoMessage], depth: int,
+) -> None:
+    """gzip_packed body (ctor consumed): inflate and parse the inner object.
+
+    Items decoded from a truncated gzip stream keep their partial content but
+    carry :data:`~.tl.decoder.GZIP_TRUNCATED_NOTE`.
+    """
+    packed = reader.tl_bytes()
+    budget = reader.budget
+    if budget.gzip_depth >= _MAX_GZIP_DEPTH:
+        raise _TLError("gzip_packed nested too deep")
+    inflated, complete = _inflate_gzip_packed(reader, packed)
+    before = len(out)
+    budget.gzip_depth += 1
+    try:
+        _parse_region(_Reader(inflated, budget=budget), out, depth + 1)
+    finally:
+        budget.gzip_depth -= 1
+    if not complete:
+        budget.gzip_truncated += 1
+        _add_note(out[before:], GZIP_TRUNCATED_NOTE)
+
+
 def _parse_rpc_result(
     reader: _Reader, out: List[ParsedMtprotoMessage], depth: int,
 ) -> None:
@@ -1046,6 +1183,7 @@ def _parse_rpc_result(
         return
     method = _rpc_method_name(inner_ctor)
     before = len(out)
+    truncated_before = reader.budget.gzip_truncated
     result_start = reader.pos
     try:
         _dispatch(reader, out, depth)
@@ -1056,12 +1194,17 @@ def _parse_rpc_result(
         # layer (e.g. a contacts/peerSettings container that embeds the users we
         # care about in trailing Vectors). Tolerantly SCAN the result bytes for
         # Vector<User>/Vector<Message> so identities are still surfaced.
-        scan = _Reader(reader._data)
-        scan.seek(result_start)
+        scan = reader.sub(result_start)
         _scan_for_vectors(scan, out, depth + 1)
+        reader.seek(max(reader.pos, scan.pos))
     if len(out) == before:
-        # Still nothing: emit a single rpc marker with the method name.
-        out.append(ParsedMtprotoMessage(kind="rpc", body="", method=method))
+        # Still nothing: emit a single rpc marker with the method name (noting
+        # a truncated gzip_packed result that decoded to nothing usable).
+        truncated = reader.budget.gzip_truncated > truncated_before
+        out.append(ParsedMtprotoMessage(
+            kind="rpc", body="", method=method,
+            note=GZIP_TRUNCATED_NOTE if truncated else "",
+        ))
     else:
         # Stamp the rpc method onto produced items that lack a richer method.
         for item in out[before:]:
@@ -1085,6 +1228,26 @@ def _rpc_method_name(inner_ctor: int) -> str:
     return "rpc_result"
 
 
+_VECTOR_BYTES = struct.pack("<I", _VECTOR)
+
+
+def _next_vector_candidate(reader: _Reader, off: int, align_base: int) -> int:
+    """Offset of the next 4-aligned (from *align_base*) Vector ctor id, or -1.
+
+    Uses ``bytes.find`` to jump between matches instead of probing every
+    offset, and charges one unit of work per aligned candidate.
+    """
+    data, end = reader._data, reader.end
+    while True:
+        hit = data.find(_VECTOR_BYTES, off, end)
+        if hit < 0:
+            return -1
+        if (hit - align_base) % 4 == 0:
+            reader.budget.charge()
+            return hit
+        off = hit + 1
+
+
 def _scan_for_vectors(
     reader: _Reader, out: List[ParsedMtprotoMessage], depth: int,
 ) -> None:
@@ -1096,39 +1259,53 @@ def _scan_for_vectors(
     constructors and try to parse each as a Vector of boxed objects (Users,
     Messages, Updates). Conservative: an element that does not line up ends that
     vector. This never raises (it is the wrapper's terminal handler).
+
+    Hardening: candidates are parsed through offset-bounded sub-readers (no
+    copy of the tail per candidate), the scan consumes its region (the reader
+    is left at its end so an enclosing vector / scan does not re-scan the same
+    bytes), and every candidate is charged to the per-message budget.
     """
-    data = reader._data
     base = reader.pos
-    n = len(data)
-    off = base
-    while off + 4 <= n:
-        if struct.unpack_from("<I", data, off)[0] == _VECTOR:
-            sub = _Reader(data[off + 4:])
-            try:
-                _parse_typed_vector(sub, out, depth)
-            except _TLError:
-                off += 4
-                continue
-            # Advance past the bytes this vector consumed so its element data is
-            # not re-scanned (and its elements re-emitted) as further "vectors".
-            off += 4 + sub.pos
+    off = align_base = base
+    while not reader.budget.exhausted:
+        try:
+            off = _next_vector_candidate(reader, off, align_base)
+        except _BudgetExceeded:
+            break
+        if off < 0:
+            break
+        sub = reader.sub(off + 4)
+        try:
+            _parse_typed_vector(sub, out, depth)
+        except _TLError:
+            off += 4
             continue
-        off += 4
+        # Advance past the bytes this vector consumed so its element data is
+        # not re-scanned (and its elements re-emitted) as further "vectors".
+        off = align_base = sub.pos
+    reader.seek(reader.end)
 
 
-def _parse_into(tl_bytes: bytes, out: List[ParsedMtprotoMessage], depth: int) -> None:
-    """Dispatch one TL object, swallowing a single object's parse failure.
+def _parse_region(
+    reader: _Reader, out: List[ParsedMtprotoMessage], depth: int,
+) -> None:
+    """Dispatch one TL object in *reader*'s region, swallowing its failure.
 
     Container children are parsed independently: one undecodable child must not
     discard its siblings, so failures here are local (degrade to nothing for
     that child) rather than propagated.
     """
     try:
-        _dispatch(_Reader(tl_bytes), out, depth)
+        _dispatch(reader, out, depth)
     except _TLError:
         return
     except Exception:  # pragma: no cover - defensive belt-and-braces
         return
+
+
+def _parse_into(tl_bytes: bytes, out: List[ParsedMtprotoMessage], depth: int) -> None:
+    """Dispatch one TL object from *tl_bytes* with a fresh per-message budget."""
+    _parse_region(_Reader(bytes(tl_bytes)), out, depth)
 
 
 # --------------------------------------------------------------------------- #
@@ -1205,16 +1382,37 @@ def _node_to_text(node: TlNode) -> Optional[ParsedMtprotoMessage]:
     )
 
 
+def _is_truncated_gzip(node: TlNode) -> bool:
+    """True for a ``gzip_packed`` node decoded from a truncated gzip stream."""
+    return node.kind == "gzip" and GZIP_TRUNCATED_NOTE in node.note
+
+
+def _ids_under_truncated_gzip(root) -> set:
+    """``id()`` of every node decoded from a truncated ``gzip_packed`` body."""
+    return {
+        id(inner)
+        for gzip_node in iter_nodes(root) if _is_truncated_gzip(gzip_node)
+        for inner in iter_nodes(gzip_node)
+    }
+
+
 def _inbound_messages_from_schema(tl_bytes: bytes) -> List[ParsedMtprotoMessage]:
-    """Extract inbound chat text by walking the schema-decoded TL tree."""
+    """Extract inbound chat text by walking the schema-decoded TL tree.
+
+    Text decoded from a truncated gzip_packed body carries
+    :data:`~.tl.decoder.GZIP_TRUNCATED_NOTE`.
+    """
     try:
         root = decode_tl_cached(bytes(tl_bytes), "mtproto")
     except Exception:  # pragma: no cover - decode_tl_cached is itself tolerant
         return []
+    partial_ids = _ids_under_truncated_gzip(root)
     out: List[ParsedMtprotoMessage] = []
     for node in iter_nodes(root):
         msg = _node_to_text(node)
         if msg is not None:
+            if id(node) in partial_ids:
+                msg.note = GZIP_TRUNCATED_NOTE
             out.append(msg)
     return out
 

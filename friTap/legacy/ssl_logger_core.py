@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import functools
+import ipaddress
 import json
 import logging
 import os
@@ -12,6 +13,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, List, NamedTuple, Optional, Tuple
@@ -38,6 +40,7 @@ from ..events import (
 )
 from ..fritap_utility import setup_fritap_logging, sha256_file
 from ..pcap import PCAP
+from ..text_safety import safe_terminal_text
 
 if TYPE_CHECKING:
     # Annotation-only; the runtime import stays function-local in _build_script_context.
@@ -108,6 +111,72 @@ FULL_AGENT_BUNDLE_SIDECAR_SUFFIX = ".src"
 # Wine launcher basenames. Module-level so the CLI layer can share it without
 # reaching through the (patchable) SSL_Logger class.
 WINE_BASENAMES = ("wine", "wine64", "wine32", "wine-preloader", "wine64-preloader")
+
+# Frida message queue bounds. The count cap alone lets a hostile or runaway
+# agent park up to MESSAGE_QUEUE_MAX_MESSAGES x (payload size) bytes in this
+# process, so queued payload bytes are budgeted too. Both caps share the same
+# policy: the Frida callback never blocks (that could stall the target) -- a
+# message that does not fit is dropped and counted.
+# Breadcrumb the agent sends after its synchronous top-level init succeeded.
+AGENT_INIT_COMPLETE_BREADCRUMB = "agent-init: complete"
+
+MESSAGE_QUEUE_MAX_MESSAGES = 10000
+MESSAGE_QUEUE_MAX_BYTES = 256 * 1024 * 1024
+MESSAGE_QUEUE_DROP_LOG_INTERVAL = 10.0
+
+
+def _queued_message_size(item) -> int:
+    """Approximate bytes held by a queued ``(message, data)`` pair.
+
+    Counts the attached binary data plus the string/bytes values of the
+    message payload (shallow, so the estimate stays O(fields)).
+    """
+    message, data = item
+    size = len(data) if isinstance(data, (bytes, bytearray, memoryview)) else 0
+    payload = message.get("payload") if isinstance(message, dict) else None
+    values = payload.values() if isinstance(payload, dict) else (payload,)
+    for value in values:
+        if isinstance(value, (str, bytes, bytearray)):
+            size += len(value)
+    return size
+
+
+class ByteBudgetQueue(queue.Queue):
+    """A :class:`queue.Queue` that also caps the total queued payload bytes.
+
+    ``put`` raises :class:`queue.Full` immediately when the item would exceed
+    the byte budget, whatever ``block`` says -- callers already treat Full as
+    "drop", and waiting on bytes would hold up Frida's message thread. The
+    size recorded at enqueue time is the one released at dequeue time, so the
+    running total never drifts. (Concurrent producers may overshoot the budget
+    by at most one message each.)
+    """
+
+    def __init__(self, maxsize: int = 0, max_bytes: int = MESSAGE_QUEUE_MAX_BYTES):
+        super().__init__(maxsize)
+        self.max_bytes = max_bytes
+        self.queued_bytes = 0
+        self._item_sizes: deque = deque()
+
+    def put(self, item, block=True, timeout=None):
+        size = _queued_message_size(item)
+        with self.mutex:
+            over_budget = self.queued_bytes + size > self.max_bytes
+        if over_budget:
+            raise queue.Full
+        super().put(item, block, timeout)
+
+    # _put / _get run under self.mutex (queue.Queue contract).
+    def _put(self, item):
+        size = _queued_message_size(item)
+        super()._put(item)
+        self._item_sizes.append(size)
+        self.queued_bytes += size
+
+    def _get(self):
+        item = super()._get()
+        self.queued_bytes -= self._item_sizes.popleft()
+        return item
 
 
 def _full_bundle_in_sync(full_bundle, public_bundle):
@@ -302,10 +371,13 @@ class SSL_Logger():
 
         # Message queue: decouples Frida callback from processing to prevent
         # GIL contention that freezes the TUI under high message rates.
-        self._message_queue: queue.Queue = queue.Queue(maxsize=10000)
+        self._message_queue: queue.Queue = ByteBudgetQueue(
+            maxsize=MESSAGE_QUEUE_MAX_MESSAGES, max_bytes=MESSAGE_QUEUE_MAX_BYTES)
         self._consumer_stop = threading.Event()
         self._consumer_thread: threading.Thread | None = None
         self._queue_drop_count = 0
+        self._queue_drops_reported = 0
+        self._queue_drop_logged_at = 0.0
 
         # Instrumentation queue: child/spawn gating events arrive on Frida's
         # own event thread, where instrument() must never run — it blocks in
@@ -427,6 +499,9 @@ class SSL_Logger():
         # so on_detach can name it if the target dies inside a hook. Stored in
         # memory only — never printed (works regardless of -v).
         self._last_hook_breadcrumb = ""
+        # Set once the agent reports "agent-init: complete"; afterwards a script
+        # error is a non-fatal runtime exception (see _is_fatal_script_error).
+        self._agent_init_complete = False
         self._crash_reported = False
         self._event_bus.subscribe(HookBreadcrumbEvent, self._on_hook_breadcrumb)
         # Platform report: the agent tells us which platform branch it selected.
@@ -854,6 +929,8 @@ class SSL_Logger():
         """Remember the last hook the agent reported entering (crash attribution)."""
         if event.marker:
             self._last_hook_breadcrumb = event.marker
+            if event.marker == AGENT_INIT_COMPLETE_BREADCRUMB:
+                self._agent_init_complete = True
 
     def _on_platform_report(self, event: "PlatformReportEvent") -> None:
         """Log the platform branch the agent selected, and ack it for probe mode.
@@ -1340,23 +1417,24 @@ class SSL_Logger():
         # from the previous blanket "crashed inside a hook" fallback.
         clean_exit = (not have_real_cause and not self.spawn
                       and crumb == "agent-init: complete")
-        if have_real_cause:
-            cause = signal_name or "native crash"
-            if abort_msg:
-                cause += f": {abort_msg}"
-            headline = f"Target process terminated unexpectedly — {cause}"
-        elif clean_exit:
-            headline = ("Target process exited "
-                        "(no crash detected; last agent stage: agent-init: complete)")
-        else:
-            headline = ("Target process terminated unexpectedly — it most likely "
-                        "crashed inside an instrumented hook")
-            if crumb:
-                headline += f" (last instrumented: {crumb})"
+        # Hooks are only blamed on evidence: frida delivered a Crash (or a
+        # signal / abort was recovered) AND, for the "inside a hook" wording,
+        # the native report names an instrumented module. A bare
+        # 'process-terminated' (external kill -9, system ANR kill, normal exit)
+        # carries no such evidence and is reported neutrally.
+        crash_evidence = have_real_cause or crash is not None
+        plain_termination = not crash_evidence and not clean_exit
+        hook_module = (self._instrumented_module_in_crash(crash_report, crumb)
+                       if crash_evidence else None)
+        headline = self._crash_headline(
+            signal_name, abort_msg, crash_evidence, clean_exit, hook_module, crumb)
         # A clean exit is informational, not an error — and skips the crash-only
-        # guidance and the "crash report" pointer emitted below.
+        # guidance and the "crash report" pointer emitted below. A plain
+        # termination is a warning: something ended the target, no proof of a crash.
         if clean_exit:
             self.logger.info(headline)
+        elif plain_termination:
+            self.logger.warning(headline)
         else:
             self.logger.error(headline)
 
@@ -1419,7 +1497,13 @@ class SSL_Logger():
                             "docs/platforms/wine.md.")
                 else:
                     # No confirmed anti-tamper and not Wine.
-                    if have_real_cause:
+                    if plain_termination:
+                        # No crash evidence: do not guess a hook crash or PairIP.
+                        self.logger.warning(
+                            "  -> If nothing stopped the target externally, try starting "
+                            "the app first, then ATTACH friTap (run WITHOUT -s). "
+                            "See fkie-cad/friTap#64.")
+                    elif have_real_cause:
                         # The real cause is in the headline above — do NOT guess
                         # PairIP. The breadcrumb is only a weak hint (it may have run
                         # on a different thread than the one that actually crashed).
@@ -1452,17 +1536,77 @@ class SSL_Logger():
         # ErrorEvent: the process simply ended, so there is nothing to report and
         # nothing should mark the session as crashed.
         if not clean_exit:
-            if log_path:
+            if log_path and plain_termination:
+                self.logger.warning(f"Hook activity written to: {log_path}")
+            elif log_path:
                 self.logger.error(f"Full crash report + hook activity written to: {log_path}")
             try:
                 from ..events import ERROR_SEVERITY_FATAL, ErrorEvent
                 self._event_bus.emit(ErrorEvent(
-                    error="Target process crashed",
+                    error=("Target process terminated" if plain_termination
+                           else "Target process crashed"),
                     description=headline,
                     severity=ERROR_SEVERITY_FATAL,
                 ))
             except Exception:
                 pass
+
+    # Native-report markers of friTap's own injected code (agent / Gum
+    # trampolines): a crash with one of these on the stack happened in a hook.
+    _FRIDA_AGENT_STACK_MARKERS = ("frida-agent", "frida-gadget", "frida_agent_main",
+                                  "gum-js-loop", "gumjs")
+
+    def _instrumented_module_names(self, crumb: str) -> List[str]:
+        """Modules friTap instrumented: detected libraries + the breadcrumb's
+        module (``"pattern-scan: libssl.so"`` -> ``libssl.so``). Read-only, no
+        Frida calls (runs on the fritap-detach thread)."""
+        names = list(self._FRIDA_AGENT_STACK_MARKERS)
+        try:
+            detected = list(getattr(self, "_detected_libraries", None) or ())
+        except RuntimeError:  # set mutated concurrently by the router thread
+            detected = []
+        names.extend(os.path.basename(str(lib)) for lib in detected if lib)
+        if crumb and ":" in crumb:
+            tail = crumb.rsplit(":", 1)[1].strip()
+            if re.search(r"\.(so|dll|dylib)\b", tail):
+                names.append(os.path.basename(tail))
+        return [n for n in names if n]
+
+    def _instrumented_module_in_crash(self, crash_report, crumb: str) -> Optional[str]:
+        """The first instrumented module named in the native crash report, if any."""
+        if not crash_report:
+            return None
+        report = str(crash_report).lower()
+        for name in self._instrumented_module_names(crumb):
+            if name.lower() in report:
+                return name
+        return None
+
+    @staticmethod
+    def _crash_headline(signal_name, abort_msg, crash_evidence, clean_exit,
+                        hook_module, crumb) -> str:
+        """One-line verdict for an unexpected target death (see
+        ``_report_target_crash`` for how the inputs are derived)."""
+        if signal_name or abort_msg:
+            cause = signal_name or "native crash"
+            if abort_msg:
+                cause += f": {abort_msg}"
+            headline = f"Target process terminated unexpectedly — {cause}"
+            if hook_module:
+                headline += f" (native stack in instrumented module {hook_module})"
+            return headline
+        if clean_exit:
+            return ("Target process exited "
+                    "(no crash detected; last agent stage: agent-init: complete)")
+        if not crash_evidence:
+            headline = "Target process terminated (killed or exited) — no crash evidence"
+            return headline + (f" (last agent stage: {crumb})" if crumb else "")
+        if hook_module:
+            headline = ("Target process terminated unexpectedly — it crashed inside an "
+                        f"instrumented hook (native stack in {hook_module})")
+            return headline + (f" (last instrumented: {crumb})" if crumb else "")
+        headline = "Target process terminated unexpectedly — native crash (cause not decoded)"
+        return headline + (f" (last agent stage: {crumb})" if crumb else "")
 
     def on_process_crashed(self, crash) -> None:
         """Device ``process-crashed`` handler.
@@ -1511,6 +1655,11 @@ class SSL_Logger():
     # Guards only the claim of the once-flag below; class-level so bare
     # ``SSL_Logger.__new__`` instances (used throughout the tests) have it too.
     _SESSION_END_CLAIM_LOCK = threading.Lock()
+
+    # Process exit status used by cleanup()'s final os._exit. 0 unless a
+    # termination signal other than SIGINT (e.g. the SIGTERM that
+    # ScriptErrorHandler sends on an agent error) started the teardown.
+    _exit_status = 0
 
     def _claim_session_end(self) -> bool:
         """Atomically claim the end-of-session teardown. True for the first
@@ -1628,8 +1777,26 @@ class SSL_Logger():
         from ..error_handler import ScriptErrorHandler
         ScriptErrorHandler.handle(
             message, self._event_bus, self.session_data,
-            self._session_data_lock, self.json_output, self.debug_output, self.logger
+            self._session_data_lock, self.json_output, self.debug_output, self.logger,
+            fatal=self._is_fatal_script_error(message),
         )
+
+    def _is_fatal_script_error(self, message: dict) -> bool:
+        """Does this Frida ``error`` message leave the agent unable to work?
+
+        Fatal: an error before the agent finished initialising (startup
+        handshake still open, or no ``agent-init: complete`` breadcrumb yet --
+        a fatal init stage rethrows to the top level during script load), or
+        an error the agent explicitly flags ``fatal``. Anything after a
+        completed init is an exception in a deferred callback (Java.perform,
+        setTimeout, an Interceptor hook): the script keeps running, so ending
+        the run would only detach mid-hook-install and risk crashing the target.
+        """
+        if message.get("fatal") is True:
+            return True
+        if getattr(self, "startup", False):
+            return True
+        return not getattr(self, "_agent_init_complete", False)
 
     def temp_fifo(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -1641,6 +1808,60 @@ class SSL_Logger():
             return None
         return self.filename
 
+
+    # Agent payload fields that are printed verbatim by the console handlers
+    # (EventBus console sink and the legacy inline handler).
+    _AGENT_CONSOLE_FIELDS = ("console", "console_dev")
+
+    @classmethod
+    def _neutralize_console_text(cls, payload: dict) -> None:
+        """Escape terminal control sequences in agent console text in place,
+        before either the EventBus or the legacy handler prints it."""
+        for field in cls._AGENT_CONSOLE_FIELDS:
+            if field in payload:
+                payload[field] = safe_terminal_text(payload[field])
+
+    @staticmethod
+    def _validated_socket_fields(payload: dict):
+        """``(src, src_port, dst, dst_port, family)`` from an agent payload,
+        validated; ``None`` when the endpoints must not become filter hosts
+        (non-IP family such as AF_UNIX, or a missing/malformed address)."""
+        family, addr_family = resolve_ss_family(payload.get("ss_family"))
+        if addr_family not in FILTERABLE_SS_FAMILIES:
+            return None
+        src_addr = get_addr_string(payload.get("src_addr"), family)
+        dst_addr = get_addr_string(payload.get("dst_addr"), family)
+        if not src_addr or not dst_addr:
+            return None
+        return (src_addr, coerce_port(payload.get("src_port")),
+                dst_addr, coerce_port(payload.get("dst_port")), family)
+
+    def _track_traced_socket(self, payload: dict) -> None:
+        """Record a socket for --socket_tracing / --full_capture (consumed by
+        cleanup() to build BPF and display filters)."""
+        fields = self._validated_socket_fields(payload)
+        if fields is None:
+            return
+        src_addr, src_port, dst_addr, dst_port, family = fields
+        host_pair = frozenset({
+            "src_addr": src_addr, "dst_addr": dst_addr, "ss_family": family
+        }.items())
+        if self.full_capture:
+            self.traced_scapy_socket_Set.add(host_pair)
+        if self.socket_trace:
+            self._event_bus.emit(SocketTraceEvent(
+                src_addr=src_addr,
+                src_port=src_port,
+                dst_addr=dst_addr,
+                dst_port=dst_port,
+                ss_family=family,
+            ))
+            self.traced_Socket_Set.add(frozenset({
+                "src_addr": src_addr, "dst_addr": dst_addr,
+                "src_port": src_port, "dst_port": dst_port,
+                "ss_family": family
+            }.items()))
+            self.traced_scapy_socket_Set.add(host_pair)
 
     def on_fritap_message(self, job, message, data):
         """Callback for errors and messages sent from injected agent script.
@@ -1683,34 +1904,15 @@ class SSL_Logger():
         if not isinstance(payload, dict) or "contentType" not in payload:
             return
 
+        self._neutralize_console_text(payload)
+
         # Emit events through the event bus for all content types
         self._emit_event_from_payload(payload, data)
 
         if self._handlers_active:
             # Socket trace / full capture set tracking (consumed by cleanup())
             if (self.socket_trace or self.full_capture) and "src_addr" in payload:
-                src_addr = get_addr_string(payload["src_addr"], payload["ss_family"])
-                dst_addr = get_addr_string(payload["dst_addr"], payload["ss_family"])
-                if self.full_capture:
-                    self.traced_scapy_socket_Set.add(frozenset({
-                        "src_addr": src_addr, "dst_addr": dst_addr, "ss_family": payload["ss_family"]
-                    }.items()))
-                if self.socket_trace:
-                    self._event_bus.emit(SocketTraceEvent(
-                        src_addr=src_addr,
-                        src_port=payload["src_port"],
-                        dst_addr=dst_addr,
-                        dst_port=payload["dst_port"],
-                        ss_family=payload["ss_family"],
-                    ))
-                    self.traced_Socket_Set.add(frozenset({
-                        "src_addr": src_addr, "dst_addr": dst_addr,
-                        "src_port": payload["src_port"], "dst_port": payload["dst_port"],
-                        "ss_family": payload["ss_family"]
-                    }.items()))
-                    self.traced_scapy_socket_Set.add(frozenset({
-                        "src_addr": src_addr, "dst_addr": dst_addr, "ss_family": payload["ss_family"]
-                    }.items()))
+                self._track_traced_socket(payload)
             return  # Output handlers process events via EventBus
 
         # Legacy path: inline output handling
@@ -3544,9 +3746,29 @@ class SSL_Logger():
             try:
                 self._message_queue.put_nowait((message, data))
             except queue.Full:
-                self._queue_drop_count += 1
+                self._record_queue_drop()
 
         return wrapped_handler
+
+    def _record_queue_drop(self) -> None:
+        """Count a message dropped at the full queue (count or byte cap) and
+        log the running total at most once per MESSAGE_QUEUE_DROP_LOG_INTERVAL.
+
+        Runs on Frida's callback thread: no blocking, no Frida calls.
+        """
+        self._queue_drop_count += 1
+        now = time.monotonic()
+        last = getattr(self, "_queue_drop_logged_at", 0.0)
+        if last and now - last < MESSAGE_QUEUE_DROP_LOG_INTERVAL:
+            return
+        self._queue_drop_logged_at = now
+        reported = getattr(self, "_queue_drops_reported", 0)
+        self._queue_drops_reported = self._queue_drop_count
+        self.logger.warning(
+            "Agent message queue full (%d messages / %d MiB cap): dropped %d "
+            "message(s) since the last report, %d in total.",
+            MESSAGE_QUEUE_MAX_MESSAGES, MESSAGE_QUEUE_MAX_BYTES // (1024 * 1024),
+            self._queue_drop_count - reported, self._queue_drop_count)
 
 
     def detach_with_timeout(self, timeout=30):
@@ -3733,6 +3955,10 @@ class SSL_Logger():
             except Exception:
                 pass
         finally:
+            # The JSON document (and every other output handler) must be complete
+            # before the os._exit below, even if a teardown step above raised
+            # before reaching close_output_handlers(). Idempotent.
+            self._close_output_handlers_safely()
             self.special_logger.info("\nThanks for using friTap. Have a great day!")
             if not self._tui_mode:
                 # os._exit, not sys.exit: SystemExit only unwinds the current
@@ -3743,7 +3969,14 @@ class SSL_Logger():
                 # thread (the crash/on_detach path). os._exit terminates the whole
                 # process immediately from whichever thread we're on, so the user
                 # never needs a second Ctrl+C.
-                os._exit(0)
+                os._exit(self._exit_status)
+
+    def _close_output_handlers_safely(self):
+        """close_output_handlers() for the exit path: idempotent, never raises."""
+        try:
+            self.close_output_handlers()
+        except Exception as exc:  # noqa: BLE001 - must not block the exit
+            self.logger.error(f"Error closing output handlers: {exc}")
 
     def _release_lsass_contributor(self):
         """Stop the LSASS helper session (Windows target sessions only; never raises).
@@ -4305,8 +4538,20 @@ class SSL_Logger():
                 self.session_data["statistics"]["total_sessions"] = len(self.session_data["ssl_sessions"])
 
     def _finalize_json_output(self):
-        """Write final JSON output to file"""
-        if self.json_file:
+        """Write final JSON output to file. Idempotent.
+
+        The legacy message path streams its document through
+        ``finalize_legacy_json``; when that writer was used, the
+        ``json_file`` handle opened by init_compat for the same path must not
+        overwrite the streamed document, so it is only closed.
+        """
+        from .message_handler import finalize_legacy_json
+        if getattr(self, "_legacy_json_stream", None) is not None:
+            finalize_legacy_json(self)
+            self._close_legacy_json_file()
+            self.logger.info(f"JSON output saved to {self.json_output}")
+            return
+        if self.json_file and not self.json_file.closed:
             try:
                 with self._session_data_lock:
                     # Update statistics
@@ -4318,6 +4563,14 @@ class SSL_Logger():
                 self.logger.info(f"JSON output saved to {self.json_output}")
             except Exception as e:
                 self.logger.error(f"Error writing JSON output: {e}")
+
+    def _close_legacy_json_file(self):
+        json_file = getattr(self, "json_file", None)
+        if json_file is not None and not json_file.closed:
+            try:
+                json_file.close()
+            except Exception:  # noqa: BLE001 - never break teardown
+                pass
 
     def add_ssl_session(self, session_info):
         """Add SSL session information to JSON output"""
@@ -4384,10 +4637,125 @@ class _PluginSessionShim:
         )
 
 
+# ---------------------------------------------------------------------------
+# Agent socket fields (untrusted: the agent runs inside the target process).
+# Validated addresses flow into BPF / Wireshark display filters, so anything
+# that is not a well-formed IPv4/IPv6 address of a whitelisted family becomes
+# the empty "missing address" value that downstream code already skips.
+# ---------------------------------------------------------------------------
+DEFAULT_SS_FAMILY = "AF_INET"
+FILTERABLE_SS_FAMILIES = frozenset({"AF_INET", "AF_INET6"})
+KNOWN_SS_FAMILIES = FILTERABLE_SS_FAMILIES | {"AF_UNIX"}
+MISSING_ADDRESS = ""
+_IPV6_HEX_LEN = 32
+_MAX_PORT = 0xFFFF
+_invalid_socket_field_warned = False
+
+
+def _warn_invalid_socket_field_once(field: str) -> None:
+    global _invalid_socket_field_warned
+    if _invalid_socket_field_warned:
+        return
+    _invalid_socket_field_warned = True
+    logging.getLogger("friTap").warning(
+        "Ignoring malformed %s reported by the agent (further occurrences are "
+        "silently replaced by an empty address / port 0).", field)
+
+
+def _is_missing(value) -> bool:
+    return value is None or value == ""
+
+
+def _ipv4_packed(socket_addr) -> Optional[bytes]:
+    """Agent IPv4 (host-order int or dotted string) as 4 bytes, else None."""
+    if isinstance(socket_addr, bool):
+        return None
+    if isinstance(socket_addr, int):
+        if 0 <= socket_addr <= 0xFFFFFFFF:
+            return struct.pack(">I", socket_addr)
+        return None
+    if isinstance(socket_addr, str):
+        try:
+            return ipaddress.IPv4Address(socket_addr).packed
+        except ValueError:
+            return None
+    return None
+
+
+def _ipv6_packed(socket_addr) -> Optional[bytes]:
+    """Agent IPv6 (32-char hex or textual form) as 16 bytes, else None."""
+    if not isinstance(socket_addr, str):
+        return None
+    if len(socket_addr) == _IPV6_HEX_LEN:
+        try:
+            return bytes.fromhex(socket_addr)
+        except ValueError:
+            pass
+    try:
+        return ipaddress.IPv6Address(socket_addr).packed
+    except ValueError:
+        return None
+
+
+def normalize_ss_family(ss_family) -> str:
+    """Whitelist the agent's ``ss_family``; anything else is the default."""
+    if isinstance(ss_family, str) and ss_family in KNOWN_SS_FAMILIES:
+        return ss_family
+    if not _is_missing(ss_family):
+        _warn_invalid_socket_field_once("ss_family")
+    return DEFAULT_SS_FAMILY
+
+
+def resolve_ss_family(raw_family):
+    """``(family, address_family)`` for an agent ``ss_family``.
+
+    ``family`` is the whitelisted value to pass downstream (default for a
+    missing or unknown one). ``address_family`` is the family to parse the
+    addresses with, or ``None`` when the agent sent an unknown family -- its
+    addresses are then discarded rather than reinterpreted as IPv4.
+    """
+    family = normalize_ss_family(raw_family)
+    if _is_missing(raw_family) or raw_family == family:
+        return family, family
+    return family, None
+
+
+def coerce_port(port) -> int:
+    """Agent port as an int in 0..65535; anything else becomes 0."""
+    if isinstance(port, int) and not isinstance(port, bool) and 0 <= port <= _MAX_PORT:
+        return port
+    if not _is_missing(port):
+        _warn_invalid_socket_field_once("port")
+    return 0
+
+
+def sanitize_raw_addr(socket_addr, ss_family):
+    """The raw agent address if it is valid for ``ss_family``, else ``""``."""
+    if ss_family == "AF_INET" and _ipv4_packed(socket_addr) is not None:
+        return socket_addr
+    if ss_family == "AF_INET6" and _ipv6_packed(socket_addr) is not None:
+        return socket_addr
+    return MISSING_ADDRESS
+
+
 def get_addr_string(socket_addr, ss_family):
-    if ss_family == "AF_INET" and isinstance(socket_addr, int):
-        return socket.inet_ntop(socket.AF_INET, struct.pack(">I", socket_addr))
-    if ss_family == "AF_INET6" and isinstance(socket_addr, str):
-        raw_addr = bytes.fromhex(socket_addr)
-        return socket.inet_ntop(socket.AF_INET6, struct.pack(">16s", raw_addr))
-    return str(socket_addr)
+    """Render an agent socket address, validated, as a printable IP string.
+
+    Only AF_INET (int / dotted string) and AF_INET6 (32-char hex / textual)
+    addresses are rendered. A missing address, AF_UNIX, an unknown family or
+    a malformed value yields ``""`` -- never the raw agent value -- so it can
+    never be interpolated into a BPF or display filter.
+    """
+    if _is_missing(socket_addr):
+        return MISSING_ADDRESS
+    if ss_family == "AF_INET":
+        packed = _ipv4_packed(socket_addr)
+        if packed is not None:
+            return socket.inet_ntop(socket.AF_INET, packed)
+    elif ss_family == "AF_INET6":
+        packed = _ipv6_packed(socket_addr)
+        if packed is not None:
+            return socket.inet_ntop(socket.AF_INET6, packed)
+    if ss_family != "AF_UNIX":
+        _warn_invalid_socket_field_once("socket address")
+    return MISSING_ADDRESS

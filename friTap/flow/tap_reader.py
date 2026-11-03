@@ -15,6 +15,7 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
+from friTap.binary_bounds import BoundsError, read_bounded
 from friTap.flow.tap_format import (
     _FOOTER_STRUCT,
     _HEADER_STRUCT,
@@ -43,6 +44,12 @@ if TYPE_CHECKING:
     from friTap.flow.models import Flow
 
 logger = logging.getLogger(__name__)
+
+#: Sanity ceiling for one record's payload. The envelope's u32 ``payload_len``
+#: allows ~4 GiB, but the writer never comes close: the collector caps a flow's
+#: retained chunk bytes at 64 MiB, so a FLOW record (chunks + bodies + JSON
+#: metadata) stays far below this. A record claiming more is treated as corrupt.
+MAX_RECORD_PAYLOAD = 1 << 30  # 1 GiB
 
 
 class TapReader:
@@ -434,8 +441,10 @@ class TapReader:
                     continue
                 if rec_type != REC_FINDING or payload_len == 0:
                     continue
-                payload = self._file.read(payload_len)
-                if len(payload) < payload_len:
+                try:
+                    payload = self._read_payload(payload_len)
+                except BoundsError:
+                    logger.debug("Skipping REC_FINDING at offset %d: bad length", offset)
                     continue
                 add_record(payload, stored_crc, offset)
             self._findings_index = index
@@ -481,9 +490,12 @@ class TapReader:
             if payload_len == 0:
                 continue
 
-            payload = self._file.read(payload_len)
-            if len(payload) < payload_len:
-                break  # Truncated payload at EOF
+            try:
+                payload = self._read_payload(payload_len)
+            except BoundsError as exc:
+                # Truncated payload at EOF, or a length no record can have.
+                logger.debug("Ending record scan at offset %d: %s", offset, exc)
+                break
 
             yield offset, rec_type, payload, stored_crc
 
@@ -542,13 +554,22 @@ class TapReader:
 
         try:
             _, payload_len, stored_crc, _ = decode_record_envelope(envelope_raw)
-        except ValueError:
-            return None
-
-        payload = self._file.read(payload_len)
-        if len(payload) < payload_len:
+            payload = self._read_payload(payload_len)
+        except ValueError:  # bad envelope, or BoundsError on the payload length
             return None
         return payload, stored_crc
+
+    def _read_payload(self, payload_len: int) -> bytes:
+        """Read a *payload_len*-byte record payload at the current position.
+
+        The length is checked against :data:`MAX_RECORD_PAYLOAD` and the bytes
+        left in the file *before* anything is allocated, so a crafted u32
+        length cannot trigger a multi-GiB ``read()``. Raises
+        :class:`~friTap.binary_bounds.BoundsError` (a ``ValueError``) on an
+        implausible or truncated payload.
+        """
+        assert self._file is not None
+        return read_bounded(self._file, payload_len, "tap record payload", MAX_RECORD_PAYLOAD)
 
     def _try_read_meta(self) -> Optional[TapMeta]:
         """Try to read a META record at the current position."""
@@ -570,8 +591,9 @@ class TapReader:
             self._file.seek(pos)
             return None
 
-        payload = self._file.read(payload_len)
-        if len(payload) < payload_len:
+        try:
+            payload = self._read_payload(payload_len)
+        except BoundsError:
             self._file.seek(pos)
             return None
 

@@ -838,7 +838,7 @@ if TEXTUAL_AVAILABLE:
                 try:
                     parsed = json.loads(data)
                     return json.dumps(parsed, indent=2)
-                except (json.JSONDecodeError, UnicodeDecodeError):
+                except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
                     return f"JSON decode failed \u2014 showing raw:\n{data!r}"
 
             if decoder == "base64":

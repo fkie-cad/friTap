@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict
 
+#: Distinct unknown auth_key_ids remembered per run. The ids are read from the
+#: wire (8 attacker-chosen bytes per record), so the set must not grow without
+#: bound; records naming further ids only bump ``unknown_key_ids_overflow``.
+MAX_UNKNOWN_KEY_IDS = 256
+
 
 @dataclass
 class DecryptedMessage:
@@ -110,6 +115,8 @@ class MtprotoStats:
     # because the count is what tells a one-off stray record apart from a whole
     # session we cannot read, and that decides whether a key hunt is worth it.
     unknown_key_ids: Dict[str, int] = field(default_factory=dict)
+    # Records whose (new) auth_key_id did not fit in ``unknown_key_ids``.
+    unknown_key_ids_overflow: int = 0
 
     def add_stream(self) -> None:
         self.streams += 1
@@ -137,6 +144,10 @@ class MtprotoStats:
     def add_unknown_key(self, auth_key_id_hex: str) -> None:
         """A record naming an auth_key_id we do not hold -- the recoverable kind."""
         self.records_unknown_key += 1
+        known = auth_key_id_hex in self.unknown_key_ids
+        if not known and len(self.unknown_key_ids) >= MAX_UNKNOWN_KEY_IDS:
+            self.unknown_key_ids_overflow += 1
+            return
         self.unknown_key_ids[auth_key_id_hex] = (
             self.unknown_key_ids.get(auth_key_id_hex, 0) + 1
         )

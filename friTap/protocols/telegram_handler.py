@@ -20,6 +20,9 @@ single source of truth in :mod:`friTap.protocols.mtproto_keylog_spec`.
 
 from __future__ import annotations
 
+import logging
+import re
+import threading
 from typing import TYPE_CHECKING, List, Optional
 
 from ..backends.base import BackendName
@@ -31,6 +34,8 @@ from .mtproto_hints import attach_mode_hint
 
 if TYPE_CHECKING:
     from ..events import KeylogEvent
+
+logger = logging.getLogger(__name__)
 
 # The MTProto networking-library hints plus the Telegram application package /
 # native-library name fragments, so library auto-detection matches Telegram.
@@ -47,6 +52,60 @@ HEADER_COMMENT = (
     f"{spec.LABEL} <dc_id> <auth_key_id_hex16> <auth_key_hex512> <key_type> | "
     f"{spec.E2E_LABEL} <key_fingerprint_hex16> <shared_key_hex512> <chat_id>"
 )
+
+# Secret-Chat chat ids are signed 64-bit integers. The agent runs inside a
+# possibly hostile target, so its ``chat_id`` is validated, never trusted.
+_INT64_MIN = -(2 ** 63)
+_INT64_MAX = 2 ** 63 - 1
+# Optional ``-`` plus at most 19 ASCII digits (the int64 maximum has 19); the
+# length cap also keeps int() away from huge digit strings.
+_DECIMAL_CHAT_ID_RE = re.compile(r"-?[0-9]{1,19}")
+_UNKNOWN_CHAT_ID = 0
+
+_invalid_chat_id_lock = threading.Lock()
+_invalid_chat_id_logged = False
+
+
+def _parse_chat_id(value) -> Optional[int]:
+    """*value* as an int64 chat id (an ``int`` or a decimal ``str``), else ``None``.
+
+    Total: never raises. ``bool``, ``float`` and anything outside the signed
+    64-bit range are rejected.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        if not _DECIMAL_CHAT_ID_RE.fullmatch(value):
+            return None
+        value = int(value)
+    if not isinstance(value, int):
+        return None
+    return value if _INT64_MIN <= value <= _INT64_MAX else None
+
+
+def _warn_invalid_chat_id_once(value) -> None:
+    """Log the first invalid agent ``chat_id``; later ones are not logged."""
+    global _invalid_chat_id_logged
+    with _invalid_chat_id_lock:
+        if _invalid_chat_id_logged:
+            return
+        _invalid_chat_id_logged = True
+    logger.warning(
+        "Ignoring invalid Secret-Chat chat_id from the agent (%s); the key is "
+        "recorded with chat_id %d. Further invalid chat_ids are not logged",
+        type(value).__name__, _UNKNOWN_CHAT_ID)
+
+
+def _chat_id_from(payload: dict) -> int:
+    """The validated ``chat_id`` of an E2E *payload*; unknown/invalid -> 0."""
+    raw = payload.get("chat_id", _UNKNOWN_CHAT_ID)
+    if not raw:
+        return _UNKNOWN_CHAT_ID
+    chat_id = _parse_chat_id(raw)
+    if chat_id is None:
+        _warn_invalid_chat_id_once(raw)
+        return _UNKNOWN_CHAT_ID
+    return chat_id
 
 
 class TelegramKeylogFormatter(KeylogFormatter):
@@ -71,7 +130,7 @@ class TelegramKeylogFormatter(KeylogFormatter):
             line = spec.format_e2e_line(
                 key_fingerprint=str(payload.get("key_fingerprint", "")),
                 shared_key=str(payload.get("shared_key", "")),
-                chat_id=int(payload.get("chat_id", 0) or 0),
+                chat_id=_chat_id_from(payload),
             )
         else:
             line = spec.format_line(

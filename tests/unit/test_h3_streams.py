@@ -152,7 +152,8 @@ class TestUniStreams:
                               stream_id=CLIENT_ENCODER_SID)
         assert results == []
         assert parser.stream_kind(CLIENT_ENCODER_SID) == KIND_QPACK_ENCODER
-        assert bytes(parser._encoder_bytes["client"]) == b"\x3f\xe1\x1f"
+        # Encoder bytes go to the QPACK context; no per-side copy is kept.
+        assert bytes(parser._encoder_bytes["client"]) == b""
 
     def test_decoder_stream_ignored(self):
         parser = Http3Parser()

@@ -28,7 +28,7 @@ from typing import Optional
 
 from friTap.parsers.base import unwrap_parser
 from friTap.parsers.hexdump import HexdumpParser
-from friTap.parsers.http3 import Http3Parser
+from friTap.parsers.http3 import ERROR_FRAME_TOO_LARGE, Http3Parser
 from friTap.parsers.registry import get_default_registry
 
 from .models import FlowChunk, FlowEventType
@@ -50,6 +50,33 @@ _PUSH_STREAM_KIND = "push"
 
 class QuicStreamFlowMixin:
     """Routes real-stream-id QUIC chunks into per-stream HTTP/3 flows."""
+
+    # ------------------------------------------------------------------
+    # Detection screening
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _screen_h3_detection(detected, data: bytes, transport: str):
+        """Veto an HTTP/3 sniff on non-QUIC bytes the HTTP/3 parser cannot frame.
+
+        Off the ``quic`` transport (e.g. UDP payloads of a keyless pcap, which
+        mix friTap-written plaintext HTTP/3 with genuine QUIC cipher-text that
+        tshark cannot tell apart) a random first byte often decodes as a short
+        DATA/HEADERS frame. Cipher-text then fails a few frames later with an
+        oversized frame; plaintext HTTP/3 never does. Returns a
+        HexdumpParser in place of such a detection, else *detected* unchanged.
+        """
+        if transport == _TRANSPORT_QUIC or not isinstance(detected, Http3Parser):
+            return detected
+        try:
+            results = Http3Parser().feed(data, "write")
+        except Exception:
+            return HexdumpParser()
+        if any(getattr(r, "error", "") == ERROR_FRAME_TOO_LARGE for r in results):
+            logger.debug("Ignoring HTTP/3 detection on unframeable %s bytes "
+                         "(likely encrypted QUIC)", transport or "unknown")
+            return HexdumpParser()
+        return detected
 
     # ------------------------------------------------------------------
     # Classification

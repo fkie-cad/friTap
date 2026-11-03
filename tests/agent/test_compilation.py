@@ -7,11 +7,34 @@ and produces valid JavaScript output.
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+
+FRITAP_ROOT = Path(__file__).parent.parent.parent
+# The build script lives in dev/ (see RELEASING.md / DEVELOPMENT.md).
+COMPILE_SCRIPT = FRITAP_ROOT / "dev" / "compile_agent.sh"
+# Pinned Node frida-compile (the same binary dev/compile_agent.sh uses).
+FRIDA_COMPILE_BIN = FRITAP_ROOT / "node_modules" / ".bin" / "frida-compile"
+
+# TypeScript-only syntax that must not survive compilation. Anchored to
+# declaration/signature positions so plain JS such as the object literal
+# `value: stringToIndex.value` or a JSDoc `{ [key: string]: ... }` comment
+# does not trip the check.
+TS_ONLY_SYNTAX = [
+    re.compile(r"^\s*(?:export\s+)?interface\s+\w+\s*(?:<[^>]*>)?\s*\{", re.M),
+    re.compile(r"^\s*(?:export\s+)?type\s+\w+\s*(?:<[^>]*>)?\s*=", re.M),
+    re.compile(r"\b(?:let|const|var)\s+\w+\s*:\s*(?:string|number|boolean|any)\b"),
+    re.compile(r"\bfunction\s*\w*\s*\([^)]*?\b\w+\??\s*:\s*(?:string|number|boolean|any)\b[^)]*\)"),
+]
+
+
+def find_typescript_syntax(content):
+    """Return the TypeScript-only constructs found in `content` (empty if none)."""
+    return [m.group(0) for pattern in TS_ONLY_SYNTAX for m in pattern.finditer(content)]
 
 
 @pytest.mark.agent_compilation
@@ -65,20 +88,13 @@ class TestAgentCompilation:
         
     def test_compilation_script_exists(self, fritap_root):
         """Test that compilation scripts exist."""
-        unix_script = fritap_root / "compile_agent.sh"
-        windows_script = fritap_root / "compile_agent.bat"
-        
-        # At least one compilation script should exist
-        assert unix_script.exists() or windows_script.exists(), \
-            "No compilation script found"
-            
-        # Unix script should be executable if it exists
-        if unix_script.exists():
-            assert os.access(unix_script, os.X_OK), \
-                "compile_agent.sh is not executable"
+        unix_script = fritap_root / "dev" / "compile_agent.sh"
+        assert unix_script.exists(), "dev/compile_agent.sh not found"
+        assert os.access(unix_script, os.X_OK), \
+            "dev/compile_agent.sh is not executable"
                 
-    @pytest.mark.skipif(not os.access("./compile_agent.sh", os.F_OK), 
-                       reason="compile_agent.sh not found")
+    @pytest.mark.skipif(not COMPILE_SCRIPT.exists() or not FRIDA_COMPILE_BIN.exists(),
+                       reason="dev/compile_agent.sh or node_modules frida-compile not found")
     def test_agent_compilation_unix(self, fritap_root, compiled_agent_path):
         """Test agent compilation on Unix systems."""
         # Change to friTap root directory
@@ -86,12 +102,12 @@ class TestAgentCompilation:
         os.chdir(fritap_root)
         
         try:
-            # Run compilation script
+            # Run compilation script (intercept target only: what this test checks)
             result = subprocess.run(
-                ['./compile_agent.sh'], 
-                capture_output=True, 
-                text=True, 
-                timeout=60
+                [str(COMPILE_SCRIPT), 'intercept'],
+                capture_output=True,
+                text=True,
+                timeout=120
             )
             
             # Check compilation succeeded
@@ -162,18 +178,27 @@ class TestAgentCompilation:
         finally:
             os.chdir(original_cwd)
             
-    def test_frida_compile_available(self):
-        """Test that frida-compile is available."""
-        try:
-            result = subprocess.run(
-                ['npx', 'frida-compile', '--version'], 
-                capture_output=True, 
-                text=True, 
-                timeout=10
-            )
-            assert result.returncode == 0, "frida-compile not available"
-        except FileNotFoundError:
-            pytest.skip("npx not available")
+    def test_frida_compile_available(self, fritap_root):
+        """Test that the pinned frida-compile is installed and runnable."""
+        pkg_json = fritap_root / "node_modules" / "frida-compile" / "package.json"
+        if not pkg_json.exists():
+            pytest.skip("node_modules/frida-compile not installed (run npm ci)")
+        with open(pkg_json) as f:
+            installed = json.load(f)["version"]
+        with open(fritap_root / "package.json") as f:
+            pinned = json.load(f).get("devDependencies", {}).get("frida-compile")
+        if pinned:
+            assert installed == pinned, \
+                f"installed frida-compile {installed} != pinned {pinned} (run npm ci)"
+        # frida-compile has no --version flag; --help is the cheap liveness probe.
+        result = subprocess.run(
+            [str(FRIDA_COMPILE_BIN), '--help'],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        assert result.returncode == 0, f"frida-compile not runnable: {result.stderr}"
+        assert "Usage: frida-compile" in result.stdout
             
     def test_typescript_compiler_available(self):
         """Test that TypeScript compiler is available."""
@@ -226,13 +251,22 @@ class TestCompiledAgentValidation:
             "No function definitions found"
             
         # Should not contain TypeScript-specific syntax
-        assert 'interface ' not in content, \
-            "TypeScript interface found - compilation incomplete"
-        assert ': string' not in content, \
-            "TypeScript type annotation found - compilation incomplete"
+        ts_syntax = find_typescript_syntax(content)
+        assert not ts_syntax, \
+            f"TypeScript-only syntax found - compilation incomplete: {ts_syntax[:3]}"
         assert 'export class' not in content, \
             "TypeScript export found - compilation incomplete"
             
+    def test_typescript_syntax_detector(self):
+        """The TS-syntax check flags real annotations but not JS look-alikes."""
+        assert find_typescript_syntax("interface Foo {\n  a: string;\n}")
+        assert find_typescript_syntax("type Bar = { a: number };")
+        assert find_typescript_syntax("let name: string = 'x';")
+        assert find_typescript_syntax("function f(a: string, b) { return a; }")
+        assert not find_typescript_syntax("const o = { value: stringToIndex.value };")
+        assert not find_typescript_syntax("/** @return {{ [key: string]: number }} */")
+        assert not find_typescript_syntax("x = c ? a : string_value;")
+
     def test_compiled_agent_contains_frida_api(self, compiled_agent_path):
         """Test that compiled agent contains Frida API calls."""
         if not compiled_agent_path.exists():
@@ -306,23 +340,24 @@ class TestCompilationErrorHandling:
             unclosed bracket {
         """)
         
-        # Try to compile the bad file
-        try:
-            result = subprocess.run(
-                ['npx', 'frida-compile', str(bad_ts_file), '-o', str(tmp_path / "output.js")], 
-                capture_output=True, 
-                text=True, 
-                timeout=30
-            )
-            
-            # Compilation should fail
-            assert result.returncode != 0, \
-                "Compilation should fail with syntax errors"
-            assert "error" in result.stderr.lower(), \
-                "Error message should be present"
-                
-        except FileNotFoundError:
-            pytest.skip("npx/frida-compile not available")
+        if not FRIDA_COMPILE_BIN.exists():
+            pytest.skip("node_modules frida-compile not installed (run npm ci)")
+        # frida-compile only accepts entries inside the project root (its cwd),
+        # so compile from tmp_path; otherwise it fails for the wrong reason.
+        result = subprocess.run(
+            [str(FRIDA_COMPILE_BIN), bad_ts_file.name, '-o', 'output.js'],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=tmp_path
+        )
+
+        # Compilation should fail with a real TypeScript diagnostic
+        assert result.returncode != 0, \
+            "Compilation should fail with syntax errors"
+        output = (result.stdout + result.stderr).lower()
+        assert "error ts" in output, \
+            f"TypeScript error message should be present: {output[:300]}"
             
     def test_compilation_with_missing_dependencies(self, tmp_path):
         """Test compilation with missing dependencies."""
@@ -338,20 +373,22 @@ class TestCompilationErrorHandling:
         }
         """)
         
-        try:
-            result = subprocess.run(
-                ['npx', 'frida-compile', str(bad_import_file), '-o', str(tmp_path / "output.js")], 
-                capture_output=True, 
-                text=True, 
-                timeout=30
-            )
-            
-            # Should fail due to missing import
-            assert result.returncode != 0, \
-                "Compilation should fail with missing imports"
-                
-        except FileNotFoundError:
-            pytest.skip("npx/frida-compile not available")
+        if not FRIDA_COMPILE_BIN.exists():
+            pytest.skip("node_modules frida-compile not installed (run npm ci)")
+        result = subprocess.run(
+            [str(FRIDA_COMPILE_BIN), bad_import_file.name, '-o', 'output.js'],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=tmp_path
+        )
+
+        # Should fail due to the missing import (not the project-root check)
+        assert result.returncode != 0, \
+            "Compilation should fail with missing imports"
+        output = result.stdout + result.stderr
+        assert "non-existent-module" in output, \
+            f"Error should name the missing module: {output[:300]}"
             
     @patch('subprocess.run')
     def test_compilation_timeout_handling(self, mock_subprocess):
@@ -366,7 +403,7 @@ class TestCompilationErrorHandling:
         try:
             with pytest.raises(subprocess.TimeoutExpired):
                 subprocess.run(
-                    ['./compile_agent.sh'], 
+                    [str(COMPILE_SCRIPT)],
                     capture_output=True, 
                     text=True, 
                     timeout=60

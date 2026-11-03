@@ -48,16 +48,18 @@ def iter_e2e_blobs(data: bytes, fingerprints: Set[bytes]) -> Iterator[Tuple[byte
     scanner. The cloud layer has no such problem: there the auth_key_id sits at a
     known offset in every record (see ``MtprotoStats.unknown_key_ids``).
     """
-    if not fingerprints:
-        return
     fp_len = crypto.E2E_FINGERPRINT_LEN
+    hits = {fp: -1 for fp in fingerprints if len(fp) == fp_len}
+    if not hits:
+        return
+    data = bytes(data)
     p = 0
     n = len(data)
-    while p + fp_len <= n:
+    while True:
+        p = _next_fingerprint_hit(data, hits, p)
+        if p < 0:
+            return
         fp = data[p : p + fp_len]
-        if fp not in fingerprints:
-            p += 1
-            continue
         length = _read_tl_bytes_length(data, p)
         if (
             length is not None
@@ -69,6 +71,23 @@ def iter_e2e_blobs(data: bytes, fingerprints: Set[bytes]) -> Iterator[Tuple[byte
             p += length
             continue
         p += 1
+
+
+def _next_fingerprint_hit(data: bytes, hits: Dict[bytes, int], start: int) -> int:
+    """Smallest offset >= *start* holding any known fingerprint, or -1.
+
+    *hits* caches each fingerprint's next occurrence (``-1`` = not searched yet,
+    ``-2`` = none left) so each one is located with ``bytes.find`` instead of probing
+    every offset; there are only a handful of fingerprints per capture.
+    """
+    best = -1
+    for fp, hit in hits.items():
+        if hit < start and hit != -2:
+            hit = data.find(fp, start)
+            hits[fp] = hit if hit >= 0 else -2  # -2: no further occurrence
+        if hit >= 0 and (best < 0 or hit < best):
+            best = hit
+    return best
 
 
 def _read_tl_bytes_length(data: bytes, p: int) -> Optional[int]:

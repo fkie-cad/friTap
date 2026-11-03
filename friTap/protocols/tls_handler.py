@@ -8,7 +8,11 @@ import re
 from typing import TYPE_CHECKING, Dict, List, Optional, Pattern, Sequence
 
 from ..backends.base import BackendName
-from ..output.keylog_format import KeylogFormatter
+from ..output.keylog_format import (
+    KeylogFormatter,
+    is_nss_keylog_line,
+    warn_dropped_keylog_line,
+)
 from .base import BackendSupport, ProtocolHandler
 
 if TYPE_CHECKING:
@@ -213,11 +217,25 @@ class TlsKeylogFormatter(KeylogFormatter):
     ``CLIENT_RANDOM <hex> <hex>`` / ``EXPORTER-* <…>`` / etc., so the
     base :meth:`KeylogFormatter.format` default already does the right
     thing; only the dedup key needs a cheaper override.
+
+    The agent string is untrusted, so :meth:`format` only passes through a
+    well-formed NSS line (``LABEL <hex|???> <hex> ...``, see
+    :func:`~friTap.output.keylog_format.is_nss_keylog_line`); anything else is
+    dropped with a rate-limited warning.
     """
 
     @property
     def protocol(self) -> str:
         return "tls"
+
+    def format(self, event: "KeylogEvent") -> List[str]:
+        line = event.key_data
+        if not line:
+            return []
+        if is_nss_keylog_line(line):
+            return [line]
+        warn_dropped_keylog_line("tls: not an NSS keylog line")
+        return []
 
     def dedup_key(self, event: "KeylogEvent") -> str:
         return event.key_data

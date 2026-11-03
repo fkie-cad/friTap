@@ -96,8 +96,12 @@ FRITAP_FREE_MODULES = ("friTap.parsers.http2_constants",)
 # R8: module -> the only friTap prefixes it may import (exact module match).
 ALLOWED_INTERNAL_IMPORTS: dict[str, tuple[str, ...]] = {
     f"{OFFLINE}.net.capture_cache": (f"{OFFLINE}.net.tcp_reassembly",),
-    # The fast pcap parser is a leaf: stdlib + scapy only, fallback passed in.
-    f"{OFFLINE}.net.pcap_fast": (),
+    # The fast pcap parser is a leaf: stdlib + scapy only, fallback passed in;
+    # record lengths are pre-validated by the (stdlib-only) capture validator.
+    f"{OFFLINE}.net.pcap_fast": (f"{OFFLINE}.net.capture_validation",),
+    f"{OFFLINE}.net.capture_validation": ("friTap.binary_bounds",),
+    # Bounded reads for untrusted length-prefixed files: a stdlib-only leaf.
+    "friTap.binary_bounds": (),
     # TLS record-layer leaves: stdlib + cryptography only.
     f"{OFFLINE}.tls.records": (),
     # tls12 reuses the tls13 AEAD helpers and the records constants.

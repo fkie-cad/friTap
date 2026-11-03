@@ -1,5 +1,5 @@
 📦
-1113484 /agent/fritap_agent.js
+1113723 /agent/fritap_agent.js
 ✄
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -12991,50 +12991,54 @@ var SSL_Java = class {
     if (Java.available) {
       setTimeout(function() {
         Java.perform(function() {
-          var Security = Java.use("java.security.Security");
-          if (Security.getProviders().toString().includes("GmsCore_OpenSSL")) {
-            log("WARNING: PID " + Process.id + " Detected GmsCore_OpenSSL Provider. This can be a bit unstable. If you having issues, rerun with -spawn for early instrumentation. Trying to remove it to fall back on default Provider");
-            Security.removeProvider("GmsCore_OpenSSL");
-            log("Removed GmsCore_OpenSSL");
-          }
-          execute();
-          if (Security.getProviders().toString().includes("Ssl_Guard")) {
-            log("Ssl_Guard deteced, removing it to fall back on default Provider");
-            Security.removeProvider("Ssl_Guard");
-            log("Removed Ssl_Guard");
-          }
-          if (Security.getProviders().toString().includes("Conscrypt version")) {
-            log("Conscrypt detected");
-            Security.removeProvider("Conscrypt");
-            log("Removed Conscrypt");
-          }
-          if (Security.getProviders().toString().includes("WolfSSLProvider")) {
-            log("WolfSSLProvider detected");
-            Security.removeProvider("WolfSSLProvider");
-            log("Removed WolfSSLProvider");
-          }
-          devlog("Remaining: " + Security.getProviders().toString());
-          Security.insertProviderAt.implementation = function(provider, position) {
-            if (provider.getName().includes("Conscrypt") || provider.getName().includes("Ssl_Guard") || provider.getName().includes("GmsCore_OpenSSL") || provider.getName().includes("WolfSSLProvider")) {
-              log("Blocking provider registration (insertProviderAt) of  " + provider.getName());
-              return position;
-            } else {
-              return this.insertProviderAt(provider, position);
+          try {
+            var Security = Java.use("java.security.Security");
+            if (Security.getProviders().toString().includes("GmsCore_OpenSSL")) {
+              log("WARNING: PID " + Process.id + " Detected GmsCore_OpenSSL Provider. This can be a bit unstable. If you having issues, rerun with -spawn for early instrumentation. Trying to remove it to fall back on default Provider");
+              Security.removeProvider("GmsCore_OpenSSL");
+              log("Removed GmsCore_OpenSSL");
             }
-          };
-          Security.addProvider.implementation = function(provider) {
-            if (provider.getName().includes("Conscrypt") || provider.getName().includes("Ssl_Guard") || provider.getName().includes("GmsCore_OpenSSL") || provider.getName().includes("WolfSSLProvider")) {
-              log("Blocking provider registration (addProvider) of " + provider.getName());
-              return 1;
-            } else {
-              if (isAndroid()) {
-                if (provider.getName() === "AndroidNSSP") {
-                  return this.insertProviderAt(provider, 1);
-                }
+            execute();
+            if (Security.getProviders().toString().includes("Ssl_Guard")) {
+              log("Ssl_Guard deteced, removing it to fall back on default Provider");
+              Security.removeProvider("Ssl_Guard");
+              log("Removed Ssl_Guard");
+            }
+            if (Security.getProviders().toString().includes("Conscrypt version")) {
+              log("Conscrypt detected");
+              Security.removeProvider("Conscrypt");
+              log("Removed Conscrypt");
+            }
+            if (Security.getProviders().toString().includes("WolfSSLProvider")) {
+              log("WolfSSLProvider detected");
+              Security.removeProvider("WolfSSLProvider");
+              log("Removed WolfSSLProvider");
+            }
+            devlog("Remaining: " + Security.getProviders().toString());
+            Security.insertProviderAt.implementation = function(provider, position) {
+              if (provider.getName().includes("Conscrypt") || provider.getName().includes("Ssl_Guard") || provider.getName().includes("GmsCore_OpenSSL") || provider.getName().includes("WolfSSLProvider")) {
+                log("Blocking provider registration (insertProviderAt) of  " + provider.getName());
+                return position;
+              } else {
+                return this.insertProviderAt(provider, position);
               }
-              return this.addProvider(provider);
-            }
-          };
+            };
+            Security.addProvider.implementation = function(provider) {
+              if (provider.getName().includes("Conscrypt") || provider.getName().includes("Ssl_Guard") || provider.getName().includes("GmsCore_OpenSSL") || provider.getName().includes("WolfSSLProvider")) {
+                log("Blocking provider registration (addProvider) of " + provider.getName());
+                return 1;
+              } else {
+                if (isAndroid()) {
+                  if (provider.getName() === "AndroidNSSP") {
+                    return this.insertProviderAt(provider, 1);
+                  }
+                }
+                return this.addProvider(provider);
+              }
+            };
+          } catch (e) {
+            devlog(`[java] provider hook install failed, skipping Java TLS provider hooks: ${e}`);
+          }
         });
       }, 0);
     }

@@ -6,7 +6,9 @@ reached the BPF. These tests pin the composer and every capture path that
 consumes it.
 """
 
-from unittest.mock import MagicMock, patch
+import re
+import shlex
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -67,7 +69,12 @@ def _tcpdump_command(**kwargs):
     android.run_tcpdump_capture("_cap.pcap", **kwargs)
     (cmd,), call_kwargs = android.adb.shell.call_args
     assert call_kwargs == {"background": True}
-    return cmd
+    # The tcpdump runs as `sh -c 'echo $$ > <pidfile>; exec <tcpdump ...>'`.
+    sh, dash_c, script = shlex.split(cmd)
+    assert (sh, dash_c) == ("sh", "-c")
+    pid_part, tcpdump_part = script.split("; exec ", 1)
+    assert pid_part == 'echo $$ > "/data/local/tmp/_cap.pcap.pid"'
+    return tcpdump_part
 
 
 def test_android_tcpdump_default_excludes_infrastructure_and_loopback():
@@ -149,8 +156,11 @@ def test_full_mobile_capture_passes_flags(include_loopback, filter_infra):
     thread = pcap.get_instance_of_FullCaptureThread()
     thread.full_mobile_capture()
     android.run_tcpdump_capture.assert_called_once_with(
-        "_out.pcap", include_loopback=include_loopback,
+        ANY, include_loopback=include_loopback,
         filter_infrastructure=filter_infra)
+    # The device file name is unique per run: _out.<pid>-<token>.pcap
+    (device_name,), _ = android.run_tcpdump_capture.call_args
+    assert re.fullmatch(r"_out\.\d+-[0-9a-f]{6}\.pcap", device_name)
 
 
 def test_pcap_init_stores_filter_infrastructure():

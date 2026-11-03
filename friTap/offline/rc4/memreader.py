@@ -41,6 +41,23 @@ _MINIDUMP_SIGNATURE = 0x504D444D  # 'MDMP'
 _STREAM_MEMORY_LIST = 5           # MINIDUMP_MEMORY_LIST
 _STREAM_MEMORY64_LIST = 9         # MINIDUMP_MEMORY64_LIST (full-memory dump)
 
+# On-disk records. Every count read from the file is bounded by the bytes left
+# for its table (count * entry size), so a crafted count cannot drive a loop or
+# an allocation past the end of the file.
+_MINIDUMP_HEADER = struct.Struct("<IIII")       # Signature Version NumberOfStreams StreamDirectoryRva
+_DIRECTORY_ENTRY = struct.Struct("<III")        # StreamType DataSize Rva
+_MEMORY64_LIST_HEADER = struct.Struct("<QQ")    # NumberOfMemoryRanges BaseRva
+_MEMORY_DESCRIPTOR64 = struct.Struct("<QQ")     # StartOfMemoryRange DataSize
+_MEMORY_LIST_HEADER = struct.Struct("<I")       # NumberOfMemoryRanges
+_MEMORY_DESCRIPTOR = struct.Struct("<QII")      # StartOfMemoryRange DataSize Rva
+
+
+class MiniDumpFormatError(ValueError):
+    """A file with the ``MDMP`` signature whose structure is malformed.
+
+    A ``ValueError``: :func:`load_dump` reports it and falls back to a flat scan.
+    """
+
 
 class MiniDump:
     """A parsed minidump: memory ranges plus VA-space read helpers."""
@@ -76,49 +93,91 @@ class MiniDump:
         return self.data[start:end]
 
 
+def _has_minidump_signature(data: bytes) -> bool:
+    return len(data) >= 32 and struct.unpack_from("<I", data, 0)[0] == _MINIDUMP_SIGNATURE
+
+
 def _parse_ranges(data: bytes) -> List[Tuple[int, int, int]]:
-    if len(data) < 32 or struct.unpack_from("<I", data, 0)[0] != _MINIDUMP_SIGNATURE:
+    """The memory ranges of a minidump; :class:`MiniDumpFormatError` if malformed.
+
+    ``struct.error`` never escapes: every table is bounds-checked first, and a
+    residual unpack failure is converted at this boundary.
+    """
+    if not _has_minidump_signature(data):
         raise ValueError("not a minidump (bad MDMP signature); is this a flat dump?")
-    n_streams, dir_rva = struct.unpack_from("<II", data, 8)
-    streams: dict[int, Tuple[int, int]] = {}
-    for i in range(n_streams):
-        off = dir_rva + i * 12
-        stype, dsize, rva = struct.unpack_from("<III", data, off)
-        streams.setdefault(stype, (dsize, rva))
-    if _STREAM_MEMORY64_LIST in streams:
-        return _parse_memory64(data, streams[_STREAM_MEMORY64_LIST][1])
-    if _STREAM_MEMORY_LIST in streams:
-        return _parse_memory32(data, streams[_STREAM_MEMORY_LIST][1])
+    try:
+        streams = _read_stream_directory(data)
+        if _STREAM_MEMORY64_LIST in streams:
+            return _parse_memory64(data, streams[_STREAM_MEMORY64_LIST][1])
+        if _STREAM_MEMORY_LIST in streams:
+            return _parse_memory32(data, streams[_STREAM_MEMORY_LIST][1])
+    except struct.error as exc:
+        raise MiniDumpFormatError(f"malformed minidump: {exc}") from exc
     raise ValueError("minidump has no memory stream (need MiniDumpWithFullMemory)")
+
+
+def _read_stream_directory(data: bytes) -> dict[int, Tuple[int, int]]:
+    """``{stream_type: (data_size, rva)}``, first entry per type wins."""
+    _sig, _ver, n_streams, dir_rva = _MINIDUMP_HEADER.unpack_from(data, 0)
+    _require_table(data, dir_rva, n_streams, _DIRECTORY_ENTRY.size, "stream directory")
+    streams: dict[int, Tuple[int, int]] = {}
+    for stype, dsize, rva in _DIRECTORY_ENTRY.iter_unpack(
+            data[dir_rva:dir_rva + n_streams * _DIRECTORY_ENTRY.size]):
+        streams.setdefault(stype, (dsize, rva))
+    return streams
 
 
 def _parse_memory64(data: bytes, rva: int) -> List[Tuple[int, int, int]]:
     # MINIDUMP_MEMORY64_LIST: NumberOfMemoryRanges(u64) BaseRva(u64), then
     # MINIDUMP_MEMORY_DESCRIPTOR64[] { StartOfMemoryRange(u64) DataSize(u64) };
     # the raw bytes for every range are concatenated starting at BaseRva.
-    count, base_rva = struct.unpack_from("<QQ", data, rva)
+    _require_table(data, rva, 1, _MEMORY64_LIST_HEADER.size, "memory64 list header")
+    count, base_rva = _MEMORY64_LIST_HEADER.unpack_from(data, rva)
+    entry = rva + _MEMORY64_LIST_HEADER.size
+    _require_table(data, entry, count, _MEMORY_DESCRIPTOR64.size, "memory64 descriptors")
     ranges: List[Tuple[int, int, int]] = []
     file_off = base_rva
-    entry = rva + 16
-    for _ in range(count):
-        start, size = struct.unpack_from("<QQ", data, entry)
-        entry += 16
+    for start, size in _MEMORY_DESCRIPTOR64.iter_unpack(
+            data[entry:entry + count * _MEMORY_DESCRIPTOR64.size]):
         ranges.append((start, size, file_off))
         file_off += size
-    return ranges
+    return _clip_ranges_to_file(ranges, len(data))
 
 
 def _parse_memory32(data: bytes, rva: int) -> List[Tuple[int, int, int]]:
     # MINIDUMP_MEMORY_LIST: NumberOfMemoryRanges(u32), then
     # MINIDUMP_MEMORY_DESCRIPTOR[] { StartOfMemoryRange(u64) DataSize(u32) Rva(u32) }.
-    (count,) = struct.unpack_from("<I", data, rva)
-    ranges: List[Tuple[int, int, int]] = []
-    entry = rva + 4
-    for _ in range(count):
-        start, size, r = struct.unpack_from("<QII", data, entry)
-        entry += 16
-        ranges.append((start, size, r))
-    return ranges
+    _require_table(data, rva, 1, _MEMORY_LIST_HEADER.size, "memory list header")
+    (count,) = _MEMORY_LIST_HEADER.unpack_from(data, rva)
+    entry = rva + _MEMORY_LIST_HEADER.size
+    _require_table(data, entry, count, _MEMORY_DESCRIPTOR.size, "memory descriptors")
+    ranges = [(start, size, r) for start, size, r in _MEMORY_DESCRIPTOR.iter_unpack(
+        data[entry:entry + count * _MEMORY_DESCRIPTOR.size])]
+    return _clip_ranges_to_file(ranges, len(data))
+
+
+def _require_table(data: bytes, offset: int, count: int, entry_size: int, what: str) -> None:
+    """Raise :class:`MiniDumpFormatError` unless *count* entries fit at *offset*."""
+    if offset < 0 or offset > len(data) or count * entry_size > len(data) - offset:
+        raise MiniDumpFormatError(
+            f"malformed minidump: {what} ({count} x {entry_size} bytes at offset "
+            f"{offset}) runs past the end of the {len(data)}-byte file"
+        )
+
+
+def _clip_ranges_to_file(ranges: List[Tuple[int, int, int]], file_size: int
+                         ) -> List[Tuple[int, int, int]]:
+    """Clip each range's data size to the bytes the file holds at its offset.
+
+    A dump cut short while being written keeps its surviving bytes (a range
+    starting past EOF becomes empty), and ``total_bytes()`` / ``read_va()``
+    never describe data the file does not hold.
+    """
+    clipped = [(va, max(0, min(size, file_size - off)), off) for va, size, off in ranges]
+    if clipped != ranges:
+        logger.warning("RC4: minidump memory ranges run past the end of the "
+                       "%d-byte file; clipped to the data it holds", file_size)
+    return clipped
 
 
 # --------------------------------------------------------------------------- #
@@ -144,6 +203,9 @@ def load_dump(path: str | Path):
     data = Path(path).read_bytes()
     try:
         return MiniDump(data)
+    except MiniDumpFormatError as exc:
+        logger.warning("RC4: %s: %s; scanning it as a flat image instead", path, exc)
+        return FlatDump(data)
     except ValueError:
         return FlatDump(data)
 

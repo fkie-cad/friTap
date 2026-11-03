@@ -25,7 +25,13 @@ from .events import (
     PlatformReportEvent,
     SessionEvent,
 )
+from .legacy.ssl_logger_core import (
+    coerce_port,
+    resolve_ss_family,
+    sanitize_raw_addr,
+)
 from .ssl_logger import get_addr_string
+from .text_safety import safe_terminal_text
 
 
 class _CanonicalProxy:
@@ -123,18 +129,25 @@ class MessageRouter:
 
     @staticmethod
     def _resolve_addresses(payload: dict) -> tuple:
-        """Extract and normalize source/destination addresses from a payload."""
+        """Extract, validate and normalize source/destination addresses.
+
+        Every field is agent-controlled: the family is whitelisted, addresses
+        are parsed as IPv4/IPv6 (anything else -- including the raw value --
+        becomes the empty "missing address"), and ports are coerced to
+        0..65535. An unknown family is treated like a missing one.
+        """
+        # A family outside the whitelist invalidates its addresses too.
+        ss_family, addr_family = resolve_ss_family(payload.get("ss_family"))
         src_addr = payload.get("src_addr", "")
         dst_addr = payload.get("dst_addr", "")
-        ss_family = payload.get("ss_family", "AF_INET")
         return (
-            get_addr_string(src_addr, ss_family),
-            payload.get("src_port", 0),
-            get_addr_string(dst_addr, ss_family),
-            payload.get("dst_port", 0),
+            get_addr_string(src_addr, addr_family),
+            coerce_port(payload.get("src_port", 0)),
+            get_addr_string(dst_addr, addr_family),
+            coerce_port(payload.get("dst_port", 0)),
             ss_family,
-            src_addr,  # raw
-            dst_addr,  # raw
+            sanitize_raw_addr(src_addr, addr_family),  # raw (validated)
+            sanitize_raw_addr(dst_addr, addr_family),  # raw (validated)
         )
 
     def _emit_datalog(self, payload: dict, data: bytes) -> None:
@@ -182,10 +195,10 @@ class MessageRouter:
         blank-line-padded red banner to the CLI (the single presentation point;
         the agent emits only the structured signal) and emits a structured event
         so API consumers (friTap/api.py) can react programmatically."""
-        name = payload.get("name") or payload.get("library", "")
-        note = payload.get("note", "")
+        name = safe_terminal_text(payload.get("name") or payload.get("library", ""))
+        note = safe_terminal_text(payload.get("note", ""))
         skipped = bool(payload.get("skippedLoaderHook", False))
-        reason = payload.get("reason", "detected")
+        reason = safe_terminal_text(payload.get("reason", "detected"))
         if not self._anti_tamper_bannered:
             self._anti_tamper_bannered = True
             from .fritap_utility import build_anti_tamper_banner
@@ -199,14 +212,16 @@ class MessageRouter:
         ))
 
     def _emit_console(self, payload: dict, level: str = "info") -> None:
+        # Agent console text is printed verbatim by the console sinks: escape
+        # terminal control sequences (ANSI/OSC injection) at the source.
         self._event_bus.emit(ConsoleEvent(
-            message=payload.get("console", ""),
+            message=safe_terminal_text(payload.get("console", "")),
             level=level,
         ))
 
     def _emit_console_dev(self, payload: dict) -> None:
         self._event_bus.emit(ConsoleEvent(
-            message=payload.get("console_dev", ""),
+            message=safe_terminal_text(payload.get("console_dev", "")),
             level="debug",
         ))
 
@@ -230,8 +245,8 @@ class MessageRouter:
             # only the version number is unknown.
             abi = 0
         self._event_bus.emit(PlatformReportEvent(
-            platform=str(payload.get("platform", "")),
-            target=str(payload.get("target", "")),
+            platform=safe_terminal_text(payload.get("platform", "")),
+            target=safe_terminal_text(payload.get("target", "")),
             probe=bool(payload.get("probe", False)),
             abi=abi,
         ))

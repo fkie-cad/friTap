@@ -102,15 +102,16 @@ def test_confirmed_anti_tamper_still_reports_pairip(caplog):
     assert "libpairipcore.so" in text
 
 
-def test_no_crash_object_falls_back_to_breadcrumb(caplog):
+def test_no_crash_object_reports_plain_termination(caplog):
+    # A bare 'process-terminated' (external kill -9, system ANR kill) carries no
+    # crash evidence: the breadcrumb alone must not blame an instrumented hook.
     obj = _make_logger(anti_tamper="", crumb="pattern-scan: libssl.so")
-    with caplog.at_level(logging.ERROR):
+    with caplog.at_level(logging.WARNING):
         obj._report_target_crash("process-terminated", None)
     text = caplog.text
-    # Without a crash report we keep the (lower-confidence) hook hypothesis...
-    assert "crashed inside an instrumented hook" in text
+    assert "terminated (killed or exited)" in text
     assert "pattern-scan: libssl.so" in text
-    # ...but still never invent a PairIP claim without evidence.
+    assert "crashed inside an instrumented hook" not in text
     assert "PairIP" not in text
 
 
@@ -129,13 +130,15 @@ def test_clean_attach_exit_not_reported_as_hook_crash(caplog):
     assert "PairIP" not in text
 
 
-def test_spawn_exit_with_empty_crumb_still_reports_crash(caplog):
-    # Empty breadcrumb (target went away before init finished) in spawn mode is a
-    # crash, not a clean exit — the hook hypothesis must still fire.
+def test_spawn_exit_with_empty_crumb_is_not_a_clean_exit(caplog):
+    # Empty breadcrumb (target went away before init finished) in spawn mode is
+    # not a clean exit, but without crash evidence it is not blamed on a hook.
     obj = _make_logger(anti_tamper="", crumb="", spawn=True)
-    with caplog.at_level(logging.ERROR):
+    with caplog.at_level(logging.WARNING):
         obj._report_target_crash("process-terminated", None)
-    assert "crashed inside an instrumented hook" in caplog.text
+    assert "terminated (killed or exited)" in caplog.text
+    assert "Target process exited" not in caplog.text
+    assert "crashed inside an instrumented hook" not in caplog.text
 
 
 class TestParseCrashCause:
@@ -158,3 +161,82 @@ class TestParseCrashCause:
         obj = SSL_Logger.__new__(SSL_Logger)
         assert obj._parse_crash_cause(None, None) == (None, None)
         assert obj._parse_crash_cause("", "") == (None, None)
+
+
+# ---------------------------------------------------------------------------
+# Evidence-gated hook blame: an external kill -9 / ANR kill (bare
+# 'process-terminated', no crash) is not a hook crash.
+# ---------------------------------------------------------------------------
+def _capture_events(obj):
+    events = []
+    obj._event_bus = types.SimpleNamespace(emit=events.append)
+    return events
+
+
+def test_external_kill_in_attach_mode_is_plain_termination(caplog):
+    obj = _make_logger(crumb="ssl-read: libssl.so", spawn=False)
+    events = _capture_events(obj)
+    with caplog.at_level(logging.DEBUG):
+        obj._report_target_crash("process-terminated", None)
+    text = caplog.text
+    assert "Target process terminated (killed or exited)" in text
+    assert "crashed inside an instrumented hook" not in text
+    assert "PairIP" not in text
+    assert all(r.levelno < logging.ERROR for r in caplog.records)
+    assert [e.error for e in events] == ["Target process terminated"]
+
+
+def test_android_spawn_kill_without_crash_does_not_guess_pairip(caplog):
+    obj = _make_logger(crumb="pattern-scan: libssl.so", spawn=True)
+    obj._android_target_cached = True
+    obj._enrich_crash_log_android = lambda crash, writer: (None, None)
+    with caplog.at_level(logging.DEBUG):
+        obj._report_target_crash("process-terminated", None)
+    assert "PairIP" not in caplog.text
+    assert "crashed inside an instrumented hook" not in caplog.text
+    assert "WITHOUT -s" in caplog.text
+
+
+def test_native_stack_in_instrumented_module_blames_hook(caplog):
+    crash = FakeCrash(report=(
+        "backtrace:\n"
+        "  #00 pc 0001234  /data/local/tmp/re.frida.server/frida-agent-64.so\n"
+        "  #01 pc 0005678  /system/lib64/libssl.so (SSL_read+12)\n"))
+    obj = _make_logger(crumb="ssl-read: libssl.so")
+    events = _capture_events(obj)
+    with caplog.at_level(logging.ERROR):
+        obj._report_target_crash("process-terminated", crash)
+    text = caplog.text
+    assert "crashed inside an instrumented hook" in text
+    assert "native stack in frida-agent" in text
+    assert [e.error for e in events] == ["Target process crashed"]
+
+
+def test_detected_library_on_stack_is_named_with_real_cause(caplog):
+    crash = FakeCrash(
+        report="signal 11 (SIGSEGV)\n  #00 pc 0001 /apex/lib64/libboringssl.so\n",
+        summary="Process crashed: SIGSEGV")
+    obj = _make_logger(crumb="")
+    obj._detected_libraries = {"/apex/lib64/libboringssl.so"}
+    with caplog.at_level(logging.ERROR):
+        obj._report_target_crash("process-terminated", crash)
+    assert "SIGSEGV" in caplog.text
+    assert "native stack in instrumented module libboringssl.so" in caplog.text
+
+
+def test_crash_without_instrumented_module_is_not_a_hook_crash(caplog):
+    crash = FakeCrash(report="  #00 pc 0001 /system/lib64/libart.so\n")
+    obj = _make_logger(crumb="ssl-read: libssl.so", spawn=False)
+    with caplog.at_level(logging.ERROR):
+        obj._report_target_crash("process-terminated", crash)
+    assert "native crash (cause not decoded)" in caplog.text
+    assert "crashed inside an instrumented hook" not in caplog.text
+
+
+def test_crash_report_makes_no_frida_calls():
+    # Runs on the fritap-detach thread: no device / script / backend access.
+    obj = _make_logger(crumb="ssl-read: libssl.so", spawn=False)
+    for attr in ("device", "script", "_backend", "process"):
+        assert not hasattr(obj, attr)
+    obj._report_target_crash("process-terminated", None)
+    obj._report_target_crash("process-terminated", FakeCrash(report="frida-agent"))

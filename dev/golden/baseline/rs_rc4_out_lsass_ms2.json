@@ -279,7 +279,7 @@
     "findings": [],
     "flow": {
      "connection_id": "net:10.211.55.4:64759-48.209.133.15:443",
-     "detected_protocol": "",
+     "detected_protocol": "HTTP/2",
      "dst_addr": "48.209.133.15",
      "dst_port": 443,
      "duration": 0.0,
@@ -424,7 +424,7 @@
     },
     "summary": {
      "connection_id": "net:10.211.55.4:64759-48.209.133.15:443",
-     "detected_protocol": "",
+     "detected_protocol": "HTTP/2",
      "dst_addr": "48.209.133.15",
      "dst_port": 443,
      "duration": 0.0,
@@ -464,17 +464,16 @@
    },
    {
     "chunks": {
-     "count": 3,
+     "count": 2,
      "sha256": [
       "6bdbc9c4883bbf25a521eb2f49fce8837d88a771b4c2ff42dffcc29d758c046e",
-      "1bec0418b4f9847e394ad08e6cae02fe2a2dc006eeccedde05c5bfb8f21a96e6",
       "1bec0418b4f9847e394ad08e6cae02fe2a2dc006eeccedde05c5bfb8f21a96e6"
      ]
     },
     "findings": [],
     "flow": {
      "connection_id": "net:10.211.55.4:64759-48.209.133.15:443",
-     "detected_protocol": "",
+     "detected_protocol": "HTTP/2",
      "dst_addr": "48.209.133.15",
      "dst_port": 443,
      "duration": 0.07100200653076172,
@@ -548,7 +547,7 @@
      "tags": [],
      "tls_alpn": "h2",
      "tls_sni": "settings-win.data.microsoft.com",
-     "total_bytes": 1953,
+     "total_bytes": 1658,
      "transport": "tls"
     },
     "layers": [
@@ -635,7 +634,7 @@
     },
     "summary": {
      "connection_id": "net:10.211.55.4:64759-48.209.133.15:443",
-     "detected_protocol": "",
+     "detected_protocol": "HTTP/2",
      "dst_addr": "48.209.133.15",
      "dst_port": 443,
      "duration": 0.07100200653076172,
@@ -660,7 +659,7 @@
      "tag_count": 0,
      "tls_alpn": "h2",
      "tls_sni": "settings-win.data.microsoft.com",
-     "total_bytes": 1953,
+     "total_bytes": 1658,
      "transport": "tls",
      "url": "/settings/v3.0/WebView2RuntimeApps/WebView2RuntimeSelectorSignal?OSVersionFull=10.0.26200.9457.arm64fre.ge_release.240331-1435&FlightRing=Retail&AttrDataVer=500&App=WV2SETTINGS&AppVer=&DeviceFamily=Windows.Desktop"
     },
@@ -684,7 +683,7 @@
     "findings": [],
     "flow": {
      "connection_id": "net:10.211.55.4:64759-48.209.133.15:443",
-     "detected_protocol": "",
+     "detected_protocol": "HTTP/2",
      "dst_addr": "48.209.133.15",
      "dst_port": 443,
      "duration": 0.03665900230407715,
@@ -819,7 +818,7 @@
     },
     "summary": {
      "connection_id": "net:10.211.55.4:64759-48.209.133.15:443",
-     "detected_protocol": "",
+     "detected_protocol": "HTTP/2",
      "dst_addr": "48.209.133.15",
      "dst_port": 443,
      "duration": 0.03665900230407715,
@@ -867,7 +866,7 @@
     "findings": [],
     "flow": {
      "connection_id": "net:10.211.55.4:64759-48.209.133.15:443",
-     "detected_protocol": "",
+     "detected_protocol": "HTTP/2",
      "dst_addr": "10.211.55.4",
      "dst_port": 64759,
      "duration": 0.0,
@@ -875,12 +874,13 @@
      "findings": [],
      "flow_id": "net:10.211.55.4:64759-48.209.133.15:443:4",
      "layers": [
-      "tls"
+      "tls",
+      "http2"
      ],
      "notes": "",
      "package_name": "out_lsass_ms2.pcap",
      "process_name": "out_lsass_ms2.pcap",
-     "protocol": "unknown",
+     "protocol": "HTTP/2",
      "request": null,
      "response": null,
      "src_addr": "48.209.133.15",
@@ -908,6 +908,15 @@
        "version": "TLS 1.2"
       },
       "type": "TlsLayer"
+     },
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "depth": 1,
+       "name": "http2"
+      },
+      "type": "AppLayer"
      }
     ],
     "ohttp_inner_request": null,
@@ -916,7 +925,7 @@
     "response": null,
     "summary": {
      "connection_id": "net:10.211.55.4:64759-48.209.133.15:443",
-     "detected_protocol": "",
+     "detected_protocol": "HTTP/2",
      "dst_addr": "10.211.55.4",
      "dst_port": 64759,
      "duration": 0.0,
@@ -929,9 +938,9 @@
      "inner_e2e_protocol": "",
      "inner_summary": "",
      "method": "",
-     "outer_app_protocol": "",
+     "outer_app_protocol": "HTTP/2",
      "process_name": "out_lsass_ms2.pcap",
-     "protocol": "unknown",
+     "protocol": "HTTP/2",
      "src_addr": "48.209.133.15",
      "src_port": 443,
      "ssl_session_id": "",
@@ -959,7 +968,7 @@
      "count": 2,
      "sha256": [
       "53ecc2da03fd4fb0bfabc688e4cc99dd2283864b1a9703d478440e97312b682c",
-      "9fc9a36b6a9e188238475bafd866f476dfb2da8ec7f070d60ebbb5915fe85bec"
+      "3875ede9fd8467f9f0e49fd11ba41b0700812ca6368f800e8e3952ef9e67374b"
      ]
     },
     "findings": [],
@@ -968,8 +977,8 @@
      "detected_protocol": "HTTP/2",
      "dst_addr": "2.21.20.134",
      "dst_port": 443,
-     "duration": 0.023646116256713867,
-     "ended": 1790502978.355133,
+     "duration": 0.023437023162841797,
+     "ended": 1790502978.354924,
      "findings": [],
      "flow_id": "net:10.211.55.4:64760-2.21.20.134:443:0",
      "layers": [
@@ -1007,7 +1016,11 @@
       "content_type": "",
       "error": "",
       "headers": {
-       "SETTINGS": "ACK"
+       "HEADER_TABLE_SIZE": "4096",
+       "INITIAL_WINDOW_SIZE": "65535",
+       "MAX_CONCURRENT_STREAMS": "100",
+       "MAX_FRAME_SIZE": "16384",
+       "MAX_HEADER_LIST_SIZE": "32768"
       },
       "host": "",
       "is_complete": true,
@@ -1028,7 +1041,7 @@
      "tags": [],
      "tls_alpn": "h2",
      "tls_sni": "assets.msn.com",
-     "total_bytes": 67,
+     "total_bytes": 97,
      "transport": "tls"
     },
     "layers": [
@@ -1088,7 +1101,11 @@
      "content_type": "",
      "error": "",
      "headers": {
-      "SETTINGS": "ACK"
+      "HEADER_TABLE_SIZE": "4096",
+      "INITIAL_WINDOW_SIZE": "65535",
+      "MAX_CONCURRENT_STREAMS": "100",
+      "MAX_FRAME_SIZE": "16384",
+      "MAX_HEADER_LIST_SIZE": "32768"
      },
      "host": "",
      "is_complete": true,
@@ -1107,8 +1124,8 @@
      "detected_protocol": "HTTP/2",
      "dst_addr": "2.21.20.134",
      "dst_port": 443,
-     "duration": 0.023646116256713867,
-     "ended": 1790502978.355133,
+     "duration": 0.023437023162841797,
+     "ended": 1790502978.354924,
      "finding_count": 0,
      "flow_id": "net:10.211.55.4:64760-2.21.20.134:443:0",
      "flow_method": "",
@@ -1129,7 +1146,7 @@
      "tag_count": 0,
      "tls_alpn": "h2",
      "tls_sni": "assets.msn.com",
-     "total_bytes": 67,
+     "total_bytes": 97,
      "transport": "tls",
      "url": "connection-setup"
     },
@@ -1144,22 +1161,26 @@
    },
    {
     "chunks": {
-     "count": 4,
+     "count": 8,
      "sha256": [
       "53c4dc8a44d30578df52bf131fdbc80d3a8d5e0d5033fdd47b730d2d57adb780",
-      "3875ede9fd8467f9f0e49fd11ba41b0700812ca6368f800e8e3952ef9e67374b",
       "f6d242db82008ceac071238588a47c80f38e3fc2d464a03619aad5d2fa44fb97",
+      "49a1e7c53f925fb2608d29bc3c9385c4f23cb682d4e4355199443e66ddc3ea39",
+      "ea7aee5b73176b20b4c994e4fbbe06f958f438a75048c20ab3b21e28e8609705",
+      "871f0b134bcad498e0ca094f2122c836eb12146b83ac6a4d2326c8adc386136b",
+      "81b83fe02e4a2e9d343e66696695542421fed8d486872a63eb8bd9d8a5010eb3",
+      "9f33bf0b88ca121b9b2b3ff5eb3e775beb6d53826018e93450bdf3a280bcd61d",
       "77e6b5ba33c9273a3f5f739b3321f50646eeb76ca67110cdc3f89dcd79accf55"
      ]
     },
     "findings": [],
     "flow": {
      "connection_id": "net:10.211.55.4:64760-2.21.20.134:443",
-     "detected_protocol": "",
+     "detected_protocol": "HTTP/2",
      "dst_addr": "2.21.20.134",
      "dst_port": 443,
-     "duration": 0.019995927810668945,
-     "ended": 1790502978.354924,
+     "duration": 0.44225287437438965,
+     "ended": 1790502978.777181,
      "findings": [],
      "flow_id": "net:10.211.55.4:64760-2.21.20.134:443:1",
      "layers": [
@@ -1227,7 +1248,7 @@
        "onewebservicelatency": "238",
        "report-to": "{\"group\":\"network-errors\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://deff.nelreports.net/api/report?cat=msn\"}]}",
        "server-timing": "clientrtt; dur=16, clienttt; dur=359, origin; dur=357, cdntime; dur=2, wpo;dur=23,1s;dur=211",
-       "set-cookie": "_EDGE_S=SID=31047C41828A642D13396BA083066559; domain=.msn.com; path=/; secure; samesite=none; httponly",
+       "set-cookie": "_C_ETH=1; domain=.msn.com; path=/; secure; samesite=none; httponly\n_C_Auth=\nApp-User=%7B%22userId%22%3A%22m-0D75C5B160D468D106C8D26C613369DB%22%2C%22cohorts%22%3A%5B%7B%22name%22%3A%22SuperCold%22%2C%22everSelected%22%3Afalse%2C%22reason%22%3A%22MatchedBySignal%22%7D%5D%2C%22accountType%22%3A%22NA%22%2C%22identityType%22%3A%22App%22%2C%22settings%22%3Anull%2C%22responseCreationDateTime%22%3A%222026-09-27T09%3A56%3A18.3705383Z%22%2C%22debugId%22%3A%22dbe7694f-8daa-4106-b127-638961e069a7%7C2026-09-27T09%3A56%3A18.3705417Z%7Cfabric_msn%7CEUS2-A%7CNews_298%22%7D; expires=Sun, 04 Oct 2026 09:56:18 GMT; domain=.msn.com; path=/; secure; samesite=none; httponly\nsptmarket=de-DE%7C%7Cde%7Cde-de%7Cde-de%7Cde%7CDE%7Creason%3DRevIP%3Ade%7Ccf%3D8%7CRefA%3D6ab8e842d6be499281dab9e665b9bb15.RefC%3D2026-09-27T09%3A56%3A18Z; expires=Wed, 27 Sep 2028 09:56:18 GMT; path=/\nmsnup=%7B%22cnex%22%3A%22no%22%7D; expires=Sat, 26 Dec 2026 09:56:18 GMT; domain=msn.com; path=/; secure; samesite=none; httponly\nMUID=; domain=.msn.com; secure; samesite=none\nMUIDB=0D75C5B160D468D106C8D26C613369DB; expires=Fri, 22 Oct 2027 09:56:18 GMT; domain=.msn.com; path=/; secure; samesite=none; httponly\n_EDGE_S=SID=31047C41828A642D13396BA083066559; domain=.msn.com; path=/; secure; samesite=none; httponly",
        "timing-allow-origin": "*",
        "vary": "Origin",
        "x-1s-digital-id": "at=NA;it=App;muid=m-0D75C5B160D468D106C8D26C613369DB",
@@ -1257,7 +1278,7 @@
      "tags": [],
      "tls_alpn": "h2",
      "tls_sni": "assets.msn.com",
-     "total_bytes": 15229,
+     "total_bytes": 94357,
      "transport": "tls"
     },
     "layers": [
@@ -1347,7 +1368,7 @@
       "onewebservicelatency": "238",
       "report-to": "{\"group\":\"network-errors\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://deff.nelreports.net/api/report?cat=msn\"}]}",
       "server-timing": "clientrtt; dur=16, clienttt; dur=359, origin; dur=357, cdntime; dur=2, wpo;dur=23,1s;dur=211",
-      "set-cookie": "_EDGE_S=SID=31047C41828A642D13396BA083066559; domain=.msn.com; path=/; secure; samesite=none; httponly",
+      "set-cookie": "_C_ETH=1; domain=.msn.com; path=/; secure; samesite=none; httponly\n_C_Auth=\nApp-User=%7B%22userId%22%3A%22m-0D75C5B160D468D106C8D26C613369DB%22%2C%22cohorts%22%3A%5B%7B%22name%22%3A%22SuperCold%22%2C%22everSelected%22%3Afalse%2C%22reason%22%3A%22MatchedBySignal%22%7D%5D%2C%22accountType%22%3A%22NA%22%2C%22identityType%22%3A%22App%22%2C%22settings%22%3Anull%2C%22responseCreationDateTime%22%3A%222026-09-27T09%3A56%3A18.3705383Z%22%2C%22debugId%22%3A%22dbe7694f-8daa-4106-b127-638961e069a7%7C2026-09-27T09%3A56%3A18.3705417Z%7Cfabric_msn%7CEUS2-A%7CNews_298%22%7D; expires=Sun, 04 Oct 2026 09:56:18 GMT; domain=.msn.com; path=/; secure; samesite=none; httponly\nsptmarket=de-DE%7C%7Cde%7Cde-de%7Cde-de%7Cde%7CDE%7Creason%3DRevIP%3Ade%7Ccf%3D8%7CRefA%3D6ab8e842d6be499281dab9e665b9bb15.RefC%3D2026-09-27T09%3A56%3A18Z; expires=Wed, 27 Sep 2028 09:56:18 GMT; path=/\nmsnup=%7B%22cnex%22%3A%22no%22%7D; expires=Sat, 26 Dec 2026 09:56:18 GMT; domain=msn.com; path=/; secure; samesite=none; httponly\nMUID=; domain=.msn.com; secure; samesite=none\nMUIDB=0D75C5B160D468D106C8D26C613369DB; expires=Fri, 22 Oct 2027 09:56:18 GMT; domain=.msn.com; path=/; secure; samesite=none; httponly\n_EDGE_S=SID=31047C41828A642D13396BA083066559; domain=.msn.com; path=/; secure; samesite=none; httponly",
       "timing-allow-origin": "*",
       "vary": "Origin",
       "x-1s-digital-id": "at=NA;it=App;muid=m-0D75C5B160D468D106C8D26C613369DB",
@@ -1372,11 +1393,11 @@
     },
     "summary": {
      "connection_id": "net:10.211.55.4:64760-2.21.20.134:443",
-     "detected_protocol": "",
+     "detected_protocol": "HTTP/2",
      "dst_addr": "2.21.20.134",
      "dst_port": 443,
-     "duration": 0.019995927810668945,
-     "ended": 1790502978.354924,
+     "duration": 0.44225287437438965,
+     "ended": 1790502978.777181,
      "finding_count": 0,
      "flow_id": "net:10.211.55.4:64760-2.21.20.134:443:1",
      "flow_method": "",
@@ -1397,7 +1418,7 @@
      "tag_count": 0,
      "tls_alpn": "h2",
      "tls_sni": "assets.msn.com",
-     "total_bytes": 15229,
+     "total_bytes": 94357,
      "transport": "tls",
      "url": "/service/news/feed/pages/dashboard4?aver=1.380.2.0&over=10.0.26200.9457.arm64fre.ge_release.240331-1435&fring=Retail&devicetype=2&oem=Parallels%20International%20GmbH.&smode=false&machineId=%7B652EDEE1-A8BD-427D-989F-46327243BA55%7D&clv=3.0&hver=526.21100.40.0&wprver=1.6.19.0&locale=de-DE&region=DE&apikey=lxSNtibdZ45aPe8BHuUR6XwhuuruYfwejEYNpSqgcd&ocid=winp2widget&timeOut=2000&activityId=6b212af3-0ace-4752-a302-4b286496a04f&user=m-0D75C5B160D468D106C8D26C613369DB&caller=bgtask&theme=light&nw=false&msrc=0&it=app&scn=al_app_anon&clientFeatures=1&overlay=0&msnup=1xUEQ0AiMJY4a9shh8iLgg%3D%3D&lci=35&luts=2026-09-27T09%3A22%3A55Z"
     },
@@ -1412,24 +1433,20 @@
    },
    {
     "chunks": {
-     "count": 6,
+     "count": 2,
      "sha256": [
       "a0005bc445b49723791b7be9a14368e23119a6ebbc2bc7f6770876af3d1e89c1",
-      "49a1e7c53f925fb2608d29bc3c9385c4f23cb682d4e4355199443e66ddc3ea39",
-      "ea7aee5b73176b20b4c994e4fbbe06f958f438a75048c20ab3b21e28e8609705",
-      "871f0b134bcad498e0ca094f2122c836eb12146b83ac6a4d2326c8adc386136b",
-      "81b83fe02e4a2e9d343e66696695542421fed8d486872a63eb8bd9d8a5010eb3",
-      "9f33bf0b88ca121b9b2b3ff5eb3e775beb6d53826018e93450bdf3a280bcd61d"
+      "9fc9a36b6a9e188238475bafd866f476dfb2da8ec7f070d60ebbb5915fe85bec"
      ]
     },
     "findings": [],
     "flow": {
      "connection_id": "net:10.211.55.4:64760-2.21.20.134:443",
-     "detected_protocol": "",
+     "detected_protocol": "HTTP/2",
      "dst_addr": "2.21.20.134",
      "dst_port": 443,
-     "duration": 0.41968703269958496,
-     "ended": 1790502978.775647,
+     "duration": 0.0,
+     "ended": 1790502978.35596,
      "findings": [],
      "flow_id": "net:10.211.55.4:64760-2.21.20.134:443:3",
      "layers": [
@@ -1459,7 +1476,25 @@
       "stream_id": 0,
       "url": "connection-setup"
      },
-     "response": null,
+     "response": {
+      "body_size": 0,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {
+       "SETTINGS": "ACK"
+      },
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": true,
+      "is_request": false,
+      "method": "SETTINGS",
+      "protocol": "HTTP/2",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": "connection-control"
+     },
      "src_addr": "10.211.55.4",
      "src_port": 64760,
      "ssl_session_id": "",
@@ -1468,7 +1503,7 @@
      "tags": [],
      "tls_alpn": "h2",
      "tls_sni": "assets.msn.com",
-     "total_bytes": 79176,
+     "total_bytes": 18,
      "transport": "tls"
     },
     "layers": [
@@ -1519,14 +1554,34 @@
      "stream_id": 0,
      "url": "connection-setup"
     },
-    "response": null,
+    "response": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 0,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {
+      "SETTINGS": "ACK"
+     },
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": true,
+     "is_request": false,
+     "method": "SETTINGS",
+     "protocol": "HTTP/2",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": "connection-control"
+    },
     "summary": {
      "connection_id": "net:10.211.55.4:64760-2.21.20.134:443",
-     "detected_protocol": "",
+     "detected_protocol": "HTTP/2",
      "dst_addr": "2.21.20.134",
      "dst_port": 443,
-     "duration": 0.41968703269958496,
-     "ended": 1790502978.775647,
+     "duration": 0.0,
+     "ended": 1790502978.35596,
      "finding_count": 0,
      "flow_id": "net:10.211.55.4:64760-2.21.20.134:443:3",
      "flow_method": "",
@@ -1547,7 +1602,7 @@
      "tag_count": 0,
      "tls_alpn": "h2",
      "tls_sni": "assets.msn.com",
-     "total_bytes": 79176,
+     "total_bytes": 18,
      "transport": "tls",
      "url": "connection-setup"
     },
@@ -1562,9 +1617,10 @@
    },
    {
     "chunks": {
-     "count": 1,
+     "count": 2,
      "sha256": [
-      "b00a57791e6382a08a074df697a40e1c557cb92d20686dd8662ad017171ca63a"
+      "b00a57791e6382a08a074df697a40e1c557cb92d20686dd8662ad017171ca63a",
+      "4f5ab36ca35414e4902b9b91f6d6f239c50b949867424f9fa683f2c6c19aa930"
      ]
     },
     "findings": [],
@@ -1573,8 +1629,8 @@
      "detected_protocol": "HTTP/2",
      "dst_addr": "13.89.179.12",
      "dst_port": 443,
-     "duration": 0.0,
-     "ended": 1790503000.295493,
+     "duration": 0.12362003326416016,
+     "ended": 1790503000.419113,
      "findings": [],
      "flow_id": "net:10.211.55.4:64761-13.89.179.12:443:0",
      "layers": [
@@ -1606,7 +1662,29 @@
       "stream_id": 0,
       "url": "connection-setup"
      },
-     "response": null,
+     "response": {
+      "body_size": 0,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {
+       "0x10": "2",
+       "INITIAL_WINDOW_SIZE": "1048576",
+       "MAX_CONCURRENT_STREAMS": "100",
+       "SETTINGS": "ACK",
+       "WINDOW_UPDATE": "983041"
+      },
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": true,
+      "is_request": false,
+      "method": "SETTINGS",
+      "protocol": "HTTP/2",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": "connection-control"
+     },
      "src_addr": "10.211.55.4",
      "src_port": 64761,
      "ssl_session_id": "",
@@ -1615,7 +1693,7 @@
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "browser.events.data.msn.com",
-     "total_bytes": 58,
+     "total_bytes": 107,
      "transport": "tls"
     },
     "layers": [
@@ -1668,14 +1746,38 @@
      "stream_id": 0,
      "url": "connection-setup"
     },
-    "response": null,
+    "response": {
+     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "body_size": 0,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {
+      "0x10": "2",
+      "INITIAL_WINDOW_SIZE": "1048576",
+      "MAX_CONCURRENT_STREAMS": "100",
+      "SETTINGS": "ACK",
+      "WINDOW_UPDATE": "983041"
+     },
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": true,
+     "is_request": false,
+     "method": "SETTINGS",
+     "protocol": "HTTP/2",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": "connection-control"
+    },
     "summary": {
      "connection_id": "net:10.211.55.4:64761-13.89.179.12:443",
      "detected_protocol": "HTTP/2",
      "dst_addr": "13.89.179.12",
      "dst_port": 443,
-     "duration": 0.0,
-     "ended": 1790503000.295493,
+     "duration": 0.12362003326416016,
+     "ended": 1790503000.419113,
      "finding_count": 0,
      "flow_id": "net:10.211.55.4:64761-13.89.179.12:443:0",
      "flow_method": "",
@@ -1696,7 +1798,7 @@
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "browser.events.data.msn.com",
-     "total_bytes": 58,
+     "total_bytes": 107,
      "transport": "tls",
      "url": "connection-setup"
     },
@@ -1711,24 +1813,22 @@
    },
    {
     "chunks": {
-     "count": 6,
+     "count": 4,
      "sha256": [
       "518de92d44c83ff148e88439dbeb9dc613f78ddba370dca14d1853c63efebadc",
       "f530cd56f3d7e1bbe373c1c3e1ff2358cc54f92a6e5d9dc743fd2450caebcd90",
       "aae5b3f7049507e09fddbd2d418f8d1009d4eb4c11f81c4d8d9ec392c17456e6",
-      "4f5ab36ca35414e4902b9b91f6d6f239c50b949867424f9fa683f2c6c19aa930",
-      "87960eb9a3a0d444c3a4060c65de493e338807520ef1aa330b45f4a3b9d93971",
       "87960eb9a3a0d444c3a4060c65de493e338807520ef1aa330b45f4a3b9d93971"
      ]
     },
     "findings": [],
     "flow": {
      "connection_id": "net:10.211.55.4:64761-13.89.179.12:443",
-     "detected_protocol": "",
+     "detected_protocol": "HTTP/2",
      "dst_addr": "13.89.179.12",
      "dst_port": 443,
-     "duration": 0.12357282638549805,
-     "ended": 1790503000.419113,
+     "duration": 0.23948884010314941,
+     "ended": 1790503000.535029,
      "findings": [],
      "flow_id": "net:10.211.55.4:64761-13.89.179.12:443:1",
      "layers": [
@@ -1781,7 +1881,7 @@
        "date": "Sun, 27 Sep 2026 09:56:39 GMT",
        "p3p": "CP=\"ALL IND DSP COR ADM CONo CUR CUSo IVAo IVDo PSA PSD TAI TELo OUR SAMo CNT COM INT NAV ONL PHY PRE PUR UNI\"",
        "server": "Microsoft-HTTPAPI/2.0",
-       "set-cookie": "MS0=fca0d55c47e74223bfb50a4d768b987d; expires=Sun, 27 Sep 2026 10:26:40 GMT; domain=.microsoft.com; path=/; secure; samesite=none",
+       "set-cookie": "MC1=GUID%3Db43db5b33176468896a60624fed916f1%26HASH%3Db43d%26LV%3D202609%26V%3D4%26LU%3D1790503000376; expires=Mon, 27 Sep 2027 09:56:40 GMT; domain=.microsoft.com; path=/; secure; samesite=none\nMS0=fca0d55c47e74223bfb50a4d768b987d; expires=Sun, 27 Sep 2026 10:26:40 GMT; domain=.microsoft.com; path=/; secure; samesite=none",
        "strict-transport-security": "max-age=31536000",
        "time-delta-millis": "11421"
       },
@@ -1804,7 +1904,7 @@
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "browser.events.data.msn.com",
-     "total_bytes": 4503,
+     "total_bytes": 3860,
      "transport": "tls"
     },
     "layers": [
@@ -1879,7 +1979,7 @@
       "date": "Sun, 27 Sep 2026 09:56:39 GMT",
       "p3p": "CP=\"ALL IND DSP COR ADM CONo CUR CUSo IVAo IVDo PSA PSD TAI TELo OUR SAMo CNT COM INT NAV ONL PHY PRE PUR UNI\"",
       "server": "Microsoft-HTTPAPI/2.0",
-      "set-cookie": "MS0=fca0d55c47e74223bfb50a4d768b987d; expires=Sun, 27 Sep 2026 10:26:40 GMT; domain=.microsoft.com; path=/; secure; samesite=none",
+      "set-cookie": "MC1=GUID%3Db43db5b33176468896a60624fed916f1%26HASH%3Db43d%26LV%3D202609%26V%3D4%26LU%3D1790503000376; expires=Mon, 27 Sep 2027 09:56:40 GMT; domain=.microsoft.com; path=/; secure; samesite=none\nMS0=fca0d55c47e74223bfb50a4d768b987d; expires=Sun, 27 Sep 2026 10:26:40 GMT; domain=.microsoft.com; path=/; secure; samesite=none",
       "strict-transport-security": "max-age=31536000",
       "time-delta-millis": "11421"
      },
@@ -1897,11 +1997,11 @@
     },
     "summary": {
      "connection_id": "net:10.211.55.4:64761-13.89.179.12:443",
-     "detected_protocol": "",
+     "detected_protocol": "HTTP/2",
      "dst_addr": "13.89.179.12",
      "dst_port": 443,
-     "duration": 0.12357282638549805,
-     "ended": 1790503000.419113,
+     "duration": 0.23948884010314941,
+     "ended": 1790503000.535029,
      "finding_count": 0,
      "flow_id": "net:10.211.55.4:64761-13.89.179.12:443:1",
      "flow_method": "",
@@ -1922,7 +2022,7 @@
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "browser.events.data.msn.com",
-     "total_bytes": 4503,
+     "total_bytes": 3860,
      "transport": "tls",
      "url": "/OneCollector/1.0?cors=true&content-type=application%2Fx-json-stream&client-id=NO_AUTH&client-version=1DS-Web-JS-3.2.8&apikey=c498711f02654edca8a715ca6e1cb4d4-dc31da17-845c-4cca-84e5-547d05dad708-6945&upload-time=1790502988955&w=0&anoncknm=al_app_anon&NoResponseBody=true"
     },
@@ -1945,7 +2045,7 @@
     "findings": [],
     "flow": {
      "connection_id": "net:10.211.55.4:64761-13.89.179.12:443",
-     "detected_protocol": "",
+     "detected_protocol": "HTTP/2",
      "dst_addr": "13.89.179.12",
      "dst_port": 443,
      "duration": 0.0,
@@ -2042,7 +2142,7 @@
     "response": null,
     "summary": {
      "connection_id": "net:10.211.55.4:64761-13.89.179.12:443",
-     "detected_protocol": "",
+     "detected_protocol": "HTTP/2",
      "dst_addr": "13.89.179.12",
      "dst_port": 443,
      "duration": 0.0,

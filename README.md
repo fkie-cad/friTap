@@ -4,7 +4,7 @@
 </div>
 
 # friTap
-![version](https://img.shields.io/badge/version-2.6.0-blue) [![PyPI version](https://d25lcipzij17d.cloudfront.net/badge.svg?id=py&r=r&ts=1683906897&type=6e&v=2.6.0&x2=0)](https://badge.fury.io/py/friTap) [![CI](https://github.com/fkie-cad/friTap/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/fkie-cad/friTap/actions/workflows/ci.yml)
+![version](https://img.shields.io/badge/version-2.6.1-blue) [![PyPI version](https://d25lcipzij17d.cloudfront.net/badge.svg?id=py&r=r&ts=1683906897&type=6e&v=2.6.1&x2=0)](https://badge.fury.io/py/friTap) [![CI](https://github.com/fkie-cad/friTap/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/fkie-cad/friTap/actions/workflows/ci.yml)
 [![Ruff](https://github.com/fkie-cad/friTap/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/fkie-cad/friTap/actions/workflows/lint.yml)
 [![Publish status](https://github.com/fkie-cad/friTap/actions/workflows/publish.yml/badge.svg?branch=main)](https://github.com/fkie-cad/friTap/actions/workflows/publish.yml)
 
@@ -249,11 +249,30 @@ caveats (notably: frida 15.x wheels target older Python versions).
 - `>= python3.10`
 - [frida](https://frida.re) (`>= 17, < 18`) and frida-tools (`>= 14, < 15`)
 - hexdump, scapy, watchdog, rich, textual, pydantic, psutil, platformdirs, h11, hpack
-- tlsLibHunter, pylsqpack, zstandard, brotli (HTTP/2 + HTTP/3 + compression decoding)
+- tlsLibHunter, pylsqpack, zstandard, brotli >= 1.2.1 (HTTP/2 + HTTP/3 + compression decoding)
 - AndroidFridaManager (for Android device management)
 - *optional:* Npcap (Windows) / libpcap (Linux, macOS) — only for `-f/--full_capture`.
 - for hooking on Android ensure that the `adb`-command is in your PATH
 
+
+### Security: Brotli CVE-2026-111497
+
+Brotli's C decoder 1.0.3 to 1.2.0 has a heap out-of-bounds write
+(CVE-2026-111497), and captured bodies are attacker-controlled.
+
+- Run `pip install -U 'brotli>=1.2.1'`. The PyPI wheel bundles its own decoder,
+  so a system `libbrotli` upgrade does not fix friTap. With a vulnerable
+  `brotli`, friTap warns at startup and leaves `br` bodies undecoded.
+- Also patch the system `libbrotli` and Wireshark/tshark. friTap turns off
+  tshark's body decompression for every tshark run it starts.
+- Build the agent with Node.js >= 22.23.4 / 24.22.1 / 26.12.1.
+- `FRITAP_ALLOW_UNPATCHED_BROTLI=1` forces `br` decoding with a
+  vulnerable-looking `brotli`. Only use it for distro builds that backported the fix.
+- `--isolate-decoders` (or `FRITAP_ISOLATE_DECODERS=1`) decodes gzip, deflate,
+  brotli and zstd bodies in a separate, restricted worker process. A future
+  decoder bug then compromises only that worker, not the friTap process that
+  holds the Frida session and the keys. It is off by default. See
+  [docs/api/cli.md](docs/api/cli.md#-isolate-decoders).
 
 ## Planned features
 

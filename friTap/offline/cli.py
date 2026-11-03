@@ -15,6 +15,7 @@ import os
 from typing import Optional, Sequence
 
 from . import keylog_coverage
+from .keylog_paths import is_safe_protocol_name, validate_manifest_path
 from .mtproto.transport import DEFAULT_OBF_ENDPOINT_MATCH_BLOCKS
 from .pcap_to_tap import (
     DEFAULT_RESYNC_SEARCH_DEPTH,  # noqa: F401 (back-compat re-export; display only)
@@ -24,7 +25,7 @@ from .pcap_to_tap import (
     convert_pcap_to_tap,
     messaging_buckets,
 )
-from .tshark import TsharkNotFoundError, find_tshark
+from .tshark import TsharkLimitError, TsharkNotFoundError, find_tshark
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +188,12 @@ def load_manifest(pcap_path: str) -> dict:
     """Load a ``<pcap>.fritap.json`` sidecar manifest if present.
 
     Returns an empty dict when the sidecar is missing or unreadable, so the
-    caller can merge unconditionally.
+    caller can merge unconditionally. The manifest is untrusted (it may ship
+    with a third-party capture), so the returned dict is already sanitized
+    (:func:`vet_manifest`): port lists are validated, keys/map entries with an
+    unsafe protocol name are dropped, and a path that resolves to a non-regular
+    or oversized file is nulled. Path values are otherwise kept as written;
+    :func:`resolve_manifest_keylog_paths` resolves them.
     """
     manifest_path = pcap_path + MANIFEST_SUFFIX
     if not os.path.isfile(manifest_path):
@@ -195,10 +201,45 @@ def load_manifest(pcap_path: str) -> dict:
     try:
         with open(manifest_path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
-        return data if isinstance(data, dict) else {}
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         logger.warning("Could not read manifest %s", manifest_path, exc_info=True)
         return {}
+    if not isinstance(data, dict):
+        return {}
+    return vet_manifest(pcap_path, sanitize_manifest_ports(data))
+
+
+_MANIFEST_PORT_KEYS = ("tls_ports", "quic_ports")
+
+
+def _is_valid_port(value) -> bool:
+    """True for an ``int`` (not ``bool``) in ``1..65535``."""
+    return isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 65535
+
+
+def manifest_ports(manifest: dict, key: str) -> list[int]:
+    """The manifest's *key* port list, or ``[]`` (with a warning) when malformed.
+
+    A valid value is a list of ints in ``1..65535``; anything else (a string, a
+    nested list, an out-of-range port, ...) is ignored as a whole rather than
+    aborting the conversion with a ``TypeError``.
+    """
+    value = manifest.get(key)
+    if value is None:
+        return []
+    if isinstance(value, list) and all(_is_valid_port(port) for port in value):
+        return list(value)
+    logger.warning("Ignoring malformed manifest %r value %r", key, value)
+    return []
+
+
+def sanitize_manifest_ports(manifest: dict) -> dict:
+    """Copy of *manifest* with each port list validated by :func:`manifest_ports`."""
+    sanitized = dict(manifest)
+    for key in _MANIFEST_PORT_KEYS:
+        if key in sanitized:
+            sanitized[key] = manifest_ports(manifest, key)
+    return sanitized
 
 
 def _resolve_relative_path(path: str, base_dirs: Sequence[str]) -> str:
@@ -223,16 +264,24 @@ def resolve_manifest_path(pcap_path: str, path: str | None) -> str | None:
     A relative manifest path belongs to the manifest, so the manifest's own
     directory (the pcap's) is tried first, making the result independent of the
     reader's CWD. Manifests written by a live capture record the path as friTap
-    was given it (relative to *its* CWD), so the CWD is the fallback.
+    was given it (relative to *its* CWD, or absolute), so the CWD is the
+    fallback. The manifest is untrusted, so an existing target must be a
+    bounded regular file (see
+    :func:`friTap.offline.keylog_paths.validate_manifest_path`); a FIFO,
+    device, directory or oversized file yields ``None``. Copying manifest-named
+    files is guarded at the sink (:func:`~friTap.offline.keylog_picker.merge_keylogs`).
     """
     if not path:
         return None
     manifest_dir = os.path.dirname(os.path.abspath(pcap_path)) if pcap_path else ""
-    return _resolve_relative_path(path, [manifest_dir, ""])
+    return validate_manifest_path(manifest_dir, path)
 
 
 # Manifest maps whose values are keylog paths (protocol -> path).
 _MANIFEST_KEYLOG_MAPS = ("keylogs", "memory_scan_keylogs")
+# Top-level manifest keys holding a single non-keylog sidecar path.
+_MANIFEST_SIDECAR_KEYS = ("tls_midstream_secrets",)
+_KEYLOG_KEY_SUFFIX = "_keylog"
 
 
 def _manifest_keylog_keys() -> frozenset[str]:
@@ -248,34 +297,95 @@ def _manifest_keylog_keys() -> frozenset[str]:
 
 
 def _resolve_manifest_value(pcap_path: str, value):
-    """:func:`resolve_manifest_path` for a string *value*; anything else unchanged."""
-    return resolve_manifest_path(pcap_path, value) if isinstance(value, str) else value
+    """:func:`resolve_manifest_path` for a string *value*; a falsy value is kept.
+
+    Any other non-string value (a list, a number, ...) is malformed and becomes
+    ``None`` so it can never reach ``open()`` as a path.
+    """
+    if isinstance(value, str):
+        return resolve_manifest_path(pcap_path, value)
+    return value if not value else None
+
+
+def _is_safe_keylog_key(key: str, keylog_keys: frozenset[str]) -> bool:
+    """A registry/``keylog`` key, or ``<proto>_keylog`` with a safe *proto*."""
+    if key in keylog_keys:
+        return True
+    return is_safe_protocol_name(key[: -len(_KEYLOG_KEY_SUFFIX)])
+
+
+def _vetted_manifest_value(pcap_path: str, value):
+    """*value* unchanged when it resolves safely, else ``None`` (falsy kept)."""
+    resolved = _resolve_manifest_value(pcap_path, value)
+    return value if resolved is not None and isinstance(value, str) else resolved
+
+
+def _transform_manifest_map(map_key: str, mapping: dict, transform) -> dict:
+    """Apply *transform* to a ``{protocol: path}`` map, dropping unsafe names."""
+    result: dict = {}
+    for name, path in mapping.items():
+        if not is_safe_protocol_name(name):
+            logger.warning("Ignoring manifest %s entry with unsafe protocol name %r",
+                           map_key, name)
+            continue
+        result[name] = transform(path)
+    return result
+
+
+def _transform_manifest_paths(manifest: dict, transform) -> dict:
+    """Copy of *manifest* with *transform* applied to every path value.
+
+    Path values: ``keylog``, every ``<proto>_keylog`` and decryptor
+    ``cli_dest`` key, ``tls_midstream_secrets``, and the ``keylogs`` /
+    ``memory_scan_keylogs`` map values. ``<proto>_keylog`` keys and map entries
+    whose protocol name is not ``^[a-z0-9_]+$`` are dropped (the name ends up in
+    output file names), as is a path map that is not a dict.
+    """
+    keylog_keys = _manifest_keylog_keys()
+    result = dict(manifest)
+    for key, value in manifest.items():
+        is_keylog_key = key in keylog_keys or key.endswith(_KEYLOG_KEY_SUFFIX)
+        if is_keylog_key and not _is_safe_keylog_key(key, keylog_keys):
+            logger.warning("Ignoring manifest key with unsafe protocol name %r", key)
+            del result[key]
+        elif is_keylog_key or key in _MANIFEST_SIDECAR_KEYS:
+            result[key] = transform(value)
+    for map_key in _MANIFEST_KEYLOG_MAPS:
+        mapping = manifest.get(map_key)
+        if isinstance(mapping, dict):
+            result[map_key] = _transform_manifest_map(map_key, mapping, transform)
+        elif map_key in manifest:
+            result.pop(map_key, None)
+    return result
+
+
+def vet_manifest(pcap_path: str, manifest: dict) -> dict:
+    """Copy of *manifest* with unsafe protocol names dropped and unsafe paths nulled.
+
+    Unlike :func:`resolve_manifest_keylog_paths` the path values are kept as
+    written; only a path that resolves to a non-regular or oversized file (or a
+    malformed non-string value) becomes ``None``.
+    """
+    return _transform_manifest_paths(
+        manifest, lambda value: _vetted_manifest_value(pcap_path, value))
 
 
 def resolve_manifest_keylog_paths(pcap_path: str, manifest: dict) -> dict:
     """Return a copy of *manifest* with every keylog path resolved.
 
     A relative path in ``<pcap>.fritap.json`` is relative to the manifest, so
-    each one goes through :func:`resolve_manifest_path`: ``keylog``, every
-    ``<proto>_keylog`` and decryptor ``cli_dest`` key (e.g.
-    ``schannel_unpaired``), and the values of the ``keylogs`` and
-    ``memory_scan_keylogs`` maps. Shared by the CLI (:func:`merge_manifest`) and
-    the API (:func:`friTap.offline.pcap_to_tap.pcap_to_tap`), so a conversion
-    does not depend on the directory it is started from.
+    each one goes through :func:`resolve_manifest_path` (manifest dir first,
+    then the CWD; a FIFO/device/directory/oversized target becomes ``None``):
+    ``keylog``, every ``<proto>_keylog`` and decryptor ``cli_dest`` key (e.g.
+    ``schannel_unpaired``), ``tls_midstream_secrets``, and the values of the
+    ``keylogs`` and ``memory_scan_keylogs`` maps. Unsafe protocol names are
+    dropped (see :func:`_transform_manifest_paths`). Shared by the CLI
+    (:func:`merge_manifest`) and the API
+    (:func:`friTap.offline.pcap_to_tap.pcap_to_tap`), so a conversion does not
+    depend on the directory it is started from.
     """
-    keylog_keys = _manifest_keylog_keys()
-    resolved = dict(manifest)
-    for key, value in manifest.items():
-        if key in keylog_keys or key.endswith("_keylog"):
-            resolved[key] = _resolve_manifest_value(pcap_path, value)
-    for map_key in _MANIFEST_KEYLOG_MAPS:
-        mapping = manifest.get(map_key)
-        if isinstance(mapping, dict):
-            resolved[map_key] = {
-                name: _resolve_manifest_value(pcap_path, path)
-                for name, path in mapping.items()
-            }
-    return resolved
+    return _transform_manifest_paths(
+        manifest, lambda value: _resolve_manifest_value(pcap_path, value))
 
 
 def manifest_protocol_keylogs(manifest: dict) -> dict[str, str]:
@@ -289,6 +399,8 @@ def manifest_protocol_keylogs(manifest: dict) -> dict[str, str]:
     from .registry import get_offline_decryptor_registry
 
     keylogs_map = manifest.get("keylogs") or {}
+    if not isinstance(keylogs_map, dict):
+        keylogs_map = {}
     found: dict[str, str] = {}
     for entry in get_offline_decryptor_registry().list():
         value = keylogs_map.get(entry.protocol_name) or manifest.get(entry.cli_dest)
@@ -337,8 +449,8 @@ def merge_manifest(args: argparse.Namespace, manifest: dict) -> dict:
 
     pcap = getattr(args, "from_pcap", "") or ""
     manifest = resolve_manifest_keylog_paths(pcap, manifest)
-    tls_ports = list(args.tls_ports) or list(manifest.get("tls_ports", []))
-    quic_ports = list(args.quic_ports) or list(manifest.get("quic_ports", []))
+    tls_ports = list(args.tls_ports) or manifest_ports(manifest, "tls_ports")
+    quic_ports = list(args.quic_ports) or manifest_ports(manifest, "quic_ports")
     keylog = args.keylog or manifest.get("keylog") or None
 
     # Per-protocol keylogs are registry-driven: each entry's dest (CLI value or
@@ -426,6 +538,30 @@ def _format_unknown_ids(unknown_key_ids) -> str:
     return shown
 
 
+# Bounded-memory cap counters: (bucket key, summary label, explanation). The
+# decryptor records each only when non-zero, so absent keys print nothing.
+_CAP_DROP_COUNTERS = (
+    ("unknown_key_ids_overflow", "unknown auth_key_id records over the cap",
+     "further unknown ids not listed above"),
+    ("users_dropped", "users dropped",
+     "user-reference cap reached — some names may be unresolved"),
+    ("chat_nodes_dropped", "chat nodes dropped",
+     "chat-reference cap reached — some chats may be unresolved"),
+)
+
+
+def _cap_drop_counts(counts: dict) -> list[tuple[str, int, str]]:
+    """``(label, count, explanation)`` for each non-zero cap counter in *counts*."""
+    return [(label, counts[key], why) for key, label, why in _CAP_DROP_COUNTERS
+            if counts.get(key)]
+
+
+def _print_cap_drops(proto: str, cap_drops: list[tuple[str, int, str]]) -> None:
+    """Print the cap-overflow counters of one protocol bucket."""
+    for label, count, why in cap_drops:
+        print(f"  {proto} {label}: {count} ({why})")
+
+
 def _print_summary(result: ConvertResult, run_scan: bool) -> None:
     """Print a human-readable summary of the conversion result."""
     print(f"Wrote {result.tap_path}")
@@ -466,9 +602,10 @@ def _print_summary(result: ConvertResult, run_scan: bool) -> None:
         unsupported_framing = counts.get("unsupported_framing", 0)
         e2e_only = counts.get("e2e_only", False)
         unknown_key_ids = counts.get("unknown_key_ids") or {}
+        cap_drops = _cap_drop_counts(counts)
         if not (messages or undecryptable or degraded or degraded_non or partial
                 or recovered or short or unsupported_framing or e2e_only
-                or unknown_key_ids):
+                or unknown_key_ids or cap_drops):
             continue
         print(f"  {proto} messages:   {messages}")
         if recovered:
@@ -505,6 +642,7 @@ def _print_summary(result: ConvertResult, run_scan: bool) -> None:
         if unknown_key_ids:
             print(f"  {proto} unknown auth_key_id(s) on the wire (capture these keys): "
                   f"{_format_unknown_ids(unknown_key_ids)}")
+        _print_cap_drops(proto, cap_drops)
     if run_scan:
         print(f"  findings:          {result.findings_count}")
 
@@ -735,7 +873,8 @@ def run_offline_pcap_to_tap(argv: Sequence[str]) -> int:
     Returns 0 on success; nonzero on error: 2 (pcap not found), 3 (tshark
     missing), 5 (no decryption keys: no keylog and no embedded DSB, or a
     protocol keylog / sidecar named by a flag does not exist), 1 (other
-    conversion failure), 4 (ran but produced no decrypted packets and no
+    conversion failure, including a tshark run stopped by its time budget or
+    output cap — printed as one line), 4 (ran but produced no decrypted packets and no
     metadata-only flow — usually wrong keys/ports).
     """
     # Discover plugin offline decryptors BEFORE building the parser so their
@@ -821,6 +960,10 @@ def run_offline_pcap_to_tap(argv: Sequence[str]) -> int:
     except NoDecryptionKeysError as exc:
         print(f"Error: {exc}")
         return 5
+    except TsharkLimitError as exc:  # tshark timed out / flooded: one line, no traceback
+        print(f"Error: {exc}")
+        logger.debug("Offline conversion stopped by a tshark run limit", exc_info=True)
+        return 1
     except Exception as exc:
         print(f"Error during offline conversion: {exc}")
         logger.error("Offline conversion failed", exc_info=True)

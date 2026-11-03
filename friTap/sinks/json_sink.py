@@ -15,28 +15,38 @@ if TYPE_CHECKING:
 class JsonSink:
     """Writes session data as a JSON file.
 
-    Accumulates events and writes a complete JSON document on close.
+    Streams events to a ``<path>.events.jsonl`` sidecar (see
+    :mod:`friTap.output.json_stream`) so memory stays bounded and a crash leaves
+    a recoverable skeleton + sidecar rather than a 0-byte file. The output
+    document schema (``key_extractions`` / ``connections``) is unchanged.
     """
+
+    _ORDER = ["key_extractions", "connections"]
+    _STREAM_KEYS = ["key_extractions", "connections"]
 
     def __init__(self, path: str) -> None:
         self._path = path
-        self._file = None
-        self._keylogs: list[dict] = []
-        self._connections: list[dict] = []
+        self._writer = None
         self._logger = logging.getLogger("friTap.sinks.json")
 
     def open(self) -> None:
-        self._file = open(self._path, "w")
+        from ..output.json_stream import JsonStreamWriter
+        self._writer = JsonStreamWriter(
+            self._path, list(self._ORDER), list(self._STREAM_KEYS), {})
 
     def on_keylog(self, event: "KeylogCanonical") -> None:
-        self._keylogs.append({
+        if self._writer is None:
+            return
+        self._writer.data["key_extractions"].append({
             "key_data": event.key_data,
             "protocol": event.protocol,
             "timestamp": event.timestamp,
         })
 
     def on_data(self, event: "DataCanonical") -> None:
-        self._connections.append({
+        if self._writer is None:
+            return
+        self._writer.data["connections"].append({
             "direction": event.direction.value,
             "src": f"{event.src.addr}:{event.src.port}",
             "dst": f"{event.dst.addr}:{event.dst.port}",
@@ -49,23 +59,13 @@ class JsonSink:
         pass
 
     def flush(self) -> None:
-        if self._file:
-            self._file.seek(0)
-            self._file.truncate()
-            json.dump({
-                "key_extractions": self._keylogs,
-                "connections": self._connections,
-            }, self._file, indent=2)
-            self._file.flush()
+        if self._writer is not None:
+            self._writer.assemble()
 
     def close(self) -> None:
-        if self._file:
-            json.dump({
-                "key_extractions": self._keylogs,
-                "connections": self._connections,
-            }, self._file, indent=2)
-            self._file.close()
-            self._file = None
+        if self._writer is not None:
+            self._writer.close()
+            self._writer = None
 
 
 class JsonlSink:

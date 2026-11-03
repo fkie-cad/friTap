@@ -15,7 +15,10 @@ import time
 from typing import IO, TYPE_CHECKING, List, Optional
 
 from ..constants import SSL_READ
-from ..sinks.tcp_state import TcpSessionTracker, build_framed_packet_from_fields
+from ..sinks.tcp_state import (
+    TcpSessionTracker,
+    build_framed_packets_from_fields,
+)
 from .base import OutputHandler
 from .dedup import KeyDeduplicator
 from .pcapng_blocks import (
@@ -102,7 +105,9 @@ class PcapngOutputHandler(OutputHandler):
         if not self._file or not event.data:
             return
 
-        packet = build_framed_packet_from_fields(
+        # One EPB per segment: oversized records are split to fit an IP packet,
+        # and an invalid record yields no packets (nothing is written).
+        packets = build_framed_packets_from_fields(
             ss_family=event.ss_family,
             src_addr=event.src_addr_raw,
             src_port=event.src_port,
@@ -115,6 +120,11 @@ class PcapngOutputHandler(OutputHandler):
         )
 
         t_us = int(time.time() * 1_000_000)
+        for packet in packets:
+            self._write_packet_block(packet, t_us)
+
+    def _write_packet_block(self, packet: bytes, t_us: int) -> None:
+        """Append one Enhanced Packet Block, flushing periodically."""
         self._file.write(build_epb(packet, t_us))
         self._epb_count += 1
         if self._epb_count % EPB_FLUSH_INTERVAL == 0:

@@ -18,11 +18,19 @@ import math
 import re
 import time
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlparse
 
 from friTap.analysis import Finding, Severity
+from friTap.analysis._json_walk import CONTAINER, iter_json
+from friTap.analysis._limits import (
+    MAX_DISPLAY_CHARS,
+    bounded_text,
+    cap_findings,
+    clip,
+    safe_json_loads,
+)
 
 if TYPE_CHECKING:
     from friTap.flow.models import Flow
@@ -119,7 +127,11 @@ def _redact(value: str, keep: int = 8) -> str:
 
 
 def _try_decode_jwt(token: str) -> dict | None:
-    """Attempt to decode a JWT without verification. Returns claims or None."""
+    """Attempt to decode a JWT without verification. Returns claims or None.
+
+    Both the header and the payload must decode to JSON *objects*; anything
+    else (list/null/scalar, as an attacker may send) is rejected.
+    """
     parts = token.split(".")
     if len(parts) != 3:
         return None
@@ -130,9 +142,19 @@ def _try_decode_jwt(token: str) -> dict | None:
         # Decode payload
         payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
         payload = json.loads(base64.urlsafe_b64decode(payload_b64))
-        return {"header": header, "payload": payload}
-    except Exception:
+    except Exception:  # includes RecursionError from deeply nested JSON
         return None
+    if not isinstance(header, dict) or not isinstance(payload, dict):
+        return None
+    return {"header": header, "payload": payload}
+
+
+def _claim_str(claims: dict, key: str) -> str:
+    """Return claim *key* coerced to a display-safe, truncated string."""
+    value = claims.get(key, "")
+    if value is None:
+        return ""
+    return clip(value, MAX_DISPLAY_CHARS)
 
 
 @dataclass(frozen=True)
@@ -198,7 +220,11 @@ _SECRET_RULES: list[SecretRule] = [
 # Backward-compat alias: the legacy (name, pattern, severity) tuple list.
 _API_KEY_PATTERNS = [(r.name, r.pattern, r.severity) for r in _SECRET_RULES]
 
-_JWT_PATTERN = re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}")
+# Segment lengths are bounded so attacker-sized runs cannot cause quadratic
+# rescans; 8 KiB per segment is far beyond any real-world JWT.
+_JWT_PATTERN = re.compile(
+    r"eyJ[A-Za-z0-9_-]{10,8192}\.[A-Za-z0-9_-]{10,8192}\.[A-Za-z0-9_-]{10,8192}"
+)
 
 _PASSWORD_FIELDS = frozenset({
     "password", "passwd", "pass", "pwd", "secret",
@@ -230,6 +256,50 @@ _TOKEN_JSON_FIELDS = frozenset({
     "auth_token", "session_token",
 })
 
+# Per-key classification of scalar JSON string fields:
+# key -> (severity, title format, description format, confidence).
+# Precedence matches the original if/elif chain: password > CSRF > token
+# (later updates override earlier ones for keys present in several sets).
+_JSON_TOKEN_RULE = (
+    Severity.HIGH, "Token/key in JSON field '{key}'",
+    "Sensitive value in {location} at '{path}' for {host}", 0.6,
+)
+_JSON_CSRF_RULE = (
+    Severity.MEDIUM, "CSRF token in JSON field '{key}'",
+    "CSRF/anti-forgery token in {location} at '{path}' for {host}", 0.7,
+)
+_JSON_PASSWORD_RULE = (
+    Severity.CRITICAL, "Password in JSON field '{key}'",
+    "Password value found in {location} at '{path}' for {host}", 0.9,
+)
+_JSON_FIELD_RULES: dict[str, tuple] = {
+    **{k: _JSON_TOKEN_RULE for k in _TOKEN_JSON_FIELDS},
+    **{k: _JSON_CSRF_RULE for k in _CSRF_FIELDS},
+    **{k: _JSON_PASSWORD_RULE for k in _PASSWORD_FIELDS},
+}
+
+
+def _join_path(prefix: str, path: str) -> str:
+    """Prefix a walker-relative JSON *path* with the caller's base path."""
+    if not prefix:
+        return path
+    if not path:
+        return prefix
+    return prefix + path if path.startswith("[") else f"{prefix}.{path}"
+
+
+@dataclass
+class _EntropyScanState:
+    """Per-flow entropy de-noising state: dedup set + suppressed counter.
+
+    :meth:`CredentialAnalyzer.analyze_flow` creates a fresh one per call and
+    passes it through the helpers, so one analyzer instance can scan several
+    flows concurrently or re-entrantly without mixing their state.
+    """
+
+    seen: set[str] = field(default_factory=set)
+    suppressed: int = 0
+
 
 class CredentialAnalyzer:
     """Analyzer that detects secrets and credentials in HTTP flows."""
@@ -238,26 +308,25 @@ class CredentialAnalyzer:
 
     def analyze_flow(self, flow: "Flow") -> list[Finding]:
         findings: list[Finding] = []
-        # Per-flow state for entropy de-noising (suppressed counter + dedup set).
-        self._entropy_suppressed = 0
-        self._entropy_seen: set[str] = set()
+        # Per-flow state for entropy de-noising, kept local to this call.
+        entropy_state = _EntropyScanState()
         # Decompress bodies once and reuse across all checks
         req_body = flow.get_decompressed_request_body() if flow.request else b""
         resp_body = flow.get_decompressed_response_body() if flow.response else b""
         self._check_auth_headers(flow, findings)
         self._check_query_params(flow, findings)
-        self._check_request_body(flow, req_body, findings)
-        self._check_response_body(flow, resp_body, findings)
-        self._check_api_key_patterns(flow, req_body, resp_body, findings)
+        self._check_request_body(flow, req_body, findings, entropy_state)
+        self._check_response_body(flow, resp_body, findings, entropy_state)
+        self._check_api_key_patterns(flow, req_body, resp_body, findings, entropy_state)
         self._check_binary_key_material(flow, req_body, resp_body, findings)
 
         # Emit a single trailing INFO finding summarizing entropy suppression.
-        if self._entropy_suppressed > 0:
+        if entropy_state.suppressed > 0:
             findings.append(Finding(
                 severity=Severity.INFO,
                 title="Entropy scan suppressed low-signal strings",
                 description=(
-                    f"Suppressed {self._entropy_suppressed} low-signal "
+                    f"Suppressed {entropy_state.suppressed} low-signal "
                     f"high-entropy strings (UUIDs, hashes, encoded payloads) "
                     f"for {flow.display_host}"
                 ),
@@ -265,12 +334,13 @@ class CredentialAnalyzer:
                 flow_id=flow.flow_id,
                 confidence=1.0,
                 evidence={
-                    "suppressed": self._entropy_suppressed,
+                    "suppressed": entropy_state.suppressed,
                     "host": flow.display_host,
                 },
             ))
 
         findings = self._dedup_findings(findings)
+        findings = cap_findings(findings, self.name, flow.flow_id)
         from friTap.analysis.filtering import with_category
         return [with_category(f, "secret") for f in findings]
 
@@ -356,14 +426,14 @@ class CredentialAnalyzer:
                         findings.append(Finding(
                             severity=Severity.CRITICAL,
                             title="Basic auth credentials in request",
-                            description=f"Username '{user}' with password sent to {flow.display_host}",
+                            description=f"Username and password sent to {flow.display_host}",
                             source=self.name,
                             flow_id=flow.flow_id,
                             confidence=1.0,
                             evidence={
                                 "location": "request_header",
                                 "header": "Authorization",
-                                "username": user,
+                                "username": _redact(user),
                                 "password": _redact(passwd),
                                 "host": flow.display_host,
                             },
@@ -393,9 +463,9 @@ class CredentialAnalyzer:
                 elif scheme and credential.strip():
                     findings.append(Finding(
                         severity=Severity.HIGH,
-                        title=f"Non-standard Authorization scheme '{scheme}'",
+                        title=f"Non-standard Authorization scheme '{clip(scheme)}'",
                         description=(
-                            f"Authorization scheme '{scheme}' with credential "
+                            f"Authorization scheme '{clip(scheme)}' with credential "
                             f"sent to {flow.display_host}"
                         ),
                         source=self.name,
@@ -415,7 +485,7 @@ class CredentialAnalyzer:
                 if header_value.strip():
                     findings.append(Finding(
                         severity=Severity.MEDIUM,
-                        title=f"CSRF token in {header_name} header",
+                        title=f"CSRF token in {clip(header_name)} header",
                         description=f"CSRF/anti-forgery token sent to {flow.display_host}",
                         source=self.name,
                         flow_id=flow.flow_id,
@@ -432,7 +502,7 @@ class CredentialAnalyzer:
             elif lower_name in ("x-api-key", "api-key", "apikey", "x-auth-token", "x-access-token"):
                 findings.append(Finding(
                     severity=Severity.HIGH,
-                    title=f"API key in {header_name} header",
+                    title=f"API key in {clip(header_name)} header",
                     description=f"API key sent to {flow.display_host}",
                     source=self.name,
                     flow_id=flow.flow_id,
@@ -486,8 +556,8 @@ class CredentialAnalyzer:
                     if value:
                         findings.append(Finding(
                             severity=Severity.HIGH,
-                            title=f"Sensitive parameter '{param_name}' in URL",
-                            description=f"URL parameter '{param_name}' contains sensitive data for {flow.display_host}",
+                            title=f"Sensitive parameter '{clip(param_name)}' in URL",
+                            description=f"URL parameter '{clip(param_name)}' contains sensitive data for {flow.display_host}",
                             source=self.name,
                             flow_id=flow.flow_id,
                             confidence=0.6,
@@ -499,7 +569,10 @@ class CredentialAnalyzer:
                             },
                         ))
 
-    def _check_request_body(self, flow: "Flow", body: bytes, findings: list[Finding]) -> None:
+    def _check_request_body(
+        self, flow: "Flow", body: bytes, findings: list[Finding],
+        entropy_state: _EntropyScanState,
+    ) -> None:
         """Check request body for passwords and credentials."""
         if not body:
             return
@@ -508,7 +581,7 @@ class CredentialAnalyzer:
 
         # JSON body
         if "json" in content_type:
-            self._scan_json_for_secrets(body, flow, "request_body", findings)
+            self._scan_json_for_secrets(body, flow, "request_body", findings, entropy_state)
 
         # Form data
         elif "x-www-form-urlencoded" in content_type:
@@ -517,7 +590,10 @@ class CredentialAnalyzer:
         # Scan raw body for JWTs
         self._scan_text_for_jwts(body, flow, "request_body", findings)
 
-    def _check_response_body(self, flow: "Flow", body: bytes, findings: list[Finding]) -> None:
+    def _check_response_body(
+        self, flow: "Flow", body: bytes, findings: list[Finding],
+        entropy_state: _EntropyScanState,
+    ) -> None:
         """Check response body for leaked secrets (tokens in JSON responses)."""
         if not body:
             return
@@ -525,24 +601,24 @@ class CredentialAnalyzer:
         content_type = flow.response_content_type.lower()
 
         if "json" in content_type:
-            self._scan_json_for_secrets(body, flow, "response_body", findings)
+            self._scan_json_for_secrets(body, flow, "response_body", findings, entropy_state)
 
         self._scan_text_for_jwts(body, flow, "response_body", findings)
 
     def _scan_json_for_secrets(
-        self, body: bytes, flow: "Flow", location: str, findings: list[Finding]
+        self, body: bytes, flow: "Flow", location: str, findings: list[Finding],
+        entropy_state: _EntropyScanState,
     ) -> None:
-        """Scan a JSON body for password fields and token values."""
-        try:
-            text = body.decode("utf-8", errors="replace")
-            data = json.loads(text)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            return
+        """Scan a JSON body for password fields and token values.
 
+        Oversized, invalid or pathologically nested JSON is skipped
+        (see :func:`friTap.analysis._limits.safe_json_loads`).
+        """
+        data = safe_json_loads(body)
         if not isinstance(data, dict):
             return
 
-        self._walk_json(data, flow, location, findings, path="")
+        self._walk_json(data, flow, location, findings, entropy_state, path="")
 
     def _walk_json(
         self,
@@ -550,73 +626,66 @@ class CredentialAnalyzer:
         flow: "Flow",
         location: str,
         findings: list[Finding],
+        entropy_state: _EntropyScanState,
         path: str,
     ) -> None:
-        """Recursively walk a JSON structure looking for sensitive fields."""
-        if isinstance(obj, dict):
-            # Private JWK: a JSON Web Key carrying private material.
-            self._check_private_jwk(obj, flow, location, findings, path)
+        """Walk a JSON structure looking for sensitive fields.
 
-            for key, value in obj.items():
-                current_path = f"{path}.{key}" if path else key
-                key_lower = key.lower()
-
-                if isinstance(value, str) and key_lower in _PASSWORD_FIELDS:
-                    findings.append(Finding(
-                        severity=Severity.CRITICAL,
-                        title=f"Password in JSON field '{key}'",
-                        description=f"Password value found in {location} at '{current_path}' for {flow.display_host}",
-                        source=self.name,
-                        flow_id=flow.flow_id,
-                        confidence=0.9,
-                        evidence={
-                            "location": location,
-                            "field": current_path,
-                            "value": _redact(value),
-                            "host": flow.display_host,
-                        },
-                    ))
-                elif isinstance(value, str) and key_lower in _CSRF_FIELDS:
-                    findings.append(Finding(
-                        severity=Severity.MEDIUM,
-                        title=f"CSRF token in JSON field '{key}'",
-                        description=f"CSRF/anti-forgery token in {location} at '{current_path}' for {flow.display_host}",
-                        source=self.name,
-                        flow_id=flow.flow_id,
-                        confidence=0.7,
-                        evidence={
-                            "location": location,
-                            "field": current_path,
-                            "value": _redact(value),
-                            "host": flow.display_host,
-                        },
-                    ))
-                elif isinstance(value, str) and key_lower in _TOKEN_JSON_FIELDS:
-                    findings.append(Finding(
-                        severity=Severity.HIGH,
-                        title=f"Token/key in JSON field '{key}'",
-                        description=f"Sensitive value in {location} at '{current_path}' for {flow.display_host}",
-                        source=self.name,
-                        flow_id=flow.flow_id,
-                        confidence=0.6,
-                        evidence={
-                            "location": location,
-                            "field": current_path,
-                            "value": _redact(value),
-                            "host": flow.display_host,
-                        },
-                    ))
-                elif isinstance(value, str):
-                    # Entropy scan on the string leaf, keyed by its field name.
-                    self._check_entropy(
-                        f'"{value}"', flow, location, findings, key_hint=key
+        Iterative and bounded (depth/node caps from
+        :mod:`friTap.analysis._json_walk`); visits fields in the same order as
+        the former recursive implementation.
+        """
+        for node in iter_json(obj):
+            if node.kind == CONTAINER:
+                if isinstance(node.value, dict):
+                    # Private JWK: a JSON Web Key carrying private material.
+                    self._check_private_jwk(
+                        node.value, flow, location, findings, _join_path(path, node.path)
                     )
-                elif isinstance(value, (dict, list)):
-                    self._walk_json(value, flow, location, findings, current_path)
-        elif isinstance(obj, list):
-            for i, item in enumerate(obj):
-                if isinstance(item, (dict, list)):
-                    self._walk_json(item, flow, location, findings, f"{path}[{i}]")
+                continue
+            self._check_json_field(
+                node.key, node.value, _join_path(path, node.path), flow, location,
+                findings, entropy_state,
+            )
+
+    def _check_json_field(
+        self,
+        key: str,
+        value: object,
+        current_path: str,
+        flow: "Flow",
+        location: str,
+        findings: list[Finding],
+        entropy_state: _EntropyScanState,
+    ) -> None:
+        """Classify one scalar JSON field (password/CSRF/token/entropy)."""
+        if not isinstance(value, str):
+            return
+        key_lower = key.lower()
+        rule = _JSON_FIELD_RULES.get(key_lower)
+        if rule is None:
+            # Entropy scan on the string leaf, keyed by its field name.
+            self._check_entropy(
+                f'"{value}"', flow, location, findings, entropy_state, key_hint=key
+            )
+            return
+        severity, title_fmt, desc_fmt, confidence = rule
+        findings.append(Finding(
+            severity=severity,
+            title=title_fmt.format(key=clip(key)),
+            description=desc_fmt.format(
+                location=location, path=clip(current_path), host=flow.display_host
+            ),
+            source=self.name,
+            flow_id=flow.flow_id,
+            confidence=confidence,
+            evidence={
+                "location": location,
+                "field": current_path,
+                "value": _redact(value),
+                "host": flow.display_host,
+            },
+        ))
 
     def _check_private_jwk(
         self,
@@ -649,7 +718,7 @@ class CredentialAnalyzer:
             evidence={
                 "location": location,
                 "field": path or "(root)",
-                "kty": kty,
+                "kty": clip(kty),
                 "host": flow.display_host,
             },
         ))
@@ -659,7 +728,7 @@ class CredentialAnalyzer:
     ) -> None:
         """Scan URL-encoded form data for password fields."""
         try:
-            text = body.decode("utf-8", errors="replace")
+            text = bounded_text(body)
             params = parse_qs(text, keep_blank_values=True)
         except Exception:
             return
@@ -706,8 +775,8 @@ class CredentialAnalyzer:
     def _scan_text_for_jwts(
         self, body: bytes, flow: "Flow", location: str, findings: list[Finding]
     ) -> None:
-        """Scan text for JWT tokens."""
-        text = body.decode("utf-8", errors="replace")
+        """Scan text for JWT tokens (first ``MAX_SCAN_BYTES`` of the body)."""
+        text = bounded_text(body)
         for match in _JWT_PATTERN.finditer(text):
             token = match.group(0)
             claims = _try_decode_jwt(token)
@@ -725,13 +794,15 @@ class CredentialAnalyzer:
         """Add a finding for a detected JWT with security analysis."""
         header = claims.get("header", {})
         payload = claims.get("payload", {})
+        if not isinstance(header, dict) or not isinstance(payload, dict):
+            return
 
         issues: list[str] = []
         severity = Severity.HIGH
 
         # Check for alg:none vulnerability
-        alg = header.get("alg", "")
-        if alg.lower() == "none":
+        alg = _claim_str(header, "alg")
+        if alg.strip().lower() == "none":
             issues.append("CRITICAL: Algorithm set to 'none' (JWT bypass vulnerability)")
             severity = Severity.CRITICAL
 
@@ -741,7 +812,7 @@ class CredentialAnalyzer:
             try:
                 if float(exp) < time.time():
                     issues.append("Token is expired")
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, OverflowError):
                 pass
 
         description = f"JWT found in {location} for {flow.display_host}"
@@ -758,15 +829,16 @@ class CredentialAnalyzer:
                 "location": location,
                 "value": _redact(token, keep=20),
                 "algorithm": alg,
-                "issuer": payload.get("iss", ""),
-                "subject": payload.get("sub", ""),
+                "issuer": _claim_str(payload, "iss"),
+                "subject": _claim_str(payload, "sub"),
                 "issues": issues,
                 "host": flow.display_host,
             },
         ))
 
     def _check_api_key_patterns(
-        self, flow: "Flow", req_body: bytes, resp_body: bytes, findings: list[Finding]
+        self, flow: "Flow", req_body: bytes, resp_body: bytes, findings: list[Finding],
+        entropy_state: _EntropyScanState,
     ) -> None:
         """Scan entire flow text for known API key / secret patterns."""
         texts: list[tuple[str, str]] = []
@@ -776,15 +848,15 @@ class CredentialAnalyzer:
         if flow.request is not None:
             req_is_json = "json" in flow.request_content_type.lower()
             for k, v in flow.request.headers.items():
-                texts.append((f"request_header:{k}", v))
+                texts.append((f"request_header:{k}", bounded_text(v)))
             if flow.request.url:
-                texts.append(("request_url", flow.request.url))
+                texts.append(("request_url", bounded_text(flow.request.url)))
             if req_body:
-                texts.append(("request_body", req_body.decode("utf-8", errors="replace")))
+                texts.append(("request_body", bounded_text(req_body)))
 
         if resp_body:
             resp_is_json = "json" in flow.response_content_type.lower()
-            texts.append(("response_body", resp_body.decode("utf-8", errors="replace")))
+            texts.append(("response_body", bounded_text(resp_body)))
 
         seen_patterns: set[str] = set()
 
@@ -826,9 +898,9 @@ class CredentialAnalyzer:
             # scanned per-string-leaf in _walk_json (with the field name as
             # key_hint) so we avoid double-counting here.
             if location == "request_body" and not req_is_json:
-                self._check_entropy(text, flow, location, findings)
+                self._check_entropy(text, flow, location, findings, entropy_state)
             elif location == "response_body" and not resp_is_json:
-                self._check_entropy(text, flow, location, findings)
+                self._check_entropy(text, flow, location, findings, entropy_state)
 
     def _check_binary_key_material(
         self, flow: "Flow", req_body: bytes, resp_body: bytes, findings: list[Finding]
@@ -880,13 +952,14 @@ class CredentialAnalyzer:
         flow: "Flow",
         location: str,
         findings: list[Finding],
+        entropy_state: _EntropyScanState,
         key_hint: str = "",
     ) -> None:
         """Detect high-entropy strings that may be unknown secrets.
 
         De-noises common false positives (UUIDs, crypto-hash digests, encoded
         payloads) and applies charset- and context-aware entropy thresholds.
-        Suppressed candidates are counted on ``self._entropy_suppressed`` and a
+        Suppressed candidates are counted on ``entropy_state.suppressed`` and a
         single trailing INFO finding is emitted by ``analyze_flow``.
         """
         in_context = self._is_secret_context(key_hint, location)
@@ -899,17 +972,17 @@ class CredentialAnalyzer:
             # Per-flow dedup by full value (avoids collapsing distinct strings
             # that merely share a redaction prefix).
             redacted = _redact(value)
-            if value in self._entropy_seen:
+            if value in entropy_state.seen:
                 continue
-            self._entropy_seen.add(value)
+            entropy_state.seen.add(value)
 
             # Skip structural non-secrets outright (not counted as suppressed —
             # they are simply not secret candidates).
             if _is_uuid(value):
-                self._entropy_suppressed += 1
+                entropy_state.suppressed += 1
                 continue
             if _is_known_hash(value):
-                self._entropy_suppressed += 1
+                entropy_state.suppressed += 1
                 continue
 
             charset = _classify_charset(value)
@@ -917,7 +990,7 @@ class CredentialAnalyzer:
             # Out-of-context encoded payloads (base64/hex of printable text)
             # are noise, not novel secrets — suppress regardless of entropy.
             if not in_context and _decodes_clean(value, charset):
-                self._entropy_suppressed += 1
+                entropy_state.suppressed += 1
                 continue
 
             threshold = self._entropy_threshold(charset, in_context)

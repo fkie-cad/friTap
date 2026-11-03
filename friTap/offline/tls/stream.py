@@ -82,6 +82,38 @@ class SeqBinding(NamedTuple):
     seq: int
 
 
+class TrialBudget:
+    """A cap on AEAD trial decryptions shared by every seq search of one run.
+
+    The secrets searched may come from an untrusted file, so the total brute
+    force work is bounded: each search asks for the trials it needs
+    (:meth:`grant`), gets at most what is left, and reports what it used
+    (:meth:`spend`). Once a request is cut short the budget is
+    :attr:`exhausted` and every later search gets zero trials.
+    """
+
+    def __init__(self, limit: int):
+        self.limit = limit
+        self.remaining = limit
+        self.exhausted = False
+
+    def grant(self, wanted: int) -> int:
+        """Up to *wanted* trials; fewer (marking the budget exhausted) when short."""
+        granted = max(0, min(wanted, self.remaining))
+        if granted < wanted:
+            self.exhausted = True
+        return granted
+
+    def spend(self, used: int) -> None:
+        """Account for *used* trials of an earlier :meth:`grant`."""
+        self.remaining -= used
+
+    @property
+    def used(self) -> int:
+        """Trials spent so far."""
+        return self.limit - self.remaining
+
+
 def decrypt_stream(secret_hex: str, records, suite: str) -> List[bytes]:
     """Decrypt consecutive app-data records once the seq-0 anchor is found."""
     secret = bytes.fromhex(secret_hex)
@@ -136,13 +168,28 @@ def seq_windows(max_seq: int) -> Iterator[Tuple[int, int]]:
 
 
 def _record_seq(secret: bytes, suite: str, hdr: bytes, frag: bytes,
-                max_seq: int, min_seq: int = 0) -> Optional[int]:
-    """The ``seq`` in ``min_seq..max_seq`` at which one record authenticates, or ``None``."""
-    for seq in range(min_seq, max_seq + 1):
+                max_seq: int, min_seq: int = 0,
+                budget: Optional[TrialBudget] = None) -> Optional[int]:
+    """The ``seq`` in ``min_seq..max_seq`` at which one record authenticates, or ``None``.
+
+    With a *budget*, only the seqs it grants are tried (the lowest first) and
+    the trials made are spent from it.
+    """
+    wanted = max(0, max_seq - min_seq + 1)
+    granted = wanted if budget is None else budget.grant(wanted)
+    for seq in range(min_seq, min_seq + granted):
         plaintext = try_decrypt(secret, suite, seq, hdr, frag)
         if plaintext is not None and inner_content_type(plaintext) in _VALID_INNER_TYPES:
+            _spend(budget, seq - min_seq + 1)
             return seq
+    _spend(budget, granted)
     return None
+
+
+def _spend(budget: Optional[TrialBudget], used: int) -> None:
+    """Spend *used* trials from *budget* (no-op without one)."""
+    if budget is not None:
+        budget.spend(used)
 
 
 def recover_binding(
@@ -153,6 +200,7 @@ def recover_binding(
     max_records: int = DEFAULT_BIND_RECORDS,
     first_record: int = 0,
     min_seq: int = 0,
+    budget: Optional[TrialBudget] = None,
 ) -> Optional[Tuple[int, int]]:
     """Find ``(record_index, seq)`` of the first of the leading records that binds.
 
@@ -165,11 +213,15 @@ def recover_binding(
     caller already tried; the returned index still counts from the first one.
     ``min_seq`` > 0 restricts the search to ``min_seq..max_seq`` (one window of
     an iterative-deepening search whose lower seqs were already tried).
+    An optional *budget* (:class:`TrialBudget`) caps the trials; the search
+    stops once it is exhausted.
     """
     secret = bytes.fromhex(secret_hex)
     window = islice(iter_app_data_records(records), first_record, max_records)
     for index, (_ctype, hdr, frag) in enumerate(window, start=first_record):
-        seq = _record_seq(secret, suite, hdr, frag, max_seq, min_seq)
+        if budget is not None and budget.exhausted:
+            return None
+        seq = _record_seq(secret, suite, hdr, frag, max_seq, min_seq, budget)
         if seq is not None:
             return index, seq
     return None
@@ -252,6 +304,7 @@ def pick_binding(
     max_records: int = DEFAULT_BIND_RECORDS,
     first_record: int = 0,
     min_seq: int = 0,
+    budget: Optional[TrialBudget] = None,
 ) -> Optional[SeqBinding]:
     """Brute force the suite, binding record and its seq for a mid-stream direction.
 
@@ -262,13 +315,13 @@ def pick_binding(
     suites whose hash length matches the secret are tried (see
     :func:`~friTap.offline.tls.tls13.suites_for_secret`); the others can never
     authenticate, so the result is unchanged. ``min_seq`` bounds the seq search
-    from below (see :func:`recover_binding`).
+    from below and *budget* caps its trials (see :func:`recover_binding`).
     """
     if suites is None:
         suites = suites_for_secret(bytes.fromhex(secret_hex))
     for suite in suites:
         found = recover_binding(secret_hex, suite, records, max_seq, max_records,
-                                first_record, min_seq)
+                                first_record, min_seq, budget)
         if found is not None:
             return SeqBinding(suite, found[0], found[1])
     return None

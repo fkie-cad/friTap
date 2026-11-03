@@ -38,8 +38,13 @@ from .tl import TlLimits, TlNode, TlVector, decode_tl
 #: Maximum resolved ``acks`` entries kept per record (``acks_total`` has the count).
 MAX_ACKS = 64
 
-#: Decoder limits for reference extraction: keep every vector item (ack ids).
-REF_LIMITS = TlLimits(keep_vector_items=100_000)
+#: Maximum ack ids stored per record for the whole conversion (``acks_total``
+#: keeps the real count). Real ``msgs_ack`` records carry a few dozen ids.
+MAX_STORED_ACKS = 4096
+
+#: Decoder limits for reference extraction: keep up to MAX_STORED_ACKS vector
+#: items (ack ids, users) per vector; vector totals stay exact.
+REF_LIMITS = TlLimits(keep_vector_items=MAX_STORED_ACKS)
 
 # Invocation wrappers whose ``query`` field holds the real RPC method.
 _WRAPPER_PREFIXES = ("invokeWith", "invokeAfter", "initConnection")
@@ -68,6 +73,14 @@ class RecordRef:
     acked_ids: Tuple[int, ...] = ()
     #: The result type of each ``rpc_result`` (parallel to ``answers_req_ids``).
     answer_methods: Tuple[str, ...] = ()
+    #: Real number of acked ids (``acked_ids`` is capped at MAX_STORED_ACKS);
+    #: 0 means "same as ``len(acked_ids)``".
+    acks_total: int = 0
+
+    @property
+    def acked_count(self) -> int:
+        """Number of acked ids, including those not stored."""
+        return max(self.acks_total, len(self.acked_ids))
 
     def answer_method(self, index: int) -> str:
         """Result type answering ``answers_req_ids[index]``, else ``rpc_result``."""
@@ -147,12 +160,23 @@ def _answer_methods(objects: List[TlNode]) -> Tuple[str, ...]:
     return tuple(method_name(obj.value("result")) for obj in _rpc_results(objects))
 
 
+def _ack_vectors(objects: List[TlNode]) -> List[TlVector]:
+    return [obj.value("msg_ids") for obj in objects
+            if isinstance(obj, TlNode) and obj.name == "msgs_ack"
+            and isinstance(obj.value("msg_ids"), TlVector)]
+
+
 def _acks(objects: List[TlNode]) -> Tuple[int, ...]:
+    """Acked msg_ids of every ``msgs_ack``, capped at :data:`MAX_STORED_ACKS`."""
     ids: List[int] = []
-    for obj in objects:
-        if isinstance(obj, TlNode) and obj.name == "msgs_ack":
-            ids.extend(_vector_ints(obj.value("msg_ids")))
+    for vector in _ack_vectors(objects):
+        ids.extend(_vector_ints(vector)[:MAX_STORED_ACKS - len(ids)])
     return tuple(ids)
+
+
+def _acks_total(objects: List[TlNode]) -> int:
+    """Real number of acked ids (vector totals, including items not kept)."""
+    return sum(max(vector.total, len(_vector_ints(vector))) for vector in _ack_vectors(objects))
 
 
 def _record_method(root: TlNode, children: Tuple[ContainerChild, ...]) -> str:
@@ -170,7 +194,7 @@ def refs_from_tree(root: TlNode, *, record_seq: int, auth_key_id: str, direction
         record_seq=record_seq, auth_key_id=auth_key_id or "", direction=direction or "",
         msg_id=int(msg_id or 0), method=_record_method(root, children),
         child_msg_ids=children, answers_req_ids=_answers(objects), acked_ids=_acks(objects),
-        answer_methods=_answer_methods(objects),
+        answer_methods=_answer_methods(objects), acks_total=_acks_total(objects),
     )
 
 
@@ -295,7 +319,7 @@ class CrossRefIndex:
                 refs["request_method"] = method
         if ref.acked_ids:
             refs["acks"] = [self._entry(ref.auth_key_id, ack) for ack in ref.acked_ids[:MAX_ACKS]]
-            refs["acks_total"] = len(ref.acked_ids)
+            refs["acks_total"] = ref.acked_count
         if ref.child_msg_ids:
             refs["container"] = [
                 {"msg_id": msg_id_hex(c.msg_id), "seqno": c.seqno, "method": c.method}

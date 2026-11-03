@@ -27,12 +27,21 @@ Raw values are redacted by default and never appear in a finding's
 
 from __future__ import annotations
 
-import json
+import math
 import re
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlparse
 
 from friTap.analysis import Finding, Severity
+from friTap.analysis._json_walk import CONTAINER, iter_json
+from friTap.analysis._limits import (
+    MAX_JSON_BYTES,
+    bounded_text,
+    cap_findings,
+    clip,
+    is_binary_body,
+    safe_json_loads,
+)
 from friTap.analysis.filtering import with_category
 
 # Reuse the IOC analyzer's vetted primitives rather than redefining them.
@@ -114,6 +123,10 @@ _DOB_PATTERNS = (
 
 _PASSPORT_PATTERN = re.compile(r"^[A-Za-z0-9]{6,9}$")
 
+# Numbers beyond this magnitude can never be coordinates; rejecting them before
+# float() avoids OverflowError on attacker-sized JSON integers.
+_MAX_COORD_MAGNITUDE = 1e6
+
 
 # ---------------------------------------------------------------------------
 # Context key hints (lower-cased comparisons)
@@ -185,6 +198,25 @@ def _iban_ok(s: str) -> bool:
         return False
 
 
+def _to_coord(value) -> float | None:
+    """Convert *value* to a finite float of plausible magnitude, else ``None``.
+
+    Guards attacker-controlled numbers: huge ints (``OverflowError``), the
+    ``Infinity``/``NaN`` JSON extensions, and non-numeric types.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and abs(value) > _MAX_COORD_MAGNITUDE:
+        return None
+    try:
+        number = float(value)
+    except (ValueError, TypeError, OverflowError):
+        return None
+    if not math.isfinite(number) or abs(number) > _MAX_COORD_MAGNITUDE:
+        return None
+    return number
+
+
 def _redact_pii(value: str, category: str) -> str:
     """Redact a PII value according to its category.
 
@@ -246,7 +278,7 @@ class PrivacyAnalyzer:
         # Confidence floor: drop low-confidence emissions unless verbose.
         if not self._verbose:
             findings = [f for f in findings if f.confidence >= 0.5]
-        return findings
+        return cap_findings(findings, self.name, flow.flow_id)
 
     # -- finding construction ----------------------------------------------
 
@@ -277,7 +309,7 @@ class PrivacyAnalyzer:
             stored_value = _redact_pii(value, category)
             redacted = True
 
-        ctx = f" ({context})" if context else ""
+        ctx = f" ({clip(context)})" if context else ""
         description = (
             f"PII of type '{category}' detected in {location}{ctx} "
             f"for {flow.display_host}"
@@ -360,16 +392,17 @@ class PrivacyAnalyzer:
     def _check_body(self, flow, body, content_type, location, findings, seen) -> None:
         if not body:
             return
-        # Decode the body once; all three scans below reuse the decoded text.
-        try:
-            text = body.decode("utf-8", errors="replace")
-        except Exception:
-            return
         ct = (content_type or "").lower()
+        if "json" in ct and len(body) <= MAX_JSON_BYTES:
+            self._scan_json(body, flow, location, findings, seen)
+            return
+        if is_binary_body(body, ct):
+            # Binary payloads produce only regex noise (and cost CPU).
+            return
+        # Decode once (bounded); the scans below reuse the decoded text.
+        text = bounded_text(body)
 
-        if "json" in ct:
-            self._scan_json(text, flow, location, findings, seen)
-        elif "x-www-form-urlencoded" in ct:
+        if "x-www-form-urlencoded" in ct:
             self._scan_form(text, flow, location, findings, seen)
         else:
             # Only unstructured bodies need a whole-body free-text sweep.
@@ -386,29 +419,37 @@ class PrivacyAnalyzer:
                     self._scan_keyed(flow, key, value, location, findings, seen)
 
     def _scan_json(self, text, flow, location, findings, seen) -> None:
-        try:
-            data = json.loads(text)
-        except (json.JSONDecodeError, ValueError):
+        data = safe_json_loads(text)
+        if data is None:
             return
         self._walk_json(data, flow, location, findings, seen)
 
     def _walk_json(self, obj, flow, location, findings, seen) -> None:
-        """Recursively walk a JSON structure looking for keyed PII + sibling pairs."""
-        if isinstance(obj, dict):
-            # Object-scoped multi-key heuristics (geo / postal address).
-            self._check_geolocation(obj, flow, location, findings, seen)
-            self._check_postal_address(obj, flow, location, findings, seen)
-            for key, value in obj.items():
-                if isinstance(value, str):
-                    self._scan_keyed(flow, key, value, location, findings, seen)
-                elif isinstance(value, (int, float)) and not isinstance(value, bool):
-                    self._scan_keyed(flow, key, str(value), location, findings, seen)
-                elif isinstance(value, (dict, list)):
-                    self._walk_json(value, flow, location, findings, seen)
-        elif isinstance(obj, list):
-            for item in obj:
-                if isinstance(item, (dict, list)):
-                    self._walk_json(item, flow, location, findings, seen)
+        """Walk a JSON structure looking for keyed PII + sibling pairs.
+
+        Iterative and bounded (depth/node caps from
+        :mod:`friTap.analysis._json_walk`), same visiting order as the former
+        recursive walk.
+        """
+        for node in iter_json(obj):
+            if node.kind == CONTAINER:
+                if isinstance(node.value, dict):
+                    # Object-scoped multi-key heuristics (geo / postal address).
+                    self._check_geolocation(node.value, flow, location, findings, seen)
+                    self._check_postal_address(node.value, flow, location, findings, seen)
+                continue
+            self._scan_json_scalar(flow, node.key, node.value, location, findings, seen)
+
+    def _scan_json_scalar(self, flow, key, value, location, findings, seen) -> None:
+        """Run keyed detectors over one scalar JSON field."""
+        if isinstance(value, str):
+            self._scan_keyed(flow, key, value, location, findings, seen)
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            try:
+                text = str(value)
+            except ValueError:  # int exceeds Python's str-conversion digit limit
+                return
+            self._scan_keyed(flow, key, text, location, findings, seen)
 
     # -- keyed (context-gated) detections ----------------------------------
 
@@ -510,9 +551,11 @@ class PrivacyAnalyzer:
         """Run detectors that validate themselves (no key context required)."""
         if not text:
             return
+        text = bounded_text(text)
 
         # Email.
-        for m in _EMAIL_PATTERN.finditer(text):
+        # Cheap '@' prefilter skips the regex entirely for email-free text.
+        for m in (_EMAIL_PATTERN.finditer(text) if "@" in text else ()):
             self._emit(
                 flow, findings, seen,
                 category="email", value=m.group(0),
@@ -640,9 +683,10 @@ class PrivacyAnalyzer:
     def _maybe_emit_geo_pair(self, flow, pair, location, findings, seen, context) -> None:
         try:
             lat_s, lon_s = pair.split(",")
-            lat = float(lat_s.strip())
-            lon = float(lon_s.strip())
         except (ValueError, AttributeError):
+            return
+        lat, lon = _to_coord(lat_s.strip()), _to_coord(lon_s.strip())
+        if lat is None or lon is None:
             return
         if not self._is_valid_geo(lat, lon):
             return
@@ -675,10 +719,9 @@ class PrivacyAnalyzer:
         lon_val = next((lower_map[k] for k in _LON_KEYS if k in lower_map), None)
         if lat_val is None or lon_val is None:
             return
-        try:
-            lat = float(lat_val)
-            lon = float(lon_val)
-        except (ValueError, TypeError):
+        lat = _to_coord(lat_val)
+        lon = _to_coord(lon_val)
+        if lat is None or lon is None:
             return
         # Reject integer-only coordinates (low precision -> not a fix).
         if self._is_integer_coord(lat_val) and self._is_integer_coord(lon_val):
@@ -717,9 +760,8 @@ class PrivacyAnalyzer:
         p0, p1 = parts[0].strip(), parts[1].strip()
         if "." not in p0 and "." not in p1:
             return None
-        try:
-            a, b = float(p0), float(p1)
-        except ValueError:
+        a, b = _to_coord(p0), _to_coord(p1)
+        if a is None or b is None:
             return None
         if self._is_valid_geo(a, b):
             return (a, b)
@@ -740,7 +782,9 @@ class PrivacyAnalyzer:
                 return None
             if any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in value):
                 return None
-            a, b = float(value[0]), float(value[1])
+            a, b = _to_coord(value[0]), _to_coord(value[1])
+            if a is None or b is None:
+                return None
             # Require a fractional part so integer arrays/indices are ignored.
             if a == int(a) and b == int(b):
                 return None

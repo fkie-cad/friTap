@@ -20,7 +20,7 @@ from friTap.parsers.decompress import (
     MAX_INFLATE,
     InflateLimitError,
     decompress_body,
-    inflate_bounded,
+    inflate_bounded_checked,
 )
 
 PROTOBUF_CONTENT_TYPES = frozenset({
@@ -31,6 +31,27 @@ PROTOBUF_CONTENT_TYPES = frozenset({
 })
 
 _GRPC_HEADER_SIZE = 5  # 1 byte flag + 4 bytes length
+
+#: Most gRPC frames split out of one body; the rest is left unsplit.
+MAX_GRPC_FRAMES_PER_BODY = 1000
+
+#: Total decompressed bytes allowed across all compressed frames of one body.
+MAX_GRPC_INFLATE_PER_BODY = 64 * 1024 * 1024
+
+_UNSUPPORTED_ENCODING_PREFIX = "unsupported grpc-encoding"
+
+#: Note reported when :data:`MAX_GRPC_FRAMES_PER_BODY` stopped the split.
+GRPC_FRAME_LIMIT_NOTE = (
+    f"gRPC frame limit ({MAX_GRPC_FRAMES_PER_BODY}) reached; remaining frames not split"
+)
+
+#: Note (``{label}`` = encoding) for a gzip/zlib message whose stream ends
+#: before its end marker: the partial output is kept, flagged by this note.
+GRPC_INFLATE_TRUNCATED_NOTE_FMT = "{label} stream truncated (partial inflate)"
+
+_GUESSED_ENCODING_NOTE = (
+    "compressed gRPC message without grpc-encoding; inflated as gzip/zlib"
+)
 
 
 @dataclass
@@ -104,10 +125,11 @@ def strip_grpc_frame_with_end(data: bytes) -> list[tuple[GrpcFrame, int]]:
     The end offset is the exclusive position in *data* just past the frame's
     payload (header included), so callers can map a frame back to the bytes
     that carried it. Raises :class:`ValueError` exactly like
-    :func:`strip_grpc_frame`.
+    :func:`strip_grpc_frame`. Reaching :data:`MAX_GRPC_FRAMES_PER_BODY` is not
+    an error: the frames split so far are returned.
     """
     frames, error = _walk_grpc_frames(data)
-    if error:
+    if error and error != GRPC_FRAME_LIMIT_NOTE:
         raise ValueError(error)
     return frames
 
@@ -119,7 +141,8 @@ def split_grpc_frames_lenient(data: bytes) -> tuple[list[GrpcFrame], str]:
     is cut short (e.g. by a preview cap) is kept with ``truncated=True``.
 
     Returns:
-        ``(frames, error)``; *error* is empty when *data* split cleanly.
+        ``(frames, error)``; *error* is empty when *data* split cleanly and
+        :data:`GRPC_FRAME_LIMIT_NOTE` when the frame cap stopped the split.
     """
     frames, error = _walk_grpc_frames(data)
     return [frame for frame, _ in frames], error
@@ -131,11 +154,15 @@ def _walk_grpc_frames(data: bytes) -> tuple[list[tuple[GrpcFrame, int]], str]:
     Collects ``(frame, end_offset)`` up to the first problem, whose message
     is returned as *error* (empty when *data* split cleanly). A final frame
     whose payload is cut short is included with ``truncated=True``; strict
-    callers raise on *error* and so never expose it.
+    callers raise on *error* and so never expose it. At most
+    :data:`MAX_GRPC_FRAMES_PER_BODY` frames are collected; *error* is then
+    :data:`GRPC_FRAME_LIMIT_NOTE` if bytes remain.
     """
     frames: list[tuple[GrpcFrame, int]] = []
     offset = 0
     while offset < len(data):
+        if len(frames) >= MAX_GRPC_FRAMES_PER_BODY:
+            return frames, GRPC_FRAME_LIMIT_NOTE
         try:
             compressed_flag, payload_len = _read_grpc_header(data, offset)
         except ValueError as exc:
@@ -153,14 +180,65 @@ def _walk_grpc_frames(data: bytes) -> tuple[list[tuple[GrpcFrame, int]], str]:
     return frames, ""
 
 
+class InflateBudget:
+    """Decompressed-byte allowance shared by all frames of one gRPC body."""
+
+    __slots__ = ("remaining",)
+
+    def __init__(self, limit: int = MAX_GRPC_INFLATE_PER_BODY) -> None:
+        self.remaining = limit
+
+    def per_message_limit(self) -> int:
+        """Output cap for the next message: the per-message and body caps."""
+        return max(0, min(MAX_INFLATE, self.remaining))
+
+    def spend(self, produced: int) -> None:
+        self.remaining -= produced
+
+
 def decompress_grpc_payload(
-    payload: bytes, grpc_encoding: str,
+    payload: bytes, grpc_encoding: str, budget: Optional[InflateBudget] = None,
 ) -> tuple[Optional[bytes], str]:
     """Decompress one compressed gRPC message per its ``grpc-encoding``.
 
-    Every encoding is bounded to :data:`~friTap.parsers.decompress.MAX_INFLATE`
-    output bytes: ``gzip``/``deflate`` via
-    :func:`~friTap.parsers.decompress.inflate_bounded`, ``zstd`` (and ``br``)
+    With a shared *budget* (one per body) the output is additionally bounded
+    by what is left of :data:`MAX_GRPC_INFLATE_PER_BODY`, and the produced
+    bytes are charged to it; an exhausted budget yields ``(None, reason)``.
+    """
+    if budget is None:
+        return _decompress_grpc_bounded(payload, grpc_encoding, MAX_INFLATE)
+    limit = budget.per_message_limit()
+    if limit <= 0:
+        return None, (
+            f"gRPC body decompression budget ({MAX_GRPC_INFLATE_PER_BODY} bytes) "
+            "exhausted; message left compressed"
+        )
+    data, note = _decompress_grpc_bounded(payload, grpc_encoding, limit)
+    budget.spend(_inflate_cost(data, note, limit))
+    return data, note
+
+
+def _inflate_cost(data: Optional[bytes], note: str, limit: int) -> int:
+    """Bytes to charge for one attempt: the output, or *limit* if it failed.
+
+    A failed attempt may have inflated up to *limit* bytes before giving up
+    (e.g. a decompression bomb), so it is charged in full; only an
+    unsupported encoding, which does no work, is free.
+    """
+    if data is not None:
+        return len(data)
+    return 0 if note.startswith(_UNSUPPORTED_ENCODING_PREFIX) else limit
+
+
+def _decompress_grpc_bounded(
+    payload: bytes, grpc_encoding: str, max_out: int,
+) -> tuple[Optional[bytes], str]:
+    """Decompress one compressed gRPC message to at most *max_out* bytes.
+
+    Every encoding is bounded (at most
+    :data:`~friTap.parsers.decompress.MAX_INFLATE` output bytes by default):
+    ``gzip``/``deflate`` via
+    :func:`~friTap.parsers.decompress.inflate_bounded_checked`, ``zstd`` (and ``br``)
     via :func:`~friTap.parsers.decompress.decompress_body`. Without an
     encoding (or ``identity``, which contradicts the compressed flag) a
     gzip/zlib inflate is tried as a best effort.
@@ -168,28 +246,46 @@ def decompress_grpc_payload(
     Returns:
         ``(data, note)``: *data* is ``None`` when the message could not be
         decompressed, and *note* then says why; on success *note* is empty
-        unless the encoding had to be guessed.
+        unless the encoding had to be guessed or a truncated gzip/zlib stream
+        yielded only partial data (both notes are joined with ``"; "``).
     """
     encoding = (grpc_encoding or "").lower().strip()
     if encoding in ("gzip", "deflate"):
-        return _inflate_grpc(payload, encoding)
+        return _inflate_grpc(payload, encoding, max_out)
     if encoding in ("zstd", "br"):
-        data, error = decompress_body(payload, encoding, max_out=MAX_INFLATE)
+        data, error = decompress_body(payload, encoding, max_out=max_out)
         return (None, f"{encoding} decompression failed: {error}") if error else (data, "")
     if encoding in ("", "identity"):
-        data, note = _inflate_grpc(payload, "gzip/zlib")
+        data, note = _inflate_grpc(payload, "gzip/zlib", max_out)
         if data is None:
             return None, "compressed gRPC message without a usable grpc-encoding; " + note
-        return data, "compressed gRPC message without grpc-encoding; inflated as gzip/zlib"
-    return None, f"unsupported grpc-encoding {encoding!r}; message left compressed"
+        return data, _join_notes(_GUESSED_ENCODING_NOTE, note)
+    return None, f"{_UNSUPPORTED_ENCODING_PREFIX} {encoding!r}; message left compressed"
 
 
-def _inflate_grpc(payload: bytes, label: str) -> tuple[Optional[bytes], str]:
-    """Bounded gzip/zlib inflate: ``(data, "")`` or ``(None, reason)``."""
+def _inflate_grpc(
+    payload: bytes, label: str, max_out: int = MAX_INFLATE,
+) -> tuple[Optional[bytes], str]:
+    """Bounded gzip/zlib inflate: ``(data, note)`` or ``(None, reason)``.
+
+    Uses a ``decompressobj`` with ``max_length`` (via
+    :func:`~friTap.parsers.decompress.inflate_bounded_checked`), so at most
+    *max_out* bytes are ever produced. *note* is empty for a complete stream;
+    a truncated one keeps its partial output with
+    :data:`GRPC_INFLATE_TRUNCATED_NOTE_FMT` as the note.
+    """
     try:
-        return inflate_bounded(payload), ""
+        data, complete = inflate_bounded_checked(payload, limit=max_out)
     except (zlib.error, InflateLimitError) as exc:
         return None, f"{label} decompression failed: {exc}"
+    if complete:
+        return data, ""
+    return data, GRPC_INFLATE_TRUNCATED_NOTE_FMT.format(label=label)
+
+
+def _join_notes(*notes: str) -> str:
+    """The non-empty *notes* joined with ``"; "``."""
+    return "; ".join(note for note in notes if note)
 
 
 def extract_grpc_messages(body: bytes, content_type: str) -> list[bytes]:

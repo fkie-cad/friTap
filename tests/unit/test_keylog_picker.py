@@ -246,9 +246,10 @@ class TestMergeKeylogs:
         assert content.count(e2e) == 1
         # Three distinct key lines total.
         assert merged.key_count == 3
-        # A single header/comment block is preserved (union of both comments).
-        assert "# telegram e2e keylog" in content
-        assert "# memscan keylog" in content
+        # Comment lines are not copied (WP9: merge inputs may be named by an
+        # untrusted manifest, so only well-formed key lines are carried over).
+        assert "# telegram e2e keylog" not in content
+        assert "# memscan keylog" not in content
 
     def test_identical_files_collapse_to_one_copy(self, tmp_path):
         from friTap.protocols.mtproto_keylog_spec import format_e2e_line

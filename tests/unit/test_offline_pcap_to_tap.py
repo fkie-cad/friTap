@@ -1043,18 +1043,23 @@ def _assert_isolated_config(env: dict) -> None:
 
 
 def test_run_capture_spawns_tshark_with_isolated_config(monkeypatch):
+    import io  # _run_capture spawns via Popen (bounded, chunked stdout reads)
+
     captured: dict = {}
 
-    class _FakeProc:
-        returncode = 0
-        stdout = ""
-        stderr = ""
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            captured["env"] = kwargs.get("env")
+            self.stdout = io.BytesIO(b"")
+            self.stderr = io.BytesIO(b"")
 
-    def fake_run(cmd, **kwargs):
-        captured["env"] = kwargs.get("env")
-        return _FakeProc()
+        def poll(self):
+            return 0
 
-    monkeypatch.setattr(tshark_mod.subprocess, "run", fake_run)
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(tshark_mod.subprocess, "Popen", _FakePopen)
     tshark_mod._run_capture(["tshark", "-v"])
     _assert_isolated_config(captured["env"])
 

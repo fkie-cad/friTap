@@ -108,12 +108,26 @@ def _best_ranked_method(parsed) -> str:
 
 
 def _rpc_result_name(data: bytes) -> str | None:
-    """Schema name of a top-level ``rpc_result``'s result object (through gzip), if known."""
-    return _rpc_result_name_cached(bytes(data))
+    """Schema name of a top-level ``rpc_result``'s result object (through gzip), if known.
+
+    Only small payloads are memoised (exact-bytes key): caching multi-MiB
+    records would pin them for the process lifetime.
+    """
+    from .tl.decoder import MAX_CACHED_PAYLOAD
+
+    data = bytes(data)
+    if len(data) > MAX_CACHED_PAYLOAD:
+        return _lookup_rpc_result_name(data)
+    return _rpc_result_name_cached(data)
 
 
 @lru_cache(maxsize=1024)
 def _rpc_result_name_cached(data: bytes) -> str | None:
+    """Memoised :func:`_lookup_rpc_result_name` (callers pass only small payloads)."""
+    return _lookup_rpc_result_name(data)
+
+
+def _lookup_rpc_result_name(data: bytes) -> str | None:
     """Name-only lookup: peek the result constructor id, then ask the schema.
 
     Vector and nested-gzip results are never named objects in the full decode,

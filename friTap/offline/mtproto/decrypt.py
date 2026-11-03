@@ -689,9 +689,10 @@ def _decrypt_direction(
         # Three ways a record fails to open, and they are not the same failure.
         # All three bump ``records_undecryptable``; only the middle one is worth
         # reporting to the user, so each gets its own counter. See MtprotoStats.
-        if len(frame) < 8:
-            # Too short to even hold an auth_key_id: nothing to report, nothing
-            # to recover.
+        if len(frame) < 8 or len(frame) > crypto.MAX_RECORD_LEN:
+            # Too short to even hold an auth_key_id (nothing to report, nothing
+            # to recover), or a forged length header naming an oversized frame
+            # that must not be AES-decrypted at all.
             stats.add_malformed_record()
             continue
         auth_key_id = frame[0:8]

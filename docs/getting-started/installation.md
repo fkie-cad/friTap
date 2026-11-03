@@ -285,7 +285,7 @@ friTap automatically installs the following dependencies:
 - **tlsLibHunter**: TLS/SSL library detection — powers `--library-scan`, `-ll/--list-libraries` and `--extract-libraries` (imported as `tlslibhunter`)
 - **platformdirs**, **pydantic** (>= 2.0): Configuration and platform-aware paths
 - **h11**, **hpack**, **pylsqpack**: HTTP/1, HTTP/2 and HTTP/3 (QPACK) parsing
-- **zstandard** (>= 0.19), **brotli** (>= 1.0): Response body decompression
+- **zstandard** (>= 0.19), **brotli** (>= 1.2.1): Response body decompression (see [Security: Brotli CVE-2026-111497](#security-brotli-cve-2026-111497))
 
 !!! note "The Frida agent is shipped pre-compiled"
     friTap bundles a pre-built JavaScript agent at `friTap/fritap_agent.js`, so
@@ -293,6 +293,28 @@ friTap automatically installs the following dependencies:
     Node/TypeScript toolchain required for normal use. Contributors who change
     the agent source under `agent/` rebuild it with `./dev/compile_agent.sh` (see
     [Architecture](../development/architecture.md) for the build pipeline).
+
+### Security: Brotli CVE-2026-111497
+
+!!! warning "Security: Brotli CVE-2026-111497"
+    CVE-2026-111497 is a heap out-of-bounds write in Google's Brotli C decoder
+    (versions 1.0.3 to 1.2.0). Captured HTTP bodies are attacker-controlled, so:
+
+    - **Upgrade the Python package:** `pip install -U 'brotli>=1.2.1'`. The PyPI
+      wheel bundles its own decoder, so upgrading the system `libbrotli` does
+      **not** fix friTap. With a vulnerable `brotli` installed, friTap prints a
+      warning at startup and skips `br` bodies (reported as
+      `brotli X is vulnerable to CVE-2026-111497; upgrade to brotli>=1.2.1 (decoding skipped)`).
+    - **Patch the system too:** update the OS `libbrotli` package and Wireshark/tshark
+      (fixed upstream in 1.0.10 / 1.1.1 / 1.2.1). friTap additionally disables
+      tshark's own body decompression (`-o http.decompress_body:FALSE` etc.) for
+      every tshark run it starts.
+    - **Agent builds:** contributors rebuilding the Frida agent should use
+      Node.js >= 22.23.4, 24.22.1 or 26.12.1.
+    - **Override:** `FRITAP_ALLOW_UNPATCHED_BROTLI=1` (also `true`/`yes`) decodes
+      `br` bodies with a `brotli` whose version is in the vulnerable range. Use it
+      **only** for distribution builds that backported the fix without bumping
+      the version.
 
 ## Optional Dependencies
 

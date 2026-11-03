@@ -57,23 +57,33 @@ def _parsed_mtproto_to_dicts(
     server->client echo of our own message is still "write"), not which way
     the carrying packet travelled; the row/chunk direction is untouched.
     """
-    return [
-        {
-            "sender": str(p.sender_id) if p.sender_id else "",
-            "direction": "write" if getattr(p, "outgoing", False) else direction,
-            "out": bool(getattr(p, "outgoing", False)),
-            "timestamp": p.timestamp or fallback_ts,
-            "kind": p.kind,
-            "body": p.body,
-            "method": getattr(p, "method", "") or "",
-            "attachments": bool(p.has_media),
-            "quote": False,
-            "reaction": False,
-            "peer_id": p.peer_id,
-            "user_id": getattr(p, "user_id", 0) or 0,
-        }
-        for p in parsed_messages
-    ]
+    return [_parsed_mtproto_to_dict(p, direction, fallback_ts) for p in parsed_messages]
+
+
+def _parsed_mtproto_to_dict(p, direction: str, fallback_ts: float) -> dict:
+    """One :class:`ParsedMtprotoMessage` as a dict (see :func:`_parsed_mtproto_to_dicts`).
+
+    A parser ``note`` (e.g. a truncated gzip_packed body) is added as an extra
+    ``note`` key only when set, so note-less messages keep their exact shape.
+    """
+    item = {
+        "sender": str(p.sender_id) if p.sender_id else "",
+        "direction": "write" if getattr(p, "outgoing", False) else direction,
+        "out": bool(getattr(p, "outgoing", False)),
+        "timestamp": p.timestamp or fallback_ts,
+        "kind": p.kind,
+        "body": p.body,
+        "method": getattr(p, "method", "") or "",
+        "attachments": bool(p.has_media),
+        "quote": False,
+        "reaction": False,
+        "peer_id": p.peer_id,
+        "user_id": getattr(p, "user_id", 0) or 0,
+    }
+    note = getattr(p, "note", "") or ""
+    if note:
+        item["note"] = note
+    return item
 
 
 def _user_dedup_key(item: dict):
@@ -305,6 +315,15 @@ def _ledger_record(state, transport: str, chunk_key: str,
     return record_seq
 
 
+#: Users / chat-related TL nodes kept per cloud record and per conversion.
+#: Kept trees live for the whole conversion, so a hostile capture must not be
+#: able to pin an unbounded number of them; ``*_dropped`` count the overflow.
+MAX_USERS_PER_RECORD = 4096
+MAX_USERS_TOTAL = 50_000
+MAX_CHAT_NODES_PER_RECORD = 256
+MAX_CHAT_NODES_TOTAL = 10_000
+
+
 class _TelegramRefs:
     """Per-conversion cross-references, users and Secret-Chat hints by record_seq.
 
@@ -319,6 +338,33 @@ class _TelegramRefs:
         self.users_by_seq: dict = {}
         self.chat_nodes: list = []
         self.e2e_chats: dict = {}
+        self.users_total = 0
+        self.users_dropped = 0
+        self.chat_nodes_dropped = 0
+
+    def _keep_users(self, record_seq: int, users: list) -> None:
+        """Store *users* of one record within the per-record and total caps."""
+        room = min(MAX_USERS_PER_RECORD, MAX_USERS_TOTAL - self.users_total)
+        kept = users[:max(room, 0)]
+        self.users_dropped += len(users) - len(kept)
+        if kept:
+            self.users_by_seq[record_seq] = kept
+            self.users_total += len(kept)
+
+    def drop_counts(self) -> tuple:
+        """``(users_dropped, chat_nodes_dropped)`` so far (cap overflow)."""
+        return self.users_dropped, self.chat_nodes_dropped
+
+    def _keep_chat_nodes(self, nodes) -> None:
+        """Store chat-related nodes of one record within the caps."""
+        room = min(MAX_CHAT_NODES_PER_RECORD, MAX_CHAT_NODES_TOTAL - len(self.chat_nodes))
+        room = max(room, 0)
+        for node in nodes:
+            if room <= 0:
+                self.chat_nodes_dropped += 1
+                continue
+            self.chat_nodes.append(node)
+            room -= 1
 
     def add_cloud(self, record_seq: int, msg) -> None:
         """Decode one cloud record once: index its refs, keep its users/chat objects."""
@@ -335,8 +381,8 @@ class _TelegramRefs:
         ))
         users = extract_users(root)
         if users:
-            self.users_by_seq[record_seq] = users
-        self.chat_nodes.extend(n for n in iter_nodes(root) if is_chat_related(n))
+            self._keep_users(record_seq, list(users))
+        self._keep_chat_nodes(n for n in iter_nodes(root) if is_chat_related(n))
 
     def add_e2e(self, record_seq: int, sc, carrier) -> None:
         """Register a Secret-Chat record and the cloud record carrying it."""
@@ -495,6 +541,7 @@ def _emit_telegram_like_streams(
 
     tstats = MtprotoStats()
     sstats = SecretChatStats()
+    drops_before = _refs_drop_counts(state)
     try:
         for msg in _time_ordered(iter_decrypted_messages(
             pcap_path, auth_keymap, stats=tstats, obf_keys=obf_keys,
@@ -522,6 +569,7 @@ def _emit_telegram_like_streams(
     # exactly rather than as a generic mid-connection/undecryptable failure.
     e2e_only = bool(secret_keymap) and not auth_keymap
     _record_telegram_stats(result, counter_name, tstats, sstats, e2e_only=e2e_only)
+    _record_refs_drops(result, counter_name, drops_before, _refs_drop_counts(state))
 
 
 def _emit_cloud_record(msg, *, cloud_function: str, bus: EventBus,
@@ -630,6 +678,33 @@ def _record_telegram_stats(result: ConvertResult, counter_name: str,
         unsupported_framing=tstats.streams_unsupported_framing,
         e2e_only=e2e_only,
         unknown_key_ids=dict(tstats.unknown_key_ids),
+        # Additive, emitted only when non-zero (``None`` is skipped), so a
+        # result without overflow keeps the exact v1 bucket shape.
+        unknown_key_ids_overflow=tstats.unknown_key_ids_overflow or None,
+    )
+
+
+def _refs_drop_counts(state) -> tuple:
+    """``(users_dropped, chat_nodes_dropped)`` of the conversion's refs, or zeros."""
+    refs = getattr(_telegram_state(state), "telegram_refs", None)
+    return refs.drop_counts() if refs is not None else (0, 0)
+
+
+def _record_refs_drops(result: ConvertResult, counter_name: str,
+                       before: tuple, after: tuple) -> None:
+    """Record the users / chat nodes this pass dropped at the refs caps.
+
+    The refs live for the whole conversion, so only this pass's delta is
+    recorded (a repeated pass never double-counts). Like
+    ``unknown_key_ids_overflow`` the keys appear only when non-zero.
+    """
+    users, chat_nodes = (now - then for now, then in zip(after, before))
+    if not (users or chat_nodes):
+        return
+    result.record_protocol(
+        counter_name,
+        users_dropped=users or None,
+        chat_nodes_dropped=chat_nodes or None,
     )
 
 

@@ -16,6 +16,8 @@ import os
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple, Type
 
+from .capture_validation import capture_read_guard, validate_capture_file
+
 
 class TcpStreamReassembler:
     """Reassemble ONE TCP direction into a contiguous byte stream.
@@ -393,7 +395,8 @@ def _iter_scapy_segments(pcap_path: str) -> Iterator[Segment]:
     import scapy.layers.inet6  # noqa: F401
     from scapy.utils import PcapReader
 
-    with PcapReader(pcap_path) as reader:
+    validate_capture_file(pcap_path)  # scapy allocates each record's length unchecked
+    with capture_read_guard(pcap_path), PcapReader(pcap_path) as reader:
         for pkt in reader:
             segment = _scapy_segment(pkt)
             if segment is not None:

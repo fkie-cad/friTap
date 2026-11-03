@@ -102,7 +102,7 @@ def test_key_centric_binding_skips_streams_after_all_bundles_placed(monkeypatch)
     tested = []
 
     def fake_bind(bundle, stream, max_seq=P.DEFAULT_MAX_SEQ, max_records=1,
-                  first_record=0):
+                  first_record=0, budget=None):
         tested.append((bundle["id"], stream.name))
         if bundle["id"] == "b0" and stream.name == "s0":
             return object()          # b0 lives on s0

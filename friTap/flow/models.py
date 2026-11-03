@@ -405,6 +405,11 @@ class Flow:
     # Cached byte total (incremented by FlowCollector when appending chunks)
     _total_bytes: int = 0
 
+    # True once the flow exceeded the collector's per-flow retained-payload cap
+    # (FlowCollector MAX_FLOW_CHUNK_BYTES): ``_total_bytes`` keeps counting but
+    # later payload chunks are not retained in ``chunks``.
+    truncated: bool = False
+
     # Protocol detected by the parser registry, populated even when no
     # ``request``/``response`` is produced yet (e.g. HTTP/2 control-frame-only
     # flows). Used as a display fallback before showing "unknown".
@@ -767,7 +772,11 @@ class Flow:
         conn.receive_data(raw)
         body_parts: list[bytes] = []
         while True:
-            event = conn.next_event()
+            try:
+                event = conn.next_event()
+            except h11.ProtocolError:
+                # Malformed (attacker-controlled) framing: keep what parsed.
+                break
             if event is h11.NEED_DATA or event is h11.PAUSED:
                 break
             if isinstance(event, h11.Data):
@@ -818,24 +827,45 @@ class Flow:
                 return value
         return default
 
-    def _get_decompressed_body(self, msg: "Optional[ParseResult]", direction: str, encoding_override: str = "") -> bytes:
+    def _get_decompressed_body(
+        self,
+        msg: "Optional[ParseResult]",
+        direction: str,
+        encoding_override: str = "",
+        max_out: Optional[int] = None,
+    ) -> bytes:
+        """Decompressed body of *msg*; output bounded by *max_out*.
+
+        *max_out* defaults to ``MAX_DECOMPRESSED_BODY`` (explicit saves); the
+        automatic ``get_decompressed_*_body`` paths pass the smaller
+        ``MAX_AUTO_DECOMPRESS``. Results are cached in ``_body_cache`` per
+        (direction, encoding, max_out) and cleared with it.
+        """
         if msg is None:
             return b""
         body = msg.body if msg.body else self.reconstruct_body(direction)
         if not body:
             return b""
-        encoding = encoding_override or msg.content_encoding
-        if not encoding:
-            lower = "content-encoding"
-            for key, value in msg.headers.items():
-                if key.lower() == lower:
-                    encoding = value
-                    break
+        encoding = encoding_override or msg.content_encoding or self._content_encoding_header(msg)
         if not encoding:
             return body
-        from friTap.parsers.decompress import decompress_body
-        data, _err = decompress_body(body, encoding)
+        from friTap.parsers.decompress import MAX_DECOMPRESSED_BODY, decompress_body
+        limit = MAX_DECOMPRESSED_BODY if max_out is None else max_out
+        key = ("decompressed", direction, encoding, limit)
+        cached = self._body_cache.get(key)
+        if cached is not None and cached[0] is msg and cached[1] is body:
+            return cached[2]
+        data, _err = decompress_body(body, encoding, limit)
+        self._body_cache[key] = (msg, body, data)
         return data
+
+    @staticmethod
+    def _content_encoding_header(msg: "ParseResult") -> str:
+        """The message's Content-Encoding header value, or ``""``."""
+        for key, value in msg.headers.items():
+            if key.lower() == "content-encoding":
+                return value
+        return ""
 
     def get_request_header(self, name: str, default: str = "") -> str:
         """Get a request header value by name (case-insensitive)."""
@@ -861,11 +891,13 @@ class Flow:
 
     def get_decompressed_request_body(self) -> bytes:
         """Return the request body after decompressing (gzip/br/zstd/deflate)."""
-        return self._get_decompressed_body(self.request, "write")
+        from friTap.parsers.decompress import MAX_AUTO_DECOMPRESS
+        return self._get_decompressed_body(self.request, "write", max_out=MAX_AUTO_DECOMPRESS)
 
     def get_decompressed_response_body(self) -> bytes:
         """Return the response body after decompressing (gzip/br/zstd/deflate)."""
-        return self._get_decompressed_body(self.response, "read")
+        from friTap.parsers.decompress import MAX_AUTO_DECOMPRESS
+        return self._get_decompressed_body(self.response, "read", max_out=MAX_AUTO_DECOMPRESS)
 
     @property
     def response_content_type(self) -> str:

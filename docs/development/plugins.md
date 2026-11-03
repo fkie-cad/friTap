@@ -295,8 +295,12 @@ behavior). It supports only the `frida` backend.
 
 The custom-script wrapper reproduces friTap's original message handling:
 
-- A message with `type == "error"` is pretty-printed and friTap terminates
-  itself (`SIGTERM`).
+- A message with `type == "error"` raised while the script loads (its
+  top-level code, or within about a second of `script.load()` returning) is
+  pretty-printed and friTap terminates itself (`SIGTERM`).
+- A later `type == "error"` message (an exception in a deferred callback,
+  such as a `Java.perform` or `setTimeout` body) does not stop the script, so
+  friTap logs it (identical errors at most once a minute) and keeps running.
 - A payload dict containing a `"custom"` key is logged at info level.
 
 So from your injected script you can surface data like this:

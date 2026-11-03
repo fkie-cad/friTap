@@ -14,6 +14,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 import time
 from typing import TYPE_CHECKING
 
@@ -27,14 +28,69 @@ if TYPE_CHECKING:
 class SessionManager:
     """Manages the lifecycle of a friTap capture session."""
 
+    # A spawned app stays suspended until friTap resumes it after attaching
+    # and loading the agent. Android's ActivityManager kills an app process
+    # that has not attached to it within its process-start timeout (10 s,
+    # scaled by ro.hw_timeout_multiplier; logcat: "failed to attach" ...
+    # "Killing <pid>: start timeout"). On a busy device or emulator Frida's
+    # attach alone can exceed that window, and the attach then fails with
+    # ProcessNotFoundError although the spawn itself worked. A fresh spawn
+    # usually succeeds, so the remote spawn+attach gets one retry.
+    SPAWN_ATTACH_ATTEMPTS = 2
+
+    # SIGTERM is how ScriptErrorHandler ends the run on an agent error; it gets
+    # the same graceful teardown as Ctrl+C, but keeps a failure exit status.
+    TERMINATION_SIGNALS = ("SIGINT", "SIGTERM")
+    # How long a signal waits for a teardown another thread already owns
+    # (e.g. the target just died) before forcing the exit anyway.
+    TEARDOWN_WAIT_SECONDS = 60.0
+
     def __init__(self, logger_instance: "SSL_Logger") -> None:
         self._logger_instance = logger_instance
         self._logger = logging.getLogger("friTap.session")
+        self._pcap_cleanup_lock = threading.RLock()
+        self._pcap_cleanup_done = False
+        self._exit_signal_received = False
 
     @property
     def _l(self) -> "SSL_Logger":
         """Shorthand access to the SSL_Logger instance."""
         return self._logger_instance
+
+    def _spawn_and_attach_remote(self, logger) -> int:
+        """Spawn ``logger.target_app`` on the remote device and attach to it.
+
+        Sets ``logger.pid`` / ``logger.process`` and returns the pid. Retries
+        the whole spawn when the spawned process vanished before the attach
+        completed (see ``SPAWN_ATTACH_ATTEMPTS``).
+        """
+        from ..backends import BackendProcessNotFoundError
+
+        for attempt in range(1, self.SPAWN_ATTACH_ATTEMPTS + 1):
+            pid = logger._backend.spawn_raw(logger.device, logger.target_app)
+            logger.pid = pid
+            try:
+                logger.process = logger._backend.attach(logger.device, str(pid))
+                return pid
+            except BackendProcessNotFoundError:
+                # The pid is gone: nothing left to resume on the failure path.
+                logger.pid = None
+                if attempt == self.SPAWN_ATTACH_ATTEMPTS:
+                    self._log_spawned_process_vanished(pid, final=True)
+                    raise
+                self._log_spawned_process_vanished(pid, final=False)
+
+    def _log_spawned_process_vanished(self, pid, final: bool) -> None:
+        cause = (
+            f"spawned process {pid} was gone before friTap could attach to it. On "
+            "Android the system kills an app that has not finished starting within "
+            "~10 s, which a slow attach on a busy device or emulator can exceed")
+        if not final:
+            self._logger.warning("The %s; spawning it again.", cause)
+            return
+        self._logger.error(
+            "The %s (%d attempts). Retry when the device is less busy, or start the "
+            "app first and attach to it without -s.", cause, self.SPAWN_ATTACH_ATTEMPTS)
 
     def start_session(self, own_message_handler=None):
         """Start a friTap capture session. Delegates to SSL_Logger internals."""
@@ -94,7 +150,7 @@ class SessionManager:
             # filesystem probe in resolve_spawn_target would otherwise test the
             # host's paths for a target that only exists on that device.
             if logger.mobile or logger.host or logger.device_id:
-                pid = logger._backend.spawn_raw(logger.device, logger.target_app)
+                pid = self._spawn_and_attach_remote(logger)
             else:
                 used_env = {}
                 if logger.environment_file:
@@ -112,8 +168,8 @@ class SessionManager:
                 )
                 pid = logger._backend.spawn_raw(logger.device, spawn_target, env=used_env)
                 time.sleep(1)
-            logger.pid = pid
-            logger.process = logger._backend.attach(logger.device, str(pid))
+                logger.pid = pid
+                logger.process = logger._backend.attach(logger.device, str(pid))
         else:
             logger.process = logger._backend.attach(logger.device, logger.target_app)
             # Record the attached pid: 'process-crashed' is a device-WIDE signal
@@ -216,57 +272,98 @@ class SessionManager:
                 pass
 
     def pcap_cleanup(self, is_full_capture, is_mobile, pcap_name):
-        """Finalize PCAP capture."""
+        """Stop the full capture and stage its temp file for the finalize step.
+
+        Idempotent: Ctrl+C/SIGTERM, target death, script errors, normal exit and
+        uncaught exceptions all call this. The work runs exactly once; a
+        concurrent caller waits for it to finish instead of racing it (the
+        finalize step must not read a half-pulled capture). ``pcap_name`` is
+        kept for API compatibility; the temp path comes from the pcap object.
+        """
         logger = self._l
-        if is_full_capture and logger.pcap_obj is not None:
-            capture_type = "local"
-            logger.pcap_obj.full_capture_thread.join(2.0)
-            if logger.pcap_obj.full_capture_thread.is_alive() and not is_mobile:
-                logger.pcap_obj.full_capture_thread.socket.close()
-            if logger.pcap_obj.full_capture_thread.mobile_subprocess != -1:
-                capture_type = "mobile"
-                logger.pcap_obj.android_Instance.send_ctrlC_over_adb()
-                time.sleep(1)
-                logger.pcap_obj.full_capture_thread.mobile_subprocess.terminate()
-                logger.pcap_obj.full_capture_thread.mobile_subprocess.wait()
-                if not logger.pcap_obj.android_Instance.is_tcpdump_available:
-                    self._logger.error("tcpdump is not available on the device.")
-                    return
-                # Pull into the directory that holds the host-side output pcap
-                # so the finalize step (PCAP._temp_pcap_path) finds it. Without
-                # this the file lands in the CWD and is dropped whenever the
-                # output pcap lives elsewhere (e.g. an absolute path).
-                pull_dest_dir = os.path.dirname(logger.pcap_obj.pcap_file_name) or "."
-                logger.pcap_obj.android_Instance.pull_pcap_from_device(pull_dest_dir)
-            self._logger.info(f"full {capture_type} capture saved to _{pcap_name}")
-            if logger.keylog_file is None:
-                self._logger.info("remember that the full capture won't contain any decrypted TLS traffic.")
-            else:
-                self._logger.info(f"remember that the full capture won't contain any decrypted TLS traffic. In order to decrypt it use the logged keys from {logger.keylog_file.name}")
+        if not is_full_capture or logger.pcap_obj is None:
+            return
+        with self._pcap_cleanup_lock:
+            if self._pcap_cleanup_done:
+                return
+            self._pcap_cleanup_done = True
+            temp_path = self._stop_full_capture(logger.pcap_obj, is_mobile)
+        self._log_full_capture_staged(temp_path, is_mobile)
+
+    @staticmethod
+    def _stop_full_capture(pcap_obj, is_mobile):
+        """Stop the capture source; return the temp capture path (None if nothing)."""
+        thread = pcap_obj.full_capture_thread
+        thread.join(2.0)
+        if is_mobile:
+            # Stops tcpdump, pulls the pcap next to the output file (where
+            # PCAP._temp_pcap_path expects it) and deletes the device copy.
+            return pcap_obj.stop_device_capture()
+        if thread.is_alive() and getattr(thread, "socket", None) is not None:
+            thread.socket.close()
+        return pcap_obj._temp_pcap_path()
+
+    def _log_full_capture_staged(self, temp_path, is_mobile):
+        capture_type = "mobile" if is_mobile else "local"
+        if not temp_path or not os.path.exists(temp_path):
+            self._logger.info(f"full {capture_type} capture: no capture data was recorded.")
+            return
+        # Only the staging copy exists yet: the user-facing "Full capture
+        # written to <output>" line comes from the finalize step, which turns
+        # it into the requested output file (and removes the temp copy).
+        self._logger.debug(f"full {capture_type} capture staged at {temp_path}")
+        keylog_file = getattr(self._l, "keylog_file", None)
+        if keylog_file is None:
+            self._logger.info("remember that the full capture won't contain any decrypted TLS traffic.")
+        else:
+            self._logger.info(f"remember that the full capture won't contain any decrypted TLS traffic. In order to decrypt it use the logged keys from {keylog_file.name}")
 
     def install_signal_handler(self):
-        """Install Ctrl+C signal handler."""
+        """Route Ctrl+C (SIGINT) and SIGTERM to the graceful teardown."""
+        for name in self.TERMINATION_SIGNALS:
+            signum = getattr(signal, name, None)
+            if signum is not None:
+                signal.signal(signum, self._on_termination_signal)
+
+    def _on_termination_signal(self, signum, frame):
         logger = self._l
-
-        def signal_handler(signum, frame):
-            self._logger.info("Ctrl+C detected. Cleaning up...")
-            if hasattr(logger, 'install_lsass_hook') and logger.install_lsass_hook:
-                try:
-                    from ..friTap import cleanup_lsass_hook
-                    cleanup_lsass_hook()
-                except ImportError:
-                    pass
+        exit_status = 0 if signum == signal.SIGINT else 128 + int(signum)
+        if self._exit_signal_received:
+            # A second signal while the teardown is still running: the user
+            # insists, so stop waiting for it.
+            os._exit(exit_status)
+        self._exit_signal_received = True
+        logger._exit_status = exit_status
+        self._logger.info(self._termination_message(signum))
+        if hasattr(logger, 'install_lsass_hook') and logger.install_lsass_hook:
+            try:
+                from ..friTap import cleanup_lsass_hook
+                cleanup_lsass_hook()
+            except ImportError:
+                pass
+        try:
             self.pcap_cleanup(logger.full_capture, logger.mobile, logger.pcap_name)
-            logger.cleanup(logger.live, logger.socket_trace, logger.full_capture, logger.debug_output, logger.debug)
+        except Exception as exc:  # cleanup() below must run regardless
+            self._logger.error(f"Error stopping the full capture: {exc}")
+        logger.cleanup(logger.live, logger.socket_trace, logger.full_capture, logger.debug_output, logger.debug)
 
-            # Safety net. cleanup() normally force-exits the process itself (it
-            # finalizes the pcap/keylog, prints the goodbye banner, then calls
-            # os._exit). We only reach this line if cleanup() returned early via
-            # its _cleanup_done guard — i.e. another thread (e.g. on_detach) is
-            # already mid-teardown. In that case force the exit here so the user
-            # never has to press Ctrl+C a second time. os._exit (not sys.exit)
-            # because the Frida session/script is left half-torn-down and a
-            # non-daemon Frida thread would otherwise block interpreter shutdown.
-            os._exit(0)
+        # Safety net. cleanup() normally force-exits the process itself (it
+        # finalizes the pcap/keylog, prints the goodbye banner, then calls
+        # os._exit). We only reach this line if cleanup() returned early via
+        # its _cleanup_done guard — i.e. another thread (e.g. on_detach) is
+        # already mid-teardown. Give that teardown a bounded chance to flush
+        # the capture (it sets _done_event once the pcap/keylog are written),
+        # then force the exit so the user never has to signal a second time.
+        # os._exit (not sys.exit) because the Frida session/script is left
+        # half-torn-down and a non-daemon Frida thread would otherwise block
+        # interpreter shutdown.
+        done_event = getattr(logger, "_done_event", None)
+        if done_event is not None:
+            done_event.wait(self.TEARDOWN_WAIT_SECONDS)
+        os._exit(exit_status)
 
-        signal.signal(signal.SIGINT, signal_handler)
+    @staticmethod
+    def _termination_message(signum):
+        if signum == signal.SIGINT:
+            return "Ctrl+C detected. Cleaning up..."
+        return f"{signal.Signals(signum).name} received. Cleaning up..."

@@ -18,8 +18,14 @@ import zlib
 from typing import Optional
 
 from friTap.constants import PROTOCOL_WEBSOCKET
+from friTap.decoder_isolation import (
+    DecoderContextLost,
+    close_isolated_decoder,
+    isolated_inflater,
+)
 
 from .base import BaseParser, ParseResult
+from .decompress import MAX_AUTO_DECOMPRESS, InflateLimitError, inflate_stream_bounded
 from .protobuf.grpc import is_grpc_frame
 
 # RFC 6455 § 11.8 — opcode names
@@ -40,40 +46,227 @@ _DEFLATE_TAIL = b"\x00\x00\xff\xff"
 # Maximum accumulated fragment size before discarding (prevents memory exhaustion)
 _MAX_FRAGMENT_BYTES = 16 * 1024 * 1024  # 16 MB
 
+# Maximum number of fragments of one compressed message before discarding.
+_MAX_FRAGMENT_COUNT = 4096
+
+# Largest single frame payload accepted; a bigger declared length is treated
+# as an invalid header (input is attacker-controlled decrypted traffic).
+_MAX_FRAME_BYTES = _MAX_FRAGMENT_BYTES
+
+# Longest frame header: 2 + 8 (64-bit length) + 4 (mask key).
+_MAX_FRAME_HEADER = 14
+
+# Cap on the bytes kept per direction for a frame spanning hooked chunks.
+_MAX_PENDING_BYTES = _MAX_FRAME_BYTES + _MAX_FRAME_HEADER
+
+# RFC 6455 section 5.2: the most significant bit of a 64-bit length MUST be 0.
+_PAYLOAD_LEN_MSB = 1 << 63
+
+# Inflated size cap per permessage-deflate message.
+_MAX_MESSAGE_INFLATE = MAX_AUTO_DECOMPRESS
+
+# Cumulative inflated output per connection before inflation is disabled.
+_MAX_CONNECTION_INFLATE = 1024 * 1024 * 1024  # 1 GiB
+
+# TEXT payloads above this size are not parsed for JSON content detection.
+_MAX_JSON_DETECT_BYTES = 1024 * 1024
+
+_ERR_INFLATE_FAILED = "permessage-deflate decompression failed"
+_ERR_INFLATE_TOO_LARGE = (
+    f"permessage-deflate message exceeds {_MAX_MESSAGE_INFLATE} B inflated, not decompressed"
+)
+_ERR_INFLATE_BUDGET = (
+    f"permessage-deflate output exceeds {_MAX_CONNECTION_INFLATE} B for this "
+    "connection; decompression disabled"
+)
+_ERR_FRAGMENT_TOO_LARGE = "permessage-deflate fragment too large, discarded"
+# Decoder isolation: the worker-side inflater (and its history) is gone.
+_ERR_CONTEXT_LOST = "permessage-deflate decoder context lost; decompression disabled"
+_ERR_TRUNCATED_FRAME = "incomplete WebSocket frame (truncated)"
+
+
+class _InflateBudget:
+    """Cumulative inflated-output allowance shared by a connection's directions."""
+
+    def __init__(self, total: int = _MAX_CONNECTION_INFLATE) -> None:
+        self.remaining = total
+        self.exhausted = False
+
+    def consume(self, produced: int) -> bool:
+        """Charge *produced* bytes; False (and exhausted for good) when over."""
+        if self.exhausted or produced > self.remaining:
+            self.exhausted = True
+            self.remaining = 0
+            return False
+        self.remaining -= produced
+        return True
+
 
 class _DeflateContext:
     """Per-direction permessage-deflate decompression state (RFC 7692).
 
     Optimistically reuses the zlib decompressor across messages (context-takeover).
     Falls back to a fresh decompressor if reuse fails (no_context_takeover).
+    Every message is inflated to at most *max_message* bytes and charged to
+    the connection's *budget*; any failure drops the shared inflater and is
+    reported via :attr:`last_error` instead of raising.
+
+    With decoder isolation on the inflater lives in the worker process (the
+    budgets stay here). If the worker loses it, the context-takeover history
+    is gone, so this direction's decompression is disabled for good.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, budget: _InflateBudget | None = None,
+                 max_message: int = _MAX_MESSAGE_INFLATE) -> None:
         self._dec: zlib.decompressobj | None = None
+        self._budget = budget if budget is not None else _InflateBudget()
+        self._max_message = max_message
+        self._disabled = False  # isolated inflater lost: history unrecoverable
+        self.last_error = ""
 
     def decompress(self, payload: bytes) -> tuple[bytes, bool]:
         """Decompress a permessage-deflate payload.
 
         Returns ``(data, was_decompressed)``.  On failure returns
-        ``(original_payload, False)`` so the caller can display raw data.
+        ``(original_payload, False)`` so the caller can display raw data;
+        :attr:`last_error` then says why.
         """
-        raw = payload + _DEFLATE_TAIL
+        self.last_error = ""
+        if self._budget.exhausted:
+            return self._fail(payload, _ERR_INFLATE_BUDGET)
+        if self._disabled:
+            return self._fail(payload, _ERR_CONTEXT_LOST)
+        try:
+            out = self._inflate(payload + _DEFLATE_TAIL)
+        except InflateLimitError:
+            return self._fail(payload, _ERR_INFLATE_TOO_LARGE)
+        except (zlib.error, ValueError, MemoryError):
+            return self._fail(payload, _ERR_INFLATE_FAILED)
+        except DecoderContextLost:
+            self._disabled = True
+            return self._fail(payload, _ERR_CONTEXT_LOST)
+        if not self._budget.consume(len(out)):
+            return self._fail(payload, _ERR_INFLATE_BUDGET)
+        return out, True
 
-        # Try persistent context first (context-takeover mode)
+    def _inflate(self, raw: bytes) -> bytes:
+        """Inflate with the persistent context, else a fresh one (kept on success)."""
         if self._dec is not None:
             try:
-                return self._dec.decompress(raw), True
+                return _feed_inflater(self._dec, raw, self._max_message)
             except zlib.error:
-                self._dec = None
+                self._drop_inflater()
+        dec = _new_inflater()
+        out = _feed_inflater(dec, raw, self._max_message)
+        self._dec = dec  # save for reuse
+        return out
 
-        # Try fresh decompressor
-        try:
-            dec = zlib.decompressobj(-zlib.MAX_WBITS)
-            result = dec.decompress(raw)
-            self._dec = dec  # save for reuse
-            return result, True
-        except zlib.error:
-            return payload, False
+    def release(self) -> None:
+        """Free an isolated inflater (stream end); its history is then gone.
+
+        In-process inflaters are kept untouched.
+        """
+        if close_isolated_decoder(self._dec):
+            self._dec = None
+            self._disabled = True
+
+    def _drop_inflater(self) -> None:
+        """Forget the inflater (an isolated one frees its worker context)."""
+        close_isolated_decoder(self._dec)
+        self._dec = None
+
+    def _fail(self, payload: bytes, error: str) -> tuple[bytes, bool]:
+        """Drop the (possibly mid-stream) inflater and report *error*."""
+        self._drop_inflater()
+        self.last_error = error
+        return payload, False
+
+
+def _new_inflater():
+    """A fresh raw-deflate inflater: worker-side when decoder isolation is on."""
+    isolated = isolated_inflater(-zlib.MAX_WBITS)
+    return isolated if isolated is not None else zlib.decompressobj(-zlib.MAX_WBITS)
+
+
+def _feed_inflater(dec, raw: bytes, max_out: int) -> bytes:
+    """``inflate_stream_bounded`` on an in-process or isolated inflater."""
+    if getattr(dec, "isolated", False):
+        return dec.inflate_bounded(raw, max_out)
+    return inflate_stream_bounded(dec, raw, max_out)
+
+
+class _DirectionState:
+    """Parser state kept separately for each direction ("read" / "write").
+
+    Holds the permessage-deflate context, fragmentation state and the bounded
+    pending buffer for a frame that spans hooked chunks.
+    """
+
+    def __init__(self, budget: _InflateBudget) -> None:
+        self.deflate = _DeflateContext(budget)
+        self.in_fragment = False
+        self.fragment_compressed = False
+        self.fragment_parts: list[bytes] = []
+        self.fragment_bytes = 0
+        self._pending_parts: list[bytes] = []
+        self._pending_len = 0
+        self._pending_need = 0  # full frame size once the header is known
+
+    # --- compressed-message fragments --------------------------------------
+
+    def start_compressed_fragment(self, payload: bytes) -> None:
+        self.fragment_compressed = True
+        self.fragment_parts = [payload]
+        self.fragment_bytes = len(payload)
+
+    def add_compressed_fragment(self, payload: bytes) -> bool:
+        """Append a CONT payload; False (state reset) when over the caps."""
+        self.fragment_parts.append(payload)
+        self.fragment_bytes += len(payload)
+        if (self.fragment_bytes > _MAX_FRAGMENT_BYTES
+                or len(self.fragment_parts) > _MAX_FRAGMENT_COUNT):
+            self.reset_compressed_fragment()
+            return False
+        return True
+
+    def take_compressed_message(self) -> bytes:
+        combined = b"".join(self.fragment_parts)
+        self.reset_compressed_fragment()
+        return combined
+
+    def reset_compressed_fragment(self) -> None:
+        self.fragment_compressed = False
+        self.fragment_parts = []
+        self.fragment_bytes = 0
+
+    # --- frames spanning chunks --------------------------------------------
+
+    def absorb(self, data: bytes) -> bytes | None:
+        """*data* prefixed with the pending tail, or None while still short.
+
+        Linear in the frame size: chunks are only joined once the pending
+        frame can be complete.
+        """
+        if not self._pending_parts:
+            return data
+        self._pending_parts.append(data)
+        self._pending_len += len(data)
+        if self._pending_need and self._pending_len < self._pending_need:
+            return None
+        return self.take_pending()
+
+    def keep_pending(self, tail: bytes, need: int) -> None:
+        """Hold an incomplete frame *tail* (*need* = full size, 0 if unknown)."""
+        self._pending_parts = [tail]
+        self._pending_len = len(tail)
+        self._pending_need = need
+
+    def take_pending(self) -> bytes:
+        buf = b"".join(self._pending_parts)
+        self._pending_parts = []
+        self._pending_len = 0
+        self._pending_need = 0
+        return buf
 
 
 def _is_websocket_frame(data: bytes) -> bool:
@@ -156,12 +349,24 @@ def _parse_frame_header(data: bytes) -> tuple[int, bool, bool, bool, int, int, b
 
 
 def unmask_payload(data: bytes, mask_key: bytes) -> bytes:
-    """XOR-unmask a WebSocket payload.  Cheap O(n) operation."""
+    """XOR-unmask a WebSocket payload.  Cheap O(n) operation.
+
+    XORs the whole payload as one big integer against the repeated mask
+    (C speed, no per-byte Python loop).
+    """
     if len(mask_key) != 4:
         return data
     n = len(data)
-    mask = mask_key * ((n + 3) // 4)
-    return bytes(a ^ b for a, b in zip(data, mask))
+    if n == 0:
+        return b""
+    mask = (bytes(mask_key) * ((n + 3) // 4))[:n]
+    unmasked = int.from_bytes(data, "big") ^ int.from_bytes(mask, "big")
+    return unmasked.to_bytes(n, "big")
+
+
+def _payload_length_allowed(payload_len: int) -> bool:
+    """RFC 6455 64-bit length MSB clear, and within :data:`_MAX_FRAME_BYTES`."""
+    return not payload_len & _PAYLOAD_LEN_MSB and payload_len <= _MAX_FRAME_BYTES
 
 
 _OPCODE_CLOSE = 0x8
@@ -253,7 +458,13 @@ def _is_websocket_data(data: bytes) -> bool:
 
 
 def _detect_json(payload: bytes) -> str:
-    """Return ``"application/json"`` if *payload* is valid JSON, else ``""``."""
+    """Return ``"application/json"`` if *payload* is valid JSON, else ``""``.
+
+    Payloads over :data:`_MAX_JSON_DETECT_BYTES` are not parsed, and deeply
+    nested input (``RecursionError``) counts as not-JSON.
+    """
+    if len(payload) > _MAX_JSON_DETECT_BYTES:
+        return ""
     stripped = payload.lstrip()
     if not stripped or stripped[0:1] not in (b'{', b'['):
         return ""
@@ -261,7 +472,7 @@ def _detect_json(payload: bytes) -> str:
         import json
         json.loads(payload)
         return "application/json"
-    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError, RecursionError):
         return ""
 
 
@@ -291,15 +502,17 @@ class WebSocketParser(BaseParser):
     PROTOCOL = PROTOCOL_WEBSOCKET
 
     def __init__(self) -> None:
-        self._in_fragment: bool = False
         self._has_parsed: bool = False
-        # Per-direction permessage-deflate contexts (RFC 7692)
-        self._deflate_read = _DeflateContext()
-        self._deflate_write = _DeflateContext()
-        # Fragment accumulation for compressed messages
-        self._fragment_compressed: bool = False
-        self._fragment_parts: list[bytes] = []
-        self._fragment_direction: str = ""
+        # Per-direction state: permessage-deflate contexts (RFC 7692),
+        # fragmentation and pending partial frames. Both directions share
+        # one cumulative inflate budget (per connection).
+        self._inflate_budget = _InflateBudget()
+        self._directions: dict[str, _DirectionState] = {
+            "read": _DirectionState(self._inflate_budget),
+            "write": _DirectionState(self._inflate_budget),
+        }
+        self._deflate_read = self._directions["read"].deflate
+        self._deflate_write = self._directions["write"].deflate
         # Trailing data from the last feed() call
         self.trailing_data: Optional[bytes] = None
         self.trailing_protocol: str = ""
@@ -314,149 +527,219 @@ class WebSocketParser(BaseParser):
         """True once at least one frame was parsed (detection alone is weak)."""
         return self._has_parsed
 
-    def feed(self, data: bytes, direction: str,
-             stream_id: int | None = None) -> list[ParseResult]:
-        """Parse WebSocket frame header, return one ParseResult per frame.
+    def _state(self, direction: str) -> _DirectionState:
+        return self._directions["read" if direction == "read" else "write"]
 
-        After parsing, check ``self.trailing_data`` for any unconsumed bytes.
-        """
-        results: list[ParseResult] = []
-        offset = 0
-        # Clear trailing state from previous call
+    def _clear_trailing(self) -> None:
         self.trailing_data = None
         self.trailing_protocol = ""
         self.trailing_sub_parse = None
         self.trailing_direction = ""
 
-        while offset < len(data):
-            remaining = data[offset:]
+    def feed(self, data: bytes, direction: str,
+             stream_id: int | None = None) -> list[ParseResult]:
+        """Parse WebSocket frame header, return one ParseResult per frame.
 
-            # Validate frame header before parsing (stops phantom frames)
-            if not _is_websocket_frame(remaining):
-                break
-
-            hdr = _parse_frame_header(remaining)
-            if hdr is None:
-                break
-
-            opcode, fin, rsv1, masked, payload_len, header_size, mask_key = hdr
-
-            # Reject orphan CONT frames (CONT without preceding fragmented data frame)
-            if opcode == 0x0 and not self._in_fragment:
-                break
-
-            frame_end = offset + header_size + payload_len
-
-            payload_start = offset + header_size
-            payload = data[payload_start:frame_end] if frame_end <= len(data) else data[payload_start:]
-
-            if mask_key:
-                payload = unmask_payload(payload, mask_key)
-
-            # --- Per-message deflate decompression (RFC 7692) ---
-            error = ""
-            was_decompressed = False
-            raw_payload = b""  # pre-decompression bytes for explorer
-
-            # Control frames (opcode >= 0x8) are never compressed
-            if opcode < 0x8:
-                if rsv1 and opcode in (0x1, 0x2) and fin:
-                    # Unfragmented compressed message
-                    ctx = self._deflate_read if direction == "read" else self._deflate_write
-                    raw_payload = payload
-                    payload, was_decompressed = ctx.decompress(payload)
-                    if rsv1 and not was_decompressed:
-                        error = "permessage-deflate decompression failed"
-
-                elif rsv1 and opcode in (0x1, 0x2) and not fin:
-                    # First fragment of a compressed message
-                    self._fragment_compressed = True
-                    self._fragment_parts = [payload]
-                    self._fragment_direction = direction
-
-                elif opcode == 0x0 and self._fragment_compressed:
-                    # Continuation of a compressed message
-                    self._fragment_parts.append(payload)
-                    total = sum(len(p) for p in self._fragment_parts)
-                    if total > _MAX_FRAGMENT_BYTES:
-                        error = "permessage-deflate fragment too large, discarded"
-                        self._fragment_compressed = False
-                        self._fragment_parts = []
-                    elif fin:
-                        combined = b"".join(self._fragment_parts)
-                        ctx = self._deflate_read if self._fragment_direction == "read" else self._deflate_write
-                        raw_payload = combined
-                        payload, was_decompressed = ctx.decompress(combined)
-                        if not was_decompressed:
-                            error = "permessage-deflate decompression failed"
-                        self._fragment_compressed = False
-                        self._fragment_parts = []
-
-            method = _OPCODE_NAMES.get(opcode, f"OP{opcode}")
-
-            # --- Body content detection ---
-            content_type = ""
-            if opcode == 0x1 and payload and fin:
-                # TEXT frame: try JSON detection
-                content_type = _detect_json(payload)
-            elif opcode == 0x2 and payload and fin and len(payload) >= 5:
-                # BIN frame: try gRPC detection
-                content_type = _detect_grpc(payload)
-
-            # Build metadata headers for control frames
-            ws_headers: dict[str, str] = {}
-            if opcode >= 0x8:
-                ws_headers["frame-type"] = method
-                ws_headers["masked"] = "yes" if masked else "no"
-                ws_headers["payload-length"] = str(payload_len)
-                if opcode == 0x8 and len(payload) >= 2:
-                    close_code = int.from_bytes(payload[:2], "big")
-                    ws_headers["close-code"] = str(close_code)
-                    if len(payload) > 2:
-                        try:
-                            ws_headers["close-reason"] = payload[2:].decode("utf-8", errors="replace")
-                        except Exception:
-                            pass
-
-            results.append(ParseResult(
-                protocol=PROTOCOL_WEBSOCKET,
-                method=method,
-                body=payload,
-                body_size=len(payload),
-                is_request=(direction == "write"),
-                is_complete=fin,
-                error=error,
-                content_type=content_type,
-                content_encoding="permessage-deflate" if was_decompressed else "",
-                headers=ws_headers if opcode >= 0x8 else {},
-                raw=raw_payload,
-            ))
-
-            # Track fragmentation state (control frames don't affect it)
-            if opcode in (0x1, 0x2) and not fin:
-                self._in_fragment = True
-            elif opcode == 0x0 and fin:
-                self._in_fragment = False
-
-            if frame_end > len(data):
-                break
-            offset = frame_end
-
+        Only complete frames are emitted: an incomplete frame at the end of
+        *data* is kept (bounded, per direction) and completed by the next
+        feed() for that direction. After parsing, check ``self.trailing_data``
+        for any unconsumed bytes.
+        """
+        self._clear_trailing()
+        state = self._state(direction)
+        buf = state.absorb(bytes(data))
+        if buf is None:
+            return []
+        results, offset = self._parse_frames(buf, direction, state)
         if results:
             self._has_parsed = True
-
-        # Detect unconsumed trailing data (also when parser has history from prior feed() calls)
-        if offset < len(data) and (results or self._has_parsed):
-            unconsumed = data[offset:]
-            protocol, cleaned, detected_parser = detect_trailing_protocol(
-                unconsumed, transport=self.flow_transport)
-            sub = try_sub_parse(cleaned, detected_parser, direction) if protocol else None
-            self.trailing_data = unconsumed
-            self.trailing_protocol = protocol
-            self.trailing_sub_parse = sub
-            self.trailing_direction = direction
-
+        if offset < len(buf) and (results or self._has_parsed):
+            self._record_trailing(buf[offset:], direction)
         return results
 
+    def _parse_frames(self, buf: bytes, direction: str,
+                      state: _DirectionState) -> tuple[list[ParseResult], int]:
+        """Parse complete frames from *buf*: ``(results, consumed_offset)``.
+
+        An incomplete last frame is moved to the pending buffer and counted
+        as consumed; an invalid header stops parsing (trailing data).
+        """
+        results: list[ParseResult] = []
+        view = memoryview(buf)
+        offset = 0
+        while offset < len(buf):
+            status, hdr = self._classify_frame(view[offset:], state)
+            if status == _FRAME_INCOMPLETE and len(buf) - offset <= _MAX_PENDING_BYTES:
+                state.keep_pending(buf[offset:], _frame_size(hdr))
+                return results, len(buf)
+            if status == _FRAME_INCOMPLETE:
+                break
+            if status == _FRAME_INVALID:
+                break
+            frame_end = offset + hdr[5] + hdr[4]
+            payload = bytes(view[offset + hdr[5]:frame_end])
+            results.append(self._frame_result(hdr, payload, direction, state))
+            offset = frame_end
+        return results, offset
+
+    @staticmethod
+    def _classify_frame(view, state: _DirectionState) -> tuple[str, tuple | None]:
+        """``(status, header)`` for the frame starting at *view*."""
+        # Validate frame header before parsing (stops phantom frames)
+        if not _is_websocket_frame(view):
+            return _FRAME_INVALID, None
+        hdr = _parse_frame_header(view)
+        if hdr is None:
+            return _FRAME_INCOMPLETE, None
+        opcode, payload_len, header_size = hdr[0], hdr[4], hdr[5]
+        # Reject orphan CONT frames (CONT without preceding fragmented data frame)
+        if opcode == 0x0 and not state.in_fragment:
+            return _FRAME_INVALID, None
+        if not _payload_length_allowed(payload_len):
+            return _FRAME_INVALID, None
+        if header_size + payload_len > len(view):
+            return _FRAME_INCOMPLETE, hdr
+        return _FRAME_COMPLETE, hdr
+
+    def _frame_result(self, hdr: tuple, payload: bytes, direction: str,
+                      state: _DirectionState) -> ParseResult:
+        """Build the ParseResult for one complete frame and update *state*."""
+        opcode, fin, rsv1, masked, payload_len, _header_size, mask_key = hdr
+        if mask_key:
+            payload = unmask_payload(payload, bytes(mask_key))
+        payload, raw_payload, was_decompressed, error = _decode_message_payload(
+            state, opcode, fin, rsv1, payload)
+        method = _OPCODE_NAMES.get(opcode, f"OP{opcode}")
+        _track_fragmentation(state, opcode, fin)
+        return ParseResult(
+            protocol=PROTOCOL_WEBSOCKET,
+            method=method,
+            body=payload,
+            body_size=len(payload),
+            is_request=(direction == "write"),
+            is_complete=fin,
+            error=error,
+            content_type=_detect_content_type(opcode, fin, payload),
+            content_encoding="permessage-deflate" if was_decompressed else "",
+            headers=_control_frame_headers(opcode, method, masked, payload_len, payload),
+            raw=raw_payload,
+        )
+
+    def _record_trailing(self, unconsumed: bytes, direction: str) -> None:
+        """Detect the protocol of unconsumed bytes and store trailing info."""
+        protocol, cleaned, detected_parser = detect_trailing_protocol(
+            unconsumed, transport=self.flow_transport)
+        sub = try_sub_parse(cleaned, detected_parser, direction) if protocol else None
+        self.trailing_data = unconsumed
+        self.trailing_protocol = protocol
+        self.trailing_sub_parse = sub
+        self.trailing_direction = direction
+
     def flush(self) -> list[ParseResult]:
-        return []
+        """Emit frames still pending at stream end, marked truncated.
+
+        Also frees isolated (worker-side) inflaters; in-process ones are kept.
+        """
+        results: list[ParseResult] = []
+        for direction, state in self._directions.items():
+            tail = state.take_pending()
+            result = _truncated_frame_result(tail, direction) if tail else None
+            if result is not None:
+                results.append(result)
+            state.deflate.release()
+        return results
+
+
+# Frame classification results used by WebSocketParser._classify_frame().
+_FRAME_COMPLETE = "complete"
+_FRAME_INCOMPLETE = "incomplete"
+_FRAME_INVALID = "invalid"
+
+
+def _frame_size(hdr: tuple | None) -> int:
+    """Full frame size from a parsed header, 0 when the header is incomplete."""
+    return 0 if hdr is None else hdr[5] + hdr[4]
+
+
+def _decode_message_payload(state: _DirectionState, opcode: int, fin: bool,
+                            rsv1: bool, payload: bytes
+                            ) -> tuple[bytes, bytes, bool, str]:
+    """Per-message deflate (RFC 7692): ``(payload, raw, decompressed, error)``.
+
+    Control frames (opcode >= 0x8) are never compressed. Compressed
+    fragments are accumulated per direction (bounded) until the final CONT.
+    """
+    if opcode >= 0x8:
+        return payload, b"", False, ""
+    if rsv1 and opcode in (0x1, 0x2) and fin:
+        return _inflate_message(state, payload)
+    if rsv1 and opcode in (0x1, 0x2):
+        state.start_compressed_fragment(payload)
+    elif opcode == 0x0 and state.fragment_compressed:
+        if not state.add_compressed_fragment(payload):
+            return payload, b"", False, _ERR_FRAGMENT_TOO_LARGE
+        if fin:
+            return _inflate_message(state, state.take_compressed_message())
+    return payload, b"", False, ""
+
+
+def _inflate_message(state: _DirectionState, compressed: bytes
+                     ) -> tuple[bytes, bytes, bool, str]:
+    """Inflate one complete compressed message with the direction's context."""
+    payload, was_decompressed = state.deflate.decompress(compressed)
+    error = "" if was_decompressed else (state.deflate.last_error or _ERR_INFLATE_FAILED)
+    return payload, compressed, was_decompressed, error
+
+
+def _track_fragmentation(state: _DirectionState, opcode: int, fin: bool) -> None:
+    """Update fragmentation state (control frames don't affect it)."""
+    if opcode in (0x1, 0x2) and not fin:
+        state.in_fragment = True
+    elif opcode == 0x0 and fin:
+        state.in_fragment = False
+
+
+def _detect_content_type(opcode: int, fin: bool, payload: bytes) -> str:
+    """Body content detection: JSON for TEXT, gRPC for BIN frames."""
+    if opcode == 0x1 and payload and fin:
+        return _detect_json(payload)
+    if opcode == 0x2 and payload and fin and len(payload) >= 5:
+        return _detect_grpc(payload)
+    return ""
+
+
+def _control_frame_headers(opcode: int, method: str, masked: bool,
+                           payload_len: int, payload: bytes) -> dict[str, str]:
+    """Metadata headers for control frames (empty for data frames)."""
+    if opcode < 0x8:
+        return {}
+    ws_headers = {
+        "frame-type": method,
+        "masked": "yes" if masked else "no",
+        "payload-length": str(payload_len),
+    }
+    if opcode == 0x8 and len(payload) >= 2:
+        ws_headers["close-code"] = str(int.from_bytes(payload[:2], "big"))
+        if len(payload) > 2:
+            ws_headers["close-reason"] = payload[2:].decode("utf-8", errors="replace")
+    return ws_headers
+
+
+def _truncated_frame_result(tail: bytes, direction: str) -> ParseResult | None:
+    """ParseResult for a frame cut off at stream end (payload as received)."""
+    hdr = _parse_frame_header(tail)
+    if hdr is None:
+        return None
+    opcode, _fin, _rsv1, _masked, _payload_len, header_size, mask_key = hdr
+    payload = tail[header_size:]
+    if mask_key:
+        payload = unmask_payload(payload, bytes(mask_key))
+    return ParseResult(
+        protocol=PROTOCOL_WEBSOCKET,
+        method=_OPCODE_NAMES.get(opcode, f"OP{opcode}"),
+        body=payload,
+        body_size=len(payload),
+        is_request=(direction == "write"),
+        is_complete=False,
+        error=_ERR_TRUNCATED_FRAME,
+    )

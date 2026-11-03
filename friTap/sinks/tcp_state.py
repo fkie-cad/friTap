@@ -9,6 +9,8 @@ The header format matches the legacy PCAP writer in ``friTap/pcap.py``.
 
 from __future__ import annotations
 
+import ipaddress
+import logging
 import random
 import struct
 import threading
@@ -21,6 +23,141 @@ if TYPE_CHECKING:
 
 
 SessionKey = tuple[object, int, object, int]
+
+# --- Segmentation ---------------------------------------------------------
+# IP length fields are 16 bit, so one synthetic packet holds at most 65535
+# bytes. Both families are capped so the WHOLE IP datagram fits in 65535
+# bytes: that satisfies the IPv4 Total Length and the IPv6 Payload Length
+# fields, and keeps every frame within the 65535-byte snaplen of the legacy
+# ``-p`` pcap header (friTap/pcap.py).
+MAX_IP_PACKET = 0xFFFF
+IPV4_HEADER_LEN = 20
+IPV6_HEADER_LEN = 40
+TCP_HEADER_LEN = 20
+UDP_HEADER_LEN = 8
+MAX_PORT = 0xFFFF
+
+_IP_HEADER_LEN = {"AF_INET": IPV4_HEADER_LEN, "AF_INET6": IPV6_HEADER_LEN}
+_TRANSPORT_HEADER_LEN = {"tcp": TCP_HEADER_LEN, "udp": UDP_HEADER_LEN}
+
+
+def max_segment_payload(family: str, transport: str = "tcp") -> int:
+    """Largest payload one IP+TCP/UDP packet of *family* can carry.
+
+    IPv4+TCP: 65535-20-20 = 65495, IPv6+TCP: 65535-40-20 = 65475,
+    IPv4+UDP: 65507, IPv6+UDP: 65487. Unknown families use the IPv6 (smaller)
+    limit and unknown transports the TCP one.
+    """
+    ip_len = _IP_HEADER_LEN.get(family, IPV6_HEADER_LEN)
+    l4_len = _TRANSPORT_HEADER_LEN.get(transport, TCP_HEADER_LEN)
+    return MAX_IP_PACKET - ip_len - l4_len
+
+
+def split_payload(data: bytes, limit: int) -> list[bytes]:
+    """Split *data* into chunks of at most *limit* bytes (``[b""]`` for empty data)."""
+    if not data:
+        return [bytes(data)]
+    return [bytes(data[i:i + limit]) for i in range(0, len(data), limit)]
+
+
+# --- Endpoint validation --------------------------------------------------
+# Addresses and ports come from agent messages; a tampered or buggy message
+# must cost one dropped record, never a struct.error in the writer.
+
+class InvalidEndpointError(ValueError):
+    """An address or port that cannot be packed into an IP/TCP/UDP header.
+
+    ``kind`` (e.g. ``"invalid port"``) names the problem without the value, so
+    drop warnings can be rate limited per kind.
+    """
+
+    def __init__(self, kind: str, value: object) -> None:
+        super().__init__(f"{kind} {value!r}")
+        self.kind = kind
+
+
+_logger = logging.getLogger("friTap")
+_warned_drop_reasons: set[str] = set()
+_warned_lock = threading.Lock()
+
+
+def warn_dropped_record(reason: str, logger: logging.Logger | None = None) -> None:
+    """Log a dropped-record warning once per distinct *reason* (rate limit)."""
+    with _warned_lock:
+        if reason in _warned_drop_reasons:
+            return
+        _warned_drop_reasons.add(reason)
+    (logger or _logger).warning(
+        "pcap: dropping plaintext record with %s (further drops of this kind "
+        "are not logged)", reason)
+
+
+def reset_drop_warnings() -> None:
+    """Forget which drop reasons were logged (tests, new sessions)."""
+    with _warned_lock:
+        _warned_drop_reasons.clear()
+
+
+def validate_port(port: object) -> int:
+    """Return *port* if it is an int in 0..65535, else raise InvalidEndpointError.
+
+    A missing port (None or "", content-only packets) is the 0 placeholder.
+    """
+    if port is None or port == "":
+        return 0
+    if not isinstance(port, int) or isinstance(port, bool) or not 0 <= port <= MAX_PORT:
+        raise InvalidEndpointError("invalid port", port)
+    return port
+
+
+def _is_placeholder(addr: object) -> bool:
+    """Content-only packets carry no address: "", None or 0 become 0.0.0.0 / ::."""
+    return addr is None or addr == "" or addr == 0
+
+
+def ipv4_address_int(addr: object) -> int:
+    """32-bit form of an IPv4 address given as int or dotted string.
+
+    Placeholders and other strings keep the historic 0.0.0.0 fallback; an int
+    outside 0..2**32-1 raises InvalidEndpointError.
+    """
+    if _is_placeholder(addr):
+        return 0
+    if isinstance(addr, int) and not isinstance(addr, bool):
+        try:
+            return int(ipaddress.IPv4Address(addr))
+        except ipaddress.AddressValueError as exc:
+            raise InvalidEndpointError("invalid IPv4 address", addr) from exc
+    if isinstance(addr, str):
+        try:
+            return int(ipaddress.IPv4Address(addr))
+        except ipaddress.AddressValueError:
+            return 0
+    raise InvalidEndpointError("invalid IPv4 address", addr)
+
+
+def ipv6_address_bytes(addr: object) -> bytes:
+    """16-byte form of an IPv6 address given as 32-char hex, text form or int.
+
+    Placeholders map to ``::``; anything else malformed raises
+    InvalidEndpointError.
+    """
+    if _is_placeholder(addr):
+        return bytes(16)
+    try:
+        if isinstance(addr, int) and not isinstance(addr, bool):
+            return ipaddress.IPv6Address(addr).packed
+        if isinstance(addr, str):
+            return _ipv6_text_to_bytes(addr)
+    except (ValueError, ipaddress.AddressValueError) as exc:
+        raise InvalidEndpointError("invalid IPv6 address", addr) from exc
+    raise InvalidEndpointError("invalid IPv6 address", addr)
+
+
+def _ipv6_text_to_bytes(addr: str) -> bytes:
+    if len(addr) == 32 and ":" not in addr:
+        return bytes.fromhex(addr)
+    return ipaddress.IPv6Address(addr).packed
 
 
 @dataclass
@@ -202,6 +339,71 @@ def _as_ipv4_int(addr: int | str) -> int:
     return addr if isinstance(addr, int) else 0
 
 
+def _family_name(ss_family: "AddressFamily | str") -> str:
+    from ..schemas.canonical import AddressFamily
+
+    return ss_family.value if isinstance(ss_family, AddressFamily) else ss_family
+
+
+def _validated_endpoints(family: str, src_addr, src_port, dst_addr, dst_port):
+    """Return (src, sport, dst, dport) ready for the builders, or raise.
+
+    IPv4 addresses come back as ints, IPv6 addresses as 32-char hex strings.
+    """
+    if family == "AF_INET6":
+        src, dst = ipv6_address_bytes(src_addr).hex(), ipv6_address_bytes(dst_addr).hex()
+    else:
+        src, dst = ipv4_address_int(src_addr), ipv4_address_int(dst_addr)
+    return src, validate_port(src_port), dst, validate_port(dst_port)
+
+
+def _udp_packets(family, src, sport, dst, dport, data) -> list[bytes]:
+    build = build_ipv6_udp_packet if family == "AF_INET6" else build_ipv4_udp_packet
+    limit = max_segment_payload(family, "udp")
+    return [build(src, sport, dst, dport, seg) for seg in split_payload(data, limit)]
+
+
+def _tcp_packets(family, src, sport, dst, dport, is_read, data, tracker) -> list[bytes]:
+    """One IP+TCP packet per segment; each segment advances the tracker's seq."""
+    build = build_ipv6_tcp_packet if family == "AF_INET6" else build_ipv4_tcp_packet
+    key = make_session_key(src, sport, dst, dport, is_read)
+    packets = []
+    for seg in split_payload(data, max_segment_payload(family, "tcp")):
+        seq, ack = tracker.get_seq_ack(key, is_read, len(seg))
+        packets.append(build(src, sport, dst, dport, seq, ack, seg))
+    return packets
+
+
+def build_framed_packets_from_fields(
+    ss_family: "AddressFamily | str",
+    src_addr: int | str,
+    src_port: int,
+    dst_addr: int | str,
+    dst_port: int,
+    is_read: bool,
+    data: bytes,
+    tracker: TcpSessionTracker,
+    transport: str = "tcp",
+) -> list[bytes]:
+    """Build the framed IP+TCP / IP+UDP packet(s) for one plaintext record.
+
+    Payloads larger than one IP datagram (see :func:`max_segment_payload`) are
+    split into several packets with contiguous TCP sequence numbers. Invalid
+    addresses or ports drop the record: the result is ``[]`` and a warning is
+    logged once per kind (never raises).
+    """
+    family = _family_name(ss_family)
+    try:
+        src, sport, dst, dport = _validated_endpoints(
+            family, src_addr, src_port, dst_addr, dst_port)
+    except InvalidEndpointError as exc:
+        warn_dropped_record(exc.kind)
+        return []
+    if transport == "udp":
+        return _udp_packets(family, src, sport, dst, dport, data)
+    return _tcp_packets(family, src, sport, dst, dport, is_read, data, tracker)
+
+
 def build_framed_packet_from_fields(
     ss_family: "AddressFamily | str",
     src_addr: int | str,
@@ -225,37 +427,35 @@ def build_framed_packet_from_fields(
 
     Accepts both :class:`~friTap.schemas.canonical.AddressFamily` enum
     values and raw strings for backward compatibility with legacy events.
+
+    Single-packet API kept for existing callers: an invalid record yields
+    ``b""`` and an oversized payload only its FIRST segment (the tracker
+    still advances over the whole payload). Use
+    :func:`build_framed_packets_from_fields` to get every segment.
     """
-    from ..schemas.canonical import AddressFamily
+    packets = build_framed_packets_from_fields(
+        ss_family, src_addr, src_port, dst_addr, dst_port,
+        is_read, data, tracker, transport)
+    if len(packets) > 1:
+        warn_dropped_record(
+            "a payload larger than one IP packet via the single-packet API "
+            "(only the first segment is kept)")
+    return packets[0] if packets else b""
 
-    family_str = ss_family.value if isinstance(ss_family, AddressFamily) else ss_family
 
-    if transport == "udp":
-        if family_str == AddressFamily.AF_INET6.value:
-            return build_ipv6_udp_packet(
-                _as_ipv6_hex(src_addr), src_port,
-                _as_ipv6_hex(dst_addr), dst_port,
-                data,
-            )
-        return build_ipv4_udp_packet(
-            _as_ipv4_int(src_addr), src_port,
-            _as_ipv4_int(dst_addr), dst_port,
-            data,
-        )
+def build_framed_packets(event: "DataCanonical", tracker: TcpSessionTracker) -> list[bytes]:
+    """Build every framed IP+TCP packet for a ``DataCanonical`` event."""
+    from ..schemas.canonical import Direction
 
-    key = make_session_key(src_addr, src_port, dst_addr, dst_port, is_read)
-    seq, ack = tracker.get_seq_ack(key, is_read, len(data))
-
-    if family_str == AddressFamily.AF_INET6.value:
-        return build_ipv6_tcp_packet(
-            _as_ipv6_hex(src_addr), src_port,
-            _as_ipv6_hex(dst_addr), dst_port,
-            seq, ack, data,
-        )
-    return build_ipv4_tcp_packet(
-        _as_ipv4_int(src_addr), src_port,
-        _as_ipv4_int(dst_addr), dst_port,
-        seq, ack, data,
+    return build_framed_packets_from_fields(
+        ss_family=event.ss_family,
+        src_addr=event.src_addr_raw,
+        src_port=event.src.port,
+        dst_addr=event.dst_addr_raw,
+        dst_port=event.dst.port,
+        is_read=(event.direction == Direction.READ),
+        data=event.data,
+        tracker=tracker,
     )
 
 

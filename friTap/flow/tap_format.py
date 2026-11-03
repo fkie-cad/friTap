@@ -504,6 +504,9 @@ def encode_flow(flow: "Flow") -> bytes:
 
     if flow.detected_protocol:
         meta["detected_protocol"] = flow.detected_protocol
+    # Additive, written only when set: older readers ignore the key.
+    if getattr(flow, "truncated", False):
+        meta["truncated"] = True
 
     # --- Schema v2 additive enrichment (write only when non-default to keep
     # records compact; findings are intentionally NOT inlined here — they are
@@ -801,6 +804,7 @@ def decode_flow(payload: bytes) -> "Flow":
     _decode_response_trailing(flow, meta, read_blob)
 
     flow.detected_protocol = meta.get("detected_protocol", "")
+    flow.truncated = bool(meta.get("truncated", False))
     flow.transport = meta.get("transport", "tls")
 
     # --- Schema v2 additive enrichment (absent in v1 files → defaults) ---

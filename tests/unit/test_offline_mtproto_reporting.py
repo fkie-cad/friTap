@@ -276,3 +276,35 @@ def test_cli_summary_omits_new_lines_when_absent(capsys):
     out = capsys.readouterr().out
     assert "partial streams" not in out
     assert "non-mtproto degraded streams" not in out
+
+
+def test_cli_summary_prints_cap_overflow_counters(capsys):
+    from friTap.offline import cli
+
+    result = SimpleNamespace(
+        tap_path="out.tap", flow_count=1, decrypted_packet_count=2, stream_count=1,
+        dropped_packet_count=0, encrypted_streams_skipped=0,
+        per_protocol={"mtproto": {"messages": 3, "unknown_key_ids_overflow": 4,
+                                  "users_dropped": 5, "chat_nodes_dropped": 6}},
+        findings_count=0,
+    )
+    cli._print_summary(result, run_scan=False)
+    out = capsys.readouterr().out
+    assert "mtproto unknown auth_key_id records over the cap: 4" in out
+    assert "mtproto users dropped: 5" in out
+    assert "mtproto chat nodes dropped: 6" in out
+
+
+def test_cli_summary_cap_counters_alone_still_print_the_bucket(capsys):
+    from friTap.offline import cli
+
+    result = SimpleNamespace(
+        tap_path="out.tap", flow_count=0, decrypted_packet_count=0, stream_count=0,
+        dropped_packet_count=0, encrypted_streams_skipped=0,
+        per_protocol={"mtproto": {"users_dropped": 2}},
+        findings_count=0,
+    )
+    cli._print_summary(result, run_scan=False)
+    out = capsys.readouterr().out
+    assert "mtproto users dropped: 2" in out
+    assert "over the cap" not in out and "chat nodes dropped" not in out

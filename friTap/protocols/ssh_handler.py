@@ -7,7 +7,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, List, Optional
 
 from ..backends.base import BackendName
-from ..output.keylog_format import KeylogFormatter
+from ..output.keylog_format import (
+    KeylogFormatter,
+    is_hex_field,
+    sanitize_keylog_fields,
+    warn_dropped_keylog_line,
+)
 from .base import BackendSupport, ProtocolHandler
 
 if TYPE_CHECKING:
@@ -16,6 +21,19 @@ if TYPE_CHECKING:
 SSH_LIBRARY_PATTERNS = [
     "libssh", "sshd", "openssh",
 ]
+
+_SHARED_SECRET_LABEL = "SHARED_SECRET"
+_SHARED_SECRET_DROP_REASON = "ssh SHARED_SECRET"
+
+
+def _distinct_cookies(payload: dict) -> List[str]:
+    """The local cookie, then the peer cookie when present and different."""
+    cookie = payload.get("cookie") or ""
+    peer = payload.get("peer_cookie") or ""
+    cookies = [cookie] if cookie else []
+    if peer and peer != cookie:
+        cookies.append(peer)
+    return cookies
 
 
 class SshKeylogFormatter(KeylogFormatter):
@@ -36,6 +54,10 @@ class SshKeylogFormatter(KeylogFormatter):
 
     Both flavours coexist in the same ``-k`` file so users get one
     Wireshark-loadable artifact plus the historical derived-key view.
+
+    The agent runs inside a possibly hostile process, so the cookies and the
+    shared secret must each be an even-length hex string; a record with any
+    other value is dropped with a once-per-reason warning.
     """
 
     @property
@@ -55,14 +77,13 @@ class SshKeylogFormatter(KeylogFormatter):
             # Fall back to the base passthrough (per-direction derived keys
             # like ``SSH_ENC_KEY_C2S …`` arrive pre-formatted in key_data).
             return super().format(event)
-        out: List[str] = []
-        cookie = payload.get("cookie") or ""
-        peer = payload.get("peer_cookie") or ""
-        if cookie:
-            out.append(f"{cookie} SHARED_SECRET {shared_secret}")
-        if peer and peer != cookie:
-            out.append(f"{peer} SHARED_SECRET {shared_secret}")
-        return out
+        secret_fields = sanitize_keylog_fields(_SHARED_SECRET_LABEL, shared_secret)
+        cookies = _distinct_cookies(payload)
+        if secret_fields is None or not all(is_hex_field(c) for c in cookies):
+            warn_dropped_keylog_line(
+                _SHARED_SECRET_DROP_REASON, "cookie and shared secret must be hex")
+            return []
+        return [f"{cookie} {secret_fields}" for cookie in cookies]
 
     def dedup_key(self, event: "KeylogEvent") -> str:
         payload = event.payload or {}

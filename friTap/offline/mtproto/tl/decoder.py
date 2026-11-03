@@ -9,7 +9,9 @@
 * a length-delimited child (a ``msg_container`` message body, a ``gzip_packed``
   payload) is a boundary: a stop inside it does not stop its siblings;
 * ``gzip_packed`` is inflated inline (gzip or zlib header, bounded by
-  :attr:`TlLimits.max_inflate`);
+  :attr:`TlLimits.max_inflate` per body, :attr:`TlLimits.max_inflate_total`
+  per decode call and :attr:`TlLimits.max_gzip_depth` levels of nesting);
+  bodies that are not built (advance-only mode) are skipped, not inflated;
 * nesting beyond :attr:`TlLimits.max_depth` stops cleanly; beyond
   :attr:`TlLimits.max_nodes` built nodes the decoder switches to advance-only
   mode (bytes are still walked, so offsets stay right, but no nodes are built);
@@ -29,6 +31,7 @@ from friTap.parsers.decompress import (  # noqa: F401  (re-export, intentional)
     MAX_INFLATE,
     InflateLimitError,
     inflate_bounded,
+    inflate_bounded_checked,
 )
 
 from .nodes import TlField, TlNode, TlRaw, TlVector
@@ -43,6 +46,10 @@ BOOL_TRUE_ID = 0x997275B5
 BOOL_FALSE_ID = 0xBC799737
 #: CRC32 id of the bare ``message msg_id:long seqno:int bytes:int body:Object``.
 MESSAGE_BARE_ID = 0x5BB8E511
+
+#: Note marking a ``gzip_packed`` body whose gzip stream was cut short: the
+#: inner object was decoded from the partial output inflated so far.
+GZIP_TRUNCATED_NOTE = "gzip_packed truncated (partial inflate)"
 
 #: Default cap on the INFLATED size of a ``gzip_packed`` body. The packed bytes
 #: are peer-supplied, so an unbounded inflate is a decompression bomb; 16 MiB is
@@ -63,6 +70,15 @@ class TlLimits:
     max_nodes: int = 20000
     keep_vector_items: int = 20
     max_inflate: int = MAX_INFLATE
+    #: Total inflated bytes across every ``gzip_packed`` of one decode call.
+    max_inflate_total: int = 2 * MAX_INFLATE
+    #: Max ``gzip_packed`` nesting (gzip inside gzip inside ...).
+    max_gzip_depth: int = 2
+
+
+#: Payloads larger than this are decoded uncached: memoising them would pin
+#: whole multi-MiB trees for the process lifetime.
+MAX_CACHED_PAYLOAD = 64 * 1024
 
 
 class _Abort(Exception):
@@ -131,6 +147,21 @@ class _Reader:
         self.take((-(header + length)) % 4)
         return value
 
+    def skip_tl_bytes(self) -> int:
+        """Advance past a TL ``bytes`` value without copying it; return its length."""
+        first = self.take(1)[0]
+        if first == 255:
+            raise _Abort(TlRaw(self.rest(), f"invalid TL string prefix 0xff at offset {self.pos - 1}"))
+        if first == 254:
+            length = int.from_bytes(self.take(3), "little")
+            header = 4
+        else:
+            length, header = first, 1
+        total = length + (-(header + length)) % 4
+        self._need(total)
+        self.pos += total
+        return length
+
 
 def _decode_string(raw: bytes) -> Any:
     try:
@@ -153,6 +184,8 @@ class _TlDecoder:
         self.nodes = 0
         self.exhausted = False
         self.skip = 0
+        self.inflated_total = 0
+        self.gzip_depth = 0
 
     # -- budget ------------------------------------------------------------ #
     def _enter(self, reader: _Reader, depth: int) -> bool:
@@ -356,8 +389,10 @@ class _TlDecoder:
         for index in range(count):
             overflow = index >= keep
             self.skip += overflow
+            before = reader.pos
             try:
                 value = self.read_value(reader, elem, depth + 1)
+                _require_progress(reader, before, index)
             except _Abort as abort:
                 if not building:
                     raise
@@ -376,32 +411,69 @@ class _TlDecoder:
     def _read_gzip(self, reader: _Reader, start: int, depth: int,
                    inner_type: Optional[TlType]) -> Any:
         build = self._enter(reader, depth)
+        if not build:
+            # Advance-only: nothing of the inner object would be kept, so walk
+            # past the packed bytes instead of inflating them.
+            reader.skip_tl_bytes()
+            return None
         packed = reader.tl_bytes()
-        inflated, error = self._inflate(packed)
+        inflated, error, complete = self._inflate(packed)
         if error:
-            if not build:
-                return None
             field = TlField("packed_data", "bytes", TlRaw(packed, error))
             return TlNode("gzip_packed", GZIP_PACKED_ID, "gzip", (field,), start,
                           reader.pos - start, error)
-        inner, stopped = self._decode_bounded(_Reader(inflated), depth, inner_type)
-        if not build:
-            return None
+        inner, stopped = self._decode_inflated(inflated, depth, inner_type)
         note = f"inflated {len(packed)} B → {len(inflated)} B"
+        if not complete:
+            note += f"; {GZIP_TRUNCATED_NOTE}"
         if stopped:
             note += "; inner decode stopped early"
         field = TlField("packed_data", "Object" if inner_type is None else inner_type.name, inner)
         return TlNode("gzip_packed", GZIP_PACKED_ID, "gzip", (field,), start,
                       reader.pos - start, note)
 
-    def _inflate(self, packed: bytes):
-        """``(inflated, "")`` or ``(b"", error)``; bounded by ``max_inflate``."""
+    def _decode_inflated(self, inflated: bytes, depth: int,
+                         inner_type: Optional[TlType]):
+        """Decode one inflated gzip body, tracking the gzip nesting depth."""
+        self.gzip_depth += 1
         try:
-            return inflate_bounded(packed, self.limits.max_inflate), ""
+            return self._decode_bounded(_Reader(inflated), depth, inner_type)
+        finally:
+            self.gzip_depth -= 1
+
+    def _inflate_error(self) -> str:
+        """Why the next gzip body may not be inflated at all, or ``""``."""
+        if self.gzip_depth >= self.limits.max_gzip_depth:
+            return f"gzip_packed nested deeper than {self.limits.max_gzip_depth}"
+        if self.inflated_total >= self.limits.max_inflate_total:
+            return f"total inflate budget {self.limits.max_inflate_total} B exhausted"
+        return ""
+
+    def _inflate(self, packed: bytes):
+        """``(inflated, "", complete)`` or ``(b"", error, False)``.
+
+        Bounded by ``max_inflate`` per body, by what is left of
+        ``max_inflate_total`` for this decode call and by ``max_gzip_depth``.
+        *complete* is False when the gzip stream was truncated and *inflated*
+        is only the output produced so far.
+        """
+        error = self._inflate_error()
+        if error:
+            return b"", error, False
+        budget_left = self.limits.max_inflate_total - self.inflated_total
+        limit = min(self.limits.max_inflate, budget_left)
+        try:
+            inflated, complete = inflate_bounded_checked(packed, limit)
         except zlib.error as exc:
-            return b"", f"inflate failed: {exc}"
+            return b"", f"inflate failed: {exc}", False
         except InflateLimitError:
-            return b"", f"inflate exceeds {self.limits.max_inflate} B limit"
+            # The rejected attempt still inflated *limit* bytes: charge them.
+            self.inflated_total += limit
+            if limit < self.limits.max_inflate:
+                return b"", f"inflate exceeds total budget ({limit} B left)", False
+            return b"", f"inflate exceeds {self.limits.max_inflate} B limit", False
+        self.inflated_total += len(inflated)
+        return inflated, "", complete
 
     def _decode_bounded(self, sub: _Reader, depth: int, expected: Optional[TlType]):
         """Decode one object filling *sub*; ``(value, stopped)``. A boundary: never raises."""
@@ -518,6 +590,12 @@ class _TlDecoder:
         return dataclasses.replace(node, fields=node.fields + tuple(extra), note=note)
 
 
+def _require_progress(reader: _Reader, before: int, index: int) -> None:
+    """Abort a vector whose element consumed no bytes (count would be free)."""
+    if reader.pos == before:
+        raise _Abort(TlRaw(reader.rest(), f"vector item {index} consumed no bytes"))
+
+
 def _trailing_fields(reader: _Reader, stopped: bool):
     """A ``<trailing>`` raw field when a fully decoded buffer has bytes left."""
     if stopped or reader.pos >= reader.end:
@@ -577,13 +655,37 @@ def rpc_result_ctor_id(data: bytes) -> Optional[int]:
         ctor_id = reader.uint32()
         if ctor_id != GZIP_PACKED_ID:
             return ctor_id
-        return _Reader(inflate_bounded(reader.tl_bytes())).uint32()
-    except (_Abort, zlib.error, InflateLimitError):
+        return _peek_inflated_uint32(reader.tl_bytes())
+    except (_Abort, zlib.error):
         return None
 
 
+def _peek_inflated_uint32(packed: bytes) -> Optional[int]:
+    """First uint32 of a gzip/zlib body, inflating only those 4 bytes."""
+    head = zlib.decompressobj(zlib.MAX_WBITS | 32).decompress(packed, 4)
+    if len(head) < 4:
+        return None
+    return struct.unpack_from("<I", head)[0]
+
+
 @lru_cache(maxsize=256)
+def _decode_tl_memo(data: bytes, domain: str, expect: Optional[str]) -> TlNode:
+    return decode_tl(data, domain=domain, expect=expect)
+
+
 def decode_tl_cached(data: bytes, domain: str = "mtproto",
                      expect: Optional[str] = None) -> TlNode:
-    """:func:`decode_tl` with default limits, memoised on the arguments."""
-    return decode_tl(data, domain=domain, expect=expect)
+    """:func:`decode_tl` with default limits, memoised on the arguments.
+
+    Only payloads up to :data:`MAX_CACHED_PAYLOAD` bytes are memoised (keyed on
+    the exact bytes); larger ones are decoded on every call so the cache can
+    never pin multi-MiB trees for the process lifetime.
+    """
+    data = bytes(data)
+    if len(data) > MAX_CACHED_PAYLOAD:
+        return decode_tl(data, domain=domain, expect=expect)
+    return _decode_tl_memo(data, domain, expect)
+
+
+decode_tl_cached.cache_info = _decode_tl_memo.cache_info  # type: ignore[attr-defined]
+decode_tl_cached.cache_clear = _decode_tl_memo.cache_clear  # type: ignore[attr-defined]

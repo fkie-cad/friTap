@@ -8,10 +8,81 @@ This preserves the original on_fritap_message inline output logic.
 
 from datetime import datetime, timezone
 
+from ..output.keylog_format import is_safe_keylog_line, warn_dropped_keylog_line
+
 try:
     import hexdump
 except ImportError:
     hexdump = None
+
+
+def _legacy_json_writer(logger_instance):
+    """Return the lazily-created streaming JSON writer for the legacy path.
+
+    Bounds memory and adds crash-safety: events are appended to a
+    ``<json>.events.jsonl`` sidecar instead of growing ``session_data`` lists
+    without limit (see :mod:`friTap.output.json_stream`). The writer shares
+    ``session_data``'s metadata (``friTap_version``/``session_info``/
+    ``statistics``) by reference so counter updates and the end-time stamp are
+    reflected on finalize. Returns ``None`` when JSON output is disabled or the
+    file cannot be opened.
+    """
+    existing = getattr(logger_instance, "_legacy_json_stream", None)
+    if existing is not None:
+        return existing
+    if not logger_instance.json_output:
+        return None
+    from ..output.json_stream import acquire_json_stream_writer
+    session_data = logger_instance.session_data
+    stream_keys = [k for k in ("ssl_sessions", "connections", "key_extractions", "errors")
+                   if isinstance(session_data.get(k), list)]
+    order = list(session_data.keys())
+    values = {k: v for k, v in session_data.items() if k not in stream_keys}
+    try:
+        writer, _created = acquire_json_stream_writer(
+            logger_instance.json_output,
+            lambda: (order, stream_keys, values),
+        )
+    except OSError as exc:
+        logger_instance.logger.warning(
+            "Failed to open JSON output file '%s': %s", logger_instance.json_output, exc)
+        logger_instance._legacy_json_stream = None
+        return None
+    logger_instance._legacy_json_stream = writer
+    return writer
+
+
+def finalize_legacy_json(logger_instance) -> None:
+    """Finalize and release the legacy streaming JSON document. Idempotent.
+
+    Teardown code (``SSL_Logger._finalize_json_output``/the target-death path)
+    can call this on every exit; a second call is a no-op.
+    """
+    writer = getattr(logger_instance, "_legacy_json_stream", None)
+    if writer is None:
+        return
+    logger_instance._legacy_json_stream = None
+    try:
+        session_info = logger_instance.session_data.get("session_info")
+        if isinstance(session_info, dict):
+            session_info["end_time"] = datetime.now(timezone.utc).isoformat()
+    except Exception:  # noqa: BLE001 - never break teardown
+        pass
+    from ..output.json_stream import release_json_stream_writer
+    release_json_stream_writer(writer)
+
+
+def _is_writable_keylog(line) -> bool:
+    """True when the agent's keylog *line* is safe to write as ONE keylog line.
+
+    The agent runs inside a possibly hostile process: a CR/LF/NUL in its string
+    would otherwise inject forged lines into the keylog file. Unsafe values are
+    dropped with a rate-limited warning.
+    """
+    if is_safe_keylog_line(line):
+        return True
+    warn_dropped_keylog_line("legacy: unsafe keylog line")
+    return False
 
 
 def _make_scapy_filter(src_addr, dst_addr, ss_family):
@@ -109,6 +180,8 @@ def handle_message_legacy(logger_instance, payload, data, message):
 
     if logger_instance.verbose:
         if (payload["contentType"] == "keylog") and logger_instance.keylog:
+            if not _is_writable_keylog(payload.get("keylog")):
+                return
             if payload["keylog"] not in logger_instance.keydump_Set:
                 logger_instance.logger.info(payload["keylog"])
                 logger_instance.keydump_Set.add(payload["keylog"])
@@ -120,7 +193,11 @@ def handle_message_legacy(logger_instance, payload, data, message):
                         "type": "key_extraction",
                         "key_data": payload["keylog"]
                     }
-                    logger_instance.session_data["key_extractions"].append(key_entry)
+                    # Stream to the crash-safe sidecar instead of growing an
+                    # in-memory list without bound.
+                    writer = _legacy_json_writer(logger_instance)
+                    if writer is not None:
+                        writer.data["key_extractions"].append(key_entry)
         elif not data or len(data) == 0:
             return
         else:
@@ -157,7 +234,11 @@ def handle_message_legacy(logger_instance, payload, data, message):
                     "ss_family": payload["ss_family"],
                     "data_length": len(data) if data else 0
                 }
-                logger_instance.session_data["connections"].append(connection_entry)
+                # Stream the connection event to the crash-safe sidecar; keep
+                # only the (bounded) counters in memory.
+                writer = _legacy_json_writer(logger_instance)
+                if writer is not None:
+                    writer.data["connections"].append(connection_entry)
                 logger_instance.session_data["statistics"]["total_connections"] += 1
                 logger_instance.session_data["statistics"]["total_bytes_captured"] += len(data) if data else 0
 
@@ -174,6 +255,8 @@ def handle_message_legacy(logger_instance, payload, data, message):
             logger_instance.cleanup(logger_instance.live, logger_instance.socket_trace, logger_instance.full_capture, logger_instance.debug)
 
     if logger_instance.keylog and payload["contentType"] == "keylog":
+        if not _is_writable_keylog(payload.get("keylog")):
+            return
         if payload["keylog"] not in logger_instance.keydump_Set:
             logger_instance.keylog_file.write(payload["keylog"] + "\n")
             logger_instance.keylog_file.flush()

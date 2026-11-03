@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 from datetime import datetime, timezone
@@ -21,15 +20,28 @@ if TYPE_CHECKING:
         LibraryDetectedEvent,
         SessionEvent,
     )
-    from .shared_output_file import SharedOutputFile
+    from .json_stream import JsonStreamWriter
 
 
-def _new_document(session_info: dict) -> dict:
+# Top-level document order (unchanged schema). The high-volume arrays are
+# streamed to the sidecar; the small ones (errors, libraries_detected) and the
+# metadata stay in memory.
+_DOCUMENT_ORDER = [
+    "session_info",
+    "ssl_sessions",
+    "connections",
+    "key_extractions",
+    "errors",
+    "libraries_detected",
+    "statistics",
+]
+_STREAM_KEYS = ["ssl_sessions", "connections", "key_extractions"]
+
+
+def _new_values(session_info: dict) -> dict:
+    """In-memory (non-streamed) part of the document: metadata + small arrays."""
     return {
         "session_info": session_info,
-        "ssl_sessions": [],
-        "connections": [],
-        "key_extractions": [],
         "errors": [],
         "libraries_detected": [],
         "statistics": {
@@ -41,27 +53,28 @@ def _new_document(session_info: dict) -> dict:
 
 
 class JsonOutputHandler(OutputHandler):
-    """Collects session data and writes a JSON summary on close.
+    """Streams session data to a crash-safe JSON document, bounded in memory.
 
-    The document is shared per path (:mod:`friTap.output.shared_output_file`):
-    the Windows LSASS session is configured with the same ``--json`` path, so
-    both sessions fill ONE in-memory document and every release rewrites the
-    whole file, the last one with the complete document. An *auxiliary*
-    session (LSASS) records its session_info under ``auxiliary_sessions`` so
-    ``session_info`` stays the target session's. With a single session the file
-    content is unchanged.
+    Events are appended to a ``<path>.events.jsonl`` sidecar (see
+    :mod:`friTap.output.json_stream`); memory holds only counters and small
+    metadata. The document is shared per path: the Windows LSASS session is
+    configured with the same ``--json`` path, so both sessions fill ONE document
+    and every release re-assembles the whole file, the last one completing it.
+    An *auxiliary* session (LSASS) records its session_info under
+    ``auxiliary_sessions`` so ``session_info`` stays the target session's. With a
+    single session the file content is unchanged.
     """
 
     def __init__(self, json_path: str, session_info: Optional[dict] = None,
                  auxiliary: bool = False) -> None:
         self._path = json_path
-        self._file: Optional["SharedOutputFile"] = None
+        self._writer: Optional["JsonStreamWriter"] = None
         self._logger = logging.getLogger("friTap.output.json")
         self._session_info = session_info or {}
         self._auxiliary = auxiliary
-        # Replaced by the shared file's lock once set up.
+        # Replaced by the shared writer's lock once set up.
         self._lock = threading.RLock()
-        self._data = _new_document({} if auxiliary else self._session_info)
+        self._data: dict = _new_values({} if auxiliary else self._session_info)
 
     def setup(self, event_bus: "EventBus") -> None:
         from ..events import (
@@ -80,19 +93,26 @@ class JsonOutputHandler(OutputHandler):
 
     def _join_shared_document(self) -> None:
         """Open (first session) or join (later session) the document for this path."""
-        from .shared_output_file import acquire_shared_output_file
+        from .json_stream import acquire_json_stream_writer
+        values = _new_values({} if self._auxiliary else self._session_info)
         try:
-            self._file, _created = acquire_shared_output_file(
-                self._path, "w", initializer=lambda _f: self._data)
+            self._writer, _created = acquire_json_stream_writer(
+                self._path,
+                lambda: (list(_DOCUMENT_ORDER), list(_STREAM_KEYS), values),
+            )
         except OSError as e:
             self._logger.warning("Failed to open JSON output file '%s': %s", self._path, e)
-            self._file = None
+            self._writer = None
             return
-        self._lock = self._file.lock
+        self._lock = self._writer.lock
         with self._lock:
-            self._data = self._file.state
+            self._data = self._writer.data
             if self._auxiliary:
-                self._data.setdefault("auxiliary_sessions", []).append(self._session_info)
+                aux_list = self._data.get("auxiliary_sessions")
+                if aux_list is None:
+                    aux_list = []
+                    self._writer.add_value_key("auxiliary_sessions", aux_list)
+                aux_list.append(self._session_info)
             else:
                 self._data["session_info"] = self._session_info
 
@@ -118,10 +138,14 @@ class JsonOutputHandler(OutputHandler):
                 "tier": payload.get("tier", ""),
                 "source": payload.get("source", ""),
             })
+        if self._writer is None:
+            return
         with self._lock:
             self._data["key_extractions"].append(record)
 
     def on_data(self, event: "DatalogEvent") -> None:
+        if self._writer is None:
+            return
         data_length = len(event.data) if event.data else 0
         with self._lock:
             self._data["connections"].append({
@@ -139,6 +163,8 @@ class JsonOutputHandler(OutputHandler):
             self._data["statistics"]["total_bytes_captured"] += data_length
 
     def on_session(self, event: "SessionEvent") -> None:
+        if self._writer is None:
+            return
         with self._lock:
             self._data["ssl_sessions"].append({
                 "timestamp": event.timestamp,
@@ -151,6 +177,8 @@ class JsonOutputHandler(OutputHandler):
             self._data["statistics"]["total_sessions"] += 1
 
     def on_error(self, event: "ErrorEvent") -> None:
+        if self._writer is None:
+            return
         with self._lock:
             self._data["errors"].append({
                 "timestamp": event.timestamp,
@@ -160,24 +188,31 @@ class JsonOutputHandler(OutputHandler):
             })
 
     def _on_library(self, event: "LibraryDetectedEvent") -> None:
+        if self._writer is None:
+            return
         lib_info = {"name": event.library, "path": event.path, "detected_at": event.timestamp}
         with self._lock:
             if lib_info not in self._data["libraries_detected"]:
                 self._data["libraries_detected"].append(lib_info)
 
     def close(self) -> None:
-        shared, self._file = self._file, None
-        if shared is None:
+        """Finalize and release the shared document. Idempotent.
+
+        Safe to call from the normal teardown, an ``atexit`` hook and any
+        target-death path; a second call is a no-op.
+        """
+        writer, self._writer = self._writer, None
+        if writer is None:
             return
-        from .shared_output_file import release_shared_output_file
+        from .json_stream import release_json_stream_writer
         try:
             with self._lock:
                 self._session_info["end_time"] = datetime.now(timezone.utc).isoformat()
-                # Every release rewrites the whole document, so the file is valid
-                # JSON even if another session sharing it is never released.
-                shared.rewrite(json.dumps(self._data, indent=2, ensure_ascii=False))
             self._logger.info("JSON output saved to %s", self._path)
         except Exception as e:
             self._logger.error("Error writing JSON output: %s", e)
         finally:
-            release_shared_output_file(shared)
+            # Every release re-assembles the whole document atomically, so the
+            # file is valid JSON even if another session sharing it is never
+            # released.
+            release_json_stream_writer(writer)

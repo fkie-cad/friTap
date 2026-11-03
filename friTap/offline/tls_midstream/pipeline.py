@@ -36,14 +36,17 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Iterable, List, Optional, Sequence, Set, Tuple
+from itertools import islice
+from typing import Iterable, Iterator, List, Optional, Sequence, Set, Tuple
 
 from friTap.connection_index import canonical_4tuple
 from friTap.events import DatalogEvent
+from friTap.offline.keylog_io import iter_bounded_lines
 from friTap.offline.pipeline_api import emit_tls_session_event
 from friTap.offline.tls.stream import (
     DEFAULT_BIND_RECORDS,
     DEFAULT_MAX_SEQ,
+    TrialBudget,
     app_data_records,
     decrypt_stream_from,
     pick_binding,
@@ -80,6 +83,15 @@ _BIND_PASSES = (1, DEFAULT_BIND_RECORDS)
 # The bundle secret tried on each direction, in binding order (write, then read).
 _DIRECTION_SECRETS = ((WRITE, "client_traffic_secret_0"),
                       (READ, "server_traffic_secret_0"))
+
+# The secret-bundle sidecar may be named by an untrusted capture manifest, and
+# every bundle is trial-decrypted against every stream, so the work is bounded:
+# at most this many distinct bundles are loaded (the rest are ignored, warned)...
+MAX_SECRET_BUNDLES = 4096
+# ...and one run of the stage makes at most this many AEAD trial decryptions in
+# its seq searches (a wrong (bundle, stream) pair costs up to ~1.6M at the
+# default max_seq). When it runs out, the search stops with one warning.
+MIDSTREAM_TRIAL_BUDGET = 5_000_000
 
 
 def _bind_windows():
@@ -144,28 +156,59 @@ def _valid_bundle(obj) -> bool:
     )
 
 
-def load_secret_bundles(path: str) -> List[dict]:
+def _parse_bundle_line(line: str) -> Optional[dict]:
+    """The secret bundle on one JSONL *line*, or ``None`` (blank/malformed/incomplete)."""
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        return None
+    return obj if _valid_bundle(obj) else None
+
+
+def _bundle_identity(bundle: dict) -> Tuple[str, ...]:
+    """The secret material binding uses: both traffic secrets, lowercased."""
+    return tuple(str(bundle.get(key) or "").lower() for _direction, key in _DIRECTION_SECRETS)
+
+
+def _distinct_bundles(lines: Iterable[str]) -> Iterator[dict]:
+    """The valid bundles of JSONL *lines*, de-duplicated by secret material (first wins)."""
+    seen: Set[Tuple[str, ...]] = set()
+    for line in lines:
+        bundle = _parse_bundle_line(line)
+        if bundle is None:
+            continue
+        identity = _bundle_identity(bundle)
+        if identity not in seen:
+            seen.add(identity)
+            yield bundle
+
+
+def load_secret_bundles(path: str, max_bundles: int = MAX_SECRET_BUNDLES) -> List[dict]:
     """Load the JSONL secret-bundle sidecar at *path* (``[]`` on any error).
 
     Each non-empty line is one bundle object (see the engine sidecar schema).
-    Malformed lines and bundles missing both traffic secrets are skipped; a bad
-    or absent file yields an empty list so the stage is simply a no-op.
+    Malformed lines, over-long lines (see
+    :func:`~friTap.offline.keylog_io.iter_bounded_lines`) and bundles missing
+    both traffic secrets are skipped; a bad or absent file yields an empty list
+    so the stage is simply a no-op. Bundles are de-duplicated by their secret
+    material (first wins; a duplicate brings no new secret to try) and at most
+    *max_bundles* distinct ones are loaded; the rest are ignored with one
+    warning.
     """
-    bundles: List[dict] = []
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except ValueError:
-                    continue
-                if _valid_bundle(obj):
-                    bundles.append(obj)
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            distinct = _distinct_bundles(iter_bounded_lines(handle, source=path))
+            bundles = list(islice(distinct, max_bundles))
+            truncated = next(distinct, None) is not None
     except OSError:
         return []
+    if truncated:
+        logger.warning(
+            "Mid-stream TLS: %s holds more than %d distinct secret bundles; "
+            "only the first %d are used", path, max_bundles, max_bundles)
     return bundles
 
 
@@ -178,6 +221,11 @@ def _starts_with_handshake(stream: MidstreamTlsStream) -> bool:
     """True when either direction of *stream* begins with a captured handshake."""
     return any(_has_leading_handshake(stream.records.get(direction) or [])
                for direction in (WRITE, READ))
+
+
+def _out_of_budget(budget: Optional[TrialBudget]) -> bool:
+    """True when *budget* is given and exhausted (no further trials allowed)."""
+    return budget is not None and budget.exhausted
 
 
 def _directions(bundle: dict, stream: MidstreamTlsStream) -> list:
@@ -200,6 +248,7 @@ def _bind_direction(
     first_record: int = 0,
     suites: Optional[List[str]] = None,
     min_seq: int = 0,
+    budget: Optional[TrialBudget] = None,
 ) -> Optional[_DirectionBinding]:
     """Trial-bind *secret_hex* to one direction's *records*, or ``None``.
 
@@ -208,12 +257,13 @@ def _bind_direction(
     bounds the starting-sequence search for a mid-stream (no-handshake) capture;
     the application_data records from ``first_record`` up to ``max_records`` are
     tried, with *suites* (default: every suite matching the secret's length).
+    The trials are spent from *budget*; an exhausted budget tries nothing.
     """
-    if not secret_hex or not records:
+    if not secret_hex or not records or _out_of_budget(budget):
         return None
     picked = pick_binding(secret_hex, records, suites=suites, max_seq=max_seq,
                           max_records=max_records, first_record=first_record,
-                          min_seq=min_seq)
+                          min_seq=min_seq, budget=budget)
     if picked is None:
         return None
     return _DirectionBinding(secret_hex, picked.suite, picked.seq, picked.record_index)
@@ -224,6 +274,7 @@ def _bind_bundle_to_stream(
     max_seq: int = DEFAULT_MAX_SEQ,
     max_records: int = 1,
     first_record: int = 0,
+    budget: Optional[TrialBudget] = None,
 ) -> Optional[StreamBinding]:
     """Try to bind one secret *bundle* to one *stream* (both directions), or ``None``.
 
@@ -242,33 +293,37 @@ def _bind_bundle_to_stream(
     both directions and they failed, so they are skipped. The deep retry skips
     every record already tried and uses only the bound direction's suite (both
     TLS 1.3 directions share the negotiated suite), so it yields exactly what a
-    full retry would.
+    full retry would. Every trial is spent from *budget* (when given).
     """
     if _starts_with_handshake(stream):
         return None
     directions = _directions(bundle, stream)
-    binds = [_bind_direction(secret, records, max_seq, max_records, first_record)
+    binds = [_bind_direction(secret, records, max_seq, max_records, first_record,
+                             budget=budget)
              for secret, records in directions]
-    return _finish(stream, directions, binds, max_seq, max_records)
+    return _finish(stream, directions, binds, max_seq, max_records, budget=budget)
 
 
 def _finish(stream: MidstreamTlsStream, directions: list, binds: Sequence,
             max_seq: int, max_records: int,
-            retry_from: int = 0) -> Optional[StreamBinding]:
+            retry_from: int = 0,
+            budget: Optional[TrialBudget] = None) -> Optional[StreamBinding]:
     """Turn a stream's first-stage direction *binds* into a StreamBinding, or ``None``.
 
     ``None`` when no direction bound. Otherwise the stream is known to be the
     bundle's session, so each unbound direction gets the partner deep retry: the
     records after the first ``max_records`` up to :data:`DEFAULT_BIND_RECORDS`,
     with the bound direction's suite, at seqs ``retry_from..max_seq``
-    (``retry_from`` > 0 only when the lower seqs were already retried).
+    (``retry_from`` > 0 only when the lower seqs were already retried), its
+    trials spent from *budget*.
     """
     bound = next((bind for bind in binds if bind), None)
     if bound is None:
         return None
     deep = max(max_records, DEFAULT_BIND_RECORDS)
     binds = [bind or _bind_direction(secret, records, max_seq, deep, max_records,
-                                     suites=[bound.suite], min_seq=retry_from)
+                                     suites=[bound.suite], min_seq=retry_from,
+                                     budget=budget)
              for bind, (secret, records) in zip(binds, directions)]
     return StreamBinding(stream, binds[0], binds[1])
 
@@ -360,17 +415,23 @@ class _BundleSearch:
     """
 
     def __init__(self, bundle: dict, max_seq: int, max_records: int,
-                 first_record: int):
+                 first_record: int, budget: Optional[TrialBudget] = None):
         self.bundle = bundle
         self.max_seq = max_seq
         self.max_records = max_records
         self.first_record = first_record
+        self.budget = budget
         self.windows = list(seq_windows(max_seq))
 
     def find(self, unclaimed: list) -> Optional[Tuple[int, StreamBinding]]:
-        """``(index into unclaimed, binding)`` for the stream the bundle binds."""
+        """``(index into unclaimed, binding)`` for the stream the bundle binds.
+
+        Stops early (``None``) once the trial budget is exhausted.
+        """
         for level, window in enumerate(self.windows):
             for position, stream in enumerate(unclaimed):
+                if _out_of_budget(self.budget):
+                    return None
                 partial = self.probe(stream, window)
                 if partial is not None:
                     return self.settle(unclaimed, position, partial, level)
@@ -383,7 +444,8 @@ class _BundleSearch:
         if low == 0:
             return _bind_bundle_to_stream(self.bundle, stream, max_seq=high,
                                           max_records=self.max_records,
-                                          first_record=self.first_record)
+                                          first_record=self.first_record,
+                                          budget=self.budget)
         open_dirs = _open_directions(self.bundle, stream)
         if not open_dirs or _starts_with_handshake(stream):
             return None
@@ -420,7 +482,7 @@ class _BundleSearch:
             return partial
         binds = self.sweep(open_dirs, (partial.write, partial.read), windows)
         return _finish(stream, _directions(self.bundle, stream), binds,
-                       self.max_seq, self.max_records, retry_from)
+                       self.max_seq, self.max_records, retry_from, self.budget)
 
     def sweep(self, open_dirs: list, binds: Sequence, windows: list) -> list:
         """Fill each unbound direction's first-stage binding, window by window."""
@@ -430,7 +492,7 @@ class _BundleSearch:
                 if binds[index] is None:
                     binds[index] = _bind_direction(
                         secret, records, high, self.max_records,
-                        self.first_record, min_seq=low)
+                        self.first_record, min_seq=low, budget=self.budget)
         return binds
 
     @staticmethod
@@ -441,13 +503,17 @@ class _BundleSearch:
 
 def _find_binding(bundle: dict, unclaimed: list, max_records: int,
                   first_record: int = 0,
-                  max_seq: int = DEFAULT_MAX_SEQ) -> Optional[Tuple[int, StreamBinding]]:
+                  max_seq: int = DEFAULT_MAX_SEQ,
+                  budget: Optional[TrialBudget] = None,
+                  ) -> Optional[Tuple[int, StreamBinding]]:
     """``(index, binding)`` of the first unclaimed stream *bundle* binds, or ``None``.
 
     Exactly what walking *unclaimed* in order with :func:`_bind_bundle_to_stream`
-    returns, found by the iterative-deepening seq search of :class:`_BundleSearch`.
+    returns, found by the iterative-deepening seq search of :class:`_BundleSearch`
+    (while *budget* lasts).
     """
-    return _BundleSearch(bundle, max_seq, max_records, first_record).find(unclaimed)
+    search = _BundleSearch(bundle, max_seq, max_records, first_record, budget)
+    return search.find(unclaimed)
 
 
 @dataclass
@@ -653,6 +719,7 @@ def run_midstream_tls_stage(
     base_ts: float = 0.0,
     server_ports: Tuple[int, ...] = (443,),
     max_seq: int = DEFAULT_MAX_SEQ,
+    trial_budget: Optional[int] = None,
 ) -> Set[str]:
     """Bind the sidecar's secret bundles to *pcap_path*'s mid-stream TLS streams.
 
@@ -662,7 +729,9 @@ def run_midstream_tls_stage(
     keys of the bound flows so the caller can relabel them ``TLS(midstream)``.
     A missing/empty sidecar (or an enumeration failure) is a no-op returning an
     empty set — the stage never aborts the surrounding conversion. ``max_seq``
-    bounds the starting-sequence search (see :data:`DEFAULT_MAX_SEQ`).
+    bounds the starting-sequence search (see :data:`DEFAULT_MAX_SEQ`) and
+    *trial_budget* (default :data:`MIDSTREAM_TRIAL_BUDGET`) the run's total AEAD
+    trial decryptions; when it runs out the search stops with one warning.
     """
     bundles = load_secret_bundles(sidecar_path)
     if not bundles:
@@ -692,6 +761,7 @@ def run_midstream_tls_stage(
     unclaimed = list(streams)
     unplaced = list(bundles)
     placements = _Placements(streams)
+    budget = TrialBudget(MIDSTREAM_TRIAL_BUDGET if trial_budget is None else trial_budget)
     for first_record, max_records in _bind_windows():
         unplaced = [
             bundle for bundle in unplaced
@@ -699,28 +769,44 @@ def run_midstream_tls_stage(
                                  bus=bus, state=state,
                                  result=result, base_ts=base_ts, stats=stats,
                                  bound_keys=bound_keys, max_seq=max_seq,
-                                 placements=placements)
+                                 placements=placements, budget=budget)
         ]
-        if not unplaced or not unclaimed:
+        if not unplaced or not unclaimed or budget.exhausted:
             break
+    _warn_budget_exhausted(budget, unclaimed, unplaced)
     stats.report(result)
     return bound_keys
+
+
+def _warn_budget_exhausted(budget: TrialBudget, unclaimed: list, unplaced: list) -> None:
+    """Log ONE warning when the run's AEAD trial budget cut the search short."""
+    if not budget.exhausted:
+        return
+    logger.warning(
+        "Mid-stream TLS: AEAD trial budget exhausted after %d trial decryptions; "
+        "stopped searching. %d unbound stream(s) stayed unsearched or only partly "
+        "searched; %d secret bundle(s) left unplaced.",
+        budget.used, len(unclaimed), len(unplaced))
 
 
 def _place_bundle(bundle: dict, unclaimed: list, max_records: int,
                   first_record: int = 0, *, bus, state, result, base_ts: float,
                   stats: _StageStats, bound_keys: Set[str],
                   max_seq: int = DEFAULT_MAX_SEQ,
-                  placements: Optional[_Placements] = None) -> bool:
+                  placements: Optional[_Placements] = None,
+                  budget: Optional[TrialBudget] = None) -> bool:
     """Bind *bundle* to the first unclaimed stream it decrypts; emit and claim it.
 
     Returns True when the bundle was placed (the stream is removed from
     *unclaimed*). A duplicate of an already fully bound bundle is skipped (see
-    :class:`_Placements`).
+    :class:`_Placements`), and nothing is tried once *budget* is exhausted.
     """
+    if _out_of_budget(budget):
+        return False
     if placements is not None and placements.is_duplicate(bundle):
         return False
-    found = _find_binding(bundle, unclaimed, max_records, first_record, max_seq)
+    found = _find_binding(bundle, unclaimed, max_records, first_record, max_seq,
+                          budget)
     if found is None:
         return False
     idx, binding = found

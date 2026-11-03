@@ -5,7 +5,7 @@
   "dropped_stream_count": 0,
   "encrypted_streams_skipped": 0,
   "findings_count": 0,
-  "flow_count": 58,
+  "flow_count": 60,
   "mtproto_messages": 0,
   "mtproto_records_undecryptable": 0,
   "mtproto_streams": 0,
@@ -15,7 +15,7 @@
   "tap_path": "<WORK>/chrome_quic_encrypted.tap"
  },
  "tap": {
-  "flow_count": 58,
+  "flow_count": 60,
   "flows": [
    {
     "chunks": {
@@ -6178,6 +6178,137 @@
     "chunks": {
      "count": 1,
      "sha256": [
+      "b25eb4798c1997ae6aad1e6a6f3bb0683342af23c1768adca47b2dc5bdd54f51"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:10.0.0.1:50914-216.239.36.223:443",
+     "detected_protocol": "",
+     "dst_addr": "10.0.0.1",
+     "dst_port": 50914,
+     "duration": 0.0,
+     "ended": 1781088274.919759,
+     "findings": [],
+     "flow_id": "net:10.0.0.1:50914-216.239.36.223:443:0",
+     "layers": [
+      "tls"
+     ],
+     "notes": "",
+     "package_name": "chrome_quic_encrypted.pcapng",
+     "process_name": "chrome_quic_encrypted.pcapng",
+     "protocol": "unknown",
+     "request": null,
+     "response": {
+      "body_size": 1199,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {},
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": false,
+      "method": "",
+      "protocol": "unknown",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": ""
+     },
+     "src_addr": "216.239.36.223",
+     "src_port": 443,
+     "ssl_session_id": "",
+     "started": 1781088274.919759,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 1199,
+     "transport": "tls"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "alpn": "",
+       "cipher": "",
+       "depth": 0,
+       "library": "",
+       "name": "tls",
+       "sni": "",
+       "version": ""
+      },
+      "type": "TlsLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": null,
+    "response": {
+     "body_sha256": "eba49e42e98c1a82bee1008fa5aa3195a42ff3b9e4c10fe4017aef309df7529f",
+     "body_size": 1199,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {},
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": false,
+     "method": "",
+     "protocol": "unknown",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": ""
+    },
+    "summary": {
+     "connection_id": "net:10.0.0.1:50914-216.239.36.223:443",
+     "detected_protocol": "",
+     "dst_addr": "10.0.0.1",
+     "dst_port": 50914,
+     "duration": 0.0,
+     "ended": 1781088274.919759,
+     "finding_count": 0,
+     "flow_id": "net:10.0.0.1:50914-216.239.36.223:443:0",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "",
+     "inner_e2e_protocol": "",
+     "inner_summary": "",
+     "method": "",
+     "outer_app_protocol": "",
+     "process_name": "chrome_quic_encrypted.pcapng",
+     "protocol": "unknown",
+     "src_addr": "216.239.36.223",
+     "src_port": 443,
+     "ssl_session_id": "",
+     "started": 1781088274.919759,
+     "state": "complete",
+     "status_code": 0,
+     "tag_count": 0,
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 1199,
+     "transport": "tls",
+     "url": ""
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   },
+   {
+    "chunks": {
+     "count": 1,
+     "sha256": [
       "6810824a4e91c8356ac8cf48e8529e4def5b78180a7c5f996ad8fbd9ecd918f4"
      ]
     },
@@ -6307,11 +6438,9 @@
    },
    {
     "chunks": {
-     "count": 3,
+     "count": 1,
      "sha256": [
-      "8d6324bc279925583e92417c6a5d5c603b66d2f7a34b7ceaf4e0e8aae32eb326",
-      "722e0be60c161ba6a9b0b87e59dfe772b8555b3c5d3dd1992fc5404fe0e17560",
-      "b25eb4798c1997ae6aad1e6a6f3bb0683342af23c1768adca47b2dc5bdd54f51"
+      "8d6324bc279925583e92417c6a5d5c603b66d2f7a34b7ceaf4e0e8aae32eb326"
      ]
     },
     "findings": [],
@@ -6320,36 +6449,20 @@
      "detected_protocol": "",
      "dst_addr": "10.0.0.1",
      "dst_port": 50914,
-     "duration": 0.0019240379333496094,
-     "ended": 1781088275.007675,
+     "duration": 0.0,
+     "ended": 1781088275.005751,
      "findings": [],
      "flow_id": "net:10.0.0.1:50914-216.239.36.223:443:2",
      "layers": [
-      "http3"
+      "tls"
      ],
      "notes": "",
      "package_name": "chrome_quic_encrypted.pcapng",
      "process_name": "chrome_quic_encrypted.pcapng",
-     "protocol": "HTTP/3",
-     "request": {
-      "body_size": 59,
-      "content_encoding": "",
-      "content_type": "",
-      "error": "",
-      "headers": {},
-      "host": "",
-      "is_complete": false,
-      "is_control_frame": false,
-      "is_request": true,
-      "method": "",
-      "protocol": "HTTP/3",
-      "status_code": 0,
-      "status_text": "",
-      "stream_id": 1,
-      "url": ""
-     },
+     "protocol": "unknown",
+     "request": null,
      "response": {
-      "body_size": 1199,
+      "body_size": 1205,
       "content_encoding": "",
       "content_type": "",
       "error": "",
@@ -6373,7 +6486,7 @@
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "",
-     "total_bytes": 3612,
+     "total_bytes": 1205,
      "transport": "tls"
     },
     "layers": [
@@ -6381,36 +6494,23 @@
       "data_source": "chunks",
       "metadata_only": false,
       "to_dict": {
+       "alpn": "",
+       "cipher": "",
        "depth": 0,
-       "name": "http3"
+       "library": "",
+       "name": "tls",
+       "sni": "",
+       "version": ""
       },
-      "type": "AppLayer"
+      "type": "TlsLayer"
      }
     ],
     "ohttp_inner_request": null,
     "ohttp_inner_response": null,
-    "request": {
-     "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-     "body_size": 59,
-     "content_encoding": "",
-     "content_type": "",
-     "error": "",
-     "headers": {},
-     "host": "",
-     "is_complete": false,
-     "is_control_frame": false,
-     "is_request": true,
-     "method": "",
-     "protocol": "HTTP/3",
-     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-     "status_code": 0,
-     "status_text": "",
-     "stream_id": 1,
-     "url": ""
-    },
+    "request": null,
     "response": {
-     "body_sha256": "eba49e42e98c1a82bee1008fa5aa3195a42ff3b9e4c10fe4017aef309df7529f",
-     "body_size": 1199,
+     "body_sha256": "9ba2ef792fa16d34e7691bf300ee3194e116ba696390f7eab222b5bb0200cf78",
+     "body_size": 1205,
      "content_encoding": "",
      "content_type": "",
      "error": "",
@@ -6432,8 +6532,8 @@
      "detected_protocol": "",
      "dst_addr": "10.0.0.1",
      "dst_port": 50914,
-     "duration": 0.0019240379333496094,
-     "ended": 1781088275.007675,
+     "duration": 0.0,
+     "ended": 1781088275.005751,
      "finding_count": 0,
      "flow_id": "net:10.0.0.1:50914-216.239.36.223:443:2",
      "flow_method": "",
@@ -6442,9 +6542,9 @@
      "inner_e2e_protocol": "",
      "inner_summary": "",
      "method": "",
-     "outer_app_protocol": "HTTP/3",
+     "outer_app_protocol": "",
      "process_name": "chrome_quic_encrypted.pcapng",
-     "protocol": "HTTP/3",
+     "protocol": "unknown",
      "src_addr": "216.239.36.223",
      "src_port": 443,
      "ssl_session_id": "",
@@ -6454,7 +6554,138 @@
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "",
-     "total_bytes": 3612,
+     "total_bytes": 1205,
+     "transport": "tls",
+     "url": ""
+    },
+    "trailing": {
+     "read_parse": null,
+     "read_protocol": "",
+     "read_sha256": null,
+     "write_parse": null,
+     "write_protocol": "",
+     "write_sha256": null
+    }
+   },
+   {
+    "chunks": {
+     "count": 1,
+     "sha256": [
+      "722e0be60c161ba6a9b0b87e59dfe772b8555b3c5d3dd1992fc5404fe0e17560"
+     ]
+    },
+    "findings": [],
+    "flow": {
+     "connection_id": "net:10.0.0.1:50914-216.239.36.223:443",
+     "detected_protocol": "",
+     "dst_addr": "10.0.0.1",
+     "dst_port": 50914,
+     "duration": 0.0,
+     "ended": 1781088275.007675,
+     "findings": [],
+     "flow_id": "net:10.0.0.1:50914-216.239.36.223:443:3",
+     "layers": [
+      "tls"
+     ],
+     "notes": "",
+     "package_name": "chrome_quic_encrypted.pcapng",
+     "process_name": "chrome_quic_encrypted.pcapng",
+     "protocol": "unknown",
+     "request": null,
+     "response": {
+      "body_size": 1208,
+      "content_encoding": "",
+      "content_type": "",
+      "error": "",
+      "headers": {},
+      "host": "",
+      "is_complete": true,
+      "is_control_frame": false,
+      "is_request": false,
+      "method": "",
+      "protocol": "unknown",
+      "status_code": 0,
+      "status_text": "",
+      "stream_id": 0,
+      "url": ""
+     },
+     "src_addr": "216.239.36.223",
+     "src_port": 443,
+     "ssl_session_id": "",
+     "started": 1781088275.007675,
+     "state": "complete",
+     "tags": [],
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 1208,
+     "transport": "tls"
+    },
+    "layers": [
+     {
+      "data_source": "chunks",
+      "metadata_only": false,
+      "to_dict": {
+       "alpn": "",
+       "cipher": "",
+       "depth": 0,
+       "library": "",
+       "name": "tls",
+       "sni": "",
+       "version": ""
+      },
+      "type": "TlsLayer"
+     }
+    ],
+    "ohttp_inner_request": null,
+    "ohttp_inner_response": null,
+    "request": null,
+    "response": {
+     "body_sha256": "1eb0ba20af526a18826e0b4e53016adcca9d8f62c292bfffbc449bb443addc81",
+     "body_size": 1208,
+     "content_encoding": "",
+     "content_type": "",
+     "error": "",
+     "headers": {},
+     "host": "",
+     "is_complete": true,
+     "is_control_frame": false,
+     "is_request": false,
+     "method": "",
+     "protocol": "unknown",
+     "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "status_code": 0,
+     "status_text": "",
+     "stream_id": 0,
+     "url": ""
+    },
+    "summary": {
+     "connection_id": "net:10.0.0.1:50914-216.239.36.223:443",
+     "detected_protocol": "",
+     "dst_addr": "10.0.0.1",
+     "dst_port": 50914,
+     "duration": 0.0,
+     "ended": 1781088275.007675,
+     "finding_count": 0,
+     "flow_id": "net:10.0.0.1:50914-216.239.36.223:443:3",
+     "flow_method": "",
+     "has_notes": false,
+     "host": "",
+     "inner_e2e_protocol": "",
+     "inner_summary": "",
+     "method": "",
+     "outer_app_protocol": "",
+     "process_name": "chrome_quic_encrypted.pcapng",
+     "protocol": "unknown",
+     "src_addr": "216.239.36.223",
+     "src_port": 443,
+     "ssl_session_id": "",
+     "started": 1781088275.007675,
+     "state": "complete",
+     "status_code": 0,
+     "tag_count": 0,
+     "tls_alpn": "",
+     "tls_sni": "",
+     "total_bytes": 1208,
      "transport": "tls",
      "url": ""
     },
@@ -7653,7 +7884,7 @@
    "ext_data": null,
    "ext_header_len": 0,
    "flags": 1,
-   "flow_count": 58,
+   "flow_count": 60,
    "format_version": 1
   },
   "keylog_records": {
@@ -7665,6 +7896,6 @@
    "parse_result_version": 1,
    "schema_version": 1
   },
-  "summary_count": 58
+  "summary_count": 60
  }
 }

@@ -53,7 +53,11 @@ class TestSSLLoggerInitialization:
     def test_initialization_with_json_output(self, mock_file):
         logger = SSL_Logger("test_app", json_output="output.json")
 
-        mock_file.assert_called_with("output.json", "w")
+        # The JSON document is now written atomically (crash-safe): events go to
+        # a sidecar and the final document is assembled via a temp file, so the
+        # target path is never opened directly in truncating "w" mode. The
+        # sidecar for the configured path is opened at setup.
+        mock_file.assert_any_call("output.json.events.jsonl", "w", encoding="utf-8")
         assert logger.json_output == "output.json"
 
     def test_initialization_with_mobile(self):
